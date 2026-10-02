@@ -105,7 +105,7 @@ pub(super) fn deliver<'a>(
         };
         // A non-stream cross-protocol response is buffered whole and translated egress → IR → ingress.
         // A same-protocol answer is relayed as the upstream sent it, a stream-asked, body-answered
-        // reply included (LLM DIALECT FIDELITY). Boxed: this arm is cold and its future is large
+        // reply included (DIALECT FIDELITY). Boxed: this arm is cold and its future is large
         // relative to the pinned hot path.
         let mut resp = if crate::engine::xchg::reply::relay::takes_whole(
             hop.ingress_protocol,

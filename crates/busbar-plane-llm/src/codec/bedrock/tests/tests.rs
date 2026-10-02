@@ -6548,7 +6548,7 @@ fn bedrock_orphan_content_block_delta_before_start_is_dropped() {
 
 /// A same-dialect buffered answer is relayed verbatim in every dialect, Bedrock included: no
 /// translator stands in for the relay, so no member (a busbar-measured `metrics.latencyMs`) is
-/// added to what the upstream sent (LLM DIALECT FIDELITY, owner 2026-10-02; 1.5.5's bytes).
+/// added to what the upstream sent (DIALECT FIDELITY, owner 2026-10-02; 1.5.5's bytes).
 /// Cross-protocol non-stream never builds one either.
 #[test]
 fn a_same_dialect_buffered_answer_gets_no_translator_in_any_dialect() {

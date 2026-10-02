@@ -545,7 +545,7 @@ async fn responses_stream_over_responses_stream() {
 }
 
 /// Same-protocol: a Responses upstream that ignores `stream` and answers one JSON body. Within one
-/// dialect the answer is relayed as the upstream sent it (LLM DIALECT FIDELITY, owner 2026-10-02;
+/// dialect the answer is relayed as the upstream sent it (DIALECT FIDELITY, owner 2026-10-02;
 /// 1.5.5's bytes): the client reads the upstream's JSON body, metered once.
 #[tokio::test]
 async fn responses_stream_over_responses_buffered() {

@@ -1370,7 +1370,7 @@ pub fn new_stream_translator(
     if !is_sse {
         // A buffered (non-stream) body. Cross-protocol never reaches here (the forward path buffers
         // and translates it before building a stream wrapper); same-protocol is a verbatim relay:
-        // the far end's bytes, untouched (LLM DIALECT FIDELITY, owner 2026-10-02).
+        // the far end's bytes, untouched (DIALECT FIDELITY, owner 2026-10-02).
         return None;
     }
     let st = if ingress == egress {

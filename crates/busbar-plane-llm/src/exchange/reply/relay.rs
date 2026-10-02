@@ -38,7 +38,7 @@ pub enum ContentType {
 
 /// Whether the far end's success answer is taken whole rather than relayed: a non-stream answer
 /// that crosses dialects. Within one dialect the answer is relayed as the far end sent it, a
-/// stream-asked, body-answered reply included (LLM DIALECT FIDELITY, owner 2026-10-02).
+/// stream-asked, body-answered reply included (DIALECT FIDELITY, owner 2026-10-02).
 #[must_use]
 pub fn takes_whole(ingress: &str, egress: &str, far_is_stream: bool) -> bool {
     !far_is_stream && ingress != egress

@@ -54,7 +54,7 @@ enum Fixture {
     /// upstream ignored `stream` and returned one JSON body, so the engine buffers it whole,
     /// translates it into the client's own stream framing, and the BUFFERED tap fires before the
     /// response is handed back. (Within one dialect the same body is relayed as the upstream sent
-    /// it — LLM DIALECT FIDELITY — so the lane here speaks another dialect.)
+    /// it — DIALECT FIDELITY — so the lane here speaks another dialect.)
     ///
     /// It is the one delivered end whose figures exist at step 6: every other admitted fixture here
     /// is a same-protocol relay whose tap fills while the CLIENT drains the body, which is after the
