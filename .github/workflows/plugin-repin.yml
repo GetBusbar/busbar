@@ -18,7 +18,7 @@
 #
 # The push rewrites workflow files (the callers' `@<sha>`), which GITHUB_TOKEN may not do: the caller
 # passes FLEET_TOKEN (contents + workflows write). Unprovisioned, the job is red and says so.
-name: plugin-repin
+name: "Plugins: repin"
 
 on:
   workflow_call:
