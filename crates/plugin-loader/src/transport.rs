@@ -39,8 +39,8 @@ use busbar_contract::abi::hot::decl::{DeclStr, OpaqueHandle};
 use busbar_contract::abi::hot::transport::{
     code, CarrierSlots, DeclByteList, DeclStrList, FramerSlots, RawWireOutcome, TransportDecl,
     WireBytesOut, WireConnFacts, WireDest, WireEnvPair, WireField, WireFramed, WireFramerOut,
-    WireOutcome, WireSettings, WireWaker, EMIT_TEXT_BIT, FRAMED_HAS_RETRY_AFTER,
-    FRAMED_HAS_STATUS_CODE, FRAMED_TEXT, NO_WAKER, TRANSPORT_DECL_MAJOR, TRANSPORT_DECL_MINOR,
+    WireOutcome, WireSettings, WireWaker, FRAMED_HAS_RETRY_AFTER, FRAMED_HAS_STATUS_CODE, NO_WAKER,
+    TRANSPORT_DECL_MAJOR, TRANSPORT_DECL_MINOR,
 };
 use busbar_contract::abi::hot::TransportDeclFn;
 use busbar_contract::abi::{check_preamble, AbiPreamble};
@@ -735,7 +735,9 @@ extern "C-unwind" fn out_frame(ctx: *mut c_void, piece: *const WireFramed) {
             status,
             status_code: (p.flags & FRAMED_HAS_STATUS_CODE != 0).then_some(p.status_code),
             retry_after_secs: (p.flags & FRAMED_HAS_RETRY_AFTER != 0).then_some(p.retry_after_secs),
-            text: p.flags & FRAMED_TEXT != 0,
+            // The condemned HOT lane carries no text bit (`qa/abi-freeze.toml`): a text message
+            // reaches the host over the memory ABI only (`abi::transport::PIECE_TEXT`).
+            text: false,
         });
     }));
 }
@@ -911,7 +913,9 @@ impl Framer for DeclFramer {
         stream: StreamId,
         bytes: &[u8],
         end_of_frame: bool,
-        text: bool,
+        // The condemned HOT lane carries no text bit (`qa/abi-freeze.toml`); a text message goes
+        // out over the memory ABI only (`abi::transport::EMIT_TEXT`).
+        _text: bool,
         mut out: &mut dyn FramerOut,
     ) -> Result<(), TransportError> {
         let f = self.slots.emit.ok_or(TransportError::Closed)?;
@@ -923,7 +927,7 @@ impl Framer for DeclFramer {
                 stream.0,
                 bytes.as_ptr(),
                 bytes.len(),
-                u8::from(end_of_frame) | if text { EMIT_TEXT_BIT } else { 0 },
+                u8::from(end_of_frame),
                 &sink,
             )
         }))

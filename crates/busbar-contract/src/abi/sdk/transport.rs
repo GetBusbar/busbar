@@ -29,8 +29,8 @@ use crate::abi::hot::decl::{DeclStr, OpaqueHandle};
 use crate::abi::hot::transport::{
     code, CarrierSlots, DeclByteList, DeclClaim, DeclStrList, FramerSlots, RawWireOutcome,
     TransportDecl, WireBytesOut, WireConnFacts, WireDest, WireField, WireFramed, WireFramerOut,
-    WireOutcome, WireSettings, WireWakeFn, WireWaker, EMIT_TEXT_BIT, FRAMED_HAS_RETRY_AFTER,
-    FRAMED_HAS_STATUS_CODE, FRAMED_TEXT, NO_WAKER, TRANSPORT_DECL_MAJOR,
+    WireOutcome, WireSettings, WireWakeFn, WireWaker, FRAMED_HAS_RETRY_AFTER,
+    FRAMED_HAS_STATUS_CODE, NO_WAKER, TRANSPORT_DECL_MAJOR,
 };
 use crate::abi::{AbiPreamble, ABI_MAGIC, ABI_MAJOR, ABI_MINOR};
 use crate::grammar::SelectorForm;
@@ -476,8 +476,9 @@ bridges! {
                     framing,
                     StreamId(stream),
                     given,
-                    end_of_frame & 1 == 1,
-                    end_of_frame & EMIT_TEXT_BIT != 0,
+                    end_of_frame == 1,
+                    // The condemned HOT lane carries no text bit (`qa/abi-freeze.toml`).
+                    false,
                     &mut out,
                 )
                 .map_err(WireOutcome::of_error)
@@ -554,9 +555,6 @@ impl FramerOut for HostOut {
         }
         if piece.retry_after_secs.is_some() {
             flags |= FRAMED_HAS_RETRY_AFTER;
-        }
-        if piece.text {
-            flags |= FRAMED_TEXT;
         }
         let framed = WireFramed {
             size: core::mem::size_of::<WireFramed>() as u32,
