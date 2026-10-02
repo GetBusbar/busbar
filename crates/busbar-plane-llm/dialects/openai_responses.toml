@@ -1,5 +1,5 @@
 # crates/busbar-plane-llm/dialects/openai_responses.toml: the HAND-WRITTEN wire <> IR mapping of
-# the OpenAI Responses dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+# the OpenAI Responses dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
 wire = "responses"  # the wire lock: dialects/responses.wire.json (notation A paths)
@@ -8,7 +8,10 @@ request = [
     "sampling",
     "openai_family",
     "responses",
+    "blocks"
 ]
+response = ["response"]
+stream = ["stream"]
 
 # Members the dialect's own code models (`prim`). `text` is NOT one: its `format` is
 # `response_format`, its other members ride `extra`.
@@ -48,9 +51,94 @@ park = true
 park = true
 "text.verbosity" = { ir = "verbosity" }
 
-# Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
+# The request members inside the message, tool and config structure that the dialect's own code
+# reads and writes (`prim`: structure is code; the walker does not walk these rows).
+[rows.blocks]
+"input[].type=message.content[].type=input_file.file_data" = { prim = "file_data" }
+"input[].type=message.content[].type=input_file.filename" = { prim = "filename" }
+"input[].type=message.content[].type=input_file.file_url" = { prim = "file_url" }
+"input[].type=message.content[].type=input_file.file_id" = { prim = "file_id" }
+"input[].type=message.content[].type=input_text.text" = { prim = "text" }
+"text.format" = { prim = "format" }
+"reasoning.summary" = { prim = "summary" }
+"input[].type=message.content[].type=output_text.text" = { prim = "text" }
+"input[].type=message.content[].type=output_text.annotations" = { prim = "annotations" }
+"input[].type=message.content[].type=input_image.image_url" = { prim = "image_url" }
+"input[].type=message.content[].type=input_image.file_id" = { prim = "file_id" }
+"input[].type=message.content[].type=input_image.detail" = { prim = "detail" }
+"input[].type=function_call.call_id" = { prim = "call_id" }
+"input[].type=function_call.name" = { prim = "name" }
+"input[].type=function_call_output.call_id" = { prim = "call_id" }
+"input[].type=function_call_output.output" = { prim = "output" }
+"input[].type=reasoning.summary" = { prim = "summary" }
+"input[].type=reasoning.content" = { prim = "content" }
+"input[].type=reasoning.encrypted_content" = { prim = "encrypted_content" }
+"input[].type=reasoning.id" = { prim = "id" }
+"input[].type=message.content[].type=refusal.refusal" = { prim = "refusal" }
+"input[].type=reasoning.content[].text" = { prim = "text" }
+"tool_choice.type=function.name" = { prim = "name" }
+"tools[].type=function.name" = { prim = "name" }
+
+# The answer members the dialect's reader and writer carry (`prim`: code carries them).
+[rows.response]
+"usage.output_tokens_details.reasoning_tokens" = { prim = "reasoning_tokens" }
+"usage.input_tokens" = { prim = "input_tokens" }
+"usage.output_tokens" = { prim = "output_tokens" }
+"usage.total_tokens" = { prim = "total_tokens" }
+"id" = { prim = "id" }
+"object" = { prim = "object" }
+"created_at" = { prim = "created_at" }
+"model" = { prim = "model" }
+"status" = { prim = "status" }
+"output" = { prim = "output" }
+"output_text" = { prim = "output_text" }
+"error" = { prim = "error" }
+"incomplete_details" = { prim = "incomplete_details" }
+"instructions" = { prim = "instructions" }
+"metadata" = { prim = "metadata" }
+"usage.input_tokens_details.cached_tokens" = { prim = "cache_read_tokens" }
+"output[].type=message.id" = { prim = "id" }
+"output[].type=message.status" = { prim = "status" }
+"output[].type=message.content" = { prim = "content" }
+"output[].type=reasoning.summary" = { prim = "summary" }
+"output[].type=reasoning.encrypted_content" = { prim = "encrypted_content" }
+"output[].type=function_call.call_id" = { prim = "call_id" }
+"output[].type=function_call.name" = { prim = "name" }
+"output[].type=function_call.arguments" = { prim = "arguments" }
+"output[].type=web_search_call.id" = { prim = "id" }
+"output[].type=web_search_call.status" = { prim = "status" }
+"service_tier" = { prim = "served_tier" }
+"usage.input_tokens_details.cache_write_tokens" = { prim = "cache_write_tokens" }
+
+# The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
+[rows.stream]
+"type=response.created" = { prim = "created" }
+"type=response.in_progress" = { prim = "in_progress" }
+"type=response.output_item.added" = { prim = "added" }
+"type=response.output_item.done" = { prim = "done" }
+"type=response.content_part.added" = { prim = "added" }
+"type=response.content_part.done" = { prim = "done" }
+"type=response.output_text.delta" = { prim = "delta" }
+"type=response.output_text.done" = { prim = "done" }
+"type=response.function_call_arguments.delta" = { prim = "delta" }
+"type=response.reasoning_summary_text.delta" = { prim = "delta" }
+"type=response.completed" = { prim = "completed" }
+"type=response.failed" = { prim = "failed" }
+"type=response.incomplete" = { prim = "incomplete" }
+
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
 [unmapped.request]
-"moderation.model" = { no-equivalent = "the model of OpenAI's moderation pass, not the request's model; no other dialect has a moderation pass" }
+"input[].type=additional_tools.tools[].type=function.name" = { no-equivalent = "a function inside an `additional_tools` input item (tools added mid-conversation): the Responses reader does not model the item and no other dialect adds tools inside its input" }
+"input[].type=additional_tools.tools[].type=namespace.tools[].type=function.name" = { no-equivalent = "a function inside a `namespace` group of an `additional_tools` input item: neither is modelled and no other dialect groups tools in namespaces" }
+"input[].type=tool_search_output.tools[].type=function.name" = { no-equivalent = "a function inside a `tool_search_output` input item (the hosted tool-search result): the reader does not model it and no other dialect has a tool-search result" }
+"input[].type=tool_search_output.tools[].type=namespace.tools[].type=function.name" = { no-equivalent = "a function inside a `namespace` group of a `tool_search_output` input item: neither is modelled and no other dialect has a tool-search result" }
+"tools[].type=namespace.tools[].type=function.name" = { no-equivalent = "a function inside a `namespace` tool group: the group rides the raw same-dialect hosted-tool carrier and no other dialect groups tools in namespaces" }
+
+[unmapped.response]
+"instructions[].type=message.content" = { no-equivalent = "the answer's echo of the request's instructions: the reader drops it with a warn (the IR answer has no request-echo slot; the request's instructions cross on the request hop)" }
+"instructions[].type=function_call.arguments" = { no-equivalent = "the answer's echo of the request's instructions: the reader drops it with a warn (the IR answer has no request-echo slot; the request's instructions cross on the request hop)" }
+"instructions[].type=function_call.name" = { no-equivalent = "the answer's echo of the request's instructions: the reader drops it with a warn (the IR answer has no request-echo slot; the request's instructions cross on the request hop)" }
 
 # Controls beyond the rows. The /v1/responses create API models no top_k, stop, penalties, seed or n
 # (openai-python ResponseCreateParamsBase); each drop is warned in these words and audited. The
