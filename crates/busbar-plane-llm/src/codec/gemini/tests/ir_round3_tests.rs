@@ -72,7 +72,7 @@ fn bedrock_image_answer() -> crate::codec::ir::IrResponse {
         .unwrap()
         .reader()
         .read_response(&converse)
-        .expect("read")..Default::default()
+        .expect("read")
 }
 
 /// Item 17 (IR-21): a generated image in a buffered Bedrock answer reaches a Gemini STREAM client
