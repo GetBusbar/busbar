@@ -119,25 +119,13 @@ fn present(bytes: &[u8], s: Span) -> Option<&[u8]> {
 
 /// `records.list`'s answer: the caller's records, each a key and a value as views into the
 /// caller's buffers, every one checked present before it is answered.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Records<'b> {
     bytes: &'b [u8],
     spans: &'b [ItemSpan],
 }
 
 impl<'b> Records<'b> {
-    /// How many records.
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.spans.len()
-    }
-
-    /// Whether there is none.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.spans.is_empty()
-    }
-
     /// The records as `(key, value)`, in key order.
     pub fn records(&self) -> impl Iterator<Item = (&'b [u8], &'b [u8])> + 'b {
         let bytes = self.bytes;
@@ -407,7 +395,7 @@ impl Services {
                 bytes: &buf[..out.len as usize],
                 spans: &spans[..out.items as usize],
             };
-            if records.records().count() == records.len() {
+            if records.records().count() == records.spans.len() {
                 Ok(records)
             } else {
                 Err(ServiceError::Broken)

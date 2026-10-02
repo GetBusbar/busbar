@@ -759,7 +759,7 @@ fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
             0,
             (&mut buf[..], &mut spans[..])
         )
-        .map(|r| r.map(|r| r.len())),
+        .map(|r| r.map(|r| r.records().count())),
         Poll::Ready(Err(ServiceError::Short {
             bytes: 14,
             items: 2
@@ -801,7 +801,7 @@ fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
     ) else {
         panic!("an empty page");
     };
-    assert!(none.is_empty());
+    assert_eq!(none.records().next(), None);
     assert_eq!(none.last_key(), None);
     assert_eq!(
         s.records_list(
@@ -812,7 +812,7 @@ fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
             0,
             (&mut buf[..], &mut spans[..])
         )
-        .map(|r| r.map(|r| r.len())),
+        .map(|r| r.map(|r| r.records().count())),
         Poll::Ready(Err(ServiceError::Broken))
     );
     let p = HostSlots {
@@ -829,7 +829,7 @@ fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
                 0,
                 (&mut buf[..], &mut spans[..])
             )
-            .map(|r| r.map(|r| r.len())),
+            .map(|r| r.map(|r| r.records().count())),
         Poll::Pending
     );
     assert_eq!(
@@ -842,7 +842,7 @@ fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
                 0,
                 (&mut buf[..], &mut spans[..])
             )
-            .map(|r| r.map(|r| r.len())),
+            .map(|r| r.map(|r| r.records().count())),
         Poll::Ready(Err(ServiceError::Unserved))
     );
 }
