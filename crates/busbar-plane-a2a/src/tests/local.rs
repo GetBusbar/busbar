@@ -197,6 +197,64 @@ fn a_push_config_lives_as_a_record_of_its_task() {
     assert_eq!(body["result"], Value::Null, "idempotent, v0.3's null");
 }
 
+/// The credential is a sealed field of the stored record and appears in no answer.
+#[test]
+fn the_stored_credential_rides_the_record_and_never_an_answer() {
+    let mut desk = desk();
+    let cfg = json!({ "taskId": "t1", "id": "c1", "url": "https://hooks.example/cb",
+                      "authentication": { "scheme": "Bearer", "credentials": "s3cret" } });
+    let (_, created) = call(&mut desk, "CreateTaskPushNotificationConfig", cfg, ALICE);
+    let bytes = desk
+        .book
+        .value(KIND_PUSH_CONFIG, &task_key(ALICE, "t1"))
+        .expect("the record");
+    let held: PushConfig = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(
+        held.authentication,
+        Some(DeliveryAuth {
+            scheme: "Bearer".into(),
+            credentials: "s3cret".into(),
+        })
+    );
+    assert!(!format!("{held:?}").contains("s3cret"));
+    let (_, got) = call(
+        &mut desk,
+        "GetTaskPushNotificationConfig",
+        json!({ "taskId": "t1", "id": "c1" }),
+        ALICE,
+    );
+    let (_, listed) = call(
+        &mut desk,
+        "ListTaskPushNotificationConfigs",
+        json!({ "taskId": "t1" }),
+        ALICE,
+    );
+    for body in [created, got, listed] {
+        assert!(!body.to_string().contains("s3cret"));
+    }
+}
+
+/// A record written before the field existed still reads, and a config without a credential
+/// writes none.
+#[test]
+fn a_record_without_the_credential_field_reads_as_none() {
+    let old: PushConfig =
+        serde_json::from_str(r#"{"id":"c1","url":"https://hooks.example/cb"}"#).unwrap();
+    assert_eq!(old.authentication, None);
+    assert!(!serde_json::to_string(&old)
+        .unwrap()
+        .contains("authentication"));
+    let kept = PushConfig {
+        authentication: Some(DeliveryAuth {
+            scheme: "Basic".into(),
+            credentials: "abc".into(),
+        }),
+        ..old
+    };
+    let again: PushConfig = serde_json::from_slice(&serde_json::to_vec(&kept).unwrap()).unwrap();
+    assert_eq!(again, kept);
+}
+
 /// Another caller's task is not found, with the engine's ErrorInfo, at 404.
 #[test]
 fn another_callers_task_is_not_found() {

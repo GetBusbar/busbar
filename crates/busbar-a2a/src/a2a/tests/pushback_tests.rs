@@ -1085,6 +1085,10 @@ async fn a_live_token_is_bounded_to_sixty_pushes_per_task_per_window() {
     let registration = issued_last(&h, before, &create_call(&task)).await;
     let token = token_on_the_wire(&registration);
 
+    // The window is FIXED and aligned to the wall clock's minute, so 61 pushes that straddle a
+    // minute boundary spend two windows and the 61st is admitted: the test waited on the clock,
+    // not on the bound. Start the 61 at the head of a window, with the whole minute to spend.
+    start_of_a_push_window().await;
     for i in 0..60 {
         assert_eq!(
             push_to_busbar(&h, &token, &pushed("working")).await,
@@ -1098,6 +1102,22 @@ async fn a_live_token_is_bounded_to_sixty_pushes_per_task_per_window() {
         "the 61st push inside one window must be refused: a live token authorises the task it \
          names, not unlimited volume spent against it"
     );
+}
+
+/// Wait until the wall clock is in the first seconds of a fixed push window (a minute), so a
+/// burst that fits in a minute is judged against ONE window.
+async fn start_of_a_push_window() {
+    const HEADROOM_SECS: u64 = 5;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after the epoch");
+    let into = now.as_secs() % 60;
+    if into > HEADROOM_SECS {
+        let rest = std::time::Duration::from_secs(60 - into).saturating_sub(
+            std::time::Duration::from_nanos(u64::from(now.subsec_nanos())),
+        );
+        tokio::time::sleep(rest + std::time::Duration::from_millis(50)).await;
+    }
 }
 
 // ══ THE TOKEN AND THE ADDRESS, AS VALUES ═════════════════════════════════════════════════════════

@@ -416,3 +416,15 @@ fn reached_addresses_are_bounded() {
         + usize::from(d.rebound("https://a.example/", &[]).is_some());
     assert_eq!(held, MAX_DESTINATIONS);
 }
+
+#[test]
+fn the_credential_round_trips_through_the_record_and_stays_redacted() {
+    let auth = DeliveryAuth {
+        scheme: "Bearer".into(),
+        credentials: "s3cret".into(),
+    };
+    let bytes = serde_json::to_vec(&auth).expect("serializes");
+    let back: DeliveryAuth = serde_json::from_slice(&bytes).expect("reads");
+    assert_eq!(back, auth);
+    assert!(!format!("{back:?}").contains("s3cret"));
+}

@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 
 use crate::a2a::task::{Task, TaskState};
 use crate::arrival::Refusal;
+use crate::push::DeliveryAuth;
 use crate::records::KIND_PUSH_CONFIG;
 use crate::tasks::{self, task_key, Halt, Records, Write};
 
@@ -285,22 +286,19 @@ fn list_tasks(
 
 // ══ PUSH-NOTIFICATION CONFIG CRUD ════════════════════════════════════════════════════════════════
 
-/// ONE registered push config: what a read verb may answer with. The credential is not a member.
+/// ONE registered push config: the push_config host record's value. A read verb answers with
+/// `id` and `url` only; the `authentication` credential is a sealed field of the record, never a
+/// member of any answer, and its `Debug` is redacted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushConfig {
     /// The caller's id for it.
     pub id: String,
     /// The callback URL, exactly as registered and as it passed the floor.
     pub url: String,
-}
-
-/// The credential a config asks busbar to present at its webhook.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryAuth {
-    /// The HTTP authentication scheme.
-    pub scheme: String,
-    /// The credentials after it.
-    pub credentials: String,
+    /// The credential the caller asked busbar to present at the webhook, if any. A record written
+    /// before the field existed reads as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<DeliveryAuth>,
 }
 
 /// The config as `dialect` spells it; never with `authentication`.
@@ -509,9 +507,10 @@ fn create_push_config(
              or register the secret in the callback URL your receiver checks.",
         ));
     }
-    if let Err(message) = delivery_auth(cfg) {
-        return Ok(err(rpc_id, INVALID_PARAMS, message));
-    }
+    let authentication = match delivery_auth(cfg) {
+        Ok(auth) => auth,
+        Err(message) => return Ok(err(rpc_id, INVALID_PARAMS, message)),
+    };
     let Some(url) = cfg.get("url").and_then(Value::as_str) else {
         return Ok(err(
             rpc_id,
@@ -540,6 +539,7 @@ fn create_push_config(
     let stored = PushConfig {
         id,
         url: url.to_string(),
+        authentication,
     };
     out.push(Write {
         kind: KIND_PUSH_CONFIG,
