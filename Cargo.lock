@@ -918,6 +918,7 @@ name = "busbar-plane-llm"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-loader",
  "bytes",
  "getrandom 0.3.4",
  "serde",
