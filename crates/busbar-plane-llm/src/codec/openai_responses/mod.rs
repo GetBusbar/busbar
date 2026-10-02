@@ -1307,7 +1307,7 @@ fn read_responses_usage(
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut usage = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
     usage.detail.service_tier = crate::codec::carry::read_word(
-        crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
+        map::WORDS_SERVED_TIER,
         response.and_then(|r| r.get(keys::SERVICE_TIER)),
     );
     Ok(usage)
@@ -2239,8 +2239,7 @@ mod tests;
 #[path = "tests/input_hardening_tests.rs"]
 mod input_hardening_tests;
 
-// The field-coverage carry instruments (qa/field-coverage.status → `carried <fn>`). Each named
-// test FAILS if its field stops surviving the read→IR→write hop, per the gate's rigor contract.
+// The field carry instruments: each test FAILS if its field stops surviving the read→IR→write hop.
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;

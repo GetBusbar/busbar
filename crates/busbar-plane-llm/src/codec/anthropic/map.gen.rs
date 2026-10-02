@@ -7,6 +7,61 @@
 
 use crate::codec::carry::{Cond, Dir, Field, Handled, Slot, Table, ValueCodec, Word, row};
 
+/// Row group `blocks`.
+pub(crate) const ROWS_BLOCKS: &[Field] = &[
+    row(&["messages[]", "role"], Slot::Structure, ValueCodec::Prim("role")),
+    row(&["messages[]", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "type=image", "source", "type=base64"], Slot::Structure, ValueCodec::Prim("base64")),
+    row(&["messages[]", "content[]", "type=image", "source", "type=file"], Slot::Structure, ValueCodec::Prim("file")),
+    row(&["messages[]", "content[]", "type=image", "source", "type=url"], Slot::Structure, ValueCodec::Prim("url")),
+    row(&["messages[]", "content[]", "type=image", "source", "type=base64", "media_type"], Slot::Structure, ValueCodec::Prim("media_type")),
+    row(&["messages[]", "content[]", "type=image", "source", "type=base64", "data"], Slot::Structure, ValueCodec::Prim("data")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=base64"], Slot::Structure, ValueCodec::Prim("base64")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=file"], Slot::Structure, ValueCodec::Prim("file")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=url"], Slot::Structure, ValueCodec::Prim("url")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=text", "media_type"], Slot::Structure, ValueCodec::Prim("media_type")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=base64", "media_type"], Slot::Structure, ValueCodec::Prim("media_type")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=text", "data"], Slot::Structure, ValueCodec::Prim("data")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=base64", "data"], Slot::Structure, ValueCodec::Prim("data")),
+    row(&["messages[]", "content[]", "type=document", "title"], Slot::Structure, ValueCodec::Prim("title")),
+    row(&["messages[]", "content[]", "type=tool_use", "id"], Slot::Structure, ValueCodec::Prim("id")),
+    row(&["messages[]", "content[]", "type=tool_use", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "content[]", "type=tool_result", "tool_use_id"], Slot::Structure, ValueCodec::Prim("tool_use_id")),
+    row(&["messages[]", "content[]", "type=tool_result", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=file", "file_id"], Slot::Structure, ValueCodec::Prim("file_id")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=content", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "type=redacted_thinking", "data"], Slot::Structure, ValueCodec::Prim("data")),
+    row(&["messages[]", "content[]", "type=text", "cache_control"], Slot::Structure, ValueCodec::Prim("cache_control")),
+    row(&["messages[]", "content[]", "type=text", "citations"], Slot::Structure, ValueCodec::Prim("citations")),
+    row(&["messages[]", "content[]", "type=image", "source", "type=url", "url"], Slot::Structure, ValueCodec::Prim("url")),
+    row(&["messages[]", "content[]", "type=image", "cache_control"], Slot::Structure, ValueCodec::Prim("cache_control")),
+    row(&["messages[]", "content[]", "type=tool_use", "cache_control"], Slot::Structure, ValueCodec::Prim("cache_control")),
+    row(&["messages[]", "content[]", "type=tool_result", "is_error"], Slot::Structure, ValueCodec::Prim("is_error")),
+    row(&["messages[]", "content[]", "type=tool_result", "cache_control"], Slot::Structure, ValueCodec::Prim("cache_control")),
+    row(&["messages[]", "content[]", "type=thinking", "thinking"], Slot::Structure, ValueCodec::Prim("thinking")),
+    row(&["messages[]", "content[]", "type=thinking", "signature"], Slot::Structure, ValueCodec::Prim("signature")),
+    row(&["messages[]", "content[]", "type=document", "source", "type=url", "url"], Slot::Structure, ValueCodec::Prim("url")),
+    row(&["messages[]", "content[]", "type=document", "context"], Slot::Structure, ValueCodec::Prim("context")),
+    row(&["messages[]", "content[]", "type=document", "citations"], Slot::Structure, ValueCodec::Prim("citations")),
+    row(&["messages[]", "content[]", "type=document", "cache_control"], Slot::Structure, ValueCodec::Prim("cache_control")),
+    row(&["messages[]", "content[]", "type=search_result", "source"], Slot::Structure, ValueCodec::Prim("source")),
+    row(&["messages[]", "content[]", "type=search_result", "title"], Slot::Structure, ValueCodec::Prim("title")),
+    row(&["messages[]", "content[]", "type=search_result", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "type=image", "source", "type=file", "file_id"], Slot::Structure, ValueCodec::Prim("file_id")),
+    row(&["messages[]", "content[]", "type=search_result", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "type=tool_result", "content[]", "type=document", "citations"], Slot::Structure, ValueCodec::Prim("citations")),
+    row(&["messages[]", "content[]", "type=tool_result", "content[]", "type=document", "context"], Slot::Structure, ValueCodec::Prim("context")),
+    row(&["messages[]", "content[]", "type=tool_result", "content[]", "type=document", "source", "type=file", "file_id"], Slot::Structure, ValueCodec::Prim("file_id")),
+    row(&["messages[]", "content[]", "type=tool_result", "content[]", "type=image", "source", "type=file", "file_id"], Slot::Structure, ValueCodec::Prim("file_id")),
+    row(&["messages[]", "content[]", "type=tool_result", "content[]", "type=search_result", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "type=tool_result", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "type=tool_result", "content[]", "type=document", "source", "type=content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "type=tool_result", "content[]", "type=document", "source", "type=text"], Slot::Structure, ValueCodec::Prim("text")),
+];
+
 /// Row group `sampling`.
 pub(crate) const ROWS_SAMPLING: &[Field] = &[
     row(&["temperature"], Slot::Temperature, ValueCodec::Plain).clamp(0.0, 1.0, "clamping temperature to Anthropic's [0.0, 1.0] range; the requested value was outside it (e.g. an OpenAI/Responses value up to 2.0) and would 422 — the forwarded value diverges from the caller's request", true).drop_if(Cond::Thinking, "omitting temperature on Anthropic egress: not compatible with thinking", true),
@@ -24,6 +79,9 @@ pub(crate) const ROWS_STRUCTURE: &[Field] = &[
     row(&["system"], Slot::Structure, ValueCodec::Prim("system")),
     row(&["tool_choice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
     row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
+    row(&["metadata", "user_id"], Slot::Structure, ValueCodec::Prim("user")),
+    row(&["output_config", "effort"], Slot::Structure, ValueCodec::Prim("reasoning")),
+    row(&["messages[]", "content[]", "type=tool_use", "input"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
 ];
 
 /// Row group `tier`.
@@ -32,7 +90,7 @@ pub(crate) const ROWS_TIER: &[Field] = &[
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, ROWS_TIER];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, ROWS_TIER, ROWS_BLOCKS];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[

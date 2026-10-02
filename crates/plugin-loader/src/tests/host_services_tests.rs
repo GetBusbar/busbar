@@ -332,6 +332,14 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         if may_pend(service) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNTICKETED, "service {service}");
+        } else if service == op::NEED_ADMIT {
+            // The connection table's verdict: an instance handed no table declared nothing.
+            assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
+            assert_eq!(
+                error(&o),
+                busbar_contract::conn::ConnError::UndeclaredNeed.text(),
+                "service {service}"
+            );
         } else if !matches!(
             service,
             op::CLOCK_NOW

@@ -462,7 +462,7 @@ pub(crate) fn base_data_router(
     // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
     // metadata document and nothing in the route table. Mounted through the seam
     // (`crate::oauth_as::seam`) rather than a direct `crate::oauth_as::routes::mount` call: the
-    // real mount lives in the sibling `busbar-oauth2` crate, which core cannot name. An
+    // real mount lives in the sibling `busbar-core-oauth2` crate, which core cannot name. An
     // unregistered seam (only busbar-core's own test binary) behaves exactly as `None` did before
     // the extraction — this binary never configures `oauth_as:` either, so the two states agree.
     let router = match crate::oauth_as::seam::seam() {
