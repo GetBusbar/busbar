@@ -736,7 +736,14 @@ framer yields the response head as the FIRST `Fields` piece, always — an empty
 status when there are no headers; a `Fields` piece after the body is the trailers; `Fields` with
 `STREAM_FAILED` is refused. The head reaches a plane only on the far-end path (the far piece's head
 and the `on_piece` field list): each plane DECLARES `keep_response_headers` at boot — at most 32,
-lowercase, never a hop-by-hop or credential name, validated — and the kernel copies only those. For
+lowercase, never a hop-by-hop or credential name, validated — and the kernel copies only those. **AMENDED
+2026-10-02 (ARCHITECT, citing the OWNER's dialect-fidelity ruling of 2026-10-02, DIALECT-FIDELITY F2: a same-dialect
+relay passes every upstream header except the governed set):** a need's `keep_mode` is either `KEEP_NAMED` (the
+named list above, unchanged) or `KEEP_ALL_EXCEPT_DENIED`: every response head field crosses except the kernel's
+`ALWAYS_DENIED` (hop-by-hop, the fields a `connection` field names, `content-length`, `content-encoding`) and
+the need's own `deny_response_headers` (at most 32, lowercase, validated; e.g. a far end's echo of the
+operator's tenant). A need states one list, never both; any other mode is refused. An append to the v1
+`Need` layout before the 1.6.0 tag: no version bump (R9 as clarified by the owner 2026-09-28). For
 gRPC the head carries no status code; the trailers carry `grpc-status`, then a terminal piece (empty
 on OK, `STREAM_FAILED` with `grpc-message`), bytes as 1.5.5. On the accept side a framer yields a
 typed per-stream head (`HeadSlots`, Part 4 Axis 3) with the first `Fields` piece, and the kernel

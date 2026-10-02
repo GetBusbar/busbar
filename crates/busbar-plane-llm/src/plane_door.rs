@@ -38,7 +38,9 @@ use std::mem::size_of;
 use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER};
+use busbar_contract::abi::host::conn::connector::{
+    Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_NAMED,
+};
 use busbar_contract::abi::host::service::ClockReading;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{
@@ -194,6 +196,10 @@ const fn need(auth: &'static str) -> Need {
         keep_response_headers: KEEP_RESPONSE_HEADERS.as_ptr(),
         keep_response_headers_len: KEEP_RESPONSE_HEADERS.len(),
         timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: core::ptr::null(),
+        deny_response_headers_len: 0,
     }
 }
 

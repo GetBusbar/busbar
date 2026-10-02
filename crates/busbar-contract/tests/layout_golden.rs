@@ -1887,7 +1887,11 @@ fn compute_layout() -> String {
             details,
             keep_response_headers,
             keep_response_headers_len,
-            timeout_ms
+            timeout_ms,
+            keep_mode,
+            _reserved,
+            deny_response_headers,
+            deny_response_headers_len
         ]
     );
     record!(

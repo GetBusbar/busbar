@@ -485,6 +485,8 @@ extern "C" {
 #define BB_HCONN_EGRESS_OPERATOR_INFRASTRUCTURE UINT32_C(2) /* [`Need::egress_class`] `operator-infrastructure`: databases, secret services, directories — */
 #define BB_HCONN_EGRESS_OPEN_WEB UINT32_C(3) /* [`Need::egress_class`] `open-web`: public destinations over a secure connection only. */
 #define BB_HCONN_EGRESS_LOOPBACK_ALLOWED UINT32_C(4) /* [`Need::egress_class`] `loopback-allowed`: a secure connection, or plaintext to loopback; the */
+#define BB_HCONN_KEEP_NAMED UINT32_C(0) /* [`Need::keep_mode`]: only the fields [`Need::keep_response_headers`] names cross. */
+#define BB_HCONN_KEEP_ALL_EXCEPT_DENIED UINT32_C(1) /* [`Need::keep_mode`]: every response head field crosses but the kernel's [`ALWAYS_DENIED`] and */
 #define BB_HCONN_KEEP_RESPONSE_HEADERS_MAX ((size_t)32) /* The most response head fields one need may keep. */
 #define BB_HCONN_SERVICE_ESTABLISH UINT32_C(0) /* Establish a stream for a need on the connector lane. */
 #define BB_HCONN_SERVICE_REJECT_ENDPOINT UINT32_C(1) /* Reject the endpoint a stream landed on; the connector tries the next. */
@@ -3006,6 +3008,10 @@ struct bb_hconn_Need {
     const bb_mech_AbiStr *keep_response_headers;
     size_t keep_response_headers_len;
     uint64_t timeout_ms;
+    uint32_t keep_mode;
+    uint32_t _reserved;
+    const bb_mech_AbiStr *deny_response_headers;
+    size_t deny_response_headers_len;
 };
 
 /* The head of every service `in`, in either table. */
@@ -4999,7 +5005,7 @@ BB_ASSERT(offsetof(bb_transport_AdoptIn, facts) == 96, "bb_transport_AdoptIn.fac
 BB_ASSERT(offsetof(bb_transport_AdoptIn, leftover) == 104, "bb_transport_AdoptIn.leftover: offset");
 BB_ASSERT(offsetof(bb_transport_AdoptIn, leftover_len) == 112, "bb_transport_AdoptIn.leftover_len: offset");
 BB_ASSERT(offsetof(bb_transport_AdoptIn, sink) == 120, "bb_transport_AdoptIn.sink: offset");
-BB_ASSERT(sizeof(bb_hconn_Need) == 120, "bb_hconn_Need: size");
+BB_ASSERT(sizeof(bb_hconn_Need) == 144, "bb_hconn_Need: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_Need) == 8, "bb_hconn_Need: alignment");
 BB_ASSERT(offsetof(bb_hconn_Need, direction) == 0, "bb_hconn_Need.direction: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, egress_class) == 4, "bb_hconn_Need.egress_class: offset");
@@ -5011,6 +5017,10 @@ BB_ASSERT(offsetof(bb_hconn_Need, details) == 72, "bb_hconn_Need.details: offset
 BB_ASSERT(offsetof(bb_hconn_Need, keep_response_headers) == 96, "bb_hconn_Need.keep_response_headers: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, keep_response_headers_len) == 104, "bb_hconn_Need.keep_response_headers_len: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, timeout_ms) == 112, "bb_hconn_Need.timeout_ms: offset");
+BB_ASSERT(offsetof(bb_hconn_Need, keep_mode) == 120, "bb_hconn_Need.keep_mode: offset");
+BB_ASSERT(offsetof(bb_hconn_Need, _reserved) == 124, "bb_hconn_Need._reserved: offset");
+BB_ASSERT(offsetof(bb_hconn_Need, deny_response_headers) == 128, "bb_hconn_Need.deny_response_headers: offset");
+BB_ASSERT(offsetof(bb_hconn_Need, deny_response_headers_len) == 136, "bb_hconn_Need.deny_response_headers_len: offset");
 BB_ASSERT(sizeof(bb_hconn_EstablishIn) == 64, "bb_hconn_EstablishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_EstablishIn) == 8, "bb_hconn_EstablishIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, head) == 0, "bb_hconn_EstablishIn.head: offset");

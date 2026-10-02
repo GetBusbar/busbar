@@ -9,7 +9,9 @@ use std::ptr::null;
 
 use super::*;
 use crate::abi::hook::{SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_STR};
-use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_RESPONSE_HEADERS_MAX};
+use crate::abi::host::conn::connector::{
+    Need, DIRECTION_OUTBOUND, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED, KEEP_RESPONSE_HEADERS_MAX,
+};
 use crate::abi::mechanism::call::AbiStr;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
@@ -1017,6 +1019,134 @@ fn a_need_keeps_only_declarable_response_fields() {
     assert_eq!(
         check_needs(&[b]),
         f(Rule::NullWithCount, "need.keep_response_headers")
+    );
+}
+
+/// RED for the keep mode (OWNER ruling 2026-10-02, dialect fidelity F2): a need keeps either the
+/// fields it names or every field but the ones it denies, never both lists, and no other mode.
+/// Denied names are lower-case tokens, bounded; denying a credential name is allowed.
+#[test]
+fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
+    let mut n: Need = z();
+    n.direction = DIRECTION_OUTBOUND;
+    n.transport = s("t");
+    n.keep_mode = KEEP_ALL_EXCEPT_DENIED;
+    let denied = [
+        s("openai-organization"),
+        s("openai-project"),
+        s("set-cookie"),
+    ];
+    n.deny_response_headers = denied.as_ptr();
+    n.deny_response_headers_len = denied.len();
+    assert_eq!(check_needs(&[n]), Ok(()));
+    let mut none = n;
+    none.deny_response_headers = null();
+    none.deny_response_headers_len = 0;
+    assert_eq!(check_needs(&[none]), Ok(()), "an empty deny list");
+
+    let kept = [s("retry-after")];
+    let mut both = n;
+    both.keep_response_headers = kept.as_ptr();
+    both.keep_response_headers_len = 1;
+    assert_eq!(
+        check_needs(&[both]),
+        f(Rule::Contradiction, "need.keep_response_headers")
+    );
+    let mut named = both;
+    named.keep_mode = KEEP_NAMED;
+    assert_eq!(
+        check_needs(&[named]),
+        f(Rule::Contradiction, "need.deny_response_headers")
+    );
+    let mut unknown = none;
+    unknown.keep_mode = 2;
+    assert_eq!(
+        check_needs(&[unknown]),
+        f(Rule::UnknownCode, "need.keep_mode")
+    );
+    let mut padded = none;
+    padded._reserved = 1;
+    assert_eq!(
+        check_needs(&[padded]),
+        f(Rule::UnknownCode, "need._reserved")
+    );
+
+    let upper = [s("OpenAI-Project")];
+    let mut b = n;
+    b.deny_response_headers = upper.as_ptr();
+    b.deny_response_headers_len = 1;
+    assert_eq!(
+        check_needs(&[b]),
+        f(Rule::UnknownCode, "need.deny_response_headers")
+    );
+    let many: Vec<AbiStr> = (0..=KEEP_RESPONSE_HEADERS_MAX).map(|_| s("x")).collect();
+    let mut b = n;
+    b.deny_response_headers = many.as_ptr();
+    b.deny_response_headers_len = many.len();
+    assert_eq!(
+        check_needs(&[b]),
+        f(Rule::OverMax, "need.deny_response_headers")
+    );
+    let mut b = n;
+    b.deny_response_headers = null();
+    b.deny_response_headers_len = 1;
+    assert_eq!(
+        check_needs(&[b]),
+        f(Rule::NullWithCount, "need.deny_response_headers")
+    );
+}
+
+/// What crosses under each mode: the named fields (never a `NEVER_KEPT` one), or every field but
+/// hop-by-hop, the connection's nominees, the re-derived framing and the plugin's denied names.
+#[test]
+fn a_response_field_crosses_by_the_needs_mode() {
+    use crate::abi::host::conn::connector::keeps_response_field as keeps;
+    let none: [&[u8]; 0] = [];
+    assert!(keeps(
+        KEEP_NAMED,
+        &["retry-after"],
+        &[],
+        "retry-after",
+        none
+    ));
+    assert!(!keeps(
+        KEEP_NAMED,
+        &["retry-after"],
+        &[],
+        "x-request-id",
+        none
+    ));
+    assert!(!keeps(KEEP_NAMED, &["set-cookie"], &[], "set-cookie", none));
+    let denied = ["openai-project"];
+    for kept in [
+        "x-request-id",
+        "retry-after",
+        "content-type",
+        "anthropic-ratelimit-requests-limit",
+    ] {
+        assert!(
+            keeps(KEEP_ALL_EXCEPT_DENIED, &[], &denied, kept, none),
+            "{kept}"
+        );
+    }
+    for stripped in [
+        "openai-project",
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+    ] {
+        assert!(
+            !keeps(KEEP_ALL_EXCEPT_DENIED, &[], &denied, stripped, none),
+            "{stripped}"
+        );
+    }
+    let nominated: [&[u8]; 1] = [b"x-hop, close"];
+    assert!(!keeps(KEEP_ALL_EXCEPT_DENIED, &[], &[], "x-hop", nominated));
+    assert!(
+        !keeps(7, &["x"], &[], "x", none),
+        "an unknown mode keeps nothing"
     );
 }
 
