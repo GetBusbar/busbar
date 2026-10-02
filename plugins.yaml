@@ -48,8 +48,9 @@
 #                  `siblings` documents the five legs that cost. Set this only for a repo that
 #                  departs from that model; it falls back to the default branch when `dev` is absent.
 #
-# Fleet fields (read by `cargo xtask fleet`, which renders every plugin repo's CI callers, toolchain,
-# lint config, LICENSE and README header from this file plus .github/fleet/, and checks the repos
+# Fleet fields (read by `busbar-release plugin sync` (GetBusbar/busbar-release), the ONE generator: it
+# renders every plugin repo's CI caller, toolchain, lint config, deny.toml, workspace dependency table,
+# LICENSE and README header from this file, its template/ and .github/fleet/deps.toml, and checks the repos
 # against the render). Defaults in brackets:
 #   manifest_name  the signed manifest's `name` (the plugin's identity at load) [repo; the
 #                  registry gate refuses any other value]
@@ -71,18 +72,18 @@
 #                  dirs (`<kind>-<name>/`, `<kind>-<name>-plugin/`), not Cargo.lock and not kept is drift
 #   gitignore      lines the rendered .gitignore carries after the fleet's own [none]
 #   notice         lines the rendered NOTICE carries after the fleet's own (a third-party credit) [none]
-#   pending_crate  the repo is registered (it exists, it is rendered and seeded by `fleet sync`) but its
+#   pending_crate  the repo is registered (it exists, it is rendered and seeded by `busbar-release plugin sync`) but its
 #                  crates have not moved in yet [false]. It stays OUT of plugin-registry-check.sh's
-#                  --list feed, so qa-gate and release-check neither clone nor test it; `fleet check`
+#                  --list feed, so qa-gate and release-check neither clone nor test it; `busbar-release plugin check`
 #                  skips its crate-shaped checks with that reason (the whole repo while it is empty) and
 #                  goes RED once both crate dirs are in and the flag is stale. Drop it at the move.
 
-# THE FLEET POLICY (`cargo xtask fleet check` holds every repo to it; `cargo xtask fleet sync` applies it).
+# THE FLEET POLICY (`busbar-release plugin check` holds every repo to it; `busbar-release plugin sync` applies it).
 #   busbar_ref  ONE pin for every plugin repo: each repo's `.busbar-ref` is exactly this, every
 #               manifest's busbar git rev is its sha, and the rendered callers take busbar's reusable
-#               workflows at that sha. Moving it is one edit here, then `cargo xtask fleet sync`.
+#               workflows at that sha. Moving it is one edit here, then `busbar-release plugin sync`.
 #   name_pattern  every plugin repo is `busbar-<kind>-<name>`, and <kind> is the entry's kind.
-#   branches    exactly these branches; dev carries .github/fleet/protection.json's protection, main and
+#   branches    exactly these branches; dev, qa and main carry the repo ruleset `busbar-release plugin sync` applies (PR + plugin-ci green), main and
 #               qa are locked by the org ruleset "release branches: main + qa (owner say-so only)"; any
 #               other branch is stale.
 fleet:
@@ -301,7 +302,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the llm plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-llm/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -315,7 +316,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the mcp plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-mcp/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -329,7 +330,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the a2a plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-a2a/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -343,7 +344,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the streaming plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-streaming/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -357,7 +358,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the decisions plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-decisions/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -371,7 +372,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the http transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-http/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -385,7 +386,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the ws transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-ws/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -399,7 +400,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the stdio transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-stdio/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -413,7 +414,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the grpc transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-grpc/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -427,7 +428,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:hook plugin cdylib: the ranking hook, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "hook-ranking/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
@@ -441,7 +442,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:store plugin cdylib: the in-memory store, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "store-memory/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
+    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true

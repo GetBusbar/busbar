@@ -370,7 +370,7 @@ where
         usage: Option<&IrDuplexUsage>,
         out: &mut Outbound,
     ) {
-        let counters = std::mem::take(&mut self.turn);
+        let counters = self.turn.close();
         if !sink.turn_closed(usage, counters) {
             out.push_up(self.codec.write_up(
                 IrClientEvent::Control(IrDuplexControl::ResponseCancel),

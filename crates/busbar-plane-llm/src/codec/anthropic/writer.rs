@@ -1063,6 +1063,10 @@ impl ProtocolWriter for AnthropicWriter {
                     (keys::TEXT): serde_json::to_string(v).unwrap_or_default(),
                     (keys::CITATIONS): null,
                 })),
+                crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
+                    super::warn_hosted_record_dropped();
+                    None
+                }
                 other => Some(write_response_block(other)),
             })
             .collect();

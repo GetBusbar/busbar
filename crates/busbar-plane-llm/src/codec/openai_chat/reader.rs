@@ -282,6 +282,19 @@ impl ProtocolReader for OpenAiReader {
                         if let Some(tool_calls) = msg_val.get(keys::TOOL_CALLS) {
                             if let Some(tc_arr) = tool_calls.as_array() {
                                 for tc_val in tc_arr {
+                                    // A replayed CUSTOM-tool call (`{"type":"custom","custom":{name,
+                                    // input}}`, free-text input) has no IR tool-call form: it is a
+                                    // valid native message the reader must not refuse (design F2,
+                                    // reader tolerance). It is dropped, observably.
+                                    if tc_val.get(keys::TYPE).and_then(|t| t.as_str())
+                                        == Some(keys::CUSTOM)
+                                    {
+                                        tracing::warn!(
+                                            "dropping a replayed custom-tool call on translate: the \
+                                             IR carries function tool calls only (no-equivalent)"
+                                        );
+                                        continue;
+                                    }
                                     // A present tool call MUST carry a non-empty string `id`: it is
                                     // the correlation key an egress dialect emits back to pair the
                                     // eventual tool result. An absent/blank/wrong-typed id yields an
@@ -1469,10 +1482,17 @@ impl ProtocolReader for OpenAiReader {
 
             request_echo: None,
             stop_detail: None,
+            safety: super::read_moderation(obj.get(MODERATION)),
+            audio: super::read_message_audio(
+                choice.get(keys::MESSAGE).and_then(|m| m.get(super::AUDIO)),
+            ),
             ..Default::default()
         })
     }
 }
+
+/// The top-level moderation results of a Chat completion.
+const MODERATION: &str = "moderation";
 
 /// The `tool_ir_index` key that records the IR index of a Thinking block opened AFTER the answer
 /// phase began (OAI-14). Tool keys are upstream `tool_calls[].index` values clamped to
