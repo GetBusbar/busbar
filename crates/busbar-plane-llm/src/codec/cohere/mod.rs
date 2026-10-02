@@ -31,7 +31,7 @@ mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires (the writer carries per-stream mutable
-/// state). Mirrors `super::anthropic::protocol`.
+/// state).
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, CohereReader, CohereWriter)
 }
@@ -129,6 +129,18 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // Cohere carries no wire-fingerprint header for the shared list-models surface.
     list_models_fingerprint_headers: &[],
     static_headers: &[],
+};
+
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = CohereWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&CohereReader),
+    leaf: &handler::LEAF,
 };
 
 /// Upstream URL path for the Cohere v2 chat endpoint. Mirrors the `PATH_UPSTREAM` pattern used by

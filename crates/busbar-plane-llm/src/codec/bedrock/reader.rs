@@ -1239,7 +1239,7 @@ impl ProtocolReader for BedrockReader {
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
-        // DOCUMENTED CROSS-PROTOCOL DROP (field-coverage carry, drop+warn+test). A native Converse
+        // DOCUMENTED CROSS-PROTOCOL DROP (drop+warn+test). A native Converse
         // response can carry Bedrock-only diagnostic/echo members the neutral IR has no home for and
         // NO other protocol expresses: `trace` (`guardrail` intervention detail + `promptRouter`
         // routing metadata), `additionalModelResponseFields` (model-specific echoed fields), and the

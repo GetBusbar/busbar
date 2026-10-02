@@ -493,7 +493,7 @@ fn legal_field_value(v: &[u8]) -> bool {
     v.iter().all(|b| *b == b'\t' || (0x20..0x7f).contains(b))
 }
 
-/// The head fields a native client of `lane`'s dialect sends (its user-agent only when translating),
+/// The head fields a native client of `lane`'s dialect sends,
 /// then, when the caller speaks that dialect, every field the caller sent but the ones busbar
 /// governs ([`governed`]):
 /// busbar is invisible to upstreams (OWNER HARD RULE 2026-10-02). The caller's value of a name
@@ -536,13 +536,13 @@ fn head_fields(
             .to_vec(),
     );
     let content_type = ("content-type".to_string(), content_type.into_bytes());
+    // A native client's user-agent, never a UA-less request (1.5.5's bytes); a same-dialect
+    // caller's own replaces it below.
+    let user_agent = ("user-agent".to_string(), user_agent.as_bytes().to_vec());
+    let mut fields = vec![content_type, user_agent, accept];
     if arrived.dialect != egress {
-        // Written in the far dialect: a native client's user-agent, never a UA-less request.
-        let user_agent = ("user-agent".to_string(), user_agent.as_bytes().to_vec());
-        return Ok(vec![content_type, user_agent, accept]);
+        return Ok(fields);
     }
-    // Same dialect: the caller's own user-agent passes (busbar fakes none).
-    let mut fields = vec![content_type, accept];
     // The caller's fields, in the order the caller sent them; a repeated name keeps every value.
     let forwarded: Vec<(String, Vec<u8>)> = caller
         .iter()

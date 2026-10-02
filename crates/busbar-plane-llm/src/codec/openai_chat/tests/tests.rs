@@ -5261,7 +5261,7 @@ fn url_annotation_offset_saturates_on_absurd_upstream_index() {
         raw: None,
     }];
     // Must not panic.
-    let anns = super::super::openai_annotations::url_annotations("hi", 5, &citations);
+    let anns = super::super::url_citation_wire::url_annotations("hi", 5, &citations);
     assert_eq!(anns.len(), 1, "{anns:?}");
     assert_eq!(
         anns[0]["start_index"],
@@ -5357,7 +5357,7 @@ fn url_annotation_quote_recovery_reports_character_indices() {
     }];
     // "héllo " is 6 chars / 7 bytes; "wörld" (the quote) is 5 chars / 6 bytes.
     let text = "héllo wörld";
-    let anns = super::super::openai_annotations::url_annotations(text, 0, &citations);
+    let anns = super::super::url_citation_wire::url_annotations(text, 0, &citations);
     assert_eq!(anns.len(), 1, "{anns:?}");
     assert_eq!(
         anns[0]["start_index"], 6,
@@ -5481,7 +5481,7 @@ fn anthropic_sourced_citation_indices_are_not_double_converted() {
         encrypted_index: None,
         raw: None,
     }];
-    let anns = super::super::openai_annotations::url_annotations("héllo wörld", 0, &citations);
+    let anns = super::super::url_citation_wire::url_annotations("héllo wörld", 0, &citations);
     assert_eq!(anns.len(), 1, "{anns:?}");
     assert_eq!(
         anns[0]["start_index"], 6,

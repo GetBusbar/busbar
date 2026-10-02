@@ -21,7 +21,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::codec::ir::{IrRequest, IrServiceTier, IrVerbosity};
+use crate::codec::ir::{IrReasoningAsk, IrReasoningEffort, IrRequest, IrServiceTier, IrVerbosity};
 
 /// A flat IR request slot a field table can name. Each slot has ONE neutral JSON spelling (the
 /// slot's own number / flag / string, a string map, or the IR word); a row's [`ValueCodec`] maps it to
@@ -60,6 +60,9 @@ pub enum Slot {
     N,
     /// `IrRequest::stop`: read from a string or an array of strings, written as an array.
     Stop,
+    /// `IrRequest::reasoning` as an effort word (`IrReasoningEffort`): filled only when no other
+    /// reasoning ask was read; written only when the ask is an effort.
+    ReasoningEffort,
     /// An OpenAI custom (free-form grammar) tool in `IrRequest::hosted_tools` (carried by code).
     CustomTool,
     /// A member the dialect's own structural code models (`prim` rows): no slot of its own.
@@ -288,6 +291,10 @@ impl Slot {
             Slot::Seed => r.seed.map(Value::from),
             Slot::N => r.n.map(Value::from),
             Slot::Stop => (!r.stop.is_empty()).then(|| Value::from(r.stop.clone())),
+            Slot::ReasoningEffort => match r.reasoning {
+                Some(IrReasoningAsk::Effort(e)) => Some(Value::from(e.as_str())),
+                _ => None,
+            },
             Slot::CustomTool | Slot::Structure => None,
         }
     }
@@ -311,6 +318,7 @@ impl Slot {
             Slot::Seed => "seed",
             Slot::N => "n",
             Slot::Stop => "stop",
+            Slot::ReasoningEffort => "reasoning_effort",
             Slot::CustomTool => "custom_tool",
             Slot::Structure => "structure",
         }
@@ -370,6 +378,12 @@ impl Slot {
                     r.stop = crate::codec::ir::read_stop_sequences(Some(v));
                 }
             }
+            Slot::ReasoningEffort => first(
+                &mut r.reasoning,
+                v.as_str()
+                    .and_then(IrReasoningEffort::parse_extended)
+                    .map(IrReasoningAsk::Effort),
+            ),
             Slot::CustomTool | Slot::Structure => {}
         }
     }

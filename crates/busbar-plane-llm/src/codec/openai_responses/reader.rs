@@ -74,10 +74,8 @@ impl ProtocolReader for ResponsesReader {
 
     #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
-        // Identical to OpenAiReader::classify — both emit the same OpenAI error envelope, so the
-        // mapping is single-sourced in `openai_chat::openai_classify` (the OpenAI dialect's codec
-        // home), reached the same RELATIVE way every sibling reach into `openai_chat` is.
-        super::super::openai_chat::openai_classify(status, body)
+        // Both bearer-envelope dialects classify alike: single-sourced in the shared dialect module.
+        crate::codec::dialect::bearer_error_classify(status.as_u16(), body)
     }
 
     fn read_request(
@@ -211,7 +209,7 @@ impl ProtocolReader for ResponsesReader {
                             // Dropping them lost an assistant turn's grounding sources on replay.
                             let citations = item
                                 .get(keys::ANNOTATIONS)
-                                .map(super::super::openai_annotations::read_url_annotations)
+                                .map(super::super::url_citation_wire::read_url_annotations)
                                 .unwrap_or_default();
                             messages.push(crate::codec::ir::IrMessage {
                                 role: crate::codec::ir::IrRole::Assistant,
@@ -1022,7 +1020,7 @@ impl ProtocolReader for ResponsesReader {
                     .map_or(0, |v| (v as usize).min(MAX_OUTPUT_INDEX));
                 if state.open_tools.contains(&(idx + TEXT_INDEX_KEY_OFFSET)) {
                     if let Some(annotation) = data.get("annotation") {
-                        let citations = super::super::openai_annotations::read_url_annotations(
+                        let citations = super::super::url_citation_wire::read_url_annotations(
                             &serde_json::Value::Array(vec![annotation.clone()]),
                         );
                         if !citations.is_empty() {
@@ -1324,7 +1322,7 @@ impl ProtocolReader for ResponsesReader {
                             cache_read_input_tokens: None,
                             detail: crate::codec::ir::IrUsageDetail {
                                 service_tier: crate::codec::carry::read_word(
-                                    crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
+                                    super::map::WORDS_SERVED_TIER,
                                     response_obj.get(keys::SERVICE_TIER),
                                 ),
                                 ..Default::default()
@@ -1531,7 +1529,7 @@ impl ProtocolReader for ResponsesReader {
                                         // deliberately not carried.
                                         let citations = block_item
                                             .get(keys::ANNOTATIONS)
-                                            .map(super::super::openai_annotations::read_url_annotations)
+                                            .map(super::super::url_citation_wire::read_url_annotations)
                                             .unwrap_or_default();
                                         // RSP-03: the part's token `logprobs` join the response's
                                         // one IR logprob run, in part order — the writer's inverse

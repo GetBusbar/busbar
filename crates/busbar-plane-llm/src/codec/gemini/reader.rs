@@ -966,9 +966,9 @@ impl ProtocolReader for GeminiReader {
                                 // reader's cap.
                                 if !name_val.is_empty()
                                     && state.open_tools.len() >= MAX_GEMINI_TOOL_FRAMES
-                                    && !state.gemini_tool_frame_cap_warned
+                                    && !state.tool_frame_cap_warned
                                 {
-                                    state.gemini_tool_frame_cap_warned = true;
+                                    state.tool_frame_cap_warned = true;
                                     tracing::warn!(
                                         cap = MAX_GEMINI_TOOL_FRAMES,
                                         "gemini stream exceeded MAX_GEMINI_TOOL_FRAMES concurrent tool-call frames; new functionCall parts are being dropped for the rest of this stream"

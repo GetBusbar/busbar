@@ -495,7 +495,8 @@ impl IrReasoningAsk {
 }
 
 impl IrReasoningEffort {
-    /// The OpenAI-family `reasoning_effort` value. Identical to [`Self::as_str`] EXCEPT `Minimal`
+    /// The effort on the three-word `low`/`medium`/`high` scale every reasoning model accepts (the
+    /// OpenAI-family writers' `reasoning_effort` value). Identical to [`Self::as_str`] EXCEPT `Minimal`
     /// maps to `"low"`: `"minimal"` is only accepted by newer OpenAI reasoning models (gpt-5),
     /// while the o-series accepts only low/medium/high. `Minimal` reaches an OpenAI egress writer
     /// only via a small cross-protocol budget (Anthropic/Gemini source), and the lane's reasoning
@@ -506,7 +507,7 @@ impl IrReasoningEffort {
     /// `XHigh`/`Max` project to `"high"` for the same reason: `"xhigh"` is accepted only by the
     /// newest OpenAI reasoning models, and the lane's model is not known here. A writer that KNOWS
     /// its lane accepts it may emit [`Self::as_str`] instead.
-    pub fn as_openai_reasoning_effort(self) -> &'static str {
+    pub fn as_three_word_str(self) -> &'static str {
         match self {
             IrReasoningEffort::Minimal => "low",
             IrReasoningEffort::XHigh | IrReasoningEffort::Max => "high",
@@ -1455,11 +1456,11 @@ pub struct StreamDecodeState {
     /// the engine now rejects `n>1`/`candidateCount>1` on a cross-protocol route up front, so this
     /// path should not be reached — but if a drop path survives, this makes it observable.
     pub multi_candidate_warned: bool,
-    /// One-way latch so the `MAX_GEMINI_TOOL_FRAMES` cap's drop `warn!` fires ONCE per stream
-    /// rather than once per dropped `functionCall` part. Set the first time a streaming chunk
-    /// tries to open a tool-call frame past the cap, making an otherwise-silent drop of model
-    /// output observable. Gemini reader only; other readers leave it false.
-    pub gemini_tool_frame_cap_warned: bool,
+    /// One-way latch so a reader's tool-frame cap drop `warn!` fires ONCE per stream rather than
+    /// once per dropped tool-call part. Set the first time a streaming chunk tries to open a
+    /// tool-call frame past the cap, making an otherwise-silent drop of model output observable.
+    /// Set by the readers that cap tool frames (Gemini today); other readers leave it false.
+    pub tool_frame_cap_warned: bool,
     /// Monotone next-free IR block index, for readers that allocate slots by ORDER OF FIRST
     /// APPEARANCE. NEVER reset for the life of the stream. The terminal branch's `mem::take` of
     /// `open_tools`/`tool_ir_index` (openai_chat reader) clears WHO IS OPEN — it must not also be

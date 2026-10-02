@@ -50,8 +50,7 @@ use usage::*;
 pub const STREAM_QUERY: (&str, &str) = ("alt", "sse");
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
-/// resolution, exactly as the registry's field doc requires. Mirrors
-/// `super::anthropic::protocol`.
+/// resolution, exactly as the registry's field doc requires.
 pub fn protocol() -> Protocol {
     Protocol::new(COUNT_LABEL, GeminiReader, GeminiWriter)
 }
@@ -204,6 +203,18 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // surface as Gemini (the `/v1beta` path is handled by the detection fold, not this header set).
     list_models_fingerprint_headers: &[FIELD_X_GOOG_API_KEY],
     static_headers: &[],
+};
+
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = GeminiWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&GeminiReader),
+    leaf: &handler::LEAF,
 };
 
 /// GEMINI'S RESPONSE-side untranslatable metadata: `safetyRatings` (Google's own harm-category
