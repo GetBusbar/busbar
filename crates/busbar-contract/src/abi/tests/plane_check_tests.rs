@@ -2004,3 +2004,34 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
         );
     }
 }
+
+/// THE ROUTE CLASS (ARCHITECT Q-SW6 amended by Q-FL3, 2026-10-02): a READY arrival names whether its
+/// entry is a pool or a model routed directly; any other class is FAULT, and an answer that admits
+/// nothing names the default class only.
+#[test]
+fn an_arrivals_route_class_is_pool_or_direct() {
+    for class in [ROUTE_POOL, ROUTE_DIRECT] {
+        let mut o: ArriveOut = z();
+        o.route = class;
+        o.pool = s("entry");
+        assert_eq!(
+            check_arrive(Ready, &o, &[], 4, &bounds()),
+            Ok(()),
+            "{class}"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_DIRECT + 1;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.route")
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.route = ROUTE_DIRECT;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool")
+    );
+}
