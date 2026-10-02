@@ -3472,7 +3472,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn records_secret;
 };
 
-/* ---- layout proof: 258 of 261 structures are pinned by the golden ---- */
+/* ---- layout proof: 259 of 262 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
