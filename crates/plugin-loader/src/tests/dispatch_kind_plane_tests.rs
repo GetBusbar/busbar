@@ -47,6 +47,7 @@ static FACTS: LazyLock<PlaneFacts> = LazyLock::new(|| PlaneFacts {
     },
     refusal_statuses: Vec::new(),
     declared: Default::default(),
+    served: Default::default(),
 });
 
 fn answer<'a, I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'a> {

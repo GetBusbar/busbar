@@ -37,7 +37,7 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
-use busbar_contract::abi::mechanism::door::Statement;
+use busbar_contract::abi::mechanism::door::{Statement, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, CancelOut, DriveIn, OpenIn, RefreshIn,
 };
@@ -95,6 +95,21 @@ pub struct PlaneFacts {
     pub refusal_statuses: Vec<RefusalStatus>,
     /// What the tail declares for the instance's admission (its label is the bind's).
     pub declared: InstanceDecl,
+    /// What the composition root serves the instance by.
+    pub served: ServedFacts,
+}
+
+/// WHAT THE COMPOSITION ROOT SERVES A PLANE INSTANCE BY, kept from its Statement at bind: the
+/// section it declares (the configuration it opens with), its operation classes in tail order (what
+/// `arrive`'s `op_class` indexes) and the `audit_kind` its admin rows are written under.
+#[derive(Debug, Clone, Default)]
+pub struct ServedFacts {
+    /// The key of the one section the Statement declares.
+    pub section: &'static str,
+    /// The tail's operation classes, in order.
+    pub op_classes: Vec<&'static str>,
+    /// The tail's `audit_kind`.
+    pub audit_kind: &'static str,
 }
 
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
@@ -150,6 +165,17 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
         bounds: Bounds::of(&tail),
         refusal_statuses,
         declared: declared(&tail),
+        served: ServedFacts {
+            section: sections
+                .iter()
+                .find(|s| s.flags & SECTION_DECLARING != 0)
+                .map_or("", |s| kept(s.name)),
+            op_classes: listed(tail.op_classes, tail.op_classes_len)
+                .into_iter()
+                .map(|c| kept(c.op))
+                .collect(),
+            audit_kind: kept(tail.audit_kind),
+        },
     })
 }
 
@@ -223,6 +249,14 @@ impl crate::dispatch::Plugin<Plane> {
             d.label = Arc::clone(&c.instance);
         }
         d
+    }
+
+    /// What the composition root serves the instance by (empty with no tail facts).
+    pub fn served(&self) -> ServedFacts {
+        self.inner
+            .context::<PlaneFacts>()
+            .map(|f| f.served.clone())
+            .unwrap_or_default()
     }
 
     /// The refusal statuses the plane's tail states, as judged at bind.
