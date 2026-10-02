@@ -984,9 +984,7 @@ EOF
   # The same regex selects the cells on both sides (an ID filter, the domain record.sh --filter
   # uses), and --strict makes the differ's exit code carry the verdict for this subset: zero owed
   # cells, an unaccepted divergence, or an owed cell missing from the candidate is red.
-  # THE SAME GOLDEN CI READS — the committed, signed-off recording, which is also why
-  # `--allow-harness-skew` is not passed: a harness edit that moves the rev is a golden to re-stamp
-  # or re-record, not a warning to pass over.
+  # THE SAME GOLDEN CI READS — the committed, signed-off recording (immutable, add-only).
   local golden="$here/testing/shadow-oracle/golden/1.5.5"
   if [ "$LAND_ORACLE_DIFF" = merged ] && [ "$k" -gt 1 ]; then
     local parts=""; i=0

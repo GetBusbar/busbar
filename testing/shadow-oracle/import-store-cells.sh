@@ -165,7 +165,7 @@ note="the three plugins.store-persist cells recorded on ${src_host} from the pin
 "$oracle" merge --out "$work/merged" \
   --cells "$data/cells.json" \
   --pinned-binaries "$digests" \
-  --allow-host-skew --allow-harness-skew \
+  --allow-host-skew \
   --note "$note" \
   "$work/golden-part" "$work/store-cells-part"
 
