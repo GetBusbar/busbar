@@ -161,6 +161,10 @@ pub(super) fn read_gemini_citations(
     out
 }
 
+/// A candidate's grounding member, and its list of grounding chunks.
+pub(super) const FIELD_GROUNDING_METADATA: &str = "groundingMetadata";
+const FIELD_GROUNDING_CHUNKS: &str = "groundingChunks";
+
 /// Map a Gemini candidate's `groundingMetadata` → neutral [`crate::codec::ir::IrCitation`]s.
 ///
 /// THE GAP THIS CLOSES: `groundingMetadata` is where a Google-Search-grounded Gemini answer puts its
@@ -188,11 +192,11 @@ pub(super) fn read_gemini_grounding_citations(
     candidate: &serde_json::Value,
     anchor_text: Option<&str>,
 ) -> Vec<crate::codec::ir::IrCitation> {
-    let Some(gm) = candidate.get("groundingMetadata") else {
+    let Some(gm) = candidate.get(FIELD_GROUNDING_METADATA) else {
         return Vec::new();
     };
     let chunks = gm
-        .get("groundingChunks")
+        .get(FIELD_GROUNDING_CHUNKS)
         .and_then(|c| c.as_array())
         .map(Vec::as_slice)
         .unwrap_or_default();
@@ -493,8 +497,8 @@ pub(super) fn read_grounding_record(
     candidate: &serde_json::Value,
 ) -> Option<crate::codec::ir::IrBlock> {
     let results: Vec<crate::codec::ir::IrSearchResult> = candidate
-        .get("groundingMetadata")?
-        .get("groundingChunks")?
+        .get(FIELD_GROUNDING_METADATA)?
+        .get(FIELD_GROUNDING_CHUNKS)?
         .as_array()?
         .iter()
         .filter_map(|chunk| {
@@ -538,5 +542,5 @@ pub(super) fn write_grounding_chunks(
             serde_json::json!({ (keys::WEB): web })
         })
         .collect();
-    (!chunks.is_empty()).then(|| serde_json::json!({ "groundingChunks": chunks }))
+    (!chunks.is_empty()).then(|| serde_json::json!({ (FIELD_GROUNDING_CHUNKS): chunks }))
 }
