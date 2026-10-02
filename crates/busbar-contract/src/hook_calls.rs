@@ -9,10 +9,13 @@
 //! built by `abi::host::hook`.
 //!
 //! Every call runs on the dispatcher's workers, off the caller's own, and is bounded by the
-//! call's `budget` — the hook's `timeout_ms` — which is also the crossing watchdog's budget for the
-//! instance: a crossing that outlives it quarantines the instance, and the implementation brings a
-//! FRESH instance back after a backoff through one trial call. A call made while quarantined
-//! waits for the trial window within its own budget, never beyond it.
+//! call's `budget` — the hook's `timeout_ms` — which is the op's DEADLINE on the dispatcher: the
+//! op is cancelled at `timeout_ms`, exactly as 1.5.5's per-hook timeout behaved (ARCHITECT
+//! Q-SO6). QUARANTINE is the dispatcher watchdog's alone: a crossing that outlives its class
+//! budget faults the instance, and the implementation brings a FRESH instance back after a
+//! backoff through one trial call. There is one watchdog mechanism; no instance carries a watchdog
+//! budget of its own. A call made while quarantined waits for the trial window within its own
+//! budget, never beyond it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -119,8 +122,8 @@ pub trait HookAxis: Send + Sync {
 
     /// OPEN one instance of `module` with `settings` (the operator's section, secrets resolved),
     /// under the host's instance `label` (unique per opened instance: the name every host service
-    /// keys its caller by). `budget` is the instance's call budget (its `timeout_ms`): every call is
-    /// bounded by it, and so is the watchdog over its crossings. A management instance
+    /// keys its caller by). `budget` is the instance's call budget (its `timeout_ms`): every call's
+    /// dispatcher deadline; the watchdog runs on its class budgets, not this. A management instance
     /// (configure/status/describe) is just another instance.
     ///
     /// # Errors

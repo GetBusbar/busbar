@@ -10,8 +10,7 @@
 
 use busbar_contract::abi::hook::{
     self, slot, validate, ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn,
-    ServeIn, ServeOut, StatusOut, Tail, TransformOut, CLASS_GATE, CLASS_TAP, PROMPT_NO, PROMPT_RW,
-    USER_NO, USER_RO,
+    ServeIn, ServeOut, StatusOut, Tail, TransformOut, CLASS_GATE, CLASS_TAP, PROMPT_RW, USER_RO,
 };
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
@@ -26,52 +25,55 @@ fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
-/// WHAT A HOOK STATES ABOUT ITSELF, read once at bind: its name, its tail's class and grants (a
-/// Statement with no hook tail states the defaults: a gate that asks for neither view) and the
-/// hook words its `MARK_WORD_HOOK` marks claim. Read back through
+/// The refusal of a hook Statement that states no kind tail.
+pub const NO_TAIL: &str =
+    "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
+
+/// WHAT A HOOK STATES ABOUT ITSELF, read once at bind: its name, its tail's class and grants and
+/// the hook words its `MARK_WORD_HOOK` marks claim. Read back through
 /// [`crate::dispatch::Plugin::context`].
+///
+/// A hook Statement with NO kind tail is refused ([`NO_TAIL`], ARCHITECT Q-SO8): every 1.6.0 hook
+/// states its class and grants (`abi::sdk::hook::tail`); none is assumed for it.
 fn facts(st: &Statement) -> Result<HookFacts, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
+    let p = st.kind_tail;
+    if p.is_null() {
+        return Err(NO_TAIL.to_string());
+    }
+    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
+    // whole tail is read only once its size covers this host's `Tail`.
+    let size = unsafe { (*p).size };
+    if (size as usize) < std::mem::size_of::<Tail>() {
+        return Err(format!(
+            "the hook tail is {size} bytes, smaller than this host's"
+        ));
+    }
+    // SAFETY: as above.
+    let t = unsafe { p.cast::<Tail>().read_unaligned() };
+    if t.kind_class != CLASS_GATE && t.kind_class != CLASS_TAP {
+        return Err(format!("the hook tail states class {}", t.kind_class));
+    }
+    if t.prompt_access > PROMPT_RW {
+        return Err(format!(
+            "the hook tail states prompt access {}",
+            t.prompt_access
+        ));
+    }
+    if t.user_access > USER_RO {
+        return Err(format!(
+            "the hook tail states user access {}",
+            t.user_access
+        ));
+    }
     let mut facts = HookFacts {
         name,
-        class: CLASS_GATE,
-        prompt: PROMPT_NO,
-        user: USER_NO,
-        infallible: false,
+        class: t.kind_class,
+        prompt: t.prompt_access,
+        user: t.user_access,
+        infallible: t.infallible != 0,
         words: Vec::new(),
     };
-    let p = st.kind_tail;
-    if !p.is_null() {
-        // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
-        // whole tail is read only once its size covers this host's `Tail`.
-        let size = unsafe { (*p).size };
-        if (size as usize) < std::mem::size_of::<Tail>() {
-            return Err(format!(
-                "the hook tail is {size} bytes, smaller than this host's"
-            ));
-        }
-        // SAFETY: as above.
-        let t = unsafe { p.cast::<Tail>().read_unaligned() };
-        if t.kind_class != CLASS_GATE && t.kind_class != CLASS_TAP {
-            return Err(format!("the hook tail states class {}", t.kind_class));
-        }
-        if t.prompt_access > PROMPT_RW {
-            return Err(format!(
-                "the hook tail states prompt access {}",
-                t.prompt_access
-            ));
-        }
-        if t.user_access > USER_RO {
-            return Err(format!(
-                "the hook tail states user access {}",
-                t.user_access
-            ));
-        }
-        facts.class = t.kind_class;
-        facts.prompt = t.prompt_access;
-        facts.user = t.user_access;
-        facts.infallible = t.infallible != 0;
-    }
     let marks: &[MarkWord] = if st.mark_words_len == 0 || st.mark_words.is_null() {
         &[]
     } else {

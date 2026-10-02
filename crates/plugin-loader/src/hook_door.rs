@@ -12,12 +12,14 @@
 //!
 //! * Every call is SUBMITTED on a ticket and awaited: it runs on the dispatcher's workers, never on
 //!   the caller's, and is bounded by the call's `budget` (the hook's `timeout_ms`), which is its
-//!   deadline on the dispatcher. A `decide`/`transform` answer that is SHORT is re-submitted once
-//!   on the same ticket over the frame's regrown buffers (the short-buffer rule).
-//! * QUARANTINE (THE DESIGN §11.11, R2): an instance the watchdog faulted (a crossing that never
-//!   returned) is never called again. The next call waits for the trial window — 1 s after the
-//!   fault, doubling to 30 s on each failed trial — within its own budget and never beyond it, then
-//!   binds and opens a FRESH instance through the same door and makes one trial call on it.
+//!   deadline on the dispatcher: cancelled at `timeout_ms`, as 1.5.5's per-hook timeout (Q-SO6).
+//!   A `decide`/`transform` answer that is SHORT is re-submitted once on the same ticket over the
+//!   frame's regrown buffers (the short-buffer rule).
+//! * QUARANTINE (THE DESIGN §11.11, R2): an instance the dispatcher's watchdog faulted (a crossing
+//!   past its class budget; the one watchdog, no per-instance budget) is never called again. The
+//!   next call waits for the trial window — 1 s after the fault, doubling to 30 s on each failed
+//!   trial — within its own budget and never beyond it, then binds and opens a FRESH instance
+//!   through the same door and makes one trial call on it.
 //! * A plugin's leased answer (`status`, `describe`) is copied, then its lease released.
 
 use std::sync::atomic::{AtomicU32, Ordering};

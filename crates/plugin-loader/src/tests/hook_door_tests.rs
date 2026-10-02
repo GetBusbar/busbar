@@ -11,6 +11,9 @@
 //! RED ARM, KEPT: [`a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors`] opens the
 //! fixture's broken door (`decide` answering two verbs) the same two ways: the axis answers
 //! [`Answered::Broken`] on both, where the conforming door answers one verb.
+//!
+//! RED ARM (ARCHITECT Q-SO8): [`a_hook_statement_without_its_kind_tail_is_refused_at_load`] — the
+//! conforming plugin with no hook tail does not load; the refusal names the missing tail.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +32,7 @@ use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
 use crate::hook_door_conformance_tests::hook_door_plugin;
 
-use hook_door_plugin::{BROKEN_NAME, NAME, REJECT_STATUS};
+use hook_door_plugin::{BROKEN_NAME, NAME, REJECT_STATUS, UNTAILED_NAME};
 
 /// Every call's budget.
 const BUDGET: Duration = Duration::from_secs(5);
@@ -247,4 +250,39 @@ fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neith
         return;
     };
     assert!(!dropped.linked(NAME) && !dropped.first_party(NAME));
+}
+
+/// RED ARM (Q-SO8): a hook Statement with no kind tail is refused at load, named; nothing assumes
+/// a class or grants for it. The conforming door, which states its tail, opens.
+#[test]
+fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
+    let untailed = rows(hook_door_plugin::untailed::door, "hook_door", Way::Linked)
+        .expect("the row states its name");
+    assert_eq!(
+        untailed.probe(UNTAILED_NAME, "gate", &json!({"reject_over_messages": 3})),
+        Some((None, Vec::new())),
+        "an untailed hook states no facts"
+    );
+    let refused = untailed
+        .open(
+            UNTAILED_NAME,
+            "hooks.gate",
+            &json!({"reject_over_messages": 3}),
+            BUDGET,
+        )
+        .err()
+        .expect("an untailed hook is refused at load");
+    assert!(
+        refused.contains(crate::dispatch::kinds::hook::NO_TAIL) && refused.contains(UNTAILED_NAME),
+        "{refused}"
+    );
+    let tailed = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked)
+        .expect("linked")
+        .open(
+            NAME,
+            "hooks.gate",
+            &json!({"reject_over_messages": 3}),
+            BUDGET,
+        );
+    assert!(tailed.is_ok(), "the tailed door opens");
 }
