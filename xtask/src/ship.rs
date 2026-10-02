@@ -171,13 +171,15 @@ pub fn ship(
     }
 
     // 3. local pre-flight (no product build).
-    let env = [("CARGO_TARGET_DIR", xtask_target.to_string())];
-    let steps: [(&[&str], &[(&str, String)]); 3] = [
-        (&["fmt", "--all"], &[]),
-        (&["metadata", "--format-version", "1"], &[]),
-        (&["xtask", "gate", "abi-header", "--write"], &env),
+    // The header step builds xtask itself, into the shared xtask target dir (ship.sh's choice).
+    let xtask_env = [("CARGO_TARGET_DIR", xtask_target.to_string())];
+    let steps: [&[&str]; 3] = [
+        &["fmt", "--all"],
+        &["metadata", "--format-version", "1"],
+        &["xtask", "gate", "abi-header", "--write"],
     ];
-    for (args, env) in steps {
+    for args in steps {
+        let env: &[(&str, String)] = if args[0] == "xtask" { &xtask_env } else { &[] };
         let r = sh.run(w, "cargo", args, env);
         if !r.ok {
             return fail(log, &format!("cargo {}", args.join(" ")), &r);
