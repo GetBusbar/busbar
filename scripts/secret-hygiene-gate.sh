@@ -256,10 +256,10 @@ C3_PROXIMITY=56
 #       any other. The scanner matches EXACTLY on the field name, so this needle could never raise a
 #       hit for the row to excuse. There is no path to repoint it to; it excused nothing, ever.
 ALLOWLIST_C1="secret|crates/busbar-contract/src/records.rs|secret
-token|crates/busbar-kernel/src/admin/v1/contract/schema.rs|token
-aws_secret_access_key|crates/busbar-kernel/src/admin/v1/contract/schema.rs|aws_secret_access_key
-access_token|crates/busbar-kernel/src/admin/v1/contract/schema.rs|
-secret|crates/busbar-kernel/src/admin/v1/contract/schema.rs|secret
+token|crates/busbar-core-admin/src/v1/schema.rs|token
+aws_secret_access_key|crates/busbar-core-admin/src/v1/schema.rs|aws_secret_access_key
+access_token|crates/busbar-core-admin/src/v1/schema.rs|
+secret|crates/busbar-core-admin/src/v1/schema.rs|secret
 upstream_credentials|crates/busbar-kernel/src/admin/v1/contract/mod.rs|upstream_credentials
 token|crates/busbar-contract/src/abi/cold/auth.rs|
 secret|crates/busbar-contract/src/abi/cold/auth.rs|

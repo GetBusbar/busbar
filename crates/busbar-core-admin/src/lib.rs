@@ -54,6 +54,9 @@ pub mod rate;
 pub mod refusal;
 pub mod verb;
 pub mod verbs;
+// The test-build admin-error witness ledger (moved from the kernel's `admin_witness`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod witness;
 
 pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 pub use idempotency::ReplayEncoder;

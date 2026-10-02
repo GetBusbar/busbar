@@ -17,7 +17,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{AdminError, HookView};
+use busbar_kernel::admin::v1::contract::{AdminError, HookView};
 
 /// Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
 /// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
@@ -332,7 +332,7 @@ pub struct PluginSchemaView {
 }
 
 /// The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings
-/// (KEY NAMES only, see [`super::HookView::settings_keys`]) and their version.
+/// (KEY NAMES only, see [`HookView::settings_keys`]) and their version.
 #[derive(Serialize, JsonSchema)]
 pub struct HookDesiredStatus {
     /// Sorted KEY NAMES of the desired settings bag, never its values.
@@ -445,14 +445,14 @@ pub struct ConfigDiffView {
 /// audit handler).
 #[derive(Serialize, JsonSchema)]
 pub struct AuditPageView {
-    pub items: Vec<crate::audit_ring::AuditEntry>,
+    pub items: Vec<busbar_kernel::audit_ring::AuditEntry>,
     pub next_cursor: Option<String>,
 }
 
 /// `GET /config/versions`: the cursor-paginated version-history envelope (`{items, next_cursor}`).
 #[derive(Serialize, JsonSchema)]
 pub struct ConfigVersionPageView {
-    pub items: Vec<crate::admin::versions::ConfigVersion>,
+    pub items: Vec<busbar_kernel::admin::versions::ConfigVersion>,
     pub next_cursor: Option<String>,
 }
 

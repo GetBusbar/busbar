@@ -4568,7 +4568,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // response shapes always match what serde serializes. Driven by a table keyed on
     // (relative-path, method, status); `attach` resolves the type to a `#/components/schemas/<T>`
     // ref, records it in `gen`, and writes the `content` block.
-    use busbar_kernel::admin::v1::contract::schema as sview;
+    use crate::v1::schema as sview;
     let mut gen = schemars::generate::SchemaSettings::draft2020_12()
         .with(|s| {
             // OpenAPI 3.1 keeps component schemas under `#/components/schemas`; strip the per-schema
