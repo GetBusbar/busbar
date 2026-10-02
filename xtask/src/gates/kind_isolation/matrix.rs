@@ -675,6 +675,12 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         } else {
             std::borrow::Cow::Borrowed(&*masked)
         };
+        // A dialect module's native item-id prefix literal is the provider's word (ruling below).
+        let masked = if c.kind == Some("plane") {
+            mask_dialect_id_prefixes(cx, &dir, &rel, text, &masked)
+        } else {
+            std::borrow::Cow::Borrowed(&*masked)
+        };
         for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
             let line = h
                 .line
@@ -774,6 +780,93 @@ fn mask_dialect_wire_keys<'a>(
         Some(buf) => std::borrow::Cow::Owned(String::from_utf8(buf).expect("ascii-for-ascii")),
         None => std::borrow::Cow::Borrowed(masked),
     }
+}
+
+/// THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324, extending the wire-key span
+/// above): an item-id prefix the provider itself mints (`ws` for a Responses `web_search_call`,
+/// `fc` for a `function_call`) is that dialect's protocol vocabulary, not a coupling. So, in a
+/// plane crate's DIALECT MODULE (a file under `<plane crate>/src/` with a path segment `<d>` or a
+/// file `<d>.rs` such that `<plane crate>/dialects/<d>.toml` exists), the string literal of a
+/// one-line `const <NAME>: &str = "<lit>";` whose NAME contains `ID_PREFIX` is masked. Nothing else
+/// is: not the constant's name, not the same word in a comment, another literal or another const,
+/// and not an id-prefix const outside a dialect module. Read off the ORIGINAL `text`, filled in
+/// `masked`, byte-aligned like every earlier mask.
+fn mask_dialect_id_prefixes<'a>(
+    cx: &Ctx,
+    dir: &str,
+    rel: &str,
+    text: &str,
+    masked: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    let in_dialect = rel
+        .strip_prefix(dir)
+        .and_then(|r| r.strip_prefix("/src/"))
+        .is_some_and(|r| {
+            r.split('/').any(|seg| {
+                let d = seg.strip_suffix(".rs").unwrap_or(seg);
+                !d.is_empty()
+                    && d.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                    && cx.exists(format!("{dir}/dialects/{d}.toml"))
+            })
+        });
+    if !rel.ends_with(".rs") || !in_dialect || masked.len() != text.len() {
+        return std::borrow::Cow::Borrowed(masked);
+    }
+    let mut out: Option<Vec<u8>> = None;
+    let mut at = 0usize;
+    for line in text.split_inclusive('\n') {
+        if let Some((start, len)) = id_prefix_literal(line) {
+            let buf = out.get_or_insert_with(|| masked.as_bytes().to_vec());
+            buf[at + start..at + start + len].fill(b'x');
+        }
+        at += line.len();
+    }
+    match out {
+        // Only ASCII literal bytes were replaced by ASCII, so the buffer is still UTF-8.
+        Some(buf) => std::borrow::Cow::Owned(String::from_utf8(buf).expect("ascii-for-ascii")),
+        None => std::borrow::Cow::Borrowed(masked),
+    }
+}
+
+/// The `(offset, len)` of `<lit>` in a line `[pub[(..)] ]const <NAME>: &str = "<lit>";` whose NAME
+/// contains `ID_PREFIX` and whose literal is plain lowercase ASCII; `None` for any other line.
+fn id_prefix_literal(line: &str) -> Option<(usize, usize)> {
+    let lead = line.len() - line.trim_start().len();
+    let mut rest = &line[lead..];
+    if let Some(r) = rest.strip_prefix("pub") {
+        rest = r.trim_start();
+        if let Some(r) = rest.strip_prefix('(') {
+            rest = r.split_once(')')?.1.trim_start();
+        }
+    }
+    let rest = rest.strip_prefix("const ")?.trim_start();
+    let (name, rest) = rest.split_once(':')?;
+    let name = name.trim();
+    if !name.contains("ID_PREFIX")
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return None;
+    }
+    let rest = rest.trim_start().strip_prefix("&str")?.trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    let body = rest.strip_prefix('"')?;
+    let end = body.find('"')?;
+    let lit = &body[..end];
+    if lit.is_empty()
+        || !lit
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    {
+        return None;
+    }
+    if body[end + 1..].trim() != ";" {
+        return None;
+    }
+    let start = line.len() - body.len();
+    Some((start, lit.len()))
 }
 
 /// The contract crate's package name: the one crate whose exported identifiers are shapes every
@@ -2750,6 +2843,53 @@ pub fn selftest<'a>(
             "[unmapped.stream]\n\"tools[].type=mcp.no_such_member\" = { no-equivalent = \"x\" }",
         ),
         &llm_raised,
+    ));
+
+    // THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324): a dialect module's
+    // native item-id prefix (`ws`) is the provider's word; a real transport `ws` still counts.
+    // Every arm runs on the plane crate's transport row re-pinned to its measurement.
+    let prefix_case = |file: &'static str, line: &'static str| {
+        let cx = cx.clone();
+        move || {
+            let body = cx.read(file).unwrap_or_default();
+            row_at_measurement(&cx, "busbar-plane-llm", "transport").layered(&plant(
+                &cx,
+                file,
+                &format!("{body}\n{line}\n"),
+            ))
+        }
+    };
+    let responses_mod = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
+    let transport_raised = ["ratchet", "busbar-plane-llm × transport", "RAISED"];
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a dialect module's native item-id prefix literal (`ws`) is the provider's word, not a \
+         transport coupling",
+        &[ROW_MATRIX],
+        prefix_case(
+            responses_mod,
+            "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
+        ),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a real transport `ws` reference in the same dialect module still counts",
+        &[ROW_MATRIX],
+        prefix_case(responses_mod, "const PLANTED_CARRIER: &str = \"ws\";"),
+        &transport_raised,
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an id-prefix literal outside a dialect module still counts",
+        &[ROW_MATRIX],
+        prefix_case(
+            "crates/busbar-plane-llm/src/codec/proto_stream.rs",
+            "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
+        ),
+        &transport_raised,
     ));
 
     // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
