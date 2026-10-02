@@ -13,7 +13,7 @@ use busbar_contract::services::{
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::TestApp;
 
-use super::{AppCredentials, CredentialServices};
+use super::{AppCredentials, CredentialServices, RootCredentials, NOT_READABLE};
 
 /// The persisted credential kind of a row-looked-up signed-ingress credential: frozen stored data,
 /// read off the kernel's frozen-text fixture rather than spelled here.
@@ -118,6 +118,7 @@ impl HostServices for Inner {
 
 /// A source answering `kind:id`, live for an id starting `live`.
 struct Source;
+impl RootCredentials for Source {}
 impl CredentialRead for Source {
     fn read(&self, kind: &str, id: &str) -> (busbar_contract::redacted::Redacted<String>, bool) {
         let secret = busbar_contract::redacted::Redacted::new(format!("{kind}:{id}"));
@@ -172,4 +173,31 @@ fn the_services_delegate_and_serve_the_read() {
             (format!("a-kind:{id}").as_bytes(), value)
         );
     }
+}
+
+/// THE LATE HANDLE: the serve path composes the services before the App exists, so a late source
+/// answers `records.secret` REFUSED until its handle is set, and the credential's secret, live,
+/// after. RED: a source read before the App exists would answer the dummy as an ordinary not-live
+/// credential, indistinguishable from a revoked one.
+#[test]
+fn a_late_source_refuses_until_its_handle_is_set() {
+    let (gov, id, secret) = gov_with_key("late");
+    let kind = signed_kind();
+    let (credentials, late) = AppCredentials::late();
+    let s = CredentialServices::new(Arc::new(Inner), Arc::new(credentials));
+    let Ran::Now(before) = s.records_secret(&kind, &id, Box::new(|_| {})) else {
+        panic!("answered at once");
+    };
+    assert_eq!(before, Stored::refused(NOT_READABLE), "not installed yet");
+    assert!(!late.is_set());
+    late.set(Arc::new(busbar_kernel::state::AppHandle::new(
+        TestApp::new().governance(gov).build(),
+    )));
+    assert!(late.is_set());
+    let Ran::Now(after) = s.records_secret(&kind, &id, Box::new(|_| {})) else {
+        panic!("answered at once");
+    };
+    let span = after.spans[0];
+    let bytes = &after.bytes[span.value.offset as usize..][..span.value.len as usize];
+    assert_eq!((bytes, after.value), (secret.as_bytes(), SECRET_LIVE));
 }

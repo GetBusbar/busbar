@@ -63,11 +63,20 @@ pub fn kernel_services(cfg: &RootCfg) -> KernelServices {
     )
 }
 
-/// THE COMPOSITION, once the configuration loads: the kernel's host services are installed into
-/// the dispatcher's [`LateServices`], before any plugin is bound. A second call (a reload) installs
-/// nothing.
-pub fn compose(cfg: &RootCfg, late: &LateServices) {
-    if late.install(Arc::new(kernel_services(cfg))).is_err() {
+/// THE COMPOSITION, once the configuration loads: the kernel's host services, with the host's
+/// `records.secret` read over `credentials` (`root::credentials`: the App's governance, through its
+/// swap handle once the App is built), are installed into the dispatcher's [`LateServices`], before
+/// any plugin is bound. A second call (a reload) installs nothing.
+pub fn compose(
+    cfg: &RootCfg,
+    late: &LateServices,
+    credentials: crate::root::credentials::AppCredentials,
+) {
+    let services = crate::root::credentials::CredentialServices::new(
+        Arc::new(kernel_services(cfg)),
+        Arc::new(credentials),
+    );
+    if late.install(Arc::new(services)).is_err() {
         tracing::debug!("the kernel's host services were already installed");
     }
 }
