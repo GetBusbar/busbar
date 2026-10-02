@@ -1342,6 +1342,7 @@ impl ProtocolReader for GeminiReader {
                     created: None,
                     system_fingerprint: None,
                     stop_sequence: None,
+                    safety: super::read_safety_ratings(body, &serde_json::Value::Null),
 
                     request_echo: None,
                     stop_detail: None,
@@ -1378,6 +1379,9 @@ impl ProtocolReader for GeminiReader {
         // STREAMING reader, which guards content with `if let Some(content)` and skips it when absent.
         // Hard-failing here turned a legitimate filtered response into a spurious 500.
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
+        // A Google-Search-grounded answer: the IR's hosted web-search record, ahead of the text
+        // (DF-MAP item 2; its spans keep riding the text blocks' citations).
+        content.extend(super::citations::read_grounding_record(candidate));
         // Per-response tool-call index feeding `synth_tool_call_id` (Gemini carries no tool id).
         let mut tool_call_index: usize = 0;
         // This response's own `responseId`, salted into every synthesized tool-call id below so a
@@ -1596,6 +1600,7 @@ impl ProtocolReader for GeminiReader {
                 .and_then(gemini_rfc3339_to_epoch),
             system_fingerprint: None,
             stop_sequence: None,
+            safety: super::read_safety_ratings(body, candidate),
 
             request_echo: None,
             stop_detail: None,

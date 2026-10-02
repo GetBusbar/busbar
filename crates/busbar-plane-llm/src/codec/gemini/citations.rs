@@ -485,3 +485,58 @@ pub(super) fn write_gemini_citation(
     }
     serde_json::Value::Object(obj)
 }
+
+/// A grounded candidate's `groundingMetadata.groundingChunks[].web` -> the IR's hosted web-search
+/// record (DF-MAP item 2): each web chunk's `uri` and `title` as a result. `None` when the candidate
+/// carries no web chunk (a Vertex `retrievedContext` datastore chunk is not a web search).
+pub(super) fn read_grounding_record(
+    candidate: &serde_json::Value,
+) -> Option<crate::codec::ir::IrBlock> {
+    let results: Vec<crate::codec::ir::IrSearchResult> = candidate
+        .get("groundingMetadata")?
+        .get("groundingChunks")?
+        .as_array()?
+        .iter()
+        .filter_map(|chunk| {
+            let web = chunk.get(keys::WEB)?;
+            Some(crate::codec::ir::IrSearchResult {
+                url: web.get(FIELD_URI)?.as_str()?.to_string(),
+                title: web
+                    .get(keys::TITLE)
+                    .and_then(|t| t.as_str())
+                    .map(String::from),
+                snippet: None,
+            })
+        })
+        .collect();
+    (!results.is_empty()).then_some(crate::codec::ir::IrBlock::HostedToolRecord {
+        kind: crate::codec::ir::IrHostedToolKind::WebSearch,
+        call_id: None,
+        status: None,
+        results,
+    })
+}
+
+/// The hosted web-search records of an answer as Gemini's `groundingMetadata.groundingChunks`
+/// (`None` when the answer carries none).
+pub(super) fn write_grounding_chunks(
+    content: &[crate::codec::ir::IrBlock],
+) -> Option<serde_json::Value> {
+    let chunks: Vec<serde_json::Value> = content
+        .iter()
+        .filter_map(|b| match b {
+            crate::codec::ir::IrBlock::HostedToolRecord { results, .. } => Some(results),
+            _ => None,
+        })
+        .flatten()
+        .map(|r| {
+            let mut web = serde_json::Map::new();
+            web.insert(FIELD_URI.to_string(), serde_json::json!(r.url));
+            if let Some(title) = &r.title {
+                web.insert(keys::TITLE.to_string(), serde_json::json!(title));
+            }
+            serde_json::json!({ (keys::WEB): web })
+        })
+        .collect();
+    (!chunks.is_empty()).then(|| serde_json::json!({ "groundingChunks": chunks }))
+}
