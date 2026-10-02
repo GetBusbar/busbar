@@ -730,6 +730,11 @@ billing|key-usage|noscope-after-403	PASS	HTTP 200; usage Δ {}
 billing|key-usage|refund-across-window	PASS	script refund-across-window.sh: status 0	
 billing|rate-card|epoch-mid-window	PASS	HTTP 200; usage Δ {}	
 billing|rate-card|history-mid-window	PASS	script rate-card-history.sh: status 0	
+boot.deprecated-env|BUSBAR_CONFIG_OVERLAY	PASS	capture	
+boot.deprecated-env|BUSBAR_PROVIDERS	PASS	capture	
+boot.deprecated-env|BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE	PASS	capture	
+boot.deprecated-env|BUSBAR_UPSTREAM_HTTP1_ONLY	PASS	capture	
+boot.deprecated-env|BUSBAR_WORKER_THREADS	PASS	capture	
 boot.refusal|BOOT-001|validate	PASS	exit 1; 	
 boot.refusal|BOOT-002|validate	PASS	exit 1; 	
 boot.refusal|BOOT-003|validate	PASS	exit 1; 	
@@ -1188,6 +1193,13 @@ egress.auth|login-hop|oidc	PASS	capture
 egress.auth|oauth-cc|mint-refresh	PASS	capture	
 egress.auth|sigv4|session-token	PASS	capture	
 egress.fetch|plugins|url	PASS	capture	
+egress.headers|forwarded|anthropic-beta	PASS	capture	
+egress.headers|forwarded|anthropic-beta-cross	PASS	capture	
+egress.headers|forwarded|openai-beta	PASS	capture	
+egress.image-detail|high|anthropic	PASS	capture	
+egress.image-detail|high|bedrock	PASS	capture	
+egress.image-detail|high|gemini	PASS	capture	
+egress.image-detail|high|openai	PASS	capture	
 export|prometheus|raw	PASS	capture	
 export|request-log-file|jsonl	PASS	capture	
 export|request-log-webhook|loopback-refused	PASS	capture	
@@ -2285,6 +2297,8 @@ mcp|streamable-http|server|server|sampling/createMessage|out_of_scope	SKIP	UNSUP
 mcp|streamable-http|server|server|sampling/createMessage|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|server|sampling/createMessage|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|server|sampling/createMessage|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+money.reserved-tier|absent|anthropic-cache	PASS	capture	
+money.reserved-tier|absent|openai-cached	PASS	capture	
 neutrality|NEUT-U-auth|validate	PASS	exit 1; 	
 neutrality|NEUT-U-export|validate	PASS	exit 1; 	
 neutrality|NEUT-U-groups|validate	PASS	exit 1; 	
@@ -2319,6 +2333,7 @@ ops.scrape|v1models|anthropic-fp	PASS	HTTP 200; usage Δ {}
 ops.scrape|v1models|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1models|openai-fp	PASS	HTTP 200; usage Δ {}	
 ops.scrape|v1models|x-api-key	PASS	HTTP 200; usage Δ {}	
+plugins.abi|json-contract|store-sqlite	PASS	capture	
 plugins.load|auth-github	PASS	script plugin-list.sh: status 0	
 plugins.load|auth-ldap	PASS	script plugin-list.sh: status 0	
 plugins.load|auth-oidc	PASS	script plugin-list.sh: status 0	
@@ -2372,6 +2387,11 @@ teller|exit-terminal	PASS	script teller-exit-terminal.sh: status 0
 teller|meter-row	PASS	script teller-meter-row.sh: status 0	
 teller|route-failover	PASS	script teller-route-failover.sh: status 0	
 teller|verify-refusal	PASS	script teller-verify-refusal.sh: status 0	
+usage.gemini|cached-content|subtractive	PASS	capture	
+usage.gemini|stream-grounded|no-tool-use-count	PASS	capture	
+usage.gemini|stream-truncated|recovery	PASS	capture	
+usage.gemini|tool-use|total-billed	PASS	capture	
+usage.gemini|tool-use|total-not-a-sum	PASS	capture	
 webrequest|gate|abstain	PASS	capture	
 webrequest|gate|order	PASS	capture	
 webrequest|gate|prompt-ro	PASS	capture	

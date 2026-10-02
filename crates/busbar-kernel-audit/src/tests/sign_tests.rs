@@ -1018,7 +1018,7 @@ fn a_tampered_checkpoint_body_refuses_with_the_bad_signature_text() {
 #[test]
 fn a_checkpoint_signature_and_a_record_signature_cannot_stand_in_for_each_other() {
     let key = signer();
-    let digest_hex = crate::legacy::sha256_hex(CHECKPOINT_BODY);
+    let digest_hex = crate::digest::sha256_hex(CHECKPOINT_BODY);
     let mut keys = AuditKeySet::new();
     keys.insert_signer(&key);
     // A record signature over the checkpoint body's digest does not verify as a checkpoint.

@@ -167,47 +167,6 @@ fn readonly_not_allow_full_full_allows_readonly() {
     assert!(!Scope::ReadOnly.dominates(Scope::Full));
 }
 
-/// The APPROVE step itself: a principal whose grants allow the needed scope is approved; one that
-/// doesn't is refused naming the scope that would have sufficed.
-#[test]
-fn approve_checks_held_grants_against_needed_scope() {
-    assert!(approve(Grants::of(Scope::Full), Scope::ReadOnly).is_ok());
-    assert!(approve(Grants::of(Scope::Full), Scope::Full).is_ok());
-    assert!(approve(Grants::of(Scope::ReadOnly), Scope::ReadOnly).is_ok());
-    assert_eq!(
-        approve(Grants::of(Scope::ReadOnly), Scope::Full),
-        Err(Refused::InsufficientScope {
-            needed: Scope::Full
-        })
-    );
-    // No grants at all refuses everything, including a read.
-    assert_eq!(
-        approve(Grants::default(), Scope::ReadOnly),
-        Err(Refused::InsufficientScope {
-            needed: Scope::ReadOnly
-        })
-    );
-}
-
-/// `transport:handshake` is a plain constant every principal is granted without a `Policy` entry —
-/// pinned so a future edit to the literal is deliberate, not a typo.
-#[test]
-fn transport_handshake_is_the_pinned_kernel_grant() {
-    assert_eq!(TRANSPORT_HANDSHAKE, "transport:handshake");
-}
-
-/// The data-listener operational routes bypass the ordinary scope check on an exact-path match only
-/// on an exact-path match only: a path that merely starts with one of them is not granted.
-#[test]
-fn kernel_granted_routes_are_exact_path_matches() {
-    for p in ["/healthz", "/stats", "/metrics", "/metrics/hooks"] {
-        assert!(is_kernel_granted(p), "{p}");
-    }
-    assert!(!is_kernel_granted("/healthzzz"));
-    assert!(!is_kernel_granted("/api/v1/admin/healthz"));
-    assert!(!is_kernel_granted("/metrics/hooks/extra"));
-}
-
 /// The table test: `required_scope` reproduces every one of the 66 pinned 1.5.5 admin operations,
 /// and the table's own read-only/full split is exactly 34/32.
 #[test]

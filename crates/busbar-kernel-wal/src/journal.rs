@@ -439,12 +439,6 @@ impl JournalRecord {
     pub fn identity(&self) -> (u64, u64) {
         (self.node, self.node_seq)
     }
-
-    /// This record's chain hash in hexadecimal, for a report or a comparison a person reads.
-    #[must_use]
-    pub fn hash_hex(&self) -> String {
-        hex(&self.hash)
-    }
 }
 
 /// The digest of a body.

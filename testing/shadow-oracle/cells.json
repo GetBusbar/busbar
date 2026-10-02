@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2484,
+    "total": 2504,
     "by_plane": {
       "a2a": 468,
-      "core": 955,
+      "core": 975,
       "llm": 149,
       "mcp": 912
     },
@@ -68,6 +68,7 @@
       "admin.plugins": 7,
       "auth.lifecycle": 3,
       "billing": 14,
+      "boot.deprecated-env": 5,
       "boot.refusal": 207,
       "boot.warning": 31,
       "cli": 14,
@@ -79,6 +80,8 @@
       "documented": 28,
       "egress.auth": 12,
       "egress.fetch": 1,
+      "egress.headers": 3,
+      "egress.image-detail": 4,
       "export": 3,
       "hazard": 2,
       "hooks": 10,
@@ -86,10 +89,12 @@
       "ledger": 5,
       "llm.wire": 142,
       "mcp": 913,
+      "money.reserved-tier": 2,
       "neutrality": 18,
       "ops.raw": 1,
       "ops.scrape": 15,
       "plugins": 14,
+      "plugins.abi": 1,
       "queue": 2,
       "route.529": 2,
       "route.cheapest": 1,
@@ -97,6 +102,7 @@
       "store.boot": 11,
       "streams": 7,
       "teller": 7,
+      "usage.gemini": 5,
       "webrequest": 8,
       "wire.h1": 3,
       "wire.h2": 4,
@@ -12286,6 +12292,379 @@
       "why": "TWO complete rate cards written into ONE window (10x, then 100x + a 3-cent per_request_fee), with a chat before the first, between the two and after the second, and GET /api/v1/admin/usage read after EACH write. RECORDED TRUTH (published 1.5.5, binary 48e2800c): both PUTs are 200, all three chats are 200, and the three reads total 25,000,000 / 500,060,000 / 750,090,000 micro-units \u2014 every read prices the ENTIRE window at the card in force at READ time. The arithmetic says so unambiguously: chat1 ALONE reads back at 25,000,000 (one request at CARD A) when it was earned at 2,500,000 under the boot card, and by the final read all three requests sit at 250,030,000 each. Priced-at-charge would have given 2,500,000 / 27,500,000 / 277,530,000 \u2014 no leading digit in common \u2014 so the reading is measured, not inferred. THE CONSEQUENCE, which is the finding: the first request is reported at THREE different prices over the life of ONE window, so an invoice read off this endpoint stops being reproducible from it the moment a rate is corrected, and the number depends only on when you looked. This is the cell the 1.6.0 divergence is judged on (the money-as-a-lookup binding): under the dated rate-card history the two pre-edit requests keep the boot and 10x cards, the final answer becomes 277,530,000, and ONLY the final read moves \u2014 the two earlier reads were already the honest figure at their own instant and stay byte-identical. The script driver, not `pre`, because a `pre` request's response is never recorded (record.sh run_pre_request checks only that busbar ANSWERED) and this cell's finding is the relation between the three reads, not any one of them."
     },
     {
+      "id": "boot.deprecated-env|BUSBAR_CONFIG_OVERLAY",
+      "plane": "core",
+      "family": "boot.deprecated-env",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-deprecated-env-0001",
+          "BUSBAR_CONFIG_OVERLAY": "{WORK}/overlay.yaml"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ]
+        ],
+        "files": {
+          "overlay.yaml": "{}\n"
+        }
+      },
+      "why": "TODO item 582: the node boots with the 1.5.x environment override `BUSBAR_CONFIG_OVERLAY={WORK}/overlay.yaml` set (replaced by `config.overlay.file`); 1.6.0 warns DEPRECATED_ENV_VAR_HONORED. Recorded: every warning line the node logged through one served chat (RUST_LOG=warn), from 1.5.5 and the candidate, so whether the warning line is NEW is measured, not assumed"
+    },
+    {
+      "id": "boot.deprecated-env|BUSBAR_PROVIDERS",
+      "plane": "core",
+      "family": "boot.deprecated-env",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-deprecated-env-0001",
+          "BUSBAR_PROVIDERS": "{WORK}/providers.yaml"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ]
+        ]
+      },
+      "why": "TODO item 582: the node boots with the 1.5.x environment override `BUSBAR_PROVIDERS={WORK}/providers.yaml` set (replaced by `providers_file`); 1.6.0 warns DEPRECATED_ENV_VAR_HONORED. Recorded: every warning line the node logged through one served chat (RUST_LOG=warn), from 1.5.5 and the candidate, so whether the warning line is NEW is measured, not assumed"
+    },
+    {
+      "id": "boot.deprecated-env|BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
+      "plane": "core",
+      "family": "boot.deprecated-env",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-deprecated-env-0001",
+          "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE": "false"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ]
+        ]
+      },
+      "why": "TODO item 582: the node boots with the 1.5.x environment override `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE=false` set (replaced by `advanced.upstream_h2_prior_knowledge`); 1.6.0 warns DEPRECATED_ENV_VAR_HONORED. Recorded: every warning line the node logged through one served chat (RUST_LOG=warn), from 1.5.5 and the candidate, so whether the warning line is NEW is measured, not assumed"
+    },
+    {
+      "id": "boot.deprecated-env|BUSBAR_UPSTREAM_HTTP1_ONLY",
+      "plane": "core",
+      "family": "boot.deprecated-env",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-deprecated-env-0001",
+          "BUSBAR_UPSTREAM_HTTP1_ONLY": "true"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ]
+        ]
+      },
+      "why": "TODO item 582: the node boots with the 1.5.x environment override `BUSBAR_UPSTREAM_HTTP1_ONLY=true` set (replaced by `advanced.upstream_http1_only`); 1.6.0 warns DEPRECATED_ENV_VAR_HONORED. Recorded: every warning line the node logged through one served chat (RUST_LOG=warn), from 1.5.5 and the candidate, so whether the warning line is NEW is measured, not assumed"
+    },
+    {
+      "id": "boot.deprecated-env|BUSBAR_WORKER_THREADS",
+      "plane": "core",
+      "family": "boot.deprecated-env",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-deprecated-env-0001",
+          "BUSBAR_WORKER_THREADS": "2"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ]
+        ]
+      },
+      "why": "TODO item 582: the node boots with the 1.5.x environment override `BUSBAR_WORKER_THREADS=2` set (replaced by its config.yaml key); 1.6.0 warns DEPRECATED_ENV_VAR_HONORED. Recorded: every warning line the node logged through one served chat (RUST_LOG=warn), from 1.5.5 and the candidate, so whether the warning line is NEW is measured, not assumed"
+    },
+    {
       "id": "boot.refusal|BOOT-001|validate",
       "plane": "core",
       "family": "boot.refusal",
@@ -20841,6 +21220,507 @@
         }
       },
       "why": "a `plugins.fetch: [{ url, sha256 }]` entry at boot: the download GET busbar sends (1.5.5's `Client::new().get()` \u2014 method, target, every header in wire order, the client's own defaults included), then, the body not hashing to the pin, the fatal boot refusal (fatal-on-miss at boot) and its exit code. The connector/http-door move of the kernel egress is compared against this."
+    },
+    {
+      "id": "egress.headers|forwarded|anthropic-beta",
+      "plane": "core",
+      "family": "egress.headers",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: anthropic\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-forwarded-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/messages",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "anthropic-version",
+                  "2023-06-01"
+                ],
+                [
+                  "anthropic-beta",
+                  "prompt-caching-2024-07-31"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "TODO item 581 (#76, ruled 2026-09-04): an anthropic client sending `anthropic-beta` (and `anthropic-version`) to an anthropic provider. The allow-listed client headers (`anthropic-beta`, `anthropic-version`, `OpenAI-Beta`) ride upstream in 1.6.0; the upstream request is recorded byte for byte from 1.5.5 and the candidate, so the register entry's premise is a diff, not a claim"
+    },
+    {
+      "id": "egress.headers|forwarded|anthropic-beta-cross",
+      "plane": "core",
+      "family": "egress.headers",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-forwarded-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/messages",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "anthropic-version",
+                  "2023-06-01"
+                ],
+                [
+                  "anthropic-beta",
+                  "prompt-caching-2024-07-31"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "TODO item 581 (#76, ruled 2026-09-04): an ANTHROPIC client carrying `anthropic-beta` to an OPENAI provider (cross-dialect: the header must not ride). The allow-listed client headers (`anthropic-beta`, `anthropic-version`, `OpenAI-Beta`) ride upstream in 1.6.0; the upstream request is recorded byte for byte from 1.5.5 and the candidate, so the register entry's premise is a diff, not a claim"
+    },
+    {
+      "id": "egress.headers|forwarded|openai-beta",
+      "plane": "core",
+      "family": "egress.headers",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-forwarded-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "OpenAI-Beta",
+                  "assistants=v2"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "TODO item 581 (#76, ruled 2026-09-04): an openai client sending `OpenAI-Beta` to an openai provider. The allow-listed client headers (`anthropic-beta`, `anthropic-version`, `OpenAI-Beta`) ride upstream in 1.6.0; the upstream request is recorded byte for byte from 1.5.5 and the candidate, so the register entry's premise is a diff, not a claim"
+    },
+    {
+      "id": "egress.image-detail|high|anthropic",
+      "plane": "core",
+      "family": "egress.image-detail",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: anthropic\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-detail-anthropic-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\",\"detail\":\"high\"}}]}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ]
+        ]
+      },
+      "why": "TODO item 585 (#76): an openai chat whose image part says `detail: high`, sent to a anthropic provider; the anthropic writer has no image `detail`. Recorded: the upstream request byte for byte (does the field vanish, and does anything else move), the caller's status, and the warning lines the node logged (RUST_LOG=warn), from 1.5.5 and the candidate"
+    },
+    {
+      "id": "egress.image-detail|high|bedrock",
+      "plane": "core",
+      "family": "egress.image-detail",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: bedrock\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "AKIDORACLEDETAIL0001:oracle/detail+secret/0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\",\"detail\":\"high\"}}]}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "\\d{8}T\\d{6}Z",
+            "<AMZ-DATE>"
+          ],
+          [
+            "Signature=[0-9a-f]{64}",
+            "Signature=<SIGNATURE>"
+          ],
+          [
+            "/\\d{8}/",
+            "/<DATE>/"
+          ]
+        ],
+        "sigv4": {
+          "secret": "oracle/detail+secret/0001"
+        }
+      },
+      "why": "TODO item 585 (#76): an openai chat whose image part says `detail: high`, sent to a bedrock provider; the bedrock converse writer has no image `detail` (SigV4 parts masked and proven, as in egress.auth). Recorded: the upstream request byte for byte (does the field vanish, and does anything else move), the caller's status, and the warning lines the node logged (RUST_LOG=warn), from 1.5.5 and the candidate"
+    },
+    {
+      "id": "egress.image-detail|high|gemini",
+      "plane": "core",
+      "family": "egress.image-detail",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: gemini\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-detail-gemini-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\",\"detail\":\"high\"}}]}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ]
+        ]
+      },
+      "why": "TODO item 585 (#76): an openai chat whose image part says `detail: high`, sent to a gemini provider; the gemini writer has no image `detail`. Recorded: the upstream request byte for byte (does the field vanish, and does anything else move), the caller's status, and the warning lines the node logged (RUST_LOG=warn), from 1.5.5 and the candidate"
+    },
+    {
+      "id": "egress.image-detail|high|openai",
+      "plane": "core",
+      "family": "egress.image-detail",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-detail-openai-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\",\"detail\":\"high\"}}]}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ]
+        ]
+      },
+      "why": "TODO item 585 (#76): an openai chat whose image part says `detail: high`, sent to a openai provider; CONTROL: the chat writer carries `detail`, so the field is on the wire here. Recorded: the upstream request byte for byte (does the field vanish, and does anything else move), the caller's status, and the warning lines the node logged (RUST_LOG=warn), from 1.5.5 and the candidate"
     },
     {
       "id": "export|prometheus|raw",
@@ -33787,6 +34667,172 @@
       "why": "upstream refuses/times out -> Route failover / native upstream error"
     },
     {
+      "id": "money.reserved-tier|absent|anthropic-cache",
+      "plane": "core",
+      "family": "money.reserved-tier",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: anthropic\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 1000000, output_utok: 2000000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-reserved-tier-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1/messages",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"id\":\"msg_cap_0001\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m-cap\",\"content\":[{\"type\":\"text\",\"text\":\"pong\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":20,\"cache_read_input_tokens\":50,\"output_tokens\":5}}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "TODO item X-235 (`reserved-tier-absent-is-zero`, Q92): a card that prices ONLY input and output (`cache_read_utok` / `cache_write_utok` absent) and an anthropic answer reporting 50 cache-read and 20 cache-write tokens. 1.5.5 prices an absent reserved tier at 0, the one scoped exception to #77(5): the cache token columns are counted and add nothing to spend_micros. The upstream answer is FIXED by the cell."
+    },
+    {
+      "id": "money.reserved-tier|absent|openai-cached",
+      "plane": "core",
+      "family": "money.reserved-tier",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 1000000, output_utok: 2000000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-reserved-tier-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1/chat/completions",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"id\":\"chatcmpl-cap0001\",\"object\":\"chat.completion\",\"created\":1700000000,\"model\":\"m-cap\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":60,\"completion_tokens\":5,\"total_tokens\":65,\"prompt_tokens_details\":{\"cached_tokens\":50}}}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "TODO item X-235: the same card against an openai answer whose `prompt_tokens_details.cached_tokens` (50) is a subset of `prompt_tokens` (60): how 1.5.5 splits the input and what the absent cache-read tier bills. The upstream answer is FIXED by the cell."
+    },
+    {
       "id": "neutrality|NEUT-U-auth|validate",
       "plane": "core",
       "family": "neutrality",
@@ -34507,6 +35553,100 @@
         "listener": "data"
       },
       "why": "x-api-key is NOT a rung for /v1/models"
+    },
+    {
+      "id": "plugins.abi|json-contract|store-sqlite",
+      "plane": "core",
+      "family": "plugins.abi",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: sqlite\n  settings: { db_path: \"{WORK}/governance.db\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-json-plugin-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ],
+        "plugins": [
+          "store-sqlite"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 15
+        }
+      },
+      "why": "ABI-o1 (spec \u00a711.8): the PUBLISHED store-sqlite v1.0.6 (built against the 1.5.5 JSON plugin contract) staged and named by the config. 1.5.5 loads it and serves; 1.6.0's boot is to REFUSE it, naming the rebuild. Recorded: the boot's exit code within 15 s and every log line (timestamps, ports, the work dir and D-1's code masked); a boot that does NOT exit is serving, so the steps then drive the plugin's JSON contract (a key minted = a store write through the plugin, a served chat = a usage posting, the usage read = a store read back) \u2014 from 1.5.5 and the candidate, the bytes the `breaking` register entry rests on"
     },
     {
       "id": "plugins.load|auth-github",
@@ -36554,6 +37694,451 @@
       "outcome": "ok",
       "weight": 10,
       "why": "step 2 VERIFY: a credential whose allowed_pools excludes the target pool is refused before step 4 ADMIT ever draws a bucket -- native 403, zero egress, zero usage delta"
+    },
+    {
+      "id": "usage.gemini|cached-content|subtractive",
+      "plane": "core",
+      "family": "usage.gemini",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: gemini\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 1000000, output_utok: 2000000, cache_read_utok: 100000, cache_write_utok: 1250000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-usage-gemini-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1beta/models/m-cap%3AgenerateContent",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"pong\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":100,\"cachedContentTokenCount\":60,\"candidatesTokenCount\":10,\"totalTokenCount\":110},\"modelVersion\":\"m-cap\"}"
+            },
+            {
+              "path": "/v1beta/models/m-cap:generateContent",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"pong\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":100,\"cachedContentTokenCount\":60,\"candidatesTokenCount\":10,\"totalTokenCount\":110},\"modelVersion\":\"m-cap\"}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "TODO item 605(b): `cachedContentTokenCount` (60) is a SUBSET of `promptTokenCount` (100). The codec's subtractive normalization (40 uncached input + 60 cache read) is checked against the bytes 1.5.5 billed: the input and cache-read token columns and spend_micros under a card that prices every reserved tier differently. The upstream answer is FIXED by the cell (the capture mock), so the recording varies only with the build under test."
+    },
+    {
+      "id": "usage.gemini|stream-grounded|no-tool-use-count",
+      "plane": "core",
+      "family": "usage.gemini",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: gemini\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 1000000, output_utok: 2000000, cache_read_utok: 100000, cache_write_utok: 1250000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-usage-gemini-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1beta/models/m-cap%3AstreamGenerateContent",
+              "status": 200,
+              "content_type": "text/event-stream",
+              "body": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"po\"}],\"role\":\"model\"},\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":18,\"totalTokenCount\":18},\"modelVersion\":\"m-cap\"}\r\n\r\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ng\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0,\"groundingMetadata\":{\"webSearchQueries\":[\"ping\"]}}],\"usageMetadata\":{\"promptTokenCount\":18,\"candidatesTokenCount\":7,\"totalTokenCount\":57},\"modelVersion\":\"m-cap\"}\r\n\r\n"
+            },
+            {
+              "path": "/v1beta/models/m-cap:streamGenerateContent",
+              "status": 200,
+              "content_type": "text/event-stream",
+              "body": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"po\"}],\"role\":\"model\"},\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":18,\"totalTokenCount\":18},\"modelVersion\":\"m-cap\"}\r\n\r\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ng\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0,\"groundingMetadata\":{\"webSearchQueries\":[\"ping\"]}}],\"usageMetadata\":{\"promptTokenCount\":18,\"candidatesTokenCount\":7,\"totalTokenCount\":57},\"modelVersion\":\"m-cap\"}\r\n\r\n"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "TODO item 605(a): a STREAMED grounded turn. Google reports `toolUsePromptTokenCount` on no frame; the final frame's `totalTokenCount` (57) exceeds prompt + candidates (25) by the 32 hidden tool-use tokens. What 1.5.5 bills from the stream, and the final usage chunk the caller receives (`stream_options.include_usage`), are recorded. The upstream answer is FIXED by the cell (the capture mock), so the recording varies only with the build under test."
+    },
+    {
+      "id": "usage.gemini|stream-truncated|recovery",
+      "plane": "core",
+      "family": "usage.gemini",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: gemini\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 1000000, output_utok: 2000000, cache_read_utok: 100000, cache_write_utok: 1250000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-usage-gemini-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1beta/models/m-cap%3AstreamGenerateContent",
+              "status": 200,
+              "content_type": "text/event-stream",
+              "body": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"po\"}],\"role\":\"model\"},\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":18,\"totalTokenCount\":18},\"modelVersion\":\"m-cap\"}\r\n\r\n"
+            },
+            {
+              "path": "/v1beta/models/m-cap:streamGenerateContent",
+              "status": 200,
+              "content_type": "text/event-stream",
+              "body": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"po\"}],\"role\":\"model\"},\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":18,\"totalTokenCount\":18},\"modelVersion\":\"m-cap\"}\r\n\r\n"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "TODO item 605(c): a stream that ENDS without a final frame (no finishReason, no candidatesTokenCount, the connection closes after the first chunk). The truncated-recovery path runs no identity cross-check; what the caller receives and what is billed are recorded from 1.5.5 and the candidate. The upstream answer is FIXED by the cell (the capture mock), so the recording varies only with the build under test."
+    },
+    {
+      "id": "usage.gemini|tool-use|total-billed",
+      "plane": "core",
+      "family": "usage.gemini",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: gemini\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 1000000, output_utok: 2000000, cache_read_utok: 100000, cache_write_utok: 1250000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-usage-gemini-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1beta/models/m-cap%3AgenerateContent",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"pong\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":18,\"candidatesTokenCount\":7,\"toolUsePromptTokenCount\":32,\"totalTokenCount\":57},\"modelVersion\":\"m-cap\"}"
+            },
+            {
+              "path": "/v1beta/models/m-cap:generateContent",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"pong\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":18,\"candidatesTokenCount\":7,\"toolUsePromptTokenCount\":32,\"totalTokenCount\":57},\"modelVersion\":\"m-cap\"}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "TODO item 576 (`gemini-tool-use-billing`, Q91): a Gemini answer whose usageMetadata carries `toolUsePromptTokenCount` (32) BESIDE `promptTokenCount` (18) and `candidatesTokenCount` (7), with Google's `totalTokenCount` = 57 = their sum. The owner ruled (2026-09-07) that the turn bills Google's total; what 1.5.5 billed (the token columns and spend_micros of GET /admin/usage) and what the caller is told (the openai `usage` block) are recorded so the ruling's registered difference rests on bytes. The upstream answer is FIXED by the cell (the capture mock), so the recording varies only with the build under test."
+    },
+    {
+      "id": "usage.gemini|tool-use|total-not-a-sum",
+      "plane": "core",
+      "family": "usage.gemini",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: gemini\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 1000000, output_utok: 2000000, cache_read_utok: 100000, cache_write_utok: 1250000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-usage-gemini-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1beta/models/m-cap%3AgenerateContent",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"pong\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":18,\"candidatesTokenCount\":7,\"toolUsePromptTokenCount\":32,\"totalTokenCount\":64},\"modelVersion\":\"m-cap\"}"
+            },
+            {
+              "path": "/v1beta/models/m-cap:generateContent",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"pong\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":18,\"candidatesTokenCount\":7,\"toolUsePromptTokenCount\":32,\"totalTokenCount\":64},\"modelVersion\":\"m-cap\"}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "TODO item 576: the identity note's case. `totalTokenCount` (64) is NOT prompt + candidates + toolUsePrompt (57): Google also counts tokens no other field names (thinking, grounding). Which total bills, and whether the caller's `usage` adds up, is recorded from 1.5.5 and the candidate; the codec's `usage_identity_note` is computed for exactly this and read by nothing. The upstream answer is FIXED by the cell (the capture mock), so the recording varies only with the build under test."
     },
     {
       "id": "webrequest|gate|abstain",

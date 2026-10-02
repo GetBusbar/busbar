@@ -262,6 +262,11 @@ billing|key-usage|noscope-after-403
 billing|key-usage|refund-across-window
 billing|rate-card|epoch-mid-window
 billing|rate-card|history-mid-window
+boot.deprecated-env|BUSBAR_CONFIG_OVERLAY
+boot.deprecated-env|BUSBAR_PROVIDERS
+boot.deprecated-env|BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE
+boot.deprecated-env|BUSBAR_UPSTREAM_HTTP1_ONLY
+boot.deprecated-env|BUSBAR_WORKER_THREADS
 boot.refusal|BOOT-001|validate
 boot.refusal|BOOT-002|validate
 boot.refusal|BOOT-003|validate
@@ -710,6 +715,13 @@ egress.auth|login-hop|oidc
 egress.auth|oauth-cc|mint-refresh
 egress.auth|sigv4|session-token
 egress.fetch|plugins|url
+egress.headers|forwarded|anthropic-beta
+egress.headers|forwarded|anthropic-beta-cross
+egress.headers|forwarded|openai-beta
+egress.image-detail|high|anthropic
+egress.image-detail|high|bedrock
+egress.image-detail|high|gemini
+egress.image-detail|high|openai
 export|prometheus|raw
 export|request-log-file|jsonl
 export|request-log-webhook|loopback-refused
@@ -884,6 +896,8 @@ llm|responses|responses|request|over_budget
 llm|responses|responses|request|over_budget_total
 llm|responses|responses|request|unauthenticated
 llm|responses|responses|request|upstream_down
+money.reserved-tier|absent|anthropic-cache
+money.reserved-tier|absent|openai-cached
 neutrality|boot-lines
 neutrality|metrics-no-plane-series
 neutrality|metrics-series
@@ -918,6 +932,7 @@ ops.scrape|v1models|none
 ops.scrape|v1models|openai-fp
 ops.scrape|v1models|x-api-key
 ops.scrape|v1modelsid|retrieve
+plugins.abi|json-contract|store-sqlite
 plugins.load|auth-github
 plugins.load|auth-ldap
 plugins.load|auth-oidc
@@ -971,6 +986,11 @@ teller|exit-terminal
 teller|meter-row
 teller|route-failover
 teller|verify-refusal
+usage.gemini|cached-content|subtractive
+usage.gemini|stream-grounded|no-tool-use-count
+usage.gemini|stream-truncated|recovery
+usage.gemini|tool-use|total-billed
+usage.gemini|tool-use|total-not-a-sum
 webrequest|gate|abstain
 webrequest|gate|order
 webrequest|gate|prompt-ro

@@ -359,11 +359,23 @@ CONTROL_B3 = [
 
 CONTROL = CONTROL_B1
 
+# BATCH 3'S MEASURED RESIDUE: the phrases (by index into CONTROL_B3) that fell through on its
+# first, untuned run. They are the detector's honest miss rate, reported every run and never
+# tuned against. They are pinned here so the exit code can mean something: a batch-3 phrase
+# that is caught today and falls through tomorrow is a regression (red), and a pinned phrase
+# that is caught today means a shape widened past it, so its pin is stale (red until struck).
+# The set only shrinks. Before this pin the residue counted as a failure, so `--selftest`
+# exited 1 on every tree since the batch was written and no change could ever turn it green
+# without tuning against the batch that exists to be untuned.
+B3_RESIDUE = {0, 2, 3, 4}
+
 
 def selftest() -> int:
-    r1 = _run_control("BATCH 1 — used to widen the shape set (regression test)", CONTROL_B1)
-    r2 = _run_control("BATCH 2 — drove the four shape families marked 'tuned-against' above", CONTROL_B2)
-    r3 = _run_control("BATCH 3 — written after ALL widening, NEVER used to tune anything", CONTROL_B3)
+    r1, _ = _run_control("BATCH 1 — used to widen the shape set (regression test)", CONTROL_B1)
+    r2, _ = _run_control("BATCH 2 — drove the four shape families marked 'tuned-against' above", CONTROL_B2)
+    r3, missed3 = _run_control("BATCH 3 — written after ALL widening, NEVER used to tune anything", CONTROL_B3)
+    regressed = sorted(set(missed3) - B3_RESIDUE)
+    stale = sorted(B3_RESIDUE - set(missed3))
     print("=" * 89)
     if r3:
         print(f"BATCH 3 (the untuned one): {r3} of {len(CONTROL_B3)} fell through.")
@@ -373,15 +385,20 @@ def selftest() -> int:
         print("that turns the detector back into a transcript of what it was shown.")
     else:
         print("BATCH 3 (the untuned one): every control phrase was caught at or above its layer.")
-    return 1 if (r1 or r2 or r3) else 0
+    for i in regressed:
+        print(f"RED: batch-3 phrase {i} was caught and now falls through: {CONTROL_B3[i][0]}")
+    for i in stale:
+        print(f"RED: batch-3 phrase {i} is pinned as residue and is now caught; strike {i} from B3_RESIDUE")
+    return 1 if (r1 or r2 or regressed or stale) else 0
 
 
-def _run_control(title: str, cases: list[tuple[str, str]]) -> int:
+def _run_control(title: str, cases: list[tuple[str, str]]) -> tuple[int, list[int]]:
     print("=" * 89)
     print(title)
     print("=" * 89 + "\n")
     bad = 0
-    for text, want in cases:
+    missed: list[int] = []
+    for idx, (text, want) in enumerate(cases):
         l1 = sorted({name for name, rx in COMPILED if rx.search(text)})
         l2 = layer2_hit(text)
         if l1:
@@ -391,12 +408,14 @@ def _run_control(title: str, cases: list[tuple[str, str]]) -> int:
             print(f"  {tag}  {l2}\n     {text}")
             if want == "1":
                 bad += 1
+                missed.append(idx)
         else:
             print(f"  ** MISSED BY BOTH LAYERS **\n     {text}")
             bad += 1
+            missed.append(idx)
         print()
     print(f"-> {len(cases) - bad}/{len(cases)} caught at or above the expected layer\n")
-    return bad
+    return bad, missed
 
 
 if __name__ == "__main__":

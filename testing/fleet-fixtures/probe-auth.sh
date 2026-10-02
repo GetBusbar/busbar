@@ -38,7 +38,8 @@ declaw "$BUSBAR_BIN"
 WORK="$(mktemp -d "${RUNNER_TEMP:-/tmp}/probe-auth-XXXXXX")"
 MARKER="fleet-fixture-auth-${ALIAS}-$$-${RANDOM}"
 SUB="probe-user-${RANDOM}"
-ISSUER="http://127.0.0.1:${IDP_PORT}/"
+IDP_CERT="${WORK}/idp-cert.pem"
+ISSUER="https://127.0.0.1:${IDP_PORT}/"
 AUDIENCE="busbar-fleet-fixture"
 GROUP_VALUE="fixture-eng"
 for p in "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" "$IDP_PORT"; do
@@ -47,9 +48,10 @@ done
 
 python3 mock-upstream.py "$MOCK_PORT" "$MARKER" >/dev/null 2>&1 &
 track_pid $!
-python3 stub-idp.py "$IDP_PORT" "http://127.0.0.1:${IDP_PORT}" "$ISSUER" "$AUDIENCE" "$SUB" groups "$GROUP_VALUE" >/dev/null 2>&1 &
+python3 stub-idp.py "$IDP_PORT" "https://127.0.0.1:${IDP_PORT}" "$ISSUER" "$AUDIENCE" "$SUB" groups "$GROUP_VALUE" "$IDP_CERT" >/dev/null 2>&1 &
 track_pid $!
-wait_for_http "http://127.0.0.1:${IDP_PORT}/jwks" 8 || fail_here "the stub IdP fixture did not come up" "port ${IDP_PORT}; openssl key generation may have failed."
+idp_up() { for _ in 1 2 3 4 5 6 7 8; do curl -fsSk -m 3 -o /dev/null "https://127.0.0.1:${IDP_PORT}/jwks" 2>/dev/null && return 0; sleep 1; done; return 1; }
+idp_up || fail_here "the stub IdP fixture did not come up" "port ${IDP_PORT}; openssl key generation may have failed."
 
 "$BUSBAR_BIN" --generate-signing-key >"${WORK}/signing.key" 2>/dev/null
 [ -s "${WORK}/signing.key" ] || fail_here "busbar --generate-signing-key produced no key" "the keys verifier cannot be configured."
@@ -63,6 +65,8 @@ EOF
 # The provider under test in auth.chain, issuer pointed at the stub, role_binding mapping the token's
 # group to a budgeted team so /auth/token can mint a self-scoped key. keys stays in the chain so the
 # minted key is then usable on the data plane.
+# The stub serves HTTPS (the plugin is https-only); its certificate is the plugin's ca_cert_pem.
+CA_PEM="$(awk '{printf "%s\\n", $0}' "$IDP_CERT")"
 cat >"${WORK}/config.yaml" <<EOF
 listen: "127.0.0.1:${LISTEN_PORT}"
 admin_listen: "127.0.0.1:${ADMIN_PORT}"
@@ -81,6 +85,7 @@ identity-providers:
     settings:
       issuer: "${ISSUER}"
       audience: "${AUDIENCE}"
+      ca_cert_pem: "${CA_PEM}"
 auth:
   chain: [keys, ${ALIAS}]
   admin_auth: [admin-tokens]
@@ -122,8 +127,21 @@ if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
 fi
 
 # Get a fresh signed id_token from the stub IdP and present it to busbar's exchange.
-IDTOKEN="$(curl -fsS -m 30 "http://127.0.0.1:${IDP_PORT}/mint" 2>/dev/null || true)"
+IDTOKEN="$(curl -fsS -m 30 --cacert "$IDP_CERT" "https://127.0.0.1:${IDP_PORT}/mint" 2>/dev/null || true)"
 [ -n "$IDTOKEN" ] || fail_here "the stub IdP did not mint an id_token" "the credential exchange has nothing to present."
+
+# POSITIVE CONTROL: a token the verifier must refuse (signed by a key not in the JWKS, expired, wrong
+# audience) must NOT exchange for a key. A provider that accepts any of them is not verifying.
+for BAD in bad-signature expired wrong-audience; do
+  BADTOKEN="$(curl -fsS -m 30 --cacert "$IDP_CERT" "https://127.0.0.1:${IDP_PORT}/mint/${BAD}" 2>/dev/null || true)"
+  [ -n "$BADTOKEN" ] || fail_here "the stub IdP did not mint the ${BAD} control token" "the positive control has nothing to present."
+  BADEXCH="$(curl -sS -m 30 -X POST "http://127.0.0.1:${LISTEN_PORT}/auth/token" \
+    -H "Authorization: Bearer ${BADTOKEN}" 2>/dev/null || true)"
+  if [ -n "$(printf '%s' "$BADEXCH" | jq -r '.api_key // empty' 2>/dev/null)" ]; then
+    fail_here "the ${ALIAS} provider exchanged a ${BAD} token for a busbar key" \
+      "a verifier that accepts a ${BAD} credential is not verifying; the PASS path below would prove nothing."
+  fi
+done
 
 EXCH="$(curl -fsS -m 30 -X POST "http://127.0.0.1:${LISTEN_PORT}/auth/token" \
   -H "Authorization: Bearer ${IDTOKEN}" 2>/dev/null || true)"

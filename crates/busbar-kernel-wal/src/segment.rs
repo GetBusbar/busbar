@@ -21,7 +21,7 @@
 use std::io;
 
 use crate::backend::SegmentBackend;
-use crate::record::{Record, FRAME_BYTES};
+use crate::record::Record;
 
 /// How large one segment is allowed to get before the log rolls to the next one.
 pub const SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
@@ -209,10 +209,5 @@ impl Segment {
         self.backend.set_len(target)?;
         self.claimed = target;
         Ok(())
-    }
-
-    /// How many whole frames would fit in what is left before the ceiling.
-    pub fn frames_remaining(&self) -> u64 {
-        self.ceiling.saturating_sub(self.write_offset) / FRAME_BYTES as u64
     }
 }

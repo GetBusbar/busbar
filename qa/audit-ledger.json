@@ -13,10 +13,6 @@
    "reason": "crate manifest -- governed by workspace-deps-lint, not a code audit"
   },
   {
-   "glob": "crates/*/Cargo.lock",
-   "reason": "resolved lockfile -- governed by the build gates, not a code audit"
-  },
-  {
    "glob": "crates/*/fixtures/**",
    "reason": "fixture inputs a crate's own gate reads; not shipped code"
   },

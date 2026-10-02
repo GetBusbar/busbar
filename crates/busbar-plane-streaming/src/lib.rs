@@ -60,6 +60,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod broker;
 pub mod claims;
 // `#![deny(missing_docs)]` above is a rule this crate holds itself to; the `codec` module was not
 // written under it and is exempt, scoped to exactly this module.
@@ -75,6 +76,7 @@ pub mod plane;
 pub mod provider;
 pub mod register;
 pub mod session;
+pub mod session_params;
 pub mod session_row;
 pub mod tools;
 pub mod twilio;
