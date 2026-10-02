@@ -9,7 +9,7 @@
 //! a field can contain the separator, because a bar the caller put inside one field moves the
 //! boundary the join relies on.
 //!
-//! [`crate::record::AuditRecord`], the fixed record, is [`Framing::LengthPrefixed`]. Every field in
+//! [`busbar_kernel_audit::record::AuditRecord`], the fixed record, is [`Framing::LengthPrefixed`]. Every field in
 //! it can hold arbitrary caller-influenced text, so the boundary is made unforgeable. The properties
 //! the framing owes are stated here as tests rather than as prose:
 //!
@@ -22,8 +22,8 @@ use busbar_contract::caps::{
     Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, Pass, UnitKey,
 };
 
-use crate::digest::{Digest, Framing};
-use crate::record::{
+use busbar_kernel_audit::digest::{Digest, Framing};
+use busbar_kernel_audit::record::{
     Audit, AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, QuantitySource,
     Subject, Usage, UsageLine, What,
 };

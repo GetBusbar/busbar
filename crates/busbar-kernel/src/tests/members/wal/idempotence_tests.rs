@@ -22,9 +22,9 @@
 
 use busbar_contract::caps::StepName;
 
-use crate::record::{Record, FRAME_BYTES};
-use crate::ship::{NullShipper, ShipError, Shipper};
-use crate::wal::{Mode, Wal};
+use busbar_kernel_wal::record::{Record, FRAME_BYTES};
+use busbar_kernel_wal::ship::{NullShipper, ShipError, Shipper};
+use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, records, FaultyFactory};
 
@@ -43,7 +43,7 @@ fn on_disk_wal() -> Wal {
         Box::new(NullShipper::new()),
         Mode::OnDisk,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .expect("a healthy disk opens")
 }
@@ -267,7 +267,7 @@ fn an_on_disk_reappend_that_the_log_already_holds_offers_the_store_nothing() {
         Box::new(shipper),
         Mode::OnDisk,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .expect("a healthy disk opens");
     let token = durability_token();
@@ -329,7 +329,7 @@ fn a_retry_after_a_refused_ship_reoffers_the_debt_without_appending_again() {
         Box::new(shipper),
         Mode::MemoryBuffered,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .expect("a healthy disk opens");
     let token = durability_token();

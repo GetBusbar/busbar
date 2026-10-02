@@ -9,10 +9,10 @@
 
 use busbar_contract::caps::StepName;
 
-use crate::backend::MemoryFactory;
-use crate::record::FRAME_BYTES;
-use crate::ship::NullShipper;
-use crate::wal::{Mode, Wal};
+use busbar_kernel_wal::backend::MemoryFactory;
+use busbar_kernel_wal::record::FRAME_BYTES;
+use busbar_kernel_wal::ship::NullShipper;
+use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, records, FaultyFactory};
 
@@ -33,7 +33,7 @@ fn the_idempotence_check_costs_one_mark_per_node_not_one_entry_per_record() {
         Box::new(NullShipper::new()),
         Mode::OnDisk,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap();
     let token = durability_token();
@@ -72,7 +72,7 @@ fn a_memory_backed_log_keeps_only_the_segment_it_is_writing_to() {
         Box::new(NullShipper::new()),
         Mode::MemoryBuffered,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap();
     let token = durability_token();
@@ -116,7 +116,7 @@ fn a_bounded_idempotence_check_still_suppresses_a_re_offer_from_a_rolled_segment
         Box::new(NullShipper::new()),
         Mode::OnDisk,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap();
     let token = durability_token();

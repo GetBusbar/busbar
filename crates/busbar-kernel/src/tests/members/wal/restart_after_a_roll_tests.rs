@@ -16,13 +16,13 @@
 
 use busbar_contract::caps::StepName;
 
-use crate::backend::{DirectoryFactory, MemoryFactory, SegmentFactory as _};
-use crate::journal::{decode_run, verify, Entry, Journal, JournalRecord, RecordClass};
-use crate::record::{Record, FRAME_BYTES};
-use crate::recover::scan;
-use crate::segment::Segment;
-use crate::ship::NullShipper;
-use crate::wal::{Mode, Wal};
+use busbar_kernel_wal::backend::{DirectoryFactory, MemoryFactory, SegmentFactory as _};
+use busbar_kernel_wal::journal::{decode_run, verify, Entry, Journal, JournalRecord, RecordClass};
+use busbar_kernel_wal::record::{Record, FRAME_BYTES};
+use busbar_kernel_wal::recover::scan;
+use busbar_kernel_wal::segment::Segment;
+use busbar_kernel_wal::ship::NullShipper;
+use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, TempDir};
 
@@ -49,7 +49,7 @@ fn write(journal: &mut Journal, n: usize, tag: u8) {
 
 /// Every record in the log, oldest segment first — which is what "the chain" means once the log has
 /// more than one segment and no single segment holds all of it.
-fn whole_log(segments: Vec<Box<dyn crate::backend::SegmentBackend>>) -> Vec<Record> {
+fn whole_log(segments: Vec<Box<dyn busbar_kernel_wal::backend::SegmentBackend>>) -> Vec<Record> {
     let mut records = Vec::new();
     for backend in segments {
         let segment = Segment::open_at(backend, 0, 0, CEILING).expect("a segment opens");
@@ -213,7 +213,7 @@ fn open_over_dir(dir: &std::path::Path) -> Wal {
         Box::new(NullShipper::new()),
         Mode::OnDisk,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .expect("the log opens over its data directory")
 }
@@ -224,7 +224,7 @@ fn open_over_memory(factory: &MemoryFactory) -> Wal {
         Box::new(NullShipper::new()),
         Mode::MemoryBuffered,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .expect("a memory segment cannot fail to open")
 }

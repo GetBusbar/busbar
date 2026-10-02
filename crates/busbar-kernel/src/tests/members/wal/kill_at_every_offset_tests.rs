@@ -8,10 +8,10 @@
 //! recovers, and asserts the recovered records are exactly the longest complete prefix of what was
 //! written. A special case in the scan shows up here as the one offset the loop fails on.
 
-use crate::backend::{MemoryFactory, SegmentFactory as _};
-use crate::record::{Record, FRAME_BYTES};
-use crate::recover::recover_and_truncate;
-use crate::segment::Segment;
+use busbar_kernel_wal::backend::{MemoryFactory, SegmentFactory as _};
+use busbar_kernel_wal::record::{Record, FRAME_BYTES};
+use busbar_kernel_wal::recover::recover_and_truncate;
+use busbar_kernel_wal::segment::Segment;
 
 use super::fixtures::{durability_token, records};
 
@@ -25,12 +25,12 @@ fn lay_down(written: &[Record]) -> Vec<u8> {
     // Retaining, because the bytes are read back after the log that wrote them is gone: a plain
     // factory releases a segment the moment nothing is writing to it.
     let mut factory = MemoryFactory::retaining();
-    let mut wal = crate::wal::Wal::with_parts(
+    let mut wal = busbar_kernel_wal::wal::Wal::with_parts(
         Box::new(factory.clone()),
-        Box::new(crate::ship::NullShipper::new()),
-        crate::wal::Mode::OnDisk,
+        Box::new(busbar_kernel_wal::ship::NullShipper::new()),
+        busbar_kernel_wal::wal::Mode::OnDisk,
         TEST_CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap();
     let token = durability_token();
@@ -47,13 +47,14 @@ fn lay_down(written: &[Record]) -> Vec<u8> {
 
 /// Recover from exactly these bytes, cutting whatever does not verify.
 fn recover_from(bytes: &[u8]) -> Vec<Record> {
-    let shared = crate::backend::SharedBytes::new(std::sync::Mutex::new(bytes.to_vec()));
-    let backend = Box::new(crate::backend::MemorySegment::over(shared));
+    let shared =
+        busbar_kernel_wal::backend::SharedBytes::new(std::sync::Mutex::new(bytes.to_vec()));
+    let backend = Box::new(busbar_kernel_wal::backend::MemorySegment::over(shared));
     let mut segment = Segment::open_at(backend, 0, 0, TEST_CEILING).unwrap();
     recover_and_truncate(
         &mut segment,
         &mut MemoryFactory::new(),
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap()
     .records
@@ -152,12 +153,14 @@ fn recovery_cuts_the_backing_so_the_next_append_lands_on_a_boundary() {
     let bytes = lay_down(&written);
     // Stop one byte into the third record's frame.
     let torn = &bytes[..2 * FRAME_BYTES + 1];
-    let shared = crate::backend::SharedBytes::new(std::sync::Mutex::new(torn.to_vec()));
-    let backend = Box::new(crate::backend::MemorySegment::over(shared.clone()));
+    let shared = busbar_kernel_wal::backend::SharedBytes::new(std::sync::Mutex::new(torn.to_vec()));
+    let backend = Box::new(busbar_kernel_wal::backend::MemorySegment::over(
+        shared.clone(),
+    ));
     let mut segment = Segment::open_at(backend, 0, 0, TEST_CEILING).unwrap();
     let mut sink = MemoryFactory::new();
     let recovered =
-        recover_and_truncate(&mut segment, &mut sink, crate::tests::fixtures::wall_ms).unwrap();
+        recover_and_truncate(&mut segment, &mut sink, super::fixtures::wall_ms).unwrap();
 
     assert_eq!(recovered.records.len(), 2);
     assert!(recovered.was_torn());
@@ -178,12 +181,12 @@ fn a_restart_replays_to_the_recovered_head_and_appends_after_it() {
     let token = durability_token();
     let first = records(1, 1, 3, 50);
     {
-        let mut wal = crate::wal::Wal::with_parts(
+        let mut wal = busbar_kernel_wal::wal::Wal::with_parts(
             Box::new(factory.clone()),
-            Box::new(crate::ship::NullShipper::new()),
-            crate::wal::Mode::OnDisk,
+            Box::new(busbar_kernel_wal::ship::NullShipper::new()),
+            busbar_kernel_wal::wal::Mode::OnDisk,
             TEST_CEILING,
-            crate::tests::fixtures::wall_ms,
+            super::fixtures::wall_ms,
         )
         .unwrap();
         wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &first)
@@ -196,12 +199,12 @@ fn a_restart_replays_to_the_recovered_head_and_appends_after_it() {
         let keep = 2 * FRAME_BYTES - 1;
         held.truncate(keep);
     }
-    let mut wal = crate::wal::Wal::with_parts(
+    let mut wal = busbar_kernel_wal::wal::Wal::with_parts(
         Box::new(factory.clone()),
-        Box::new(crate::ship::NullShipper::new()),
-        crate::wal::Mode::OnDisk,
+        Box::new(busbar_kernel_wal::ship::NullShipper::new()),
+        busbar_kernel_wal::wal::Mode::OnDisk,
         TEST_CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap();
     assert_eq!(wal.recovered(), &first[..1]);

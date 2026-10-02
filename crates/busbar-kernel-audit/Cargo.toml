@@ -38,7 +38,3 @@ busbar-contract = { path = "../busbar-contract" }
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 zeroize = { workspace = true }
-
-[dev-dependencies]
-# The published bodies are JSON; the tests parse them rather than trusting the renderer.
-serde_json = { workspace = true }

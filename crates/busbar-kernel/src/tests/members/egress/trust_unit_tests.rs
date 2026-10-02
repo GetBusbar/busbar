@@ -5,10 +5,9 @@
 
 use busbar_contract::caps::{Dial, Grant, KernelSeal, LaneId, Pass, ReasonCode, StepName, Verify};
 
-use super::destination_tests::AllYes;
-use super::Pools;
-use crate::trust::destination::{DestinationFacts, OriginKind};
-use crate::trust::unit::{Trust, VerifyRequest};
+use super::fixtures::{AllYes, Pools};
+use busbar_kernel_egress::trust::destination::{DestinationFacts, OriginKind};
+use busbar_kernel_egress::trust::unit::{Trust, VerifyRequest};
 
 const UNPRICED: &str = "no configured rate for model 'arbitrary'";
 
@@ -35,12 +34,12 @@ fn request<'a>(candidates: &'a [DestinationFacts], pool: &'a str) -> VerifyReque
 #[test]
 fn a_permitted_candidate_is_sealed_on_its_lane() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let decision = Trust.verify(
         &request(&candidates, "p"),
         &Pools::default(),
         &AllYes::default(),
-        &super::destination_tests::AllAdmitted,
+        &super::fixtures::AllAdmitted,
         &trust,
         &token,
     );
@@ -54,7 +53,7 @@ fn a_kind_the_origin_may_not_reach_is_dropped_rather_than_refused() {
     let (seal, trust, token) = kernel();
     // A provider push proposing an administrative verb: the candidate is dropped and the step still
     // proceeds, because an empty set is a legitimate answer here.
-    let candidates = vec![super::destination_tests::kinds::kernel_verb()];
+    let candidates = vec![super::fixtures::kinds::kernel_verb()];
     let req = VerifyRequest {
         origin: OriginKind::Provider,
         ..request(&candidates, "p")
@@ -64,7 +63,7 @@ fn a_kind_the_origin_may_not_reach_is_dropped_rather_than_refused() {
             &req,
             &Pools::default(),
             &AllYes::default(),
-            &super::destination_tests::AllAdmitted,
+            &super::fixtures::AllAdmitted,
             &trust,
             &token,
         )
@@ -77,8 +76,8 @@ fn a_kind_the_origin_may_not_reach_is_dropped_rather_than_refused() {
 fn a_candidate_failing_its_own_rule_is_dropped() {
     let (seal, trust, token) = kernel();
     let candidates = vec![
-        super::destination_tests::kinds::upstream(),
-        super::destination_tests::kinds::nested_plane(),
+        super::fixtures::kinds::upstream(),
+        super::fixtures::kinds::nested_plane(),
     ];
     let facts = AllYes {
         nested: false,
@@ -89,7 +88,7 @@ fn a_candidate_failing_its_own_rule_is_dropped() {
             &request(&candidates, "p"),
             &Pools::default(),
             &facts,
-            &super::destination_tests::AllAdmitted,
+            &super::fixtures::AllAdmitted,
             &trust,
             &token,
         )
@@ -105,7 +104,7 @@ fn a_candidate_failing_its_own_rule_is_dropped() {
 #[test]
 fn an_all_excluded_pool_still_proceeds_with_an_empty_set() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let facts = AllYes {
         allow_listed: false,
         ..AllYes::default()
@@ -114,7 +113,7 @@ fn an_all_excluded_pool_still_proceeds_with_an_empty_set() {
         &request(&candidates, "p"),
         &Pools::default(),
         &facts,
-        &super::destination_tests::AllAdmitted,
+        &super::fixtures::AllAdmitted,
         &trust,
         &token,
     );
@@ -127,13 +126,13 @@ fn an_all_excluded_pool_still_proceeds_with_an_empty_set() {
 #[test]
 fn the_pool_allow_list_refuses_at_the_verify_step() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let refusal = Trust
         .verify(
             &request(&candidates, "cold"),
             &Pools::allowing(&["fast"]),
             &AllYes::default(),
-            &super::destination_tests::AllAdmitted,
+            &super::fixtures::AllAdmitted,
             &trust,
             &token,
         )
@@ -149,7 +148,7 @@ fn the_pool_allow_list_refuses_at_the_verify_step() {
 #[test]
 fn a_reachable_fallback_pool_refuses_the_same_way() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let pools = Pools {
         allowed: Some(vec!["a".to_string()]),
         ..Pools::default()
@@ -160,7 +159,7 @@ fn a_reachable_fallback_pool_refuses_the_same_way() {
             &request(&candidates, "a"),
             &pools,
             &AllYes::default(),
-            &super::destination_tests::AllAdmitted,
+            &super::fixtures::AllAdmitted,
             &trust,
             &token,
         )
@@ -172,14 +171,14 @@ fn a_reachable_fallback_pool_refuses_the_same_way() {
 #[test]
 fn an_unpriced_name_refuses_for_having_no_rate() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let pools = Pools::with_card_missing(&["arbitrary"]);
     let refusal = Trust
         .verify(
             &request(&candidates, "arbitrary"),
             &pools,
             &AllYes::default(),
-            &super::destination_tests::AllAdmitted,
+            &super::fixtures::AllAdmitted,
             &trust,
             &token,
         )
@@ -199,12 +198,12 @@ fn an_unpriced_name_refuses_for_having_no_rate() {
 #[test]
 fn a_breaker_open_lane_is_excluded_at_the_seal_exactly_as_the_pre_walk_excludes_it() {
     let (seal, trust, token) = kernel();
-    let lanes = super::Lanes::with(|l| {
+    let lanes = super::fixtures::Lanes::with(|l| {
         l.open_breaker.insert(0);
     });
     assert!(
-        !crate::trust::lane::survives_prewalk_filter(
-            crate::trust::lane::LaneCandidate { idx: 0, weight: 1 },
+        !busbar_kernel_egress::trust::lane::survives_prewalk_filter(
+            busbar_kernel_egress::trust::lane::LaneCandidate { idx: 0, weight: 1 },
             &lanes,
             &lanes,
             "p",
@@ -213,7 +212,7 @@ fn a_breaker_open_lane_is_excluded_at_the_seal_exactly_as_the_pre_walk_excludes_
         "the pre-walk excludes the open lane"
     );
 
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let sealed = Trust
         .verify(
             &request(&candidates, "p"),
@@ -235,8 +234,8 @@ fn a_breaker_open_lane_is_excluded_at_the_seal_exactly_as_the_pre_walk_excludes_
 #[test]
 fn an_admitted_lane_is_sealed_and_the_breaker_was_asked_about_it() {
     let (seal, trust, token) = kernel();
-    let lanes = super::Lanes::default();
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let lanes = super::fixtures::Lanes::default();
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let sealed = Trust
         .verify(
             &request(&candidates, "p"),
@@ -264,8 +263,8 @@ fn an_admitted_lane_is_sealed_and_the_breaker_was_asked_about_it() {
 #[test]
 fn a_unit_price_over_the_cards_maximum_is_not_sealed() {
     let (seal, trust, token) = kernel();
-    let lanes = super::Lanes::default();
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let lanes = super::fixtures::Lanes::default();
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let facts = AllYes {
         price_within_max: false,
         ..AllYes::default()
@@ -293,7 +292,7 @@ fn a_unit_price_over_the_cards_maximum_is_not_sealed() {
 #[test]
 fn a_name_answering_with_the_metadata_address_is_not_sealed() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let facts = AllYes {
         resolves_to: Some("169.254.169.254"),
         ..AllYes::default()
@@ -303,7 +302,7 @@ fn a_name_answering_with_the_metadata_address_is_not_sealed() {
             &request(&candidates, "p"),
             &Pools::default(),
             &facts,
-            &super::destination_tests::AllAdmitted,
+            &super::fixtures::AllAdmitted,
             &trust,
             &token,
         )
@@ -319,7 +318,7 @@ fn a_name_answering_with_the_metadata_address_is_not_sealed() {
 #[test]
 fn a_loopback_answer_is_excluded_while_the_ordinary_upstream_still_seals() {
     let (seal, trust, token) = kernel();
-    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let candidates = vec![super::fixtures::kinds::upstream()];
     let loopback = AllYes {
         resolves_to: Some("127.0.0.1"),
         ..AllYes::default()
@@ -329,7 +328,7 @@ fn a_loopback_answer_is_excluded_while_the_ordinary_upstream_still_seals() {
             &request(&candidates, "p"),
             &Pools::default(),
             &loopback,
-            &super::destination_tests::AllAdmitted,
+            &super::fixtures::AllAdmitted,
             &trust,
             &token,
         )
@@ -346,7 +345,7 @@ fn a_loopback_answer_is_excluded_while_the_ordinary_upstream_still_seals() {
             &request(&candidates, "p"),
             &Pools::default(),
             &public,
-            &super::destination_tests::AllAdmitted,
+            &super::fixtures::AllAdmitted,
             &trust,
             &token,
         )
@@ -370,15 +369,15 @@ fn a_loopback_answer_is_excluded_while_the_ordinary_upstream_still_seals() {
 fn a_lane_less_destination_leaves_the_sealed_set_without_refusing_the_step() {
     let (seal, trust, token) = kernel();
     let candidates = vec![
-        super::destination_tests::kinds::upstream(),
-        super::destination_tests::kinds::kernel_verb(),
+        super::fixtures::kinds::upstream(),
+        super::fixtures::kinds::kernel_verb(),
     ];
     let sealed = Trust
         .verify(
             &request(&candidates, "p"),
             &Pools::default(),
             &AllYes::default(),
-            &super::destination_tests::AllAdmitted,
+            &super::fixtures::AllAdmitted,
             &trust,
             &token,
         )

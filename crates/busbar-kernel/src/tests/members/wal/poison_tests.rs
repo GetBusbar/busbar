@@ -8,8 +8,8 @@
 //! that failed goes to a fresh segment with the batch after it — in that order, so the log reads
 //! back in the order records were written.
 
-use crate::record::FRAME_BYTES;
-use crate::wal::{Mode, Wal};
+use busbar_kernel_wal::record::FRAME_BYTES;
+use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, records, Fault, FaultyFactory};
 
@@ -18,15 +18,15 @@ const CEILING: u64 = 256 * FRAME_BYTES as u64;
 fn wal_with_faults() -> (
     Wal,
     super::fixtures::FaultSwitch,
-    crate::backend::MemoryFactory,
+    busbar_kernel_wal::backend::MemoryFactory,
 ) {
     let (factory, switch, memory) = FaultyFactory::new();
     let wal = Wal::with_parts(
         Box::new(factory),
-        Box::new(crate::ship::NullShipper::new()),
+        Box::new(busbar_kernel_wal::ship::NullShipper::new()),
         Mode::OnDisk,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap();
     (wal, switch, memory)
@@ -192,12 +192,14 @@ fn a_poisoned_segment_never_takes_another_write() {
 #[test]
 fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
     struct Refuses;
-    impl crate::ship::Shipper for Refuses {
+    impl busbar_kernel_wal::ship::Shipper for Refuses {
         fn ship(
             &mut self,
-            _records: &[crate::record::Record],
-        ) -> Result<(), crate::ship::ShipError> {
-            Err(crate::ship::ShipError::Unavailable("under test".into()))
+            _records: &[busbar_kernel_wal::record::Record],
+        ) -> Result<(), busbar_kernel_wal::ship::ShipError> {
+            Err(busbar_kernel_wal::ship::ShipError::Unavailable(
+                "under test".into(),
+            ))
         }
     }
     let (factory, _switch, _memory) = FaultyFactory::new();
@@ -206,12 +208,12 @@ fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
         Box::new(Refuses),
         Mode::OnDisk,
         u64::MAX / 2,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap();
     let token = durability_token();
 
-    let bound = crate::wal::STORE_BACKLOG_RECORDS;
+    let bound = busbar_kernel_wal::wal::STORE_BACKLOG_RECORDS;
     let mut written = 0u64;
     while written < bound as u64 + 200 {
         let batch = records(1, written + 1, 100, 8);
@@ -240,15 +242,17 @@ fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
 fn a_store_that_refuses_a_memory_buffered_batch_is_a_durability_loss() {
     // With no data directory the store IS the durability, so its refusal is the loss.
     struct Refuses;
-    impl crate::ship::Shipper for Refuses {
+    impl busbar_kernel_wal::ship::Shipper for Refuses {
         fn ship(
             &mut self,
-            _records: &[crate::record::Record],
-        ) -> Result<(), crate::ship::ShipError> {
-            Err(crate::ship::ShipError::Unavailable("under test".into()))
+            _records: &[busbar_kernel_wal::record::Record],
+        ) -> Result<(), busbar_kernel_wal::ship::ShipError> {
+            Err(busbar_kernel_wal::ship::ShipError::Unavailable(
+                "under test".into(),
+            ))
         }
     }
-    let mut wal = Wal::memory_buffered_to(Box::new(Refuses), crate::tests::fixtures::wall_ms);
+    let mut wal = Wal::memory_buffered_to(Box::new(Refuses), super::fixtures::wall_ms);
     let token = durability_token();
     let batch = records(1, 1, 2, 20);
     wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &batch)
@@ -261,7 +265,7 @@ fn a_store_that_refuses_a_memory_buffered_batch_is_a_durability_loss() {
 #[derive(Default)]
 struct RefusesOnce {
     refusals_left: usize,
-    taken: std::sync::Arc<std::sync::Mutex<Vec<crate::record::Record>>>,
+    taken: std::sync::Arc<std::sync::Mutex<Vec<busbar_kernel_wal::record::Record>>>,
 }
 
 impl RefusesOnce {
@@ -269,7 +273,7 @@ impl RefusesOnce {
         refusals: usize,
     ) -> (
         Self,
-        std::sync::Arc<std::sync::Mutex<Vec<crate::record::Record>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<busbar_kernel_wal::record::Record>>>,
     ) {
         let taken = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         (
@@ -282,11 +286,16 @@ impl RefusesOnce {
     }
 }
 
-impl crate::ship::Shipper for RefusesOnce {
-    fn ship(&mut self, records: &[crate::record::Record]) -> Result<(), crate::ship::ShipError> {
+impl busbar_kernel_wal::ship::Shipper for RefusesOnce {
+    fn ship(
+        &mut self,
+        records: &[busbar_kernel_wal::record::Record],
+    ) -> Result<(), busbar_kernel_wal::ship::ShipError> {
         if self.refusals_left > 0 {
             self.refusals_left -= 1;
-            return Err(crate::ship::ShipError::Unavailable("under test".into()));
+            return Err(busbar_kernel_wal::ship::ShipError::Unavailable(
+                "under test".into(),
+            ));
         }
         self.taken
             .lock()
@@ -311,7 +320,7 @@ fn an_on_disk_batch_the_store_refused_is_offered_again_rather_than_discarded() {
         Box::new(shipper),
         Mode::OnDisk,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap();
     let token = durability_token();
@@ -355,11 +364,10 @@ fn an_on_disk_batch_the_store_refused_is_offered_again_rather_than_discarded() {
 /// than a store that was briefly unavailable.
 #[test]
 fn a_memory_buffered_retry_after_a_refusal_does_not_write_the_records_twice() {
-    use crate::journal::{Entry, Journal, RecordClass};
+    use busbar_kernel_wal::journal::{Entry, Journal, RecordClass};
 
     let (shipper, taken) = RefusesOnce::new(1);
-    let mut journal =
-        Journal::memory_buffered_to(4, Box::new(shipper), crate::tests::fixtures::wall_ms);
+    let mut journal = Journal::memory_buffered_to(4, Box::new(shipper), super::fixtures::wall_ms);
     let token = durability_token();
 
     let first: Vec<Entry> = (0..2)
@@ -396,12 +404,14 @@ fn a_memory_buffered_retry_after_a_refusal_does_not_write_the_records_twice() {
 fn a_store_that_refuses_an_on_disk_batch_does_not_fail_the_commit() {
     // With a data directory the local log is the record and shipping is catch-up work.
     struct Refuses;
-    impl crate::ship::Shipper for Refuses {
+    impl busbar_kernel_wal::ship::Shipper for Refuses {
         fn ship(
             &mut self,
-            _records: &[crate::record::Record],
-        ) -> Result<(), crate::ship::ShipError> {
-            Err(crate::ship::ShipError::Unavailable("under test".into()))
+            _records: &[busbar_kernel_wal::record::Record],
+        ) -> Result<(), busbar_kernel_wal::ship::ShipError> {
+            Err(busbar_kernel_wal::ship::ShipError::Unavailable(
+                "under test".into(),
+            ))
         }
     }
     let (factory, _switch, _memory) = FaultyFactory::new();
@@ -410,7 +420,7 @@ fn a_store_that_refuses_an_on_disk_batch_does_not_fail_the_commit() {
         Box::new(Refuses),
         Mode::OnDisk,
         CEILING,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .unwrap();
     let token = durability_token();

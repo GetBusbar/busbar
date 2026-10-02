@@ -46,8 +46,9 @@ bytes = { workspace = true }
 
 # Test-only. `busbar-unit-breaker` is never named by this crate's library code — the breaker seam
 # enters production code through `ports::Breaker` alone, and the composition root binds the two
-# units. This dev-dependency exists only so `tests/breaker_adapter.rs` can prove that seam is
-# actually implementable over the breaker unit's real API, not a fixture invented to fit it.
+# units. This dev-dependency exists only so the test harness can drive that seam over the breaker
+# unit's real API; the seam proof itself (minting a step token) lives in busbar-kernel's
+# `tests/members/egress/breaker_adapter_tests.rs`, where minting is legal.
 [dev-dependencies]
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to

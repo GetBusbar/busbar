@@ -8,9 +8,9 @@
 //! older release's derivation at a pinned card against the sum of the stored nano-units.
 
 use busbar_contract::caps::step::MeterClassId;
-use busbar_contract::caps::{Consumption, Grant, KernelSeal, QuantitySource, Usage, UsageLine};
+use busbar_contract::caps::{QuantitySource, UsageLine};
 
-use crate::cost::{price, History, LaneClass, Posting, Priced, RateCard};
+use crate::cost::{LaneClass, RateCard};
 
 /// A nano-unit total in whole MINOR units through the CHECKED projection (item 28): the one money
 /// type, which refuses a figure the served type cannot hold rather than pinning it at a ceiling.
@@ -21,16 +21,6 @@ pub(crate) fn minor_nanos(nanos: u128) -> Result<i64, crate::cost::MoneyError> {
 /// [`minor_nanos`] at the micro scale: the same checked projection, the finer narrowing.
 pub(crate) fn micros_nanos(nanos: u128) -> Result<i64, crate::cost::MoneyError> {
     crate::cost::Money::of_nanos(nanos).and_then(crate::cost::Money::micros_i64)
-}
-
-/// A priced posting's figure in minor units, checked. Every fixture here is in range.
-pub(crate) fn minor(p: &Priced) -> i64 {
-    minor_nanos(p.priced_nanos).expect("the fixture's figure is in range")
-}
-
-/// A priced posting's figure in micro-units, checked. Every fixture here is in range.
-pub(crate) fn micros(p: &Priced) -> i64 {
-    micros_nanos(p.priced_nanos).expect("the fixture's figure is in range")
 }
 
 mod derive_tests;
@@ -46,43 +36,6 @@ pub(crate) const INPUT: &str = "input";
 pub(crate) const OUTPUT: &str = "output";
 pub(crate) const CACHE_READ: &str = "cache_read";
 pub(crate) const CACHE_WRITE: &str = "cache_write";
-
-/// Build a usage report for a test.
-///
-/// Minting a token here is what a test needs in order to have a report at all: the report type can
-/// only be built by the usage unit holding its own token, which is the property being relied on
-/// everywhere else in this crate. The seal is confined to the kernel in real code; these lines are
-/// test-only and are the same exception the capability crate's own tests take.
-pub(crate) fn usage(lines: &[(&'static str, u64)]) -> Usage {
-    let seal = KernelSeal::acquire_for_kernel();
-    let token = Grant::<Consumption>::mint(&seal);
-    let lines = lines
-        .iter()
-        .map(|(class, quantity)| UsageLine {
-            class: MeterClassId::new(class),
-            quantity: *quantity,
-            source: QuantitySource::Count,
-            estimated: false,
-        })
-        .collect();
-    Usage::report(&token, lines).expect("a test report stays within the line bound")
-}
-
-/// The same, marked as the kernel's own floor rather than a reported figure.
-pub(crate) fn estimated_usage(lines: &[(&'static str, u64)]) -> Usage {
-    let seal = KernelSeal::acquire_for_kernel();
-    let token = Grant::<Consumption>::mint(&seal);
-    let lines = lines
-        .iter()
-        .map(|(class, quantity)| UsageLine {
-            class: MeterClassId::new(class),
-            quantity: *quantity,
-            source: QuantitySource::Count,
-            estimated: false,
-        })
-        .collect();
-    Usage::estimate(&token, lines).expect("a test report stays within the line bound")
-}
 
 /// The plain line form the read-time derivation takes.
 pub(crate) fn lines(entries: &[(&'static str, u64)]) -> Vec<UsageLine> {
@@ -124,36 +77,5 @@ pub(crate) fn card4(lane: &'static str, rates: [f64; 4], fee_cents: i64) -> Rate
             (LaneClass::new(lane, CACHE_WRITE), rates[3]),
         ],
         fee_cents,
-    )
-}
-
-/// Price a usage report against ONE card, through the whole lookup path.
-///
-/// The card is wrapped in a single-entry history effective from instant zero and the posting is
-/// dated at zero, so `card_at` resolves to that entry and the answer is the lookup's, not a
-/// shortcut's. Every case in these files that used to price against a pinned card now runs through
-/// the history, which is the point: the migration's claim is that a single-entry history IS the old
-/// pinned card, and the cheapest way to keep that claim honest is to make the old cases prove it.
-pub(crate) fn priced(
-    card: &RateCard,
-    lane: &str,
-    usage: &busbar_contract::caps::Usage,
-    fee_count: u64,
-    tier_bp: u32,
-) -> Priced {
-    let history = History::opening(card.clone(), 0);
-    let posting = Posting::from_usage(lane, usage, fee_count, tier_bp, 0, 0);
-    price(&history.current(), &posting).expect("a card at instant zero covers a posting at zero")
-}
-
-/// A posting carrying one class's quantity, dated at a named instant.
-pub(crate) fn posting_at(lane: &str, arrived_ms: u64, lines: &[(&'static str, u64)]) -> Posting {
-    Posting::from_usage(
-        lane,
-        &usage(lines),
-        0,
-        crate::cost::STANDARD_TIER_BP,
-        arrived_ms,
-        arrived_ms,
     )
 }

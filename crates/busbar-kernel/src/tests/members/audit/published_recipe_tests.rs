@@ -358,14 +358,18 @@ fn the_published_table_still_describes_what_this_build_seals() {
     let order = published_field_order(&doc);
 
     let token: Pass<AuditStep> = Pass::mint(&KernelSeal::acquire_for_kernel());
-    let key = crate::sign::AuditSigningKey::from_hex_seed(
+    let key = busbar_kernel_audit::sign::AuditSigningKey::from_hex_seed(
         "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
     )
     .expect("the test seed is 64 lowercase hex");
-    let mut chain = crate::record::AuditChain::new().signing_with(key);
-    let sealed = crate::record::Audit::seal(&mut chain, super::sign_tests::rich_inputs(1), &token);
+    let mut chain = busbar_kernel_audit::record::AuditChain::new().signing_with(key);
+    let sealed = busbar_kernel_audit::record::Audit::seal(
+        &mut chain,
+        super::sign_tests::rich_inputs(1),
+        &token,
+    );
 
-    let body: serde_json::Value = serde_json::from_str(&crate::expose::range_body(
+    let body: serde_json::Value = serde_json::from_str(&busbar_kernel_audit::expose::range_body(
         &chain,
         std::slice::from_ref(&sealed),
         1,
@@ -477,18 +481,29 @@ fn the_published_bodies_expose_a_window_that_stops_short() {
     use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Pass};
 
     let token: Pass<AuditStep> = Pass::mint(&KernelSeal::acquire_for_kernel());
-    let mut chain = crate::record::AuditChain::new();
+    let mut chain = busbar_kernel_audit::record::AuditChain::new();
     let records: Vec<_> = (1..=5)
-        .map(|i| crate::record::Audit::seal(&mut chain, super::sign_tests::rich_inputs(i), &token))
+        .map(|i| {
+            busbar_kernel_audit::record::Audit::seal(
+                &mut chain,
+                super::sign_tests::rich_inputs(i),
+                &token,
+            )
+        })
         .collect();
 
     // The node answers a request for 1..5 with only the first four. Nothing about those four is
     // wrong — they link, they number, they hash. The run is just short at the end.
-    let short: serde_json::Value =
-        serde_json::from_str(&crate::expose::range_body(&chain, &records[..4], 1, 5))
-            .expect("a published body is JSON");
+    let short: serde_json::Value = serde_json::from_str(&busbar_kernel_audit::expose::range_body(
+        &chain,
+        &records[..4],
+        1,
+        5,
+    ))
+    .expect("a published body is JSON");
     let head: serde_json::Value =
-        serde_json::from_str(&crate::expose::head_body(&chain)).expect("a published body is JSON");
+        serde_json::from_str(&busbar_kernel_audit::expose::head_body(&chain))
+            .expect("a published body is JSON");
 
     let asked_to = short["to"]
         .as_u64()

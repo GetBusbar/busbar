@@ -22,11 +22,11 @@
 // The record-side harness (`token`, `inputs`) is the parent module's; the amendment surface is
 // reached through the crate's public paths.
 use super::{inputs, token};
-use crate::amend::{content_access, correction, AmendChain, Amendment, Reader};
-use crate::record::{
+use busbar_contract::count::Count;
+use busbar_kernel_audit::amend::{content_access, correction, AmendChain, Amendment, Reader};
+use busbar_kernel_audit::record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditRecord, OpClassId, Subject,
 };
-use busbar_contract::count::Count;
 
 // ── THE AMENDMENT CHAIN'S TWO HALVES ─────────────────────────────────────────────────────────────
 
