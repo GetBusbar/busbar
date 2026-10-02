@@ -206,7 +206,7 @@ impl AsPlane {
 /// THE SEAM-TYPED BUILDER (`busbar_kernel::oauth_as::seam::AsPlaneSeam::build`): builds the plane AND
 /// spawns its sweeper — the whole "how do I come alive" act `appbuild.rs` used to perform inline
 /// before the extraction — and hands back the type-erased object `App::oauth_as` stores. This is
-/// the function pointer `busbar_oauth2::install` actually registers; core cannot call
+/// the function pointer `busbar_core_oauth2::install` actually registers; core cannot call
 /// [`AsPlane::build`] directly, since that would name this crate's type from busbar-core.
 pub(crate) fn seam_build(
     identity: &AsIdentity,
