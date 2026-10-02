@@ -58,7 +58,7 @@ fn openai_logprobs_object_carries_the_required_refusal_member() {
         bytes: None,
         top: Vec::new(),
     }];
-    let out = crate::codec::openai_chat::write_openai_logprobs(&lps);
+    let out = crate::codec::logprob_wire::write_token_logprobs(&lps);
     assert!(
         out.get("content").is_some_and(|c| c.is_array()),
         "the content member must stay a token array: {out}"

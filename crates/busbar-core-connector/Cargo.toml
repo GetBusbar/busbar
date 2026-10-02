@@ -5,8 +5,8 @@
 # and it is the one place TLS lives: connection security (`tls`, formerly the `busbar-core-connsec`
 # crate, folded in verbatim) is core-only and never crosses to a plugin.
 #
-# A trusted, compiled-in, CLEANLINESS crate, same category as `busbar-core-admin` /
-# `busbar-core-oauth2` (DECISIONS #37's core tier): a mandatory sibling of `busbar-kernel`, never a
+# A trusted, compiled-in, CLEANLINESS crate, same category as the other
+# core-tier crates (DECISIONS #37): a mandatory sibling of `busbar-kernel`, never a
 # plugin. One-way dependency on `busbar-kernel` (it reads `TlsCfg` and resolves key material through
 # `SecretResolver`) — `busbar-kernel` depends on nothing here.
 #
