@@ -196,8 +196,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::one_unit_leaves_exactly_one_link_on_the_chain",
-          "note": "one unit over the loop seals exactly one link, with the action and outcome the shipped plane seals"
+          "test": "crates/busbar/src/root/tests/plane_node.rs::a_driven_planes_abandoned_end_seals_one_audit_record",
+          "note": "a driven unit's end seals exactly one audit record from the facts and pass its audit door handed back, and an unanswered audit door seals none (the in-memory request chain this cell named is deleted by the P2 ruling)"
         }
       },
       "exit": {
@@ -207,8 +207,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::one_unit_leaves_exactly_one_link_on_the_chain",
-          "note": "the same cell is the exit assertion: exactly one link, never two, so the exit posts once"
+          "test": "crates/busbar/src/root/tests/plane_node.rs::the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_one",
+          "note": "a served unit is driven exactly once and a refused one never, so the exit posts once; the one-terminal-per-unit count is crates/busbar-kernel/src/ingress/tests/terminal_tests.rs"
         }
       }
     },
