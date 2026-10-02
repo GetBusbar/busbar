@@ -357,6 +357,35 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
         }
     }
     let runner = rigs::Runner::new(&root, recording.as_deref());
+    // The rigs run IN PARALLEL (ARCHITECT 2026-10-02): each is a separate toolchain
+    // (python, node, Docker, cargo) and most of the hop's conformance time is waiting
+    // on one of them; one thread per rig, each in its own work dir.
+    let ran: BTreeMap<rigs::Rig, BTreeMap<String, Outcome>> = match &blocked {
+        Some(_) => BTreeMap::new(),
+        None => std::thread::scope(|scope| {
+            let handles: Vec<_> = by_rig
+                .keys()
+                .map(|&rig| (rig, scope.spawn(|| runner.run(rig))))
+                .collect();
+            handles
+                .into_iter()
+                .map(|(rig, h)| {
+                    let outcomes = h.join().unwrap_or_else(|_| {
+                        by_rig[&rig]
+                            .iter()
+                            .map(|s| {
+                                (
+                                    s.id.clone(),
+                                    Outcome::not_run(format!("the {} rig panicked", rig.name())),
+                                )
+                            })
+                            .collect()
+                    });
+                    (rig, outcomes)
+                })
+                .collect()
+        }),
+    };
     let mut unwritten = 0;
     for (rig, suites) in by_rig {
         let outcomes = match &blocked {
@@ -364,7 +393,7 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
                 .iter()
                 .map(|s| (s.id.clone(), Outcome::not_run(why.clone())))
                 .collect(),
-            None => runner.run(rig),
+            None => ran.get(&rig).cloned().unwrap_or_default(),
         };
         let moved = match head_commit(&root) {
             Ok(h) if h == start_head => None,
