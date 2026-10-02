@@ -22,9 +22,11 @@ use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::metering::{SessionMetering, TurnVerdict};
 use crate::runtime::tools::ToolExecutor;
-use busbar_plane_streaming::governed::GovernedSession;
-use busbar_plane_streaming::session::TurnCounters;
-use busbar_plane_streaming::session_pump::{SessionPump, TurnSink};
+use busbar_plane_streaming::{
+    governed::GovernedSession,
+    session::TurnCounters,
+    session_pump::{SessionPump, TurnSink},
+};
 use bytes::Bytes;
 use std::sync::{Arc, Mutex};
 
@@ -32,12 +34,9 @@ use busbar_kernel::ingress::byte_duplex::{CallRef as WireCallRef, DuplexHandle, 
 
 /// THE FRAME PLAN one decoded inbound frame produces — what to write UPSTREAM (client→server events:
 /// tool results, barge-in cancel/truncate, `response.create`), what to relay DOWNLINK to the client,
-/// and whether the kernel's budget verdict tripped a HARD CLOSE this frame. The plane's own plan
-/// (`busbar_plane_streaming::session_pump::Outbound`).
-pub use busbar_plane_streaming::session_pump::Outbound;
-
-/// The named reason a session closed at its configured wall-clock ceiling is told under.
-pub use busbar_plane_streaming::session_pump::SESSION_CEILING_REASON;
+/// and whether the kernel's budget verdict tripped a HARD CLOSE this frame. Re-exported with the named reason a
+/// session closed at its configured wall-clock ceiling is told under.
+pub use busbar_plane_streaming::session_pump::{Outbound, SESSION_CEILING_REASON};
 
 /// A closed turn's way to the kernel account: the session's metering, when it has one. A turn the
 /// account answers `MustClose` for cuts the session.

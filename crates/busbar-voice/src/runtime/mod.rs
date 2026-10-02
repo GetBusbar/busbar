@@ -14,7 +14,7 @@ pub mod carrier;
 pub mod metering;
 pub mod scope;
 pub mod session;
-/// THE TOOL EXECUTOR PORT, from `busbar-plane-streaming`, and its production default
+/// THE TOOL EXECUTOR PORT and its production default
 /// ([`tools::ClientRelay`]: this node serves no tool, so every call is relayed to the caller). The
 /// echo executor the batteries drive is a test double, present only in test builds.
 pub mod tools {

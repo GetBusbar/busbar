@@ -2193,6 +2193,58 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "STREAMS-METADATA the protected-resource document a refused caller is pointed at is served",
+      "kind": "improvement",
+      "changelog": "**The streaming plane serves the protected-resource metadata its challenge points at.** A caller refused at a realtime door is pointed at `<public_url>/.well-known/oauth-protected-resource/v1/realtime`, and nothing served that path. It now answers the RFC 9728 document: the plane's audience as `resource` and `bearer_methods_supported: [\"header\"]`, the same document the MCP route serves.",
+      "by": "owner (Matthew Jackson), delegated to the ARCHITECT, ruling 2026-10-01 on the metadata observation",
+      "signoff": {
+        "who": "owner (Matthew Jackson), delegated to the ARCHITECT",
+        "when": "2026-10-01",
+        "ruling": "ARCHITECT ruling on the metadata observation, owner-delegated 2026-10-01: an ACCEPTED DIFFERENCE, not a re-baseline (goldens are never blessed)"
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|metadata\\|protected-resource$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "streams|metadata|protected-resource",
+            "pointer": "/steps/0/status",
+            "equals": 200
+          },
+          {
+            "cell": "streams|metadata|protected-resource",
+            "pointer": "/steps/0/body/json/bearer_methods_supported",
+            "equals": [
+              "header"
+            ]
+          },
+          {
+            "cell": "streams|metadata|protected-resource",
+            "pointer": "/steps/0/body/json/resource",
+            "exists": true
+          },
+          {
+            "cell": "streams|metadata|protected-resource",
+            "pointer": "/steps/0/body/json/authorization_servers",
+            "exists": false
+          },
+          {
+            "cell": "streams|metadata|protected-resource",
+            "pointer": "/steps/1",
+            "exists": false
+          }
+        ]
+      },
+      "rationale": "1.5.5's challenge pointed refused callers at <public_url>/.well-known/oauth-protected-resource/v1/realtime, which nothing served. That was a defect. 5768d32dc serves the RFC 9728 document through the kernel's one metadata renderer, which is the same document the mcp route serves (bearer_methods_supported [\"header\"]). ARCHITECT ruling on the metadata observation, owner-delegated 2026-10-01. The pinned pre-fold build (golden/1.6.0-pre) answered that one GET 401 invalid_api_key; the candidate answers 200 with the document. Scope: this one cell, the body class only; the premise pins the candidate's one step to a 200 carrying exactly that document (bearer_methods_supported [\"header\"], a resource, no authorization server), so any other change to the step is not forgiven."
     }
   ]
 }
