@@ -36,6 +36,15 @@
 #
 # The moving leg (a plugin's `dev` against busbar's own tree) is busbar's side: the release engine
 # in busbar-release runs it when it admits a busbar candidate.
+#
+# THE C PATH (`plugin_lang: c`; BUSBAR-1.6.0.md decision #84, witness GetBusbar/busbar-secret-c): a
+# plugin repo with no Rust and no busbar crate. Its `.c` sources (`c_dir`) are compiled with the
+# system C compiler against `busbar_plugin.h` from busbar AT THE PIN, into the library a release
+# packs; then busbar's own `crates/plugin-loader/tests/dropped_conformance.rs`, at the same pin,
+# loads that library through `load_dropped`, drives the kind's conformance script over the plugin's
+# `<c_dir>/conformance.json`, and keeps its RED arm (the sources rebuilt at another kind ABI are
+# refused). It has no crates, so the Rust steps and the Rust gates do not run for it; the pin check
+# (PIN_CHECK_LANG=c: a Cargo.toml in it is refused) and the signing gate do.
 name: "Plugins: CI"
 
 on:
@@ -73,6 +82,16 @@ on:
         description: "The manifest alias (the short config name), used by the signing gate's config fixture."
         required: true
         type: string
+      plugin_lang:
+        description: "rust | c. `c`: the plugin is C sources built from busbar_plugin.h alone (THE C PATH above)."
+        required: false
+        type: string
+        default: "rust"
+      c_dir:
+        description: "plugin_lang c: the repo-relative directory of the plugin's .c sources and its conformance.json."
+        required: false
+        type: string
+        default: ""
     secrets:
       CODECOV_TOKEN:
         description: "Codecov upload token; the coverage job is informational and skips the upload without it."
@@ -112,6 +131,8 @@ jobs:
       - name: pin-check selftest (every refusal fires before the verdict is trusted)
         run: bash busbar/scripts/fleet/pin-check.sh --selftest
       - name: pin-check
+        env:
+          PIN_CHECK_LANG: ${{ inputs.plugin_lang }}
         run: bash busbar/scripts/fleet/pin-check.sh plugin
 
   linux:
@@ -179,15 +200,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
-      - name: busbar at the pin (the real binaries the end-to-end tests build and boot, and/or the signing gate)
-        if: inputs.busbar_checkout || env.SIGNING_GATE == 'true'
+      - name: busbar at the pin (the real binaries the end-to-end tests build and boot, the signing gate, the C path's header and conformance)
+        if: inputs.busbar_checkout || env.SIGNING_GATE == 'true' || inputs.plugin_lang == 'c'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
           ref: ${{ needs.pin.outputs.sha }}
           path: busbar
       - name: busbar's policy, lock, loader and golden at the pin (read-only, for the gates)
-        if: ${{ !(inputs.busbar_checkout || env.SIGNING_GATE == 'true') }}
+        if: ${{ !(inputs.busbar_checkout || env.SIGNING_GATE == 'true' || inputs.plugin_lang == 'c') }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
@@ -245,7 +266,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: ${{ (inputs.busbar_checkout || env.SIGNING_GATE == 'true') && fromJSON('"plugin\nbusbar"') || 'plugin' }}
+          workspaces: ${{ inputs.plugin_lang == 'c' && 'busbar' || ((inputs.busbar_checkout || env.SIGNING_GATE == 'true') && fromJSON('"plugin\nbusbar"') || 'plugin') }}
           key: busbar-${{ needs.pin.outputs.sha }}
       - name: fmt
         if: steps.crates.outputs.present == 'true'
@@ -259,12 +280,31 @@ jobs:
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
         run: cargo build --workspace --locked
+      - name: "C: build from busbar_plugin.h alone (the library a signed tarball carries)"
+        if: inputs.plugin_lang == 'c'
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+          C_DIR: ${{ inputs.c_dir }}
+        run: |
+          set -euo pipefail
+          [ -n "$C_DIR" ] || { echo "::error::plugin_lang c needs c_dir"; exit 1; }
+          src="$GITHUB_WORKSPACE/plugin/$C_DIR"
+          ls "$src"/*.c >/dev/null || { echo "::error::no .c source in $C_DIR"; exit 1; }
+          lib="$GITHUB_WORKSPACE/plugin/target/debug/lib${CRATE//-/_}.so"
+          mkdir -p "$(dirname "$lib")"
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -fPIC -shared \
+            -I busbar/crates/busbar-contract/include -o "$lib" "$src"/*.c
+          {
+            echo "BUSBAR_DROPPED_LIB=$lib"
+            echo "BUSBAR_DROPPED_SOURCES=$src"
+            echo "BUSBAR_DROPPED_SCRIPT=$src/conformance.json"
+          } >> "$GITHUB_ENV"
       - name: signing gate — signed loads; unsigned / wrong-key / tampered are refused (PB-11)
         # End-to-end proof against a REAL busbar binary + the REAL first-party trust pipeline, built
         # here with an ephemeral (never the release) embedded key: positive (correctly signed
         # passes) and four negatives (unsigned, wrong key, tampered lib bytes, tampered manifest),
         # each asserted on the exact refusal message. Runs only for the kinds the script covers.
-        if: env.SIGNING_GATE == 'true' && steps.crates.outputs.present == 'true'
+        if: env.SIGNING_GATE == 'true' && (steps.crates.outputs.present == 'true' || inputs.plugin_lang == 'c')
         working-directory: plugin
         env:
           CRATE: ${{ inputs.plugin_crate }}
@@ -352,6 +392,16 @@ jobs:
           [ -n "$f" ] || { echo "::error::no declares.json in the repo"; exit 1; }
           python3 busbar/scripts/fleet/plugin-gates.py declares busbar "$KIND" "plugin/$f"
 
+      - name: "C: the kind's conformance through load_dropped at the pin, RED arm kept (both must RUN)"
+        if: ${{ !cancelled() && inputs.plugin_lang == 'c' }}
+        working-directory: busbar
+        run: |
+          set -euo pipefail
+          out="$(cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
+          passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
+          [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests (the script and the RED arm)"; exit 1; }
+          echo "C conformance: $passed test(s) passed"
+
   macos:
     name: build, test [macos]
     needs: pin
@@ -362,7 +412,7 @@ jobs:
         with:
           path: plugin
       - name: busbar at the pin
-        if: inputs.busbar_checkout
+        if: inputs.busbar_checkout || inputs.plugin_lang == 'c'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
@@ -402,7 +452,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: ${{ inputs.busbar_checkout && fromJSON('"plugin\nbusbar"') || 'plugin' }}
+          workspaces: ${{ inputs.plugin_lang == 'c' && 'busbar' || (inputs.busbar_checkout && fromJSON('"plugin\nbusbar"') || 'plugin') }}
           key: busbar-${{ needs.pin.outputs.sha }}
       - name: does the repo have its crates yet
         id: crates
@@ -423,11 +473,29 @@ jobs:
         env:
           MACOS_TEST: ${{ inputs.macos_test }}
         run: bash -c "$MACOS_TEST"
+      - name: "C: build from busbar_plugin.h alone, then the kind's conformance at the pin (RED arm kept)"
+        if: inputs.plugin_lang == 'c'
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+          C_DIR: ${{ inputs.c_dir }}
+        run: |
+          set -euo pipefail
+          src="$GITHUB_WORKSPACE/plugin/$C_DIR"
+          lib="$GITHUB_WORKSPACE/plugin/target/debug/lib${CRATE//-/_}.dylib"
+          mkdir -p "$(dirname "$lib")"
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -fPIC -shared \
+            -I busbar/crates/busbar-contract/include -o "$lib" "$src"/*.c
+          cd busbar
+          out="$(BUSBAR_DROPPED_LIB="$lib" BUSBAR_DROPPED_SOURCES="$src" BUSBAR_DROPPED_SCRIPT="$src/conformance.json" \
+            cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
+          passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
+          [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests"; exit 1; }
 
   coverage:
     name: coverage (informational)
     needs: pin
-    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    # Rust only: a C plugin's lines are not llvm-cov's to count.
+    if: inputs.plugin_lang != 'c' && (github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref))
     continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 60
