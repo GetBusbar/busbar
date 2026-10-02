@@ -220,8 +220,6 @@ pub fn snapshot_spec(models: usize) -> SnapshotSpec {
 struct Unit {
     /// An ATTEMPT opened the request bound for the far end; the caller's body follows it there.
     attempt: bool,
-    /// The far end's status, from its answer's first piece.
-    status: u16,
     /// The far end's answer, read as it is relayed.
     reading: FarEndReading,
     /// The piece answered short: its re-call carries the same piece, which is not read twice.
@@ -469,9 +467,6 @@ fn far_end(
     let last = given.flags & PIECE_LAST != 0;
     if !unit.recall {
         unit.reading.piece(bytes);
-        if first {
-            unit.status = u16::try_from(given.status_code).unwrap_or(0);
-        }
     }
     let (mut fields, mut units, mut arena) =
         (input.fields_buf(), input.units_buf(), input.arena_buf());
@@ -487,7 +482,7 @@ fn far_end(
         }
     }
     if last {
-        if let Some(count) = unit.reading.units(unit.status) {
+        if let Some(count) = unit.reading.units() {
             units.push(UnitCount {
                 class: count.class,
                 source: UNITS_REPORTED,
