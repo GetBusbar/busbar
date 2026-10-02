@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! FIELD-COVERAGE CARRY tests for the OpenAI Chat Completions dialect (`qa/field-coverage.status`).
+//! FIELD-COVERAGE CARRY tests for the OpenAI Chat Completions dialect (`dialects/openai_chat.toml`).
 //!
-//! Each test below backs a set of `openai/...` field ids in the coverage gate, and each named field
+//! Each test below backs a set of `openai/...` fields, and each named field
 //! has its OWN assertion inside the grouped test — a mutation that stops carrying that one field
 //! breaks exactly that assertion. Two carry shapes are used, per the dialect classification:
 //!

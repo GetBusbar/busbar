@@ -3855,7 +3855,7 @@ fn test_stream_open_tools_growth_is_capped() {
 }
 
 /// Past `MAX_GEMINI_TOOL_FRAMES` the drop must be OBSERVABLE, not silent: the first frame that
-/// hits the cap latches `state.gemini_tool_frame_cap_warned` (which also gates a `tracing::warn!`
+/// hits the cap latches `state.tool_frame_cap_warned` (which also gates a `tracing::warn!`
 /// with the cap value). Under the cap the latch must stay false — this is a genuine drop signal,
 /// not noise on every ordinary stream.
 #[test]
@@ -3879,7 +3879,7 @@ fn test_stream_tool_frame_cap_drop_is_observable() {
         );
     }
     assert!(
-        !state.gemini_tool_frame_cap_warned,
+        !state.tool_frame_cap_warned,
         "cap-drop latch must not fire while under MAX_GEMINI_TOOL_FRAMES"
     );
 
@@ -3899,7 +3899,7 @@ fn test_stream_tool_frame_cap_drop_is_observable() {
         );
     }
     assert!(
-        state.gemini_tool_frame_cap_warned,
+        state.tool_frame_cap_warned,
         "dropping functionCall frames past MAX_GEMINI_TOOL_FRAMES must be observable via the latch"
     );
 }
