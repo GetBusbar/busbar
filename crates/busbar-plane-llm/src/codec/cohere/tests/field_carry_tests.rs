@@ -3,11 +3,11 @@
 
 //! FIELD-COVERAGE CARRY TESTS for the Cohere v2 Chat dialect.
 //!
-//! Each `#[test]` here is the instrument named by a `qa/field-coverage.status` `carried` line: it
+//! Each `#[test]` here watches fields of `dialects/cohere.toml`: it
 //! reads a native Cohere body, drives it through the neutral IR, writes it back on the Cohere wire,
 //! and asserts — field by field — that the named field SURVIVED. A field whose assertion is deleted
-//! is a field a future edit can drop in silence, which is the whole failure mode the field-coverage
-//! gate exists to make impossible, so every field id in the status file has its OWN assertion below.
+//! is a field a future edit can drop in silence, which is the whole failure mode these tests
+//! exist to make impossible, so every field has its OWN assertion below.
 //!
 //! Classification (see the module docs on `reader.rs`/`writer.rs`):
 //! * CROSS-PROTOCOL-MEANINGFUL fields (messages, tools, sampling knobs, response_format, tool_plan,

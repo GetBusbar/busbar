@@ -36,15 +36,14 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 
 #[rustfmt::skip]
 #[path = "map.gen.rs"]
-pub(crate) mod map;
+mod map;
 pub mod handler;
 mod reader;
 pub(crate) mod slots;
 mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
-/// resolution, exactly as the registry's field doc requires. Mirrors
-/// `super::anthropic::protocol`.
+/// resolution, exactly as the registry's field doc requires.
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, OpenAiReader, OpenAiWriter)
 }
@@ -162,29 +161,28 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = OpenAiWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&OpenAiReader),
+    leaf: &handler::LEAF,
+};
+
 /// Largest upstream `tool_calls[].index` we accept in a streaming chunk. OpenAI documents at most
 /// 128 parallel tool calls, so any larger index is malformed; we clamp to this value before it
 /// reaches the IR index arithmetic (`oai_idx + 1 + offset`) so a crafted `u64::MAX` index can never
 /// overflow the `usize` cast or the addition. Chosen as the highest valid 0-based index (127).
 const MAX_TOOL_INDEX: u64 = 127;
 
-/// Fallback model name when a cross-protocol request carries none. The Chat-Completions and
-/// Responses writers are two wire formats of the SAME provider family, so this value is
-/// deliberately identical and MUST stay in lockstep — single-sourced here (`busbar-llm`, the plane
-/// that owns the OpenAI family) and referenced by both modules. If the two protocols ever genuinely
-/// diverge, split it back out at that point. (Relocated UP from `busbar-core`, which had no
-/// production user of it.)
-pub const OPENAI_FAMILY_DEFAULT_MODEL: &str = "gpt-4o";
-
-/// DoS cap on concurrently-tracked open tool-call accumulators per stream. Matches OpenAI's
-/// documented parallel-tool-call limit (128). Single-sourced here so Chat Completions and
-/// Responses cannot drift. (Relocated UP from `busbar-core`, which had no production user of it.)
-pub const OPENAI_FAMILY_MAX_OPEN_TOOLS: usize = 128;
-
 /// Hard cap on the number of DISTINCT tool-call indices we track per stream (`open_tools`). Bounds
 /// per-request memory and the number of synthesized BlockStart events against a pathological backend
 /// emitting unbounded unique indices. Matches OpenAI's documented parallel-tool-call limit (128).
-const MAX_OPEN_TOOLS: usize = OPENAI_FAMILY_MAX_OPEN_TOOLS;
+const MAX_OPEN_TOOLS: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
 /// OPENAI CHAT'S USAGE COUNTS, AS DATA (#42). `prompt_tokens` is a TOTAL that already INCLUDES the
 /// cached prefix (`prompt_tokens_details.cached_tokens`) and the cache-write slice
@@ -255,7 +253,7 @@ fn read_openai_usage(
 /// would otherwise produce a model-less first chunk / completion — both an SDK deserialisation
 /// failure and a proxy tell (a real OpenAI endpoint never omits `model`). A current, widely-served
 /// model id keeps the synthesized value plausible.
-const DEFAULT_MODEL: &str = OPENAI_FAMILY_DEFAULT_MODEL;
+const DEFAULT_MODEL: &str = crate::codec::dialect::FALLBACK_MODEL;
 
 /// Busbar-internal sentinel key for `max_completion_tokens` source tracking. The reader folds BOTH `max_tokens` and the
 /// modern `max_completion_tokens` into the single IR `max_tokens` field so a caller's output-token
@@ -555,94 +553,6 @@ const COMPLETION_ID_TOKEN_LEN: usize = 24;
 /// [`synth_completion_id`].
 const BASE62: &[u8; 62] = crate::codec::dialect::BASE62_ALPHABET;
 
-/// OpenAI's `logprobs` object (`{content: [{token, logprob, bytes, top_logprobs[]}]}`) → the
-/// neutral IR entries. `bytes` is preserved verbatim when present (a token can be a partial UTF-8
-/// fragment, so the byte array is the only faithful carrier).
-pub fn read_openai_logprobs(
-    v: Option<&serde_json::Value>,
-) -> Vec<crate::codec::ir::IrTokenLogprob> {
-    let entries = match v
-        .and_then(|lp| lp.get(keys::CONTENT))
-        .and_then(|c| c.as_array())
-    {
-        Some(a) => a,
-        None => return Vec::new(),
-    };
-    let read_bytes = |e: &serde_json::Value| -> Option<Vec<u8>> {
-        e.get(keys::BYTES)?.as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok()))
-                .collect()
-        })
-    };
-    entries
-        .iter()
-        .filter_map(|e| {
-            Some(crate::codec::ir::IrTokenLogprob {
-                token: e.get(keys::TOKEN)?.as_str()?.to_string(),
-                logprob: e.get(keys::LOGPROB)?.as_f64()?,
-                bytes: read_bytes(e),
-                top: e
-                    .get(keys::TOP_LOGPROBS)
-                    .and_then(|t| t.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|t| {
-                                Some(crate::codec::ir::IrTopLogprob {
-                                    token: t.get(keys::TOKEN)?.as_str()?.to_string(),
-                                    logprob: t.get(keys::LOGPROB)?.as_f64()?,
-                                    bytes: read_bytes(t),
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            })
-        })
-        .collect()
-}
-
-/// Neutral IR logprobs → OpenAI's `logprobs` object. `bytes` is synthesized from the token's UTF-8
-/// encoding when the source protocol (Gemini) carries none — the same value OpenAI itself returns
-/// for a whole-token UTF-8 string.
-pub fn write_openai_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> serde_json::Value {
-    let content: Vec<serde_json::Value> = lps
-        .iter()
-        .map(|lp| {
-            let bytes = lp
-                .bytes
-                .clone()
-                .unwrap_or_else(|| lp.token.as_bytes().to_vec());
-            let top: Vec<serde_json::Value> = lp
-                .top
-                .iter()
-                .map(|t| {
-                    let b = t
-                        .bytes
-                        .clone()
-                        .unwrap_or_else(|| t.token.as_bytes().to_vec());
-                    serde_json::json!({(keys::TOKEN): t.token, (keys::LOGPROB): t.logprob, (keys::BYTES): b})
-                })
-                .collect();
-            serde_json::json!({
-                (keys::TOKEN): lp.token,
-                (keys::LOGPROB): lp.logprob,
-                (keys::BYTES): bytes,
-                (keys::TOP_LOGPROBS): top
-            })
-        })
-        .collect();
-    // `refusal` is a REQUIRED member of the choice `logprobs` object in BOTH published schemas
-    // (`CreateChatCompletionResponse` and `CreateChatCompletionStreamResponse` each declare
-    // `required: ["content", "refusal"]`), nullable: the refusal-token list, or null when the model
-    // did not refuse. The IR carries no refusal tokens (a refusal arrives as message text), so emit
-    // explicit null — which is what real OpenAI returns for a non-refusing completion. Emitting only
-    // `content` failed strict spec validation and the Python SDK's Pydantic model, and was a proxy
-    // tell on every response that carried logprobs. The Responses writer lifts the `content` array
-    // out of this object for an `output_text` part's bare `LogProb[]`, so it is unaffected.
-    serde_json::json!({ (keys::CONTENT): content, (keys::REFUSAL): serde_json::Value::Null })
-}
-
 /// Synthesize a protocol-correct OpenAI completion id (`"chatcmpl-<24 base62 chars>"`) for
 /// cross-protocol responses where the backend supplied none. Native OpenAI chat-completion ids are
 /// `chatcmpl-` plus a fixed-width 24-char base62 token (33 chars total); the official SDKs treat
@@ -798,8 +708,8 @@ fn media_part_from_ir(
         }
         // An OpenAI Files handle — this dialect's own or a Responses `input_file.file_id`, the same
         // namespace (SHR-03): re-emit the native `file_id` form.
-        (K::Document, source) if super::openai_annotations::openai_file_id(source).is_some() => {
-            let id = super::openai_annotations::openai_file_id(source)?;
+        (K::Document, source) if super::url_citation_wire::files_api_id(source).is_some() => {
+            let id = super::url_citation_wire::files_api_id(source)?;
             let mut file = serde_json::Map::new();
             file.insert(keys::FILE_ID.to_string(), serde_json::json!(id));
             if let Some(n) = name {
@@ -1486,8 +1396,7 @@ pub const OpenAiWriter: OpenAiWriter = OpenAiWriter {
 };
 
 /// A FRESH writer as a VALUE, for the one-shot `write_request` / `write_response` calls the test
-/// suites make — the exact twin of [`crate::codec::anthropic::anthropic_writer`], and needed for the same
-/// reason. Borrowing the const directly (`OpenAiWriter.write_request(…)`) is
+/// suites make. Every dialect with an interior-mutable writer const has one, for the same reason. Borrowing the const directly (`OpenAiWriter.write_request(…)`) is
 /// `clippy::borrow_interior_mutable_const`: each borrow inlines its own copy of the interior-mutable
 /// cell, which is harmless for a stateless one-shot call but wrong for a STREAM (whose identity must
 /// be decided by one writer). This returns the value so the temporary is explicit, and a test that
@@ -1540,94 +1449,6 @@ impl OpenAiWriter {
             .lock()
             .map(|set| set.contains(&index))
             .unwrap_or(false)
-    }
-}
-
-/// Canonical OpenAI-family error classification, shared verbatim by `OpenAiReader::classify` and
-/// `ResponsesReader::classify` (the two were word-for-word identical). Both surfaces emit the same
-/// OpenAI error envelope, so the mapping — context-length-exceeded (fail over without penalty) first,
-/// then 429→RateLimit, 401/403→Auth, 5xx→ServerError, other 4xx→ClientError — is single-sourced here.
-///
-/// RELOCATED from the substrate's `proto::openai_classify`: this is real OpenAI-vendor
-/// dialect-classification logic, and Law 5 (dialects belong to the plane) says it belongs at the
-/// OpenAI dialect's codec home, not in the neutral substrate. It is test-only (the production
-/// classification path is `OpenAiReader::extract_error` / `ResponsesReader::extract_error`, which this
-/// mirrors for the confinement/parity test suite), so it stays `#[cfg(test)]` here exactly as it was
-/// `#[cfg(any(test, feature = "test-support"))]` in the substrate — no other crate named it.
-#[cfg(test)]
-pub(crate) fn openai_classify(status: StatusCode, body: &[u8]) -> CanonicalSignal {
-    // context-length-exceeded — the lane is healthy; this must fail over (to a larger-context
-    // model), not penalize the breaker. Detect by OpenAI code/message first.
-    let code_is_context = crate::codec::json::parse::<serde_json::Value>(body)
-        .ok()
-        .and_then(|j| {
-            j.get(keys::ERROR_WORD)
-                .and_then(|e| e.get(keys::CODE))
-                .and_then(|c| c.as_str())
-                .map(|s| s.to_string())
-        })
-        .as_deref()
-        == Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH);
-    // Mirror production `extract_error`: the prose message scan is GATED to the HTTP statuses an
-    // oversized request actually uses (400 invalid_request_error; 413 payload-too-large). Without the
-    // gate a 401/429/5xx whose prose happens to contain "maximum context length" would reclassify as
-    // ContextLength — letting a genuine auth/rate-limit/server failure escape fault attribution. The
-    // structured `code: "context_length_exceeded"` path is NOT gated (it is unambiguous).
-    //
-    // The scan itself is the shared one and not a clause of its own: production runs all four
-    // phrasings through `context_length_prose_scan`, and a copy here that carried only the
-    // first was a mirror that showed a different picture. Every test proving oversized-request
-    // failover through this function was then proving behaviour production does not have, for three
-    // of the four phrasings the providers actually send.
-    let oversized = status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE;
-    let prose_is_context =
-        oversized && context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
-    if code_is_context || prose_is_context {
-        return CanonicalSignal {
-            class: StatusClass::ContextLength,
-            provider_signal: Some(
-                crate::codec::dialect::PROVIDER_SIGNAL_CONTEXT_LENGTH.to_string(),
-            ),
-            retry_after: None,
-        };
-    }
-
-    if status == StatusCode::TOO_MANY_REQUESTS {
-        return CanonicalSignal {
-            class: StatusClass::RateLimit,
-            provider_signal: Some("429".to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return CanonicalSignal {
-            class: StatusClass::Auth,
-            provider_signal: Some(keys::AUTH_WORD.to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status.is_server_error() {
-        return CanonicalSignal {
-            class: StatusClass::ServerError,
-            provider_signal: Some("5xx".to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status.is_client_error() {
-        return CanonicalSignal {
-            class: StatusClass::ClientError,
-            provider_signal: Some(format!("{}", status.as_u16())),
-            retry_after: None,
-        };
-    }
-
-    CanonicalSignal {
-        class: StatusClass::ClientError,
-        provider_signal: None,
-        retry_after: None,
     }
 }
 
