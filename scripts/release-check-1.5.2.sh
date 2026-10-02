@@ -786,6 +786,7 @@ auth_plugin_flows() {
     github) echo "get" ;;        # opaque token → GET redirect only (no held-token POST path)
     ldap)   echo "form" ;;       # credential-form bind flow
     admin-tokens) echo "none" ;; # the operator ADMIN credential: gates /api/v1/admin only, no /auth/token
+    webhook-signature) echo "none" ;; # verifies an inbound webhook's signature per request; no /auth/token
     *)      echo "" ;;
   esac
 }
