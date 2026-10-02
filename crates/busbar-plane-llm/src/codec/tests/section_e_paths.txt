@@ -1,5 +1,6 @@
 # DF-MAP-IR-GAPS section E: every response/stream wire path no dialect code names (handoffs/DF-MAP-irgap.json,
 # base 4f4aa80ee; a `{}` map segment is cut at its parent). A translate attempt's drop walk names each one.
+# Paths a later DF-MAP lane mapped (Gemini avgLogprobs and safety ratings; the Responses stream events themselves, whose members stay listed) are removed: they cross.
 anthropic response container.expires_at
 anthropic response container.skills
 anthropic response container.skills[].skill_id
@@ -170,7 +171,6 @@ cohere stream type=citation-start.delta.message.citations.content_index
 cohere stream type=citation-start.delta.message.citations.sources[].type=tool.tool_output
 cohere stream type=debug
 cohere stream type=debug.event_type
-gemini response candidates[].avgLogprobs
 gemini response candidates[].citationMetadata.citationSources[].license
 gemini response candidates[].content.parts[].audioTranscription
 gemini response candidates[].content.parts[].audioTranscription.speakerLabel
@@ -259,9 +259,6 @@ gemini response candidates[].groundingMetadata.webSearchQueries
 gemini response candidates[].logprobsResult.chosenCandidates[].tokenId
 gemini response candidates[].logprobsResult.logProbabilitySum
 gemini response candidates[].logprobsResult.topCandidates[].candidates[].tokenId
-gemini response candidates[].safetyRatings[].blocked
-gemini response candidates[].safetyRatings[].category
-gemini response candidates[].safetyRatings[].probability
 gemini response candidates[].urlContextMetadata
 gemini response candidates[].urlContextMetadata.urlMetadata
 gemini response candidates[].urlContextMetadata.urlMetadata[].retrievedUrl
@@ -269,9 +266,6 @@ gemini response candidates[].urlContextMetadata.urlMetadata[].urlRetrievalStatus
 gemini response modelStatus
 gemini response modelStatus.modelStage
 gemini response modelStatus.retirementTime
-gemini response promptFeedback.safetyRatings[].blocked
-gemini response promptFeedback.safetyRatings[].category
-gemini response promptFeedback.safetyRatings[].probability
 gemini response usageMetadata.cacheTokensDetails
 gemini response usageMetadata.serviceTier
 gemini response usageMetadata.toolUsePromptTokensDetails
@@ -1167,20 +1161,16 @@ responses stream type=response.audio.done
 responses stream type=response.audio.transcript.done
 responses stream type=response.code_interpreter_call.interpreting
 responses stream type=response.code_interpreter_call_code.done
-responses stream type=response.content_part.added
 responses stream type=response.content_part.added.part.type=output_text.annotations[].type=container_file_citation
 responses stream type=response.content_part.added.part.type=output_text.annotations[].type=container_file_citation.container_id
 responses stream type=response.content_part.added.part.type=output_text.annotations[].type=file_citation
 responses stream type=response.content_part.added.part.type=output_text.annotations[].type=file_path
-responses stream type=response.content_part.done
 responses stream type=response.content_part.done.part.type=output_text.annotations[].type=container_file_citation
 responses stream type=response.content_part.done.part.type=output_text.annotations[].type=container_file_citation.container_id
 responses stream type=response.content_part.done.part.type=output_text.annotations[].type=file_citation
 responses stream type=response.content_part.done.part.type=output_text.annotations[].type=file_path
-responses stream type=response.created
 responses stream type=response.custom_tool_call_input.done
 responses stream type=response.file_search_call.searching
-responses stream type=response.function_call_arguments.done
 responses stream type=response.image_generation_call.generating
 responses stream type=response.image_generation_call.partial_image
 responses stream type=response.image_generation_call.partial_image.background
@@ -1188,7 +1178,6 @@ responses stream type=response.image_generation_call.partial_image.partial_image
 responses stream type=response.image_generation_call.partial_image.partial_image_index
 responses stream type=response.image_generation_call.partial_image.size
 responses stream type=response.mcp_call_arguments.done
-responses stream type=response.output_item.added
 responses stream type=response.output_item.added.item.type=additional_tools
 responses stream type=response.output_item.added.item.type=additional_tools.tools[].external_web_access
 responses stream type=response.output_item.added.item.type=additional_tools.tools[].search_content_types
@@ -1564,7 +1553,6 @@ responses stream type=response.output_item.added.item.type=web_search_call.actio
 responses stream type=response.output_item.added.item.type=web_search_call.action.type=search
 responses stream type=response.output_item.added.item.type=web_search_call.action.type=search.queries
 responses stream type=response.output_item.added.item.type=web_search_call.action.type=search.sources
-responses stream type=response.output_item.done
 responses stream type=response.output_item.done.item.type=additional_tools
 responses stream type=response.output_item.done.item.type=additional_tools.tools[].external_web_access
 responses stream type=response.output_item.done.item.type=additional_tools.tools[].search_content_types
@@ -1940,18 +1928,11 @@ responses stream type=response.output_item.done.item.type=web_search_call.action
 responses stream type=response.output_item.done.item.type=web_search_call.action.type=search
 responses stream type=response.output_item.done.item.type=web_search_call.action.type=search.queries
 responses stream type=response.output_item.done.item.type=web_search_call.action.type=search.sources
-responses stream type=response.output_text.annotation.added
 responses stream type=response.output_text.annotation.added.annotation.type=container_file_citation
 responses stream type=response.output_text.annotation.added.annotation.type=container_file_citation.container_id
 responses stream type=response.output_text.annotation.added.annotation.type=file_citation
 responses stream type=response.output_text.annotation.added.annotation.type=file_path
 responses stream type=response.output_text.annotation.added.annotation_index
-responses stream type=response.output_text.done
-responses stream type=response.queued
-responses stream type=response.reasoning_summary_part.added
-responses stream type=response.reasoning_summary_part.done
-responses stream type=response.reasoning_summary_text.done
-responses stream type=response.reasoning_text.done
 responses stream type=response.refusal.done
 responses stream type=response.shell_call_command.added
 responses stream type=response.shell_call_command.added.command
