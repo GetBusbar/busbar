@@ -67,9 +67,9 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # The conformance rig drives the plane end-to-end over real openai-realtime (the voice dialect) wire
 # bytes, so it builds the same JSON fixtures the underlying codec tests use.
 serde_json = { workspace = true }
-# THE DOOR, BOTH WAYS (`tests/door.rs`): the loader's plane kind loads the linked door and the
-# dropped-in image the example below builds, and drives both through one script. Dev-only: absent
-# from every release build.
+# THE DOOR, BOTH WAYS (`tests/conformance.rs`, the plugin's own witness): the loader's plane kind
+# loads the linked door and the dropped-in image the example below builds, and drives both through
+# one script. Dev-only: absent from every release build.
 busbar-plugin-loader = { path = "../plugin-loader" }
 
 # THE DROPPED-IN IMAGE ON THE ONE DOOR: built by `cargo test`.

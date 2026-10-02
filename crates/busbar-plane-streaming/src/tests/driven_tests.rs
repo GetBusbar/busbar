@@ -126,17 +126,18 @@ fn the_metadata_document_names_the_audience() {
 #[test]
 fn each_loop_step_has_the_planes_answer() {
     use busbar_contract::abi::plane::{PRINCIPAL_NONE, PRINCIPAL_REQUIRED};
-    assert_eq!(authenticate(Door::Mint), PRINCIPAL_REQUIRED);
-    assert_eq!(authenticate(Door::Twilio), PRINCIPAL_REQUIRED);
-    assert_eq!(authenticate(Door::Metadata), PRINCIPAL_NONE);
-    assert_eq!(verify(), "session.model");
-    assert_eq!(approve(), ("session", "streaming-server"));
+    assert_eq!(Door::Mint.authenticate(), PRINCIPAL_REQUIRED);
+    assert_eq!(Door::Twilio.authenticate(), PRINCIPAL_REQUIRED);
+    assert_eq!(Door::Metadata.authenticate(), PRINCIPAL_NONE);
+    assert_eq!(Door::Sideband.verify(), "session.model");
+    assert_eq!(Door::Sideband.approve(), ("session", "streaming-server"));
     assert!(
-        admit(Door::Sideband).is_empty(),
+        Door::Sideband.admit().is_empty(),
         "a session pays for what the far end reports"
     );
     let cfg = SessionConfig::default();
-    let sock = route(Door::Gemini, &cfg, None, b"")
+    let sock = Door::Gemini
+        .route(&cfg, None, b"")
         .expect("routes")
         .expect("a session dials");
     assert_eq!(sock.verb, "GET");
@@ -145,16 +146,13 @@ fn each_loop_step_has_the_planes_answer() {
         "the credential is never in the target"
     );
     assert_eq!(
-        route(Door::Sdp, &cfg, None, b"v=0").expect("routes"),
+        Door::Sdp.route(&cfg, None, b"v=0").expect("routes"),
         Some(sdp_attempt(b"v=0"))
     );
-    assert_eq!(
-        route(Door::Metadata, &cfg, None, b"").expect("routes"),
-        None
-    );
+    assert_eq!(Door::Metadata.route(&cfg, None, b"").expect("routes"), None);
     let mut units = crate::session_unit::CumulativeUnits::default();
     units.0[1] = 20;
     units.0[4] = 2;
-    assert_eq!(meter(&units), vec![(1, 20), (4, 2)]);
-    assert_eq!(audit(Door::Mint), "streaming.session.open");
+    assert_eq!(Door::Sideband.meter(&units), vec![(1, 20), (4, 2)]);
+    assert_eq!(Door::Mint.audit(), "streaming.session.open");
 }

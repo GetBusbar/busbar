@@ -65,6 +65,7 @@ pub mod session_params;
 pub mod session_pump;
 pub mod session_row;
 pub mod session_unit;
+pub mod sessions;
 pub mod tools;
 
 #[cfg(test)]

@@ -50,7 +50,10 @@ impl TurnSink for CumulativeUnits {
     }
 }
 
-/// What one piece asks the driver to carry.
+/// What one piece asks the driver to carry. Every frame a session emits, to either side, is one
+/// TEXT message ([`FRAMES_ARE_TEXT`]): the realtime dialects and the telephony envelope are JSON
+/// events. What arrives may be either: Gemini Live's server sends its JSON in binary frames, and a
+/// frame is read by its bytes, not its opcode.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Plan {
     /// Frames bound for the far end, in order.
@@ -141,6 +144,9 @@ impl TwilioBridge {
         }
     }
 }
+
+/// Every frame a session emits is one text message: the door sets the text bit on each.
+pub const FRAMES_ARE_TEXT: bool = true;
 
 /// ONE LIVE SESSION over the far end's codec `C`.
 #[derive(Debug)]

@@ -18,9 +18,9 @@ pub mod session;
 /// ([`tools::ClientRelay`]: this node serves no tool, so every call is relayed to the caller). The
 /// echo executor the batteries drive is a test double, present only in test builds.
 pub mod tools {
-    pub use busbar_plane_streaming::tools::{ClientRelay, ToolExecutor};
     #[cfg(any(test, feature = "test-support"))]
     pub use crate::testkit::echo::EchoToolExecutor;
+    pub use busbar_plane_streaming::tools::{ClientRelay, ToolExecutor};
 }
 
 pub use carrier::Carrier;
@@ -37,9 +37,9 @@ pub use scope::{SessionHandle, VoiceSessionRow};
 pub use session::{
     serve_to_teardown, serve_with_sweep, Outbound, SessionCore, UplinkForwarder, VoiceSession,
 };
-pub use tools::{ClientRelay, ToolExecutor};
 #[cfg(any(test, feature = "test-support"))]
 pub use tools::EchoToolExecutor;
+pub use tools::{ClientRelay, ToolExecutor};
 
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::sync::Arc;
@@ -152,11 +152,8 @@ pub fn build_runtime(
         .cloned()
         .unwrap_or_default();
     Arc::new(
-        VoiceRuntime::new(
-            Arc::new(DurableHandleEngine::new()),
-            Arc::new(ClientRelay),
-        )
-        .with_streams(&streams),
+        VoiceRuntime::new(Arc::new(DurableHandleEngine::new()), Arc::new(ClientRelay))
+            .with_streams(&streams),
     )
 }
 

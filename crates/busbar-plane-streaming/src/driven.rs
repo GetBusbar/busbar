@@ -107,95 +107,114 @@ pub const fn arrive(claim: u32) -> Option<Arrival> {
     }
 }
 
-// ── the plane's answer at each loop step (THE DESIGN §1's order) ─────────────────────────────────
+// ── the plane's answer at each loop step, in the order the kernel's loop runs them ─────────────
 
-/// AUTHENTICATE: whom a unit on `door` needs. Every keyed door needs a principal; the metadata
-/// document answers anyone.
-#[must_use]
-pub const fn authenticate(door: Door) -> u32 {
-    if door.is_open() {
-        busbar_contract::abi::plane::PRINCIPAL_NONE
-    } else {
-        busbar_contract::abi::plane::PRINCIPAL_REQUIRED
-    }
+/// THE PLANE'S ANSWER AT EACH LOOP STEP for a unit on one of its doors: what the kernel's loop asks
+/// the plane at authenticate, verify, approve, admit, route, meter and audit. The door answers the
+/// driver through these; nothing here reaches the kernel any other way.
+pub trait Steps {
+    /// AUTHENTICATE: whom a unit on this door needs.
+    fn authenticate(&self) -> u32;
+    /// VERIFY: where, inside the plane's section, the destination a session dials is named.
+    fn verify(&self) -> &'static str;
+    /// APPROVE: the grant a key must hold, as (kind, value).
+    fn approve(&self) -> (&'static str, &'static str);
+    /// ADMIT: the units a unit is expected to cost before the far end reports any.
+    fn admit(&self) -> Vec<(u32, u64)>;
+    /// ROUTE: the request an attempt sends the far end; `None` when the door sends nothing.
+    ///
+    /// # Errors
+    /// The request body's serializer text.
+    fn route(
+        &self,
+        config: &SessionConfig,
+        caller_ref: Option<&str>,
+        body: &[u8],
+    ) -> Result<Option<Attempt>, String>;
+    /// METER: a session's units so far, per billable class index, the zero classes left out.
+    fn meter(&self, units: &crate::session_unit::CumulativeUnits) -> Vec<(u32, u64)>;
+    /// AUDIT: the action a unit on this door is audited under.
+    fn audit(&self) -> &'static str;
 }
 
-/// VERIFY: where, inside the plane's section, the destination a session dials is named. The kernel
-/// resolves it through the root models and judges it.
-#[must_use]
-pub const fn verify() -> &'static str {
-    crate::door::EGRESS_TARGET
-}
-
-/// APPROVE: the grant a key must hold to open a session here: the `session` kind, for the one pool
-/// every session is served on.
-#[must_use]
-pub const fn approve() -> (&'static str, &'static str) {
-    (crate::door::SCOPE, crate::door::SESSION_POOL)
-}
-
-/// ADMIT: the units a unit on `door` is expected to cost before the far end reports any. None: a
-/// session is admitted at open and pays for what the far end reports (and its per-session fee,
-/// which the kernel counts); the one-request doors report nothing.
-#[must_use]
-pub fn admit(door: Door) -> Vec<(u32, u64)> {
-    match door {
-        Door::Mint | Door::Sdp | Door::Sideband | Door::Gemini | Door::Twilio | Door::Metadata => {
-            Vec::new()
+impl Steps for Door {
+    /// Every keyed door needs a principal; the metadata document answers anyone.
+    fn authenticate(&self) -> u32 {
+        if self.is_open() {
+            busbar_contract::abi::plane::PRINCIPAL_NONE
+        } else {
+            busbar_contract::abi::plane::PRINCIPAL_REQUIRED
         }
     }
-}
 
-/// ROUTE: the request an attempt on `door` sends the far end. The session doors dial the dialect's
-/// realtime socket (the credential is the kernel's, never in the target); the mint and SDP doors send
-/// their one request; the metadata document is answered here and sends nothing.
-///
-/// # Errors
-/// The mint body's serializer text.
-pub fn route(
-    door: Door,
-    config: &SessionConfig,
-    caller_ref: Option<&str>,
-    body: &[u8],
-) -> Result<Option<Attempt>, String> {
-    Ok(match door {
-        Door::Mint => Some(mint_attempt(config, caller_ref, None)?),
-        Door::Sdp => Some(sdp_attempt(body)),
-        Door::Sideband | Door::Twilio => Some(Attempt {
-            verb: "GET",
-            target: REALTIME_SOCKET_PATH,
-            fields: Vec::new(),
-            body: Vec::new(),
-        }),
-        Door::Gemini => Some(Attempt {
-            verb: "GET",
-            target: GEMINI_SOCKET_PATH,
-            fields: Vec::new(),
-            body: Vec::new(),
-        }),
-        Door::Metadata => None,
-    })
-}
+    /// The kernel resolves `streams.session.model` through the root models and judges it.
+    fn verify(&self) -> &'static str {
+        crate::door::EGRESS_TARGET
+    }
 
-/// METER: a session's units so far, per billable class index, the zero classes left out. Counts
-/// only; the kernel prices nothing the plane names.
-#[must_use]
-pub fn meter(units: &crate::session_unit::CumulativeUnits) -> Vec<(u32, u64)> {
-    units
-        .0
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| **n != 0)
-        .map(|(i, n)| (i as u32, *n))
-        .collect()
-}
+    /// The `session` kind, for the one pool every session is served on.
+    fn approve(&self) -> (&'static str, &'static str) {
+        (crate::door::SCOPE, crate::door::SESSION_POOL)
+    }
 
-/// AUDIT: the action a unit on `door` is audited under.
-#[must_use]
-pub const fn audit(door: Door) -> &'static str {
-    match door {
-        Door::Metadata => "streaming.metadata.read",
-        _ => SESSION_OPEN_ACTION,
+    /// None: a session is admitted at open and pays for what the far end reports (and its
+    /// per-session fee, which the kernel counts); the one-request doors report nothing.
+    fn admit(&self) -> Vec<(u32, u64)> {
+        match self {
+            Door::Mint
+            | Door::Sdp
+            | Door::Sideband
+            | Door::Gemini
+            | Door::Twilio
+            | Door::Metadata => Vec::new(),
+        }
+    }
+
+    /// The session doors dial the dialect's realtime socket (the credential is the kernel's, never
+    /// in the target); the mint and SDP doors send their one request; the metadata document is
+    /// answered here and sends nothing.
+    fn route(
+        &self,
+        config: &SessionConfig,
+        caller_ref: Option<&str>,
+        body: &[u8],
+    ) -> Result<Option<Attempt>, String> {
+        Ok(match self {
+            Door::Mint => Some(mint_attempt(config, caller_ref, None)?),
+            Door::Sdp => Some(sdp_attempt(body)),
+            Door::Sideband | Door::Twilio => Some(Attempt {
+                verb: "GET",
+                target: REALTIME_SOCKET_PATH,
+                fields: Vec::new(),
+                body: Vec::new(),
+            }),
+            Door::Gemini => Some(Attempt {
+                verb: "GET",
+                target: GEMINI_SOCKET_PATH,
+                fields: Vec::new(),
+                body: Vec::new(),
+            }),
+            Door::Metadata => None,
+        })
+    }
+
+    /// Counts only; the kernel prices nothing the plane names.
+    fn meter(&self, units: &crate::session_unit::CumulativeUnits) -> Vec<(u32, u64)> {
+        units
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n != 0)
+            .map(|(i, n)| (i as u32, *n))
+            .collect()
+    }
+
+    /// A session open, or a read of the metadata document.
+    fn audit(&self) -> &'static str {
+        match self {
+            Door::Metadata => "streaming.metadata.read",
+            _ => SESSION_OPEN_ACTION,
+        }
     }
 }
 

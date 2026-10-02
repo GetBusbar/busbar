@@ -47,6 +47,7 @@ use busbar_contract::plane::{PER_SESSION, TOKEN_FAMILY};
 
 use crate::claims::{Dialect, HTTP_TRANSPORT, WS_TRANSPORT};
 use crate::config::StreamsCfg;
+use crate::driven::Steps;
 use crate::meta;
 use crate::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 
@@ -541,7 +542,7 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
         return Outcome::Refused;
     };
     let mut units = input.units_buf();
-    for (class, amount) in crate::driven::admit(a.door) {
+    for (class, amount) in a.door.admit() {
         units.push(UnitCount {
             class,
             source: UNITS_ESTIMATED,
@@ -555,7 +556,7 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     out.units_written = units.written() as u32;
     out.op_class = a.op_class;
     out.dialect = a.dialect;
-    out.principal_need = crate::driven::authenticate(a.door);
+    out.principal_need = a.door.authenticate();
     Outcome::Ready
 });
 
