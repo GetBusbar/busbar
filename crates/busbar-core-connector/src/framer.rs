@@ -22,9 +22,10 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
-    FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, PIECE_CONTINUED,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
-    PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
+    PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
+    PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE,
+    YIELD_MORE,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -791,7 +792,7 @@ impl Framing {
         Ok(y)
     }
 
-    /// `emit`: bytes for the far side, on `stream`.
+    /// `emit`: bytes for the far side, on `stream`; `text`: they are a text message (`EMIT_TEXT`).
     ///
     /// # Errors
     ///
@@ -801,6 +802,7 @@ impl Framing {
         stream: u64,
         bytes: &[u8],
         end_of_frame: bool,
+        text: bool,
     ) -> Result<Yielded, Refused> {
         let mut i: EmitIn = blank_in();
         i.framing = self.token;
@@ -808,6 +810,7 @@ impl Framing {
         i.bytes = bytes.as_ptr();
         i.len = bytes.len();
         i.end_of_frame = u32::from(end_of_frame);
+        i.flags = if text { EMIT_TEXT } else { 0 };
         i.sink = self.bufs.sink();
         let mut o: FramerOut = blank_out();
         ready(self.door.cross(Call::Emit(&mut i, &mut o)))?;

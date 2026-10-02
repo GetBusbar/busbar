@@ -39,8 +39,8 @@ use busbar_contract::abi::hot::decl::{DeclStr, OpaqueHandle};
 use busbar_contract::abi::hot::transport::{
     code, CarrierSlots, DeclByteList, DeclStrList, FramerSlots, RawWireOutcome, TransportDecl,
     WireBytesOut, WireConnFacts, WireDest, WireEnvPair, WireField, WireFramed, WireFramerOut,
-    WireOutcome, WireSettings, WireWaker, FRAMED_HAS_RETRY_AFTER, FRAMED_HAS_STATUS_CODE,
-    FRAMED_TEXT, NO_WAKER, TRANSPORT_DECL_MAJOR, TRANSPORT_DECL_MINOR,
+    WireOutcome, WireSettings, WireWaker, EMIT_TEXT_BIT, FRAMED_HAS_RETRY_AFTER,
+    FRAMED_HAS_STATUS_CODE, FRAMED_TEXT, NO_WAKER, TRANSPORT_DECL_MAJOR, TRANSPORT_DECL_MINOR,
 };
 use busbar_contract::abi::hot::TransportDeclFn;
 use busbar_contract::abi::{check_preamble, AbiPreamble};
@@ -911,6 +911,7 @@ impl Framer for DeclFramer {
         stream: StreamId,
         bytes: &[u8],
         end_of_frame: bool,
+        text: bool,
         mut out: &mut dyn FramerOut,
     ) -> Result<(), TransportError> {
         let f = self.slots.emit.ok_or(TransportError::Closed)?;
@@ -922,7 +923,7 @@ impl Framer for DeclFramer {
                 stream.0,
                 bytes.as_ptr(),
                 bytes.len(),
-                u8::from(end_of_frame),
+                u8::from(end_of_frame) | if text { EMIT_TEXT_BIT } else { 0 },
                 &sink,
             )
         }))

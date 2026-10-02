@@ -20,7 +20,8 @@ use busbar_contract::abi::mechanism::DOOR_SYMBOL;
 use busbar_contract::abi::transport::check::check_framer;
 use busbar_contract::abi::transport::{
     slot, BeginIn, EmitIn, FinishIn, FramePiece, FramerOut, FramerSink, IngestIn, Ops,
-    CLOSE_NORMAL, PIECE_END_OF_FRAME, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_MORE,
+    CLOSE_NORMAL, EMIT_TEXT, PIECE_END_OF_FRAME, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
+    YIELD_MORE,
 };
 
 fn z<T>() -> T {
@@ -197,16 +198,23 @@ impl Host {
     }
 
     fn say(&mut self, end: &mut End, message: &'static str) {
+        let r = self.emit(end, message.as_bytes(), 0);
+        let more = self.take(r.0, &r.1, end);
+        self.again(more, end);
+    }
+
+    /// One whole message from `end`, its `EmitIn::flags` as given; the raw answer.
+    fn emit(&mut self, end: &End, message: &[u8], flags: u32) -> (Outcome, FramerOut) {
         let mut i: EmitIn = z();
         i.framing = end.framing;
         i.bytes = message.as_ptr();
         i.len = message.len();
         i.end_of_frame = 1;
+        i.flags = flags;
         i.sink = self.sink();
         let mut o: FramerOut = z();
         let r = call(self.ops.emit, self.inst, &mut i, &mut o, slot::EMIT);
-        let more = self.take(r, &o, end);
-        self.again(more, end);
+        (r, o)
     }
 
     fn finish(&mut self, end: &mut End) {
@@ -312,6 +320,44 @@ fn text_and_binary(label: &str, ops: &'static Ops, caps: (usize, usize, usize)) 
         "the text message arrives as text, the binary one as binary"
     );
     host.close();
+}
+
+/// RED (C19-TAIL U5 write): a message emitted with `EMIT_TEXT` goes out under the TEXT opcode (the
+/// far end hears it as text), one without it as BINARY; text that is not UTF-8 is refused, never
+/// sent under a promise it breaks. On the parent every emit went out BINARY.
+fn written_as_text(label: &str, ops: &'static Ops, caps: (usize, usize, usize)) {
+    let mut host = Host::open(ops, caps);
+    let mut dial = host.begin(SIDE_DIAL, "ws://svc.test/stream");
+    let mut accept = host.begin(SIDE_ACCEPT, "");
+    host.carry(&mut dial, &mut accept);
+    host.carry(&mut accept, &mut dial);
+    for (message, flags) in [(&b"{\"t\":1}"[..], EMIT_TEXT), (&b"\x01\x02"[..], 0)] {
+        let (r, o) = host.emit(&dial, message, flags);
+        let more = host.take(r, &o, &mut dial);
+        host.again(more, &mut dial);
+        host.carry(&mut dial, &mut accept);
+    }
+    println!(
+        "PROOF {label}: heard {:?} text {:?}",
+        accept.frames, accept.text
+    );
+    assert_eq!(
+        accept.frames,
+        [(b"{\"t\":1}".to_vec(), true), (b"\x01\x02".to_vec(), true)]
+    );
+    assert_eq!(accept.text, [true, false], "written as text, heard as text");
+    let (r, _) = host.emit(&dial, b"\xff\xfe", EMIT_TEXT);
+    assert_ne!(r, Outcome::Ready, "text that is not UTF-8 is refused");
+    host.close();
+}
+
+#[test]
+fn a_message_written_as_text_goes_out_as_text_through_both_doors() {
+    let (d, _lib) = dropped();
+    for (image, ops) in [("linked", linked()), ("dropped", d)] {
+        written_as_text(&format!("{image} roomy"), ops, (64 * 1024, 64 * 1024, 64));
+        written_as_text(&format!("{image} tight"), ops, (7, 3, 1));
+    }
 }
 
 #[test]

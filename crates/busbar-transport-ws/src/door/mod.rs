@@ -33,8 +33,8 @@ use busbar_contract::abi::transport::{
     ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, SettingDecl, ShutIn,
     TransportTail, WriteIn, CANCEL_NOTHING_MOVED, CLOSE_CAPACITY_EXHAUSTED, CLOSE_DRAIN,
     CLOSE_PEER_CLOSED, CLOSE_POISONED, CLOSE_REVOKED, CLOSE_TIMEOUT, CLOSE_TRANSPORT_FAILED,
-    FRAMING_STREAM, PIECE_END_OF_FRAME, PIECE_TEXT, ROLE_FRAMER, SETTING_COUNT, SIDE_ACCEPT,
-    SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    EMIT_TEXT, FRAMING_STREAM, PIECE_END_OF_FRAME, PIECE_TEXT, ROLE_FRAMER, SETTING_COUNT,
+    SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::registry::DEFAULT_REQUEST_BODY_MAX_BYTES;
@@ -555,8 +555,15 @@ impl Slot for Emit {
             if bytes.is_empty() && !eof {
                 return Ok(());
             }
-            f.emit(i.framing, StreamId(i.stream), bytes, eof, c)
-                .map_err(|e| format!("{e:?}"))
+            f.emit(
+                i.framing,
+                StreamId(i.stream),
+                bytes,
+                eof,
+                i.flags & EMIT_TEXT != 0,
+                c,
+            )
+            .map_err(|e| format!("{e:?}"))
         })
     }
 }

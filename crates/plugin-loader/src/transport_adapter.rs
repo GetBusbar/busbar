@@ -810,7 +810,7 @@ impl Transport for WireTransport {
                 (Some(framer), Some(state)) => {
                     let mut partial = HashMap::new();
                     let mut produced = Produced::new(self.stack.row.status_namespace, &mut partial);
-                    framer.emit(state, stream, bytes.as_slice(), true, &mut produced)?;
+                    framer.emit(state, stream, bytes.as_slice(), true, false, &mut produced)?;
                     let sent = produced.sent;
                     self.stack.send(&held, &sent).await?;
                 }

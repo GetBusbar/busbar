@@ -246,8 +246,8 @@ fn dial_transcript(linked: &dyn Framer) -> Vec<Vec<u8>> {
     let mut chunks = pump((linked, d, &mut dh), (linked, a, &mut ah));
     let message = payload(3, 5_000);
     let (first, second) = message.split_at(message.len() / 2);
-    let _ = linked.emit(d, StreamId(0), first, false, &mut dh);
-    let _ = linked.emit(d, StreamId(0), second, true, &mut dh);
+    let _ = linked.emit(d, StreamId(0), first, false, false, &mut dh);
+    let _ = linked.emit(d, StreamId(0), second, true, false, &mut dh);
     chunks.extend(pump((linked, d, &mut dh), (linked, a, &mut ah)));
     linked.close(d, CloseReason::CapacityExhausted, &mut dh);
     chunks.extend(pump((linked, d, &mut dh), (linked, a, &mut ah)));
@@ -289,7 +289,7 @@ fn fold(x: &dyn Framer, linked: &dyn Framer, transcript: &[Vec<u8>]) -> Fold {
         let _ = x.ingest(a, chunk, false, &mut ah);
         if i == 0 {
             // After the opening: the accepting side sends a frame of its own.
-            let _ = x.emit(a, StreamId(0), &payload(9, 3_000), true, &mut ah);
+            let _ = x.emit(a, StreamId(0), &payload(9, 3_000), true, false, &mut ah);
         }
         accepting.push(std::mem::take(&mut ah));
     }
@@ -311,9 +311,9 @@ fn fold(x: &dyn Framer, linked: &dyn Framer, transcript: &[Vec<u8>]) -> Fold {
         .open(Side::Accept, "", &facts, &mut lh)
         .expect("accept");
     pump((x, d, &mut dh), (linked, l, &mut lh));
-    let _ = x.emit(d, StreamId(0), &payload(5, 4_000), true, &mut dh);
+    let _ = x.emit(d, StreamId(0), &payload(5, 4_000), true, false, &mut dh);
     pump((x, d, &mut dh), (linked, l, &mut lh));
-    let _ = linked.emit(l, StreamId(0), &payload(11, 2_000), true, &mut lh);
+    let _ = linked.emit(l, StreamId(0), &payload(11, 2_000), true, false, &mut lh);
     pump((x, d, &mut dh), (linked, l, &mut lh));
     x.close(d, CloseReason::Normal, &mut dh);
     pump((x, d, &mut dh), (linked, l, &mut lh));
@@ -327,7 +327,7 @@ fn fold(x: &dyn Framer, linked: &dyn Framer, transcript: &[Vec<u8>]) -> Fold {
     let _ = x.ingest(r, &transcript[0], false, &mut refused);
     let _ = x.refusal(r, None, b"refused", &mut refused);
     let after_refusal = x
-        .emit(r, StreamId(0), b"x", true, &mut Heard::default())
+        .emit(r, StreamId(0), b"x", true, false, &mut Heard::default())
         .unwrap_err();
 
     let mut envelope = Vec::new();
@@ -345,7 +345,14 @@ fn fold(x: &dyn Framer, linked: &dyn Framer, transcript: &[Vec<u8>]) -> Fold {
         refused,
         after_refusal,
         unknown_emit: x
-            .emit(u64::MAX, StreamId(0), b"x", true, &mut Heard::default())
+            .emit(
+                u64::MAX,
+                StreamId(0),
+                b"x",
+                true,
+                false,
+                &mut Heard::default(),
+            )
             .unwrap_err(),
     }
 }
@@ -538,6 +545,7 @@ fn the_dropped_in_crossing_is_under_a_microsecond() {
             StreamId(0),
             b"x",
             true,
+            false,
             &mut out,
         ));
     };

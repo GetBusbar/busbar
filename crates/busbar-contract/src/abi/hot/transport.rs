@@ -607,6 +607,9 @@ pub const FRAMED_HAS_STATUS_CODE: u8 = 1;
 pub const FRAMED_HAS_RETRY_AFTER: u8 = 2;
 /// [`WireFramed::flags`]: the bytes belong to a text message ([`crate::transport::Framed::text`]).
 pub const FRAMED_TEXT: u8 = 4;
+/// The `emit` slot's `end_of_frame` byte: the bytes are a text message ([`crate::transport::Framer::emit`]'s
+/// `text`).
+pub const EMIT_TEXT_BIT: u8 = 2;
 
 /// `send(ctx, bytes, len)`: bytes owed to the far side.
 pub type WireSendFn = extern "C-unwind" fn(ctx: *mut c_void, bytes: *const u8, len: usize);
@@ -709,7 +712,8 @@ pub struct FramerSlots lowers Framer {
     /// [`Framer::ingest`](crate::transport::Framer::ingest): `end` is `0`/`1`.
     ingest: FramerIngestFn = fn(state: *mut c_void, framing: u64, bytes: *const u8, len: usize,
         end: u8, out: *const WireFramerOut);
-    /// [`Framer::emit`](crate::transport::Framer::emit): `end_of_frame` is `0`/`1`.
+    /// [`Framer::emit`](crate::transport::Framer::emit): `end_of_frame` is `0`/`1`, with
+    /// [`EMIT_TEXT_BIT`] set for a text message.
     emit: FramerEmitFn = fn(state: *mut c_void, framing: u64, stream: u64, bytes: *const u8,
         len: usize, end_of_frame: u8, out: *const WireFramerOut);
     /// [`Framer::encode_envelope`](crate::transport::Framer::encode_envelope): a refusal answers one of

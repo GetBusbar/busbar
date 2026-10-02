@@ -138,7 +138,7 @@ pub struct Connection {
     /// Its head words.
     head_words: HeadWords,
     /// Writes the caller made before the framing began, in order: `(stream, bytes, end)`.
-    early: Vec<(u64, Vec<u8>, bool)>,
+    early: Vec<(u64, Vec<u8>, bool, bool)>,
     open_deadline: Option<Instant>,
     framer_deadline: Option<Instant>,
     sleep: Option<(Instant, Pin<Box<tokio::time::Sleep>>)>,
@@ -450,10 +450,11 @@ impl Connection {
 
     /// The bytes held for the socket: early writes and framed bytes it has not taken.
     fn buffered(&self) -> usize {
-        self.out.len() + self.early.iter().map(|(_, b, _)| b.len()).sum::<usize>()
+        self.out.len() + self.early.iter().map(|(_, b, _, _)| b.len()).sum::<usize>()
     }
 
-    /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete),
+    /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete, `text` =
+    /// it is a text message),
     /// answering how many were taken: framed now if the framing has begun, else once it does; the
     /// socket takes them as its readiness allows, driven by `cx`. At most the room left under
     /// [`WRITE_BUFFER_BYTES`] is taken (`end` holds only when all of `bytes` was), so `Ok(0)` for a
@@ -466,12 +467,14 @@ impl Connection {
         &mut self,
         bytes: &[u8],
         end: bool,
+        text: bool,
         cx: &mut Context<'_>,
     ) -> Result<usize, Failure> {
-        self.emit(EXCHANGE_STREAM, bytes, end, cx)
+        self.emit(EXCHANGE_STREAM, bytes, end, text, cx)
     }
 
-    /// Offer `bytes` on `stream` (`end` = the stream's message is complete): the framer's `emit`
+    /// Offer `bytes` on `stream` (`end` = the stream's message is complete, `text` = it is a text
+    /// message): the framer's `emit`
     /// on that stream, now if the framing has begun, else once it does. An accepted connection
     /// answers each piece on the stream the piece came on.
     ///
@@ -483,6 +486,7 @@ impl Connection {
         stream: u64,
         bytes: &[u8],
         end: bool,
+        text: bool,
         cx: &mut Context<'_>,
     ) -> Result<usize, Failure> {
         match &self.phase {
@@ -507,11 +511,11 @@ impl Connection {
             Phase::Ended => return Err(Failure::Closed),
             Phase::Open => {
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-                let y = framing.emit(stream, bytes, end).map_err(failed)?;
+                let y = framing.emit(stream, bytes, end, text).map_err(failed)?;
                 self.absorb(y)?;
             }
             Phase::Connecting | Phase::Handshaking => {
-                self.early.push((stream, bytes.to_vec(), end));
+                self.early.push((stream, bytes.to_vec(), end, text));
             }
         }
         if let Err(f) = self.drive(cx) {
@@ -657,14 +661,14 @@ impl Connection {
                         .map_err(|e| Failure::Refused(e.to_string()))?;
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
                 let y = framing
-                    .emit(EXCHANGE_STREAM, &message, true)
+                    .emit(EXCHANGE_STREAM, &message, true, false)
                     .map_err(failed)?;
                 self.absorb(y)?;
             }
         }
-        for (stream, bytes, end) in std::mem::take(&mut self.early) {
+        for (stream, bytes, end, text) in std::mem::take(&mut self.early) {
             let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-            let y = framing.emit(stream, &bytes, end).map_err(failed)?;
+            let y = framing.emit(stream, &bytes, end, text).map_err(failed)?;
             self.absorb(y)?;
         }
         Ok(())

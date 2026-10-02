@@ -48,11 +48,11 @@ fn byte_exact_both_ways_through_the_framer() {
         let w = wire();
         let (client, server, _l) = pair(&w).await;
         let payload: Vec<u8> = (0..=255_u8).cycle().take(50_000).collect();
-        w.write(&client, StreamId(0), ScratchBytes::new(&payload))
+        w.write(&client, StreamId(0), ScratchBytes::new(&payload), false)
             .await
             .unwrap();
         assert_eq!(read_n(&w, &server, payload.len()).await, payload);
-        w.write(&server, StreamId(0), ScratchBytes::new(b"reply"))
+        w.write(&server, StreamId(0), ScratchBytes::new(b"reply"), false)
             .await
             .unwrap();
         assert_eq!(read_n(&w, &client, 5).await, b"reply");
@@ -80,12 +80,34 @@ fn a_text_frame_arrives_as_text_at_the_seam() {
             );
             let w = Arc::new(HostWire::new(Arc::new(door)).unwrap());
             let (client, server, _l) = pair(&w).await;
-            w.write(&client, StreamId(0), ScratchBytes::new(b"{}"))
+            w.write(&client, StreamId(0), ScratchBytes::new(b"{}"), false)
                 .await
                 .unwrap();
             let (_, frame) = w.frames(server).next().await.unwrap().unwrap();
             assert_eq!(frame.bytes.as_slice(), b"{}");
             assert_eq!(frame.meta.text, text, "stated text={text}");
+        }
+    });
+}
+
+/// RED (C19-TAIL U5 write): a write stated as text reaches the framer as a text emit
+/// (`EMIT_TEXT`); a binary one does not.
+#[test]
+fn a_text_write_reaches_the_framer_as_text() {
+    worker().block_on(async {
+        for text in [true, false] {
+            let door = Arc::new(TestDoor::identity("bytes"));
+            let w = Arc::new(HostWire::new(door.clone()).unwrap());
+            let (client, server, _l) = pair(&w).await;
+            w.write(&client, StreamId(0), ScratchBytes::new(b"{}"), text)
+                .await
+                .unwrap();
+            assert_eq!(read_n(&w, &server, 2).await, b"{}");
+            assert_eq!(
+                door.count("emit text"),
+                usize::from(text),
+                "written text={text}"
+            );
         }
     });
 }
@@ -106,9 +128,14 @@ fn half_close_lets_the_other_side_keep_writing() {
             frames.next().await.is_none(),
             "the far end's end ends the frames"
         );
-        w.write(&server, StreamId(0), ScratchBytes::new(b"still here"))
-            .await
-            .unwrap();
+        w.write(
+            &server,
+            StreamId(0),
+            ScratchBytes::new(b"still here"),
+            false,
+        )
+        .await
+        .unwrap();
         let mut got = [0_u8; 10];
         futures::io::AsyncReadExt::read_exact(&mut raw, &mut got)
             .await
@@ -149,7 +176,7 @@ fn close_interrupts_a_write_blocked_on_a_peer_that_stopped_reading() {
         let big = vec![7_u8; 64 * 1024 * 1024];
         let r = tokio::time::timeout(
             Duration::from_secs(10),
-            w.write(&client, StreamId(0), ScratchBytes::new(&big)),
+            w.write(&client, StreamId(0), ScratchBytes::new(&big), false),
         )
         .await
         .expect("the close interrupts the write");
@@ -162,7 +189,7 @@ fn detach_hands_up_the_stream_with_what_the_framer_held() {
     worker().block_on(async {
         let w = wire();
         let (client, server, _l) = pair(&w).await;
-        w.write(&client, StreamId(0), ScratchBytes::new(b"early"))
+        w.write(&client, StreamId(0), ScratchBytes::new(b"early"), false)
             .await
             .unwrap();
         // Read one frame on the server side and leave it in the framer's hands, unconsumed: the
@@ -269,7 +296,7 @@ fn a_dial_to_nothing_is_refused_and_a_closed_connection_takes_no_write() {
         assert_eq!(client.peer(), addr, "the peer is the address dialled");
         w.close(client.clone(), CloseReason::Normal);
         assert_eq!(
-            w.write(&client, StreamId(0), ScratchBytes::new(b"late"))
+            w.write(&client, StreamId(0), ScratchBytes::new(b"late"), false)
                 .await,
             Err(TransportError::Closed)
         );
@@ -401,11 +428,11 @@ fn detach_while_the_socket_is_held_elsewhere_returns_none_and_the_connection_sti
             w.get(server.id()).unwrap().socket().is_some(),
             "the socket was put back"
         );
-        w.write(&client, StreamId(0), ScratchBytes::new(b"ping"))
+        w.write(&client, StreamId(0), ScratchBytes::new(b"ping"), false)
             .await
             .unwrap();
         assert_eq!(read_n(&w, &server, 4).await, b"ping");
-        w.write(&server, StreamId(0), ScratchBytes::new(b"pong"))
+        w.write(&server, StreamId(0), ScratchBytes::new(b"pong"), false)
             .await
             .unwrap();
         assert_eq!(read_n(&w, &client, 4).await, b"pong");
@@ -421,7 +448,7 @@ fn a_cancelled_pending_read_leaves_the_next_read_intact() {
     worker().block_on(async {
         let w = wire();
         let (client, server, _l) = pair(&w).await;
-        w.write(&client, StreamId(0), ScratchBytes::new(b"first"))
+        w.write(&client, StreamId(0), ScratchBytes::new(b"first"), false)
             .await
             .unwrap();
         assert_eq!(read_n(&w, &server, 5).await, b"first");
@@ -430,10 +457,10 @@ fn a_cancelled_pending_read_leaves_the_next_read_intact() {
             let cancelled = tokio::time::timeout(Duration::from_millis(50), frames.next()).await;
             assert!(cancelled.is_err(), "nothing to read: the read was pending");
         }
-        w.write(&client, StreamId(0), ScratchBytes::new(b"second"))
+        w.write(&client, StreamId(0), ScratchBytes::new(b"second"), false)
             .await
             .unwrap();
-        w.write(&client, StreamId(0), ScratchBytes::new(b"-third"))
+        w.write(&client, StreamId(0), ScratchBytes::new(b"-third"), false)
             .await
             .unwrap();
         assert_eq!(read_n(&w, &server, 12).await, b"second-third");
@@ -452,7 +479,7 @@ fn emitted_frames_carry_their_payload_length_and_never_exceed_a_read_chunk() {
             .cycle()
             .take(3 * READ_CHUNK_BYTES + 123)
             .collect();
-        w.write(&client, StreamId(0), ScratchBytes::new(&payload))
+        w.write(&client, StreamId(0), ScratchBytes::new(&payload), false)
             .await
             .unwrap();
         let mut frames = w.frames(server.clone());

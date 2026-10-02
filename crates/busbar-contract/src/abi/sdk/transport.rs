@@ -29,7 +29,7 @@ use crate::abi::hot::decl::{DeclStr, OpaqueHandle};
 use crate::abi::hot::transport::{
     code, CarrierSlots, DeclByteList, DeclClaim, DeclStrList, FramerSlots, RawWireOutcome,
     TransportDecl, WireBytesOut, WireConnFacts, WireDest, WireField, WireFramed, WireFramerOut,
-    WireOutcome, WireSettings, WireWakeFn, WireWaker, FRAMED_HAS_RETRY_AFTER,
+    WireOutcome, WireSettings, WireWakeFn, WireWaker, EMIT_TEXT_BIT, FRAMED_HAS_RETRY_AFTER,
     FRAMED_HAS_STATUS_CODE, FRAMED_TEXT, NO_WAKER, TRANSPORT_DECL_MAJOR,
 };
 use crate::abi::{AbiPreamble, ABI_MAGIC, ABI_MAJOR, ABI_MINOR};
@@ -472,7 +472,14 @@ bridges! {
             out: *const WireFramerOut) {
             let (given, mut out) = (bytes(buf, len)?, host_out(out)?);
             t.inner
-                .emit(framing, StreamId(stream), given, end_of_frame == 1, &mut out)
+                .emit(
+                    framing,
+                    StreamId(stream),
+                    given,
+                    end_of_frame & 1 == 1,
+                    end_of_frame & EMIT_TEXT_BIT != 0,
+                    &mut out,
+                )
                 .map_err(WireOutcome::of_error)
         }
         fn encode_envelope(t; fields: *const WireField, fields_len: usize, body: *const u8,

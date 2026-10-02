@@ -375,6 +375,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
         c.write(
             &payload,
             true,
+            false,
             &mut std::task::Context::from_waker(std::task::Waker::noop()),
         )
         .expect("the write is taken");

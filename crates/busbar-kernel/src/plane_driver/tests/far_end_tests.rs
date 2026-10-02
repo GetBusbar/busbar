@@ -146,7 +146,14 @@ impl Conns for Table {
         self.bytes.lock().unwrap().insert(id, bytes);
         Ok(ConnId(id))
     }
-    fn write(&self, _: InstanceId, _: ConnId, b: &[u8], _: bool) -> Result<usize, ConnError> {
+    fn write(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+        b: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
         Ok(b.len())
     }
     fn read(&self, _: InstanceId, _: ConnId, _: Ticket, _: &mut [u8]) -> Result<Piece, ConnError> {

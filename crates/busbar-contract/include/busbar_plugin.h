@@ -457,6 +457,7 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_FIELDS UINT16_C(16) /* [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers), */
 #define BB_TRANSPORT_PIECE_CONTINUED UINT16_C(32) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier */
 #define BB_TRANSPORT_PIECE_TEXT UINT16_C(64) /* [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire */
+#define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
 #define BB_TRANSPORT_YIELD_ENDED UINT32_C(1) /* [`FramerYield::flags`]: no frame follows on this connection. */
 #define BB_TRANSPORT_YIELD_MORE UINT32_C(2) /* [`FramerYield::flags`]: a buffer filled; call the same op again once drained. */
 #define BB_TRANSPORT_YIELD_HAS_DEADLINE UINT32_C(4) /* [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then. */
@@ -2920,7 +2921,7 @@ struct bb_transport_EmitIn {
     const uint8_t *bytes;
     size_t len;
     uint32_t end_of_frame;
-    uint32_t _reserved;
+    uint32_t flags;
     bb_transport_FramerSink sink;
     uint64_t deadline_ns;
 };
@@ -4956,7 +4957,7 @@ BB_ASSERT(offsetof(bb_transport_EmitIn, stream) == 96, "bb_transport_EmitIn.stre
 BB_ASSERT(offsetof(bb_transport_EmitIn, bytes) == 104, "bb_transport_EmitIn.bytes: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, len) == 112, "bb_transport_EmitIn.len: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, end_of_frame) == 120, "bb_transport_EmitIn.end_of_frame: offset");
-BB_ASSERT(offsetof(bb_transport_EmitIn, _reserved) == 124, "bb_transport_EmitIn._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, flags) == 124, "bb_transport_EmitIn.flags: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, sink) == 128, "bb_transport_EmitIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, deadline_ns) == 208, "bb_transport_EmitIn.deadline_ns: offset");
 BB_ASSERT(sizeof(bb_transport_EncodeIn) == 232, "bb_transport_EncodeIn: size");

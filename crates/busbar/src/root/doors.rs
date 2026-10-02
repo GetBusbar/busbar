@@ -209,7 +209,9 @@ impl busbar_contract::Transport for RootWire {
         stream: busbar_contract::StreamId,
         bytes: busbar_contract::ScratchBytes<'a>,
     ) -> busbar_contract::Fut<'a, usize> {
-        self.0.write(conn, stream, bytes)
+        // The kernel's write carries no text bit yet: it takes FrameMeta::text from the plane's
+        // PIECE_OUT_TEXT after SERVE-WIRE's P1; until then every write here is binary.
+        self.0.write(conn, stream, bytes, false)
     }
 
     fn encode_envelope<'a>(

@@ -77,7 +77,14 @@ impl Conns for Recording {
             .push((caller, need, desc.target.to_owned()));
         Ok(id)
     }
-    fn write(&self, _: InstanceId, _: ConnId, _: &[u8], _: bool) -> Result<usize, ConnError> {
+    fn write(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
         Err(ConnError::Closed)
     }
     fn read(&self, _: InstanceId, _: ConnId, _: u64, _: &mut [u8]) -> Result<Piece, ConnError> {
@@ -429,7 +436,14 @@ impl Conns for Scripted {
         }
         self.slab.insert(caller, need, ())
     }
-    fn write(&self, c: InstanceId, id: ConnId, b: &[u8], _: bool) -> Result<usize, ConnError> {
+    fn write(
+        &self,
+        c: InstanceId,
+        id: ConnId,
+        b: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
         self.slab.get(c, id)?;
         self.writes.lock().unwrap().push(b.to_vec());
         Ok(b.len())
