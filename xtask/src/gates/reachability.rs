@@ -63,6 +63,12 @@
 //!   - **or a `Units` impl its linked entry exports** — a type the entry module (the `linked-entry`
 //!     row's `crate::root::<module>`, else the plugin crate's `linked` module) declares and builds
 //!     in an item its `linked-axes` row puts in the generated table, or one that item reaches.
+//!   - **or, for a DOOR plane, its served door** (ARCHITECT Q-SO10; spec K5: "production
+//!     PlaneDriver+KernelServices composition = ONE place, K1 serve path; folds add only door
+//!     rows") — ALL of: its `linked-axes` row carries `plane-door` (its door row); exactly ONE
+//!     function reached from `fn main()` builds a `PlaneDriver` (the composition); and a line
+//!     reached from `fn main()` in that same module drives a unit through a driver (`.unit(`, the
+//!     served data route). Any one alone is red: a driver with no data route is not a unit path.
 //!
 //!   `root/units_<plane>.rs` IS NOT THE TEST. That module predates the unification; three of the
 //!   four were rustc-dead while the rider served their planes, so a row
@@ -296,9 +302,9 @@ const ROSTER: &[Plane] = &[
         module: "units_decision",
         linked_crate: "busbar-plane-decisions",
         register_tokens: &["DecisionPlane", "busbar_plane_decisions"],
-        note:
-            "#48's fifth plane (jev). Its linked entry is `root/plane_decisions.rs`, a declaration \
-               with no served door; whether 1.6.0 serves it is owner question Q72(3)",
+        note: "#48's fifth plane (jev), a DOOR plane. Owner ruled Q72(3): 1.6.0 SERVES it. Its \
+               unit path is its served door (Q-SO10): the `plane-door` row, the one composition's \
+               driver, and the data route driving it (SERVE-WIRE P2 + the DEC-SERVE serving slice)",
     },
 ];
 
@@ -1080,6 +1086,74 @@ fn construction_sites(
         }
     }
     out
+}
+
+/// The `linked-axes` axis whose row puts a plane's DOOR in the generated `plane_doors` table: the
+/// plane's door row (spec K5: "folds add only door rows").
+const PLANE_DOOR_AXIS: &str = "plane-door";
+/// The kernel type a door plane is driven by.
+const DRIVER_TYPE: &str = "PlaneDriver";
+/// The call a claimed arrival reaches a driver by: `PlaneDriver::unit` runs the ten steps.
+const DRIVE_CALL: &str = ".unit(";
+
+/// THE DOOR PLANES' ONE COMPOSITION AND ITS SERVE PATH (ARCHITECT Q-SO10; spec K5: "production
+/// PlaneDriver+KernelServices composition = ONE place, K1 serve path; folds add only door rows").
+/// `composition` is the one function, reached from `fn main()`, that builds a [`DRIVER_TYPE`] —
+/// `Err` when none does, or when more than one function does (K5 says one place). `served` is the
+/// non-test line, in a function reached from `fn main()` in that SAME module, that drives a unit
+/// through a driver ([`DRIVE_CALL`]) — `Err` when nothing does: a driver with no data route is not
+/// a unit path. A door plane's unit path is both of these AND its own door row.
+struct DoorServe {
+    composition: Result<String, String>,
+    served: Result<String, String>,
+}
+
+fn door_serve(files: &[Scanned], items: &[Item], live: &BTreeSet<usize>) -> DoorServe {
+    let sites = construction_sites(files, items, live, DRIVER_TYPE);
+    let places: BTreeSet<(String, String)> = sites
+        .iter()
+        .filter(|s| s.why == SiteKind::Live)
+        .map(|s| (s.rel.clone(), s.item.clone().unwrap_or_default()))
+        .collect();
+    let composition = match places.len() {
+        0 => Err(format!(
+            "no `{DRIVER_TYPE}` is built in a function reached from fn main() ({})",
+            describe(&sites)
+        )),
+        1 => Ok(places.iter().next().cloned().unwrap_or_default()),
+        n => Err(format!(
+            "`{DRIVER_TYPE}` is built in {n} places reached from fn main() ({}); spec K5 composes              the door planes in ONE",
+            places
+                .iter()
+                .map(|(rel, item)| format!("`{item}` in {rel}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    };
+    let served = match &composition {
+        Err(e) => Err(e.clone()),
+        Ok((rel, item)) => files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.rel == *rel)
+            .find_map(|(fi, f)| {
+                f.lines.iter().enumerate().find_map(|(i, l)| {
+                    let reached = enclosing_item(items, fi, i).filter(|n| live.contains(n))?;
+                    (!f.is_test_line(i) && l.counted.contains(DRIVE_CALL)).then(|| {
+                        format!("{}:{} (in `{}`)", f.rel, l.no, items[reached].name)
+                    })
+                })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "the drivers `{item}` ({rel}) builds are driven by nothing: no line reached                      from fn main() in that module runs a unit (`{DRIVE_CALL}`) — a driver with no                      data route is not a unit path"
+                )
+            }),
+    };
+    DoorServe {
+        composition: composition.map(|(rel, item)| format!("`{item}` in {rel}")),
+        served,
+    }
 }
 
 /// The innermost non-test item whose span contains this line.
@@ -1996,6 +2070,8 @@ impl Gate for ReachabilityGate {
         let units = all_unit_types(&files);
         let regs = registrations(&files, &all_items, &graph, &units);
         let flips = flips(&files, &all_items, &graph, &regs);
+        // THE DOOR PLANES' ONE COMPOSITION AND SERVE PATH (Q-SO10), once for every plane.
+        let door = door_serve(&files, &all_items, &reached);
         // `register_planes()` folds the generated `LINKED` table — the one write into the plane axis.
         let folds_linked = register_planes
             .iter()
@@ -2175,13 +2251,35 @@ impl Gate for ReachabilityGate {
                     export.rel, export.units, export.exported
                 )
             };
+            // A DOOR PLANE'S UNIT PATH (ARCHITECT Q-SO10; spec K5): its door row (its `linked-axes`
+            // row carries the `plane-door` axis) AND the one composition building a driver AND a
+            // reached line in that module driving a unit. Any one alone stays red.
+            let door_row = axes.iter().any(|a| a == PLANE_DOOR_AXIS);
+            let door_live = match (door_row, &door.composition, &door.served) {
+                (true, Ok(built), Ok(served)) => Some(format!(
+                    "its door row (`{PLANE_DOOR_AXIS}` on its `linked-axes` row) is composed into a \
+                     `{DRIVER_TYPE}` by {built} and served at {served}"
+                )),
+                _ => None,
+            };
+            let door_why = match (door_row, &door.composition, &door.served) {
+                (false, _, _) => format!(
+                    "its `linked-axes` row carries no `{PLANE_DOOR_AXIS}` axis (no door row)"
+                ),
+                (true, Err(e), _) | (true, Ok(_), Err(e)) => e.clone(),
+                (true, Ok(_), Ok(_)) => "served".to_string(),
+            };
+            if let Some(path) = &door_live {
+                live_paths.push(path.clone());
+            }
             let unit_path = if live_paths.is_empty() {
                 Err(format!(
                     "NO LIVE UNIT PATH: roster plane `{}` has no kernel-loop runner registered for its \
-                     capability key and no `Units` impl its linked entry exports, so nothing `fn \
-                     main()` reaches drives its ten steps. Rider: {rider_why}. Linked entry: \
-                     {export_why}. Give it a unit path, or declare it in {DECLARATIONS} with the \
-                     reason and the switch. The evidence is written up in {EVIDENCE}.",
+                     capability key, no `Units` impl its linked entry exports and no served door, so \
+                     nothing `fn main()` reaches drives its ten steps. Rider: {rider_why}. Linked \
+                     entry: {export_why}. Door: {door_why}. Give it a unit path, or declare it in \
+                     {DECLARATIONS} with the reason and the switch. The evidence is written up in \
+                     {EVIDENCE}.",
                     p.key
                 ))
             } else {
@@ -2223,6 +2321,9 @@ impl Gate for ReachabilityGate {
                 Some(stem) => mods.contains(stem),
                 None => linked_rows.iter().any(|(_, k)| k == p.linked_crate),
             };
+            if let Some(path) = &door_live {
+                reach_hits.push(path.clone());
+            }
             if export.exists && !export.units.is_empty() && entry_reached {
                 reach_hits.push(format!(
                     "its linked entry `{}` declares {:?} and is reached through the generated table",
@@ -2232,8 +2333,9 @@ impl Gate for ReachabilityGate {
             let root_reach = if reach_hits.is_empty() {
                 Err(format!(
                     "NO UNIT PATH REACHED: no module a chain from {MAIN_RS} arrives at routes plane \
-                     `{}`'s capability key onto a kernel-loop runner, and its linked entry exports no \
-                     `Units` impl. Rider: {rider_why}. Linked entry: {export_why}.",
+                     `{}`'s capability key onto a kernel-loop runner, its linked entry exports no \
+                     `Units` impl, and no served door carries it. Rider: {rider_why}. Linked entry: \
+                     {export_why}. Door: {door_why}.",
                     p.key
                 ))
             } else {
@@ -2671,6 +2773,43 @@ impl Gate for ReachabilityGate {
             },
             "builds none of them",
         ));
+        // A DOOR PLANE (ARCHITECT Q-SO10; spec K5): the decisions plane with no rider and no Units
+        // export, its unit path the one composition's driver AND that driver driven AND its door
+        // row. Green with all three; each one missing reds both rows.
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a door plane composed into a PlaneDriver, driven, and on the plane-door axis is green",
+            evidenced(decision_door(true, true, false)),
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a door plane whose driver is built but drives no unit reds its unit-path and root-reach rows",
+            &[row_unit_path("decision"), row_root_reach("decision")],
+            decision_door(true, false, false),
+            "a driver with no data route is not a unit path",
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a driver built and driven for a plane with no door row reds its unit-path and root-reach rows",
+            &[row_unit_path("decision"), row_root_reach("decision")],
+            decision_door(false, true, false),
+            "no `plane-door` axis (no door row)",
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "PlaneDriver built in two places reached from fn main() reds the door plane's unit-path row",
+            &[row_unit_path("decision")],
+            decision_door(true, true, true),
+            "spec K5 composes the door planes in ONE",
+        ));
         // A PLUGIN CRATE'S OWN ENTRY MODULE, both ways: mcp's flip removed, and its `linked`
         // module exporting a Units impl — built in an exported item (green), or not (red).
         report.push(green_over(
@@ -3001,6 +3140,57 @@ fn decision_without_unit_path() -> Overlay {
     ov.set(
         DECISION_ENTRY_RS,
         "pub const PLANE_DECLARATION: &str = \"decision\";\n\npub const PLANE_HOOKS: u64 = 0;\n",
+    );
+    ov
+}
+
+const SERVE_RS: &str = "crates/busbar/src/root/serve.rs";
+
+/// The decisions plane as a DOOR plane: no rider and no `Units` export ([`decision_without_unit_path`]),
+/// and a `root/serve.rs` that `fn main()` reaches, whose `compose_planes` builds a `PlaneDriver`.
+/// `door_row`: the plane's `linked-axes` row carries `plane-door`. `driven`: a reached `serve` in the
+/// same module runs a unit through the driver. `twice`: a second reached function also builds one.
+fn decision_door(door_row: bool, driven: bool, twice: bool) -> Overlay {
+    let mut ov = decision_without_unit_path();
+    if door_row {
+        ov.set(
+            CRATE_MANIFEST,
+            FIXTURE_LINKED_MANIFEST.replace(
+                "plane-decisions = \"plane\"\n",
+                "plane-decisions = \"plane plane-door\"\n",
+            ),
+        );
+    }
+    let mut serve = String::from(
+        "pub struct ServedPlane {\n    driver: PlaneDriver,\n}\n\n\
+         pub fn compose_planes() -> Vec<ServedPlane> {\n    let driver = PlaneDriver::new(1);\n    vec![ServedPlane { driver }]\n}\n",
+    );
+    let mut calls = String::from("    let planes = root::serve::compose_planes();\n");
+    if driven {
+        serve.push_str(
+            "\npub fn serve(planes: &[ServedPlane]) -> u64 {\n    planes.iter().map(|p| p.driver.unit(1)).sum()\n}\n",
+        );
+        calls.push_str("    let _ = root::serve::serve(&planes);\n");
+    } else {
+        calls.push_str("    let _ = planes;\n");
+    }
+    if twice {
+        serve.push_str(
+            "\npub fn compose_again() -> ServedPlane {\n    ServedPlane { driver: PlaneDriver::new(2) }\n}\n",
+        );
+        calls.push_str("    let _ = root::serve::compose_again();\n");
+    }
+    ov.set(SERVE_RS, serve);
+    ov.set(
+        "crates/busbar/src/root/mod.rs",
+        format!(
+            "{}pub mod serve;\n",
+            include_str!("../../fixtures/reachability-green/crates/busbar/src/root/mod.rs")
+        ),
+    );
+    ov.set(
+        MAIN_RS,
+        FIXTURE_GREEN_MAIN.replace(INSTALL_CALL_LINE, &format!("{INSTALL_CALL_LINE}{calls}")),
     );
     ov
 }
