@@ -209,7 +209,10 @@ async fn an_errored_or_abandoned_turn_still_ledgers_what_it_served() {
         row_set(&[("audio_seconds_in", 2), ("tool_calls", 1)]),
         "an error-ended turn ledgers its own counts (1.5 s rounds up to 2)"
     );
-    let _ = core.on_client_frame(uplink_audio(400));
+    // 600 ms more: the session has spoken 2 100 ms, which converts once to 3 s (MONEY-AUDIT STR-2:
+    // the session is one unit; rounding each turn up on its own would also read 3 here, but 20 turns
+    // of 1 050 ms read 40 s that way instead of 21 s).
+    let _ = core.on_client_frame(uplink_audio(600));
     core.settle_open_turn();
     assert_eq!(
         rows(&host)["audio_seconds_in"],
