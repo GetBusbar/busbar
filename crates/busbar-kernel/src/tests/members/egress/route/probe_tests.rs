@@ -173,6 +173,44 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
     );
 }
 
+/// An answer the breaker records nothing for — the caller's own fault — resolves no probe, so the
+/// attempt gives back the one it won; 1.5.5 released it on exactly this exit (v1.5.5
+/// `crates/busbar/src/proxy/engine/mod.rs:1900-1912`; the request-too-large exit at `:2131-2138`).
+#[test]
+fn an_answer_that_records_nothing_gives_the_probe_back() {
+    let mut node = Node::with_lanes(&["a"]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
+    node.breaker.set(
+        DestinationId::new(0),
+        Health {
+            cooldown: 30,
+            offers_probe: Some(9),
+            ..Health::default()
+        },
+    );
+    node.conns.script(
+        "a",
+        Script::Frames(vec![super::harness::frame(
+            Some(busbar_contract::transport::wire::WireStatusClass::CallerFault),
+            "bad",
+        )]),
+    );
+
+    assert!(
+        node.route("primary").is_delivered(),
+        "the caller's fault is relayed"
+    );
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![busbar_kernel_egress::ports::Outcome::RecordNothing]
+    );
+    assert_eq!(
+        node.breaker.probe_releases(),
+        vec![("primary".to_string(), DestinationId::new(0), 9)],
+        "a cell must never wedge half-open on an answer that recorded nothing"
+    );
+}
+
 // ── the shed paths that dispatch nothing ────────────────────────────────────────────────────────
 //
 // A pick can win the recovery probe and then never reach a dispatch: the far end resolves the

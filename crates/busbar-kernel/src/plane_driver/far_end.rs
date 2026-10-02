@@ -785,7 +785,14 @@ impl EgressFarEnd<'_> {
         if tripped {
             e.telemetry.breaker_trip(&pool, destination);
         }
-        live.probe = None;
+        // A recorded outcome resolves a probe this attempt won. An answer that records NOTHING (the
+        // caller's own fault, a request too large for the window) resolves none, so the probe stays
+        // the attempt's and the settle gives it back, owner-checked: 1.5.5 released it on exactly
+        // these exits or the member stayed wedged half-open (v1.5.5
+        // `crates/busbar/src/proxy/engine/mod.rs:1900-1912`, `:2131-2138`).
+        if !matches!(classified.outcome, Outcome::RecordNothing) {
+            live.probe = None;
+        }
         // The caller's own fault is not the destination's, and a degraded dispatch relays the
         // upstream's answer: either reaches the plane as it came.
         if matches!(classified.disposition, Disposition::ClientFault) || live.degraded {
