@@ -23,7 +23,7 @@ it; `-` means the dialect has no form for it.
 | cohere | response | 14 | 0 |
 | cohere | stream | 11 | 0 |
 | gemini | request | 41 | 1 |
-| gemini | response | 21 | 1 |
+| gemini | response | 34 | 1 |
 | openai_chat | request | 70 | 1 |
 | openai_chat | response | 34 | 1 |
 | openai_chat | stream | 4 | 0 |
@@ -186,9 +186,9 @@ it; `-` means the dialect has no form for it.
 | response_id | - | - | - | `responseId` | - | - |
 | role | `role` | `output.message.role` | `message.role` | - | `choices[].message.role` | - |
 | safety_ratings | - | - | - | `candidates[].safetyRatings`<br>`promptFeedback.safetyRatings` | - | - |
-| safety_verdict | - | - | - | - | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | `moderation.input.type=moderation_result.categories`<br>`moderation.output.type=moderation_result.categories` |
+| safety_verdict | - | - | - | `candidates[].safetyRatings[].category`<br>`candidates[].safetyRatings[].blocked`<br>`promptFeedback.safetyRatings[].category`<br>`promptFeedback.safetyRatings[].blocked` | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | `moderation.input.type=moderation_result.categories`<br>`moderation.output.type=moderation_result.categories` |
 | search_units | - | - | `usage.billed_units.search_units` | - | - | - |
-| served_tier | `usage.service_tier` | - | - | - | `service_tier` | `service_tier` |
+| served_tier | `usage.service_tier` | - | - | `usageMetadata.serviceTier` | `service_tier` | `service_tier` |
 | status | - | - | - | - | - | `status`<br>`output[].type=message.status`<br>`output[].type=web_search_call.status` |
 | stop_sequence | `stop_sequence` | - | - | - | - | - |
 | summary | - | - | - | - | - | `output[].type=reasoning.summary` |
@@ -200,8 +200,8 @@ it; `-` means the dialect has no form for it.
 | tool_use_prompt_token_count | - | - | - | `usageMetadata.toolUsePromptTokenCount` | - | - |
 | total_tokens | - | `usage.totalTokens` | - | `usageMetadata.totalTokenCount` | `usage.total_tokens` | `usage.total_tokens` |
 | type | `type` | - | - | - | - | - |
-| usage_by_modality | - | - | - | - | `usage.prompt_tokens_details.text_tokens`<br>`usage.prompt_tokens_details.image_tokens`<br>`usage.completion_tokens_details.text_tokens` | - |
-| web_search | `content[].type=web_search_tool_result`<br>`content[].type=web_search_tool_result.tool_use_id`<br>`content[].type=web_search_tool_result.content[].url`<br>`content[].type=web_search_tool_result.content[].title`<br>`content[].type=web_search_tool_result.content.error_code` | - | - | - | - | `output[].type=web_search_call`<br>`output[].type=web_search_call.id`<br>`output[].type=web_search_call.status`<br>`output[].type=web_search_call.action.type=search.sources[].url` |
+| usage_by_modality | - | - | - | `usageMetadata.promptTokensDetails[].modality`<br>`usageMetadata.promptTokensDetails[].tokenCount`<br>`usageMetadata.candidatesTokensDetails[].modality`<br>`usageMetadata.candidatesTokensDetails[].tokenCount`<br>`usageMetadata.cacheTokensDetails[].modality`<br>`usageMetadata.cacheTokensDetails[].tokenCount` | `usage.prompt_tokens_details.text_tokens`<br>`usage.prompt_tokens_details.image_tokens`<br>`usage.completion_tokens_details.text_tokens` | - |
+| web_search | `content[].type=web_search_tool_result`<br>`content[].type=web_search_tool_result.tool_use_id`<br>`content[].type=web_search_tool_result.content[].url`<br>`content[].type=web_search_tool_result.content[].title`<br>`content[].type=web_search_tool_result.content.error_code` | - | - | `candidates[].groundingMetadata.groundingChunks[].web.uri`<br>`candidates[].groundingMetadata.groundingChunks[].web.title` | - | `output[].type=web_search_call`<br>`output[].type=web_search_call.id`<br>`output[].type=web_search_call.status`<br>`output[].type=web_search_call.action.type=search.sources[].url` |
 | web_search_requests | `usage.server_tool_use.web_search_requests` | - | - | - | - | - |
 
 ## stream
