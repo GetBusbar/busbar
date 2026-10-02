@@ -22,7 +22,7 @@
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::KindTailHead;
 use busbar_contract::abi::plane::{
-    AdminRoute, BillableClass, PinMechanism, PlaneTail, Section, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
+    AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, Section, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_ROOT,
     SECTION_DECLARING, SHAPE_PIECEWISE, TRUST_PIN, TRUST_REVERIFY_TTL,
 };
@@ -140,6 +140,68 @@ const TRUST_KEYS: &[TrustKey] = &[
     },
 ];
 
+/// The operation class of the child-process carrier's session verbs, which no method row carries.
+pub const OP_SESSION: &str = "session";
+
+/// The index of [`OP_SESSION`] in the tail's operation classes: after every method row's class.
+pub const OP_CLASS_SESSION: u32 = crate::ops::OP_CLASSES.len() as u32;
+
+const fn op_class(i: usize) -> OpClass {
+    OpClass {
+        op: abi_str(crate::ops::OP_CLASSES[i].as_str()),
+        name: abi_str(crate::ops::OP_CLASSES[i].as_str()),
+    }
+}
+
+/// The operation classes, in [`crate::ops::OP_CLASSES`] order, then [`OP_SESSION`].
+const OP_CLASS_TABLE: &[OpClass] = &[
+    op_class(0),
+    op_class(1),
+    op_class(2),
+    op_class(3),
+    op_class(4),
+    op_class(5),
+    op_class(6),
+    op_class(7),
+    op_class(8),
+    op_class(9),
+    op_class(10),
+    op_class(11),
+    op_class(12),
+    op_class(13),
+    op_class(14),
+    op_class(15),
+    op_class(16),
+    OpClass {
+        op: abi_str(OP_SESSION),
+        name: abi_str(OP_SESSION),
+    },
+];
+
+/// The tail index of an operation class; a class the table does not hold reads as the session
+/// class.
+#[must_use]
+pub fn op_class_index(op: busbar_contract::ids::OpClassId) -> u32 {
+    crate::ops::OP_CLASSES
+        .iter()
+        .position(|c| *c == op)
+        .map_or(OP_CLASS_SESSION, |i| i as u32)
+}
+
+/// The status of a verb the endpoint does not serve.
+pub const STATUS_METHOD_NOT_ALLOWED: u32 = 405;
+
+/// The served engine's body for a verb the endpoint does not serve.
+#[must_use]
+pub fn method_not_allowed_body() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "error": "method_not_allowed",
+        "error_description":
+            "MCP revision 2026-07-28 has no GET stream and no sessions; the endpoint accepts POST only.",
+    }))
+    .unwrap_or_default()
+}
+
 /// THE STATEMENT TAIL: the plane's static facts.
 pub const TAIL: &PlaneTail = &PlaneTail {
     head: KindTailHead {
@@ -166,8 +228,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     dialect_auth_len: 0,
     scope_kinds: SCOPE_KINDS.as_ptr(),
     scope_kinds_len: SCOPE_KINDS.len(),
-    op_classes: std::ptr::null(),
-    op_classes_len: 0,
+    op_classes: OP_CLASS_TABLE.as_ptr(),
+    op_classes_len: OP_CLASS_TABLE.len(),
     billable_classes: BILLABLE_CLASSES.as_ptr(),
     billable_classes_len: BILLABLE_CLASSES.len(),
     route_cost: std::ptr::null(),

@@ -25,7 +25,7 @@ const SECTION: &[u8] = br#"{
     "url": "https://mcp.example/db",
     "pin": {"mechanism": "unpinned"},
     "resources_allow": {"file:///shared": {"blob": "YmluYXJ5"}},
-    "resource_templates_allow": {"file:///logs/{day}": {"text": "db log"}}
+    "resource_templates_allow": {"file:///logs/{day}": {"text": "db log {day}"}}
   }
 }"#;
 

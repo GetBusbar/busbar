@@ -142,3 +142,17 @@ fn the_statement_version_is_the_crates() {
         crate::plane_door::VERSION
     );
 }
+
+/// The tail states one operation class per method row's class, in their order, then the session
+/// class, and each row's class is found at its own index.
+#[test]
+fn the_tail_states_every_operation_class_then_the_session_class() {
+    assert_eq!(OP_CLASS_TABLE.len(), crate::ops::OP_CLASSES.len() + 1);
+    for (i, op) in crate::ops::OP_CLASSES.iter().enumerate() {
+        assert_eq!(op_class_index(*op) as usize, i);
+        let abi = OP_CLASS_TABLE[i].op;
+        assert_eq!((abi.ptr, abi.len), (op.as_str().as_ptr(), op.as_str().len()));
+    }
+    assert_eq!(OP_CLASS_SESSION as usize, crate::ops::OP_CLASSES.len());
+    assert_eq!(TAIL.op_classes_len, OP_CLASS_TABLE.len());
+}

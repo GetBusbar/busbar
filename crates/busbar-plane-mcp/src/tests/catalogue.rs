@@ -22,7 +22,7 @@ const SECTION: &[u8] = br#"{
     },
     "prompts_allow": {"summarise": {"description": "Summarise."}},
     "resources_allow": {"file:///readme": {"name": "readme", "mime_type": "text/plain", "text": "hi"}},
-    "resource_templates_allow": {"file:///logs/{date}": {"name": "log", "text": "x"}}
+    "resource_templates_allow": {"file:///logs/{date}": {"name": "log", "text": "log {date}"}}
   },
   "db": {
     "url": "https://mcp.example/db",
@@ -73,7 +73,10 @@ fn the_whole_catalogue_is_listed_under_published_names_pending_included() {
     let read_file = &tools["result"]["tools"][2];
     assert_eq!(read_file["description"], "Reads a file.");
     assert_eq!(read_file["inputSchema"], json!({"type": "object"}));
-    assert_eq!(read_file["_meta"], json!({"io.busbar/schemaHash": "sha256:aa"}));
+    assert_eq!(
+        read_file["_meta"],
+        json!({"io.busbar/schemaHash": "sha256:aa"})
+    );
     // A pending tool, and a blank hash, publish no hash.
     assert!(tools["result"]["tools"][3].get("_meta").is_none());
     assert!(tools["result"]["tools"][1].get("_meta").is_none());
@@ -162,7 +165,10 @@ fn a_quarantined_tool_is_hidden_and_only_granted_tools_are_asked() {
     let c = catalogue(1, SECTION);
     let fs = holding(&["mcp_server:fs", "mcp_tool:fs_read_file"]);
     let v = read(c.tools_list(&json!(1), &fs, |t| {
-        assert_eq!(t.namespaced, "fs_read_file", "an ungranted tool is never asked");
+        assert_eq!(
+            t.namespaced, "fs_read_file",
+            "an ungranted tool is never asked"
+        );
         true
     }));
     assert_eq!(v["result"]["tools"], json!([]));
@@ -174,9 +180,10 @@ fn a_quarantined_tool_is_hidden_and_only_granted_tools_are_asked() {
 #[test]
 fn an_approval_is_visible_from_its_generation_and_not_before() {
     let before = catalogue(1, SECTION);
-    let approved = String::from_utf8(SECTION.to_vec())
-        .expect("utf-8")
-        .replace(r#""write_file": {}"#, r#""write_file": {"schema_hash": "sha256:cc"}"#);
+    let approved = String::from_utf8(SECTION.to_vec()).expect("utf-8").replace(
+        r#""write_file": {}"#,
+        r#""write_file": {"schema_hash": "sha256:cc"}"#,
+    );
     let after = catalogue(2, approved.as_bytes());
     let hash = |c: &Catalogue| {
         read(c.tools_list(&json!(1), &everyone, |_| false))["result"]["tools"][3]
@@ -184,7 +191,10 @@ fn an_approval_is_visible_from_its_generation_and_not_before() {
             .cloned()
     };
     assert_eq!(hash(&before), None);
-    assert_eq!(hash(&after), Some(json!({"io.busbar/schemaHash": "sha256:cc"})));
+    assert_eq!(
+        hash(&after),
+        Some(json!({"io.busbar/schemaHash": "sha256:cc"}))
+    );
     assert_eq!((before.generation(), after.generation()), (1, 2));
 }
 
