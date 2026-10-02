@@ -312,7 +312,15 @@ impl Inner {
                 deadline_ns,
                 Arc::clone(&lent),
             );
-            let done = reply.await;
+            // THE BUDGET CUTS THE WAIT, NOT THE PLUGIN: a hook that is still inside its slot when the
+            // deadline passes answers the caller `TimedOut` then, never after (1.5.5's timeout
+            // behaviour, frozen); the dropped guard tells the dispatcher no one is waiting.
+            let Ok(done) =
+                tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), reply)
+                    .await
+            else {
+                return Err(Answered::TimedOut);
+            };
             let out = done.frame.as_ref().map(|f| f.out);
             if done.short && first {
                 if let Some(grown) = out.as_ref().and_then(&mut regrow) {
