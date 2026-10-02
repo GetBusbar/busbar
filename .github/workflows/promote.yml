@@ -6,7 +6,7 @@ on: pull_request
 concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
 permissions: { contents: read }
 env:
-  RELEASE_REF: 9ba9ab5c90ac6436fc5edbb450e645d1cdc45a10
+  RELEASE_REF: bf34a0043a3175ace168a7d9df42f8efe3d10d43
   SHA: ${{ github.event.pull_request.head.sha }}
   TO: ${{ github.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -22,6 +22,7 @@ jobs:
       - { id: pre, run: bash busbar-release/ci/promote/preflight.sh }
   hop:
     needs: preflight
+    permissions: { contents: read, issues: write, pull-requests: write }
     runs-on: ${{ needs.preflight.outputs.runner }}
     timeout-minutes: 330
     steps:
@@ -30,6 +31,11 @@ jobs:
       - run: bash busbar-release/ci/promote/hop.sh
         env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}" }
       - { if: always(), uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02, with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/turnstile-*.json", if-no-files-found: warn } } # v4
+      # The durable verdict hop.sh writes pass or fail (verdict/): artifact, sticky PR comment, branch health issue.
+      - { if: always(), uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02, with: { name: "verdict-${{ env.SHA }}", path: "verdict/", retention-days: 90, if-no-files-found: warn } } # v4
+      - if: always()
+        run: bash busbar-release/ci/promote/publish.sh
+        env: { GH_TOKEN: "${{ github.token }}" }
       - if: vars.PROMOTE_BOARD == 'true'
         run: bash busbar-release/ci/promote/board.sh
         env: { GITHUB_TOKEN: "${{ secrets.BUSBAR_TRAIN_TOKEN }}" }
