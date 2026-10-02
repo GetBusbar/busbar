@@ -3,16 +3,13 @@
 
 //! The unit's own proof.
 //!
-//! These are the previous release's failover, pick-order, exhaustion and probe tests, carried over
-//! and re-asserted against the moved code. What each one checks is unchanged; what it drives is a
-//! scripted transport instead of a real upstream, which is the only difference between the two and
-//! the reason each is a unit test here rather than an integration test elsewhere.
+//! What stays here mints nothing: the rotation's allocation shape, the request context's deadline
+//! arithmetic and the one floor the breaker unit shares.
 //!
-//! The tests that drive a route step need a `Pass<Route>`, and minting one is legal only in
+//! The tests that drive the walk need a `Pass<Route>`, and minting one is legal only in
 //! `busbar-kernel`, so they live in its `src/tests/members/egress/route/` together with the
-//! scripted node they drive. What stays here mints nothing.
+//! scripted node they drive.
 
 mod allocation_tests;
 mod exhaustion_tests;
 mod pick_order_tests;
-mod walk_tests;

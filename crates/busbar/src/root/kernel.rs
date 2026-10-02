@@ -64,7 +64,6 @@ use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{Evidence, UnitCtx, Units};
 use busbar_kernel_egress::trust::Trust;
-use busbar_kernel_egress::EgressUnit;
 use busbar_kernel_identity::{Auth, AuthChain};
 
 /// Take the kernel's seal. Boot only, once per process.
@@ -1200,8 +1199,6 @@ impl busbar_contract::verb_store::Store for RefusingStore {
 /// functions or unit structs the step calls with the facts it was handed — and holding an empty
 /// value for each of them would be furniture rather than structure.
 pub struct ProductionUnits {
-    /// The egress unit's rotation memory. The walk itself is a per-request value.
-    pub egress: EgressUnit,
     /// Every `(pool, destination)` breaker cell and every destination's lifetime budget, behind the
     /// port the egress unit reaches it through.
     ///
@@ -1321,7 +1318,6 @@ impl ProductionUnits {
         #[cfg_attr(not(feature = "root-admin"), allow(unused_mut))]
         let mut units = ProductionUnits {
             breaker: crate::root::adapters::BreakerAdapter::with_policy(breaker_policy),
-            egress: EgressUnit::new(),
             auth: Auth::new(auth_chain),
             // The unbound posture, which is the one a node has until it is handed a directory:
             // the cache is real, and the two authorities are absent rather than permissive. A
