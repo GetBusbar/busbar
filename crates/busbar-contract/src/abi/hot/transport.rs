@@ -583,7 +583,7 @@ pub struct WireFramed {
     pub end_of_frame: u8,
     /// The status class ([`code::status_class`]; `0` = none).
     pub status_class: u8,
-    /// [`FRAMED_HAS_STATUS_CODE`] | [`FRAMED_HAS_RETRY_AFTER`] | [`FRAMED_TEXT`].
+    /// Bit 0: `status_code` is present. Bit 1: `retry_after_secs` is present.
     pub flags: u8,
     /// Alignment padding.
     pub _reserved: u8,
@@ -605,8 +605,6 @@ pub struct WireFramed {
 pub const FRAMED_HAS_STATUS_CODE: u8 = 1;
 /// [`WireFramed::flags`]: the retry-after is present.
 pub const FRAMED_HAS_RETRY_AFTER: u8 = 2;
-/// [`WireFramed::flags`]: the bytes belong to a text message ([`crate::transport::Framed::text`]).
-pub const FRAMED_TEXT: u8 = 4;
 
 /// `send(ctx, bytes, len)`: bytes owed to the far side.
 pub type WireSendFn = extern "C-unwind" fn(ctx: *mut c_void, bytes: *const u8, len: usize);
