@@ -189,6 +189,7 @@ extern "C" {
 #define BB_AUTH_FACT_INBOUND_NEEDS_BODY_HASH UINT32_C(2) /* [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as */
 #define BB_AUTH_FACT_INBOUND_ALL_HEADERS UINT32_C(4) /* [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's */
 #define BB_AUTH_FACT_OPERATOR UINT32_C(8) /* [`AuthTail::facts`]: this plugin's `verify` judges THE OPERATOR CREDENTIAL, the one admin */
+#define BB_AUTH_FACT_READS_CREDENTIALS UINT32_C(16) /* [`AuthTail::facts`]: this plugin's `verify` reads host-held credentials of the kinds */
 #define BB_AUTH_METRIC_CACHE_FLUSHED "busbar_auth_cache_flushed_total" /* THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a */
 #define BB_AUTH_LOGIN_KIND_NONE UINT32_C(0) /* [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared). */
 #define BB_AUTH_LOGIN_KIND_REDIRECT UINT32_C(1) /* [`AuthTail::login_kind`]: a redirect to an IdP. */
@@ -548,7 +549,10 @@ extern "C" {
 #define BB_HSVC_OP_RANDOM_FILL UINT32_C(18) /* `random.fill`. */
 #define BB_HSVC_OP_NEED_ADMIT UINT32_C(19) /* `need.admit`. */
 #define BB_HSVC_OP_TRUST_VERIFY UINT32_C(20) /* `trust.verify`. */
-#define BB_HSVC_SERVICES UINT32_C(21) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_RECORDS_SECRET UINT32_C(21) /* `records.secret`. */
+#define BB_HSVC_SERVICES UINT32_C(22) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
+#define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
 #define BB_HSVC_FOUND UINT64_C(1) /* `value` of [`op::RECORDS_GET`]: the record is in span `0`. */
 #define BB_HSVC_CLAIM_WON UINT64_C(1) /* `value` of [`op::RECORDS_CLAIM`]: this call made the claim. */
@@ -913,6 +917,7 @@ typedef struct bb_hsvc_ClockNowIn bb_hsvc_ClockNowIn;
 typedef struct bb_hsvc_RecordsGetIn bb_hsvc_RecordsGetIn;
 typedef struct bb_hsvc_RecordsListIn bb_hsvc_RecordsListIn;
 typedef struct bb_hsvc_RecordsClaimIn bb_hsvc_RecordsClaimIn;
+typedef struct bb_hsvc_RecordsSecretIn bb_hsvc_RecordsSecretIn;
 typedef struct bb_hsvc_DestJudgeIn bb_hsvc_DestJudgeIn;
 typedef struct bb_hsvc_SignIn bb_hsvc_SignIn;
 typedef struct bb_hsvc_UnitNestIn bb_hsvc_UnitNestIn;
@@ -1865,6 +1870,8 @@ struct bb_auth_AuthTail {
     const bb_auth_StyleDecl *styles;
     size_t styles_len;
     bb_mech_AbiStr operator_principal;
+    const bb_mech_AbiStr *credential_kinds;
+    size_t credential_kinds_len;
 };
 
 /* `open_outbound`'s `in`. */
@@ -3280,6 +3287,14 @@ struct bb_hsvc_RecordsClaimIn {
     uint64_t ttl_ms;
 };
 
+/* [`op::RECORDS_SECRET`]'s `in`: the secret of one HOST-held credential, of a kind the calling */
+struct bb_hsvc_RecordsSecretIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr kind;
+    bb_mech_AbiStr id;
+    bb_hsvc_ServiceBufs into;
+};
+
 /* [`op::DEST_JUDGE`]'s `in`: judge a destination named inside content against the egress rules of */
 struct bb_hsvc_DestJudgeIn {
     bb_hsvc_ServiceHead head;
@@ -3431,9 +3446,10 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn random_fill;
     bb_hsvc_ServiceFn need_admit;
     bb_hsvc_ServiceFn trust_verify;
+    bb_hsvc_ServiceFn records_secret;
 };
 
-/* ---- layout proof: 257 of 260 structures are pinned by the golden ---- */
+/* ---- layout proof: 258 of 261 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4141,7 +4157,7 @@ BB_ASSERT(BB_ALIGNOF(bb_auth_StyleDecl) == 8, "bb_auth_StyleDecl: alignment");
 BB_ASSERT(offsetof(bb_auth_StyleDecl, name) == 0, "bb_auth_StyleDecl.name: offset");
 BB_ASSERT(offsetof(bb_auth_StyleDecl, flags) == 16, "bb_auth_StyleDecl.flags: offset");
 BB_ASSERT(offsetof(bb_auth_StyleDecl, points) == 20, "bb_auth_StyleDecl.points: offset");
-BB_ASSERT(sizeof(bb_auth_AuthTail) == 56, "bb_auth_AuthTail: size");
+BB_ASSERT(sizeof(bb_auth_AuthTail) == 72, "bb_auth_AuthTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_AuthTail) == 8, "bb_auth_AuthTail: alignment");
 BB_ASSERT(offsetof(bb_auth_AuthTail, head) == 0, "bb_auth_AuthTail.head: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, caps) == 8, "bb_auth_AuthTail.caps: offset");
@@ -4151,6 +4167,8 @@ BB_ASSERT(offsetof(bb_auth_AuthTail, inbound_points) == 20, "bb_auth_AuthTail.in
 BB_ASSERT(offsetof(bb_auth_AuthTail, styles) == 24, "bb_auth_AuthTail.styles: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, styles_len) == 32, "bb_auth_AuthTail.styles_len: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, operator_principal) == 40, "bb_auth_AuthTail.operator_principal: offset");
+BB_ASSERT(offsetof(bb_auth_AuthTail, credential_kinds) == 56, "bb_auth_AuthTail.credential_kinds: offset");
+BB_ASSERT(offsetof(bb_auth_AuthTail, credential_kinds_len) == 64, "bb_auth_AuthTail.credential_kinds_len: offset");
 BB_ASSERT(sizeof(bb_auth_OpenOutboundIn) == 152, "bb_auth_OpenOutboundIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_OpenOutboundIn) == 8, "bb_auth_OpenOutboundIn: alignment");
 BB_ASSERT(offsetof(bb_auth_OpenOutboundIn, head) == 0, "bb_auth_OpenOutboundIn.head: offset");
@@ -5266,6 +5284,12 @@ BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, head) == 0, "bb_hsvc_RecordsClaimIn.h
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, kind) == 24, "bb_hsvc_RecordsClaimIn.kind: offset");
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, key) == 40, "bb_hsvc_RecordsClaimIn.key: offset");
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, ttl_ms) == 56, "bb_hsvc_RecordsClaimIn.ttl_ms: offset");
+BB_ASSERT(sizeof(bb_hsvc_RecordsSecretIn) == 88, "bb_hsvc_RecordsSecretIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_RecordsSecretIn) == 8, "bb_hsvc_RecordsSecretIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_RecordsSecretIn, head) == 0, "bb_hsvc_RecordsSecretIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_RecordsSecretIn, kind) == 24, "bb_hsvc_RecordsSecretIn.kind: offset");
+BB_ASSERT(offsetof(bb_hsvc_RecordsSecretIn, id) == 40, "bb_hsvc_RecordsSecretIn.id: offset");
+BB_ASSERT(offsetof(bb_hsvc_RecordsSecretIn, into) == 56, "bb_hsvc_RecordsSecretIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_DestJudgeIn) == 80, "bb_hsvc_DestJudgeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_DestJudgeIn) == 8, "bb_hsvc_DestJudgeIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, head) == 0, "bb_hsvc_DestJudgeIn.head: offset");
@@ -5358,7 +5382,7 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_NeedAdmitIn) == 4, "bb_hsvc_NeedAdmitIn: alignment"
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, head) == 0, "bb_hsvc_NeedAdmitIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, need) == 24, "bb_hsvc_NeedAdmitIn.need: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, _reserved) == 28, "bb_hsvc_NeedAdmitIn._reserved: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 176, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 184, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5383,6 +5407,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_call) == 144, "bb_hsvc_HostSlots.hook
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, random_fill) == 152, "bb_hsvc_HostSlots.random_fill: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 160, "bb_hsvc_HostSlots.need_admit: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 168, "bb_hsvc_HostSlots.trust_verify: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 176, "bb_hsvc_HostSlots.records_secret: offset");
 #endif
 
 #ifdef __cplusplus
