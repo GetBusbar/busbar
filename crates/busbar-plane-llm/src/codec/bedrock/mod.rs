@@ -1695,9 +1695,14 @@ const GUARDRAIL_USAGE_COUNTS: &[&str] = &[
 /// one WARN names them all (`inputAssessment.<count>=n`, `outputAssessments.<count>=n`), so the
 /// gap between the ledger and AWS's invoice is visible rather than silent. A present count that is
 /// not a count is named `unreadable`. Nothing is ledgered; nothing is refused.
-fn warn_guardrail_units(holder: &serde_json::Value) {
+///
+/// The readable sums are RETURNED as the turn's residual units (MONEY LAW, owner 2026-10-02),
+/// keyed `guardrail.<side>.<count>`, for the reader to carry on the usage it reports: never
+/// billed, and the kernel's settle step writes the `usage.residual` audit row that names them.
+fn warn_guardrail_units(holder: &serde_json::Value) -> std::collections::BTreeMap<String, u64> {
+    let mut residual = std::collections::BTreeMap::new();
     let Some(guardrail) = holder.get(TRACE).and_then(|t| t.get(GUARDRAIL)) else {
-        return;
+        return residual;
     };
     let usage_of = |a: &serde_json::Value| {
         a.get(GUARDRAIL_INVOCATION_METRICS)
@@ -1741,11 +1746,14 @@ fn warn_guardrail_units(holder: &serde_json::Value) {
                 named.push(format!("{side}.{count}=unreadable"));
             } else if let Some(n) = sum {
                 named.push(format!("{side}.{count}={n}"));
+                if n > 0 {
+                    residual.insert(format!("{GUARDRAIL}.{side}.{count}"), n);
+                }
             }
         }
     }
     if named.is_empty() {
-        return;
+        return residual;
     }
     let units = named.join(" ");
     tracing::warn!(
@@ -1754,6 +1762,7 @@ fn warn_guardrail_units(holder: &serde_json::Value) {
         "bedrock guardrail policy units are billed by AWS separately from the model's tokens and \
          land in no meter class this plane declares: they are not ledgered"
     );
+    residual
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.

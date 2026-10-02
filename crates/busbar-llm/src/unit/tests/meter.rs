@@ -116,6 +116,7 @@ fn sink(
         key: key.clone(),
         pool: std::sync::Arc::from("p"),
         charged_at,
+        request_id: 0,
         admit: None,
     }
 }

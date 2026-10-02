@@ -316,3 +316,85 @@ fn a_total_that_disagrees_is_reported_never_ledgered() {
         cap.messages()
     );
 }
+
+/// The residual units the buffered read and the stream's `metadata` frame each carry onto the
+/// ledger projection.
+fn residuals_on_both_paths(
+    usage: &serde_json::Value,
+    trace: Option<&serde_json::Value>,
+) -> [std::collections::BTreeMap<String, u64>; 2] {
+    let mut body = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+        "stopReason": "end_turn",
+        "usage": usage
+    });
+    let mut metadata = serde_json::json!({"type": "metadata", "usage": usage});
+    if let Some(trace) = trace {
+        body["trace"] = trace.clone();
+        metadata["trace"] = trace.clone();
+    }
+    let buffered = BedrockReader.read_response(&body).expect("read").usage;
+    let mut state = crate::codec::ir::StreamDecodeState::default();
+    BedrockReader.read_response_events(
+        "",
+        &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
+        &mut state,
+    );
+    let streamed = BedrockReader
+        .read_response_events("", &metadata, &mut state)
+        .into_iter()
+        .find_map(|e| match e {
+            IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .expect("the metadata frame emits a MessageDelta");
+    [
+        buffered.to_token_usage().residual_units,
+        streamed.to_token_usage().residual_units,
+    ]
+}
+
+/// THE RESIDUALS TRAVEL ON THE USAGE, UNBILLED (MONEY LAW, owner 2026-10-02). Guardrail policy
+/// units (7 on each of two guardrails) and a stated total 7 above the itemized sum each reach the
+/// ledger projection as a named residual, on the buffered read and the streamed one, while the
+/// billed tiers stay the itemized counts. A total BELOW its terms is no unbilled count and adds
+/// none. RED when a reader stops carrying a residual it WARNs about.
+#[test]
+fn the_residuals_travel_on_the_usage_unbilled() {
+    let closes = serde_json::json!({"inputTokens": 1000, "outputTokens": 100, "totalTokens": 1100});
+    let trace = guardrail_trace("inputAssessment", "topicPolicyUnits");
+    for (path, residual) in ["buffered", "streamed"]
+        .iter()
+        .zip(residuals_on_both_paths(&closes, Some(&trace)))
+    {
+        assert_eq!(
+            residual,
+            std::collections::BTreeMap::from([(
+                "guardrail.inputAssessment.topicPolicyUnits".to_string(),
+                14
+            )]),
+            "{path}: the guardrail units are a named residual"
+        );
+    }
+    let above = serde_json::json!({"inputTokens": 1000, "outputTokens": 100, "totalTokens": 1107});
+    for (path, residual) in ["buffered", "streamed"]
+        .iter()
+        .zip(residuals_on_both_paths(&above, None))
+    {
+        assert_eq!(
+            residual,
+            std::collections::BTreeMap::from([("bedrock.usage.stated_total_gap".to_string(), 7)]),
+            "{path}: the stated total above the itemized sum is a named residual"
+        );
+    }
+    let below = serde_json::json!({"inputTokens": 1000, "outputTokens": 100, "totalTokens": 15});
+    for (path, residual) in ["buffered", "streamed"]
+        .iter()
+        .zip(residuals_on_both_paths(&below, None))
+    {
+        assert!(
+            residual.is_empty(),
+            "{path}: a total below its terms is no unbilled count: {residual:?}"
+        );
+    }
+}

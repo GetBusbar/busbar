@@ -1171,15 +1171,16 @@ impl ProtocolReader for BedrockReader {
                 // total made the same turn's bill reconcilable buffered and not reconcilable
                 // streamed.
                 let usage_val = data.get(keys::USAGE);
-                let usage = match read_bedrock_usage(usage_val) {
+                let mut usage = match read_bedrock_usage(usage_val) {
                     Ok(usage) => usage,
                     Err(refusal) => {
                         out.push(IrStreamEvent::Error(refusal));
                         return out;
                     }
                 };
-                // The guardrail policy units ride the same frame's `trace`, as they do buffered.
-                warn_guardrail_units(data);
+                // The guardrail policy units ride the same frame's `trace`, as they do buffered,
+                // and travel on the usage as residuals (never billed).
+                usage.detail.residual_units = warn_guardrail_units(data);
 
                 out.push(IrStreamEvent::MessageDelta {
                     stop_reason: state.pending_stop_reason.take(),
@@ -1386,9 +1387,10 @@ impl ProtocolReader for BedrockReader {
         let usage_obj = obj.get(keys::USAGE);
         // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens` — rides the same table
         // as the totals (see `USAGE`). Absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-        let usage = read_bedrock_usage(usage_obj)?;
-        // The guardrail policy units AWS bills beside the tokens ride `trace`, not `usage`.
-        warn_guardrail_units(body);
+        let mut usage = read_bedrock_usage(usage_obj)?;
+        // The guardrail policy units AWS bills beside the tokens ride `trace`, not `usage`; they
+        // travel on the usage as residuals (never billed).
+        usage.detail.residual_units = warn_guardrail_units(body);
 
         Ok(crate::codec::ir::IrResponse {
             logprobs: Vec::new(),

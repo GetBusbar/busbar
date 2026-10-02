@@ -1270,6 +1270,11 @@ pub struct IrUsageDetail {
     /// `billable_tokens` ignores this field like every other on the struct, so populating it can
     /// never change what busbar bills.
     pub usage_identity_note: Option<UsageIdentityNote>,
+    /// Counts the reader found that no billing class records (Bedrock's guardrail policy units),
+    /// keyed by the provider's own count name. Never billed: [`IrUsage::to_token_usage`] carries
+    /// them onto [`busbar_contract::billing::TokenUsage::residual_units`], which no billed-usage
+    /// builder reads.
+    pub residual_units: std::collections::BTreeMap<String, u64>,
     /// The tokens split by modality (OpenAI `*_tokens_details.{text,image,audio}_tokens`, Gemini
     /// `*TokensDetails[].{modality,tokenCount}`). PRESENTATION ONLY (ARCHITECT ruling 2026-10-02,
     /// DF-MAP item 4, MONEY LAW): it creates no meter class, feeds no ledger, and changes no billed
@@ -1381,10 +1386,31 @@ impl IrUsage {
                 .unwrap_or(self.output_tokens),
             cache_read: self.cache_read_input_tokens,
             cache_creation: self.cache_creation_input_tokens,
+            residual_units: self.residual_units(),
             ..Default::default()
         }
     }
+
+    /// THE RESIDUALS this usage reports, never billed (MONEY LAW, owner 2026-10-02): every count
+    /// the reader carried on [`IrUsageDetail::residual_units`], plus the provider-stated total above
+    /// the itemized sum ([`IrUsageDetail::usage_identity_note`] with a positive `unaccounted`) as
+    /// `<identity>.stated_total_gap`. A total BELOW its terms is no unbilled count, so it adds
+    /// nothing here; its note and WARN still say so.
+    fn residual_units(&self) -> std::collections::BTreeMap<String, u64> {
+        let mut residual = self.detail.residual_units.clone();
+        if let Some(note) = &self.detail.usage_identity_note {
+            let gap = u64::try_from(note.unaccounted).unwrap_or(0);
+            if gap > 0 {
+                let identity = note.identity;
+                residual.insert(format!("{identity}.{STATED_TOTAL_GAP}"), gap);
+            }
+        }
+        residual
+    }
 }
+
+/// The residual key suffix for a provider-stated total above its itemized sum.
+const STATED_TOTAL_GAP: &str = "stated_total_gap";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrBlockMeta {
