@@ -22,6 +22,9 @@ use busbar_contract::records::{PlaneRequestCtx, ScopeRef, VirtualKey};
 fn deployment(pool: &str) -> Arc<App> {
     crate::test_support::register_neutral_test_plane();
     crate::metrics::init();
+    // `known_protocols` seeds nothing: the registry read seeds this binary's built-in protocols, so
+    // the list is not empty when these tests run alone.
+    let _ = crate::proto::registry();
     let proto = crate::proto::known_protocols()[0];
     TestApp::new()
         .lane(LaneSpec::new(pool, proto, "http://127.0.0.1:1"))
@@ -58,16 +61,16 @@ fn a_destination_refusal_ends_the_unit_exactly_once() {
     let app = deployment(pool);
     let proto = "ingress-terminal-acl-proto";
     let before = terminals(proto);
-    let refused = governance_guard(
+    let Err(refused) = governance_guard(
         &app,
         &caller(&["some-other-pool"]),
         proto,
         pool,
         Instant::now(),
         0,
-    )
-    .err()
-    .expect("a key without a grant on the pool is turned away");
+    ) else {
+        panic!("a key without a grant on the pool is turned away");
+    };
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
     assert_eq!(
         terminals(proto) - before,
