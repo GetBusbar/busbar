@@ -79,7 +79,8 @@ pub const DEFAULT_ERROR_BODY_MAX: usize = 256 * 1024;
 /// joined onto, and its auth binding.
 #[derive(Clone)]
 pub struct MemberRoute {
-    /// The plane instance's declared need the connection opens on.
+    /// The plane instance's declared need the connection opens on, resolved once at config load
+    /// by the member's auth key ([`super::resolve_member_needs`]).
     pub need: NeedId,
     /// The provider's `base_url`, as the operator spelled it.
     pub base_url: String,
