@@ -302,14 +302,11 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // crates/busbar-core-admin/src/v1/service.rs, outside the reviewed homes — an admin read that
     // prices on its own path (the BUDGET row: the enforcement path is not the invoice path).
     "one-pricing-site",
-    // `token-sealed` and its three named mints: the Teller's tokens, `KernelSeal::acquire_for_kernel(`,
-    // the arrival-hold mint and `SecretOnce::mint(` are spelled outside their one home crate (266,
-    // 136, 49 and 5 sites). Item 317: the one deliberate cross-crate hole in the capability model is
-    // held by nothing while these are red. The arrival hold is a money hold, so this drains with it.
-    "token-sealed",
-    "token-sealed:admit-token-mint",
-    "token-sealed:kernel-seal",
-    "token-sealed:secret-once-mint",
+    // `token-sealed` and its three named mints STRUCK 2026-10-02 (GATE-GREEN, ARCHITECT rulings A + B,
+    // Q-GG2, Q-GG3): every site was test code. The contract's and the kernel member crates' minting
+    // tests moved into busbar-kernel/src; root, llm and core-admin tests take their tokens from the
+    // kernel's test-only mint (`test_support::tokens`) and core-admin's `secret_once`; the lint's
+    // rule-spec literals moved to a data file. Each row measures 0 with the full scan, tests included.
     //
     // C1 / THE FOLD — DRAIN: Phase 4.
     // `lean-core`: 14 string literals in the kernel and busbar-kernel-* crates naming a dialect or a
