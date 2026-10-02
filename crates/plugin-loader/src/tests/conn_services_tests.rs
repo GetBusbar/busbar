@@ -503,7 +503,16 @@ struct Scripted {
     within: Mutex<Vec<Vec<std::net::IpAddr>>>,
     writes: Mutex<Vec<Vec<u8>>>,
     script: Mutex<VecDeque<(Piece, Vec<u8>)>>,
+    /// Every upgrade call: the stream, the name offered and the trust reference.
+    upgrades: Mutex<Vec<Upgrade>>,
+    /// How many upgrade calls answer PENDING before one answers done.
+    upgrade_pends: Mutex<u32>,
+    /// What `facts` answers; `None` = the stream is closed.
+    facts: Mutex<Option<ConnFacts>>,
 }
+
+/// One upgrade call as it reached the table: the stream, the name offered, the trust reference.
+type Upgrade = (ConnId, Option<String>, Option<String>);
 
 impl DeclaredConns for Scripted {
     fn declare(
@@ -522,6 +531,27 @@ impl DeclaredConns for Scripted {
     }
     fn framed(&self, _: InstanceId, _: NeedId) -> bool {
         self.framed
+    }
+    fn upgrade_secure(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        name: Option<&str>,
+        trust: Option<&str>,
+        _: u64,
+    ) -> Result<(), ConnError> {
+        self.slab.get(caller, conn)?;
+        self.upgrades.lock().unwrap().push((
+            conn,
+            name.map(str::to_owned),
+            trust.map(str::to_owned),
+        ));
+        let mut pends = self.upgrade_pends.lock().unwrap();
+        if *pends > 0 {
+            *pends -= 1;
+            return Err(ConnError::Pending);
+        }
+        Ok(())
     }
 }
 
@@ -571,7 +601,7 @@ impl Conns for Scripted {
         Err(ConnError::Pending)
     }
     fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
-        Err(ConnError::Closed)
+        self.facts.lock().unwrap().clone().ok_or(ConnError::Closed)
     }
     fn close(&self, c: InstanceId, id: ConnId) -> Result<(), ConnError> {
         self.slab.remove(c, id).map(|_| ())
@@ -1077,4 +1107,139 @@ fn need_admit_answers_the_tables_verdict_on_the_declared_need() {
     let q = bound(Box::leak(Box::new(NEEDS)), &refused);
     assert_eq!(open_with(&q, b"{}"), Outcome::Ready);
     assert_eq!(admit(&q, 0), Outcome::Refused, "the table refused it");
+}
+
+// ── UPGRADE_SECURE AND FACTS (ARCHITECT ruling Q-FC3) ──────────────────────────────────────────
+
+/// The instance's host tables as `open` hands them: its context and the connector slots.
+fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
+    use busbar_contract::abi::mechanism::ticket::HostTables;
+    busbar_contract::abi::sdk::conn::Host::of(&HostTables {
+        size: std::mem::size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: p.inner.ctx(),
+        wake: None,
+        conns: &CONN_SLOTS,
+        services: std::ptr::null(),
+    })
+}
+
+/// RED (Q-FC3): the plugin-facing path. Through the SDK's `Connector`, an op establishes a raw
+/// stream and upgrades it: the upgrade reaches the host's table under the instance's identity with
+/// the stream, the name offered and the trust reference; while the handshake runs it is PENDING,
+/// and the op's re-entry on the same ticket redeems the establish (never dialled twice) and drives
+/// the upgrade to done, after which a further re-entry redeems that too (never run again).
+#[test]
+fn an_sdk_upgrade_reaches_the_table_and_follows_the_replay_rule() {
+    use std::task::Poll;
+    let table = Arc::new(Scripted {
+        upgrade_pends: Mutex::new(1),
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let host = sdk_host(&p);
+    let entry = |host: &busbar_contract::abi::sdk::conn::Host| {
+        let mut c = host.connector(T);
+        let Poll::Ready(Ok(stream)) = c.establish(0, Some("127.0.0.1:9"), "") else {
+            panic!("the raw stream is established");
+        };
+        (stream, c.upgrade_secure(stream, Some("ldap.example"), None))
+    };
+    let (stream, first) = entry(&host);
+    assert_eq!(first, Poll::Pending, "the handshake is running");
+    let (again, second) = entry(&host);
+    assert_eq!(again, stream, "the establish is redeemed on re-entry");
+    assert_eq!(second, Poll::Ready(Ok(())));
+    let (_, third) = entry(&host);
+    assert_eq!(third, Poll::Ready(Ok(())));
+    assert_eq!(table.opened.lock().unwrap().len(), 1, "dialled once");
+    let upgrades = table.upgrades.lock().unwrap().clone();
+    assert_eq!(
+        upgrades,
+        vec![(ConnId(stream), Some("ldap.example".to_owned()), None); 2],
+        "run until done, never after"
+    );
+}
+
+/// RED (Q-FC3): an upgrade that would pend on no ticket is refused, and a framed stream (one the
+/// host holds for its framer) is never upgraded.
+#[test]
+fn an_upgrade_on_no_ticket_or_a_framed_stream_is_refused() {
+    use busbar_contract::abi::host::conn::connector::UpgradeIn;
+    let table = Arc::new(Scripted {
+        upgrade_pends: Mutex::new(1),
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let upgrade = |stream: u64, ticket: Ticket| UpgradeIn {
+        head: ServiceHead {
+            size: std::mem::size_of::<UpgradeIn>() as u32,
+            op: service::UPGRADE_SECURE,
+            handle: CompletionHandle {
+                ticket,
+                seq: 9,
+                _reserved: 0,
+            },
+        },
+        stream,
+        offered_name: NONE,
+        trust: NONE,
+    };
+    let out = call(
+        &p,
+        CONN_SLOTS.upgrade_secure,
+        &upgrade(stream, Ticket::NONE),
+    );
+    assert_eq!(out.outcome, RawOutcome::of(Outcome::Refused));
+    let framed = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let q = bound_over(&framed);
+    let held = opened_stream(&q, 0).value;
+    let out = call(&q, CONN_SLOTS.upgrade_secure, &upgrade(held, T));
+    assert_eq!(out.outcome, RawOutcome::of(Outcome::Refused));
+    assert!(framed.upgrades.lock().unwrap().is_empty());
+}
+
+/// RED (Q-FC3): `FACTS` writes the stream's facts: secure, and the far end's certificate hash
+/// (the channel-binding input) as the table answered it; a stream in the clear is not secure and
+/// carries no hash.
+#[test]
+fn facts_expose_the_peer_certificate_hash() {
+    use busbar_contract::abi::host::conn::connector::{FactsIn, StreamFacts};
+    let table = Arc::new(Scripted::default());
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let read = |seq: u32| {
+        // SAFETY: an all-zero `StreamFacts` is a valid value the slot overwrites.
+        let mut f: StreamFacts = unsafe { std::mem::zeroed() };
+        let i = FactsIn {
+            head: head_of::<FactsIn>(service::FACTS, seq),
+            stream,
+            facts: &mut f,
+        };
+        let out = call(&p, CONN_SLOTS.facts, &i);
+        assert_eq!(out.outcome, RawOutcome::of(Outcome::Ready));
+        let text = |s: AbiStr| {
+            (!s.ptr.is_null()).then(|| {
+                // SAFETY: the host holds the facts' strings until the stream closes.
+                String::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+                    .unwrap()
+            })
+        };
+        (f.secure, text(f.peer_cert_hash))
+    };
+    *table.facts.lock().unwrap() = Some(ConnFacts::default());
+    assert_eq!(read(1), (0, None), "in the clear");
+    *table.facts.lock().unwrap() = Some(ConnFacts {
+        peer_cert: Some(busbar_contract::transport::wire::CertFacts {
+            subject: String::new(),
+            issuer: String::new(),
+            fingerprint: "ab".repeat(32),
+        }),
+        ..ConnFacts::default()
+    });
+    assert_eq!(read(2), (1, Some("ab".repeat(32))), "secured");
 }

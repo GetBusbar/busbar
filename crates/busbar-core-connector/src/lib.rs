@@ -621,6 +621,23 @@ impl Connector {
     }
 }
 
+/// The host name a dial target names: a URL's host, or a bare `host:port`'s host, unbracketed.
+fn host_of(target: &str) -> String {
+    if target.contains("://") {
+        if let Ok(parts) = busbar_contract::net::parse_url(target) {
+            return parts.host;
+        }
+    }
+    let authority = target.split(['/', '?', '#']).next().unwrap_or(target);
+    let host = match authority.rsplit_once(':') {
+        Some((h, port)) if !port.contains(']') => h,
+        _ => authority,
+    };
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_owned()
+}
+
 /// Whether a dial target carries a userinfo (`user:pass@`): a URL by the contract's one reader, a
 /// bare `host:port` by its authority.
 fn carries_userinfo(target: &str) -> bool {
@@ -692,6 +709,60 @@ impl DeclaredConns for Connector {
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
         let declared = self.declared.lock().expect("declared needs");
         declared.get(&(owner, need)).map(|(_, answer)| *answer)
+    }
+
+    /// THE MID-STREAM UPGRADE: the connection, once dialled, is secured with the need's own client
+    /// config (the public roots and the operator CA its `trust_from` named, on top), or the
+    /// connector's default trust for a need that names none, offering `name` or the endpoint's
+    /// host name, bounded by the open's default timeout. A framed need's stream is refused (its
+    /// framer, not the plugin, speaks on it), and so is a `trust` reference other than the need's
+    /// own `trust_from`.
+    fn upgrade_secure(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        name: Option<&str>,
+        trust: Option<&str>,
+        ticket: Ticket,
+    ) -> Result<(), ConnError> {
+        let (need, held) = self.slab.get(caller, conn)?;
+        if self.framed(caller, need) {
+            return Err(ConnError::Refused);
+        }
+        let config = {
+            let declared = self.declared.lock().expect("declared needs");
+            let trust_from = declared
+                .get(&(caller, need))
+                .map(|(spec, _)| spec.trust_from.as_str());
+            if trust.is_some_and(|t| Some(t) != trust_from) {
+                return Err(ConnError::Refused);
+            }
+            let over = self.over.lock().expect("needs");
+            over.get(&(caller, need))
+                .and_then(|d| d.tls.clone())
+                .or_else(|| self.tls.clone())
+                .ok_or(ConnError::Refused)?
+        };
+        let waker = self.waker(ticket);
+        if !Self::settle(&held, Some(&waker))? {
+            return Err(ConnError::Pending);
+        }
+        let mut c = held.conn.lock().expect("connection");
+        let c = c.as_mut().ok_or(ConnError::Closed)?;
+        let name = match name {
+            Some(n) => n.to_owned(),
+            None => host_of(c.target()),
+        };
+        match c.upgrade_secure(
+            &config,
+            &name,
+            DEFAULT_OPEN_TIMEOUT,
+            &mut Context::from_waker(&waker),
+        ) {
+            Poll::Ready(Ok(())) => Ok(()),
+            Poll::Ready(Err(f)) => Err(map(&f)),
+            Poll::Pending => Err(ConnError::Pending),
+        }
     }
 
     /// A need is framed when the entry serving its transport composes over another claim (a framer
@@ -909,7 +980,14 @@ impl Conns for Connector {
                 .agreed_protocol
                 .as_ref()
                 .map(|p| String::from_utf8_lossy(p).into_owned()),
-            peer_cert: None,
+            peer_cert: c
+                .as_ref()
+                .and_then(Connection::peer_cert_hash)
+                .map(|fingerprint| busbar_contract::transport::wire::CertFacts {
+                    subject: String::new(),
+                    issuer: String::new(),
+                    fingerprint,
+                }),
             claim: e.claim.clone(),
         })
     }
@@ -945,6 +1023,10 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/trust_from_tests.rs"]
 mod trust_from_tests;
+
+#[cfg(test)]
+#[path = "tests/upgrade_tests.rs"]
+mod upgrade_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code, dead_code)]

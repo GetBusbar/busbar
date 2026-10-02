@@ -267,6 +267,33 @@ pub trait DeclaredConns: Conns {
     /// What [`DeclaredConns::declare`] answered for `owner`'s `need`; `None` = never declared.
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
 
+    /// UPGRADE `conn`, an open raw byte stream, to connection security from its next byte on
+    /// (`abi::host::conn::connector::service::UPGRADE_SECURE`: StartTLS after the plugin's own
+    /// negotiation, or TLS from the first byte when made before any byte): offering `name`
+    /// (`None` = the endpoint's host name) and trusting the need's anchors — the public roots, and
+    /// the operator CA its `trust_from` names on top. `trust` names the anchors by the need's
+    /// `trust_from` reference (`None` = the need's); any other reference is refused. The first
+    /// call starts the handshake and every call drives it: `Ok` once it completed,
+    /// [`ConnError::Pending`] with interest under `ticket` while it runs. A host that offers no
+    /// upgrade refuses.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Pending`], [`ConnError::Refused`] (the stream is framed, already secure, or
+    /// the far end's certificate was refused), [`ConnError::NotOwner`], [`ConnError::Closed`],
+    /// [`ConnError::Timeout`].
+    fn upgrade_secure(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        name: Option<&str>,
+        trust: Option<&str>,
+        ticket: Ticket,
+    ) -> Result<(), ConnError> {
+        let _ = (caller, conn, name, trust, ticket);
+        Err(ConnError::Refused)
+    }
+
     /// Whether `owner`'s `need` is carried over a FRAMED transport (a framer composed over a
     /// carrier, http's kind): its request goes out as one opening message, head words, fields and
     /// body, so the host opens it when the request is whole. A raw byte stream, or a need never
