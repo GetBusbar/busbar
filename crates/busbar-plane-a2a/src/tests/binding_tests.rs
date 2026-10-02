@@ -51,7 +51,7 @@ fn the_unframable_sentence_bounds_both_words() {
     assert_eq!(
         unframable_text("GetTask", "SOAP 1.2 ://x"),
         "a2a.hop.unframable: `GetTask` could not be carried to this agent over its \
-         `SOAP?1.2????x` binding"
+         `SOAP?1.2??//x` binding"
     );
     assert_eq!(bounded_word(""), "?");
     assert_eq!(bounded_word(&"a".repeat(60)).len(), 48);
