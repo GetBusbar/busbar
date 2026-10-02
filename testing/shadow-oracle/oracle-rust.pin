@@ -177,8 +177,15 @@
 # cells; cells.json moves with it in this commit). No golden is recorded by this move. Feature branch head; re-pin to the
 # merge commit when it lands.
 #
+# 2026-10-02 (SWITCH-OVER, ARCHITECT rulings Q-SO2/Q-SO3/Q-SO4): moved e58d85c -> 6839561 (busbar-release main;
+# e58d85c's patches are in main as f13bdd6/f16d1dc/7d1d307/cf1954d). #19: plugin-digests.tsv gains an optional 5th
+# column, the busbar line a row serves (1.5 | 1.6, absent = 1.5), chosen from the binary's --version; {ASSET:<plugin>}
+# fills an asset file name from the chosen row; fetch-plugin takes --bin/--line. #23: headroom leaves the hooks variant
+# (HEADROOM-REMOVE), so its 43 cells are NEW cells `<old id>@hooks-webrequest` (variant hooks-webrequest, one webrequest
+# gate); per-cell mask.json_keys (scoped to the webrequest asset-name fields; a key both kept and masked is refused).
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=e58d85c
+release_ref=6839561
 crate=busbar-release-oracle
 bin=busbar-oracle

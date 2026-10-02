@@ -5692,14 +5692,14 @@
       "why": "no credential -> 401 envelope"
     },
     {
-      "id": "admin.ops|DeleteHooksName|if-match-malformed",
+      "id": "admin.ops|DeleteHooksName|if-match-malformed@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "DELETE",
-        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "path": "/api/v1/admin/hooks/busbar-webrequest",
         "headers": {
           "If-Match": "garbage"
         },
@@ -5708,20 +5708,20 @@
         "listener": "admin"
       },
       "why": "If-Match malformed: [400]",
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
       "bindings": [
         "PB-100"
       ]
     },
     {
-      "id": "admin.ops|DeleteHooksName|if-match-stale",
+      "id": "admin.ops|DeleteHooksName|if-match-stale@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "DELETE",
-        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "path": "/api/v1/admin/hooks/busbar-webrequest",
         "headers": {
           "If-Match": "\"0\""
         },
@@ -5730,7 +5730,7 @@
         "listener": "admin"
       },
       "why": "If-Match stale: [409]",
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
       "bindings": [
         "PB-100"
       ]
@@ -5752,14 +5752,14 @@
       "why": "expect [404]"
     },
     {
-      "id": "admin.ops|DeleteHooksName|ok",
+      "id": "admin.ops|DeleteHooksName|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "DELETE",
-        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "path": "/api/v1/admin/hooks/busbar-webrequest",
         "headers": {},
         "body": null,
         "auth": "admin",
@@ -5767,15 +5767,15 @@
         "post": [
           {
             "method": "GET",
-            "path": "/api/v1/admin/hooks/busbar-headroom",
+            "path": "/api/v1/admin/hooks/busbar-webrequest",
             "headers": {},
             "auth": "admin",
             "listener": "admin"
           }
         ]
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409. | oracle: variant=hooks (published",
-      "config_variant": "hooks"
+      "why": "ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409. | oracle: variant=hooks-webrequest",
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|DeleteHooksName|unauth",
@@ -6195,14 +6195,14 @@
       "why": "expect [404]"
     },
     {
-      "id": "admin.ops|DeletePluginsFile|ok",
+      "id": "admin.ops|DeletePluginsFile|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "DELETE",
-        "path": "/api/v1/admin/plugins/busbar-webrequest-1.0.6-{TRIPLE}.tar.gz",
+        "path": "/api/v1/admin/plugins/{ASSET:webrequest-hook}",
         "headers": {},
         "body": null,
         "auth": "admin",
@@ -6217,8 +6217,13 @@
           }
         ]
       },
-      "why": "ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op. | oracle: variant=hooks (published he",
-      "config_variant": "hooks"
+      "why": "ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op. | oracle: variant=hooks-webrequest (p",
+      "config_variant": "hooks-webrequest",
+      "mask": {
+        "json_keys": [
+          "effects.audit.items.resource"
+        ]
+      }
     },
     {
       "id": "admin.ops|DeletePluginsFile|unauth",
@@ -6228,7 +6233,7 @@
       "outcome": "ok",
       "request": {
         "method": "DELETE",
-        "path": "/api/v1/admin/plugins/busbar-webrequest-1.0.6-{TRIPLE}.tar.gz",
+        "path": "/api/v1/admin/plugins/{ASSET:webrequest-hook}",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6980,21 +6985,21 @@
       "why": "expect [404]"
     },
     {
-      "id": "admin.ops|GetHooksNameHealth|ok",
+      "id": "admin.ops|GetHooksNameHealth|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/busbar-headroom/health",
+        "path": "/api/v1/admin/hooks/busbar-webrequest/health",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest load",
-      "config_variant": "hooks"
+      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|GetHooksNameHealth|unauth",
@@ -7029,21 +7034,21 @@
       "why": "expect [404]"
     },
     {
-      "id": "admin.ops|GetHooksNameSchema|ok",
+      "id": "admin.ops|GetHooksNameSchema|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/busbar-headroom/schema",
+        "path": "/api/v1/admin/hooks/busbar-webrequest/schema",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest load",
-      "config_variant": "hooks"
+      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|GetHooksNameSchema|unauth",
@@ -7078,21 +7083,21 @@
       "why": "expect [404]"
     },
     {
-      "id": "admin.ops|GetHooksNameStatus|ok",
+      "id": "admin.ops|GetHooksNameStatus|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/busbar-headroom/status",
+        "path": "/api/v1/admin/hooks/busbar-webrequest/status",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest load",
-      "config_variant": "hooks"
+      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|GetHooksNameStatus|unauth",
@@ -7127,21 +7132,21 @@
       "why": "expect [404]"
     },
     {
-      "id": "admin.ops|GetHooksName|ok",
+      "id": "admin.ops|GetHooksName|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "path": "/api/v1/admin/hooks/busbar-webrequest",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest load",
-      "config_variant": "hooks"
+      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest load",
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|GetHooksName|unauth",
@@ -7160,7 +7165,7 @@
       "why": "no credential -> 401 envelope"
     },
     {
-      "id": "admin.ops|GetHooks|ok",
+      "id": "admin.ops|GetHooks|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -7174,7 +7179,7 @@
         "listener": "admin"
       },
       "why": "200 Page_HookView \u2014 empty on the oracle config (no hooks: block).",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|GetHooks|unauth",
@@ -7737,21 +7742,21 @@
       "why": "expect [404]"
     },
     {
-      "id": "admin.ops|GetPluginsFileSchema|ok",
+      "id": "admin.ops|GetPluginsFileSchema|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/plugins/busbar-headroom-2.0.7-{TRIPLE}.tar.gz/schema",
+        "path": "/api/v1/admin/plugins/{ASSET:webrequest-hook}/schema",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404. | oracle: variant=hooks (published headroom + webrequest loaded)",
-      "config_variant": "hooks"
+      "why": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404. | oracle: variant=hooks-webrequest (published webrequest loaded; o",
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|GetPluginsFileSchema|unauth",
@@ -7770,7 +7775,7 @@
       "why": "no credential -> 401 envelope"
     },
     {
-      "id": "admin.ops|GetPlugins|ok",
+      "id": "admin.ops|GetPlugins|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -7784,7 +7789,7 @@
         "listener": "admin"
       },
       "why": "200 Page_PluginView; `type` query is REQUIRED (auth|hooks|store), missing/unknown \u21d2 400. | oracle: ?type=hook (the param is required)",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|GetPlugins|unauth",
@@ -8512,47 +8517,47 @@
       "why": "expect [400]"
     },
     {
-      "id": "admin.ops|PatchHooksNameSettings|if-match-malformed",
+      "id": "admin.ops|PatchHooksNameSettings|if-match-malformed@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "PATCH",
-        "path": "/api/v1/admin/hooks/busbar-headroom/settings",
+        "path": "/api/v1/admin/hooks/busbar-webrequest/settings",
         "headers": {
           "Content-Type": "application/json",
           "If-Match": "garbage"
         },
-        "body": "{\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.6}}",
+        "body": "{\"settings\":{\"timeout_ms\":60,\"url\":\"http://127.0.0.1:9/oracle-sidecar\"}}",
         "auth": "admin",
         "listener": "admin"
       },
       "why": "If-Match malformed: [400]",
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
       "bindings": [
         "PB-100"
       ]
     },
     {
-      "id": "admin.ops|PatchHooksNameSettings|if-match-stale",
+      "id": "admin.ops|PatchHooksNameSettings|if-match-stale@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "PATCH",
-        "path": "/api/v1/admin/hooks/busbar-headroom/settings",
+        "path": "/api/v1/admin/hooks/busbar-webrequest/settings",
         "headers": {
           "Content-Type": "application/json",
           "If-Match": "\"0\""
         },
-        "body": "{\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.6}}",
+        "body": "{\"settings\":{\"timeout_ms\":60,\"url\":\"http://127.0.0.1:9/oracle-sidecar\"}}",
         "auth": "admin",
         "listener": "admin"
       },
       "why": "If-Match stale: [409]",
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
       "bindings": [
         "PB-100"
       ]
@@ -8576,24 +8581,24 @@
       "why": "expect [404]"
     },
     {
-      "id": "admin.ops|PatchHooksNameSettings|ok",
+      "id": "admin.ops|PatchHooksNameSettings|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "PATCH",
-        "path": "/api/v1/admin/hooks/busbar-headroom/settings",
+        "path": "/api/v1/admin/hooks/busbar-webrequest/settings",
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.6}}",
+        "body": "{\"settings\":{\"timeout_ms\":60,\"url\":\"http://127.0.0.1:9/oracle-sidecar\"}}",
         "auth": "admin",
         "listener": "admin",
         "post": [
           {
             "method": "GET",
-            "path": "/api/v1/admin/hooks/busbar-headroom",
+            "path": "/api/v1/admin/hooks/busbar-webrequest",
             "headers": {},
             "auth": "admin",
             "listener": "admin"
@@ -8601,7 +8606,7 @@
         ]
       },
       "why": "ok: null \u2014 needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409. | oracle: va",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|PatchHooksNameSettings|unauth",
@@ -9858,7 +9863,7 @@
       "why": "expect [400]"
     },
     {
-      "id": "admin.ops|PostHooks|if-match-malformed",
+      "id": "admin.ops|PostHooks|if-match-malformed@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -9875,13 +9880,13 @@
         "listener": "admin"
       },
       "why": "If-Match malformed: [400]",
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
       "bindings": [
         "PB-100"
       ]
     },
     {
-      "id": "admin.ops|PostHooks|if-match-stale",
+      "id": "admin.ops|PostHooks|if-match-stale@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -9898,13 +9903,13 @@
         "listener": "admin"
       },
       "why": "If-Match stale: [409]",
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
       "bindings": [
         "PB-100"
       ]
     },
     {
-      "id": "admin.ops|PostHooks|ok",
+      "id": "admin.ops|PostHooks|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -9929,7 +9934,7 @@
         ]
       },
       "why": "Registers the NEW tap hook `oracle-webreq` backed by the published busbar-webrequest plugin (kind: hook in its manifest; declares no settings schema, so `open()",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|PostHooks|unauth",
@@ -10382,7 +10387,7 @@
       "why": "expect [400]"
     },
     {
-      "id": "admin.ops|PostPluginsInspect|ok",
+      "id": "admin.ops|PostPluginsInspect|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -10393,12 +10398,12 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"file\":\"busbar-webrequest-1.0.6-{TRIPLE}.tar.gz\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
+        "body": "{\"file\":\"{ASSET:webrequest-hook}\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
         "auth": "admin",
         "listener": "admin"
       },
       "why": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView; read-only scope, own rate class PluginInspect (30/min). `tarball_b64` required \u21d2 bad_body 400; ",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|PostPluginsInspect|unauth",
@@ -10412,7 +10417,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"file\":\"busbar-webrequest-1.0.6-{TRIPLE}.tar.gz\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
+        "body": "{\"file\":\"{ASSET:webrequest-hook}\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
         "auth": "none",
         "listener": "admin"
       },
@@ -10478,7 +10483,7 @@
       "why": "expect [400]"
     },
     {
-      "id": "admin.ops|PostPluginsRollback|if-match-malformed",
+      "id": "admin.ops|PostPluginsRollback|if-match-malformed@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -10490,18 +10495,24 @@
           "Content-Type": "application/json",
           "If-Match": "garbage"
         },
-        "body": "{\"file\":\"busbar-headroom-2.0.7-{TRIPLE}.tar.gz\"}",
+        "body": "{\"file\":\"{ASSET:webrequest-hook}\"}",
         "auth": "admin",
         "listener": "admin"
       },
       "why": "If-Match malformed: [400]",
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
+      "mask": {
+        "json_keys": [
+          "body.json.file",
+          "effects.audit.items.resource"
+        ]
+      },
       "bindings": [
         "PB-100"
       ]
     },
     {
-      "id": "admin.ops|PostPluginsRollback|if-match-stale",
+      "id": "admin.ops|PostPluginsRollback|if-match-stale@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -10513,18 +10524,24 @@
           "Content-Type": "application/json",
           "If-Match": "\"0\""
         },
-        "body": "{\"file\":\"busbar-headroom-2.0.7-{TRIPLE}.tar.gz\"}",
+        "body": "{\"file\":\"{ASSET:webrequest-hook}\"}",
         "auth": "admin",
         "listener": "admin"
       },
       "why": "If-Match stale: [409]",
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
+      "mask": {
+        "json_keys": [
+          "body.json.file",
+          "effects.audit.items.resource"
+        ]
+      },
       "bindings": [
         "PB-100"
       ]
     },
     {
-      "id": "admin.ops|PostPluginsRollback|ok",
+      "id": "admin.ops|PostPluginsRollback|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -10535,7 +10552,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"file\":\"busbar-headroom-2.0.7-{TRIPLE}.tar.gz\"}",
+        "body": "{\"file\":\"{ASSET:webrequest-hook}\"}",
         "auth": "admin",
         "listener": "admin",
         "post": [
@@ -10548,8 +10565,14 @@
           }
         ]
       },
-      "why": "Rolls the published busbar-headroom plugin back to the SAME version already active (the only artifact present in the plugins dir under the hooks variant) -- a n",
-      "config_variant": "hooks"
+      "why": "Rolls the published busbar-webrequest plugin back to the SAME version already active (the only artifact present in the plugins dir under the hooks-webrequest va",
+      "config_variant": "hooks-webrequest",
+      "mask": {
+        "json_keys": [
+          "body.json.file",
+          "effects.audit.items.resource"
+        ]
+      }
     },
     {
       "id": "admin.ops|PostPluginsRollback|unauth",
@@ -10588,7 +10611,7 @@
       "why": "expect [400]"
     },
     {
-      "id": "admin.ops|PostPlugins|ok",
+      "id": "admin.ops|PostPlugins|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
@@ -10599,7 +10622,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"file\":\"busbar-webrequest-1.0.6-{TRIPLE}.tar.gz\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
+        "body": "{\"file\":\"{ASSET:webrequest-hook}\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
         "auth": "admin",
         "listener": "admin",
         "post": [
@@ -10613,7 +10636,13 @@
         ]
       },
       "why": "ok: null \u2014 needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required \u21d2 bad_body 400; bad filename 400 Cond::InvalidFilename; untr",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest",
+      "mask": {
+        "json_keys": [
+          "body.json.file",
+          "effects.audit.items.resource"
+        ]
+      }
     },
     {
       "id": "admin.ops|PostPlugins|unauth",
@@ -10627,7 +10656,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"file\":\"busbar-webrequest-1.0.6-{TRIPLE}.tar.gz\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
+        "body": "{\"file\":\"{ASSET:webrequest-hook}\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
         "auth": "none",
         "listener": "admin"
       },
@@ -11422,19 +11451,19 @@
       "why": "expect [400]"
     },
     {
-      "id": "admin.ops|PutHooksName|if-match-malformed",
+      "id": "admin.ops|PutHooksName|if-match-malformed@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "PUT",
-        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "path": "/api/v1/admin/hooks/busbar-webrequest",
         "headers": {
           "Content-Type": "application/json",
           "If-Match": "garbage"
         },
-        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-headroom\",\"on_error\":\"nothing\",\"prompt\":\"rw\",\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.5},\"timeout_ms\":60}}",
+        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-webrequest\",\"on_error\":\"nothing\",\"settings\":{\"timeout_ms\":60,\"url\":\"http://127.0.0.1:9/oracle-sidecar\"},\"timeout_ms\":60}}",
         "auth": "admin",
         "listener": "admin"
       },
@@ -11442,25 +11471,25 @@
       "inventory": [
         "CONF-220"
       ],
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
       "bindings": [
         "PB-100"
       ]
     },
     {
-      "id": "admin.ops|PutHooksName|if-match-stale",
+      "id": "admin.ops|PutHooksName|if-match-stale@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "PUT",
-        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "path": "/api/v1/admin/hooks/busbar-webrequest",
         "headers": {
           "Content-Type": "application/json",
           "If-Match": "\"0\""
         },
-        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-headroom\",\"on_error\":\"nothing\",\"prompt\":\"rw\",\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.5},\"timeout_ms\":60}}",
+        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-webrequest\",\"on_error\":\"nothing\",\"settings\":{\"timeout_ms\":60,\"url\":\"http://127.0.0.1:9/oracle-sidecar\"},\"timeout_ms\":60}}",
         "auth": "admin",
         "listener": "admin"
       },
@@ -11468,7 +11497,7 @@
       "inventory": [
         "CONF-220"
       ],
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
       "bindings": [
         "PB-100"
       ]
@@ -11492,24 +11521,24 @@
       "why": "expect [404]"
     },
     {
-      "id": "admin.ops|PutHooksName|ok",
+      "id": "admin.ops|PutHooksName|ok@hooks-webrequest",
       "plane": "core",
       "family": "admin.ops",
       "driver": "http",
       "outcome": "ok",
       "request": {
         "method": "PUT",
-        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "path": "/api/v1/admin/hooks/busbar-webrequest",
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-headroom\",\"on_error\":\"nothing\",\"prompt\":\"rw\",\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.5},\"timeout_ms\":60}}",
+        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-webrequest\",\"on_error\":\"nothing\",\"settings\":{\"timeout_ms\":60,\"url\":\"http://127.0.0.1:9/oracle-sidecar\"},\"timeout_ms\":60}}",
         "auth": "admin",
         "listener": "admin",
         "post": [
           {
             "method": "GET",
-            "path": "/api/v1/admin/hooks/busbar-headroom",
+            "path": "/api/v1/admin/hooks/busbar-webrequest",
             "headers": {},
             "auth": "admin",
             "listener": "admin"
@@ -11520,7 +11549,7 @@
       "inventory": [
         "CONF-220"
       ],
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "admin.ops|PutHooksName|unauth",
@@ -11717,7 +11746,7 @@
       "why": "the admin operator credential is not a valid signed vkey on the data-plane chain (keys); refused before Admit ever draws a budget bucket"
     },
     {
-      "id": "admin.plugins|type-auth",
+      "id": "admin.plugins|type-auth@hooks-webrequest",
       "plane": "core",
       "family": "admin.plugins",
       "driver": "http",
@@ -11730,11 +11759,11 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "GET /plugins?type=*: the auth catalog: compiled-in modules plus each wired and installed kind:auth row. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
-      "config_variant": "hooks"
+      "why": "GET /plugins?type=*: the auth catalog: compiled-in modules plus each wired and installed kind:auth row. Recorded under the hooks-webrequest variant (the published webrequest hook staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "admin.plugins|type-bogus",
+      "id": "admin.plugins|type-bogus@hooks-webrequest",
       "plane": "core",
       "family": "admin.plugins",
       "driver": "http",
@@ -11747,11 +11776,11 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "GET /plugins?type=*: an unknown type: the refusal and its text. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
-      "config_variant": "hooks"
+      "why": "GET /plugins?type=*: an unknown type: the refusal and its text. Recorded under the hooks-webrequest variant (the published webrequest hook staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "admin.plugins|type-export",
+      "id": "admin.plugins|type-export@hooks-webrequest",
       "plane": "core",
       "family": "admin.plugins",
       "driver": "http",
@@ -11764,11 +11793,11 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "GET /plugins?type=*: an `export` type 1.5.5 does not list: the refusal it answers. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
-      "config_variant": "hooks"
+      "why": "GET /plugins?type=*: an `export` type 1.5.5 does not list: the refusal it answers. Recorded under the hooks-webrequest variant (the published webrequest hook staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "admin.plugins|type-hooks",
+      "id": "admin.plugins|type-hooks@hooks-webrequest",
       "plane": "core",
       "family": "admin.plugins",
       "driver": "http",
@@ -11781,11 +11810,17 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "GET /plugins?type=*: the hooks catalog under the documented plural spelling. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
-      "config_variant": "hooks"
+      "why": "GET /plugins?type=*: the hooks catalog under the documented plural spelling. Recorded under the hooks-webrequest variant (the published webrequest hook staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks-webrequest",
+      "mask": {
+        "json_keys": [
+          "body.json.items.file",
+          "body.json.items.target"
+        ]
+      }
     },
     {
-      "id": "admin.plugins|type-missing",
+      "id": "admin.plugins|type-missing@hooks-webrequest",
       "plane": "core",
       "family": "admin.plugins",
       "driver": "http",
@@ -11798,11 +11833,11 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "GET /plugins?type=*: the REQUIRED `type` parameter missing: the refusal and its text. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
-      "config_variant": "hooks"
+      "why": "GET /plugins?type=*: the REQUIRED `type` parameter missing: the refusal and its text. Recorded under the hooks-webrequest variant (the published webrequest hook staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "admin.plugins|type-secret",
+      "id": "admin.plugins|type-secret@hooks-webrequest",
       "plane": "core",
       "family": "admin.plugins",
       "driver": "http",
@@ -11815,11 +11850,11 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "GET /plugins?type=*: the secret catalog: kind:secret tarballs only (none staged here). Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
-      "config_variant": "hooks"
+      "why": "GET /plugins?type=*: the secret catalog: kind:secret tarballs only (none staged here). Recorded under the hooks-webrequest variant (the published webrequest hook staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "admin.plugins|type-store",
+      "id": "admin.plugins|type-store@hooks-webrequest",
       "plane": "core",
       "family": "admin.plugins",
       "driver": "http",
@@ -11832,8 +11867,14 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "GET /plugins?type=*: the store catalog: the compiled-in memory head plus each kind:store tarball in plugins.dir. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
-      "config_variant": "hooks"
+      "why": "GET /plugins?type=*: the store catalog: the compiled-in memory head plus each kind:store tarball in plugins.dir. Recorded under the hooks-webrequest variant (the published webrequest hook staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks-webrequest",
+      "mask": {
+        "json_keys": [
+          "body.json.items.file",
+          "body.json.items.target"
+        ]
+      }
     },
     {
       "id": "auth.lifecycle|key-expiry",
@@ -19774,7 +19815,7 @@
       }
     },
     {
-      "id": "crosscut.traps|plugin-digests",
+      "id": "crosscut.traps|plugin-digests@hooks-webrequest",
       "plane": "core",
       "family": "crosscut.traps",
       "driver": "http",
@@ -19787,11 +19828,17 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "GET /api/v1/admin/plugins (hooks variant, the published headroom + webrequest plugins loaded): each item's digest is content-derived and pinned instead of being left to the generic scrubbing rules, so a later binary that reports a plugin's tarball as unchanged while its actual bytes moved is a diff",
-      "config_variant": "hooks",
+      "why": "GET /api/v1/admin/plugins (hooks-webrequest variant, the published webrequest plugin loaded): each item's digest is content-derived and pinned instead of being left to the generic scrubbing rules, so a later binary that reports a plugin's tarball as unchanged while its actual bytes moved is a diff",
+      "config_variant": "hooks-webrequest",
       "keep": {
         "json_keys": [
           "items.digest"
+        ]
+      },
+      "mask": {
+        "json_keys": [
+          "body.json.items.file",
+          "body.json.items.target"
         ]
       }
     },
@@ -21989,7 +22036,7 @@
       "why": "the same boot's whole log carries NO line naming a data directory, a WAL, peers or a fleet: the golden is an empty line set, so any such line on a later binary is a diff rather than a judgement call about whether the wording is alarming"
     },
     {
-      "id": "hooks|admin-list",
+      "id": "hooks|admin-list@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22003,10 +22050,10 @@
         "listener": "admin"
       },
       "why": "registry with the loaded hook, incl. the 1.5.5 legacy `at` field alongside `phase`/`fires_at` (the legacy-hook-spelling rule)",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "hooks|config-settings-put|persist-non-boolean",
+      "id": "hooks|config-settings-put|persist-non-boolean@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22022,10 +22069,10 @@
         "listener": "admin"
       },
       "why": "a non-boolean `persist:` is refused naming `persist`+`boolean`, not `unknown field` (the legacy-hook-spelling rule)",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "hooks|config-settings-put|persist-true",
+      "id": "hooks|config-settings-put|persist-true@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22041,10 +22088,10 @@
         "listener": "admin"
       },
       "why": "1.5.5 `persist:` boolean control key \u2014 accepted (boolean-validated) then ignored, never an unknown-field 400 (the legacy-hook-spelling rule)",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "hooks|hooked-pool|embedded-system-turn",
+      "id": "hooks|hooked-pool|embedded-system-turn@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22058,10 +22105,10 @@
         "listener": "data"
       },
       "why": "an embedded system-role turn folded out of `messages` by the IR \u2014 message_count parity (the folded-system-turn parity rule)",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "hooks|hooked-pool|ok",
+      "id": "hooks|hooked-pool|ok@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22075,10 +22122,10 @@
         "listener": "data"
       },
       "why": "gate + rewrite in 1.5.5 order; served 200",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "hooks|hooked-pool|ok_stream",
+      "id": "hooks|hooked-pool|ok_stream@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22092,10 +22139,10 @@
         "listener": "data"
       },
       "why": "streamed through the gate",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "hooks|hooked-pool|unauth",
+      "id": "hooks|hooked-pool|unauth@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22109,10 +22156,10 @@
         "listener": "data"
       },
       "why": "refused before any hook",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "hooks|metrics-hooks",
+      "id": "hooks|metrics-hooks@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22126,13 +22173,13 @@
         "listener": "data"
       },
       "why": "the hook's own scrape exposition",
-      "config_variant": "hooks",
+      "config_variant": "hooks-webrequest",
       "bindings": [
         "PB-43"
       ]
     },
     {
-      "id": "hooks|register|plugin-alias",
+      "id": "hooks|register|plugin-alias@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22148,10 +22195,10 @@
         "listener": "admin"
       },
       "why": "1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` \u2014 must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (the legacy-hook-spelling rule)",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
-      "id": "hooks|unhooked-pool|ok",
+      "id": "hooks|unhooked-pool|ok@hooks-webrequest",
       "plane": "core",
       "family": "hooks",
       "driver": "http",
@@ -22165,7 +22212,7 @@
         "listener": "data"
       },
       "why": "a pool without the hook is untouched",
-      "config_variant": "hooks"
+      "config_variant": "hooks-webrequest"
     },
     {
       "id": "http.crosscut|413|a2a-jsonrpc",
