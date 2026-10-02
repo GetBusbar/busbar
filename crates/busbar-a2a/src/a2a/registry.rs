@@ -248,9 +248,25 @@ impl AgentRegistration {
 // `Approved` registration is ever a candidate. Operator approval is a capability VOUCH as well as an
 // authenticity check, and the anomaly breaker is what catches an agent that betrays the vouch.
 
-// THE SHAPE OF A TASK, as the catalogue is allowed to see it: the plane's, one home
-// ([`busbar_plane_a2a::skill::TaskShape`]).
-pub(crate) use busbar_plane_a2a::skill::TaskShape;
+// TEMPORARY DUPLICATE of the a2a plane's skill fit (ARCHITECT 2026-10-02, #141 door-only):
+// busbar-a2a names no plane path; this copy ends when FOLD-A2A slice 8 deletes busbar-a2a.
+/// THE SHAPE OF A TASK, as the catalogue is allowed to see it.
+///
+/// Typed metadata only. There is no `text` member and there is not going to be one: a field for
+/// prose is a field somebody eventually matches on, and the moment selection reads prose the
+/// upstream's free text is deciding where tasks go.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TaskShape {
+    /// The skill being asked for, by `id`. `None` means "any skill this agent declares".
+    pub(crate) skill: Option<String>,
+    /// Protocol features the task REQUIRES (`streaming`, `pushNotifications`, …). An agent that does
+    /// not declare a required feature cannot accept this shape of task.
+    pub(crate) requires_stream: bool,
+    pub(crate) requires_push_notifications: bool,
+    /// MIME modes the caller will SEND and the modes it can ACCEPT back.
+    pub(crate) input_modes: Vec<String>,
+    pub(crate) output_modes: Vec<String>,
+}
 
 /// WHAT THE CALLER WANTS — everything the grant list and the fitness test need beyond the
 /// registration itself, and this plane's [`CatalogueItem::Query`].
@@ -384,16 +400,72 @@ impl CatalogueItem for AgentRegistration {
     }
 }
 
-/// JUDGE WHETHER AN AGENT CARD MATCHES A TASK SHAPE: the plane's structural fit
-/// ([`busbar_plane_a2a::skill::judge`]), its reasons read as this catalogue's exclusions.
+// TEMPORARY DUPLICATE of the a2a plane's skill fit (ARCHITECT 2026-10-02, #141 door-only):
+// busbar-a2a names no plane path; this copy ends when FOLD-A2A slice 8 deletes busbar-a2a.
+/// JUDGE WHETHER AN AGENT CARD MATCHES A TASK SHAPE. Structural, never a score: an agent either can
+/// accept this shape of task or it cannot.
+///
+/// Unrelated to `mcp/client/argguard.rs`'s `judge`, which asks whether an ARGUMENT is a URL-ish SSRF
+/// hazard. Same verb, unrelated subjects; the `structure-lint` gate carries that as a signed
+/// DISTINCT row rather than leaving it as duplication nobody noticed.
 fn judge(card: &AgentCard, shape: &TaskShape) -> Result<Option<String>, Excluded> {
-    use busbar_plane_a2a::skill::Unfit;
-    busbar_plane_a2a::skill::judge(card, shape).map_err(|unfit| match unfit {
-        Unfit::SkillNotDeclared(id) => Excluded::SkillNotDeclared(id),
-        Unfit::CapabilityNotDeclared(what) => Excluded::CapabilityNotDeclared(what),
-        Unfit::ModesIncompatible => Excluded::ModesIncompatible,
-        Unfit::Unreadable(_) => Excluded::Unreadable(CardError::NotAnObject),
-    })
+    if shape.requires_stream && !card.capabilities.is_stream {
+        return Err(Excluded::CapabilityNotDeclared("streaming"));
+    }
+    if shape.requires_push_notifications && !card.capabilities.push_notifications {
+        return Err(Excluded::CapabilityNotDeclared("pushNotifications"));
+    }
+
+    let matched = match &shape.skill {
+        None => None,
+        Some(wanted) => {
+            let skill = card
+                .skills
+                .iter()
+                .find(|s| &s.id == wanted)
+                .ok_or_else(|| Excluded::SkillNotDeclared(wanted.clone()))?;
+            // A skill's own modes OVERRIDE the card defaults where it declares them, and fall back
+            // to the defaults where it does not. Reading the skill's empty list as "accepts nothing"
+            // would exclude every agent that sensibly declares its modes once.
+            let inputs = pick(&skill.input_modes, &card.default_input_modes);
+            let outputs = pick(&skill.output_modes, &card.default_output_modes);
+            check_modes(shape, inputs, outputs)?;
+            return Ok(Some(skill.id.clone()));
+        }
+    };
+
+    check_modes(shape, &card.default_input_modes, &card.default_output_modes)?;
+    Ok(matched)
+}
+
+fn pick<'a>(specific: &'a [String], fallback: &'a [String]) -> &'a [String] {
+    if specific.is_empty() {
+        fallback
+    } else {
+        specific
+    }
+}
+
+/// The caller must be able to SEND something the agent accepts, and RECEIVE something the agent
+/// produces. Both directions, because an agent that accepts the request and answers in a format the
+/// caller cannot read has not served the task.
+///
+/// A caller that names no modes is not constraining the match: it has said nothing, and treating
+/// silence as "accepts nothing" would empty every catalogue by default.
+fn check_modes(
+    shape: &TaskShape,
+    agent_inputs: &[String],
+    agent_outputs: &[String],
+) -> Result<(), Excluded> {
+    let compatible = |wanted: &[String], declared: &[String]| -> bool {
+        wanted.is_empty() || declared.is_empty() || wanted.iter().any(|w| declared.contains(w))
+    };
+    if !compatible(&shape.input_modes, agent_inputs)
+        || !compatible(&shape.output_modes, agent_outputs)
+    {
+        return Err(Excluded::ModesIncompatible);
+    }
+    Ok(())
 }
 
 /// RECEIVING: which LOCAL fronted agents this caller may see and invoke.

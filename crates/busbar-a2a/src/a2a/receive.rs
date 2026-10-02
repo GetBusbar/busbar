@@ -3665,10 +3665,47 @@ pub(crate) fn shape_of_for_test(envelope: &serde_json::Value) -> super::registry
     shape_of(envelope)
 }
 
-/// The SHAPE of work an inbound envelope is asking for, as the catalogue's filter reads it: the
-/// plane's reading ([`busbar_plane_a2a::skill::TaskShape::of`]).
+// TEMPORARY DUPLICATE of the a2a plane's skill fit (ARCHITECT 2026-10-02, #141 door-only):
+// busbar-a2a names no plane path; this copy ends when FOLD-A2A slice 8 deletes busbar-a2a.
+/// The SHAPE of work an inbound envelope is asking for, as the catalogue's filter reads it.
+///
+/// Read from the request rather than assumed, because the catalogue's whole job is to refuse an
+/// agent whose card does not declare what this call needs. An envelope that names nothing
+/// constrains nothing, which is the empty shape.
 fn shape_of(envelope: &serde_json::Value) -> super::registry::TaskShape {
-    super::registry::TaskShape::of(envelope)
+    let params = envelope.get("params");
+    let cfg = params.and_then(|p| p.get("configuration"));
+    super::registry::TaskShape {
+        skill: params
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("skill"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        // BOTH SPELLINGS OF "THIS IS A STREAM": see [`reads_as_stream`].
+        requires_stream: envelope
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(reads_as_stream),
+        // ALL THREE SPELLINGS of "this task registers a callback" — the same pointer list the
+        // callback guard reads ([`CALLBACK_CONFIG_POINTERS`]), because one spelling here was the
+        // exact lesson the guard's doc comment records: a v1.0 `taskPushNotificationConfig`
+        // envelope declares push work just as loudly as v0.3's `pushNotificationConfig`, and a
+        // filter reading only one spelling silently stops constraining the other era's callers.
+        requires_push_notifications: CALLBACK_CONFIG_POINTERS
+            .into_iter()
+            .any(|p| envelope.pointer(p).is_some()),
+        input_modes: Vec::new(),
+        output_modes: cfg
+            .and_then(|c| c.get("acceptedOutputModes"))
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
 }
 
 /// A per-call identifier derived from the request bytes and the clock. Not a UUID and not claiming
