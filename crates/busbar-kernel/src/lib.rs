@@ -351,7 +351,8 @@ pub use preflight::{
     plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
 };
 pub use router::{
-    build_router, build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,
+    build_router, build_split_routers_serving, build_split_routers_with_limits,
+    fallback_error_response, REQUEST_ACTIVITY_TICKS,
 };
 // Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
 // build sees them as unused — allowed, with the reason written down rather than widened away.
@@ -376,12 +377,17 @@ use busbar_contract::abi::mechanism::route::RouteAuth;
 /// core widening the `pub(crate)` router fn or the `CoreRouteTable`/`CoreRoute` types to `pub`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> {
-    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
-        .1
-        .routes()
-        .iter()
-        .map(|r| (r.path.clone(), r.auth))
-        .collect()
+    router::base_data_router(
+        &app.plugin_routes,
+        &app.plane_slots,
+        app.oauth_as.as_ref(),
+        Vec::new(),
+    )
+    .1
+    .routes()
+    .iter()
+    .map(|r| (r.path.clone(), r.auth))
+    .collect()
 }
 
 /// TEST-SUPPORT ROUTER-SURFACE VIEW, with the declared METHOD. The sibling of
@@ -390,12 +396,17 @@ pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> 
 /// [`RouteAuth`]) — the `pub(crate)` `CoreRoute`/`CoreRouteTable` stay sealed.
 #[cfg(any(test, feature = "test-support"))]
 pub fn base_data_route_method_view(app: &state::App) -> Vec<(String, String, RouteAuth)> {
-    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
-        .1
-        .routes()
-        .iter()
-        .map(|r| (r.path.clone(), r.method.as_str().to_string(), r.auth))
-        .collect()
+    router::base_data_router(
+        &app.plugin_routes,
+        &app.plane_slots,
+        app.oauth_as.as_ref(),
+        Vec::new(),
+    )
+    .1
+    .routes()
+    .iter()
+    .map(|r| (r.path.clone(), r.method.as_str().to_string(), r.auth))
+    .collect()
 }
 
 /// TEST-SUPPORT VIEW of [`state::App::boot_route_paths`]: the plugin-route paths this process can
