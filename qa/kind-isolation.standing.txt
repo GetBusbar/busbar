@@ -76,6 +76,8 @@ kind-isolation:matrix	unlisted-cell	busbar-core-admin × transport	109
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × cleanliness	2
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × legacy	1
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	47
+kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × kernel	5
+kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × legacy	2
 kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	47
 kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	34
@@ -94,8 +96,6 @@ kind-isolation:matrix	unlisted-cell	busbar-llm × legacy	10
 # mcp/tests/roots_changed_tests.rs:154. EXPIRES with FOLD-MCP (step 36b P1).
 kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	310
 kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	25
-kind-isolation:matrix	unlisted-cell	busbar-oauth2 × kernel	5
-kind-isolation:matrix	unlisted-cell	busbar-oauth2 × legacy	2
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × legacy	3
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × plane	44
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × transport	25
