@@ -13326,7 +13326,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
         drive().await;
     }
 
-    let witnessed = busbar_kernel::admin::v1::contract::taxonomy::observed::snapshot();
+    let witnessed = crate::witness::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,
     // Cond) TRIPLE for the emissions that named their condition. Keyed on the NEUTRAL string form the
     // process-wide substrate ledger stores (so a witness produced through EITHER copy of busbar-core —
