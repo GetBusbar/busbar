@@ -23,8 +23,10 @@
 //! fresh addresses must overlap those an earlier delivery to it reached ([`Deliveries::reached`]),
 //! a bounded set in plane memory.
 //!
-//! The caller's webhook credential ([`DeliveryAuth`]) is held here, never persisted and never
-//! printed, and joins the request only after the judge has passed. busbar's own callback token
+//! The caller's webhook credential ([`DeliveryAuth`]) has its home in the push_config host record
+//! (a sealed field of it, `PushConfig::authentication`). It is held here, in plane memory, only
+//! while a delivery is in flight, never logged or printed, and joins the request only after the
+//! judge has passed. busbar's own callback token
 //! ([`Tokens`]) is a capability for one task, minted from the kernel's random bytes, checked in
 //! constant time, and never logged or audited.
 
@@ -95,8 +97,10 @@ pub fn notification_body(task: &Task) -> Vec<u8> {
 }
 
 /// THE CREDENTIAL THE CALLER ASKED BUSBAR TO PRESENT AT ITS WEBHOOK. The caller's own secret for
-/// the caller's own receiver: never logged, never echoed on a read verb, never persisted.
-#[derive(Clone, PartialEq, Eq)]
+/// the caller's own receiver. Its home is the push_config host record (a sealed field of it); plane
+/// memory holds it only while a delivery is in flight; it is never logged, printed, or echoed on a
+/// read verb.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeliveryAuth {
     /// The HTTP authentication scheme, as the caller wrote it.
     pub scheme: String,
