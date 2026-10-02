@@ -63,7 +63,7 @@ pub(super) const USAGE: &[UsageCount] = &[
     (
         CountSlot::InputAudio,
         CountRead::ListFirst {
-            list: &["promptTokensDetails"],
+            list: &[MODALITY_LISTS[0]],
             key: FIELD_MODALITY,
             value: GEMINI_AUDIO,
             count: FIELD_TOKEN_COUNT,
@@ -72,7 +72,7 @@ pub(super) const USAGE: &[UsageCount] = &[
     (
         CountSlot::OutputAudio,
         CountRead::ListFirst {
-            list: &["candidatesTokensDetails"],
+            list: &[MODALITY_LISTS[1]],
             key: FIELD_MODALITY,
             value: GEMINI_AUDIO,
             count: FIELD_TOKEN_COUNT,
@@ -114,6 +114,11 @@ pub(super) const MODALITY_LISTS: [&str; 3] = [
     "cacheTokensDetails",
 ];
 
+/// The `modality` words of a detail entry other than audio ([`GEMINI_AUDIO`]).
+const MODALITY_TEXT: &str = "TEXT";
+const MODALITY_IMAGE: &str = "IMAGE";
+const MODALITY_VIDEO: &str = "VIDEO";
+
 /// `usageMetadata.{prompt,candidates,cache}TokensDetails[]{modality,tokenCount}` -> the IR's
 /// by-modality split (DF-MAP item 4; presentation only, never billed). `None` when no list is present.
 fn read_by_modality(u: &serde_json::Value) -> Option<crate::codec::ir::IrUsageByModality> {
@@ -125,10 +130,10 @@ fn read_by_modality(u: &serde_json::Value) -> Option<crate::codec::ir::IrUsageBy
         for e in u.get(list).and_then(|l| l.as_array()).into_iter().flatten() {
             let n = e.get(FIELD_TOKEN_COUNT).and_then(|v| v.as_u64());
             match e.get(FIELD_MODALITY).and_then(|v| v.as_str()) {
-                Some("TEXT") => c.text = n,
-                Some("IMAGE") => c.image = n,
+                Some(MODALITY_TEXT) => c.text = n,
+                Some(MODALITY_IMAGE) => c.image = n,
                 Some(GEMINI_AUDIO) => c.audio = n,
-                Some("VIDEO") => c.video = n,
+                Some(MODALITY_VIDEO) => c.video = n,
                 _ => {}
             }
         }
@@ -149,10 +154,10 @@ pub(super) fn write_by_modality(
 ) {
     for (list, c) in MODALITY_LISTS.iter().zip([&m.input, &m.output, &m.cache]) {
         let entries: Vec<serde_json::Value> = [
-            ("TEXT", c.text),
-            ("IMAGE", c.image),
+            (MODALITY_TEXT, c.text),
+            (MODALITY_IMAGE, c.image),
             (GEMINI_AUDIO, c.audio),
-            ("VIDEO", c.video),
+            (MODALITY_VIDEO, c.video),
         ]
         .into_iter()
         .filter_map(|(modality, n)| {
