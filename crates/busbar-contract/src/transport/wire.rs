@@ -182,6 +182,13 @@ pub struct FrameMeta {
     /// already in the past. Carrying the raw header instead would push a clock reading onto a
     /// layer that no longer has the answer's arrival instant.
     pub retry_after_secs: Option<u64>,
+    /// The frame's bytes are a TEXT message, not a binary one, on a wire whose messages are one or
+    /// the other (ws's TEXT and BINARY opcodes). THE BIT'S ONE HOME: a framer states it as
+    /// [`crate::abi::transport::PIECE_TEXT`], the host reads it here, and a reader of the frame
+    /// reads nothing else. `false` (the [`Default`]) is binary, the meaning every transport whose
+    /// wire draws no such line keeps; it is not serialized, so a binary frame's record is unchanged.
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
+    pub text: bool,
 }
 
 /// Why a frame was dropped without changing any state.

@@ -15,8 +15,9 @@
 //! * The session opens at the upgrade (`Unit0Trigger::Upgrade`): an ACCEPTED connection answers the
 //!   upgrade request it ingests with the switching-protocols response; a DIALLED one opens with the
 //!   upgrade request for its target and completes when the response arrives.
-//! * A WebSocket MESSAGE is the frame unit: each binary or text message ingested is one frame, and
-//!   each frame emitted (its last piece marked) goes out as one binary message.
+//! * A WebSocket MESSAGE is the frame unit: each binary or text message ingested is one frame, a text
+//!   one stated as text ([`Framed::text`]), and each frame emitted (its last piece marked) goes out
+//!   as one binary message.
 //! * A ping is answered with its pong on the next bytes out; a close is answered and ends the frames.
 //! * A close carries the RFC 6455 code its reason names ([`close_code_for`]).
 //! * The message ceiling is the deployment's body cap, for a whole message and for a single frame.
@@ -262,7 +263,9 @@ impl WsFramer {
         loop {
             match ws.read() {
                 Ok(Message::Binary(b)) => out.frame(Framed::plain(StreamId(0), &b, true)),
-                Ok(Message::Text(t)) => out.frame(Framed::plain(StreamId(0), t.as_bytes(), true)),
+                Ok(Message::Text(t)) => {
+                    out.frame(Framed::plain(StreamId(0), t.as_bytes(), true).text(true));
+                }
                 // A ping's pong is queued by the machine and goes out with the next bytes; a pong and
                 // a raw frame carry nothing for the layer above.
                 Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}

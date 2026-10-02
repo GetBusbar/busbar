@@ -63,6 +63,37 @@ async fn upgrade_then_round_trip_byte_exact() {
     assert_eq!(frame.meta.status, None, "no status leg after the upgrade");
 }
 
+/// RED (C19-TAIL U5): a TEXT message arrives as text and a BINARY one as binary
+/// (`FrameMeta::text`, the bit's one home). On the parent both arrived as binary, so a reader could
+/// not answer a text-speaking peer in kind.
+#[tokio::test]
+async fn a_text_message_arrives_as_text_and_a_binary_one_as_binary() {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let t = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (accepted, dialled) = tokio::join!(
+        t.handshake_over(end_a, true, WS_TARGET, "peer-a"),
+        tokio_tungstenite::client_async(WS_TARGET, end_b)
+    );
+    let (mut client, _resp) = dialled.unwrap();
+    client
+        .send(Message::Text("{\"t\":1}".into()))
+        .await
+        .unwrap();
+    client
+        .send(Message::Binary(vec![1, 2, 3].into()))
+        .await
+        .unwrap();
+    let mut frames = t.frames(accepted.unwrap());
+    let (_, text) = frames.next().await.unwrap().unwrap();
+    assert_eq!(text.bytes.as_slice(), b"{\"t\":1}");
+    assert!(text.meta.text, "a text message arrives as text");
+    let (_, binary) = frames.next().await.unwrap().unwrap();
+    assert_eq!(binary.bytes.as_slice(), [1, 2, 3]);
+    assert!(!binary.meta.text, "a binary message arrives as binary");
+}
+
 /// With no layer under it this transport has no socket to reach for, and inventing one is exactly
 /// what the composition exists to stop.
 #[tokio::test]

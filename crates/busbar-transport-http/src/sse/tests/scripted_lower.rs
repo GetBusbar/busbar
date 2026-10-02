@@ -61,6 +61,7 @@ pub(super) fn body_frame(bytes: &[u8]) -> (StreamId, Frame) {
                 status: None,
                 status_code: None,
                 retry_after_secs: None,
+                text: false,
             },
         },
     )

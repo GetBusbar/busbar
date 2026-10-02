@@ -113,6 +113,7 @@ impl Transport for SseTransport {
                             status: status.class,
                             status_code: status.code,
                             retry_after_secs: status.retry_after_secs,
+                            text: false,
                         },
                     };
                     return Some((Ok((StreamId(0), frame)), st));

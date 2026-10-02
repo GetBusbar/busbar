@@ -24,7 +24,7 @@ use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, PIECE_CONTINUED,
     PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
-    SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -112,6 +112,8 @@ pub struct Got {
     pub retry_after_secs: Option<u64>,
     /// The bytes are a field block (`PIECE_FIELDS`): the far end's head, or its trailers.
     pub fields: bool,
+    /// The bytes belong to a text message (`PIECE_TEXT`), read up as `FrameMeta::text`.
+    pub text: bool,
     /// On the head's first piece: the far end's reason phrase, exactly as sent (the stream's head
     /// slots), where the wire has one.
     pub reason: Option<Vec<u8>>,
@@ -389,6 +391,7 @@ impl Buffers {
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
                     .then_some(p.retry_after_secs),
                 fields: p.flags & PIECE_FIELDS != 0,
+                text: p.flags & PIECE_TEXT != 0,
                 reason: None,
             });
         }

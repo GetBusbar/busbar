@@ -63,6 +63,33 @@ fn byte_exact_both_ways_through_the_framer() {
     });
 }
 
+/// RED (C19-TAIL U5): a frame the framer states as text reaches the kernel's seam with
+/// `FrameMeta::text` set (the bit's one home); a binary one does not.
+#[test]
+fn a_text_frame_arrives_as_text_at_the_seam() {
+    worker().block_on(async {
+        for text in [true, false] {
+            let door = TestDoor::new(
+                "bytes",
+                &["bytes"],
+                &[],
+                Knobs {
+                    text,
+                    ..Knobs::default()
+                },
+            );
+            let w = Arc::new(HostWire::new(Arc::new(door)).unwrap());
+            let (client, server, _l) = pair(&w).await;
+            w.write(&client, StreamId(0), ScratchBytes::new(b"{}"))
+                .await
+                .unwrap();
+            let (_, frame) = w.frames(server).next().await.unwrap().unwrap();
+            assert_eq!(frame.bytes.as_slice(), b"{}");
+            assert_eq!(frame.meta.text, text, "stated text={text}");
+        }
+    });
+}
+
 #[test]
 fn half_close_lets_the_other_side_keep_writing() {
     worker().block_on(async {

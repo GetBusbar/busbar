@@ -784,6 +784,7 @@ fn body_frame(bytes: Vec<u8>) -> (StreamId, Frame) {
                 status: None,
                 status_code: None,
                 retry_after_secs: None,
+                text: false,
             },
         },
     )

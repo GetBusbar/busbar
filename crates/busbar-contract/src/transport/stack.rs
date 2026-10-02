@@ -232,6 +232,9 @@ pub struct Framed<'a> {
     pub status_code: Option<u32>,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: Option<u64>,
+    /// The bytes belong to a TEXT message, not a binary one
+    /// ([`crate::abi::transport::PIECE_TEXT`]; read above the ABI as `FrameMeta::text`).
+    pub text: bool,
 }
 
 impl<'a> Framed<'a> {
@@ -245,7 +248,15 @@ impl<'a> Framed<'a> {
             status: None,
             status_code: None,
             retry_after_secs: None,
+            text: false,
         }
+    }
+
+    /// The same piece, stated as part of a TEXT message (`true`) or a binary one.
+    #[must_use]
+    pub const fn text(mut self, text: bool) -> Self {
+        self.text = text;
+        self
     }
 }
 

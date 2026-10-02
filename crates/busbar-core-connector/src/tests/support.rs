@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{
-    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_END_OF_FRAME, YIELD_ENDED,
-    YIELD_HAS_DEADLINE, YIELD_MORE,
+    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_END_OF_FRAME, PIECE_TEXT,
+    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 use super::framer::{Call, Crossed, DoorFacts, FramerDoor};
@@ -32,6 +32,8 @@ pub struct Knobs {
     pub authority: Option<&'static str>,
     /// `begin` yields one request head, `GET /v1` on stream `1`, as an accepted framing does.
     pub head: bool,
+    /// Every frame the framing yields is a text message (`PIECE_TEXT`), as ws states one.
+    pub text: bool,
 }
 
 #[derive(Default)]
@@ -41,6 +43,7 @@ struct State {
     ended: bool,
     heard: bool,
     deadline_ns: u64,
+    text: bool,
 }
 
 /// The test entry.
@@ -121,7 +124,7 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
             PIECE_END_OF_FRAME
         } else {
             0
-        };
+        } | if st.text && n > 0 { PIECE_TEXT } else { 0 };
         // SAFETY: a host buffer of at least one piece.
         unsafe {
             sink.pieces.write(FramePiece {
@@ -200,7 +203,10 @@ impl FramerDoor for TestDoor {
             }
             Call::Begin(i, o) => {
                 let token = self.next.fetch_add(1, Ordering::Relaxed);
-                let mut st = State::default();
+                let mut st = State {
+                    text: self.knobs.text,
+                    ..State::default()
+                };
                 answer(&mut st, &i.sink, o, silence);
                 if self.knobs.head {
                     let bytes = b"GET/v1";

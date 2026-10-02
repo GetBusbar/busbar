@@ -39,8 +39,8 @@ use busbar_contract::abi::hot::decl::{DeclStr, OpaqueHandle};
 use busbar_contract::abi::hot::transport::{
     code, CarrierSlots, DeclByteList, DeclStrList, FramerSlots, RawWireOutcome, TransportDecl,
     WireBytesOut, WireConnFacts, WireDest, WireEnvPair, WireField, WireFramed, WireFramerOut,
-    WireOutcome, WireSettings, WireWaker, FRAMED_HAS_RETRY_AFTER, FRAMED_HAS_STATUS_CODE, NO_WAKER,
-    TRANSPORT_DECL_MAJOR, TRANSPORT_DECL_MINOR,
+    WireOutcome, WireSettings, WireWaker, FRAMED_HAS_RETRY_AFTER, FRAMED_HAS_STATUS_CODE,
+    FRAMED_TEXT, NO_WAKER, TRANSPORT_DECL_MAJOR, TRANSPORT_DECL_MINOR,
 };
 use busbar_contract::abi::hot::TransportDeclFn;
 use busbar_contract::abi::{check_preamble, AbiPreamble};
@@ -735,6 +735,7 @@ extern "C-unwind" fn out_frame(ctx: *mut c_void, piece: *const WireFramed) {
             status,
             status_code: (p.flags & FRAMED_HAS_STATUS_CODE != 0).then_some(p.status_code),
             retry_after_secs: (p.flags & FRAMED_HAS_RETRY_AFTER != 0).then_some(p.retry_after_secs),
+            text: p.flags & FRAMED_TEXT != 0,
         });
     }));
 }

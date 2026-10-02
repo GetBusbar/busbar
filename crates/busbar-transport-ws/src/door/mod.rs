@@ -33,8 +33,8 @@ use busbar_contract::abi::transport::{
     ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, SettingDecl, ShutIn,
     TransportTail, WriteIn, CANCEL_NOTHING_MOVED, CLOSE_CAPACITY_EXHAUSTED, CLOSE_DRAIN,
     CLOSE_PEER_CLOSED, CLOSE_POISONED, CLOSE_REVOKED, CLOSE_TIMEOUT, CLOSE_TRANSPORT_FAILED,
-    FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_FRAMER, SETTING_COUNT, SIDE_ACCEPT, SIDE_DIAL,
-    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    FRAMING_STREAM, PIECE_END_OF_FRAME, PIECE_TEXT, ROLE_FRAMER, SETTING_COUNT, SIDE_ACCEPT,
+    SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::registry::DEFAULT_REQUEST_BODY_MAX_BYTES;
@@ -125,6 +125,8 @@ struct Piece {
     stream: u64,
     bytes: Vec<u8>,
     end_of_frame: bool,
+    /// The bytes belong to a text message (`PIECE_TEXT`).
+    text: bool,
 }
 
 /// What one framing owes the host and has not been able to hand it.
@@ -158,6 +160,7 @@ impl Out for Collect<'_> {
             stream: piece.stream.0,
             bytes: piece.bytes.to_vec(),
             end_of_frame: piece.end_of_frame,
+            text: piece.text,
         });
     }
     fn end(&mut self) {
@@ -167,6 +170,7 @@ impl Out for Collect<'_> {
                 stream: 0,
                 bytes: Vec::new(),
                 end_of_frame: true,
+                text: false,
             });
         }
         self.owed.ended = true;
@@ -653,6 +657,10 @@ fn fill(owed: &mut Owed, sink: &FramerSink, o: &mut FramerOut) {
                 status_class: 0,
                 flags: if whole && piece.end_of_frame {
                     PIECE_END_OF_FRAME
+                } else {
+                    0
+                } | if piece.text && take > 0 {
+                    PIECE_TEXT
                 } else {
                     0
                 },

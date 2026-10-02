@@ -610,45 +610,9 @@ impl Transport for WsTransport {
                     let item = loop {
                         match reader.next().await {
                             None => break None, // the peer closed the socket
-                            Some(Ok(Message::Binary(b))) => {
-                                // One copy, straight into the slab: `to_vec` then `Arc::from` copied the payload
-                                // twice, on the hot path, for every inbound message.
-                                let bytes = SlabBytes::new(Arc::<[u8]>::from(&b[..]));
-                                let meta = FrameMeta {
-                                    bytes: bytes.len() as u64,
-                                    transport_units: None,
-                                    status: None,
-                                    status_code: None,
-                                    retry_after_secs: None,
-                                };
-                                break Some(Ok((
-                                    StreamId(0),
-                                    Frame {
-                                        direction: Direction::Inbound,
-                                        stream: StreamId(0),
-                                        bytes,
-                                        meta,
-                                    },
-                                )));
-                            }
+                            Some(Ok(Message::Binary(b))) => break Some(Ok(inbound(&b, false))),
                             Some(Ok(Message::Text(t))) => {
-                                let bytes = SlabBytes::new(Arc::<[u8]>::from(t.as_bytes()));
-                                let meta = FrameMeta {
-                                    bytes: bytes.len() as u64,
-                                    transport_units: None,
-                                    status: None,
-                                    status_code: None,
-                                    retry_after_secs: None,
-                                };
-                                break Some(Ok((
-                                    StreamId(0),
-                                    Frame {
-                                        direction: Direction::Inbound,
-                                        stream: StreamId(0),
-                                        bytes,
-                                        meta,
-                                    },
-                                )));
+                                break Some(Ok(inbound(t.as_bytes(), true)))
                             }
                             // RFC 6455 §5.5.1/§7.1.5: an endpoint that receives a Close frame and has
                             // not already sent one MUST send a Close frame in response before the
@@ -1011,6 +975,27 @@ impl Transport for WsTransport {
 /// framing failure is a peer whose bytes were wrong and redialling changes nothing. A close the
 /// peer already completed is neither — it is the session ending, and the only error shape for that
 /// is `Closed`.
+/// One inbound message as its frame on the connection's one stream, `text` saying which opcode it
+/// came under ([`FrameMeta::text`]). One copy, straight into the slab: `to_vec` then `Arc::from`
+/// copied the payload twice, on the hot path, for every inbound message.
+fn inbound(payload: &[u8], text: bool) -> (StreamId, Frame) {
+    let bytes = SlabBytes::new(Arc::<[u8]>::from(payload));
+    let meta = FrameMeta {
+        bytes: bytes.len() as u64,
+        text,
+        ..FrameMeta::default()
+    };
+    (
+        StreamId(0),
+        Frame {
+            direction: Direction::Inbound,
+            stream: StreamId(0),
+            bytes,
+            meta,
+        },
+    )
+}
+
 fn read_error(e: &tokio_tungstenite::tungstenite::Error) -> TransportError {
     use tokio_tungstenite::tungstenite::Error as WsError;
     match e {

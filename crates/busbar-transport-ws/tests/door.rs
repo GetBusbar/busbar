@@ -20,7 +20,7 @@ use busbar_contract::abi::mechanism::DOOR_SYMBOL;
 use busbar_contract::abi::transport::check::check_framer;
 use busbar_contract::abi::transport::{
     slot, BeginIn, EmitIn, FinishIn, FramePiece, FramerOut, FramerSink, IngestIn, Ops,
-    CLOSE_NORMAL, PIECE_END_OF_FRAME, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_MORE,
+    CLOSE_NORMAL, PIECE_END_OF_FRAME, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_MORE,
 };
 
 fn z<T>() -> T {
@@ -50,6 +50,8 @@ struct End {
     framing: u64,
     wire: Vec<u8>,
     frames: Vec<(Vec<u8>, bool)>,
+    /// Per frame in `frames`: every message-bearing piece of it carried `PIECE_TEXT`.
+    text: Vec<bool>,
     ended: bool,
 }
 
@@ -124,7 +126,13 @@ impl Host {
             self.log.extend_from_slice(b);
             match end.frames.last_mut() {
                 Some((open, false)) => open.extend_from_slice(b),
-                _ => end.frames.push((b.to_vec(), false)),
+                _ => {
+                    end.frames.push((b.to_vec(), false));
+                    end.text.push(true);
+                }
+            }
+            if !b.is_empty() {
+                *end.text.last_mut().expect("a frame") &= p.flags & PIECE_TEXT != 0;
             }
             if p.flags & PIECE_END_OF_FRAME != 0 {
                 end.frames.last_mut().expect("a frame").1 = true;
@@ -169,6 +177,11 @@ impl Host {
     /// Carry what `from` has written to `to`.
     fn carry(&mut self, from: &mut End, to: &mut End) {
         let bytes = std::mem::take(&mut from.wire);
+        self.hear(to, &bytes);
+    }
+
+    /// `to` ingests `bytes` off its wire.
+    fn hear(&mut self, to: &mut End, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
@@ -261,6 +274,53 @@ fn exchange(label: &str, ops: &'static Ops, caps: (usize, usize, usize)) -> Vec<
     let log = host.log.clone();
     host.close();
     log
+}
+
+/// One client message as the wire carries it: FIN, `opcode`, masked with the all-zero key (so the
+/// payload is its own masking), a payload under 126 bytes.
+fn client_message(opcode: u8, payload: &[u8]) -> Vec<u8> {
+    let mut m = vec![0x80 | opcode, 0x80 | payload.len() as u8, 0, 0, 0, 0];
+    m.extend_from_slice(payload);
+    m
+}
+
+/// RED (C19-TAIL U5): a TEXT message arrives as text (`PIECE_TEXT` on every piece of it) and a
+/// BINARY one as binary. On the parent the door stated no text bit, so a text frame arrived as
+/// binary.
+fn text_and_binary(label: &str, ops: &'static Ops, caps: (usize, usize, usize)) {
+    let mut host = Host::open(ops, caps);
+    let mut dial = host.begin(SIDE_DIAL, "ws://svc.test/stream");
+    let mut accept = host.begin(SIDE_ACCEPT, "");
+    host.carry(&mut dial, &mut accept);
+    host.carry(&mut accept, &mut dial);
+    host.hear(&mut accept, &client_message(0x1, b"{\"t\":1}"));
+    host.hear(&mut accept, &client_message(0x2, b"\x01\x02\x03"));
+    println!(
+        "PROOF {label}: frames {:?} text {:?}",
+        accept.frames, accept.text
+    );
+    assert_eq!(
+        accept.frames,
+        [
+            (b"{\"t\":1}".to_vec(), true),
+            (b"\x01\x02\x03".to_vec(), true)
+        ]
+    );
+    assert_eq!(
+        accept.text,
+        [true, false],
+        "the text message arrives as text, the binary one as binary"
+    );
+    host.close();
+}
+
+#[test]
+fn a_text_message_arrives_as_text_through_both_doors() {
+    let (d, _lib) = dropped();
+    for (image, ops) in [("linked", linked()), ("dropped", d)] {
+        text_and_binary(&format!("{image} roomy"), ops, (64 * 1024, 64 * 1024, 64));
+        text_and_binary(&format!("{image} tight"), ops, (7, 3, 1));
+    }
 }
 
 fn linked() -> &'static Ops {

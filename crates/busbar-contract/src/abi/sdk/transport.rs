@@ -30,7 +30,7 @@ use crate::abi::hot::transport::{
     code, CarrierSlots, DeclByteList, DeclClaim, DeclStrList, FramerSlots, RawWireOutcome,
     TransportDecl, WireBytesOut, WireConnFacts, WireDest, WireField, WireFramed, WireFramerOut,
     WireOutcome, WireSettings, WireWakeFn, WireWaker, FRAMED_HAS_RETRY_AFTER,
-    FRAMED_HAS_STATUS_CODE, NO_WAKER, TRANSPORT_DECL_MAJOR,
+    FRAMED_HAS_STATUS_CODE, FRAMED_TEXT, NO_WAKER, TRANSPORT_DECL_MAJOR,
 };
 use crate::abi::{AbiPreamble, ABI_MAGIC, ABI_MAJOR, ABI_MINOR};
 use crate::grammar::SelectorForm;
@@ -547,6 +547,9 @@ impl FramerOut for HostOut {
         }
         if piece.retry_after_secs.is_some() {
             flags |= FRAMED_HAS_RETRY_AFTER;
+        }
+        if piece.text {
+            flags |= FRAMED_TEXT;
         }
         let framed = WireFramed {
             size: core::mem::size_of::<WireFramed>() as u32,

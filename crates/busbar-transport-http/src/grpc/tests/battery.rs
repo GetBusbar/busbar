@@ -1319,6 +1319,7 @@ async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
                     status: None,
                     status_code: None,
                     retry_after_secs: None,
+                    text: false,
                 },
             },
         ))
@@ -1397,6 +1398,7 @@ async fn a_forwarder_parked_on_a_full_inbound_buffer_ends_when_the_connection_do
                     status: None,
                     status_code: None,
                     retry_after_secs: None,
+                    text: false,
                 },
             },
         ))
