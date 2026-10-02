@@ -30,19 +30,21 @@ use std::sync::Mutex;
 
 use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
-use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+use busbar_contract::abi::mechanism::door::{
+    KindTailHead, Section, Statement, SECTION_DECLARING, SECTION_REQUIRED,
+};
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceIn, OnPieceOut, OpClass,
-    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
-    PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, Section, ServeIn, ServeOut, UnitCount,
-    CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
-    SECTION_DECLARING, SECTION_REQUIRED, SHAPE_PIECEWISE, UNITS_ESTIMATED,
+    ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, PlaneDriveIn,
+    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
+    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_FAILED, CLAIM_EXACT,
+    CLAIM_OPEN, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, SHAPE_PIECEWISE, UNITS_ESTIMATED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
-use busbar_contract::abi::sdk::{Instance, Lent, Published, Safe, SafeSlot};
+use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
+use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::plane::{PER_SESSION, TOKEN_FAMILY};
 
 use crate::claims::{Dialect, HTTP_TRANSPORT, WS_TRANSPORT};
@@ -164,6 +166,9 @@ const fn need(direction: u32, transport: &'static str, auth: AbiStr, target: Abi
             fmt: BLOB_ABSENT,
             flags: 0,
         },
+        keep_response_headers: ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
     }
 }
 
@@ -211,8 +216,6 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     signing_domain: NONE,
     signing_kid_prefix: NONE,
     cli_help: NONE,
-    sections: SECTIONS.as_ptr(),
-    sections_len: SECTIONS.len(),
     dialects: DIALECTS.as_ptr(),
     dialects_len: DIALECTS.len(),
     dialect_auth: DIALECT_AUTH.as_ptr(),
@@ -229,14 +232,14 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     fee_units_len: FEE_UNITS.len(),
     record_kinds: ptr::null(),
     record_kinds_len: 0,
-    needs: NEEDS.as_ptr(),
-    needs_len: NEEDS.len(),
     egress_targets: EGRESS_TARGETS.as_ptr(),
     egress_targets_len: EGRESS_TARGETS.len(),
     record_chains: ptr::null(),
     record_chains_len: 0,
     trust_keys: ptr::null(),
     trust_keys_len: 0,
+    refusal_statuses: ptr::null(),
+    refusal_statuses_len: 0,
 };
 
 /// The inbound auth style of the metadata door: none, it is read without a credential.
@@ -360,20 +363,18 @@ pub const ROUTES: &[Route] = &[
     },
 ];
 
-const fn claim(i: usize) -> Claim {
-    let r = ROUTES[i];
-    Claim {
-        verb: abi_str(r.verb),
-        target: abi_str(r.target),
-        carrier: abi_str(r.carrier),
-        flags: if r.exact() { CLAIM_EXACT } else { 0 } | if r.open() { CLAIM_OPEN } else { 0 },
-        _reserved: 0,
+impl Route {
+    /// The door as a generation snapshot claims it.
+    #[must_use]
+    pub fn claim(&self) -> ClaimSpec {
+        let flags =
+            if self.exact() { CLAIM_EXACT } else { 0 } | if self.open() { CLAIM_OPEN } else { 0 };
+        ClaimSpec {
+            refusal_dialect: self.refusal_dialect as u16,
+            ..ClaimSpec::new(self.verb, self.target, self.carrier, flags)
+        }
     }
 }
-
-const CLAIMS: &[Claim] = &[claim(0), claim(1), claim(2), claim(3), claim(4), claim(5)];
-
-const _: () = assert!(CLAIMS.len() == ROUTES.len());
 
 /// Judge a settings blob with the plane's grammar; an empty blob is the default section.
 ///
@@ -397,39 +398,31 @@ pub fn absolute(public_url: &str, path: &str) -> Option<String> {
     Some(u.to_string())
 }
 
-/// One generation's published answer: its snapshot and the strings it points at.
+/// One generation's answer: the strings its snapshot names, read once from the public base URL.
 pub struct Generation {
+    generation: u64,
     audience: String,
     resource_metadata: String,
-    snapshot: Published<PlaneSnapshot>,
 }
 
 impl Generation {
     /// The generation `generation` of a plane whose deployment states `public_url`.
     #[must_use]
-    pub fn build(generation: u64, public_url: Option<&str>) -> Box<Self> {
-        let admitted =
-            public_url.and_then(|p| Some((absolute(p, MOUNT_PATH)?, absolute(p, METADATA_PATH)?)));
-        let (audience, resource_metadata, claims) = match admitted {
-            Some((a, m)) => (a, m, CLAIMS),
-            None => (String::new(), String::new(), &[][..]),
-        };
-        let mut g = Box::new(Generation {
+    pub fn build(generation: u64, public_url: Option<&str>) -> Self {
+        let (audience, resource_metadata) = public_url
+            .and_then(|p| Some((absolute(p, MOUNT_PATH)?, absolute(p, METADATA_PATH)?)))
+            .unwrap_or_default();
+        Generation {
+            generation,
             audience,
             resource_metadata,
-            snapshot: Published::new(snapshot(generation, claims)),
-        });
-        let mut s = *g.snapshot.get();
-        s.audience = text(&g.audience);
-        s.resource_metadata = text(&g.resource_metadata);
-        g.snapshot = Published::new(s);
-        g
+        }
     }
 
     /// Its generation.
     #[must_use]
     pub fn generation(&self) -> u64 {
-        self.snapshot.get().generation
+        self.generation
     }
 
     /// The audience a caller's token must carry; empty = no receiving side.
@@ -444,61 +437,48 @@ impl Generation {
         &self.resource_metadata
     }
 
-    /// Its snapshot, for the host.
+    /// Its snapshot as the plane publishes it: every door claimed and the audience and metadata
+    /// URL bound, or, with no receiving side, nothing claimed.
     #[must_use]
-    pub fn snapshot(&self) -> *const PlaneSnapshot {
-        self.snapshot.as_ptr()
+    pub fn snapshot(&self) -> SnapshotSpec {
+        if self.audience.is_empty() {
+            return SnapshotSpec::default();
+        }
+        SnapshotSpec {
+            claims: ROUTES.iter().map(Route::claim).collect(),
+            audience: Some(self.audience.clone()),
+            resource_metadata: Some(self.resource_metadata.clone()),
+            ..SnapshotSpec::default()
+        }
     }
 }
 
-fn snapshot(generation: u64, claims: &'static [Claim]) -> PlaneSnapshot {
-    PlaneSnapshot {
-        size: size_of::<PlaneSnapshot>() as u32,
-        _reserved: 0,
-        generation,
-        claims: if claims.is_empty() {
-            ptr::null()
-        } else {
-            claims.as_ptr()
-        },
-        claims_len: claims.len(),
-        admin_routes: ptr::null(),
-        admin_routes_len: 0,
-        openapi: Blob {
-            ptr: ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        },
-        audience: NONE,
-        resource_metadata: NONE,
-    }
-}
-
-fn text(s: &str) -> AbiStr {
-    if s.is_empty() {
-        return NONE;
-    }
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
-}
+/// The plane's refusal code for an arrival on a claim it does not publish: no door of the plane
+/// serves it (a 404).
+pub const REFUSAL_NO_DOOR: u32 = 1;
 
 /// One open plane instance.
 pub struct Plane {
     /// The deployment's public base URL, as `open` read it; a refresh keeps it.
     public_url: Option<String>,
-    /// The live generations' settings and snapshots, oldest first (control lane only).
-    generations: Mutex<Vec<(StreamsCfg, Box<Generation>)>>,
+    /// The live generations' settings and answers, oldest first (control lane only).
+    generations: Mutex<Vec<(StreamsCfg, Generation)>>,
+    /// The published snapshots, held by the SDK until their generation's `retire`.
+    snapshots: Generations<PlaneSnapshot>,
 }
 
 impl Plane {
-    fn publish(&self, generation: u64, cfg: StreamsCfg) -> *const PlaneSnapshot {
+    /// Publish generation `generation` into the `out` field `pick` names.
+    fn publish<T: busbar_contract::abi::sdk::door::AbiOut>(
+        &self,
+        out: &mut Out<'_, T>,
+        pick: impl FnOnce(&T) -> &*const PlaneSnapshot,
+        generation: u64,
+        cfg: StreamsCfg,
+    ) {
         let g = Generation::build(generation, self.public_url.as_deref());
-        let p = g.snapshot();
+        out.publish(pick, &self.snapshots, generation, &g.snapshot());
         lock(&self.generations).push((cfg, g));
-        p
     }
 }
 
@@ -508,20 +488,24 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// One slot body on the SDK's safe surface over the instance's [`Plane`].
 macro_rules! slot {
-    ($name:ident, $in:ty, $out:ty, |$inst:pat_param, $input:pat_param, $o:pat_param| $body:block) => {
+    ($name:ident, $in:ty, $out:ty, |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
         struct $name;
         impl SafeSlot for $name {
             type In = $in;
             type Out = $out;
             type State = Plane;
-            fn call($inst: Instance<'_, Plane>, $input: Lent<'_, $in>, $o: &mut $out) -> Outcome {
+            fn call(
+                $inst: Instance<'_, Plane>,
+                $input: Lent<'_, $in>,
+                #[allow(unused_mut)] mut $o: Out<'_, $out>,
+            ) -> Outcome {
                 $body
             }
         }
     };
 }
 
-slot!(Validate, ValidateIn, OutHead, |_, input, _| {
+slot!(Validate, ValidateIn, OutHead, |_, input, _out| {
     match read_settings(input.field(|i| &i.settings).bytes()) {
         Ok(_) => Outcome::Ready,
         Err(_) => Outcome::Refused,
@@ -541,8 +525,9 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
     let p = Plane {
         public_url,
         generations: Mutex::new(Vec::new()),
+        snapshots: Generations::new(),
     };
-    out.snapshot = p.publish(input.open.generation, cfg);
+    p.publish(&mut out, |o| &o.snapshot, input.open.generation, cfg);
     instance.open(p);
     Outcome::Ready
 });
@@ -558,40 +543,43 @@ slot!(
         let Ok(cfg) = read_settings(input.field(|i| &i.settings).bytes()) else {
             return Outcome::Refused;
         };
-        out.snapshot = p.publish(input.generation, cfg);
+        p.publish(&mut out, |o| &o.snapshot, input.generation, cfg);
         Outcome::Ready
     }
 );
 
-slot!(Retire, GenIn, OutHead, |instance, input, _| {
+slot!(Retire, GenIn, OutHead, |instance, input, _out| {
     if let Some(p) = instance.get() {
         lock(&p.generations).retain(|(_, g)| g.generation() != input.generation);
+        p.snapshots.retire(input.generation);
     }
     Outcome::Ready
 });
 
 slot!(Tick, TickIn, TickOut, |_, _, out| {
-    out.next_tick_ns = 0;
+    out.set(|o| &o.next_tick_ns, 0);
     Outcome::Ready
 });
 
-slot!(Drive, PlaneDriveIn, PlaneDriveOut, |_, _, _| {
+slot!(Drive, PlaneDriveIn, PlaneDriveOut, |_, _, _out| {
     Outcome::Ready
 });
 
 slot!(Cancel, CancelIn, CancelOut, |_, _, out| {
-    out.disposition = CANCEL_FAILED;
+    out.set(|o| &o.disposition, CANCEL_FAILED);
     Outcome::Ready
 });
 
-slot!(Release, ReleaseIn, OutHead, |_, _, _| { Outcome::Ready });
+slot!(Release, ReleaseIn, OutHead, |_, _, _out| { Outcome::Ready });
 
-slot!(Close, InHead, OutHead, |_, _, _| { Outcome::Ready });
+slot!(Close, InHead, OutHead, |_, _, _out| { Outcome::Ready });
 
 // A claimed arrival is classified: its door's dialect, the session open, a known principal. No
 // admission estimate: a session's units are what the far end reports.
 slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     let Some(a) = crate::driven::arrive(input.claim) else {
+        out.set(|o| &o.refusal, REFUSAL_NO_DOOR);
+        out.set(|o| &o.refusal_status, 404);
         return Outcome::Refused;
     };
     let mut units = input.units_buf();
@@ -603,34 +591,34 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
         });
     }
     if !units.fits() {
-        out.units_needed = units.needed() as u32;
+        out.set(|o| &o.units_needed, units.needed() as u32);
         return Outcome::Failed;
     }
-    out.units_written = units.written() as u32;
-    out.op_class = a.op_class;
-    out.dialect = a.dialect;
-    out.principal_need = a.door.authenticate();
+    out.set(|o| &o.units_written, units.written() as u32);
+    out.set(|o| &o.op_class, a.op_class);
+    out.set(|o| &o.dialect, a.dialect);
+    out.set(|o| &o.principal_need, a.door.authenticate());
     Outcome::Ready
 });
 
 // The door serves no unit's pieces yet: every piece, refusal render, admin serve and projection is
 // declined, and a declined unit is charged nothing.
 
-slot!(OnPiece, OnPieceIn, OnPieceOut, |_, _, _| {
+slot!(OnPiece, OnPieceIn, OnPieceOut, |_, _, _out| {
     Outcome::Refused
 });
 
-slot!(Refusal, RefusalIn, RefusalOut, |_, _, _| {
+slot!(Refusal, RefusalIn, RefusalOut, |_, _, _out| {
     Outcome::Refused
 });
 
-slot!(Serve, ServeIn, ServeOut, |_, _, _| { Outcome::Refused });
+slot!(Serve, ServeIn, ServeOut, |_, _, _out| { Outcome::Refused });
 
-slot!(Hydrate, GenIn, OutHead, |_, _, _| { Outcome::Ready });
+slot!(Hydrate, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
-slot!(Start, GenIn, OutHead, |_, _, _| { Outcome::Ready });
+slot!(Start, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
-slot!(Project, ProjectIn, ProjectOut, |_, _, _| {
+slot!(Project, ProjectIn, ProjectOut, |_, _, _out| {
     Outcome::Refused
 });
 
@@ -638,6 +626,10 @@ busbar_contract::plugin_door! {
     ops: busbar_contract::abi::plane::Ops,
     statement: Statement {
         kind_tail: ptr::from_ref(TAIL).cast::<KindTailHead>(),
+        sections: SECTIONS.as_ptr(),
+        sections_len: SECTIONS.len(),
+        needs: NEEDS.as_ptr(),
+        needs_len: NEEDS.len(),
         ..statement(NAME, env!("CARGO_PKG_VERSION"), 64)
     },
     lifecycle: {
