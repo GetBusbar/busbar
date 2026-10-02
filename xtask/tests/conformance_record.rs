@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use xtask::conformance_record::{
-    decide_jev, decide_legs, decide_llm, decide_voice, decide_ws, head_commit, render_verdict,
-    write_verdict, LlmRun, Outcome, Status, VoiceRun, WsRun, LLM_DIALECTS,
+    decide_legs, decide_llm, decide_voice, decide_ws, head_commit, render_verdict, write_verdict,
+    LlmRun, Outcome, Status, VoiceRun, WsRun, LLM_DIALECTS,
 };
 use xtask::gates::conformance_sync::render::{Suite, Tier};
 
@@ -266,30 +266,6 @@ fn every_rig_decider_answers_not_run_when_its_self_test_or_controls_are_red() {
     assert_eq!(
         decide_legs(&controls_ok, &subj(Some(0)), "e").status,
         Status::Pass
-    );
-
-    // jev: the rig's own judgement is carried, but only when it wrote one after a green self-test.
-    let jv = r#"{"status":"fail","armed":true,"reason":"not served"}"#;
-    assert_eq!(
-        decide_jev(Some(1), Some(0), Some(jv), "e").status,
-        Status::NotRun
-    );
-    assert_eq!(
-        decide_jev(Some(0), Some(2), None, "e").status,
-        Status::NotRun
-    );
-    let f = decide_jev(Some(0), Some(0), Some(jv), "e");
-    assert_eq!(f.status, Status::Fail);
-    assert_eq!(f.reason.as_deref(), Some("not served"));
-    assert_eq!(
-        decide_jev(
-            Some(0),
-            Some(0),
-            Some(r#"{"status":"pass","armed":false}"#),
-            "e"
-        )
-        .status,
-        Status::NotRun
     );
 }
 
@@ -555,9 +531,8 @@ fn run(args: &[&str]) -> i32 {
 }
 
 #[test]
-fn a_suite_with_no_rig_or_no_registry_entry_is_an_argument_error() {
+fn a_suite_with_no_registry_entry_is_an_argument_error() {
     assert_eq!(run(&["conformance", "record"]), 2);
-    assert_eq!(run(&["conformance", "record", "--suite", "a2a"]), 2);
     assert_eq!(
         run(&["conformance", "record", "--suite", "no-such-suite"]),
         2
