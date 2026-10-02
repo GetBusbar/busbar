@@ -35,7 +35,7 @@ use busbar_kernel::state::AppHandle;
 /// The seam-typed mount (`busbar_kernel::oauth_as::seam::AsPlaneSeam::mount`): downcasts the
 /// type-erased plane object core hands in and defers to [`mount`]. Core cannot call [`mount`]
 /// directly — it would have to name `AsPlane`, the reverse edge Cargo refuses — so this is the
-/// function pointer `busbar_oauth2::install` actually registers.
+/// function pointer `busbar_core_oauth2::install` actually registers.
 pub(crate) fn seam_mount(
     router: CoreRouter,
     plane: Option<&Arc<dyn std::any::Any + Send + Sync>>,
