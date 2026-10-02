@@ -290,6 +290,8 @@ fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
         ],
         "a cut answer is a partial one: the transfer is recorded as failed"
     );
+    // And the four pieces that streamed are billed, not refunded (spec Part 2 #62, #77(2)).
+    assert_eq!(node.breaker.budget_net(DestinationId::new(0)), 1);
 }
 
 #[test]

@@ -215,6 +215,8 @@ struct Live {
     answered: bool,
     /// One unit of lifetime budget was spent on the success.
     spent: bool,
+    /// A byte of the success's answer reached the plane (its first byte is delivered).
+    delivered: bool,
     /// The answer ended.
     ended: bool,
     /// A relayed non-success answer: how many more of its body's bytes the plane may be handed.
@@ -344,7 +346,9 @@ impl EgressFarEnd<'_> {
                 e.clock.now_secs(),
             );
         }
-        if live.spent && !live.ended {
+        // A unit dropped mid-answer is a cut: it refunds only when NOTHING streamed (spec Part 2
+        // #62, #77(2); v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-306`).
+        if live.spent && !live.ended && !live.delivered {
             e.breaker.refund_budget(live.member.destination);
         }
         if !live.answered {
@@ -395,6 +399,7 @@ impl EgressFarEnd<'_> {
             anchor_ms: 0,
             answered: false,
             spent: false,
+            delivered: false,
             ended: false,
             error_left: None,
         });
@@ -701,11 +706,17 @@ impl EgressFarEnd<'_> {
             PieceKind::Completion => Some(self.end(true)),
             // The far end's fields after its body (trailers): handed to the plane, which decides
             // what they mean (one that reads a trailer status reads it; any other ignores them).
-            PieceKind::Fields | PieceKind::HookReply => Some(FarPiece {
-                bytes: buf[..piece.len].to_vec(),
-                fields: true,
-                ..FarPiece::default()
-            }),
+            PieceKind::Fields | PieceKind::HookReply => {
+                let piece = FarPiece {
+                    bytes: buf[..piece.len].to_vec(),
+                    fields: true,
+                    ..FarPiece::default()
+                };
+                if let Some(live) = self.lock().live.as_mut() {
+                    delivered(live, &piece);
+                }
+                Some(piece)
+            }
             PieceKind::Body if answered => Some(self.capped(FarPiece {
                 bytes: buf[..piece.len].to_vec(),
                 ..FarPiece::default()
@@ -721,6 +732,7 @@ impl EgressFarEnd<'_> {
             return piece;
         };
         let piece = cap(live, piece);
+        delivered(live, &piece);
         if piece.last {
             // The rest is never read: the connection closes and the member's slot frees.
             self.settle(&mut w);
@@ -728,12 +740,14 @@ impl EgressFarEnd<'_> {
         piece
     }
 
-    /// THE ANSWER WAS CUT after its first piece: the connection failed or the send's deadline
-    /// passed before it completed. A success's head was recorded as a success, but the answer never
-    /// arrived intact, so a COMPENSATING transient failure is recorded against the member, and the
-    /// budget unit its success spent is given back — 1.5.5's mid-body transfer failure (v1.5.5
-    /// `crates/busbar/src/proxy/engine/mod.rs:329-353`, buffered; `crates/busbar/src/proxy/
-    /// response_body.rs:358-409`, streamed). A relayed failure's body that is cut recorded its own
+    /// THE ANSWER WAS CUT after its head: the connection failed or the send's deadline passed
+    /// before it completed. A success's head was recorded as a success, but the answer never
+    /// arrived intact, so a COMPENSATING transient failure is recorded against the member (v1.5.5
+    /// `crates/busbar/src/proxy/response_body.rs:279-306`, `:358-409`). The budget unit its success
+    /// spent is given back ONLY when nothing streamed (no byte reached the plane, 1.5.5's
+    /// pre-first-byte arm and its buffered read, `engine/mod.rs:329-353`). After the first byte a
+    /// cut is NOT a refund: the delivered units settle like any other end (spec Part 2 #62,
+    /// #77(2); `response_body.rs:279-306`). A relayed failure's body that is cut recorded its own
     /// outcome on its head and is not compensated.
     fn cut(&self, token: &Pass<Route>) -> FarPiece {
         let e = self.egress;
@@ -759,8 +773,9 @@ impl EgressFarEnd<'_> {
     fn end(&self, clean: bool) -> FarPiece {
         let mut w = self.lock();
         if let Some(live) = w.live.as_mut() {
-            if !clean && live.spent {
-                // A delivery that did not complete gives its budget unit back.
+            if !clean && live.spent && !live.delivered {
+                // A delivery that did not complete gives its budget unit back, but only when
+                // nothing streamed: a mid-stream cut is not a refund (spec Part 2 #62, #77(2)).
                 self.egress.breaker.refund_budget(live.member.destination);
             }
             live.spent = false;
@@ -808,6 +823,7 @@ impl EgressFarEnd<'_> {
             // The request owns the probe through the outcome it just recorded.
             live.probe = None;
             live.spent = e.breaker.spend_budget(destination);
+            live.delivered = !bytes.is_empty();
             return FarPiece {
                 bytes,
                 status: far_status,
@@ -904,6 +920,14 @@ impl FarEnd for EgressFarEnd<'_> {
 #[cfg(test)]
 #[path = "tests/far_end_tests.rs"]
 mod tests;
+
+/// Whether `piece`, handed to the plane, delivers a byte of `live`'s SUCCESS answer: from then on
+/// a cut is not a refund (spec Part 2 #62).
+fn delivered(live: &mut Live, piece: &FarPiece) {
+    if live.answered && live.error_left.is_none() && !piece.bytes.is_empty() {
+        live.delivered = true;
+    }
+}
 
 /// THE ERROR-BODY CAP on one body piece of `live`'s answer: a success's body passes whole; a relayed
 /// failure's is handed over up to what is left of the cap, and a piece that overruns it is cut

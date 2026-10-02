@@ -139,8 +139,13 @@ fn there_is_no_failover_after_the_first_byte() {
     );
 }
 
+/// A MID-STREAM CUT IS NOT A REFUND (spec Part 2 #62, OWNER-LOCKED; #77(2) "no refunds"): once a
+/// byte of the answer has reached the caller, a cut bills what streamed to the cut point and the
+/// budget unit the success spent stands. The transfer is still recorded as failed, as 1.5.5 did on
+/// a stream cut after its first byte (v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-306`:
+/// the compensating transient, the stream marked ended, nothing refunded).
 #[test]
-fn a_truncated_answer_gives_the_request_budget_unit_back() {
+fn a_stream_cut_after_its_first_byte_refunds_nothing() {
     let node = two_lane_pool();
     node.conns.script(
         "a",
@@ -150,17 +155,42 @@ fn a_truncated_answer_gives_the_request_budget_unit_back() {
     assert!(node.route("primary").is_delivered());
     assert_eq!(
         node.breaker.budget_net(DestinationId::new(0)),
-        0,
-        "the unit spent on the success is given back when the body does not arrive whole"
+        1,
+        "the unit spent on the success stands: what streamed is billed, not refunded"
     );
-    // v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:329-353` (buffered) and
-    // `crates/busbar/src/proxy/response_body.rs:358-409` (streamed): the headers recorded a
-    // success, the body never arrived intact, so a compensating transient is recorded AND the
-    // budget unit is refunded.
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
         vec![Outcome::Success, Outcome::Transient { retry_after: None }],
         "and the failed transfer is recorded as a compensating transient"
+    );
+}
+
+/// The other side of #62: a success whose answer is cut before ANY byte reached the caller
+/// delivered nothing, so the unit its head spent is given back, with the compensating transient
+/// (v1.5.5 `crates/busbar/src/proxy/response_body.rs:358-409`, the pre-first-byte arm;
+/// `crates/busbar/src/proxy/engine/mod.rs:329-353`, a buffered body that failed before the caller
+/// saw any of it).
+#[test]
+fn a_cut_before_the_first_byte_refunds_the_budget_unit() {
+    let node = two_lane_pool();
+    node.conns.script(
+        "a",
+        Script::Truncated(frame(Some(WireStatusClass::Success), "")),
+    );
+
+    let outcome = node.route("primary");
+    assert!(
+        matches!(&outcome, Routed::Delivered(d) if d.pieces == 0),
+        "nothing of the answer reached the caller: {outcome:?}"
+    );
+    assert_eq!(
+        node.breaker.budget_net(DestinationId::new(0)),
+        0,
+        "nothing streamed, so the unit spent on the head is given back"
+    );
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::Success, Outcome::Transient { retry_after: None }]
     );
 }
 
