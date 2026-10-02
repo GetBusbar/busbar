@@ -79,9 +79,6 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
 busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "17cfd311eb8f72340dc323f9947f0055a8b537bd" }
-# The same repo's cdylib crate at the SAME rev (one resolved copy): the dropped-in http door the
-# connector's universal-needs witness drives.
-busbar-transport-http-plugin = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "17cfd311eb8f72340dc323f9947f0055a8b537bd" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.

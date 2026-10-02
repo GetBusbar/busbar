@@ -76,11 +76,12 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 serde_json = { workspace = true }
 # The tls tests write the minted cert and key as PEM; the shipped dtls engine mints DER only.
 rcgen = { workspace = true, features = ["pem"] }
-# THE DOORS THE WITNESS DRIVES, dropped in: the http transport repo's cdylib (a door that composes
-# over a socket framer) and the tcp transport repo's (the socket framer it composes over), each at
-# the rev the workspace pins, built under `deps/` by these edges and found by what they state, never
-# by name. Dev-only; the wires' own both-doors conformance lives in their repos.
-busbar-transport-http-plugin = { workspace = true }
+# THE DOOR THE WITNESS DRIVES, dropped in: the tcp transport repo's cdylib (the socket framer), at
+# the rev the workspace pins, built under `deps/` by this edge and found by what it states, never by
+# name. Dev-only; the wires' own both-doors conformance lives in their repos. The http repo's cdylib
+# is not an edge here: its closure reaches a socket stack (hyper-util, socket2, tokio net) that
+# qa/dep-wall.ledger does not pin for it, and a new offender is never pinned in the change that
+# brings it in.
 busbar-transport-tcp-plugin = { workspace = true }
 
 # THE UNIVERSAL-NEEDS FIXTURE: a secret-kind plugin that declares one outbound need and dials through
