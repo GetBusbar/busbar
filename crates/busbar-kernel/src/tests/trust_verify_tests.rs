@@ -56,7 +56,7 @@ fn caller(instance: &str) -> Caller {
 /// An instance declaring `issuer` rooted in key 1, `no-root` with a pin naming no root key, and
 /// `bad-root` whose root key is not a key.
 fn host() -> KernelServices {
-    let s = KernelServices::new(HashMap::new(), Arc::new(SystemResolver));
+    let s = KernelServices::new();
     s.admit(
         "inst",
         InstanceFacts {
