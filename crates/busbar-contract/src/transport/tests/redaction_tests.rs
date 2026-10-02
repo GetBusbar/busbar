@@ -1,7 +1,7 @@
 use super::{ClientIdentity, EgressTrust};
 
 /// A byte value that appears NOWHERE in the redacted `Debug` shells (`ClientIdentity { … }`,
-/// `EgressTrust { … }`, `[]`, `<redacted>`), so its decimal spelling in the output can only mean
+/// `EgressTrust { … }`, `[]`, `[REDACTED]`), so its decimal spelling in the output can only mean
 /// the key material leaked. `0xEF` = 239.
 const KEY_BYTE: u8 = 0xEF;
 
@@ -9,11 +9,11 @@ const KEY_BYTE: u8 = 0xEF;
 fn client_identity_debug_redacts_private_key() {
     let id = ClientIdentity {
         cert_chain: Vec::new(),
-        private_key: vec![KEY_BYTE; 8],
+        private_key: vec![KEY_BYTE; 8].into(),
     };
     let shown = format!("{id:?}");
     assert!(
-        shown.contains("<redacted>"),
+        shown.contains("[REDACTED]"),
         "private key must be redacted, got: {shown}"
     );
     assert!(
@@ -29,12 +29,12 @@ fn egress_trust_debug_redacts_client_private_key() {
         pinned_public_keys: Vec::new(),
         client_identity: Some(ClientIdentity {
             cert_chain: Vec::new(),
-            private_key: vec![KEY_BYTE; 8],
+            private_key: vec![KEY_BYTE; 8].into(),
         }),
     };
     let shown = format!("{trust:?}");
     assert!(
-        shown.contains("<redacted>"),
+        shown.contains("[REDACTED]"),
         "nested client identity's private key must be redacted, got: {shown}"
     );
     assert!(

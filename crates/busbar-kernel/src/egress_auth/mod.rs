@@ -73,9 +73,34 @@ pub(crate) fn minter_client() -> Result<crate::egress::engine::EngineClient, Str
 /// client-level 30s total the retired reqwest builder carried.
 pub(crate) const MINT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
-// The OAuth token response's `expires_in` reading (its default and its tolerant parse) is egress-auth
-// semantics with no engine in it, so it lives with the egress-auth unit (#83a O1 placement).
-pub(crate) use busbar_kernel_identity::egress_auth::{default_expires_in, deserialize_expires_in};
+// The OAuth token response (its `Redacted` access token and its tolerant `expires_in`) is egress-auth
+// semantics with no engine in it, so it lives with the egress-auth unit (#83a O1 placement), as does
+// the read-only serde helper a secret field of a decoded document names to land in `Redacted`.
+pub(crate) use busbar_kernel_identity::egress_auth::{deserialize_redacted, TokenResponse};
+
+/// The `map_err` for a `serde_json` decode whose INPUT may carry a secret — a service-account key, a
+/// token response, a secret's settings. `serde_json::Error`'s own `Display` is withheld: a data
+/// error quotes the offending value (`invalid type: string "<the value>"`), which here can be the
+/// secret itself, and these messages reach `--validate` output, read-scope admin callers and logs.
+/// What survives is `what` failed, the CLASS of failure and WHERE — enough to repair the document,
+/// nothing of what it holds (secret-hygiene #53, Check 3: redact at the format site). The one
+/// decoder text kept verbatim is a MISSING FIELD: serde spells it from the type's own schema
+/// (``missing field `private_key` ``), never from the input, and it is the commonest repair.
+pub(crate) fn json_err(what: &'static str) -> impl FnOnce(serde_json::Error) -> String {
+    move |e: serde_json::Error| {
+        if e.is_data() && e.to_string().starts_with("missing field `") {
+            return format!("{what}: {e}");
+        }
+        let class = match e.classify() {
+            serde_json::error::Category::Io => "the input could not be read",
+            serde_json::error::Category::Syntax => "it is not well-formed JSON",
+            serde_json::error::Category::Data => "a field is missing or has the wrong type",
+            serde_json::error::Category::Eof => "it ends before the JSON does",
+        };
+        let (line, column) = (e.line(), e.column());
+        format!("{what}: {class} (line {line}, column {column}; the decoder's text is withheld)")
+    }
+}
 
 /// Read a token-endpoint HTTP response body under the engine's established capped-read primitive
 /// (`proxy::read_capped`) rather than `resp.text()`, which buffers an UNBOUNDED body — a hijacked or

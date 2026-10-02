@@ -121,8 +121,17 @@ fn session_scope_refusal() -> axum::response::Response {
 pub(crate) struct ProviderEndpoint {
     /// The provider origin (scheme + authority, e.g. `https://api.openai.com`).
     pub base_url: String,
-    /// The REAL provider key, held server-side.
-    pub api_key: String,
+    /// The REAL provider key, held server-side and `Redacted`: exposed only at the three sites that
+    /// put it on the provider hop (the mint minter, the SDP bearer, the WebSocket dial URL).
+    pub api_key: busbar_contract::Redacted<String>,
+}
+
+impl ProviderEndpoint {
+    /// The provider WebSocket URL for `dialect`, carrying the key the dialect's dial authenticates
+    /// with. Its own fn so the exposure is one named site, outside any statement that also logs.
+    fn ws_url(&self, dialect: &str) -> String {
+        provider_ws_url(&self.base_url, dialect, self.api_key.expose_secret())
+    }
 }
 
 /// THE COMPOSED REALTIME PROVIDER — the one endpoint the mint / SDP-broker passes dial, written once
@@ -145,7 +154,7 @@ pub fn install_provider(base_url: impl Into<String>, api_key: impl Into<String>)
     COMPOSED_PROVIDER
         .set(ProviderEndpoint {
             base_url: base_url.into(),
-            api_key: api_key.into(),
+            api_key: busbar_contract::Redacted::new(api_key.into()),
         })
         .is_ok()
 }
@@ -210,7 +219,7 @@ pub fn install_gemini_provider(base_url: impl Into<String>, api_key: impl Into<S
     COMPOSED_PROVIDER_GEMINI
         .set(ProviderEndpoint {
             base_url: base_url.into(),
-            api_key: api_key.into(),
+            api_key: busbar_contract::Redacted::new(api_key.into()),
         })
         .is_ok()
 }
@@ -1060,7 +1069,13 @@ async fn serve_mint(
     let Some(p) = provider else {
         return sideband_pending();
     };
-    let minter = HttpsTokenMinter::new(egress_client(), &p.base_url, &p.api_key, owner, None);
+    let minter = HttpsTokenMinter::new(
+        egress_client(),
+        &p.base_url,
+        p.api_key.expose_secret(),
+        owner,
+        None,
+    );
     match minter.mint(cfg).await {
         Ok(token) => json_response(
             axum::http::StatusCode::OK,
@@ -1103,7 +1118,7 @@ async fn serve_sdp(
         .uri(&uri)
         .header(http::header::CONTENT_TYPE, "application/sdp");
     // Busbar's OWN provider credential — never the caller's inbound governance bearer.
-    for (name, value) in crate::voice_provider_bearer(&p.api_key) {
+    for (name, value) in crate::voice_provider_bearer(p.api_key.expose_secret()) {
         builder = builder.header(name, value);
     }
     let req = match builder.body(Full::new(offer)) {
@@ -1475,7 +1490,7 @@ where
                     ) {
                         Ok(proxy) => {
                             let pool = stream_breaker_key(dialect);
-                            let url = provider_ws_url(&p.base_url, dialect, &p.api_key);
+                            let url = p.ws_url(dialect);
                             match dial_provider(
                                 host.as_ref(),
                                 &pool,

@@ -86,16 +86,24 @@ impl<T: Zeroize + Clone> Clone for Redacted<T> {
 /// field — e.g. `ExchangeRequest`, `CompleteLogin`) would compare byte-by-byte with a data-dependent
 /// early exit, leaking through timing how long a common prefix two secrets share. Routing through the
 /// crate's [`constant_time_eq`](crate::constant_time_eq) — the same primitive the auth path uses to
-/// compare credentials — closes that channel for every secret comparison, structurally. The bound is
-/// `AsRef<str>` (satisfied by `String`, the only `T` any secret is wrapped in) so the comparison can
-/// go through that str-based primitive.
-impl<T: Zeroize + AsRef<str>> PartialEq for Redacted<T> {
+/// compare credentials, here over its byte form — closes that channel for every secret comparison,
+/// structurally. The bound is `AsRef<[u8]>`, satisfied by both shapes a secret is wrapped in: a
+/// `String` (a token, a key) and a `Vec<u8>` (DER key material, a raw credential).
+impl<T: Zeroize + AsRef<[u8]>> PartialEq for Redacted<T> {
     fn eq(&self, other: &Self) -> bool {
-        constant_time_eq(self.0.as_ref(), other.0.as_ref())
+        constant_time_eq_bytes(self.0.as_ref(), other.0.as_ref())
     }
 }
 
-impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
+impl<T: Zeroize + AsRef<[u8]>> Eq for Redacted<T> {}
+
+/// An EMPTY secret — what a `#[derive(Default)]` on a struct with a `Redacted` field fills in. It holds
+/// no material, so it reveals nothing.
+impl<T: Zeroize + Default> Default for Redacted<T> {
+    fn default() -> Self {
+        Self(T::default())
+    }
+}
 
 // ── The constant-time primitive `Redacted`'s `PartialEq` is built on ───────────────────────────
 //
@@ -123,11 +131,14 @@ impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
 /// `sha256_hex`) still leaks whether the two lengths matched. Prefer hashing both sides
 /// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
 /// does not guarantee that for its caller.
-#[inline(never)]
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
+    constant_time_eq_bytes(a.as_bytes(), b.as_bytes())
+}
 
+/// [`constant_time_eq`] over raw bytes — the one loop both it and [`Redacted`]'s `PartialEq` (which
+/// also compares `Vec<u8>` secrets) run, so there is still exactly one constant-time primitive.
+#[inline(never)]
+fn constant_time_eq_bytes(a_bytes: &[u8], b_bytes: &[u8]) -> bool {
     if a_bytes.len() != b_bytes.len() {
         return false;
     }

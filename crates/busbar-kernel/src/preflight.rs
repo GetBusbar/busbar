@@ -1048,9 +1048,12 @@ pub(crate) fn build_secret_resolver(
                 .map(String::as_str)
                 .unwrap_or("{}");
             let m = registry.open_secret(module, open_cfg)?;
+            // The decoder's own text is withheld (`json_err`): it can quote a settings value.
             m.resolve(
                 &serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(settings)
-                    .map_err(|e| format!("secret settings are not a JSON object: {e}"))?,
+                    .map_err(crate::egress_auth::json_err(
+                        "secret settings are not a JSON object",
+                    ))?,
             )
             .map_err(|e| e.to_string())
         },

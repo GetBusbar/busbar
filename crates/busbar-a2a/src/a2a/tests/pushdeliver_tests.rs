@@ -279,7 +279,7 @@ fn the_callers_own_webhook_credential_is_presented_on_the_delivery() {
         id,
         Some(&pushdeliver::DeliveryAuth {
             scheme: "Bearer".to_string(),
-            credentials: "receiver-issued-token".to_string(),
+            credentials: busbar_contract::Redacted::new("receiver-issued-token".to_string()),
         }),
     );
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
@@ -314,7 +314,7 @@ fn re_registering_without_authentication_stops_the_credential_being_sent() {
         id,
         Some(&pushdeliver::DeliveryAuth {
             scheme: "Bearer".to_string(),
-            credentials: "old-token".to_string(),
+            credentials: busbar_contract::Redacted::new("old-token".to_string()),
         }),
     );
     pushdeliver::remember_auth(id, None);
@@ -347,7 +347,7 @@ fn a_terminal_delivery_drops_the_credential_as_well_as_the_pin() {
         id,
         Some(&pushdeliver::DeliveryAuth {
             scheme: "Bearer".to_string(),
-            credentials: "short-lived".to_string(),
+            credentials: busbar_contract::Redacted::new("short-lived".to_string()),
         }),
     );
     let (seam, _log) = seam_answering(&[AT_REGISTRATION], 200);
@@ -366,7 +366,7 @@ fn the_delivery_credential_does_not_appear_in_its_own_debug_rendering() {
     crate::testkit::install_test_seams();
     let auth = pushdeliver::DeliveryAuth {
         scheme: "Bearer".to_string(),
-        credentials: "a-secret-nobody-should-log".to_string(),
+        credentials: busbar_contract::Redacted::new("a-secret-nobody-should-log".to_string()),
     };
     let rendered = format!("{auth:?}");
     assert!(

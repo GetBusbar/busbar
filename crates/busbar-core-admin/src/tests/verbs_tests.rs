@@ -167,7 +167,7 @@ impl Governance for FakeGovernance {
         self.keys.lock().unwrap().insert(id.clone(), false);
         Ok(MintedKey {
             id,
-            secret: "sk-fresh".to_string(),
+            secret: busbar_contract::Redacted::new("sk-fresh".to_string()),
             expires_at: Some(9_999_999),
         })
     }
@@ -185,7 +185,7 @@ impl Governance for FakeGovernance {
             Some(true) => Ok(RotateOutcome::Tombstoned),
             Some(false) => Ok(RotateOutcome::Rotated(MintedKey {
                 id: id.to_string(),
-                secret: "sk-rotated".to_string(),
+                secret: busbar_contract::Redacted::new("sk-rotated".to_string()),
                 expires_at: Some(9_999_999),
             })),
         }

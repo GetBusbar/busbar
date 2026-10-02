@@ -60,8 +60,10 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
     match &trust.client_identity {
         None => Ok(wants_client_cert(trust).with_no_client_auth()),
         Some(identity) => {
-            let key = rustls_pki_types::PrivateKeyDer::try_from(identity.private_key.clone())
-                .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
+            let key = rustls_pki_types::PrivateKeyDer::try_from(
+                identity.private_key.expose_secret().clone(),
+            )
+            .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
             let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
                 .cert_chain
                 .iter()

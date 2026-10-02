@@ -657,7 +657,7 @@ impl SigningMaterial {
 /// path itself.)
 pub struct RotatedCredential {
     pub key: VirtualKey,
-    pub token: String,
+    pub token: busbar_contract::redacted::Redacted<String>,
     pub exp: u64,
 }
 

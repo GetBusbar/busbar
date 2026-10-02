@@ -229,7 +229,7 @@ async fn a_client_identity_is_presented_to_a_mutual_peer() {
         pinned_public_keys: Vec::new(),
         client_identity: Some(busbar_contract::transport::trust::ClientIdentity {
             cert_chain: client_chain,
-            private_key: client_key,
+            private_key: client_key.into(),
         }),
     };
     dial(
@@ -249,7 +249,7 @@ fn a_client_identity_that_does_not_parse_refuses_the_boot_naming_the_need() {
     let bad = EgressTrust {
         client_identity: Some(busbar_contract::transport::trust::ClientIdentity {
             cert_chain: chain,
-            private_key: b"not a private key".to_vec(),
+            private_key: b"not a private key".to_vec().into(),
         }),
         ..EgressTrust::default()
     };
