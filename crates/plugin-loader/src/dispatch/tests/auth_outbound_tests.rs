@@ -187,6 +187,8 @@ mod plugin {
         styles: STYLES.as_ptr(),
         styles_len: STYLES.len(),
         operator_principal: busbar_contract::abi::sdk::door::abi_str(""),
+        credential_kinds: std::ptr::null(),
+        credential_kinds_len: 0,
     };
 
     use busbar_contract::abi::sdk::auth_door as a;

@@ -1016,6 +1016,9 @@ impl<K: Kind> Plugin<K> {
             kind: v.kind,
         });
         let context = K::context(&st).map_err(LoadError::KindTail)?;
+        let _ = wake
+            .credential_kinds
+            .set(K::credential_kinds(context.as_deref()));
         let plugin = Self {
             inner: Arc::new(Instance {
                 instance,

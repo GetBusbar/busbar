@@ -693,6 +693,8 @@ fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
             styles: std::ptr::null(),
             styles_len: 0,
             operator_principal: busbar_contract::abi::sdk::door::abi_str(""),
+            credential_kinds: std::ptr::null(),
+            credential_kinds_len: 0,
         }));
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind_tail: std::ptr::from_ref(tail).cast(),
@@ -751,6 +753,8 @@ fn a_tail_with_a_broken_point_set_refuses() {
             styles: styles.as_ptr(),
             styles_len: styles.len(),
             operator_principal: abi_str(""),
+            credential_kinds: std::ptr::null(),
+            credential_kinds_len: 0,
         }));
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind_tail: std::ptr::from_ref(tail).cast(),
@@ -830,6 +834,8 @@ fn the_carriers_are_the_statements_carrier_marks() {
         styles: std::ptr::null(),
         styles_len: 0,
         operator_principal: abi_str(""),
+        credential_kinds: std::ptr::null(),
+        credential_kinds_len: 0,
     };
     let tail: &'static AuthTail = Box::leak(Box::new(TAIL));
     let carriers = |words: &'static [MarkWord]| {
@@ -893,6 +899,8 @@ fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
             styles: std::ptr::null(),
             styles_len: 0,
             operator_principal: abi_str(principal),
+            credential_kinds: std::ptr::null(),
+            credential_kinds_len: 0,
         }));
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind_tail: std::ptr::from_ref(tail).cast(),
@@ -929,5 +937,75 @@ fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
     assert!(
         bind(AUTH_TAIL_FROZEN - 8, CAP_INBOUND, 0, "").is_err(),
         "below the frozen size"
+    );
+}
+
+/// THE CREDENTIAL-READ FACT (ARCHITECT 2026-10-01, AUTH-DOOR Q2 ruling B): `FACT_READS_CREDENTIALS`
+/// needs `CAP_INBOUND` and a non-empty list of non-empty kinds, and a list needs the fact; each half
+/// alone refuses the load, and the agreeing tail reads its kinds back, onto the instance the host
+/// serves `records.secret` to. An OLDER tail (56 bytes, before the list was appended) reads none,
+/// even when the memory past its size holds a list. RED: before the fact, no tail named a kind.
+#[test]
+fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
+    use busbar_contract::abi::auth::{
+        AuthTail, CAP_INBOUND, CAP_OUTBOUND, FACT_READS_CREDENTIALS, LOGIN_KIND_NONE,
+    };
+    use busbar_contract::abi::mechanism::door::KindTailHead;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    let bind = |size: usize, caps: u32, facts: u32, kinds: &'static [AbiStr]| {
+        let tail = Box::leak(Box::new(AuthTail {
+            head: KindTailHead {
+                size: size as u32,
+                _reserved: 0,
+            },
+            caps,
+            facts,
+            login_kind: LOGIN_KIND_NONE,
+            inbound_points: if caps & CAP_INBOUND != 0 {
+                POINT_HEAD
+            } else {
+                0
+            },
+            styles: std::ptr::null(),
+            styles_len: 0,
+            operator_principal: abi_str(""),
+            credential_kinds: kinds.as_ptr(),
+            credential_kinds_len: kinds.len(),
+        }));
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            ..statement("t", "1", 0)
+        };
+        <Auth as Kind>::context(&st).map(|c| <Auth as Kind>::credential_kinds(c.as_deref()))
+    };
+    const SIGV4: &[AbiStr] = &[abi_str("sigv4")];
+    const BLANK: &[AbiStr] = &[abi_str("")];
+    let host = size_of::<AuthTail>();
+    let reads = FACT_READS_CREDENTIALS;
+    assert_eq!(
+        bind(host, CAP_INBOUND, reads, SIGV4),
+        Ok(vec!["sigv4".to_string()])
+    );
+    assert_eq!(bind(host, CAP_INBOUND, 0, &[]), Ok(vec![]));
+    assert!(
+        bind(host, CAP_INBOUND, reads, &[]).is_err(),
+        "the fact without kinds"
+    );
+    assert!(
+        bind(host, CAP_INBOUND, 0, SIGV4).is_err(),
+        "kinds without the fact"
+    );
+    assert!(
+        bind(host, CAP_INBOUND, reads, BLANK).is_err(),
+        "a blank kind"
+    );
+    assert!(
+        bind(host, CAP_OUTBOUND, reads, SIGV4).is_err(),
+        "a reader that does not verify"
+    );
+    assert_eq!(
+        bind(host - 16, CAP_INBOUND, 0, SIGV4),
+        Ok(vec![]),
+        "a 56-byte tail reads no kinds; its appended list is never read"
     );
 }

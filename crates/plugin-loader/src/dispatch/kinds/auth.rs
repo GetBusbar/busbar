@@ -48,6 +48,8 @@ pub struct Auth;
 const MAX_CARRIERS: usize = 64;
 /// The most outbound styles an auth tail may state.
 const MAX_STYLES: usize = 64;
+/// The most credential kinds an auth tail may state.
+const MAX_CREDENTIAL_KINDS: usize = 64;
 
 /// What an auth instance's Statement states, copied out once at bind and read back through
 /// [`crate::dispatch::Plugin::context`]: its capabilities, its facts, the inbound carrier fields
@@ -75,6 +77,9 @@ pub struct AuthFacts {
     pub inbound_points: AuthPoints,
     /// With `abi::auth::FACT_OPERATOR`: the principal id the operator credential identifies.
     pub operator_principal: Option<String>,
+    /// With `abi::auth::FACT_READS_CREDENTIALS`: the credential kinds `verify` reads through
+    /// `records.secret`, the only kinds the host serves this instance.
+    pub credential_kinds: Vec<String>,
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
@@ -147,6 +152,31 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
             principal.len()
         ));
     }
+    // The credential-read fact agrees with its kinds, and with the inbound capability: a `verify`
+    // that reads host-held credentials names exactly the kinds it reads. Either without the other
+    // refuses the load.
+    if t.credential_kinds_len > MAX_CREDENTIAL_KINDS
+        || (t.credential_kinds.is_null() && t.credential_kinds_len != 0)
+    {
+        return Err(format!(
+            "the auth tail states {} credential kinds",
+            t.credential_kinds_len
+        ));
+    }
+    let credential_kinds = (0..t.credential_kinds_len)
+        // SAFETY: `credential_kinds` holds `credential_kinds_len` `'static` strings (checked above).
+        .map(|i| owned(unsafe { t.credential_kinds.add(i).read_unaligned() }))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("an auth credential kind is over-long")?;
+    let reads = t.facts & auth::FACT_READS_CREDENTIALS != 0;
+    let blank = credential_kinds.iter().any(String::is_empty);
+    if reads == credential_kinds.is_empty() || blank || (reads && t.caps & auth::CAP_INBOUND == 0) {
+        return Err(format!(
+            "the auth tail's credential-read fact disagrees with its {} credential kinds or \
+             capabilities",
+            credential_kinds.len()
+        ));
+    }
     // Every style states known flags and the points it needs; a stray bit refuses the load.
     if t.styles_len > MAX_STYLES || (t.styles.is_null() && t.styles_len != 0) {
         return Err(format!("the auth tail states {} styles", t.styles_len));
@@ -186,6 +216,7 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         login_kind: t.login_kind,
         inbound_points,
         operator_principal: operator.then_some(principal),
+        credential_kinds,
     })
 }
 
@@ -236,6 +267,13 @@ impl Kind for Auth {
 
     fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
         Ok(Some(Box::new(facts(st)?)))
+    }
+
+    fn credential_kinds(context: Option<&Context>) -> Vec<String> {
+        context
+            .and_then(|c| c.downcast_ref::<AuthFacts>())
+            .map(|f| f.credential_kinds.clone())
+            .unwrap_or_default()
     }
 
     fn op_name(s: u32) -> &'static str {
