@@ -260,7 +260,7 @@ const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
         companions: PART_COMPANIONS,
     },
     crate::codec::drops::Blocks {
-        at: &["systemInstruction", "parts[]"],
+        at: &[FIELD_SYSTEM_INSTRUCTION, "parts[]"],
         tag: None,
         modelled: &[keys::TEXT],
         companions: PART_COMPANIONS,
