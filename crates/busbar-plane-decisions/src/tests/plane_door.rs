@@ -3,7 +3,11 @@ use crate::ops;
 
 #[test]
 fn the_statement_names_the_crate_version() {
-    assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+    let manifest = include_str!("../../Cargo.toml");
+    assert!(
+        manifest.contains(&format!("\nversion = \"{VERSION}\"\n")),
+        "the Statement's version is the manifest's"
+    );
 }
 
 #[test]

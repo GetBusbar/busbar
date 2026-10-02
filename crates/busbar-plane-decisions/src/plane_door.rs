@@ -28,7 +28,6 @@
 use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::{Mutex, PoisonError};
 
 use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
@@ -50,7 +49,7 @@ use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{
-    open_failed, Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot,
+    open_failed, Generations, HostBuf, Instance, Keyed, Lent, Out, Safe, SafeSlot,
 };
 use busbar_contract::plane::PlaneMeta;
 
@@ -237,7 +236,7 @@ struct Unit {
 #[derive(Debug)]
 pub struct DecisionsDoor {
     generations: Generations<PlaneSnapshot>,
-    units: Mutex<BTreeMap<u64, Unit>>,
+    units: Keyed<u64, Unit>,
 }
 
 /// One slot body on the SDK's safe surface, over this plane's [`DecisionsDoor`].
@@ -277,7 +276,7 @@ slot!(
         };
         let plane = DecisionsDoor {
             generations: Generations::new(),
-            units: Mutex::new(BTreeMap::new()),
+            units: Keyed::new(),
         };
         let spec = snapshot_spec(section.models.len());
         out.publish(|o| &o.snapshot, &plane.generations, open.generation, &spec);
@@ -522,32 +521,33 @@ slot!(
         };
         let given = input.get();
         let bytes = input.field(|i| &i.bytes).bytes();
-        let mut units = plane.units.lock().unwrap_or_else(PoisonError::into_inner);
-        let unit = unit_of(&mut units, given.unit);
-        // A re-call after `more = 1` carries no bytes, no flags and no attempt: it is paid from
-        // what is owed.
-        let continues = bytes.is_empty() && given.flags == 0 && given.attempt_no == 0;
-        let (outcome, done) = if continues && unit.at < unit.owed.len() {
-            (Outcome::Ready, pay(unit, input, &mut out))
-        } else {
-            match given.from {
-                FROM_KERNEL if given.attempt_no != 0 => (attempt(unit, input, &mut out), false),
-                FROM_CALLER => match driven::caller_piece(bytes, given.flags & PIECE_LAST != 0) {
-                    CallerAnswer::Empty => (Outcome::Refused, true),
-                    CallerAnswer::Keep if unit.attempt => {
-                        owe(unit, bytes, EMIT_TO_FAR_END, input, &mut out);
-                        (Outcome::Ready, false)
-                    }
-                    CallerAnswer::Keep => (Outcome::Ready, false),
-                },
-                FROM_FAR_END => far_end(unit, input, &mut out),
-                _ => (Outcome::Refused, false),
+        plane.units.with_all(|units| {
+            let unit = unit_of(units, given.unit);
+            // A re-call after `more = 1` carries no bytes, no flags and no attempt: it is paid from
+            // what is owed.
+            let continues = bytes.is_empty() && given.flags == 0 && given.attempt_no == 0;
+            let (outcome, done) = if continues && unit.at < unit.owed.len() {
+                (Outcome::Ready, pay(unit, input, &mut out))
+            } else {
+                match given.from {
+                    FROM_KERNEL if given.attempt_no != 0 => (attempt(unit, input, &mut out), false),
+                    FROM_CALLER => match driven::caller_piece(bytes, given.flags & PIECE_LAST != 0) {
+                        CallerAnswer::Empty => (Outcome::Refused, true),
+                        CallerAnswer::Keep if unit.attempt => {
+                            owe(unit, bytes, EMIT_TO_FAR_END, input, &mut out);
+                            (Outcome::Ready, false)
+                        }
+                        CallerAnswer::Keep => (Outcome::Ready, false),
+                    },
+                    FROM_FAR_END => far_end(unit, input, &mut out),
+                    _ => (Outcome::Refused, false),
+                }
+            };
+            if done {
+                units.remove(&given.unit);
             }
-        };
-        if done {
-            units.remove(&given.unit);
-        }
-        outcome
+            outcome
+        })
     }
 );
 
