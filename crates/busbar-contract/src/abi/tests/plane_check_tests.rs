@@ -186,6 +186,33 @@ fn a_class_counted_twice_is_fault() {
     v.source = UNITS_REPORTED;
     v.class = 0;
     assert_eq!(check_arrive(Ready, &o, &[u, v], 4, &bounds()), Ok(()));
+    // ONE BILLING COUNT per class: a floor beside a reported count of the same class is two bills
+    // of one thing, refused; a floor beside an estimate is not.
+    v.class = 1;
+    v.source = UNITS_FLOOR;
+    assert_eq!(
+        check_arrive(Ready, &o, &[u, v], 4, &bounds()),
+        f(Rule::Contradiction, "unit.class")
+    );
+    u.source = UNITS_ESTIMATED;
+    assert_eq!(check_arrive(Ready, &o, &[u, v], 4, &bounds()), Ok(()));
+}
+
+/// THE USAGE FLOOR (Q24/Q28): a floor count is a known source and bills like a reported one; an
+/// estimate never bills, and no other value is a source.
+#[test]
+fn a_floor_count_is_a_known_source_that_bills() {
+    let mut o: ArriveOut = z();
+    o.units_written = 1;
+    let mut u: UnitCount = z();
+    u.class = 1;
+    u.source = UNITS_FLOOR;
+    u.amount = 51;
+    assert_eq!(check_arrive(Ready, &o, &[u], 4, &bounds()), Ok(()));
+    assert!(units_bill(UNITS_FLOOR));
+    assert!(units_bill(UNITS_REPORTED));
+    assert!(!units_bill(UNITS_ESTIMATED));
+    assert!(!units_bill(UNITS_FLOOR + 1));
 }
 
 /// THE CANCEL RULE's shape: an arrival is either a cancellable unit (`correlation`) or a cancel
@@ -308,7 +335,7 @@ fn a_unit_naming_no_billable_class_or_unknown_source_is_fault() {
         f(Rule::IndexOutOfRange, "unit.class")
     );
     u.class = 1;
-    u.source = 2;
+    u.source = UNITS_FLOOR + 1;
     assert_eq!(
         check_arrive(Ready, &o, &[u], 4, &bounds()),
         f(Rule::UnknownCode, "unit.source")

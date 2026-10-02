@@ -339,7 +339,8 @@ extern "C" {
 #define BB_PLANE_SHAPE_WHOLE UINT32_C(0) /* [`PlaneTail::dispatch_shape`]: the kernel gathers the caller's whole body and pushes it as one */
 #define BB_PLANE_SHAPE_PIECEWISE UINT32_C(1) /* [`PlaneTail::dispatch_shape`]: the kernel pushes the caller's bytes piece by piece as they */
 #define BB_PLANE_UNITS_ESTIMATED UINT32_C(0) /* [`UnitCount::source`]: the plane's own estimate; never billed. */
-#define BB_PLANE_UNITS_REPORTED UINT32_C(1) /* [`UnitCount::source`]: the far end reported it; the only billable source. */
+#define BB_PLANE_UNITS_REPORTED UINT32_C(1) /* [`UnitCount::source`]: the far end reported it; it bills. */
+#define BB_PLANE_UNITS_FLOOR UINT32_C(2) /* [`UnitCount::source`]: the plane's floor for a delivered reply whose far-end usage could not be */
 #define BB_PLANE_PRINCIPAL_NONE UINT32_C(0) /* [`ArriveOut::principal_need`]: no principal. */
 #define BB_PLANE_PRINCIPAL_REQUIRED UINT32_C(1) /* [`ArriveOut::principal_need`]: the kernel must verify a principal before the first piece. */
 #define BB_PLANE_PRINCIPAL_OPTIONAL UINT32_C(2) /* [`ArriveOut::principal_need`]: verify one if the caller presents it. */
