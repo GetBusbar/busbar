@@ -311,12 +311,17 @@ impl Walk {
 
     /// Park the queue terminal's wait: the members the last pick passed over AT CAPACITY (a held
     /// slot can drop; nothing else waiting can cure), and the bound, the lesser of the pool's
-    /// setting and what the walk has left. `Err` is the shed, for a pool that is not configured.
+    /// setting and what the walk has left.
+    ///
+    /// Waiting only helps if some member was passed over AT CAPACITY. When every exclusion was
+    /// dead, out of budget, suppressed or a lost probe race, nothing will free a slot, so the
+    /// request is never parked: the shed comes now and answers every step from here, as 1.5.5's
+    /// pre-check did (v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:191-202`).
     ///
     /// # Errors
-    /// The shed for a wait over a pool the walk does not have.
+    /// The shed: for a wait over a pool the walk does not have, or one with nothing to wait for.
     pub fn park<'p>(
-        &self,
+        &mut self,
         ports: &WalkPorts<'p>,
         wait: &Wait,
         token: &Pass<Route>,
@@ -329,6 +334,11 @@ impl Walk {
             if matches!(reason, Unavailable::AtCapacity { .. }) && !waiting.contains(destination) {
                 waiting.push(*destination);
             }
+        }
+        if waiting.is_empty() {
+            let shed = pool_shed(ports, &wait.pool, token);
+            self.phase = Phase::Shed(shed.clone());
+            return Err(shed);
         }
         let started = ports.clock.now_millis();
         Ok(Parked {
@@ -363,11 +373,13 @@ impl Walk {
 impl<'p> Parked<'p> {
     /// THE BOUNDED WAIT for a slot on a member passed over AT CAPACITY, then the breaker re-asked
     /// on the member that freed one; nothing when no slot frees within the bound. The depth gauge
-    /// counts the waiter in for the length of the wait.
+    /// counts the waiter in for the length of the wait and out on EVERY exit, a dropped future
+    /// included (a caller that went away while parked), as 1.5.5's RAII depth did (v1.5.5
+    /// `crates/busbar/src/proxy/engine/walk.rs:212-214`).
     pub async fn wait(mut self, ports: &WalkPorts<'_>) -> Waited<'p> {
         let pool = self.pool;
         let members = pool.admissible_members();
-        ports.telemetry.queued(&pool.name, 1);
+        let _parked = QueuedGuard::park(ports.telemetry, &pool.name);
         let won = loop {
             if self.waiting.is_empty() {
                 break None;
@@ -400,12 +412,33 @@ impl<'p> Parked<'p> {
                 }
             }
         };
-        ports.telemetry.queued(&pool.name, -1);
         Waited {
             name: self.name,
             pool,
             won,
         }
+    }
+}
+
+/// One parked waiter's place in the depth gauge, given back on drop. The increment and the
+/// decrement sit either side of an await, and a future dropped part-way runs no code between them;
+/// tying the decrement to a drop makes the balance hold on every exit there is.
+struct QueuedGuard<'a> {
+    telemetry: &'a dyn Telemetry,
+    pool: &'a str,
+}
+
+impl<'a> QueuedGuard<'a> {
+    /// Count one waiter in.
+    fn park(telemetry: &'a dyn Telemetry, pool: &'a str) -> Self {
+        telemetry.queued(pool, 1);
+        Self { telemetry, pool }
+    }
+}
+
+impl Drop for QueuedGuard<'_> {
+    fn drop(&mut self) {
+        self.telemetry.queued(self.pool, -1);
     }
 }
 

@@ -499,10 +499,12 @@ fn the_wait_sheds_at_once_when_nothing_it_could_wait_for_is_busy() {
     );
 
     assert_eq!(node.walker("primary").shed().retry_after_secs, Some(60));
+    // v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:191-202`: the pre-check sheds before the
+    // depth gauge is touched.
     assert_eq!(
-        *node.telemetry.queue_depth.lock().unwrap(),
+        *node.telemetry.queue_parks.lock().unwrap(),
         0,
-        "with nothing it could wait for the wait ends at once, and the gauge balances"
+        "the request never parked"
     );
 }
 
@@ -561,6 +563,34 @@ fn the_wait_sheds_when_no_slot_frees_and_the_gauge_balances() {
         *node.telemetry.queue_depth.lock().unwrap(),
         0,
         "the depth gauge is decremented on every exit, so it can never leak a phantom waiter"
+    );
+    drop(held);
+}
+
+/// v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:212-214`: the depth gauge is RAII, decremented
+/// on every exit including a dropped future.
+#[test]
+fn the_wait_gives_the_depth_gauge_back_when_the_parked_request_is_dropped() {
+    let node = queue_node(250);
+    node.capacity.set_ceiling(DestinationId::new(0), 1);
+    node.capacity.set_ceiling(DestinationId::new(1), 1);
+    let held: Vec<_> = (0..2)
+        .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
+        .collect();
+
+    // Park the request, then walk away from it without ever polling it again — a client that hung
+    // up mid-wait. The increment happened; nothing but a drop will run the decrement.
+    node.walker("primary").abandon_wait();
+
+    assert_eq!(
+        *node.telemetry.queue_parks.lock().unwrap(),
+        1,
+        "the request did park, so the gauge was incremented"
+    );
+    assert_eq!(
+        *node.telemetry.queue_depth.lock().unwrap(),
+        0,
+        "an abandoned waiter must not leave a phantom behind in the depth gauge"
     );
     drop(held);
 }

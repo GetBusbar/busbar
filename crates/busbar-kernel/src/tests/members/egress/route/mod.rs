@@ -398,6 +398,33 @@ impl Walker<'_> {
         }
     }
 
+    /// Step to the queue terminal, park its wait, poll it once and drop it there — the way a
+    /// caller that goes away while its request is parked leaves the wait.
+    pub fn abandon_wait(&mut self) {
+        let Walker {
+            node,
+            pools,
+            token,
+            walk,
+        } = self;
+        let ports = ports(node, pools);
+        let Step::Wait(wait) = walk.next(&ports, node.affinity, token) else {
+            panic!("expected the queue terminal's wait");
+        };
+        let parked = walk
+            .park(&ports, &wait, token)
+            .unwrap_or_else(|shed| panic!("expected a wait, got the shed {shed:?}"));
+        node.rt.block_on(async {
+            let mut waiting = Box::pin(parked.wait(&ports));
+            let waker = std::task::Waker::noop();
+            let mut cx = std::task::Context::from_waker(waker);
+            assert!(
+                std::future::Future::poll(waiting.as_mut(), &mut cx).is_pending(),
+                "the wait was expected to park rather than finish on the first poll"
+            );
+        });
+    }
+
     /// The next step, which must be a member.
     pub fn take(&mut self) -> Taken {
         match self.step() {
