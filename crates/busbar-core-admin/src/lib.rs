@@ -201,3 +201,9 @@ mod key_revoke_tombstone_tests;
 #[cfg(test)]
 #[path = "tests/core_moved_tests.rs"]
 mod core_moved_tests;
+
+// The one-time secret placeholder's read-back, moved here from busbar-contract: `SecretOnce::mint(`
+// is spelled only in this crate, the verbs unit's home (`token-sealed:secret-once-mint`).
+#[cfg(test)]
+#[path = "tests/secret_once_tests.rs"]
+mod secret_once_tests;

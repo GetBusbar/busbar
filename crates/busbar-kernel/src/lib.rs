@@ -344,6 +344,11 @@ pub mod router;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+// busbar-contract's capability tests that mint a token: a token constructor is spelled only inside
+// this crate's src (construction `token-sealed`), so they live here.
+#[cfg(test)]
+#[path = "tests/caps_tests/mod.rs"]
+mod caps_tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,
