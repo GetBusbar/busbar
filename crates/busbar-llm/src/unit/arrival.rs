@@ -278,14 +278,17 @@ pub fn arrival_path_model(
         }
     };
 
+    // The JSON-array marker key, resolved once by protocol name; the parsed document and the
+    // carried bytes both take it.
+    let shim = gemini_json_array
+        .then(|| busbar_kernel::proto::array_stream_shim_key_for(proto))
+        .flatten();
     match v.as_object_mut() {
         Some(obj) => {
             obj.insert("model".to_string(), Value::String(model.to_string()));
             obj.insert("stream".to_string(), Value::Bool(stream));
-            if gemini_json_array {
-                if let Some(shim_key) = busbar_kernel::proto::array_stream_shim_key_for(proto) {
-                    obj.insert(shim_key.to_string(), Value::Bool(true));
-                }
+            if let Some(shim_key) = shim {
+                obj.insert(shim_key.to_string(), Value::Bool(true));
             }
         }
         // A native client body is always a document. If it is not, there is nothing to splice the
@@ -296,9 +299,6 @@ pub fn arrival_path_model(
     // The carried bytes are the caller's own with the same three members spliced in at the byte
     // level (never a re-serialization), so the relay's governed removals give a same-dialect far
     // end the caller's bytes back.
-    let shim = gemini_json_array
-        .then(|| busbar_kernel::proto::array_stream_shim_key_for(proto))
-        .flatten();
     let injected: Bytes =
         match crate::engine::xchg::arrive::splice_path_facts(body, model, stream, shim) {
             Some(b) => b.into(),
