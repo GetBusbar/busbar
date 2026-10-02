@@ -445,3 +445,46 @@ plugins:
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
+  - repo: busbar-secret-env
+    kind: secret
+    alias: env
+    crate: busbar-secret-env-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:secret plugin cdylib: the env secret source (module: env), resolving a config secret from the process environment. Part of the default build; drop the signed tarball into plugins/ for a bare-bones build."
+    declares: "secret-env/declares.json"
+    # OWNER 2026-09-27: env and file are ordinary secret plugins in the default build (THE DESIGN §9);
+    # registered into the fleet by PLUGIN-TEMPLATE (ARCHITECT 2026-10-02). First release with the core
+    # version that pins it.
+    released: false
+  - repo: busbar-secret-file
+    kind: secret
+    alias: file
+    crate: busbar-secret-file-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:secret plugin cdylib: the file secret source (module: file), resolving a config secret from the filesystem. Part of the default build; drop the signed tarball into plugins/ for a bare-bones build."
+    declares: "secret-file/declares.json"
+    # OWNER 2026-09-27: env and file are ordinary secret plugins in the default build (THE DESIGN §9);
+    # registered into the fleet by PLUGIN-TEMPLATE (ARCHITECT 2026-10-02). First release with the core
+    # version that pins it.
+    released: false
+  - repo: busbar-auth-webhook-signature
+    kind: auth
+    alias: webhook-signature
+    crate: busbar-auth-webhook-signature-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:auth plugin cdylib: the webhook-signature auth module, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "auth-webhook-signature/declares.json"
+    # THE DESIGN §9's auth roster; the repo is created by `busbar-release plugin new auth
+    # webhook-signature` (PLUGIN-TEMPLATE, ARCHITECT 2026-10-02) with the template's skeleton crates;
+    # its door lands in it. First release with the core version that pins it.
+    released: false
+    pending_crate: true
