@@ -30,10 +30,10 @@
 //! (entropy, the wall clock, the translation cap, the usage-tap count) it reaches through the
 //! host services the contract carries, which the host installs where it installs the protocols.
 //!
-//! SIBLING PATHS ARE RELATIVE. A dialect referring to a SIBLING dialect does it RELATIVELY —
-//! `super::gemini::…` from a `mod.rs`, `super::super::…` from one file deeper. That convention
-//! predates this crate (it made the dual `#[path]` compile into `busbar-core` work) and is kept
-//! because it is correct either way and because keeping it makes this split a pure move.
+//! A DIALECT NEVER NAMES A SIBLING DIALECT (design F3 SELF-CONTAINED). What two dialects share
+//! is a wire mechanism, and it lives in a shared module named for the mechanism (`rerank_wire`,
+//! `logprob_wire`, the bearer-envelope helpers in `dialect`), never in one dialect for another to
+//! import. A seventh dialect is a seventh module plus its one registration line.
 
 /// The concrete chat IR + leaf-op IR. The substrate keeps the neutral `ir::facts` trait /
 /// `ir::handle` / `ir::invoke` / `ir::subscribe`; the concrete shapes are here.

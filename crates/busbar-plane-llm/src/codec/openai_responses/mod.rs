@@ -44,7 +44,6 @@ mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution: `ResponsesWriter` carries per-STREAM mutable state (`sequence`, `response_id`).
-/// Mirrors `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, ResponsesReader, ResponsesWriter)
 }

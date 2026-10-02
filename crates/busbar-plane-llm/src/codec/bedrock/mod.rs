@@ -132,7 +132,7 @@ const VIDEO: &str = "video";
 const WIDTH: &str = "width";
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
-/// resolution, exactly as the registry's field doc requires. Mirrors `super::anthropic::protocol`.
+/// resolution, exactly as the registry's field doc requires.
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, BedrockReader, BedrockWriter)
 }

@@ -43,8 +43,7 @@ pub(crate) mod slots;
 mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
-/// resolution, exactly as the registry's field doc requires. Mirrors
-/// `super::anthropic::protocol`.
+/// resolution, exactly as the registry's field doc requires.
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, OpenAiReader, OpenAiWriter)
 }
@@ -1385,8 +1384,7 @@ pub const OpenAiWriter: OpenAiWriter = OpenAiWriter {
 };
 
 /// A FRESH writer as a VALUE, for the one-shot `write_request` / `write_response` calls the test
-/// suites make — the exact twin of [`crate::codec::anthropic::anthropic_writer`], and needed for the same
-/// reason. Borrowing the const directly (`OpenAiWriter.write_request(…)`) is
+/// suites make. Every dialect with an interior-mutable writer const has one, for the same reason. Borrowing the const directly (`OpenAiWriter.write_request(…)`) is
 /// `clippy::borrow_interior_mutable_const`: each borrow inlines its own copy of the interior-mutable
 /// cell, which is harmless for a stateless one-shot call but wrong for a STREAM (whose identity must
 /// be decided by one writer). This returns the value so the temporary is explicit, and a test that

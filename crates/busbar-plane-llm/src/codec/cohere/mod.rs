@@ -31,7 +31,7 @@ mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires (the writer carries per-stream mutable
-/// state). Mirrors `super::anthropic::protocol`.
+/// state).
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, CohereReader, CohereWriter)
 }
