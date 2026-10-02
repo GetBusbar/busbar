@@ -2,8 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DOOR PLANES' COMPOSITION (TODO U6-U7, ARCHITECT Q-SW4 2026-10-02), over the test plane
-//! linked into this test: a bound plane whose section the deployment writes is opened, driven and
-//! its admin routes published; one whose section is absent stays unopened (LAW 7).
+//! dropped in (its `plane_driver_test_plane` example `cdylib`, admitted against the Statement its
+//! own library states; the binary forbids unsafe code, so the fixture's source is never compiled
+//! into it): a bound plane whose section the deployment writes is opened, driven and its admin
+//! routes published; one whose section is absent stays unopened (LAW 7).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -15,12 +17,8 @@ use busbar_kernel::teller::{Ended, UnitCtx};
 
 use super::{compose_planes, LateServices};
 use crate::root::loader::dispatch::{
-    load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+    load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, NoSink,
 };
-
-#[path = "../../../tests/fixtures/plane_driver_test_plane.rs"]
-#[allow(dead_code)]
-mod plane;
 
 /// No money moves in a composition: nothing runs a unit.
 struct NoUnits;
@@ -33,11 +31,33 @@ impl MoneySeam for NoUnits {
     fn abandoned(&self, _: &UnitCtx, _: Ended) {}
 }
 
-/// The test plane, bound through its linked door on `dispatcher` as `instance`.
-fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root::linked::DoorPlane {
-    let row = LinkedRow::of(plane::door).expect("the plane states its Statement");
-    load_linked(
-        &row,
+/// The test plane's example `cdylib` beside this test binary; `None` where a scoped run did not
+/// build it. Under CI a missing artifact is a failure.
+fn dropped_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.parent()?.parent()?.join("examples").join(format!(
+        "{}plane_driver_test_plane{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ));
+    let found = path.exists().then_some(path);
+    assert!(
+        found.is_some() || std::env::var_os("CI").is_none(),
+        "the plane_driver_test_plane example cdylib is not built under CI"
+    );
+    found
+}
+
+/// The test plane, dropped in and bound on `dispatcher` as `instance`; `None` where its `cdylib`
+/// is not built.
+fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> Option<crate::root::linked::DoorPlane> {
+    let path = dropped_path()?;
+    let stated = rendering_of_library(&path)
+        .expect("the test plane's library reads")
+        .expect("the test plane states its Statement");
+    let plane = load_dropped(
+        &path,
+        &stated,
         Bind {
             instance: Arc::from(instance),
             max_inflight_cap: 64,
@@ -46,7 +66,8 @@ fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root::linked::D
             conns: None,
         },
     )
-    .expect("the linked door binds")
+    .expect("the dropped-in door binds");
+    Some(plane)
 }
 
 fn composed_services() -> Arc<LateServices> {
@@ -81,7 +102,11 @@ fn admin(path: &str) -> Option<u16> {
 fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-configured";
-    let doors = vec![(instance.to_string(), bound(instance, &dispatcher))];
+    let Some(plane) = bound(instance, &dispatcher) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let doors = vec![(instance.to_string(), plane)];
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", serde_yaml::Value::Mapping(Default::default()));
     let late = composed_services();
@@ -116,7 +141,11 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
 fn a_door_plane_whose_section_is_absent_stays_unopened() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-unconfigured";
-    let doors = vec![(instance.to_string(), bound(instance, &dispatcher))];
+    let Some(plane) = bound(instance, &dispatcher) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let doors = vec![(instance.to_string(), plane)];
     let late = composed_services();
     let served = compose_planes(&doors, &dispatcher, &late, &BTreeMap::new(), &|| {
         Arc::new(NoUnits) as Arc<dyn MoneySeam>
