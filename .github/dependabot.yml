@@ -1,14 +1,19 @@
 # Dependabot configuration — keeps dependencies current with automated PRs.
+# Every update of an ecosystem is ONE grouped PR; .github/workflows/dependabot-bundle.yml folds the
+# ecosystems into one branch (deps/bundle) and one PR.
 # Security updates are enabled separately in the repo's security settings.
 version: 2
 updates:
   # Rust crate dependencies (Cargo.toml / Cargo.lock).
   - package-ecosystem: "cargo"
     directory: "/"
-    target-branch: "dev"
+    target-branch: "predev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    groups:
+      all:
+        patterns: ["*"]
     commit-message:
       prefix: "deps"
 
@@ -16,9 +21,24 @@ updates:
   # A compromised action is itself a supply-chain vector, so these are tracked too.
   - package-ecosystem: "github-actions"
     directory: "/"
-    target-branch: "dev"
+    target-branch: "predev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    groups:
+      all:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  # The release image (Dockerfile base images).
+  - package-ecosystem: "docker"
+    directory: "/"
+    target-branch: "predev"
+    schedule:
+      interval: "weekly"
+    groups:
+      all:
+        patterns: ["*"]
     commit-message:
       prefix: "ci"
