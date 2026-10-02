@@ -27,6 +27,10 @@ enum Class {
     StatedTotal,
     /// A guardrail policy-unit count: read and named on the residual WARN, never ledgered.
     GuardrailResidual,
+    /// A measurement of the assessment itself (its latency, the characters and images it covered):
+    /// not a unit AWS bills, which are the policy units above. Read nowhere, ledgered nowhere,
+    /// named on no WARN.
+    AssessmentMetric,
 }
 
 /// Every count the wire lock declares under the response's `usage`, by its path below `usage`.
@@ -50,6 +54,16 @@ const GUARDRAIL_COUNTS: &[&str] = &[
     "sensitiveInformationPolicyUnits",
     "topicPolicyUnits",
     "wordPolicyUnits",
+];
+
+/// Every other integer of a guardrail assessment's `invocationMetrics` (`GuardrailInvocationMetrics`):
+/// the assessment's latency and its coverage, by their path below `invocationMetrics`.
+const GUARDRAIL_METRICS: &[&str] = &[
+    "guardrailProcessingLatency",
+    "guardrailCoverage.textCharacters.guarded",
+    "guardrailCoverage.textCharacters.total",
+    "guardrailCoverage.images.guarded",
+    "guardrailCoverage.images.total",
 ];
 
 /// The integer members the pinned wire lock declares under `usage` and `trace.guardrail` on
@@ -84,24 +98,34 @@ fn class_of(path: &str) -> (Class, Option<(&'static str, String)>) {
             .unwrap_or_else(|| panic!("`{path}` is in the wire lock with no class"));
         return (class, None);
     }
-    let side = if path.starts_with("trace.guardrail.inputAssessment{}.invocationMetrics.usage.") {
-        "inputAssessment"
-    } else if path.starts_with("trace.guardrail.outputAssessments{}[].invocationMetrics.usage.") {
-        "outputAssessments"
-    } else {
-        panic!("`{path}` is in the wire lock with no class")
+    let (side, member) = [
+        (
+            "inputAssessment",
+            "trace.guardrail.inputAssessment{}.invocationMetrics.",
+        ),
+        (
+            "outputAssessments",
+            "trace.guardrail.outputAssessments{}[].invocationMetrics.",
+        ),
+    ]
+    .into_iter()
+    .find_map(|(side, prefix)| path.strip_prefix(prefix).map(|m| (side, m)))
+    .unwrap_or_else(|| panic!("`{path}` is in the wire lock with no class"));
+    let class = match member.strip_prefix("usage.") {
+        Some(count) if GUARDRAIL_COUNTS.contains(&count) => Class::GuardrailResidual,
+        None if GUARDRAIL_METRICS.contains(&member) => Class::AssessmentMetric,
+        _ => panic!("`{path}` is in the wire lock with no class"),
     };
-    let count = path.rsplit('.').next().expect("a member").to_string();
-    assert!(
-        GUARDRAIL_COUNTS.contains(&count.as_str()),
-        "`{path}` is in the wire lock with no class"
-    );
-    (Class::GuardrailResidual, Some((side, count)))
+    (class, Some((side, member.to_string())))
 }
 
-/// A guardrail trace whose two guardrails each report 7 of `count` on `side`.
-fn guardrail_trace(side: &str, count: &str) -> serde_json::Value {
-    let usage = serde_json::json!({"invocationMetrics": {"usage": {count: 7}}});
+/// Two guardrails on `side`, each carrying 7 at `member` (a path below `invocationMetrics`).
+fn guardrail_trace(side: &str, member: &str) -> serde_json::Value {
+    let usage = member.rsplit('.').fold(
+        serde_json::json!(7),
+        |inner, key| serde_json::json!({ key: inner }),
+    );
+    let usage = serde_json::json!({ "invocationMetrics": usage });
     let assessment = |u: &serde_json::Value| {
         if side == "inputAssessment" {
             u.clone()
@@ -193,7 +217,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
     );
     assert_eq!(
         counts.len(),
-        BEDROCK_USAGE_CLASSES.len() + 2 * GUARDRAIL_COUNTS.len(),
+        BEDROCK_USAGE_CLASSES.len() + 2 * (GUARDRAIL_COUNTS.len() + GUARDRAIL_METRICS.len()),
         "the lock's counts {counts:?} each need exactly one class"
     );
     let base = serde_json::json!({"inputTokens": 1000, "outputTokens": 100, "totalTokens": 1100});
@@ -228,9 +252,9 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
                 usage["totalTokens"] = serde_json::json!(1107);
                 ((0, 0, 0, 0), Some((1107, 1100, 7)))
             }
-            Class::GuardrailResidual => {
-                let (side, count) = guardrail.as_ref().expect("a guardrail count");
-                trace = Some(guardrail_trace(side, count));
+            Class::GuardrailResidual | Class::AssessmentMetric => {
+                let (side, member) = guardrail.as_ref().expect("a guardrail member");
+                trace = Some(guardrail_trace(side, member));
                 ((0, 0, 0, 0), None)
             }
         };
@@ -257,7 +281,14 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
                 assert_eq!(a.2, ttl_5m, "{path}: `{field}` 5m cache-write attribution");
             }
         }
-        if let Some((side, count)) = guardrail {
+        if let (Class::AssessmentMetric, Some((_, member))) = (class, &guardrail) {
+            assert!(
+                !cap.messages().iter().any(|m| m.contains(member.as_str())),
+                "`{field}` is no billed unit and is named on no WARN: {:?}",
+                cap.messages()
+            );
+        } else if let Some((side, member)) = guardrail {
+            let count = member.strip_prefix("usage.").expect("a policy-unit count");
             let named = format!("{side}.{count}=14");
             assert_eq!(
                 cap.messages()
