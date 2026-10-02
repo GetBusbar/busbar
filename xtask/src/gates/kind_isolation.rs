@@ -6356,7 +6356,7 @@ impl Gate for KindIsolationGate {
                 &[
                     "unlisted-dep-edge",
                     "cleanliness -> transport",
-                    "busbar-core-oauth2 -> busbar-transport-http",
+                    "busbar-core-oauth2 -> busbar-transport-planted",
                 ],
             ));
             report.push(prove_rows_red(
@@ -9487,13 +9487,23 @@ fn drain_row_plant() -> Overlay {
     ))
 }
 
-/// `busbar-core-oauth2` — a `cleanliness` crate — declaring a wire.
+/// The transport crate [`cleanliness_reaches_wire`] lands beside the tree's own.
+const PLANTED_WIRE: &str = "busbar-transport-planted";
+
+/// `busbar-core-oauth2` — a `cleanliness` crate — declaring a wire. The wire is planted with it: the
+/// transports leave this tree for their own repos one by one, and an edge to a crate the census no
+/// longer holds is measured as no edge at all, so the case brings the transport it reaches.
 fn cleanliness_reaches_wire() -> Overlay {
     manifest_plant(
+        &format!("crates/{PLANTED_WIRE}"),
+        PLANTED_WIRE,
+        &["busbar-contract"],
+    )
+    .layered(&manifest_plant(
         "crates/busbar-core-oauth2",
         "busbar-core-oauth2",
-        &["busbar-contract", "busbar-transport-http"],
-    )
+        &["busbar-contract", PLANTED_WIRE],
+    ))
 }
 
 /// A plane declaring the `cleanliness` crate `busbar-core-oauth2`.
@@ -10327,7 +10337,7 @@ mod plant_tests {
             &[
                 "unlisted-dep-edge",
                 "cleanliness -> transport",
-                "busbar-core-oauth2 -> busbar-transport-http",
+                "busbar-core-oauth2 -> busbar-transport-planted",
             ],
         );
     }
