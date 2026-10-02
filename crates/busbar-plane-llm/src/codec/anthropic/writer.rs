@@ -285,7 +285,7 @@ impl ProtocolWriter for AnthropicWriter {
             // 400 — this is the SAME guard the parallelism carry just below already applies.
             if !out.contains_key(keys::TOOLS) {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tool_choice"),
+                    crate::codec::drops::TOOL_CHOICE,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping tool_choice on Anthropic egress: Anthropic rejects a tool_choice with \
@@ -358,7 +358,7 @@ impl ProtocolWriter for AnthropicWriter {
                     }
                     None => {
                         crate::codec::drops::writer_drop!(
-                            crate::codec::drops::member("response_format"),
+                            crate::codec::drops::RESPONSE_FORMAT,
                             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                             [parameter = keys::RESPONSE_FORMAT, ],
                             "dropping schema-less JSON mode on Anthropic egress: structured outputs \
@@ -542,7 +542,7 @@ impl ProtocolWriter for AnthropicWriter {
                 let ty = tc.get(keys::TYPE).and_then(|t| t.as_str());
                 if ty == Some(keys::ANY) || ty == Some(keys::TOOL) {
                     crate::codec::drops::writer_drop!(
-                        crate::codec::drops::member("tool_choice"),
+                        crate::codec::drops::TOOL_CHOICE,
                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                         [tool_choice = ?ty, ],
                         "downgrading forced/targeted tool_choice to 'auto' on Anthropic egress: \
@@ -1042,7 +1042,7 @@ impl ProtocolWriter for AnthropicWriter {
                 crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. } => {
                     crate::codec::drops::writer_drop!(
-                        crate::codec::drops::block("image"),
+                        crate::codec::drops::IMAGE,
                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                         [],
                         "dropping image/attachment output block on Anthropic response egress: an \

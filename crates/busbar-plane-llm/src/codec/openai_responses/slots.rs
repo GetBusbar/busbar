@@ -221,7 +221,7 @@ pub(super) fn write_hosted_tool(
             }
             if search.max_uses.is_some() || !search.blocked_domains.is_empty() {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tools"),
+                    crate::codec::drops::TOOLS,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "responses writer: the web_search tool models no `max_uses` / \
@@ -236,7 +236,7 @@ pub(super) fn write_hosted_tool(
         })),
         crate::codec::ir::IrHostedTool::WebFetch(_) => {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("tools"),
+                crate::codec::drops::TOOLS,
                 &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
                 [hosted_tool = tool.kind_str(),],
                 "responses writer: /v1/responses has no hosted URL-fetch tool; dropping it \

@@ -160,7 +160,7 @@ impl ProtocolWriter for OpenAiWriter {
                                     }))
                                 }
                                 None => crate::codec::drops::writer_drop!(
-                                    crate::codec::drops::block("image"),
+                                    crate::codec::drops::IMAGE,
                                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                     [],
                                     "dropping unresolvable vendor-scoped image reference on OpenAI \
@@ -524,7 +524,7 @@ impl ProtocolWriter for OpenAiWriter {
                         tools_arr.push(hosted.clone());
                     } else {
                         crate::codec::drops::writer_drop!(
-                            crate::codec::drops::member("tools"),
+                            crate::codec::drops::TOOLS,
                             &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
                             [],
                             "dropping a hosted tool on OpenAI Chat egress: it has no Chat \
@@ -588,7 +588,7 @@ impl ProtocolWriter for OpenAiWriter {
         {
             if req.tools.is_empty() && custom_tools.is_empty() {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tool_choice"),
+                    crate::codec::drops::TOOL_CHOICE,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping tool_choice on OpenAI egress: \"tool_choice\" is only allowed when \
@@ -1071,7 +1071,7 @@ impl ProtocolWriter for OpenAiWriter {
             if let crate::codec::ir::IrBlock::Thinking { text, redacted, .. } = block {
                 if !text.is_empty() {
                     crate::codec::drops::writer_drop!(
-                        crate::codec::drops::block("thinking"),
+                        crate::codec::drops::THINKING,
                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                         [redacted = *redacted, byte_len = text.len(), ],
                         "dropping a reasoning/thinking block on OpenAI Chat egress: the completion \

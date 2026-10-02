@@ -574,13 +574,13 @@ const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
 /// The Converse answer content grammar.
 /// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
 const IR_BLOCK_KINDS: &[(&str, &str)] = &[
-    ("text", "text"),
-    ("image", "image"),
-    ("document", "document"),
-    ("video", "video"),
-    ("thinking", "reasoningContent"),
-    ("tool_use", "toolUse"),
-    ("tool_result", "toolResult"),
+    (crate::codec::drops::kind::TEXT, keys::TEXT),
+    (crate::codec::drops::kind::IMAGE, keys::IMAGE),
+    (crate::codec::drops::kind::DOCUMENT, keys::DOCUMENT),
+    (crate::codec::drops::kind::VIDEO, VIDEO),
+    (crate::codec::drops::kind::THINKING, REASONING_CONTENT),
+    (crate::codec::drops::kind::TOOL_USE, TOOL_USE_CAMEL),
+    (crate::codec::drops::kind::TOOL_RESULT, TOOL_RESULT),
 ];
 
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
@@ -767,7 +767,7 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
         crate::codec::ir::IrImageSource::Url(_)
         | crate::codec::ir::IrImageSource::Vendor { .. } => {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::block("image"),
+                crate::codec::drops::IMAGE,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "dropping image with no Bedrock Converse projection (URL or foreign vendor ref)"
@@ -966,7 +966,7 @@ fn bedrock_media_content_block(
         crate::codec::ir::IrMediaKind::Video => (VIDEO, bedrock_video_format(source)?),
         crate::codec::ir::IrMediaKind::Audio => {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::block("audio"),
+                crate::codec::drops::AUDIO,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "dropping audio attachment on Bedrock egress: Converse has `document` and `video` \
@@ -1023,7 +1023,7 @@ fn bedrock_media_content_block(
         }
     } else if citations.is_some() || context.is_some() {
         crate::codec::drops::writer_drop!(
-            crate::codec::drops::block("document"),
+            crate::codec::drops::DOCUMENT,
             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
             [media_kind = kind.as_str(),],
             "dropping attachment citations/context on Bedrock egress: Converse carries them on a \
@@ -1053,7 +1053,7 @@ fn bedrock_document_format(source: &crate::codec::ir::IrImageSource) -> Option<&
         APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_SPREADSHEETML_SHEET => XLSX,
         other => {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::block("document"),
+                crate::codec::drops::DOCUMENT,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [media_type = %other, ],
                 "dropping document attachment on Bedrock egress: the mime type is not a member of \
@@ -1085,7 +1085,7 @@ fn bedrock_video_format(source: &crate::codec::ir::IrImageSource) -> Option<&'st
         Some("3gpp") => THREE_GP,
         _ => {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::block("video"),
+                crate::codec::drops::VIDEO,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [media_type = %media_type, ],
                 "dropping video attachment on Bedrock egress: the mime type is not a member of \
@@ -1643,7 +1643,7 @@ fn write_bedrock_request_metadata(pairs: &[(String, String)]) -> Option<serde_js
     for (k, v) in pairs {
         if !bedrock_request_metadata_fits(k, 1) || !bedrock_request_metadata_fits(v, 0) {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("metadata"),
+                crate::codec::drops::METADATA,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [key = %k, ],
                 "dropping a metadata entry on Bedrock egress: Converse requestMetadata keys and \
@@ -1652,7 +1652,7 @@ fn write_bedrock_request_metadata(pairs: &[(String, String)]) -> Option<serde_js
         }
         if out.len() == REQUEST_METADATA_MAX_ENTRIES && !out.contains_key(k) {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("metadata"),
+                crate::codec::drops::METADATA,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [key = %k, ],
                 "dropping a metadata entry on Bedrock egress: Converse requestMetadata holds at \
