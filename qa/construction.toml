@@ -2059,7 +2059,7 @@ known_sites = [
   "crates/busbar-kernel/src/config_validate/mod.rs :: provider '{provider_name}' base_url must use https for a public host (got '{base_url}'); plaintext http is permitted only for a private/loopback local-model upstream",
   "crates/busbar-kernel/src/endpoints.rs :: model",
   "crates/busbar-kernel/src/ingress/mod.rs :: governance: no configured rate for model; rejecting (rate_card is authoritative and complete)",
-  "crates/busbar-kernel/src/ingress/mod.rs :: no configured rate for model '{pool}'",
+  "crates/busbar-kernel/src/door.rs :: no configured rate for model '{name}'",
   "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
   "crates/busbar-kernel/src/ingress/mod.rs :: /{provider}/{model}/v1/messages",
   "crates/busbar-kernel/src/metrics/money.rs :: model",
