@@ -59,20 +59,22 @@ impl Door {
         }
     }
 
-    /// The door's dialect, by its index in the tail's dialects.
+    /// The door's line on the guest list: its claim (`crate::door::ROUTES`), in claim order.
+    #[must_use]
+    pub const fn line(self) -> crate::door::Route {
+        crate::door::ROUTES[self as usize]
+    }
+
+    /// The door's dialect, by its index in the tail's dialects: its line's.
     #[must_use]
     pub const fn dialect(self) -> u32 {
-        match self {
-            Door::Mint | Door::Sdp | Door::Sideband | Door::Metadata => 0,
-            Door::Gemini => 1,
-            Door::Twilio => 2,
-        }
+        self.line().dialect
     }
 
     /// `true` for the door read without a credential.
     #[must_use]
     pub const fn is_open(self) -> bool {
-        matches!(self, Door::Metadata)
+        self.line().open()
     }
 
     /// `true` for a door that opens a live session rather than answering one request.
@@ -291,7 +293,9 @@ pub struct Reply {
 /// The status the served plane answers a failed mint with.
 pub const MINT_FAILED_STATUS: u16 = 502;
 
-fn mint_failed(reason: &str) -> Reply {
+/// The served plane's 502 for a mint that failed for `reason`.
+#[must_use]
+pub fn mint_failed(reason: &str) -> Reply {
     Reply {
         status: MINT_FAILED_STATUS,
         fields: Vec::new(),

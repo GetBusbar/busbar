@@ -35,7 +35,11 @@ mod selectors {
             .iter()
             .filter(|c| c.dialect == Dialect::TwilioMediaStreams)
             .collect();
-        assert_eq!(twilio.len(), 1, "exactly one claim names the Twilio dialect");
+        assert_eq!(
+            twilio.len(),
+            1,
+            "exactly one claim names the Twilio dialect"
+        );
         let claim = &twilio[0].claim;
         assert_eq!(
             claim.transport, WS_TRANSPORT,

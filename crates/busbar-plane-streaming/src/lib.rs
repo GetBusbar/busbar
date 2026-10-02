@@ -60,6 +60,7 @@ pub mod meta;
 pub mod open_calls;
 pub mod provider;
 pub mod register;
+pub mod request_unit;
 pub mod session;
 pub mod session_params;
 pub mod session_pump;
