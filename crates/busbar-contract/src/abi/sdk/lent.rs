@@ -565,6 +565,24 @@ lend! {
     HostRecords { buf(items, items_cap) -> RecordEntry; }
 }
 
+// THE EXPORT KIND (`abi::export`): the recorder snapshot `scrape` lends (families, their samples,
+// their labels) and the host buffer it renders into, `check`'s instances and `serve`'s headers.
+use crate::abi::export::{
+    CheckIn, CheckInstance, ScrapeFamily, ScrapeIn, ScrapeLabel, ScrapeSample,
+    ServeIn as ExportServeIn,
+};
+
+lend! {
+    ScrapeIn {
+        list(families, families_len) -> ScrapeFamily;
+        buf(buf, cap) -> u8;
+    }
+    ScrapeFamily { list(samples, samples_len) -> ScrapeSample; }
+    ScrapeSample { list(labels, labels_len) -> ScrapeLabel; }
+    CheckIn { list(instances, instances_len) -> CheckInstance; }
+    ExportServeIn { list(headers, headers_len) -> AbiStr; }
+}
+
 #[cfg(test)]
 #[path = "tests/lent_tests.rs"]
 mod tests;
