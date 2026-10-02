@@ -578,12 +578,6 @@ from    = 233
 to      = 236
 because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2026-09-30 (URL-PARSE audit) SEAM puts the one URL and host reader at busbar-contract/src/net.rs (BUSBAR-1.6.0.md, the engine-folds paragraph). The three hits are the web scheme names the reader must spell: net.rs:398 (the http literal of strip_scheme, moved verbatim from busbar-kernel-egress trust::net) and net.rs:518 (the http and ws arms of UrlFamily::of, folded from the two split_ws_url copies). The pair nets down in the same commit: busbar-kernel-egress x transport 56 -> 55 and x plane 16 -> 13 (net -1). Measured by cargo xtask gate kind-isolation --report on predev 8a4b18692: 233 at the base, 236 at the tip."
 
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-file    = "qa/construction.toml"
-from    = 55599
-to      = 55602
-because = "train/cg-64: DEL-BUDGET-R +3 (proof1 55443 over 8fc5e67e2 55440), merge-steward delegation <= +150 (ARCHITECT 2026-10-01). Re-summed on merge of predev: predev arms 55599 (train/cg-65 lowered 55605 -> 55599) + 3 = 55602."
-
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 29392
@@ -1559,8 +1553,7 @@ kernel_crate = "busbar-kernel"
 #    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
 # ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
 #    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
-# ── RE-ARMED 55599 -> 55602 by train/cg-64: DEL-BUDGET-R +3 as declared, re-summed over cg-65's 55599 on merge.
-kernel_ceiling = 55602
+kernel_ceiling = 55537
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
