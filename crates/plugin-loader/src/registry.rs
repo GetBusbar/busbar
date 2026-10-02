@@ -555,6 +555,13 @@ impl PluginRegistry {
         Ok(p)
     }
 
+    /// The STORE `name_or_alias` resolves to, refused unless its manifest says `store`. The one
+    /// place the loader spells the store kind's root key; [`Self::open_store`] and
+    /// [`Self::store_door`] both resolve through it.
+    fn resolve_store(&self, name_or_alias: &str) -> Result<&LoadablePlugin, String> {
+        self.resolve_kind(name_or_alias, "store", "back the governance store")
+    }
+
     /// Open a STORE plugin resolved by name or alias: verifies the resolved plugin's `kind` is
     /// `store`, then loads it over the store C ABI (its verified bytes staged — memfd on Linux,
     /// private temp elsewhere — or its linked boundary) and `open`s it with `cfg_json`. The one
@@ -564,7 +571,7 @@ impl PluginRegistry {
         name_or_alias: &str,
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
-        let p = self.resolve_kind(name_or_alias, "store", "back the governance store")?;
+        let p = self.resolve_store(name_or_alias)?;
         if let Some(LinkedEntry::Store { open, .. }) = p.entry {
             return open(cfg_json);
         }
@@ -591,7 +598,7 @@ impl PluginRegistry {
         name_or_alias: &str,
     ) -> Result<busbar_contract::store_calls::StoreDoor, String> {
         use busbar_contract::store_calls::StoreDoor;
-        let p = self.resolve_kind(name_or_alias, "store", "back the governance store")?;
+        let p = self.resolve_store(name_or_alias)?;
         let no_door = || {
             format!(
                 "plugin '{}' states no store door: rebuild the plugin against the 1.6.0 SDK",
