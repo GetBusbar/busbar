@@ -300,7 +300,7 @@ pub fn item_body<'a>(lines: &'a [Line], signature: &str) -> Option<Vec<&'a Line>
 
 // ---------------------------------------------------------------------------
 // WHAT COUNTS AS A TEST THAT WAS WATCHED — shared by every gate that accepts a named test as
-// evidence (`capability_equality.rs`'s proven cells, `field_coverage.rs`'s carried fields).
+// evidence (`capability_equality.rs`'s proven cells).
 //
 // A named function is evidence only when it is (1) TEST CODE, (2) a TEST the harness runs, and
 // (3) a body that ASSERTS something, directly or one hop into a same-file helper. A gate that
