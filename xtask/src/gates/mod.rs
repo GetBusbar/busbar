@@ -65,6 +65,7 @@ pub mod reachability;
 pub mod response_header;
 pub mod script_allowlist;
 pub mod seal_witness;
+pub mod secret_accessor_seal;
 pub mod secret_hygiene;
 pub mod segregation;
 pub mod service_images;
@@ -2674,6 +2675,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(seal_witness::SealWitnessGate),
         summary: "capability proofs are exactly Pass<stage> + Grant<capability> + one kernel minter (#65/#73)",
+    },
+    Registration {
+        name: "secret-accessor-seal",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(secret_accessor_seal::SecretAccessorSealGate),
+        summary: "no cdylib plugin crate reaches a raw secret accessor (expose/bytes) or KernelSeal::acquire_for_kernel (DECISIONS #40)",
     },
     Registration {
         name: "money-invariants",
