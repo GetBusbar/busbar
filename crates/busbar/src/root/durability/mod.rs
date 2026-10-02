@@ -2136,7 +2136,7 @@ pub struct NodeBook {
 /// deployment and not a silent data loss — there was nowhere the records were ever going.
 ///
 /// **A DEPLOYMENT WITH A STORE DOES NOT COME THROUGH HERE.** It is composed by the binary's
-/// `compose_boot_book`, which takes the CONFIGURED data directory and the configured store's
+/// `root::boot::compose_book`, which takes the CONFIGURED data directory and the configured store's
 /// shipper and seals the opening before it hands the book back. This constructor hard-codes both
 /// answers, which is correct only because the one caller that reaches it has already established
 /// that there is no store to make either decision against.

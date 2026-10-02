@@ -7,7 +7,8 @@
 //! Select picks the plugins the configuration uses (BUSBAR-1.6.0.md §2, §4 Law 7). `--validate` runs these three
 //! stages and nothing dials, no library is opened and no store is opened.
 //!
-//! The rest of boot — the one load, register and seal — moves here as BOOT-LOOP 8.
+//! Stage 4 Book ([`book`]) opens the store, replays the WAL, seals the opening and binds the
+//! keyset, at boot only. The rest of boot — the one load, register and seal — moves here as BOOT-LOOP 8.
 
 use std::sync::Arc;
 
@@ -352,6 +353,179 @@ pub fn refuse_unserved_inbound(
     let doc = document(path).unwrap_or_default();
     let candidates = discover(registry)?;
     refuse_inbound(&candidates, &select(&Uses::of(&doc), &candidates))
+}
+
+/// THE BOOT BOOK, COMPOSED — the extracted seam [`book`] calls, wired against a store
+/// adapter so its behaviour can be proved without a bound listener or a loaded plugin behind it.
+///
+/// Three decisions, made together here because they are ONE value and a caller that made them
+/// separately would have a node whose halves disagree:
+///
+/// 1. **The journal ships to the CONFIGURED STORE'S shipper.** A batch is offered to that shipper
+///    and its answer is part of the commit — committed-before-ack — and it is written to this
+///    node's own disk as well when a data directory was resolved. Read
+///    [`super::durability`]'s preamble for what "the store" answers with TODAY: on every store this
+///    binary can load, the record verbs are answered by the adapter's node-local shim, which
+///    acknowledges and never fails. So this line buys the WIRING, not new bytes at rest — the
+///    moment a store speaks the record ABI the batches land in it, with no change here. The
+///    durability a node gains today from this function is the on-disk half, and the honesty of the
+///    other half is that the previous release kept nothing there either.
+/// 2. **The ledger dual-writes onto the in-memory reconciliation rows.** That half stays memory: it
+///    is the cross-check the reconciliation identity is read from, not the acknowledgement path.
+/// 3. **The OPENING IS SEALED, here, before this function returns.** The previous release's rows are
+///    read through the same adapter and sealed as the opening figures, with the marker written onto
+///    THIS journal rather than the adapter's node-local shim — which could only ever hold it for the
+///    life of a process.
+///
+/// **THE ORDER IS THE WHOLE POINT.** The seal happens before the composed book is handed back, so it
+/// is impossible for a caller to reach a settlement path with an unopened book: the first accepted
+/// connection can settle, and a settlement posted before the opening was sealed would measure its
+/// residual from a checkpoint that did not exist when it happened. An opening sealed after traffic
+/// has begun is worse than no opening at all, because it looks authoritative.
+///
+/// It returns the wired stack, the rows a view reads them back from, and what the migration did.
+/// The opening is signed with the audit chain's own key (Q71(3): one keyset); a chain given no key
+/// seals it unsigned, which the ledger unit accepts.
+///
+/// # Errors
+///
+/// The journal could not be opened (a configured data directory that could not be read), or the
+/// opening could not be sealed — the two boot conditions [`super::migration::run`] returns where
+/// continuing would be worse than refusing. A store that merely would not answer for some rows is
+/// NOT one of them; see that module's preamble.
+pub fn compose_book(
+    adapter: &super::loader::store_adapter::StoreAdapter,
+    data_dir: Option<std::path::PathBuf>,
+    mig: &super::migration::MigrationConfig,
+    now: u64,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+) -> Result<
+    (
+        super::durability::Durability,
+        Arc<busbar_kernel_ledger::legacy::RecordingRows>,
+        super::migration::Migration,
+    ),
+    String,
+> {
+    let rows = Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
+    let mut durability = super::durability::build_for_node(
+        &super::durability::DurabilityConfig {
+            data_dir: data_dir.clone(),
+        },
+        mig.node,
+        adapter.shipper(),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
+    )
+    .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
+    // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
+    // corrected count and every recorded content access survive the restart (a node with no data
+    // directory rebuilds nothing).
+    durability.restore_amendments();
+    // A corrupt journal segment was already logged and counted when the book was built; this puts
+    // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
+    if let Err(lost) =
+        durability.journal_quarantines(token, busbar_contract::caps::StepName::Meter, now)
+    {
+        tracing::error!(
+            step = lost.step().as_str(),
+            "the journal could not record the quarantine boot recovery made"
+        );
+    }
+    // THE DEPLOYMENT KEYSET (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect ruling 2026-09-26),
+    // bound BEFORE the opening is sealed so checkpoint 0 is signed with it too. With a data
+    // directory the first boot mints it, caches it there (0600) and seals its fingerprint in a
+    // `Bootstrap` record; a later boot that cannot produce that fingerprint refuses `KeysetMissing`.
+    // Without one it is ephemeral: minted for this process, written nowhere, checked by nothing.
+    super::keyset::bind(
+        &mut durability,
+        data_dir.as_deref(),
+        token,
+        busbar_contract::caps::StepName::Meter,
+        now,
+    )
+    .map_err(|e| e.to_string())?;
+    let migration = {
+        let (mut records, signer) =
+            durability.migration_records_signed(token, busbar_contract::caps::StepName::Meter);
+        let signer = signer
+            .as_ref()
+            .map(|s| s as &dyn busbar_kernel_ledger::checkpoint::CheckpointSecret);
+        super::migration::run(adapter, &mut records, mig, now, signer)
+            .map_err(|e| format!("the boot ledger could not seal its opening balances: {e}"))?
+    };
+    Ok((durability, rows, migration))
+}
+
+/// STAGE 4, BOOK (`BUSBAR-1.6.0.md` §3, the stage table: "open the store, replay the WAL, seal the
+/// opening, bind the keyset — at boot only"): THE PROCESS'S ONE BOOK, opened over the deployment's
+/// configured store with its balances sealed. Boot calls it once. Reload runs stages 1–3 and 5 and
+/// never Book (§3; ARCHITECT round-2 ruling "Book stage and store are BOOT-ONLY"): a rebuilt
+/// generation carries the store it was handed, so a reload neither reopens the store nor seals a
+/// second opening.
+///
+/// A node with a governance store ships its book to that store and opens it from the rows the
+/// previous release left there; a node with none keeps the previous release's memory-only book,
+/// because a store the batches were never going to reach cannot be the one they are shipped to.
+///
+/// The data directory is the one [`busbar_kernel::preflight::fleet_data_dir`] resolves — the SAME
+/// accessor the plugin anti-downgrade floor persists under, so the two can never disagree about
+/// where this node keeps its own files. Absent, the branch in
+/// [`super::durability::build_for_node`] is the unset one and nothing is probed, nothing is opened
+/// and no file appears: this wiring gives a node with a CONFIGURED directory somewhere to write, and
+/// deliberately does not make writing unconditional.
+///
+/// # Errors
+///
+/// The ephemeral keyset could not be bound, or [`compose_book`] refused.
+pub fn book(app: &busbar_kernel::state::App) -> Result<super::durability::NodeBook, String> {
+    let Some(gov) = app.governance.as_ref() else {
+        // No store: the keyset is node-local and ephemeral (PB-13), and the chain still signs.
+        let book = super::durability::node_book();
+        if let Err(e) = super::keyset::bind_ephemeral(
+            &mut book.durability.lock().unwrap_or_else(|p| p.into_inner()),
+        ) {
+            return Err(e.to_string());
+        }
+        return Ok(book);
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let adapter = super::loader::store_adapter::StoreAdapter::native(gov.store());
+    let mig = super::migration::config_from(&app.cost, now);
+    let token = super::kernel::new_kernel().durability_token();
+    let data_dir = busbar_kernel::preflight::fleet_data_dir();
+    let (durability, rows, migration) = compose_book(&adapter, data_dir, &mig, now, &token)?;
+    // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
+    // boot log's INFO+ line set is part of what "LLM-only ≡ 1.5.5" means — it is pinned
+    // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's
+    // `hazard|no-data-dir|logs` cell — so a new line here is a user-visible byte change
+    // on a surface that must not move. The seal is an internal fact an operator can ask
+    // for; it is not news a 1.5.5 deployment ever printed.
+    if migration.sealed_now() {
+        tracing::debug!(
+            node = mig.node,
+            rate_card_version = mig.rate_card_version,
+            "the boot ledger sealed its opening balances from the configured store"
+        );
+    }
+    // THIS ONE STAYS A WARN, and the asymmetry is deliberate: it fires only when the store
+    // would not list its key rows, which means the opening is INCOMPLETE — sealed over the
+    // buckets configuration named and missing the ones the store would have. A money fact
+    // that degraded silently to keep a log shape would be the wrong trade. It cannot fire
+    // on the neutral shape: it takes a store that fails to answer, not a store with
+    // nothing in it.
+    if let Some(reason) = &migration.key_rows_unreadable {
+        tracing::warn!(
+            reason = %reason,
+            "the boot ledger could not list the store's key rows, so the opening was sealed \
+             over the buckets the configuration named"
+        );
+    }
+    let durability = Arc::new(std::sync::Mutex::new(durability));
+    // Every amendment sealed from here on goes on the book it was rebuilt from.
+    super::durability::bind_amendments(&durability);
+    Ok(super::durability::NodeBook { durability, rows })
 }
 
 #[cfg(test)]
