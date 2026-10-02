@@ -242,11 +242,13 @@ pub enum LoadError {
     Rendering(String),
     /// The door's Statement is not the one the manifest (or the compiled-in row) states.
     StatementMismatch,
-    /// An outbound need names a scheme no loaded transport serves (spec Part 2 #50: fail closed at
-    /// boot, naming the plugin and the scheme).
+    /// A need, outbound or inbound, names a scheme no loaded transport serves (spec Part 2 #50:
+    /// fail closed at boot, naming the plugin and the scheme).
     UnservedScheme {
         /// The plugin the Statement names.
         plugin: String,
+        /// The need is inbound (it listens), not outbound.
+        inbound: bool,
         /// The need's unserved scheme.
         scheme: String,
     },
@@ -306,9 +308,14 @@ impl fmt::Display for LoadError {
             Self::StatementMismatch => f.write_str(
                 "the plugin's Statement is not the one its manifest states — repack the plugin",
             ),
-            Self::UnservedScheme { plugin, scheme } => write!(
+            Self::UnservedScheme {
+                plugin,
+                inbound,
+                scheme,
+            } => write!(
                 f,
-                "plugin `{plugin}` declares an outbound need over `{scheme}`, and no loaded transport serves `{scheme}`"
+                "plugin `{plugin}` declares an {} need over `{scheme}`, and no loaded transport serves `{scheme}`",
+                if *inbound { "inbound" } else { "outbound" }
             ),
         }
     }

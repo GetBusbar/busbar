@@ -688,7 +688,7 @@ impl DeclaredConns for Connector {
         // headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any earlier pin is dropped), and
         // refused when no loaded transport serves its scheme (spec Part 2 #50; the loader fails
         // the boot on it, naming the plugin and the scheme); an inbound need is recorded (the
-        // listener binds it).
+        // listener binds it), and refused on an unserved scheme alike.
         let outbound = spec.direction == DIRECTION_OUTBOUND;
         let unresolved = !spec.target_from.is_empty() && target.is_none();
         let credentialed = target.is_some_and(carries_userinfo);
@@ -701,6 +701,12 @@ impl DeclaredConns for Connector {
                     self.declare_need_to(owner, need, &spec.transport, spec.egress_class, t)
                 }
                 (true, None) => self.declare_need(owner, need, &spec.transport, spec.egress_class),
+                // An inbound need over a scheme no loaded transport serves is refused the same way.
+                (false, _)
+                    if !spec.transport.is_empty() && !self.serves_scheme(&spec.transport) =>
+                {
+                    Err(ConnError::Refused)
+                }
                 (false, _) => {
                     self.slab.declare(owner, need);
                     Ok(())

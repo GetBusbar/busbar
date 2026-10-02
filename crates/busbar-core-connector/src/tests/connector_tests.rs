@@ -71,6 +71,18 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
             Err(ConnError::Refused)
         );
         assert_eq!(c.declared(OWNER, NeedId(1)), Some(Err(ConnError::Refused)));
+        // An inbound need over an unserved scheme is refused alike (ARCHITECT ruling 2026-10-02).
+        let mut inbound = unserved.clone();
+        inbound.direction = busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None),
+            Err(ConnError::Refused)
+        );
+        inbound.transport = "bytes".to_owned();
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None),
+            Ok(())
+        );
         let desc = OpenDesc {
             target: &far,
             ..OpenDesc::default()

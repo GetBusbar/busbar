@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::host::conn::connector::{
-    service, EstablishIn, Need, DIRECTION_OUTBOUND, KEEP_NAMED,
+    service, EstablishIn, Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_NAMED,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_JSON};
@@ -255,10 +255,16 @@ fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
     let Err(refusal) = bind_over(Box::leak(Box::new(NEEDS)), &unserved) else {
         panic!("a need over an unserved scheme must refuse the load");
     };
-    let crate::dispatch::LoadError::UnservedScheme { plugin, scheme } = &refusal else {
+    let crate::dispatch::LoadError::UnservedScheme {
+        plugin,
+        inbound,
+        scheme,
+    } = &refusal
+    else {
         panic!("refused for the wrong reason: {refusal}");
     };
     assert_eq!(scheme, "sock");
+    assert!(!inbound);
     assert!(!plugin.is_empty(), "the refusal names the plugin");
     let text = refusal.to_string();
     assert!(
@@ -269,6 +275,44 @@ fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
 
     let served = Arc::new(Recording::default());
     assert!(bind_over(Box::leak(Box::new(NEEDS)), &served).is_ok());
+}
+
+/// RED (spec Part 0: core refuses at boot; Part 2 #50; ARCHITECT ruling 2026-10-02): an INBOUND need
+/// over a scheme no loaded transport serves refuses the load the same way, naming the plugin and the
+/// scheme; the same inbound need over a served scheme binds.
+#[test]
+fn an_inbound_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
+    const INBOUND: [Need; 1] = [Need {
+        direction: DIRECTION_INBOUND,
+        target_from: NONE,
+        ..NEEDS[0]
+    }];
+    let unserved = Arc::new(Recording {
+        unserved: vec!["sock"],
+        ..Recording::default()
+    });
+    let Err(refusal) = bind_over(Box::leak(Box::new(INBOUND)), &unserved) else {
+        panic!("an inbound need over an unserved scheme must refuse the load");
+    };
+    let crate::dispatch::LoadError::UnservedScheme {
+        plugin,
+        inbound,
+        scheme,
+    } = &refusal
+    else {
+        panic!("refused for the wrong reason: {refusal}");
+    };
+    assert_eq!(scheme, "sock");
+    assert!(*inbound, "the refusal says the need is inbound");
+    let text = refusal.to_string();
+    assert!(
+        text.contains(plugin.as_str()) && text.contains("inbound") && text.contains("`sock`"),
+        "{text}"
+    );
+    assert!(unserved.declared.lock().unwrap().is_empty());
+
+    let served = Arc::new(Recording::default());
+    assert!(bind_over(Box::leak(Box::new(INBOUND)), &served).is_ok());
 }
 
 /// RED: the instance that declares a need is handed the slots; its config-targeted need is not

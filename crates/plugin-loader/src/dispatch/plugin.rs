@@ -936,17 +936,16 @@ impl<K: Kind> Plugin<K> {
                         .map(|r| r.needs)
                         .ok_or_else(|| LoadError::BadStatement("the needs do not render".into()))?;
                     for (i, need) in needs.iter().enumerate() {
-                        // THE BOOT'S SCHEME MATCH (spec Part 2 #50): an outbound need over a
-                        // scheme no loaded transport serves refuses the load, naming the plugin
-                        // and the scheme — fail closed now, never at the need's first open.
-                        if need.direction == DIRECTION_OUTBOUND
-                            && !need.transport.is_empty()
-                            && !table.serves_scheme(&need.transport)
-                        {
+                        // THE BOOT'S SCHEME MATCH (spec Part 0: core refuses at boot; Part 2
+                        // #50): a need, outbound or inbound, over a scheme no loaded transport
+                        // serves refuses the load, naming the plugin and the scheme — fail closed
+                        // now, never at the need's first open or listen.
+                        if !need.transport.is_empty() && !table.serves_scheme(&need.transport) {
                             return Err(LoadError::UnservedScheme {
                                 plugin: str_bytes(st.name)
                                     .map(|n| String::from_utf8_lossy(n).into_owned())
                                     .unwrap_or_default(),
+                                inbound: need.direction != DIRECTION_OUTBOUND,
                                 scheme: need.transport.clone(),
                             });
                         }
