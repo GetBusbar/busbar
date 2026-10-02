@@ -46,11 +46,11 @@ const HOSTILE: &[&str] = &[
     "\u{0}https://10.99.99.99",
     "https://10.99.99.99\u{0}",
     "\t https://10.99.99.99/ \r\n",
-    "   https://api.openai.com/v1   ",
+    "   https://api.example.com/v1   ",
     // Interior tab / CR / LF, deleted from anywhere in the input rather than trimmed.
     "http://169.254.169\t.254/",
     "http://169.254.169.254\r\n/",
-    "https://api.openai\n.com/v1",
+    "https://api.example\n.com/v1",
     // The CONTROL for the trim: an interior space is NOT one of the three deleted bytes and is not
     // at either end, so a malformed host must stay malformed rather than be silently repaired into
     // something that matches.
@@ -74,7 +74,7 @@ const HOSTILE: &[&str] = &[
     "http://[fd00:ec2::254]/",         // IMDSv6
     // ── Authority-boundary tricks ────────────────────────────────────────────────────────────────
     "https://10.0.0.1\\x.allowed.com/",
-    "https://api.openai.com@169.254.169.254/",
+    "https://api.example.com@169.254.169.254/",
     "https://user:pass@10.99.99.99:8443/v1",
     "https://169.254.169.254:80/?q=#frag",
     "https://169.254.169.254#@allowed.com",
@@ -106,7 +106,7 @@ const BARE_AUTHORITIES: &[&str] = &[
     " 10.99.99.99:8443",
     "169.254.169.254:8080",
     "169.254.169.254 ",
-    "api.openai.com",
+    "api.example.com",
 ];
 
 /// Both names read the same host out of every hostile spelling.
@@ -145,7 +145,7 @@ fn both_names_reach_one_extraction() {
 #[test]
 fn both_names_reach_one_denylist_judgement() {
     let operator_blocked = vec!["10.99.99.99".to_string(), "internal.example".to_string()];
-    let operator_allowed = vec!["api.openai.com".to_string()];
+    let operator_allowed = vec!["api.example.com".to_string()];
     for spelling in HOSTILE.iter().chain(BARE_AUTHORITIES) {
         // The bare guard, no operator lists at all.
         assert_eq!(
