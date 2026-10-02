@@ -77,7 +77,7 @@ pub use pool::{
     DEFAULT_FAILOVER_DEADLINE_SECS,
 };
 pub use select::{RequestCtx, WeightedFloor};
-pub use walk::RouteRequest;
+pub use walk::{RouteRequest, Step, Taken, Walk, WalkPorts};
 pub use wire::{Delivered, RouteOutcome, Shed};
 
 use busbar_contract::caps::{Pass, Route};

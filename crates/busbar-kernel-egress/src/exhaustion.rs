@@ -19,7 +19,7 @@ use crate::pool::{Member, OnExhausted, Pool};
 use crate::ports::{Breaker, DestinationId, Permit, Telemetry, Unavailable};
 use crate::race;
 use crate::select::{pick_among, PickInput, ProbeGuard, RequestCtx};
-use crate::walk::RouteRequest;
+use crate::walk::{RouteRequest, WalkPorts};
 use crate::wire::{RouteOutcome, Shed};
 
 /// The wait a shed advertises when nothing else justifies a longer one, in whole seconds.
@@ -488,4 +488,42 @@ async fn queue_wait<'a>(
             }
         }
     }
+}
+
+/// THE LAST RESORT: the member with the soonest cooldown and a free slot, even though it is
+/// suppressed.
+///
+/// This is the ONE documented breaker bypass in the unit, and two details of it matter.
+///
+/// It ranks by soonest cooldown and then takes the first member with a FREE slot, rather than
+/// insisting on the single best one. The soonest member may itself be at capacity, and refusing
+/// outright because the best member is momentarily busy — while a slightly worse sibling is idle —
+/// defeats the whole point of a last resort. Members that are dead or out of budget are filtered
+/// first, so their zero cooldown never sorts them to the front.
+///
+/// It owns NO probe and the walk passes none on: handing it the cell's current epoch instead would
+/// be actively unsafe, since a half-open cell's epoch may be a PEER's, and an owner-checked release
+/// keyed on it would revert the peer's live probe.
+pub fn least_bad(
+    ports: &WalkPorts<'_>,
+    pool: &Pool,
+    token: &Pass<Route>,
+) -> Option<(Member, Permit)> {
+    let now = ports.clock.now_secs();
+    let members = pool.admissible_members();
+    let mut ranked: Vec<&Member> = members
+        .iter()
+        .filter(|m| ports.breaker.admissible(m.destination))
+        .collect();
+    ranked.sort_by_key(|m| {
+        ports
+            .breaker
+            .cooldown_remaining(&pool.name, m.destination, now, token)
+    });
+    ranked.into_iter().find_map(|m| {
+        ports
+            .capacity
+            .try_acquire(m.destination)
+            .map(|p| ((*m).clone(), p))
+    })
 }
