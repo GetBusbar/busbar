@@ -4,18 +4,15 @@
 //! THE ANTHROPIC USAGE CENSUS (MONEY-AUDIT A-F1; owner 2026-10-02: every billed count lands in an
 //! existing meter class by the provider's own semantics; the plane reports units, never a price).
 //!
-//! The census is the pinned wire lock (`testing/llm-conformance/wire/anthropic.wire.json`): every
-//! integer count it declares under the response `usage` object and under the `message_delta` stream
+//! The census is the pinned wire lock (`testing/llm-conformance/wire/anthropic.wire.json`, read
+//! through `codec::usage_census`): every integer count it declares under the response `usage` object and under the `message_delta` stream
 //! frame's `usage` has a class below, and reporting 7 more of it moves the ledgered units by exactly
 //! that class on the buffered read, the truncated-body recovery and the stream tap, as both ledger
 //! projections read them (the governance ledger's `tier_usage` and the plane's `Units`).
 
 use super::super::proto_codec::ProtocolReader;
 use super::AnthropicReader;
-use busbar_contract::billing::TokenUsage;
-
-/// The ledgered units, in this order: input, output, cache read, cache write, `search_units`.
-type Ledgered = [i64; 5];
+use crate::codec::usage_census::{bump, class_of, ledgered, lock_counts, moved, Ledgered};
 
 /// What each Anthropic `usage` count IS, as the move one more of it makes on the ledgered units.
 /// The four totals are the reserved token classes. A web search is one billed search, the open
@@ -46,68 +43,6 @@ fn base_usage() -> serde_json::Value {
         "output_tokens_details": {"thinking_tokens": 20},
         "server_tool_use": {"web_search_requests": 2, "web_fetch_requests": 1}
     })
-}
-
-/// The integer counts the lock declares under `prefix` (a dotted path below it, no list member).
-fn lock_counts(section: &str, prefix: &str) -> Vec<String> {
-    let lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../testing/llm-conformance/wire/anthropic.wire.json");
-    let lock: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&lock_path).expect("the pinned anthropic wire lock"),
-    )
-    .expect("wire lock json");
-    lock[section]
-        .as_object()
-        .expect("wire lock paths")
-        .iter()
-        .filter(|(_, v)| v["type"].as_str().is_some_and(|t| t.contains("integer")))
-        .filter_map(|(k, _)| k.strip_prefix(prefix))
-        .filter(|f| !f.contains('['))
-        .map(String::from)
-        .collect()
-}
-
-/// The one ledgered reading of a usage, through BOTH projections a ledger row is built from; they
-/// must agree.
-fn ledgered(u: &TokenUsage) -> Ledgered {
-    let n = |x: u64| i64::try_from(x).expect("small fixture");
-    let map = crate::codec::wire_shim::tier_usage(u).usage_units;
-    let class = |c: &str| n(map.get(c).copied().unwrap_or(0));
-    let tiers = [
-        class(busbar_contract::records::UNIT_INPUT),
-        class(busbar_contract::records::UNIT_OUTPUT),
-        class(busbar_contract::records::UNIT_CACHE_READ),
-        class(busbar_contract::records::UNIT_CACHE_WRITE),
-        class(crate::codec::ir::rerank::SEARCH_UNITS_CLASS),
-    ];
-    let units = crate::exchange::reply::Units::of(Some(u), Default::default());
-    let plane = [
-        n(units.tokens_in),
-        n(units.tokens_out),
-        n(units.cache_read),
-        n(units.cache_write),
-        n(units
-            .open
-            .get(crate::codec::ir::rerank::SEARCH_UNITS_CLASS)
-            .copied()
-            .unwrap_or(0)),
-    ];
-    assert_eq!(tiers, plane, "the two ledger projections disagree");
-    tiers
-}
-
-/// Set the member at a dotted `path` under `usage`.
-fn bump(usage: &mut serde_json::Value, path: &str, by: u64) {
-    let mut at = usage;
-    let mut parts = path.split('.').peekable();
-    while let Some(part) = parts.next() {
-        if parts.peek().is_none() {
-            let was = at[part].as_u64().unwrap_or(0);
-            at[part] = serde_json::json!(was + by);
-        } else {
-            at = &mut at[part];
-        }
-    }
 }
 
 /// The buffered read and the truncated-body recovery of one response carrying `usage`.
@@ -150,24 +85,12 @@ fn streamed(usage: &serde_json::Value) -> Ledgered {
     ledgered(&t.usage().expect("the tap captured usage").to_token_usage())
 }
 
-fn class_of(field: &str, census: &str) -> Ledgered {
-    ANTHROPIC_COUNT_CLASSES
-        .iter()
-        .find(|(f, _)| *f == field)
-        .map(|(_, c)| *c)
-        .unwrap_or_else(|| panic!("`{census}.{field}` is in the wire lock with no meter class"))
-}
-
-fn moved(after: Ledgered, before: Ledgered) -> Ledgered {
-    std::array::from_fn(|i| after[i] - before[i])
-}
-
 /// EVERY COUNT ANTHROPIC REPORTS IS LEDGERED IN ITS OWN CLASS, ON EVERY READ PATH. RED when the
 /// reader drops a count (a web search ledgered nowhere), mis-classes one, or the lock gains a count
 /// nobody classed.
 #[test]
 fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
-    let response = lock_counts("response", "usage.");
+    let response = lock_counts("anthropic", "response", "usage.");
     assert_eq!(
         response.len(),
         ANTHROPIC_COUNT_CLASSES.len(),
@@ -175,7 +98,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
     );
     let before = buffered_and_truncated(&base_usage());
     for field in &response {
-        let class = class_of(field, "usage");
+        let class = class_of(ANTHROPIC_COUNT_CLASSES, field, "usage");
         let mut usage = base_usage();
         bump(&mut usage, field, 7);
         let after = buffered_and_truncated(&usage);
@@ -192,7 +115,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
         }
     }
 
-    let stream = lock_counts("stream", "type=message_delta.usage.");
+    let stream = lock_counts("anthropic", "stream", "type=message_delta.usage.");
     assert!(
         stream
             .iter()
@@ -201,7 +124,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
     );
     let before = streamed(&base_usage());
     for field in &stream {
-        let class = class_of(field, "message_delta.usage");
+        let class = class_of(ANTHROPIC_COUNT_CLASSES, field, "message_delta.usage");
         let mut usage = base_usage();
         bump(&mut usage, field, 7);
         assert_eq!(

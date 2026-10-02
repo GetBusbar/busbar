@@ -1424,7 +1424,14 @@ impl ProtocolReader for CohereReader {
 /// COHERE'S USAGE COUNTS, AS DATA. The raw `tokens` bucket gives the totals; `cached_tokens` is
 /// the cache hit, a slice INSIDE `tokens.input_tokens` (so it is subtracted there and carried as
 /// the cache read); `billed_units` is the provider-metered bucket — its token counts, its
-/// `search_units` and its `classifications` — carried as attribution beside the totals.
+/// `search_units` and its `classifications`.
+///
+/// WHERE EACH COUNT IS LEDGERED (MONEY-AUDIT A-F1; the census over the pinned wire lock,
+/// `testing/llm-conformance/wire/cohere.wire.json`, is `usage_census_tests`): the billed token
+/// counts win the reserved input/output classes over the raw ones (`IrUsage::to_token_usage`), the
+/// cache hit is the cache read, `search_units` is the open class `search_units`.
+/// `classifications` is a residual: no meter class the LLM plane declares carries it, so
+/// [`read_cohere_usage`] WARNs it and nothing is ledgered for it.
 const USAGE: &[UsageCount] = &[
     (
         CountSlot::Input,
@@ -1454,11 +1461,23 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
-/// A Cohere `usage` / `meta` object (`None` when absent) → the IR usage, through [`USAGE`].
+/// A Cohere `usage` / `meta` object (`None` when absent) → the IR usage, through [`USAGE`]. A
+/// billed `classifications` count is a RESIDUAL — a unit Cohere bills that no meter class the LLM
+/// plane declares carries — so it is WARNed, never ledgered and never folded into another class
+/// (MONEY-AUDIT A-F1; its audit row is escalated, A-F4/STR-5/STR-8).
 fn read_cohere_usage(
     usage: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)
+    let read = crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)?;
+    if let Some(units) = read.detail.billed_classifications.filter(|n| *n != 0) {
+        tracing::warn!(
+            protocol = VENDOR_NAME,
+            field = "billed_units.classifications",
+            units,
+            "usage residual: Cohere billed classification units that no meter class carries;              they are not ledgered (MONEY-AUDIT A-F1)"
+        );
+    }
+    Ok(read)
 }
 
 #[cfg(test)]
