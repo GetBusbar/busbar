@@ -452,6 +452,20 @@ pub trait ProtocolWriter: Send + Sync {
         })
     }
 
+    /// [`Self::write_error`] with the entropy for any identifier the envelope mints handed in by the
+    /// caller ([`crate::codec::write_error_envelope`]), for a caller that may not read a random
+    /// source. Default: the envelope mints nothing, so the entropy is unused. A dialect whose
+    /// envelope carries a minted id overrides this and builds that id from `entropy`.
+    fn write_error_from_entropy(
+        &self,
+        status: u16,
+        kind: &str,
+        message: &str,
+        _entropy: &[u8],
+    ) -> serde_json::Value {
+        self.write_error(status, kind, message)
+    }
+
     /// Attach any protocol-specific RESPONSE HEADERS a native endpoint always carries on an error
     /// response, given the already-built error `envelope` and canonical `kind`. Default no-op (most
     /// protocols carry the error entirely in the body). Bedrock attaches `x-amzn-RequestId` +
@@ -961,19 +975,44 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
     #[cfg(test)]
     crate::codec::ensure_test_protocols_registered();
     // Post-A4b the `ProtocolDecl.codec` field is the NEUTRAL `DialectCodec` factory (core names no
-    // `Protocol`), so the name→codec map lives here in the plugin that owns the six dialects. A fresh
-    // instance per resolution, exactly as the registry field doc required (the writers carry per-stream
-    // state). MCP declares no codec and is absent here → `None`, as before. Reached both standalone
-    // (`crate::codec::<dialect>`) and netted-into-core (`core::proto::<dialect>`) via the relative `super::`.
-    match name {
-        PROTO_ANTHROPIC => Some(super::anthropic::protocol()),
-        PROTO_BEDROCK => Some(super::bedrock::protocol()),
-        PROTO_COHERE => Some(super::cohere::protocol()),
-        PROTO_GEMINI => Some(super::gemini::protocol()),
-        PROTO_OPENAI => Some(super::openai_chat::protocol()),
-        PROTO_RESPONSES => Some(super::openai_responses::protocol()),
-        _ => None,
-    }
+    // `Protocol`), so the name→codec map lives here in the plugin that owns the dialects: each
+    // dialect's registration ([`DialectEntry::protocol`]) builds a fresh instance per resolution,
+    // exactly as the registry field doc required (the writers carry per-stream state). MCP declares
+    // no codec and is absent here → `None`, as before.
+    entry_of(name).map(|d| (d.protocol)())
+}
+
+/// ONE DIALECT'S REGISTRATION: everything this plane resolves BY NAME about a dialect, declared by
+/// the dialect itself in its own module (design F3 SELF-CONTAINED: "central name-`match` registries
+/// become per-dialect registration"; spec Part 3 #5: adding a dialect = adding a file). The plane's
+/// one list of them is [`crate::codec::DIALECTS`], so a new dialect is a new module plus ONE line
+/// there; nothing in this file names a dialect.
+pub struct DialectEntry {
+    /// The dialect's declaration (its name is the registry key).
+    pub decl: &'static busbar_contract::protocol::ProtocolDecl,
+    /// Build the dialect's wire codec: a fresh instance per resolution ([`protocol_for`]).
+    pub protocol: fn() -> Protocol,
+    /// Hand a fresh writer, built on the stack, to the callback ([`with_writer`]).
+    pub with_writer: WithWriter,
+    /// Hand the (stateless) reader to the callback ([`with_reader`]).
+    pub with_reader: WithReader,
+    /// The dialect's row of the leaf-op `(operation, protocol)` dispatch.
+    pub leaf: &'static crate::codec::leaf_codec::LeafCodecs,
+}
+
+/// A dialect's stack-writer callback: builds a fresh writer and hands it to the closure.
+pub type WithWriter = fn(&mut dyn FnMut(&dyn ProtocolWriter));
+
+/// A dialect's reader callback: hands its (stateless) reader to the closure.
+pub type WithReader = fn(&mut dyn FnMut(&dyn ProtocolReader));
+
+/// The registration of the dialect named `name`, read off [`crate::codec::DIALECTS`]. `None` for a
+/// name this plane does not register.
+pub fn entry_of(name: &str) -> Option<&'static DialectEntry> {
+    crate::codec::DIALECTS
+        .iter()
+        .copied()
+        .find(|d| d.decl.name == name)
 }
 
 /// Run `f` against the named dialect's WRITER built ON THE STACK — no `Protocol`, no `Box`.
@@ -999,33 +1038,11 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
 /// see the same writer on frame after frame — must not come here: it wants a resolution it can hold,
 /// which is [`protocol_for`].
 pub fn with_writer<T>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> T) -> Option<T> {
-    match name {
-        PROTO_ANTHROPIC => {
-            let w = super::anthropic::AnthropicWriter;
-            Some(f(&w))
-        }
-        PROTO_BEDROCK => {
-            let w = super::bedrock::BedrockWriter;
-            Some(f(&w))
-        }
-        PROTO_COHERE => {
-            let w = super::cohere::CohereWriter;
-            Some(f(&w))
-        }
-        PROTO_GEMINI => {
-            let w = super::gemini::GeminiWriter;
-            Some(f(&w))
-        }
-        PROTO_OPENAI => {
-            let w = super::openai_chat::OpenAiWriter;
-            Some(f(&w))
-        }
-        PROTO_RESPONSES => {
-            let w = super::openai_responses::ResponsesWriter;
-            Some(f(&w))
-        }
-        _ => None,
-    }
+    let entry = entry_of(name)?;
+    let mut f = Some(f);
+    let mut out = None;
+    (entry.with_writer)(&mut |w| out = f.take().map(|f| f(w)));
+    out
 }
 
 /// The reader twin of [`with_writer`]: the named dialect's READER on the stack (the readers are
@@ -1036,15 +1053,11 @@ pub fn with_writer<T>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> T) -> O
 /// answer's state is the caller's `StreamDecodeState`, handed in — so every reader question is a
 /// stateless question and belongs here.
 pub fn with_reader<T>(name: &str, f: impl FnOnce(&dyn ProtocolReader) -> T) -> Option<T> {
-    match name {
-        PROTO_ANTHROPIC => Some(f(&super::anthropic::AnthropicReader)),
-        PROTO_BEDROCK => Some(f(&super::bedrock::BedrockReader)),
-        PROTO_COHERE => Some(f(&super::cohere::CohereReader)),
-        PROTO_GEMINI => Some(f(&super::gemini::GeminiReader)),
-        PROTO_OPENAI => Some(f(&super::openai_chat::OpenAiReader)),
-        PROTO_RESPONSES => Some(f(&super::openai_responses::ResponsesReader)),
-        _ => None,
-    }
+    let entry = entry_of(name)?;
+    let mut f = Some(f);
+    let mut out = None;
+    (entry.with_reader)(&mut |r| out = f.take().map(|f| f(r)));
+    out
 }
 
 /// The sole [`DialectCodec`] implementor today: a name-keyed forwarder to this protocol's in-core
@@ -1212,7 +1225,7 @@ pub struct ToolIdRemap {
 /// (OpenAI's documented parallel-tool-call limit), which is the number of distinct tool ids a
 /// legitimate turn can carry; a stream that presents more is an untrusted upstream growing a
 /// per-request map without bound, not a request busbar needs to memoize for.
-pub const TOOL_ID_REMAP_MAX_MEMO: usize = crate::codec::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
+pub const TOOL_ID_REMAP_MAX_MEMO: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
 impl ToolIdRemap {
     /// Number of memoized pairs currently retained — the retention the cap bounds.
