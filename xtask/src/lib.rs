@@ -39,6 +39,7 @@ pub mod audit_cmd;
 pub mod audit_verify;
 pub mod cli;
 pub mod conformance_check;
+pub mod conformance_record;
 pub mod ctx;
 pub mod denylist;
 pub mod dialect;
