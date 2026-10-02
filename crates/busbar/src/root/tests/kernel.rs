@@ -1103,44 +1103,47 @@ fn a_back_dated_correction_survives_a_restart() {
             3_000_000_000,
             EARNED_B,
         );
-        // The effect half of the verb, as `amend_rate_history_effect` runs it: the record first,
-        // then the append.
-        let corrected = busbar_kernel_ledger::cost::RateCard::from_nano_rates(
-            [(
-                busbar_kernel_ledger::cost::LaneClass::new(FLAT_LANE, "input"),
-                4_000,
-            )],
-            0,
-        );
-        crate::root::units_admin::AmendmentJournal::new(
+        // The effect half of the verb, as `amend_rate_history_effect` runs it: the record first
+        // (sealing the corrected card), then the append.
+        let journal = crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&book),
             Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel()),
-        )
-        .record(
-            &crate::root::units_admin::AmendmentRecord {
-                effective_from: CORRECTED.0,
-                effective_until: Some(CORRECTED.1),
-                amended_at_ms: SIGNED_AT,
-                sealed_fee: 0,
-                rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(4_000))],
-                operator_fingerprint: "op".to_string(),
-                reason_hash: [9; 32],
-                principal: "admin".to_string(),
-                dual_control: "single".to_string(),
-                signed_payload: b"signed".to_vec(),
-                signature: "00".to_string(),
-            },
-            SIGNED_AT / 1_000,
-        )
-        .expect("the journal takes the correction");
+        );
         holder
             .amend(
-                corrected,
-                CORRECTED.0,
-                Some(CORRECTED.1),
-                SIGNED_AT,
-                "op".to_string(),
-                [9; 32],
+                &crate::root::kernel::Correction {
+                    effective_from: CORRECTED.0,
+                    effective_until: Some(CORRECTED.1),
+                    appended_at: SIGNED_AT,
+                    author: busbar_kernel_ledger::cost::Author::Amend {
+                        operator_fingerprint: "op".to_string(),
+                        reason_hash: [9; 32],
+                    },
+                    cells: vec![(
+                        busbar_kernel_ledger::cost::LaneClass::new(FLAT_LANE, "input"),
+                        4_000,
+                    )],
+                    fee: None,
+                },
+                |card| {
+                    journal.record(
+                        &crate::root::units_admin::AmendmentRecord {
+                            effective_from: CORRECTED.0,
+                            effective_until: Some(CORRECTED.1),
+                            amended_at_ms: SIGNED_AT,
+                            over_card_in_force: true,
+                            sealed_fee: card.fee(),
+                            rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(4_000))],
+                            operator_fingerprint: "op".to_string(),
+                            reason_hash: [9; 32],
+                            principal: "admin".to_string(),
+                            dual_control: "single".to_string(),
+                            signed_payload: b"signed".to_vec(),
+                            signature: "00".to_string(),
+                        },
+                        SIGNED_AT / 1_000,
+                    )
+                },
             )
             .expect("a resolved history takes a correction");
     }

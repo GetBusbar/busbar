@@ -3872,6 +3872,190 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
     }
 }
 
+/// A history whose opening card prices two flat lanes, a flat fee of 3 and the `mcp` plane's own
+/// card — the shape a correction of one cell must leave standing everywhere it does not name.
+#[cfg(test)]
+fn a_full_card_history() -> crate::root::kernel::RootHistory {
+    use busbar_kernel_ledger::cost::TierRates;
+    let history = crate::root::kernel::RootHistory::default();
+    let card = busbar_kernel_ledger::cost::RateCard::from_config(
+        Some([
+            (
+                "gpt",
+                TierRates {
+                    input: 2.0,
+                    output: 8.0,
+                    cache_read: 0.5,
+                    cache_write: 2.5,
+                },
+            ),
+            (
+                "claude",
+                TierRates {
+                    input: 3.0,
+                    output: 15.0,
+                    cache_read: 0.3,
+                    cache_write: 3.75,
+                },
+            ),
+            (
+                "mcp\u{1f}search",
+                TierRates {
+                    input: 5.0,
+                    output: 6.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+        ]),
+        3,
+    );
+    history.apply(card, 1_000);
+    history
+}
+
+/// The nano-units one row prices at, at `at`, on `history`'s head.
+#[cfg(test)]
+fn priced_at(
+    history: &crate::root::kernel::RootHistory,
+    lane: &str,
+    class: &str,
+    count: u64,
+    fee_count: u64,
+    at: u64,
+) -> Result<u128, busbar_kernel_ledger::cost::MoneyError> {
+    use busbar_kernel_ledger::cost::{nanos_of_exact, whole, Tally, STANDARD_TIER_BP};
+    let pinned = history.pin().expect("a history");
+    let mut tally = Tally::in_view(pinned.view());
+    tally.row(
+        lane,
+        at,
+        STANDARD_TIER_BP,
+        [(class, whole(count))],
+        whole(fee_count),
+    )?;
+    nanos_of_exact(tally.exact()?)
+}
+
+/// **A CORRECTION OF ONE CELL REPRICES THAT CELL AND NOTHING ELSE** (MONEY-AUDIT D-1; #79 "a
+/// correction reprices exactly its window", #42 "never a silent 0", #44).
+///
+/// THE DEFECT THIS CLOSES. The corrected card was built from the cells the body named ALONE, with
+/// the fee defaulting to 0, and it out-ranked the whole card for its window: correcting `gpt`/`input`
+/// priced every request's fee at 0, refused `gpt`/`output` and every `claude` class (a served unit
+/// turned into a refusal), and priced every `mcp` row at 0 (no plane card on the correction). The
+/// corrected card is now the card in force with the named cell set.
+#[test]
+fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
+    let history = a_full_card_history();
+    let inside = 5_000;
+    let outside = 2_000;
+    // The configured figures, read outside the window, before and after.
+    let configured = |history: &crate::root::kernel::RootHistory, lane: &str, class: &str| {
+        priced_at(history, lane, class, 1_000, 1, outside).expect("the configured card prices it")
+    };
+    let gpt_output = configured(&history, "gpt", "output");
+    let claude_input = configured(&history, "claude", "input");
+    let mcp_input = configured(&history, "mcp\u{1f}search", "input");
+
+    amend_through_a_journal(&history, &a_correction_body(), 6, a_sealed_operator())
+        .expect("the correction applies");
+
+    // THE NAMED CELL MOVES: 1,000 units at 1 micro-unit (1,000 nano-units) plus the fee of 3 minor
+    // units (30,000,000 nano-units).
+    assert_eq!(
+        priced_at(&history, "gpt", "input", 1_000, 1, inside).expect("the corrected cell prices"),
+        1_000_000 + 30_000_000,
+        "the corrected rate and the configured fee"
+    );
+    // EVERY OTHER CELL, THE FEE AND THE OTHER PLANE ARE PRICED AS CONFIGURED INSIDE THE WINDOW.
+    for (lane, class, want) in [
+        ("gpt", "output", gpt_output),
+        ("claude", "input", claude_input),
+        ("mcp\u{1f}search", "input", mcp_input),
+    ] {
+        assert_eq!(
+            priced_at(&history, lane, class, 1_000, 1, inside),
+            Ok(want),
+            "{lane}/{class} inside the corrected window prices at the configured card, fee included"
+        );
+    }
+    assert_eq!(
+        configured(&history, "gpt", "input"),
+        2_000_000 + 30_000_000,
+        "outside the window the configured card still prices the corrected cell"
+    );
+}
+
+/// **A CORRECTION NAMING A FEE MOVES THE FEE AND KEEPS EVERY RATE** (D-1), and one naming a cell on a
+/// plane prices that plane's card, not the flat card.
+#[test]
+fn a_fee_or_plane_correction_moves_only_what_it_names() {
+    let history = a_full_card_history();
+    let body = signed_correction(serde_json::json!({
+        "effective_from": 4_000,
+        "effective_until": 9_000,
+        "per_request_fee": 7,
+        "rates": [ { "lane": "mcp\u{1f}search", "class": "input", "micro_per_unit": 9.0 } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": a_test_operator_fingerprint(),
+    }));
+    amend_through_a_journal(&history, &body, 6, a_sealed_operator())
+        .expect("the correction applies");
+    assert_eq!(
+        priced_at(&history, "gpt", "output", 1_000, 1, 5_000),
+        Ok(8_000_000 + 70_000_000),
+        "gpt/output keeps its configured rate; the fee is the corrected 7"
+    );
+    assert_eq!(
+        priced_at(&history, "mcp\u{1f}search", "input", 1_000, 0, 5_000),
+        Ok(9_000_000),
+        "the plane's own cell is corrected"
+    );
+    assert_eq!(
+        priced_at(&history, "mcp\u{1f}search", "output", 1_000, 0, 5_000),
+        Ok(6_000_000),
+        "the plane's other cell is kept"
+    );
+}
+
+/// **A CORRECTION NO SINGLE CARD PRICES IS REFUSED, AND APPENDS NOTHING** (D-1). A config apply at
+/// 6,000 resolves part of `[4,000, 9,000)`; correcting the card in force at 4,000 for the whole
+/// window would silently revert that apply for `[6,000, 9,000)`. A cell on a plane whose billing is
+/// off has no card to land on: correcting it would switch the plane's billing on and refuse every
+/// class the correction is silent about.
+#[test]
+fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
+    let history = a_full_card_history();
+    history.apply(a_card_at(4.0, 0), 6_000);
+    let before = history.len();
+    let refused = amend_through_a_journal(&history, &a_correction_body(), 7, a_sealed_operator());
+    assert!(
+        matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
+        "{refused:?}"
+    );
+    assert_eq!(
+        history.len(),
+        before,
+        "a refused correction appends nothing"
+    );
+
+    let history = a_full_card_history();
+    let body = signed_correction(serde_json::json!({
+        "effective_from": 4_000,
+        "effective_until": 9_000,
+        "rates": [ { "lane": "a2a\u{1f}agent", "class": "bytes", "micro_per_unit": 1.0 } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": a_test_operator_fingerprint(),
+    }));
+    let refused = amend_through_a_journal(&history, &body, 6, a_sealed_operator());
+    assert!(
+        matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
+        "{refused:?}"
+    );
+    assert_eq!(history.len(), 1, "a refused correction appends nothing");
+}
+
 /// A scratch data directory, removed on drop.
 #[cfg(test)]
 struct AmendScratch(std::path::PathBuf);
@@ -4597,12 +4781,24 @@ fn a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports() {
     // arrived at, appended long after the line was booked.
     view.history
         .amend(
-            a_card_at(4.0, 0),
-            A_LINE_MS - 1_000,
-            Some(A_LINE_MS + 1_000),
-            A_LINE_MS + 60_000,
-            "op-1".to_string(),
-            [9u8; 32],
+            &crate::root::kernel::Correction {
+                effective_from: A_LINE_MS - 1_000,
+                effective_until: Some(A_LINE_MS + 1_000),
+                appended_at: A_LINE_MS + 60_000,
+                author: busbar_kernel_ledger::cost::Author::Amend {
+                    operator_fingerprint: "op-1".to_string(),
+                    reason_hash: [9u8; 32],
+                },
+                cells: vec![(
+                    busbar_kernel_ledger::cost::LaneClass::new(
+                        A_LANE,
+                        busbar_kernel_ledger::cost::CLASS_INPUT,
+                    ),
+                    4_000,
+                )],
+                fee: Some(0),
+            },
+            |_| Ok::<(), ()>(()),
         )
         .expect("the fixture has an opening entry to correct");
 

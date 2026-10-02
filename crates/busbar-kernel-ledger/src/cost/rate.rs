@@ -528,6 +528,49 @@ impl RateCard {
         self
     }
 
+    /// **A SIGNED CORRECTION OF THIS CARD** (#79): this card with the named cells set to the
+    /// corrected integer rates and, where one is named, the flat fee replaced — and EVERYTHING ELSE
+    /// AS IT WAS: every other lane and class, every other plane's card, the fee the correction did
+    /// not name. A correction reprices exactly the cells it names; a card built from those cells
+    /// alone priced the fee at nothing, refused every class it was silent about and priced every
+    /// other plane at 0 for the whole corrected window.
+    ///
+    /// A plane-qualified lane (`"<plane>\u{1f}<lane>"`) corrects THAT plane's card. `None` when a
+    /// named cell has no PRESENT card to land on — the flat card or the plane's own card is absent
+    /// (billing off, #42) — or names no lane: a correction cannot switch a plane's billing on, which
+    /// would turn every unit it serves into a refusal for the classes the correction is silent about.
+    pub fn corrected(
+        &self,
+        cells: impl IntoIterator<Item = (LaneClass, u64)>,
+        fee: Option<i64>,
+    ) -> Option<RateCard> {
+        let mut card = self.clone();
+        if let Some(fee) = fee {
+            card.fee = fee.max(0);
+        }
+        for (cell, nanos) in cells {
+            let (plane, lane) = split_plane_lane(&cell.lane);
+            if lane.is_empty() {
+                return None;
+            }
+            let target = match plane {
+                "" => &mut card,
+                plane => card.planes.get_mut(plane)?,
+            };
+            if !target.present {
+                return None;
+            }
+            target
+                .prices
+                .entry(lane.to_string())
+                .or_default()
+                .entry(cell.class)
+                .or_default()
+                .set(nanos);
+        }
+        Some(card)
+    }
+
     /// The fee a reserved fee class ([`PER_REQUEST`], [`PER_SESSION`]) prices at on this card, in
     /// minor units; `None` for any other class.
     pub fn fee_of(&self, class: &str) -> Option<i64> {

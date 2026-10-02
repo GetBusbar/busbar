@@ -385,3 +385,78 @@ fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
         "a lane's rates carry no report-sizing fold beside the spend fold"
     );
 }
+
+/// **A CORRECTED CARD IS THE CARD WITH THE NAMED CELLS SET** (MONEY-AUDIT D-1): every other lane,
+/// class and plane card and the unnamed fee stay; a named fee replaces the fee; a cell on a plane
+/// with no present card, or naming no lane, has nowhere to land.
+#[test]
+fn a_corrected_card_keeps_everything_it_does_not_name() {
+    use crate::cost::TierRates;
+    let tiers = |input, output| TierRates {
+        input,
+        output,
+        cache_read: 0.0,
+        cache_write: 0.0,
+    };
+    let card = RateCard::from_config(
+        Some([
+            ("gpt", tiers(2.0, 8.0)),
+            ("claude", tiers(3.0, 15.0)),
+            ("mcp\u{1f}search", tiers(5.0, 6.0)),
+        ]),
+        3,
+    );
+    let nanos = |card: &RateCard, lane: &str, class: &str| {
+        card.lane_rates(lane)
+            .filter(|r| r.class_priced(class))
+            .map(|r| r.nanos_per_unit(class))
+    };
+
+    let corrected = card
+        .corrected([(LaneClass::new("gpt", "input"), 1_000)], None)
+        .expect("the flat card is present");
+    assert_eq!(nanos(&corrected, "gpt", "input"), Some(1_000));
+    assert_eq!(nanos(&corrected, "gpt", "output"), Some(8_000));
+    assert_eq!(nanos(&corrected, "claude", "output"), Some(15_000));
+    assert_eq!(nanos(&corrected, "mcp\u{1f}search", "input"), Some(5_000));
+    assert_eq!(corrected.fee(), 3, "a fee it does not name is kept");
+
+    let corrected = card
+        .corrected(
+            [(LaneClass::new("mcp\u{1f}search", "input"), 9_000)],
+            Some(7),
+        )
+        .expect("the mcp card is present");
+    assert_eq!(nanos(&corrected, "mcp\u{1f}search", "input"), Some(9_000));
+    assert_eq!(nanos(&corrected, "mcp\u{1f}search", "output"), Some(6_000));
+    assert_eq!(
+        nanos(&corrected, "gpt", "input"),
+        Some(2_000),
+        "the flat card is untouched"
+    );
+    assert_eq!(corrected.fee(), 7, "a named fee replaces the fee");
+
+    assert!(
+        card.corrected([(LaneClass::new("a2a\u{1f}agent", "bytes"), 1)], None)
+            .is_none(),
+        "a plane with no card of its own has billing off; a correction cannot switch it on"
+    );
+    assert!(
+        RateCard::absent(3)
+            .corrected([(LaneClass::new("gpt", "input"), 1)], None)
+            .is_none(),
+        "an absent flat card has nowhere for a cell to land"
+    );
+    assert!(
+        card.corrected([(LaneClass::new("mcp\u{1f}", "input"), 1)], None)
+            .is_none(),
+        "a cell naming no lane"
+    );
+    assert_eq!(
+        RateCard::absent(3)
+            .corrected(std::iter::empty(), Some(5))
+            .map(|c| (c.fee(), c.pricing_enabled())),
+        Some((5, false)),
+        "a fee alone corrects an absent card's fee and leaves billing off"
+    );
+}

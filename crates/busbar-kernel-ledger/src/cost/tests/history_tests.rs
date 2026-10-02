@@ -328,3 +328,56 @@ fn a_snapshot_above_the_head_sees_the_whole_history() {
     assert_eq!(above.entries().len(), 3);
     assert_eq!(above.card_at(120).expect("covered").0, HistorySeq(2));
 }
+
+/// **THE ONE CARD A CORRECTION'S WINDOW RESOLVES TO** (MONEY-AUDIT D-1): the entry pricing every
+/// instant of the window, or nothing when a second entry resolves part of it or the window runs past
+/// the entry's end.
+#[test]
+fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
+    let mut history = History::opening(card_at(2.0), 0);
+    history.append(CardEntryDraft {
+        effective_from: 6_000,
+        effective_until: None,
+        card: card_at(3.0),
+        appended_at: 6_000,
+        author: Author::Config { policy_epoch: 1 },
+    });
+    history.append(CardEntryDraft {
+        effective_from: 10_000,
+        effective_until: Some(12_000),
+        card: card_at(4.0),
+        appended_at: 20_000,
+        author: Author::Amend {
+            operator_fingerprint: "op".to_string(),
+            reason_hash: [0; 32],
+        },
+    });
+    let view = history.current();
+    let seq = |from, until| view.sole_entry_over(from, until).map(|e| e.seq());
+    assert_eq!(seq(1_000, Some(6_000)), Some(HistorySeq(0)));
+    assert_eq!(
+        seq(1_000, Some(6_001)),
+        None,
+        "the edit at 6,000 prices part of it"
+    );
+    assert_eq!(seq(6_000, Some(10_000)), Some(HistorySeq(1)));
+    assert_eq!(
+        seq(6_000, None),
+        None,
+        "the amendment prices part of an open window"
+    );
+    assert_eq!(seq(10_000, Some(12_000)), Some(HistorySeq(2)));
+    assert_eq!(
+        seq(11_000, Some(12_001)),
+        None,
+        "runs past the amendment's end"
+    );
+    assert_eq!(seq(12_000, None), Some(HistorySeq(1)));
+    assert_eq!(
+        History::new()
+            .current()
+            .sole_entry_over(0, None)
+            .map(|e| e.seq()),
+        None
+    );
+}
