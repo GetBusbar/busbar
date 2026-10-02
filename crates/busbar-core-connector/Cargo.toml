@@ -74,6 +74,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-
 # dropped in through the real admission, scan and open, never a host written for the test. Dev-only.
 busbar-plugin-loader = { path = "../plugin-loader" }
 serde_json = { workspace = true }
+# The tls tests write the minted cert and key as PEM; the shipped dtls engine mints DER only.
+rcgen = { workspace = true, features = ["pem"] }
 
 # THE UNIVERSAL-NEEDS FIXTURE: a secret-kind plugin that declares one outbound need and dials through
 # the connection table. A cargo example, built by `cargo test` as a cdylib — a fixture, never a
