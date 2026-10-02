@@ -91,8 +91,9 @@ pub const CONTROL_ORDER: &[Slot] = &[
 /// How a dialect handles a control slot beyond its rows (`[controls]` in the mapping file).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Handled {
-    /// Dropped with neither a warn nor an audit entry: the 1.5.5 behaviour, kept as a named waiver
-    /// (`silent = true`, its reason cited in the mapping file).
+    /// No form, and no text of the dialect's own (`silent = true`): 1.5.5 dropped it with neither a
+    /// warn nor an audit entry. A drop is never silent (spec Part 2 #76, design F3 "Drops"), so it
+    /// is dropped like a control with no row: the dialect's `drop_warn` and the seam's audit.
     Silent,
     /// Carried, warned or reported by the named dialect code (`code = "<name>"`).
     Code(&'static str),
@@ -562,7 +563,7 @@ pub fn write_fields(table: Table, req: &IrRequest, egress: Egress, out: &mut Map
 
 /// THE DERIVED DROPS: the controls of [`CONTROL_ORDER`] that `req` carries and this dialect cannot
 /// write: no row names the slot (a hook row and a `prim` row carry it), or its word-table row has
-/// no word for the value — unless `controls` names the slot silent or carried by code. The names
+/// no word for the value — unless `controls` names the slot carried by code. The names
 /// are the ones the dialect's `dropped_egress_controls` reports and its warns carry.
 pub fn dropped<'a>(
     table: Table,
@@ -574,7 +575,7 @@ pub fn dropped<'a>(
             return false;
         }
         match handled(controls, slot) {
-            Some(Handled::Silent | Handled::Code(_)) => false,
+            Some(Handled::Code(_)) => false,
             _ => match rows(table).find(|f| f.slot == slot) {
                 None => true,
                 Some(
@@ -667,6 +668,11 @@ pub fn keep_unmodelled(table: Table, obj: &Map<String, Value>, extra: &mut Map<S
             extra.insert(key.clone(), value.clone());
         }
     }
+}
+
+/// Whether `table` has a row at the wire path `path` (`["generationConfig", "topK"]`).
+pub fn maps(table: Table, path: &[&str]) -> bool {
+    rows(table).any(|f| f.path == path)
 }
 
 /// Whether `key` is a top-level member `table` models (the reader keeps every other member in

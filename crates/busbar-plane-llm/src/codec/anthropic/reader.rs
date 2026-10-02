@@ -187,6 +187,26 @@ impl ProtocolReader for AnthropicReader {
         Box::new(self.clone())
     }
 
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
+    fn strip_for_translate(&self, req: &mut crate::codec::ir::IrRequest) {
+        super::strip_placeholders(req);
+    }
+
     /// IR-18: a `signature_delta` on the Anthropic wire is Claude's.
     fn stream_signature_origin(
         &self,
@@ -710,7 +730,12 @@ impl ProtocolReader for AnthropicReader {
         let content_val = obj.get(keys::CONTENT).ok_or_else(ir_parse_error)?;
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
         if let Some(arr) = content_val.as_array() {
-            for block_val in arr {
+            // A block kind the reader does not model is dropped, never answered as an empty text
+            // block; a translate attempt names it (`RESPONSE_BLOCKS`).
+            for block_val in arr
+                .iter()
+                .filter(|b| super::RESPONSE_BLOCKS.iter().all(|g| g.models(b)))
+            {
                 content.push(read_block(block_val)?);
             }
         }

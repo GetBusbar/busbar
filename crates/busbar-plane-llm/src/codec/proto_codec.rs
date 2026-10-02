@@ -185,6 +185,35 @@ pub trait ProtocolReader: Send + Sync {
 
     /// Clone this reader as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolReader>;
+
+    // ── what a translate attempt cannot carry (`codec::drops`), declared per dialect as data ──
+
+    /// The dialect's request field table (its map file), which the drop walker reads to tell a
+    /// mapped nested member from an unmapped one.
+    fn request_map(&self) -> crate::codec::carry::Table {
+        &[]
+    }
+
+    /// The members this reader parks in `extra` beside the ones its map file does not model, and
+    /// what each holds of the caller's request.
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        &[]
+    }
+
+    /// The content-block grammar of the dialect's requests.
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        &[]
+    }
+
+    /// The content-block grammar of the dialect's answers.
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        &[]
+    }
+
+    /// On a translate attempt, before the request is prepared for the far end: take out of `req`
+    /// what this reader holds only for a same-dialect write (Anthropic's positional placeholders
+    /// for blocks it does not model). Nothing by default.
+    fn strip_for_translate(&self, _req: &mut crate::codec::ir::IrRequest) {}
 }
 
 pub trait ProtocolWriter: Send + Sync {

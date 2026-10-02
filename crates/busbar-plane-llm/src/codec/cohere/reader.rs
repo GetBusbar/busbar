@@ -1227,6 +1227,22 @@ impl ProtocolReader for CohereReader {
         Box::new(self.clone())
     }
 
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
     fn read_response(
         &self,
         body: &serde_json::Value,

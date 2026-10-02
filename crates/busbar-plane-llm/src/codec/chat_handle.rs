@@ -9,6 +9,7 @@
 //! former `IrReq::Chat`/`IrResp::Chat` arms (only `crate::codec::` -> core re-pathing); the
 //! warn strings and their order are unchanged.
 
+use crate::codec::drops::{self, Dropped};
 use crate::codec::ir::{IrRequest, IrResponse};
 use busbar_contract::billing::Billing;
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler};
@@ -20,6 +21,9 @@ use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::SlabBytes;
 use serde_json::Value;
+
+/// Gemini's server-side context-cache reference: a request member no other dialect can carry.
+const CACHED_CONTENT: &str = "cachedContent";
 
 /// Google's documented dummy `thoughtSignature` sentinel — relocated with chat from `ir::variant`.
 pub const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
@@ -54,6 +58,10 @@ pub fn warn_dropped_image_details(ir: &IrRequest) {
 
 /// Chat cross-protocol EGRESS preparation (verbatim from the former `IrReq::Chat` arm).
 pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
+    // What the ingress reader holds only for a same-dialect write (Anthropic's positional
+    // placeholders for the blocks it does not model) never crosses: nothing is substituted for a
+    // dropped block. The drop itself is named by the block walker at the translate seam.
+    super::proto_codec::with_reader(prep.ingress_protocol, |r| r.strip_for_translate(ir));
     if ir.max_tokens.is_none() && prep.egress_requires_max_tokens {
         ir.max_tokens = Some(
             prep.lane_default_max_tokens
@@ -72,12 +80,13 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     // SAME-protocol passthrough never reaches here (the body is forwarded verbatim), so
     // `n>1` still works end-to-end where the response is not funneled through the IR.
     if ir.n.is_some_and(|n| n > 1) {
-        ::tracing::debug!(diag = %crate::codec::diagnostics::IR_CLAMP_N_TO_1.banner(),
-            ingress = %prep.ingress_protocol,
+        drops::note(Dropped::new(
+            "n",
+            &crate::codec::diagnostics::IR_CLAMP_N_TO_1,
             "clamping n>1 to 1 on the cross-protocol seam: the neutral response IR carries \
              a single candidate, so extra choices would be generated, billed, and then \
-             dropped; the backend is asked for exactly one candidate"
-        );
+             dropped; the backend is asked for exactly one candidate",
+        ));
         ir.n = Some(1);
     }
     // The reasoning gate. A lane that did not claim the capability never receives a
@@ -87,12 +96,13 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
         if prep.reasoning_allowed {
             ir.reasoning_budgets = Some(prep.reasoning_budgets);
         } else {
-            ::tracing::debug!(diag = %crate::codec::diagnostics::IR_DROP_REASONING.banner(),
-                ingress = %prep.ingress_protocol,
+            drops::note(Dropped::new(
+                "reasoning",
+                &crate::codec::diagnostics::IR_DROP_REASONING,
                 "dropping cross-protocol reasoning/thinking ask: the target lane does \
                  not declare the capability; set `reasoning: true` on the model (or \
-                 pool member) if this backend accepts thinking params"
-            );
+                 pool member) if this backend accepts thinking params",
+            ));
             ir.reasoning = None;
         }
     }
@@ -126,13 +136,14 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
             cleared |= t.cache_control.take().is_some();
         }
         if cleared {
-            ::tracing::debug!(diag = %crate::codec::diagnostics::IR_DROP_PROMPT_CACHE.banner(),
-                ingress = %prep.ingress_protocol,
+            drops::note(Dropped::new(
+                "cache_control",
+                &crate::codec::diagnostics::IR_DROP_PROMPT_CACHE,
                 "dropping cross-protocol prompt-cache breakpoints: the target lane's \
                  dialect gates its cache marker per model and the lane does not \
                  declare the capability; set `prompt_caching: true` on the model if \
-                 this backend accepts cache markers (e.g. Claude on Bedrock)"
-            );
+                 this backend accepts cache markers (e.g. Claude on Bedrock)",
+            ));
         }
     }
     // Anthropic cache_control CAP: "A maximum of 4 blocks with
@@ -181,14 +192,15 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
             }
         }
         if dropped > 0 {
-            ::tracing::debug!(diag = %crate::codec::diagnostics::IR_DROP_CACHE_CONTROL_OVER_CAP.banner(),
-                ingress = %prep.ingress_protocol,
-                cap,
-                dropped,
-                "dropping {dropped} cache_control breakpoint(s) past the egress \
-                 dialect's cap of {cap}: the target vendor 400s past this count and \
-                 the IR carries breakpoints unbounded"
-            );
+            drops::note(Dropped::new(
+                "cache_control",
+                &crate::codec::diagnostics::IR_DROP_CACHE_CONTROL_OVER_CAP,
+                format!(
+                    "dropping {dropped} cache_control breakpoint(s) past the egress \
+                     dialect's cap of {cap}: the target vendor 400s past this count and \
+                     the IR carries breakpoints unbounded"
+                ),
+            ));
         }
     }
     // HOSTED-TOOL cross-protocol drop — of the RAW, same-protocol-only `IrTool::hosted` object.
@@ -203,18 +215,21 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     // never reaches here - its body is forwarded verbatim, so hosted tools pass through
     // intact), so DROPPING every hosted tool here is exactly the "keep same-proto, drop
     // cross-proto" contract. Retain the count for the warn before draining.
-    let hosted_dropped = ir.tools.iter().filter(|t| t.hosted.is_some()).count();
-    if hosted_dropped > 0 {
-        ir.tools.retain(|t| t.hosted.is_none());
-        ::tracing::debug!(diag = %crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS.banner(),
-            ingress = %prep.ingress_protocol,
-            dropped = hosted_dropped,
+    for hosted in ir.tools.iter().filter_map(|t| t.hosted.as_ref()) {
+        let kind = hosted
+            .get(crate::codec::keys::TYPE)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        drops::note(Dropped::new(
+            format!("tools[].type={kind}"),
+            &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
             "dropping cross-protocol hosted (built-in) tool(s): a Responses hosted tool \
              has no function-tool equivalent for a non-Responses backend; forwarding it \
              would emit a malformed empty-name function tool the upstream rejects (400). \
-             Route hosted-tool requests to a Responses lane to use them"
-        );
+             Route hosted-tool requests to a Responses lane to use them",
+        ));
     }
+    ir.tools.retain(|t| t.hosted.is_none());
     // Gemini `cachedContent` references a server-side context cache at
     // Google that busbar cannot project into `contents` — it has no handle on the
     // cached turns' text. `extra` is about to be wiped wholesale below (this is the
@@ -266,65 +281,50 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     // did not update a duplicated literal here would silently switch this warn off, and a
     // signal that can stop signalling without failing to compile is the failure class
     // this whole section exists to remove.
-    if let Some(n) = ir
+    if ir
         .extra
-        .get(crate::codec::dialect::MESSAGE_NAMES_SENTINEL)
-        .and_then(|v| v.as_object())
-        .map(serde_json::Map::len)
+        .contains_key(crate::codec::dialect::MESSAGE_NAMES_SENTINEL)
     {
-        ::tracing::debug!(diag = %crate::codec::diagnostics::IR_DROP_MESSAGE_NAME.banner(),
-            ingress = %prep.ingress_protocol,
-            messages = n,
+        drops::note(Dropped::new(
+            crate::codec::dialect::MESSAGE_NAMES_PATH,
+            &crate::codec::diagnostics::IR_DROP_MESSAGE_NAME,
             "dropping OpenAI `messages[].name` on the cross-protocol seam: no target \
              protocol models a per-message participant name, so a multi-speaker \
              transcript reaches the backend with its speaker labels removed. Put the \
-             speaker in the message TEXT, or route to an openai lane"
-        );
+             speaker in the message TEXT, or route to an openai lane",
+        ));
     }
-    if ir.extra.contains_key("cachedContent") {
-        ::tracing::debug!(diag = %crate::codec::diagnostics::IR_DROP_CACHED_CONTENT.banner(),
-            ingress = %prep.ingress_protocol,
-            key = "cachedContent",
+    if ir.extra.contains_key(CACHED_CONTENT) {
+        drops::note(Dropped::new(
+            CACHED_CONTENT,
+            &crate::codec::diagnostics::IR_DROP_CACHED_CONTENT,
             "dropping Gemini `cachedContent` on the cross-protocol seam: the referenced \
              context cache lives server-side at Google and cannot be projected into \
              `contents`, so (1) the backend answers on the VISIBLE history only — the \
              cached turns are absent, not summarized — and (2) the caller is billed FULL \
              UNCACHED input for this request. Route cachedContent requests to a Gemini \
-             lane."
-        );
+             lane.",
+        ));
     }
-    // EVERY remaining unmodeled request key dies here, and until this warn existed it
-    // died SILENTLY: exactly two keys (Gemini `cachedContent` above, Cohere `documents`
-    // at its reader) named themselves, and the other ~40 — OpenAI `logit_bias` /
-    // `store` / `metadata` / `service_tier` / `stream_options` / `prediction` /
-    // `modalities` / `audio` / `web_search_options`, Anthropic `metadata` / `container` /
-    // `mcp_servers` / `betas`, Gemini `safetySettings` / `labels`, Bedrock
-    // `guardrailConfig` / `promptVariables` / `requestMetadata` / `performanceConfig`,
-    // Cohere `citation_options` / `safety_mode` / `strict_tools` / `logprobs`, Responses
-    // `previous_response_id` / `conversation` / `truncation` / `include` / `prompt` /
-    // `prompt_cache_key` / `safety_identifier` / `background` — vanished with nothing in
-    // the logs. Most of them are correctly untranslatable (they name machinery that
-    // exists at exactly one vendor); the DEFECT was the silence, not the drop. Naming the
-    // actual key set of THIS request moves the whole class from "dropped silently" to
-    // "dropped with a signal" without guessing at an inventory that would go stale.
-    //
-    // Emitted only when there is something to clear, and the keys are sorted so the line
-    // is stable/greppable across requests. `extra` is a flat map of the SOURCE dialect's
-    // unmodeled top-level keys, so the key names alone are the diagnostic — values are
-    // deliberately NOT logged (they carry caller payload).
-    if !ir.extra.is_empty() {
-        let mut cleared: Vec<&str> = ir.extra.keys().map(String::as_str).collect();
-        cleared.sort_unstable();
-        ::tracing::debug!(diag = %crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS.banner(),
-            ingress = %prep.ingress_protocol,
-            keys = %cleared.join(","),
-            count = cleared.len(),
-            "dropping unmodeled request keys on the cross-protocol seam: `extra` carries \
-             the SOURCE dialect's unmodeled top-level fields and no target writer can \
-             re-emit a foreign dialect's key, so every key named here is NOT forwarded \
-             to the backend. Route these requests to a same-protocol lane (which \
-             forwards the caller's original bytes verbatim) if the field is load-bearing."
-        );
+    // EVERY remaining member `extra` holds dies here: the source dialect's members its map file
+    // does not model, and the ones its reader parks, named as the reader declares them (a spelling
+    // hint or a member its own code carries names nothing). Only paths are logged, never values
+    // (they carry caller payload).
+    let paths = super::proto_codec::with_reader(prep.ingress_protocol, |r| {
+        drops::extra_paths(&ir.extra, r.parked(), |path| {
+            crate::codec::carry::maps(r.request_map(), path)
+        })
+    })
+    .unwrap_or_else(|| drops::extra_paths(&ir.extra, &[], |_| false));
+    for path in paths {
+        drops::note(Dropped::new(
+            path,
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            "dropping an unmapped request member on the cross-protocol seam: the source \
+             dialect's member has no form in the target dialect, so it is NOT forwarded to the \
+             backend. Route the request to a same-protocol lane (which forwards the caller's \
+             bytes) if the member is load-bearing",
+        ));
     }
     ir.extra.clear();
 }

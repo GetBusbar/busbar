@@ -330,6 +330,92 @@ const BLOCK_TYPE_REDACTED_THINKING: &str = "redacted_thinking";
 /// its own protocol's round-trip instead of being destroyed.
 const ANTHROPIC_UNMODELED_BLOCKS_SENTINEL: &str = "__busbar_anthropic_unmodeled_blocks";
 
+/// Every content-block kind [`read_block`] reads (the request and answer grammar, `codec::drops`).
+/// A block of any other kind does not cross a translate attempt, which names it.
+const BLOCK_KINDS: &[&str] = &[
+    keys::TEXT,
+    keys::THINKING,
+    STOP_TOOL_USE,
+    TOOL_RESULT,
+    keys::IMAGE,
+    BLOCK_TYPE_DOCUMENT,
+    BLOCK_TYPE_SEARCH_RESULT,
+    BLOCK_TYPE_REDACTED_THINKING,
+];
+
+/// The request content-block grammar: the turns' blocks and the system blocks.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["messages[]", "content[]"],
+        tag: Some(keys::TYPE),
+        modelled: BLOCK_KINDS,
+        companions: &[],
+    },
+    crate::codec::drops::Blocks {
+        at: &["system[]"],
+        tag: Some(keys::TYPE),
+        modelled: BLOCK_KINDS,
+        companions: &[],
+    },
+];
+
+/// The answer content-block grammar.
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["content[]"],
+    tag: Some(keys::TYPE),
+    modelled: BLOCK_KINDS,
+    companions: &[],
+}];
+
+/// What the Anthropic reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // The raw unmodelled blocks, for a same-dialect write; `REQUEST_BLOCKS` names them.
+    crate::codec::drops::Parked {
+        key: ANTHROPIC_UNMODELED_BLOCKS_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // The thinking ask and the legacy structured-output spelling cross as the IR's reasoning and
+    // response format.
+    crate::codec::drops::Parked {
+        key: keys::THINKING,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::OUTPUT_FORMAT,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::OUTPUT_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[keys::EFFORT, keys::FORMAT]),
+    },
+    crate::codec::drops::Parked {
+        key: keys::METADATA,
+        holds: crate::codec::drops::Holds::Members(&[USER_ID]),
+    },
+];
+
+/// Take out of a request read for a translate attempt the empty text blocks [`read_block`] put in
+/// place of the blocks it does not model (they hold the turn's positions for a same-dialect
+/// write). Nothing is put in a dropped block's place. An empty text block is never the caller's
+/// own content: the Messages API refuses one.
+fn strip_placeholders(req: &mut crate::codec::ir::IrRequest) {
+    let placeholder = |b: &crate::codec::ir::IrBlock| {
+        matches!(
+            b,
+            crate::codec::ir::IrBlock::Text {
+                text,
+                cache_control: None,
+                citations,
+                refusal: false,
+            } if text.is_empty() && citations.is_empty()
+        )
+    };
+    req.system.retain(|b| !placeholder(b));
+    for m in &mut req.messages {
+        m.content.retain(|b| !placeholder(b));
+    }
+}
+
 /// The native Anthropic content-block `type` values [`read_block`] models. Anything else degrades
 /// to an empty Text placeholder there; used here to find which raw blocks need parking under
 /// [`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`] without duplicating `read_block`'s parse logic.

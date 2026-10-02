@@ -1010,29 +1010,68 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
                 context: None,
             })
         }
-        // Forward-compatibility: a valid native Responses content-block type the IR does not model
-        // (a future type OpenAI adds after this build). The prior bare `Err`
-        // here was swallowed with ZERO log by every caller's `filter_map(..ok())`
-        // (`message_content_blocks` above, and the `function_call_output` content-array reader) —
-        // not just `input_file` but EVERY unknown future Responses content type vanished silently.
-        // Mirror the Anthropic reader's unmodeled-block handling: degrade to an empty Text block
-        // (preserving the turn's position in its parent array) with a WARN naming the type, rather
-        // than disappearing without a trace.
-        other => {
-            tracing::warn!(
-                block_type = other,
-                "skipping unmodeled Responses content-block type during ir parse; degrading to an \
-                 empty text block rather than silently dropping it"
-            );
-            Ok(crate::codec::ir::IrBlock::Text {
-                text: String::new(),
-                cache_control: None,
-                citations: Vec::new(),
-                refusal: false,
-            })
-        }
+        // A content kind this reader does not model: not read, and nothing put in its place. Every
+        // caller drops an `Err` (`filter_map(..ok())`), and a translate attempt names the dropped
+        // kind (`REQUEST_BLOCKS`), so nothing vanishes unsaid where something is dropped.
+        _ => Err(ir_parse_error()),
     }
 }
+
+/// The Responses request content grammar (`codec::drops`): a message item's `content[]` and a tool
+/// output item's `output[]`. A block of any other kind does not cross a translate attempt, which
+/// names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["input[]", "content[]"],
+        tag: Some(keys::TYPE),
+        modelled: INPUT_KINDS,
+        companions: &[],
+    },
+    crate::codec::drops::Blocks {
+        at: &["input[]", "output[]"],
+        tag: Some(keys::TYPE),
+        modelled: INPUT_KINDS,
+        companions: &[],
+    },
+];
+
+/// The content kinds `responses_block` reads.
+const INPUT_KINDS: &[&str] = &[
+    CONTENT_TYPE_INPUT_TEXT,
+    CONTENT_TYPE_OUTPUT_TEXT,
+    INPUT_IMAGE,
+    INPUT_FILE,
+    keys::REFUSAL,
+    keys::INPUT_AUDIO,
+];
+
+/// The Responses answer content grammar: a message item's `content[]`.
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["output[]", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: &[CONTENT_TYPE_OUTPUT_TEXT, keys::REFUSAL],
+    companions: &[],
+}];
+
+/// What the Responses reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // The model is the route's (it rides the lane).
+    crate::codec::drops::Parked {
+        key: keys::MODEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // `text` minus its `format` (which crosses as the response format): each member the map file
+    // does not map is dropped.
+    crate::codec::drops::Parked {
+        key: keys::TEXT,
+        holds: crate::codec::drops::Holds::Members(&[]),
+    },
+    // The reasoning ask's effort crosses; its other members are dropped.
+    crate::codec::drops::Parked {
+        key: keys::REASONING,
+        holds: crate::codec::drops::Holds::Members(&[keys::EFFORT]),
+    },
+];
 
 /// Build an IR `Image` block from a Responses `input_image` content object. Prefers an inline
 /// `image_url` (parsed via the shared `parse_image_url` into a `Base64`/`Url` source). Otherwise, an

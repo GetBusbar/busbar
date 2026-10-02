@@ -218,7 +218,7 @@ impl ProtocolReader for OpenAiReader {
                             });
                         } else if let Some(arr) = content.as_array() {
                             for block_val in arr {
-                                system_blocks.push(read_openai_block(block_val)?);
+                                system_blocks.extend(read_openai_part(block_val)?);
                             }
                         }
                     }
@@ -266,8 +266,7 @@ impl ProtocolReader for OpenAiReader {
                                 });
                             } else if let Some(arr) = cv.as_array() {
                                 for block_val in arr {
-                                    let block = read_openai_block(block_val)?;
-                                    msg_content.push(block);
+                                    msg_content.extend(read_openai_part(block_val)?);
                                 }
                             }
                         }
@@ -379,8 +378,9 @@ impl ProtocolReader for OpenAiReader {
                             Some(serde_json::Value::Array(parts)) => {
                                 let mut acc = String::new();
                                 for part in parts {
-                                    if let Ok(crate::codec::ir::IrBlock::Text { text, .. }) =
-                                        read_openai_block(part)
+                                    if let Ok(Some(crate::codec::ir::IrBlock::Text {
+                                        text, ..
+                                    })) = read_openai_part(part)
                                     {
                                         acc.push_str(&text);
                                     }
@@ -1194,6 +1194,22 @@ impl ProtocolReader for OpenAiReader {
         Box::new(self.clone())
     }
 
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
     fn read_response(
         &self,
         body: &serde_json::Value,
@@ -1272,7 +1288,9 @@ impl ProtocolReader for OpenAiReader {
                 }
             } else if let Some(arr) = content_val.as_array() {
                 for block_val in arr {
-                    let block = read_openai_block(block_val)?;
+                    let Some(block) = read_openai_part(block_val)? else {
+                        continue;
+                    };
                     // An image part in a RESPONSE message array has no Chat Completions response
                     // representation (the completion `message.content` carries no image output), so it
                     // is dropped — but OBSERVABLY: `warn!` instead of the prior silent skip, so a

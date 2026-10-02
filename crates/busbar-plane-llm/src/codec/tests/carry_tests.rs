@@ -217,7 +217,8 @@ fn drops_are_derived_from_missing_rows_in_the_control_order() {
         ..Default::default()
     };
     let names: Vec<&str> = dropped(&[ROWS], CONTROLS, &ir).map(Slot::name).collect();
-    assert_eq!(names, ["stop", "service_tier", "store"]);
+    // A `silent` control is dropped like one with no row: never silently (spec Part 2 #76).
+    assert_eq!(names, ["top_k", "stop", "service_tier", "store"]);
     let ir = IrRequest {
         service_tier: Some(IrServiceTier::Priority),
         ..Default::default()

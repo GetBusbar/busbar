@@ -139,6 +139,10 @@ pub mod dialect;
 /// The plane's own coded diagnostics, and the slice the composition root installs.
 pub mod diagnostics;
 
+/// The one drop path of a translate attempt: drop + warn + the path for the seam's audit, and the
+/// walkers that name what a dialect does not map.
+pub mod drops;
+
 /// The AWS event-stream framing codec the signing dialect streams in.
 pub mod eventstream;
 

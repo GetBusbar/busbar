@@ -83,6 +83,7 @@ const TEXT_FORMAT: &str = "textFormat";
 const TEXT_TO_IMAGE_PARAMS: &str = "textToImageParams";
 const THROTTLING_EXCEPTION: &str = "throttlingException";
 const TOOL_CHOICE_CAMEL: &str = "toolChoice";
+const SERVICE_TIER_CAMEL: &str = "serviceTier";
 const TOOL_RESULT: &str = "toolResult";
 const TOOL_SPEC: &str = "toolSpec";
 const TOOL_USE_CAMEL: &str = "toolUse";
@@ -529,6 +530,104 @@ const FIELD_LATENCY_MS: &str = "latencyMs";
 /// `extra` is cleared on the cross-protocol seam, so cross-protocol egress (no sentinel) always emits
 /// the canonical `top_k`. The leading `__busbar` prefix never collides with a real Bedrock field.
 const TOP_K_CAMEL_SENTINEL: &str = "__busbar_top_k_camel";
+
+/// The Converse request content grammar (`codec::drops`): a union keyed by its kind member. A block
+/// of any other kind (an inline `guardContent` marker) does not cross a translate attempt, which
+/// names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["messages[]", "content[]"],
+        tag: None,
+        modelled: &[
+            keys::TEXT,
+            keys::IMAGE,
+            keys::DOCUMENT,
+            VIDEO,
+            TOOL_USE_CAMEL,
+            TOOL_RESULT,
+            REASONING_CONTENT,
+            CITATIONS_CONTENT,
+            CACHE_POINT,
+        ],
+        companions: &[],
+    },
+    crate::codec::drops::Blocks {
+        at: &["system[]"],
+        tag: None,
+        modelled: &[keys::TEXT, CACHE_POINT],
+        companions: &[],
+    },
+];
+
+/// The Converse answer content grammar.
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["output", "message", "content[]"],
+    tag: None,
+    modelled: &[
+        keys::TEXT,
+        TOOL_USE_CAMEL,
+        CITATIONS_CONTENT,
+        REASONING_CONTENT,
+        keys::IMAGE,
+    ],
+    companions: &[],
+}];
+
+/// What the Converse reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // Positional stashes for a same-dialect write: the cache points and documents cross as the IR's
+    // cache breakpoints and media; `REQUEST_BLOCKS` names the guard markers; the `topK` spelling is
+    // a hint.
+    crate::codec::drops::Parked {
+        key: CACHE_POINTS_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: GUARD_CONTENT_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: DOC_VIDEO_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: TOP_K_CAMEL_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // `requestMetadata` crosses as the caller metadata.
+    crate::codec::drops::Parked {
+        key: FIELD_REQUEST_METADATA,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // The members of each config object the reader's own code carries; the map file maps the rest
+    // of what crosses.
+    crate::codec::drops::Parked {
+        key: INFERENCE_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[MAX_TOKENS_CAMEL]),
+    },
+    crate::codec::drops::Parked {
+        key: ADDITIONAL_MODEL_REQUEST_FIELDS,
+        holds: crate::codec::drops::Holds::Members(&[
+            TOP_K,
+            TOP_K_CAMEL,
+            keys::THINKING,
+            keys::OUTPUT_CONFIG,
+            REASONING_CONFIG,
+        ]),
+    },
+    crate::codec::drops::Parked {
+        key: keys::TOOL_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[keys::TOOLS, TOOL_CHOICE_CAMEL]),
+    },
+    crate::codec::drops::Parked {
+        key: OUTPUT_CONFIG_CAMEL,
+        holds: crate::codec::drops::Holds::Members(&[TEXT_FORMAT]),
+    },
+    crate::codec::drops::Parked {
+        key: SERVICE_TIER_CAMEL,
+        holds: crate::codec::drops::Holds::Members(&[]),
+    },
+];
 
 /// Read a native Bedrock Converse `reasoningContent` content block into an IR `Thinking` block, or
 /// `None` when the block carries neither known member (forward-compatibility: a future

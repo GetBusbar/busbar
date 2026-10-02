@@ -23,6 +23,7 @@ use super::super::refuse::{render, Rendered};
 use super::failure::request_id_field;
 use super::wire;
 use super::wire::head_field;
+use crate::codec::drops;
 use crate::codec::translate::{TranslateCodec as _, TranslateRespInput};
 use crate::codec::DECLS;
 
@@ -231,8 +232,8 @@ fn json(
     ingress_serves: bool,
     rv: &Value,
 ) -> Result<Option<Whole>, String> {
-    let (usage, answered) = eh
-        .translate_response(
+    let read = || {
+        let answered = eh.translate_response(
             TranslateRespInput::Json(rv),
             ingress_serves,
             ctx.ingress,
@@ -241,9 +242,32 @@ fn json(
             ctx.wants_stream && !ctx.json_array,
             ctx.elapsed_ms,
             ctx.request,
-        )
-        .map_err(|e| format!("{e:?}"))?;
-    crate::codec::dialect::warn_untranslatable_response_metadata(ctx.egress, ctx.ingress, rv);
+        );
+        if answered.is_ok() {
+            crate::codec::dialect::drop_untranslatable_response_metadata(ctx.egress, rv);
+            crate::codec::proto_codec::with_reader(ctx.egress, |r| {
+                drops::note_unmodelled_blocks(
+                    r.response_blocks(),
+                    rv,
+                    drops::UNMODELLED_ANSWER_BLOCK,
+                )
+            });
+        }
+        answered
+    };
+    // A translate attempt's drops go through the one drop path; a same-dialect answer drops
+    // nothing.
+    let answered = if ctx.ingress == ctx.egress {
+        read()
+    } else {
+        let seam = drops::Seam {
+            direction: drops::Direction::Response,
+            ingress: ctx.ingress,
+            egress: ctx.egress,
+        };
+        drops::scope(seam, read).0
+    };
+    let (usage, answered) = answered.map_err(|e| format!("{e:?}"))?;
     let delivers = matches!(
         answered,
         TranslatedResponse::StreamFrames(_)

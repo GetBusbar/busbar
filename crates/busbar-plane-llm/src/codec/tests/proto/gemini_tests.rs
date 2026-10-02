@@ -768,15 +768,26 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
         lane_caps: Default::default(),
     };
 
-    // The cachedContent drop was reclassified benign-recurring (per-request cross-protocol seam) and
-    // now emits at `diag_debug!` (BUSBAR-7084), so capture at DEBUG to preserve the both-consequences
-    // content coverage rather than assert on a level the diagnostic no longer uses.
-    let cap = WarnCapture::capturing_debug();
+    // The drop goes through the one drop path (`codec::drops`): a WARN (BUSBAR-7084), on a
+    // translate attempt only.
+    let seam = crate::codec::drops::Seam {
+        direction: crate::codec::drops::Direction::Request,
+        ingress: "gemini",
+        egress: "openai",
+    };
+    let cap = WarnCapture::default();
     let subscriber = cap.clone();
     let mut req = ir;
-    tracing::subscriber::with_default(subscriber, || {
-        crate::codec::chat_handle::chat_prepare_for_egress(&mut req, &prep)
+    let ((), dropped) = tracing::subscriber::with_default(subscriber, || {
+        crate::codec::drops::scope(seam, || {
+            crate::codec::chat_handle::chat_prepare_for_egress(&mut req, &prep)
+        })
     });
+    assert_eq!(
+        dropped,
+        vec!["cachedContent".to_string()],
+        "the seam's audit names the dropped path once"
+    );
 
     assert!(
         cap.contains("VISIBLE history") && cap.contains("UNCACHED"),
@@ -793,7 +804,9 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
     let subscriber2 = cap2.clone();
     let mut req2 = ir2;
     tracing::subscriber::with_default(subscriber2, || {
-        crate::codec::chat_handle::chat_prepare_for_egress(&mut req2, &prep)
+        crate::codec::drops::scope(seam, || {
+            crate::codec::chat_handle::chat_prepare_for_egress(&mut req2, &prep)
+        })
     });
     assert!(
         !cap2.contains("cachedContent"),
