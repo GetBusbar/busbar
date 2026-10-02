@@ -239,15 +239,15 @@ fn a_grounded_turn_bills_the_tool_use_term() {
     assert_eq!(billed.output, 172);
 }
 
-/// GOOGLE'S TOTAL BILLS, AND THE GAP IS STILL REPORTED (Q91 option A, ARCHITECT ruling C8/576). If
-/// Google states a `totalTokenCount` the modelled terms cannot reach, the turn bills Google's total:
-/// every input-side term is itemized, so the unitemized remainder is billed as output. The note
-/// still reports the gap, which is what says a counter is unmodelled.
+/// THE LEDGER HOLDS WHAT GOOGLE ITEMIZED, AND THE GAP IS REPORTED (owner 2026-10-02: ledger what
+/// the plane reports; fix Gemini ledging). If Google states a `totalTokenCount` the itemized terms
+/// cannot reach, no unit is invented for the gap: the buckets ledger exactly as sent and the note
+/// (with its audit WARN) names the gap, which is what says a counter is unmodelled.
 ///
 /// The term here (`someFutureTokenCount`) is deliberately one `GEMINI_USAGE_ADDITIVE_TERMS` does not
 /// model.
 #[test]
-fn an_unmodelled_term_is_reported_and_billed_as_output() {
+fn an_unmodelled_term_is_reported_never_ledgered() {
     let body = serde_json::json!({
         "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
         "usageMetadata": {
@@ -261,9 +261,11 @@ fn an_unmodelled_term_is_reported_and_billed_as_output() {
         .reader()
         .read_response(&body)
         .expect("read");
-    // The input bucket as sent; the 7 unitemized tokens bill as output, so the turn bills 22.
+    // The buckets exactly as sent; the 7 tokens no counter itemizes are folded into none of them.
     assert_eq!(ir.usage.input_tokens, 10);
-    assert_eq!(ir.usage.output_tokens, 12);
+    assert_eq!(ir.usage.output_tokens, 5);
+    let ledgered = ir.usage.to_token_usage();
+    assert_eq!((ledgered.input, ledgered.output), (10, 5));
     let note = ir
         .usage
         .detail
@@ -280,24 +282,34 @@ fn an_unmodelled_term_is_reported_and_billed_as_output() {
 }
 
 /// THE ORACLE CELL `usage.gemini|tool-use|total-not-a-sum` (TODO 576): Google states 64 where its
-/// named counters sum to 57 (18 prompt + 7 candidates + 32 tool-use). The turn bills 64: 50 input
-/// (prompt + tool-use) and 14 output (7 visible + the 7 unitemized), on every read path.
+/// named counters sum to 57 (18 prompt + 7 candidates + 32 tool-use). The ledger holds the itemized
+/// 57, on every read path: 50 input (prompt + tool-use prompt) and 7 output. The 7-token gap is
+/// reported, never ledgered.
 #[test]
-fn a_total_above_its_terms_bills_googles_total_on_every_path() {
+fn a_total_above_its_terms_ledgers_the_itemized_counts_on_every_path() {
     const RESP: &str = r#"{"candidates":[{"content":{"parts":[{"text":"pong"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":18,"candidatesTokenCount":7,"toolUsePromptTokenCount":32,"totalTokenCount":64},"modelVersion":"m-cap"}"#;
     let body: serde_json::Value = serde_json::from_str(RESP).unwrap();
     let ir = Protocol::gemini()
         .reader()
         .read_response(&body)
         .expect("read");
-    let billed = ir.usage.to_token_usage();
-    assert_eq!((billed.input, billed.output), (50, 14));
-    assert_eq!(billed.input + billed.output, 64, "Google's totalTokenCount");
+    let ledgered = ir.usage.to_token_usage();
+    assert_eq!((ledgered.input, ledgered.output), (50, 7));
+    let note = ir
+        .usage
+        .detail
+        .usage_identity_note
+        .as_ref()
+        .expect("the gap is reported");
+    assert_eq!(
+        (note.reported_total, note.summed_total, note.unaccounted),
+        (64, 57, 7)
+    );
     let recovered = Protocol::gemini()
         .reader()
         .recover_truncated_usage(RESP.as_bytes())
         .expect("the trailing usageMetadata is recoverable");
-    assert_eq!((recovered.input, recovered.output), (50, 14));
+    assert_eq!((recovered.input, recovered.output), (50, 7));
 }
 
 /// A total at or below the sum of its terms adds nothing: an early stream frame states none, and a
@@ -444,4 +456,190 @@ fn sse_early_frame_usage_metadata_carries_no_counters() {
         ir.usage.detail.usage_identity_note, None,
         "a counterless frame states no total, so there is no identity to violate"
     );
+}
+
+/// The upstream body of the oracle cell `usage.gemini|stream-grounded|no-tool-use-count` (TODO
+/// 605(a)), verbatim: a STREAMED grounded turn whose final frame states `totalTokenCount` 57
+/// against prompt 18 + candidates 7, with no `toolUsePromptTokenCount` on any frame.
+const GROUNDED_STREAM: &str = concat!(
+    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"po\"}],\"role\":\"model\"},\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":18,\"totalTokenCount\":18},\"modelVersion\":\"m-cap\"}\r\n\r\n",
+    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ng\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0,\"groundingMetadata\":{\"webSearchQueries\":[\"ping\"]}}],\"usageMetadata\":{\"promptTokenCount\":18,\"candidatesTokenCount\":7,\"totalTokenCount\":57},\"modelVersion\":\"m-cap\"}\r\n\r\n",
+);
+
+/// What 1.5.5 relayed for that cell to an OpenAI chat client that asked for
+/// `stream_options.include_usage`, verbatim from `golden/1.5.5` (`/steps/0/body/text`; the oracle
+/// masks the chunk id as `<ID>` and `created` as 0). The usage chunk reports the counters Google
+/// itemized: 18 prompt, 7 completion, 25 total.
+const GROUNDED_STREAM_155: &str = concat!(
+    "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0}],\"created\":0,\"id\":\"chatcmpl-<ID>\",\"model\":\"m-cap\",\"object\":\"chat.completion.chunk\"}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"po\"},\"finish_reason\":null,\"index\":0}],\"created\":0,\"id\":\"chatcmpl-<ID>\",\"model\":\"m-cap\",\"object\":\"chat.completion.chunk\"}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"ng\"},\"finish_reason\":null,\"index\":0}],\"created\":0,\"id\":\"chatcmpl-<ID>\",\"model\":\"m-cap\",\"object\":\"chat.completion.chunk\"}\n\n",
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"created\":0,\"id\":\"chatcmpl-<ID>\",\"model\":\"m-cap\",\"object\":\"chat.completion.chunk\"}\n\n",
+    "data: {\"choices\":[],\"created\":0,\"id\":\"chatcmpl-<ID>\",\"model\":\"m-cap\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":7,\"prompt_tokens\":18,\"total_tokens\":25}}\n\n",
+    "data: [DONE]\n\n",
+);
+
+/// The oracle's two masks, and nothing else: every `"id":"chatcmpl-…"` value becomes `<ID>` and
+/// every `"created":N` becomes 0. Every other byte is compared as relayed.
+fn mask_chunk_identity(out: &str) -> String {
+    fn mask_after(s: &str, key: &str, stop: fn(char) -> bool, with: &str) -> String {
+        let mut rest = s;
+        let mut masked = String::with_capacity(s.len());
+        while let Some(at) = rest.find(key) {
+            let (head, tail) = rest.split_at(at + key.len());
+            masked.push_str(head);
+            masked.push_str(with);
+            rest = &tail[tail.find(stop).unwrap_or(tail.len())..];
+        }
+        masked.push_str(rest);
+        masked
+    }
+    let ids = mask_after(out, "\"id\":\"chatcmpl-", |c| c == '"', "<ID>");
+    mask_after(&ids, "\"created\":", |c| !c.is_ascii_digit(), "0")
+}
+
+/// Relay the grounded stream to an OpenAI chat client that opted into the usage chunk.
+fn relay_grounded_stream() -> (String, busbar_contract::billing::TokenUsage) {
+    let mut t = crate::codec::proto_stream::StreamTranslate::new("openai", "gemini")
+        .expect("openai ingress over a gemini egress");
+    t.set_client_include_usage(true);
+    let mut out = t.feed(GROUNDED_STREAM.as_bytes());
+    out.extend(t.finish());
+    let billed = t
+        .usage()
+        .expect("the stream's usage is captured for billing")
+        .to_token_usage();
+    (
+        mask_chunk_identity(&String::from_utf8(out).expect("utf8 SSE")),
+        billed,
+    )
+}
+
+/// THE LEDGER AND THE RELAYED BYTES BOTH CARRY WHAT GOOGLE ITEMIZED (oracle cell
+/// `usage.gemini|stream-grounded|no-tool-use-count`). The final frame states `totalTokenCount` 57
+/// against 18 prompt + 7 candidates; the 32-token gap is reported, never ledgered, so the turn
+/// ledgers 18 in + 7 out (what 1.5.5 billed) and the client receives exactly the 1.5.5 stream: its
+/// usage chunk reports 7 completion, 25 total.
+#[test]
+fn a_grounded_stream_relays_the_155_bytes_and_ledgers_the_itemized_counts() {
+    let (relayed, ledgered) = relay_grounded_stream();
+    assert_eq!(
+        relayed, GROUNDED_STREAM_155,
+        "the relayed stream is 1.5.5's"
+    );
+    assert_eq!((ledgered.input, ledgered.output), (18, 7));
+}
+
+/// THE RED ARM: the pin above is not vacuous. The stream b8605a388 relayed (the total's remainder
+/// folded into the client's usage chunk: 39 completion, 57 total) differs from 1.5.5's after the
+/// same masks, and the relay today does not produce it.
+#[test]
+fn a_grounded_stream_never_relays_the_totals_remainder() {
+    let leaked = GROUNDED_STREAM_155.replace(
+        "\"usage\":{\"completion_tokens\":7,\"prompt_tokens\":18,\"total_tokens\":25}",
+        "\"usage\":{\"completion_tokens\":39,\"prompt_tokens\":18,\"total_tokens\":57}",
+    );
+    assert_ne!(
+        leaked, GROUNDED_STREAM_155,
+        "the fixture names the usage chunk"
+    );
+    assert_ne!(
+        mask_chunk_identity(&leaked),
+        GROUNDED_STREAM_155,
+        "the masks never hide a usage count"
+    );
+    let (relayed, _) = relay_grounded_stream();
+    assert_ne!(relayed, leaked, "the total's remainder reached the client");
+    assert!(
+        relayed.contains("\"completion_tokens\":7,")
+            && !relayed.contains("\"completion_tokens\":39"),
+        "{relayed}"
+    );
+}
+
+/// What each `usageMetadata` count IS, per Google's own usage semantics, as the meter-class move
+/// one more reported token makes: (input, cache read, output). Prompt and the tool-use prompt are
+/// input; the cached slice moves a prompt token into the cache-read class; candidates and thoughts
+/// are output. `totalTokenCount` is Google's sum of the others, never a unit of its own.
+const GEMINI_COUNT_CLASSES: &[(&str, (i64, i64, i64))] = &[
+    ("promptTokenCount", (1, 0, 0)),
+    ("cachedContentTokenCount", (-1, 1, 0)),
+    ("toolUsePromptTokenCount", (1, 0, 0)),
+    ("candidatesTokenCount", (0, 0, 1)),
+    ("thoughtsTokenCount", (0, 0, 1)),
+];
+
+/// EVERY COUNT GOOGLE REPORTS IS LEDGERED, IN ITS OWN CLASS (owner 2026-10-02: ledger what the plane
+/// reports; fix Gemini ledging). The census is the pinned wire lock
+/// (`testing/llm-conformance/wire/gemini.wire.json`): every integer member of `usageMetadata` must
+/// have a declared class above, and reporting 7 more of it must move the ledgered units by exactly
+/// that class on the buffered and the truncated-recovery read. RED when the reader drops a count
+/// (a usage-table row removed), mis-classes one, or the lock gains a count nobody classed.
+#[test]
+fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
+    let lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/llm-conformance/wire/gemini.wire.json");
+    let lock: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&lock_path).expect("the pinned gemini wire lock"),
+    )
+    .expect("wire lock json");
+    let counts: Vec<&str> = lock["response"]
+        .as_object()
+        .expect("response paths")
+        .iter()
+        .filter(|(_, v)| v["type"] == "integer")
+        .filter_map(|(k, _)| k.strip_prefix("usageMetadata."))
+        .filter(|f| !f.contains('.') && !f.contains('['))
+        .filter(|f| *f != "totalTokenCount")
+        .collect();
+    assert_eq!(
+        counts.len(),
+        GEMINI_COUNT_CLASSES.len(),
+        "the lock's usageMetadata counts {counts:?} each need exactly one class"
+    );
+    let ledger = |usage: serde_json::Value| -> [(i64, i64, i64); 2] {
+        let body = serde_json::json!({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+            "usageMetadata": usage
+        });
+        let units = |u: busbar_contract::billing::TokenUsage| {
+            let n = |x: u64| i64::try_from(x).expect("small fixture");
+            (n(u.input), n(u.cache_read.unwrap_or(0)), n(u.output))
+        };
+        let buffered = Protocol::gemini()
+            .reader()
+            .read_response(&body)
+            .expect("read")
+            .usage
+            .to_token_usage();
+        let recovered = Protocol::gemini()
+            .reader()
+            .recover_truncated_usage(body.to_string().as_bytes())
+            .expect("the trailing usageMetadata is recoverable");
+        [units(buffered), units(recovered)]
+    };
+    let base = serde_json::json!({"promptTokenCount": 1000, "candidatesTokenCount": 100});
+    let before = ledger(base.clone());
+    for field in counts {
+        let (_, (di, dc, dout)) = GEMINI_COUNT_CLASSES
+            .iter()
+            .find(|(f, _)| *f == field)
+            .unwrap_or_else(|| {
+                panic!("`usageMetadata.{field}` is in the wire lock with no meter class")
+            });
+        let mut usage = base.clone();
+        let was = usage[field].as_u64().unwrap_or(0);
+        usage[field] = serde_json::json!(was + 7);
+        let after = ledger(usage);
+        for (path, (b, a)) in ["buffered", "truncated"]
+            .iter()
+            .zip(before.iter().zip(after.iter()))
+        {
+            assert_eq!(
+                (a.0 - b.0, a.1 - b.1, a.2 - b.2),
+                (7 * di, 7 * dc, 7 * dout),
+                "{path}: 7 more `{field}` must move (input, cache read, output) by its class"
+            );
+        }
+    }
 }
