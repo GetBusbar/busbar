@@ -1624,11 +1624,136 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
+/// Stable identifier of the identity [`read_bedrock_usage`] checks `usage.totalTokens` against,
+/// carried on [`crate::codec::ir::UsageIdentityNote::identity`].
+const BEDROCK_USAGE_IDENTITY: &str = "bedrock.usage";
+
 /// A Bedrock Converse `usage` object (`None` when absent) → the IR usage, through [`USAGE`].
+///
+/// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/bedrock.wire.json`) DECLARES
+/// UNDER `usage` IS LEDGERED OR A SLICE OF A LEDGERED COUNT: `inputTokens` (input),
+/// `outputTokens` (output), `cacheReadInputTokens` (cache read), `cacheWriteInputTokens` (cache
+/// write); `cacheDetails[].inputTokens` is the per-TTL split of the cache write, carried as the 5m
+/// and 1h attribution and ledgered inside the one cache-write class. `totalTokens` is AWS's sum of
+/// the four (cache tokens included, see the writer's `converse_total_tokens`), never a unit: it is
+/// cross-checked against the ledgered classes and a gap is WARN-logged and carried as the usage
+/// identity note, never ledgered. The guardrail policy units ride `trace`, not `usage`: see
+/// [`warn_guardrail_units`].
 fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)
+    let mut ir = crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)?;
+    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
+        VENDOR_NAME,
+        BEDROCK_USAGE_IDENTITY,
+        usage_obj.and_then(|u| u.get(TOTAL_TOKENS_CAMEL)),
+        &ir,
+    );
+    Ok(ir)
+}
+
+/// The members of a Converse `TokenUsage` object: a `usage` object naming none of them is not the
+/// turn's token usage (a guardrail's `invocationMetrics.usage` names policy units instead).
+const TOKEN_USAGE_MEMBERS: &[&str] = &[
+    INPUT_TOKENS_CAMEL,
+    OUTPUT_TOKENS_CAMEL,
+    TOTAL_TOKENS_CAMEL,
+    CACHE_READ_INPUT_TOKENS,
+    CACHE_WRITE_INPUT_TOKENS,
+];
+
+/// `trace.guardrail` members, as the Converse service model spells them.
+const GUARDRAIL: &str = "guardrail";
+const GUARDRAIL_INPUT_ASSESSMENT: &str = "inputAssessment";
+const GUARDRAIL_OUTPUT_ASSESSMENTS: &str = "outputAssessments";
+const GUARDRAIL_INVOCATION_METRICS: &str = "invocationMetrics";
+
+/// Every count of a guardrail assessment's `invocationMetrics.usage` (the service model's
+/// `GuardrailUsage`), as AWS spells it: the policy units AWS bills per policy type, the free
+/// units it reports beside them, and the automated-reasoning policy count.
+const GUARDRAIL_USAGE_COUNTS: &[&str] = &[
+    "topicPolicyUnits",
+    "contentPolicyUnits",
+    "wordPolicyUnits",
+    "sensitiveInformationPolicyUnits",
+    "sensitiveInformationPolicyFreeUnits",
+    "contextualGroundingPolicyUnits",
+    "contentPolicyImageUnits",
+    "automatedReasoningPolicyUnits",
+    "automatedReasoningPolicies",
+];
+
+/// READ EVERY GUARDRAIL POLICY-UNIT COUNT A TURN REPORTS, AND SAY THAT NONE OF IT IS LEDGERED.
+///
+/// A Converse response (or the stream's `metadata` frame) that ran a guardrail carries
+/// `trace.guardrail.inputAssessment.<id>.invocationMetrics.usage` and
+/// `trace.guardrail.outputAssessments.<id>[].invocationMetrics.usage`: the policy units AWS bills
+/// for the guardrail SEPARATELY from the model's tokens, per policy type. They are not tokens, and
+/// no meter class this plane declares holds them (input, output, cache read and cache write are
+/// token classes), so folding them into one would price a policy unit at a token rate. They are
+/// therefore a residual: each count is summed per side over every guardrail and assessment, and
+/// one WARN names them all (`inputAssessment.<count>=n`, `outputAssessments.<count>=n`), so the
+/// gap between the ledger and AWS's invoice is visible rather than silent. A present count that is
+/// not a count is named `unreadable`. Nothing is ledgered; nothing is refused.
+fn warn_guardrail_units(holder: &serde_json::Value) {
+    let Some(guardrail) = holder.get(TRACE).and_then(|t| t.get(GUARDRAIL)) else {
+        return;
+    };
+    let usage_of = |a: &serde_json::Value| {
+        a.get(GUARDRAIL_INVOCATION_METRICS)
+            .and_then(|m| m.get(keys::USAGE))
+            .cloned()
+    };
+    let input: Vec<serde_json::Value> = guardrail
+        .get(GUARDRAIL_INPUT_ASSESSMENT)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(usage_of)
+        .collect();
+    let output: Vec<serde_json::Value> = guardrail
+        .get(GUARDRAIL_OUTPUT_ASSESSMENTS)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter_map(usage_of)
+        .collect();
+    let mut named: Vec<String> = Vec::new();
+    for (side, usages) in [
+        (GUARDRAIL_INPUT_ASSESSMENT, &input),
+        (GUARDRAIL_OUTPUT_ASSESSMENTS, &output),
+    ] {
+        for count in GUARDRAIL_USAGE_COUNTS {
+            let mut sum: Option<u64> = None;
+            let mut unreadable = false;
+            for u in usages {
+                match u.get(*count).filter(|v| !v.is_null()) {
+                    None => {}
+                    Some(v) => match crate::codec::usage_count::read_count_u64(v) {
+                        Some(n) => sum = Some(sum.unwrap_or(0).saturating_add(n)),
+                        None => unreadable = true,
+                    },
+                }
+            }
+            if unreadable {
+                named.push(format!("{side}.{count}=unreadable"));
+            } else if let Some(n) = sum {
+                named.push(format!("{side}.{count}={n}"));
+            }
+        }
+    }
+    if named.is_empty() {
+        return;
+    }
+    let units = named.join(" ");
+    tracing::warn!(
+        protocol = VENDOR_NAME,
+        units = %units,
+        "bedrock guardrail policy units are billed by AWS separately from the model's tokens and \
+         land in no meter class this plane declares: they are not ledgered"
+    );
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.
@@ -2215,6 +2340,10 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/usage_float_tests.rs"]
 mod usage_float_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;
 
 #[cfg(test)]
 #[path = "tests/ir_mapping_tests.rs"]
