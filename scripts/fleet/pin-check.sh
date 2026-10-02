@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# THE PIN CHECK every first-party plugin repo runs (plugin-ci.yml's `pin` job, and `cargo xtask fleet
+# THE PIN CHECK every first-party plugin repo runs (plugin-ci.yml's `pin` job, and `busbar-release plugin
 # check` reads the same rules). A plugin repo names the busbar it builds against in FOUR places, and
 # they must agree, or what CI proves is not what the release builds:
 #
