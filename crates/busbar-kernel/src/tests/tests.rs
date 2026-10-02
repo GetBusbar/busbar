@@ -1032,7 +1032,7 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
             crate::preflight::builtin_ranking_known(name),
             "a built-in ranking strategy is a hook word of the linked ranking door: {name}"
         );
-        let policy = crate::preflight::builtin_ranking(name).expect("the strategy opens");
+        let (policy, _) = crate::preflight::builtin_ranking(name).expect("the strategy opens");
         assert_eq!(policy.name(), *name);
     }
     assert!(!crate::preflight::builtin_ranking_known(
@@ -1043,6 +1043,161 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
         reg.resolve("cheapest").is_none(),
         "a strategy word is the door's mark, not a registry alias"
     );
+}
+
+/// RANKING PARITY THROUGH THE DOOR (ARCHITECT Q-SO9): each of the four strategy words, opened
+/// through the hook axis and called through the hook seam, answers exactly the decision 1.5.5's
+/// in-process native answered on the ranking parity cases (the 1.5.5 natives' own cases: the same
+/// candidates, the same expected order or abstain). Every answer is `Ok`: the call never fails,
+/// times out or reaches `on_error`. Its deadline is the dispatcher's Call class budget, never the
+/// 1 ms gate default.
+#[cfg(feature = "hooks-ranking")]
+#[tokio::test]
+async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error() {
+    use crate::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
+    /// `(idx, cost, latency, concurrency, rate headroom)`.
+    type Row = (usize, Option<f64>, Option<f64>, usize, Option<f64>);
+    let cand = |&(idx, cost, lat, conc, rate): &Row| Candidate {
+        idx,
+        model: "m",
+        provider: "p",
+        weight: 1,
+        context_max: None,
+        tier: None,
+        cost_per_mtok: cost,
+        tags: &[],
+        latency_ms: lat,
+        available_concurrency: conc,
+        budget_remaining: None,
+        rate_headroom: rate,
+        signals: Default::default(),
+    };
+    let req = RoutingRequest {
+        request_id: 1,
+        pool: "p",
+        ingress_protocol: "wire-a",
+        requested_model: None,
+        message_count: 1,
+        tool_count: 0,
+        has_tools: false,
+        total_chars: 10,
+        system_chars: 0,
+        max_tokens: None,
+        stream: false,
+        prompt: None,
+        identity: None,
+        signals: Default::default(),
+    };
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let prefer = |o: &[usize]| RoutingDecision::Prefer(o.to_vec());
+    // The 1.5.5 natives' cases (crates/hooks-ranking lib_tests before the door): word, candidates,
+    // the decision 1.5.5 answered.
+    let cases: Vec<(&str, Vec<Row>, RoutingDecision)> = vec![
+        (
+            "cheapest",
+            vec![
+                (0, Some(15.0), None, 1, None),
+                (1, Some(3.0), None, 1, None),
+                (2, None, None, 1, None),
+            ],
+            prefer(&[1, 0, 2]),
+        ),
+        (
+            "cheapest",
+            vec![(0, None, None, 1, None), (1, None, None, 1, None)],
+            RoutingDecision::Abstain,
+        ),
+        (
+            "cheapest",
+            vec![(0, Some(5.0), None, 1, None)],
+            prefer(&[0]),
+        ),
+        (
+            "fastest",
+            vec![
+                (0, None, Some(120.0), 1, None),
+                (1, None, Some(40.0), 1, None),
+                (2, None, Some(80.0), 1, None),
+            ],
+            prefer(&[1, 2, 0]),
+        ),
+        (
+            "fastest",
+            vec![(0, None, None, 1, None), (1, None, None, 1, None)],
+            RoutingDecision::Abstain,
+        ),
+        (
+            "fastest",
+            vec![(0, None, Some(30.0), 1, None)],
+            prefer(&[0]),
+        ),
+        (
+            "least_busy",
+            vec![
+                (0, None, None, 2, None),
+                (1, None, None, 9, None),
+                (2, None, None, 5, None),
+            ],
+            prefer(&[1, 2, 0]),
+        ),
+        (
+            "least_busy",
+            vec![
+                (0, None, None, 0, None),
+                (1, None, None, 0, None),
+                (2, None, None, 0, None),
+            ],
+            prefer(&[0, 1, 2]),
+        ),
+        ("least_busy", vec![(0, None, None, 3, None)], prefer(&[0])),
+        (
+            "usage",
+            vec![
+                (0, None, None, 1, Some(0.10)),
+                (1, None, None, 1, Some(0.90)),
+                (2, None, None, 1, None),
+                (3, None, None, 1, Some(0.50)),
+            ],
+            prefer(&[1, 3, 0, 2]),
+        ),
+        (
+            "usage",
+            vec![
+                (0, None, None, 1, None),
+                (1, None, None, 1, None),
+                (2, None, None, 1, None),
+            ],
+            RoutingDecision::Abstain,
+        ),
+        (
+            "usage",
+            vec![(0, None, None, 1, Some(0.0)), (1, None, None, 1, Some(0.0))],
+            prefer(&[0, 1]),
+        ),
+        ("cheapest", Vec::new(), RoutingDecision::Abstain),
+        ("fastest", Vec::new(), RoutingDecision::Abstain),
+        ("least_busy", Vec::new(), RoutingDecision::Abstain),
+        ("usage", Vec::new(), RoutingDecision::Abstain),
+    ];
+    let gate_default = std::time::Duration::from_millis(crate::config::DEFAULT_POLICY_TIMEOUT_MS);
+    for (word, rows, want) in cases {
+        let (policy, budget) =
+            crate::preflight::builtin_ranking(word).expect("the strategy opens through the door");
+        assert!(
+            budget > gate_default,
+            "`{word}`'s deadline is the dispatcher's Call class budget, not the gate default"
+        );
+        let cands: Vec<Candidate<'_>> = rows.iter().map(cand).collect();
+        let got = policy.decide(&req, &cands, &ctx, budget).await;
+        match got {
+            Ok(decision) => assert_eq!(decision, want, "`{word}` over {rows:?}"),
+            Err(e) => panic!("`{word}` reached on_error ({e}); 1.5.5's ranking never did"),
+        }
+    }
 }
 
 /// SECURITY: if the CONFIGURED governance store resolves to a plugin that is UNTRUSTED and NOT

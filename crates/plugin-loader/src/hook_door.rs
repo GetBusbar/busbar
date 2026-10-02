@@ -853,6 +853,10 @@ impl HookAxis for HookRows {
             .is_some_and(|c| matches!(c.origin, Origin::Linked(_)))
     }
 
+    fn call_budget(&self) -> Duration {
+        self.dispatcher.budgets().call
+    }
+
     fn first_party(&self, module: &str) -> bool {
         self.find(module).is_some_and(|c| {
             matches!(c.origin, Origin::Linked(_)) || self.first_party.contains(&c.name)

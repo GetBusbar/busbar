@@ -204,19 +204,24 @@ pub(crate) fn builtin_ranking_known(name: &str) -> bool {
 
 /// The built-in ranking strategy `name` names on the hook axis — the linked row that claims the
 /// word, opened with `{"policy": "<name>"}` (ARCHITECT 2026-10-02, the hook-ranking opener) and
-/// called through the hook seam — or `None` when this build links no ranking row claiming it.
+/// called through the hook seam — with its deadline: the dispatcher's Call class budget (ARCHITECT
+/// Q-SO9), never the gate default. Ranking is pure compute and answers on its first poll, so, as in
+/// 1.5.5, it cannot time out. `None` when this build links no ranking row claiming the word.
 pub(crate) fn builtin_ranking(
     name: &str,
-) -> Option<std::sync::Arc<dyn crate::hooks::RoutingPolicy>> {
+) -> Option<(
+    std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+    std::time::Duration,
+)> {
     let axis = linked_hook_axis()?;
     if !axis.linked(name) {
         return None;
     }
-    let budget = std::time::Duration::from_millis(crate::config::DEFAULT_POLICY_TIMEOUT_MS);
+    let budget = axis.call_budget();
     let calls = axis
         .open(name, name, &serde_json::json!({ "policy": name }), budget)
         .ok()?;
-    Some(crate::hooks::plugin::HookPolicy::new(calls, name))
+    Some((crate::hooks::plugin::HookPolicy::new(calls, name), budget))
 }
 
 /// The build's own secret module `module` names on the secret axis — a linked `kind: secret` row,

@@ -320,12 +320,12 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
     // The non-weighted ranking strategies are hook words of the linked `hooks-ranking` door on the
     // hook axis. Compiled OUT, no door claims them (a config_validate BOOT ERROR, so unreachable in a
     // running server); degrade to None (SWRR) as belt-and-suspenders.
-    let policy = crate::preflight::builtin_ranking(name)?;
+    let (policy, timeout) = crate::preflight::builtin_ranking(name)?;
     Some(ResolvedPolicy::Policy {
         policy,
         on_error: crate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
-        timeout: policy_timeout(crate::config::DEFAULT_POLICY_TIMEOUT_MS),
+        timeout,
         // Native policies rank on live signals and have no reader for prompt/identity.
         send_prompt: false,
         send_user: false,
@@ -1451,10 +1451,10 @@ fn resolve_on_error_chain<'a>(
         }
         // A built-in ranking strategy: sync, no I/O, cannot fail — one link, then done. Compiled
         // out, the name falls through to the registry lookup below (and validation errored at boot).
-        if let Some(policy) = crate::preflight::builtin_ranking(current) {
+        if let Some((policy, timeout)) = crate::preflight::builtin_ranking(current) {
             chain.push(FallbackHook {
                 policy,
-                timeout: policy_timeout(crate::config::DEFAULT_POLICY_TIMEOUT_MS),
+                timeout,
                 send_prompt: false,
                 send_user: false,
                 on_empty: crate::config::PolicyOnError::Reject,

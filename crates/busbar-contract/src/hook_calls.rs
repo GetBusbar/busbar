@@ -139,6 +139,11 @@ pub trait HookAxis: Send + Sync {
     /// Whether `module` names a row this build LINKS (as opposed to one dropped in).
     fn linked(&self, module: &str) -> bool;
 
+    /// The dispatcher's Call class budget: the deadline of a call no operator `timeout_ms` bounds
+    /// (a pool's ranking strategy, ARCHITECT Q-SO9). Such a hook is pure compute and answers READY
+    /// on its first poll, so this deadline is never the one that ends it.
+    fn call_budget(&self) -> Duration;
+
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.
     fn first_party(&self, module: &str) -> bool;
 }

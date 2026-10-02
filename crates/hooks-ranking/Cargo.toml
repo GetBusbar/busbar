@@ -11,3 +11,8 @@ license = "Apache-2.0"
 busbar-contract = { path = "../busbar-contract" }
 # The settings document `open` reads (already in the contract's closure).
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# THE DOOR WITNESS (`tests/door.rs`): the linked door admitted through the one loader and driven
+# through the one dispatcher (the transport crates' pattern).
+busbar-plugin-loader = { path = "../plugin-loader" }
