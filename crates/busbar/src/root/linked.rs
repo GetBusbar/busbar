@@ -41,7 +41,7 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
-use busbar_kernel::preflight::{LinkedAuth, LinkedHook, LinkedStore, RegistryIn, RootInstall};
+use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RegistryIn, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -96,8 +96,9 @@ pub struct Linked {
     pub exports: &'static [LinkedExport],
     /// The store axis: each linked in-process store's `(name, ephemeral, default, open)`.
     pub stores: &'static [LinkedStore],
-    /// The hook axis: each linked ranking row's `(name, aliases, open)`.
-    pub hooks: &'static [LinkedHook],
+    /// The hook axis: each linked `kind: hook` row's door, bound through the one loader path by the
+    /// root's hook axis (`crate::root::hooks`).
+    pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
     /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
     pub auths: &'static [LinkedAuth],
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
@@ -300,7 +301,6 @@ pub fn register_stores(linked: &Linked) {
     match default_store(linked.stores) {
         Ok(default) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
-            hooks: linked.hooks,
             default_store_module: default.unwrap_or_default(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),

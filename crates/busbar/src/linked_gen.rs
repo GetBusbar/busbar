@@ -45,7 +45,9 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("cli-help", "cli_help", "CLI_HELP"),
     ("exports", "exports", "EXPORT"),
     ("stores", "stores", "STORE"),
-    ("hooks", "hooks", "HOOK"),
+    // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
+    // dropped-in build exports.
+    ("hooks", "hook_doors", "door"),
     // The node axis: a plane whose units a composition root's node drives is handed that node.
     ("node", "node", "install_node"),
     // The unified kernel loop (#28): the key a plane is flipped onto its one-shot or session runner

@@ -4,14 +4,10 @@ version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The built-in ranking hooks for busbar: cheapest / fastest / least_busy / usage order-gates over the routing-policy contract."
+description = "The ranking hook for busbar: cheapest / fastest / least_busy / usage order-gates over the hook kind's decide view."
 license = "Apache-2.0"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-async-trait = { workspace = true }
-
-[dev-dependencies]
-# The native policies are sync; the async-trait wrapper still makes `decide` async, so the tests
-# need a (current-thread) runtime to drive it.
-tokio = { workspace = true, features = ["rt", "macros"] }
+# The settings document `open` reads (already in the contract's closure).
+serde_json = { workspace = true }

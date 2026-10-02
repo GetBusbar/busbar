@@ -1015,60 +1015,34 @@ fn the_built_in_secret_modules_are_linked_rows_of_the_secret_axis() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// K5b (3c) exit test: the built-in ranking strategies are ALIASES of ONE linked `hooks-ranking` row
-/// on the hook axis — each frozen spelling (`least_busy` too, which the package-name rule would
-/// refuse as a name) resolves through the alias table to that `kind: hook` row, and opens as the
-/// strategy it spells. `weighted` stays the inline floor (no row). A frozen spelling is the weakest
-/// claim on the table: a dropped-in plugin aliased `cheapest` keeps answering to it.
-/// RED by planting the door bypass: `linked_rows()` registering no ranking row leaves every
-/// strategy spelling unresolved ("a built-in ranking strategy is a row of the hook axis").
+/// K5b (3c) exit test, on the hook door: the built-in ranking strategies are the HOOK WORDS of ONE
+/// linked `hooks-ranking` door on the hook axis — each strategy word names that row, and opens (with
+/// `{"policy": "<word>"}`) as the strategy it spells. `weighted` stays the inline floor (no row).
+/// The words are the door's Statement marks, never registry aliases: no registry row spells them.
+/// RED by planting the door bypass: an axis with no linked ranking door leaves every strategy word
+/// unknown.
 #[cfg(feature = "hooks-ranking")]
 #[test]
-fn the_built_in_ranking_strategies_are_aliases_of_one_linked_row_of_the_hook_axis() {
-    let preflight = |cfg: &crate::config::PluginsCfg| {
-        crate::plugins_preflight(
-            None,
-            None,
-            &Default::default(),
-            &Default::default(),
-            cfg,
-            &Default::default(),
-        )
-    };
-    let reg = preflight(&Default::default()).expect("the default boot registers its linked rows");
+fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook_axis() {
     for name in crate::config::RESERVED_HOOK_NAMES
         .iter()
         .filter(|n| crate::config::parse_strategy(n) != crate::config::PoolPolicy::Weighted)
     {
-        let row = reg
-            .resolve(name)
-            .expect("a built-in ranking strategy is a row of the hook axis");
-        assert_eq!(
-            (row.manifest.kind.as_str(), row.manifest.name.as_str()),
-            ("hook", "hooks-ranking")
+        assert!(
+            crate::preflight::builtin_ranking_known(name),
+            "a built-in ranking strategy is a hook word of the linked ranking door: {name}"
         );
-        assert!(row.in_process() && row.manifest.alias == "hooks-ranking");
-        assert_eq!(reg.open_ranking(name).expect("the row opens").name(), *name);
+        let policy = crate::preflight::builtin_ranking(name).expect("the strategy opens");
+        assert_eq!(policy.name(), *name);
     }
-    assert!(reg.resolve(crate::config::ON_ERROR_WEIGHTED).is_none());
-    assert!(reg.open_ranking("hooks-ranking").is_err());
-
-    let dir = tmp_plugin_dir("linked-ranking");
-    let tarball = unsigned_tarball(plugin_manifest("acme-rank", "cheapest", "acme"), b"lib");
-    std::fs::write(dir.join("acme-rank.tar.gz"), tarball).unwrap();
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    let reg = preflight(&cfg).expect("the directory scans");
-    let row = reg.resolve("cheapest").expect("the alias still resolves");
-    assert_eq!(
-        row.manifest.name, "acme-rank",
-        "a row's own alias outranks a frozen spelling"
+    assert!(!crate::preflight::builtin_ranking_known(
+        crate::config::ON_ERROR_WEIGHTED
+    ));
+    let reg = crate::preflight::linked().expect("the linked rows register");
+    assert!(
+        reg.resolve("cheapest").is_none(),
+        "a strategy word is the door's mark, not a registry alias"
     );
-    assert_eq!(
-        reg.resolve("least_busy").unwrap().manifest.name,
-        "hooks-ranking"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// SECURITY: if the CONFIGURED governance store resolves to a plugin that is UNTRUSTED and NOT

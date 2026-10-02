@@ -1,63 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The built-in RANKING hooks — `cheapest` / `fastest` / `least_busy` / `usage`: busbar-native
-//! routing policies, each a small sync sort over the live signals projected into `Candidate`.
+//! The RANKING hook: `cheapest` / `fastest` / `least_busy` / `usage`, each a small sync sort over
+//! the live signals a `decide` view already carries (`Decoded::candidates`). A hook plugin on the
+//! hook kind's memory ABI ([`door`]); the four strategy words are the hook words its Statement
+//! claims. `weighted` is NOT a word of this plugin: it is the engine's non-removable inline SWRR
+//! floor (the name stays in [`rank`] as the explicit Abstaining form).
 //!
-//! These are removable built-in order-hooks (the `hooks-ranking` engine feature): each implements
-//! the `RoutingPolicy` contract (`busbar-contract`) and ranks on a signal the hook wire already
-//! projects, so an external hook could do the same. `weighted` is NOT here — it is the engine's
-//! non-removable inline SWRR floor, never a plugin (the `weighted` NAME/entry lives alongside for
-//! registry completeness, but the floor's zero-cost behavior is the engine's inline path). Each
-//! native is the proof-of-completeness for its input signal: if a native can't be written, the
-//! contract's in-data is incomplete.
-//!
-//! All natives are SYNC and never touch async or I/O; the async-trait wrapper is free for them. The
-//! default `weighted` native exists only as the explicit `route: native, policy.name: weighted`
-//! form — it returns `Abstain`, converging with the zero-cost default SWRR path.
-//!
-//! The native bodies + `native_policy` registry are live: `resolve_policy` looks a non-weighted name
-//! up here at config load, and `forward::decide_policy_order` invokes the resolved policy per request.
+//! All rankings are SYNC and never touch async or I/O. A key that is absent, or present but not
+//! orderable (`NaN`, infinite), ranks as an absent signal: demoted to the end, still reachable;
+//! when EVERY candidate lacks a usable key the answer is `Abstain` (no opinion, default SWRR).
+//! Ties break by `idx`, so an order is the same on every call.
 
-use busbar_contract::hooks::{
-    Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
-};
-use std::time::Duration;
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+
+pub mod door;
+
+use busbar_contract::abi::sdk::hook::{DecodedCandidate, Verdict};
 
 // ── Policy-name constants ─────────────────────────────────────────────────────────────────────────
-// Single source of truth for the five native policy wire names. Referenced from:
-//   • the `name()` impls below (what feeds `x-busbar-route-policy`),
-//   • the `native_policy` registry match arms below,
-//   • `config.rs` (deserialization / shorthand desugar),
-//   • busbar's `hooks/mod.rs` (the zero-cost-path guard: the `native_policy` lookup that turns a
-//     built-in name into one sync, non-failing link instead of a registry hop).
+// Single source of truth for the strategy names: the `rank` match arms and [`WORDS`] (the hook
+// words the Statement claims) both read them.
 const POLICY_NAME_WEIGHTED: &str = "weighted";
 const POLICY_NAME_CHEAPEST: &str = "cheapest";
 const POLICY_NAME_FASTEST: &str = "fastest";
 const POLICY_NAME_LEAST_BUSY: &str = "least_busy";
 const POLICY_NAME_USAGE: &str = "usage";
-
-/// `weighted` — the explicit form of the default. Always `Abstain`, so selection falls through to
-/// the unchanged inline SWRR. Lets operators write `route: native, policy.name: weighted` and get
-/// byte-identical behavior to the default, proving the seam without changing the hot path.
-struct WeightedPolicy;
-
-#[async_trait::async_trait]
-impl RoutingPolicy for WeightedPolicy {
-    async fn decide(
-        &self,
-        _req: &RoutingRequest<'_>,
-        _candidates: &[Candidate<'_>],
-        _ctx: &RoutingContext<'_>,
-        _budget: Duration,
-    ) -> PolicyResult {
-        Ok(RoutingDecision::Abstain)
-    }
-
-    fn name(&self) -> &'static str {
-        POLICY_NAME_WEIGHTED
-    }
-}
 
 /// A ranking key that can be put in a TOTAL order. The float signals a routing policy ranks by
 /// (`cost_per_mtok`, `latency_ms`, `rate_headroom`) arrive from operator config and from measured
@@ -93,15 +62,15 @@ impl RankKey for usize {
 /// member with missing signal data is reachable, not stranded. Returns `Abstain` if EVERY candidate
 /// lacks a usable signal (no opinion → default SWRR).
 fn rank_ascending_by<K: RankKey>(
-    candidates: &[Candidate<'_>],
-    key: impl Fn(&Candidate<'_>) -> Option<K>,
-) -> RoutingDecision {
+    candidates: &[DecodedCandidate<'_>],
+    key: impl Fn(&DecodedCandidate<'_>) -> Option<K>,
+) -> Verdict {
     let mut keyed: Vec<(usize, Option<K>)> = candidates
         .iter()
         .map(|c| (c.idx, usable_key(&key, c)))
         .collect();
     if keyed.iter().all(|(_, k)| k.is_none()) {
-        return RoutingDecision::Abstain;
+        return Verdict::Abstain;
     }
     // Sort: Some(k) before None; among Some, ascending by k; ties (and None/None) by idx for a
     // deterministic, stable order. Every surviving `Some` is orderable (the extractor dropped the
@@ -115,14 +84,14 @@ fn rank_ascending_by<K: RankKey>(
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => ia.cmp(ib),
     });
-    RoutingDecision::Prefer(keyed.into_iter().map(|(idx, _)| idx).collect())
+    Verdict::Prefer(keyed.into_iter().map(|(idx, _)| idx).collect())
 }
 
 /// The key extractor made TOTAL: a signal that is present but not orderable is reported as absent,
 /// so the comparator below only ever sees keys it can actually order. See [`RankKey`].
 fn usable_key<K: RankKey>(
-    key: &impl Fn(&Candidate<'_>) -> Option<K>,
-    candidate: &Candidate<'_>,
+    key: &impl Fn(&DecodedCandidate<'_>) -> Option<K>,
+    candidate: &DecodedCandidate<'_>,
 ) -> Option<K> {
     key(candidate).filter(|k| k.usable())
 }
@@ -130,15 +99,15 @@ fn usable_key<K: RankKey>(
 /// Rank descending (largest key first) — the same shape as `rank_ascending_by` but preferring the
 /// LARGEST signal (e.g. most free concurrency, most budget remaining).
 fn rank_descending_by<K: RankKey>(
-    candidates: &[Candidate<'_>],
-    key: impl Fn(&Candidate<'_>) -> Option<K>,
-) -> RoutingDecision {
+    candidates: &[DecodedCandidate<'_>],
+    key: impl Fn(&DecodedCandidate<'_>) -> Option<K>,
+) -> Verdict {
     let mut keyed: Vec<(usize, Option<K>)> = candidates
         .iter()
         .map(|c| (c.idx, usable_key(&key, c)))
         .collect();
     if keyed.iter().all(|(_, k)| k.is_none()) {
-        return RoutingDecision::Abstain;
+        return Verdict::Abstain;
     }
     keyed.sort_by(|(ia, ka), (ib, kb)| match (ka, kb) {
         (Some(a), Some(b)) => b
@@ -149,132 +118,45 @@ fn rank_descending_by<K: RankKey>(
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => ia.cmp(ib),
     });
-    RoutingDecision::Prefer(keyed.into_iter().map(|(idx, _)| idx).collect())
+    Verdict::Prefer(keyed.into_iter().map(|(idx, _)| idx).collect())
 }
 
-/// `cheapest` — prefer the lowest operator-declared `cost_per_mtok`. Members with no declared cost
-/// are demoted (but reachable). Proof-of-completeness for the `cost` signal.
-struct CheapestPolicy;
-
-#[async_trait::async_trait]
-impl RoutingPolicy for CheapestPolicy {
-    async fn decide(
-        &self,
-        _req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
-        _ctx: &RoutingContext<'_>,
-        _budget: Duration,
-    ) -> PolicyResult {
-        Ok(rank_ascending_by(candidates, |c| c.cost_per_mtok))
-    }
-    fn name(&self) -> &'static str {
-        POLICY_NAME_CHEAPEST
-    }
+/// Rank `candidates` by the strategy `name` (`weighted` is the explicit Abstaining form). `None`
+/// for a word this plugin does not claim.
+///
+/// * `cheapest`: lowest operator-declared `cost_per_mtok`; a member with no cost is demoted.
+/// * `fastest`: lowest measured rolling-EWMA `latency_ms`; a member with no sample is demoted.
+/// * `least_busy`: most `available_concurrency`; the signal is always present, so never Abstains.
+/// * `usage`: most `rate_headroom` (the largest fraction of the governance rate budget still
+///   available this window); a member with no headroom signal is demoted, and every member lacking
+///   it Abstains (no rate limit in play).
+#[must_use]
+pub fn rank(name: &str, candidates: &[DecodedCandidate<'_>]) -> Option<Verdict> {
+    Some(match name {
+        POLICY_NAME_WEIGHTED => Verdict::Abstain,
+        POLICY_NAME_CHEAPEST => rank_ascending_by(candidates, |c| c.cost_per_mtok),
+        POLICY_NAME_FASTEST => rank_ascending_by(candidates, |c| c.latency_ms),
+        POLICY_NAME_LEAST_BUSY => rank_descending_by(candidates, |c| Some(c.available_concurrency)),
+        POLICY_NAME_USAGE => rank_descending_by(candidates, |c| c.rate_headroom),
+        _ => return None,
+    })
 }
 
-/// `fastest` — prefer the lowest measured rolling-EWMA latency. Members with no latency sample yet
-/// are demoted (reachable). Proof-of-completeness for the `latency` signal.
-struct FastestPolicy;
+/// The strategy words this plugin claims (its Statement's hook words).
+pub const WORDS: [&str; 4] = [
+    POLICY_NAME_CHEAPEST,
+    POLICY_NAME_FASTEST,
+    POLICY_NAME_LEAST_BUSY,
+    POLICY_NAME_USAGE,
+];
 
-#[async_trait::async_trait]
-impl RoutingPolicy for FastestPolicy {
-    async fn decide(
-        &self,
-        _req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
-        _ctx: &RoutingContext<'_>,
-        _budget: Duration,
-    ) -> PolicyResult {
-        Ok(rank_ascending_by(candidates, |c| c.latency_ms))
-    }
-    fn name(&self) -> &'static str {
-        POLICY_NAME_FASTEST
-    }
-}
+/// The plugin's name: its Statement's, and the linked row's.
+pub const NAME: &str = "hooks-ranking";
 
-/// `least_busy` — prefer the lane with the most available concurrency permits (the most headroom).
-/// Always has data (available_concurrency is always known), so never Abstains. Proof-of-completeness
-/// for the `concurrency` signal.
-struct LeastBusyPolicy;
-
-#[async_trait::async_trait]
-impl RoutingPolicy for LeastBusyPolicy {
-    async fn decide(
-        &self,
-        _req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
-        _ctx: &RoutingContext<'_>,
-        _budget: Duration,
-    ) -> PolicyResult {
-        Ok(rank_descending_by(candidates, |c| {
-            Some(c.available_concurrency)
-        }))
-    }
-    fn name(&self) -> &'static str {
-        POLICY_NAME_LEAST_BUSY
-    }
-}
-
-/// `usage` — prefer the candidate with the most rate-limit HEADROOM: the largest fraction of the
-/// request's governance rate budget (the tighter of the caller key's request-rate / volume-rate
-/// limit) still available this window, so traffic steers away from a candidate about to exceed its
-/// rate limit. Ranks DESCENDING
-/// by `Candidate.rate_headroom` (most headroom first); candidates with no headroom signal (`None`) are
-/// demoted to last but stay reachable. Abstains when EVERY candidate lacks the signal (no rate limit
-/// in play → fall through to the default SWRR). Proof-of-completeness for the `rate_headroom` signal.
-struct UsagePolicy;
-
-#[async_trait::async_trait]
-impl RoutingPolicy for UsagePolicy {
-    async fn decide(
-        &self,
-        _req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
-        _ctx: &RoutingContext<'_>,
-        _budget: Duration,
-    ) -> PolicyResult {
-        Ok(rank_descending_by(candidates, |c| c.rate_headroom))
-    }
-    fn name(&self) -> &'static str {
-        POLICY_NAME_USAGE
-    }
-}
-
-/// Resolve a native policy name to a boxed policy. `None` for an unknown name (rejected at startup
-/// validation). `weighted` returns the Abstaining default native.
-pub fn native_policy(name: &str) -> Option<std::sync::Arc<dyn RoutingPolicy>> {
-    use std::sync::Arc;
-    match name {
-        POLICY_NAME_WEIGHTED => Some(Arc::new(WeightedPolicy)),
-        POLICY_NAME_CHEAPEST => Some(Arc::new(CheapestPolicy)),
-        POLICY_NAME_FASTEST => Some(Arc::new(FastestPolicy)),
-        POLICY_NAME_LEAST_BUSY => Some(Arc::new(LeastBusyPolicy)),
-        POLICY_NAME_USAGE => Some(Arc::new(UsagePolicy)),
-        _ => None,
-    }
-}
-
-/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links the ranking hooks registers onto
-/// the hook axis — ONE row, the frozen strategy spellings its aliases (`weighted` is the engine's
-/// inline floor, never a row). `HOOK` is `(name, aliases, open)`; `open` is handed the spelling a
-/// reference used.
+/// THE LINKED ENTRY: what a build that links the ranking hook registers on the hook axis — its
+/// door, the same door a dropped-in build of it exports. Its hook words are [`WORDS`].
 pub mod linked {
-    use super::*;
-
-    /// A ranking row's open: the policy one of its spellings ranks by.
-    pub type Open = fn(&str) -> Option<std::sync::Arc<dyn RoutingPolicy>>;
-
-    /// `(name, aliases, open)`.
-    pub const HOOK: (&str, &[&str], Open) = (
-        "hooks-ranking",
-        &[
-            POLICY_NAME_CHEAPEST,
-            POLICY_NAME_FASTEST,
-            POLICY_NAME_LEAST_BUSY,
-            POLICY_NAME_USAGE,
-        ],
-        native_policy,
-    );
+    pub use crate::door::door;
 }
 
 #[cfg(test)]

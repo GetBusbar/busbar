@@ -317,9 +317,9 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
     // 1.2.1's `route: weighted` — so `native_name()` returns `None` here and we take the `?`
     // short-circuit BELOW regardless of the ranking feature.
     let name = cfg.policy.native_name()?;
-    // The non-weighted ranking strategies are aliases of the linked `hooks-ranking` row on the hook
-    // axis. Compiled OUT, no row answers (a config_validate BOOT ERROR, so unreachable in a running
-    // server); degrade to None (SWRR) as belt-and-suspenders.
+    // The non-weighted ranking strategies are hook words of the linked `hooks-ranking` door on the
+    // hook axis. Compiled OUT, no door claims them (a config_validate BOOT ERROR, so unreachable in a
+    // running server); degrade to None (SWRR) as belt-and-suspenders.
     let policy = crate::preflight::builtin_ranking(name)?;
     Some(ResolvedPolicy::Policy {
         policy,
