@@ -6,7 +6,7 @@
 //! Test builds only; production relays every call to the caller (`ClientRelay`).
 
 use async_trait::async_trait;
-use busbar_plane_streaming::tools::ToolExecutor;
+use crate::runtime::tools::ToolExecutor;
 
 /// Echoes the call: `{"tool":<name>,"echo":<arguments>}`.
 #[derive(Debug, Default, Clone, Copy)]
