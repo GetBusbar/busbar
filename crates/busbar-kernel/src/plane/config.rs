@@ -560,7 +560,7 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// boot and on every apply, never as a unit ledgered on a lane no card prices.
     ///
     /// Empty default: a plane whose lanes are learned at run time (a tool a server lists) names none.
-    fn priced_lanes(&self) -> Vec<String> {
+    fn ledger_lanes(&self) -> Vec<String> {
         Vec::new()
     }
 

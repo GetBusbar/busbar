@@ -1676,14 +1676,14 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     }
 
     // EVERY REGISTRATION A PLANE BILLS FROM CONFIG IS PRICED (#42, #77(5)): a plane whose lanes are
-    // its config registrations names them ([`PlaneCfg::priced_lanes`]), and its present card silent
+    // its config registrations names them ([`PlaneCfg::ledger_lanes`]), and its present card silent
     // about one refuses here with a paste-ready stub, rather than a unit ledgered on a lane no card
     // prices (which fails every read of the bucket that holds it).
     //
-    // [`PlaneCfg::priced_lanes`]: crate::plane::config::PlaneCfg::priced_lanes
+    // [`PlaneCfg::ledger_lanes`]: crate::plane::config::PlaneCfg::ledger_lanes
     if let Some(card) = &cfg.rate_card {
         for defs in [cfg.tool_defs.as_ref(), cfg.agent_defs.as_ref()] {
-            let lanes = defs.priced_lanes();
+            let lanes = defs.ledger_lanes();
             let missing: Vec<&str> = (lanes.iter().map(String::as_str))
                 .filter(|l| {
                     let plane = split_plane_lane(l).0;

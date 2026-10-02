@@ -48,7 +48,7 @@ use crate::diagnostics::{
     A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
 };
 use busbar_kernel::plane_host::EngineHost;
-use busbar_kernel::{diag_debug, diag_error, diag_warn};
+use busbar_kernel::{diag_debug, diag_error, diag_warn, store::agent_key};
 
 /// The audit action every inbound call on this plane records under.
 pub(super) const AUDIT_ACTION: &str = "agent.call";
@@ -85,7 +85,7 @@ fn admission_pool(pool: &str) -> String {
 /// (`agent:<id>`, [`busbar_kernel::store::agent_key`]) qualified by this plane — the
 /// `agents.rate_card` key that prices it, which config validation holds a present card to.
 pub(crate) fn agent_lane(agent_id: &str) -> String {
-    admission_pool(&busbar_kernel::store::agent_key(agent_id))
+    admission_pool(&agent_key(agent_id))
 }
 
 /// THE CREDENTIAL KIND THIS MOUNT CONFERS. `a2a_inbound` only when the plane is audience-bound;
@@ -1288,7 +1288,7 @@ async fn admitted(
         Err(resp) => return *resp,
     };
     let actor = principal.actor_id().to_string();
-    let resource = busbar_kernel::store::agent_key(&admitted.dispatch.agent_id);
+    let resource = agent_key(&admitted.dispatch.agent_id);
 
     // ── THE OPERATOR'S HOOK GATE — `agents.hooks:` and `agents.<agent>.hooks:`. ─────────────────
     //

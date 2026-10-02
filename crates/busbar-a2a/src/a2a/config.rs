@@ -471,7 +471,7 @@ impl busbar_kernel::plane::config::PlaneCfg for AgentsCfg {
 
     /// Every agent is a lane: a hop is ledgered on `agent:<id>` qualified by this plane, the key the
     /// operator writes under `agents.rate_card` (#42: a present card prices every agent).
-    fn priced_lanes(&self) -> Vec<String> {
+    fn ledger_lanes(&self) -> Vec<String> {
         (self.agents.keys())
             .map(|name| super::receive::agent_lane(name.as_str()))
             .collect()
