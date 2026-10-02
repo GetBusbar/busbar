@@ -19,6 +19,8 @@ kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	6
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	3
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	5
 kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
+# FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02): approved rises; the plane-door both-ways proof's wire literals (the https:// vendor URL and the grammar's own http:// sentence) in crates/plugin-loader/src/tests/plane_door_conformance_tests.rs, under option (e)'s grant.
+kind-isolation:matrix	measurement-disagreement	busbar-plugin-loader × transport	2
 # Q77-PENDING (a) (ARCHITECT pre-ruling 2026-10-01, KI-SHIP-SCOPE: the root composes the cleanliness
 # tier; ARCHITECTURE_ALLOWED root -> cleanliness): the composition root builds the process's ONE
 # Connector (BUSBAR-1.6.0.md THE DESIGN, Connections: "The chain is kernel -> busbar-core-connector ->
@@ -47,7 +49,12 @@ kind-isolation:matrix	ratchet	busbar-plane-llm × plane	600
 kind-isolation:matrix	ratchet	busbar-plane-llm × transport	599
 kind-isolation:matrix	ratchet	busbar-plane-mcp × legacy	11
 kind-isolation:matrix	ratchet	busbar-plugin-loader × hooks	3
-kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	63
+# FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02): approved rises; the plane-door both-ways proof moved into the loader (option (c)/(e)): loader × plane 63 -> 65, loader × transport 14 (its claim/carrier words and wire URLs); busbar-plane-a2a × legacy 13, × plane 76, × transport 109 drain at FOLD-A2A slice 8 (busbar-a2a deleted).
+kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	65
+kind-isolation:matrix	ratchet	busbar-plugin-loader × transport	14
+kind-isolation:matrix	ratchet	busbar-plane-a2a × legacy	13
+kind-isolation:matrix	ratchet	busbar-plane-a2a × plane	76
+kind-isolation:matrix	ratchet	busbar-plane-a2a × transport	109
 kind-isolation:matrix	ratchet	busbar-store-memory × plane	6
 kind-isolation:matrix	ratchet	busbar-voice × contract	122
 kind-isolation:matrix	ratchet	busbar-voice × plane	872

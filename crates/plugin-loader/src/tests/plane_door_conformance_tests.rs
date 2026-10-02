@@ -14,7 +14,7 @@
 //! * `retire` drops the first; `tick`, `drive` and `cancel` answer their dispositions;
 //! * `arrive` on the JSON-RPC line decides a request (its op class, dialect and principal need)
 //!   and refuses a wrong media type in the plane's own words, which `refusal` renders with the
-//!   plane's status; a kernel refusal renders at the kernel's status on the HTTP+JSON line;
+//!   plane's status; a kernel refusal renders at the kernel's status on the target line;
 //! * `on_piece` relays the extended-card read addressed to one agent: the ATTEMPT names `POST` at
 //!   the agent's own path with the engine's three fields, the caller's body goes to the far end
 //!   verbatim, and the far end's answer comes back as the caller's, `reply_cap` bytes at a time
@@ -70,7 +70,7 @@ fn dispatcher() -> &'static Dispatcher {
 
 fn bind() -> Bind {
     Bind {
-        instance: Arc::from("plane-door"),
+        instance: Arc::from("both-ways"),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher().adopter(),
@@ -550,7 +550,7 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
         DIALECT_TARGET,
         b"this key may not reach that agent",
     ));
-    // On the gRPC line the plane's own refusal is the envelope at its neutral status; a gate's no
+    // On the framed line the plane's own refusal is the envelope at its neutral status; a gate's no
     // keeps the kernel's status and its marker, which the plane never sets.
     t.push(refuse(p, REFUSAL_ARRIVE, 400, DIALECT_FRAMED, &words));
     t.push(refuse(
@@ -595,13 +595,13 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
         "piece unserved {}",
         piece(p, 2, FROM_KERNEL, 0, 0, b"", b"vendor", 64)
     ));
-    // THE HTTP+JSON LINE: the envelope its request spells, decided as the JSON-RPC line decides it,
+    // THE TARGET LINE: the envelope its request spells, decided as the JSON-RPC line decides it,
     // in the line's dialect; a `POST /tasks/{id}` naming no verb is the engine's 404 in its words.
     let rest_line = |verb: &str, target: &str| {
         let at = ROUTES
             .iter()
             .position(|r| r.verb == verb && r.target == target)
-            .expect("an HTTP+JSON route");
+            .expect("a target-line route");
         u32::try_from(at).expect("an index")
     };
     a.input.claim = rest_line("GET", &format!("{MOUNT}/tasks"));
@@ -672,7 +672,7 @@ fn the_plane_door_answers_identically_linked_and_dropped_in() {
             "arrive rest {:?} op={list} dialect={DIALECT_TARGET}",
             Outcome::Ready
         ),
-        "GET {MOUNT}/tasks arrives as ListTasks on the HTTP+JSON dialect"
+        "GET {MOUNT}/tasks arrives as ListTasks on the target dialect"
     );
     assert!(
         line("arrive rest refused").starts_with(&format!(
@@ -716,7 +716,7 @@ fn the_plane_door_answers_identically_linked_and_dropped_in() {
             1
         )),
         own.split_once(' ').map(|(_, rest)| rest.to_string()),
-        "the gRPC line renders the envelope at the same neutral status"
+        "the framed line renders the envelope at the same neutral status"
     );
     let gate = line(&format!("refusal cause={REFUSAL_GATE}"));
     assert!(
