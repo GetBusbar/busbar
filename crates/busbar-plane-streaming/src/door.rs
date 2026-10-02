@@ -4,6 +4,12 @@
 //! THE STREAMING PLANE'S DOOR: the one function a compiled-in row holds and a dropped-in image
 //! exports (`examples/streaming_door.rs`), and everything it states and answers.
 //!
+//! The composition root links [`door`] on its `plane-door` axis under the streaming fold's
+//! development-only switch `streaming-on-driver` (`BUSBAR-1.6.0.md` Part 3, section 12, "The
+//! switch") and binds it through the loader's one load beside the dropped-in plane doors. The
+//! default build links no streaming door, and with the switch on the `busbar-voice` row still serves
+//! every streaming route until the serve path hands this door the arrivals it takes.
+//!
 //! ## What the plane states once
 //!
 //! The Statement tail ([`TAIL`]): the `streams:` section it declares (and the `providers:` section
