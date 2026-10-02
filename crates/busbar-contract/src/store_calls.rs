@@ -189,6 +189,18 @@ pub enum StoreDoor {
     },
 }
 
+impl std::fmt::Debug for StoreDoor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreDoor::Linked(_) => f.debug_tuple("Linked").finish_non_exhaustive(),
+            StoreDoor::Dropped { file, .. } => f
+                .debug_struct("Dropped")
+                .field("file", file)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
 /// ONE OPENED STORE, as the axis hands it to the kernel (WIRE-STORE Q9): the 1.5.5 op set
 /// synchronously (`records`, the transitional bridge until M6) and the typed v3 calls.
 pub struct OpenedStore {
@@ -196,6 +208,14 @@ pub struct OpenedStore {
     pub records: std::sync::Arc<dyn crate::records::RecordStore>,
     /// The store v3 slots; `None` for a store reached by no door.
     pub calls: Option<std::sync::Arc<dyn StoreCalls>>,
+}
+
+impl std::fmt::Debug for OpenedStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenedStore")
+            .field("calls", &self.calls.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// THE STORE AXIS, as the composition root installs it in the kernel: every store, compiled in or
