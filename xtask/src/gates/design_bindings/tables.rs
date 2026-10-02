@@ -465,7 +465,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-81", &[
         ("test", "the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one", "a saturated hook fails on the caller's deadline, never waits out the wedge, and serves again once its calls drain"),
-        ("test", "dlopen_decide_deadline_cuts_off_a_slow_gate", "the call budget cuts a slow gate off promptly, an error on_error decides"),
+        ("test", "dlopen_slow_gate_hits_the_deadline", "the call budget cuts a slow gate off promptly, an error on_error decides (R1: one of the two 1.5.5 timeout tests)"),
         ("test", "a_panicking_hook_is_broken_through_the_axis_never_a_verdict", "a panicking plugin is a fail-closed error"),
         ("lint", "xtask/src/gates/blocking_ffi.rs", "every plugin transport call is made from a blocking context"),
     ]),
