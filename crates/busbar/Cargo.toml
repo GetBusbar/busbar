@@ -152,7 +152,7 @@ busbar-export-otlp = { workspace = true, optional = true }
 # The transports. Composition is an edge that does not exist as a Cargo dependency — a transport may
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+busbar-transport-tcp = { workspace = true }
 busbar-transport-http = { workspace = true }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
@@ -457,6 +457,11 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # above, dropped into `plugins/` as the library a tarball of the sink carries. The sink's own
 # both-doors conformance lives in its repo (GetBusbar/busbar-export-file, `tests/conformance.rs`).
 busbar-export-file-plugin = { workspace = true }
+# The dropped-in transport proofs (`tests/transport_dropped_in_serves.rs`, the tcp-less boot in
+# `tests/linked_export_sinks_boot_as_their_own_kind.rs`): the tcp transport repo's cdylib crate at the
+# SAME pinned rev as the linked `busbar-transport-tcp` edge above, found in this target dir under
+# `deps/` (hashed) by the door it loads as. The wire's own both-doors conformance lives in its repo.
+busbar-transport-tcp-plugin = { workspace = true }
 # The scrape role's first-party proof (`tests/export_scrape_is_first_party.rs`): the scrape sink's
 # repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-prometheus` edge above —
 # the library a tarball of the sink carries, found in this target dir by what it loads as. The
