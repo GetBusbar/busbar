@@ -352,6 +352,7 @@ dependencies = [
  "busbar-transport-http",
  "busbar-transport-stdio",
  "busbar-transport-tcp",
+ "busbar-transport-tcp-plugin",
  "busbar-transport-ws",
  "busbar-voice",
  "bytes",
@@ -1000,7 +1001,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin-example-plane",
  "busbar-store-memory",
- "busbar-transport-tcp",
+ "busbar-transport-tcp-plugin",
  "ed25519-dalek",
  "flate2",
  "futures",
@@ -1063,9 +1064,18 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=89d08ebcb91e5b2d4001b667fba151d9bc09d22d#89d08ebcb91e5b2d4001b667fba151d9bc09d22d"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
+]
+
+[[package]]
+name = "busbar-transport-tcp-plugin"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=89d08ebcb91e5b2d4001b667fba151d9bc09d22d#89d08ebcb91e5b2d4001b667fba151d9bc09d22d"
+dependencies = [
+ "busbar-contract",
+ "busbar-transport-tcp",
 ]
 
 [[package]]
