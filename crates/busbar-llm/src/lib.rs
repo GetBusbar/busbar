@@ -112,7 +112,7 @@ mod alloc_gate_instrument {
 /// (`proto_codec`, `ir`, the dialect modules), so every such path resolves to the same item.
 pub use busbar_plane_llm::codec::{
     anthropic, bedrock, chat_handle, cohere, gemini, ir, ir_encode, leaf_codec, leaf_handles,
-    openai_annotations, openai_chat, openai_responses, proto_codec, proto_stream, synth_rng,
+    openai_chat, openai_responses, proto_codec, proto_stream, synth_rng, url_citation_wire,
     usage_tail, wire_shim, DECLS,
 };
 
