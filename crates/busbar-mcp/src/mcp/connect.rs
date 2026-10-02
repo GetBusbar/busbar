@@ -46,10 +46,7 @@
 //!
 //! `pinned_pubkey` still degrades to the declared value: it names an MCP-native manifest signature
 //! this build does not verify, so there is no independent observation to build one from, and
-//! `observed_pin` says so rather than fabricating one. stdio has no TLS hop at all, so
-//! `peer_spki` is always `None` there — a `cert_spki`/`mtls` pin on a stdio registration therefore
-//! never observes a match and stays quarantined, which is the fail-closed answer to a network-layer
-//! pin configured on a carrier with no network layer.
+//! `observed_pin` says so rather than fabricating one.
 
 use super::catalogue::ServerEntry;
 use super::client::catalogue::{CatalogueCache, ServerCatalogue, ToolDef, TransportPin};
@@ -259,25 +256,17 @@ pub(crate) async fn refresh(
         REFRESH_REQUEST_ID,
         access_token.as_deref(),
     );
-    // THE SAME VTABLE THE DISPATCH PATH USES, and it has to be. This was a direct
-    // `HttpTransport::send`, which was correct while there was one transport and became a real
-    // defect the moment there were two: a stdio registration carries no `url:`, so the refresh would
-    // have POSTed to an empty string, recorded a FAILED CONTACT, and eventually demoted a server
-    // that was healthy — a drift quarantine caused entirely by busbar asking the wrong channel.
-    //
-    // Routing it through the axis fixes that and buys the thing that matters more: rug-pull
-    // detection RUNS on stdio servers. A transport whose tool list is never re-observed is a
-    // transport where the operator's approved digests are never compared against anything.
+    // THE SAME VTABLE THE DISPATCH PATH USES, and it has to be: a refresh that asked a different
+    // channel than dispatch does could record a FAILED CONTACT against a healthy server and demote it.
     let leg = WireLeg {
         pool,
         policy,
         timeout: REFRESH_TIMEOUT,
         server: server_id.as_str(),
-        command: server.stdio.as_ref(),
         // The operator's own grants for this registration. A refresh is not a caller's dispatch, but
-        // the child it reaches can still send busbar an authority ask on its stdout while the tool
-        // list is being fetched, and that ask is judged against the same grants a dispatch would use
-        // — never against a default this call site chose.
+        // the peer it reaches can still send busbar an authority ask while the tool list is being
+        // fetched, and that ask is judged against the same grants a dispatch would use — never
+        // against a default this call site chose.
         grants: server.grants,
     };
     let response = match crate::mcp::client::wire::wire_for(server.transport)
@@ -366,8 +355,7 @@ pub(crate) async fn refresh(
 ///
 /// `None` when there is nothing to compare: no pin declared (an unpinned or still-pending
 /// registration — there is no root to check drift against), or a `cert_spki`/`mtls` registration
-/// whose hop presented no SPKI at all (plaintext, a certificate that could not be walked, or a
-/// carrier with no TLS hop such as stdio). That last case is deliberately NOT "no observation, so
+/// whose hop presented no SPKI at all (plaintext, or a certificate that could not be walked). That last case is deliberately NOT "no observation, so
 /// keep believing the declared pin": `Sighting::Seen`'s `pin: None` disagrees with a locked
 /// `Some(_)` in `Approval::drift_against`, which is `pin_changed = true` — a demotion. A pin whose
 /// peer went dark is refused exactly as one that rotated, because "we could not look" and "it

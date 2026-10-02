@@ -290,17 +290,12 @@ pub(crate) mod test_ca {
 //
 // THE CLASSIFIER IS NOT HERE. `super::peer::classify` is the one table that decides what a peer's
 // message IS, and `super::peer::ServerNotification::effect` is the one table that decides what
-// busbar DOES about it — both shared with the stdio leg, which reads the same messages off a
-// child's stdout. Two carriers, one meaning. A second table here would be a second answer to "may
-// this notification move busbar's catalogue", and the one that got fixed would not be the one that
-// was wrong.
+// busbar DOES about it. A second table here would be a second answer to "may this notification
+// move busbar's catalogue", and the one that got fixed would not be the one that was wrong.
 //
-// WHAT DIFFERS BETWEEN THE CARRIERS, and it is exactly one thing: stdio ANSWERS a peer's request,
-// because a child's stdin is a channel busbar can write a reply on and a child left waiting on one
-// is a child that hangs. An SSE response body is not a channel — it is the answer to a POST that has
-// already been sent — so a request arriving here CANNOT be answered, and it is refused by being
-// recorded and dropped. That is a transport fact, and it lives in the transport rather than as a
-// branch on the axis somewhere that can see both.
+// An SSE response body is not a channel — it is the answer to a POST that has already been sent —
+// so a peer's REQUEST arriving here CANNOT be answered, and it is refused by being recorded and
+// dropped. That is a transport fact, and it lives in the transport.
 
 /// Classify and handle every server-originated frame in an SSE body, in arrival order.
 ///
@@ -379,8 +374,7 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
             // never adopted as the answer to what busbar actually asked, which is what a reader that
             // took the first frame of the stream would do. The three authority asks are refused here
             // by the absence of any way to satisfy them, which is a stronger refusal than the grant
-            // gate stdio applies: over this carrier busbar cannot say yes even if an operator
-            // granted it.
+            // gate: over this carrier busbar cannot say yes even if an operator granted it.
             ServerMessage::Request { verb, .. } => tracing::debug!(
                 server = %leg.server,
                 verb = ?verb,
@@ -469,7 +463,7 @@ mod transport_tests;
 
 // THE INBOUND HALF of this wire: what an upstream says back on the SSE answer, and what busbar does
 // about it. It hangs off the transport rather than off `super::peer` because the CLASSIFIER is
-// proven there, shared with stdio — what is proven here is the CARRIER: that the frames are found on
+// proven there — what is proven here is the CARRIER: that the frames are found on
 // an SSE body, that the effects land, and that the answer to the POST survives them all intact.
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/http_peer_tests.rs"]

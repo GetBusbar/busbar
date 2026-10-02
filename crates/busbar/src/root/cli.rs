@@ -206,9 +206,6 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
             }
             Some(0)
         }
-        // The STDIO SERVE MODE is not an exit-and-print flag: it proceeds to the ordinary boot and
-        // is read again inside `run()`, where it swaps the two TCP listeners for the process's own
-        // stdin/stdout. Recognised here so it is not refused as an unknown argument.
         // A flag a linked plane declares (its `Flags:` row) is not an exit-and-print flag either.
         Some(arg) if is_plane_flag(crate::LINKED.cli_help, arg) => None,
         Some("--validate") => Some(validate_config_command()),

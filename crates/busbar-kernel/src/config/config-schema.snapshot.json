@@ -327,15 +327,6 @@
       "kind": "struct",
       "transparent": false
     },
-    "ChildEnvValue": {
-      "deny_unknown_fields": false,
-      "kind": "enum",
-      "transparent": false,
-      "variants": [
-        "Plain",
-        "Secret"
-      ]
-    },
     "ClientIdentityCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -1019,7 +1010,7 @@
         },
         "env": {
           "optional": true,
-          "type": "std::collections::BTreeMap<String, ChildEnvValue>"
+          "type": "std::collections::BTreeMap<String, serde_json::Value>"
         },
         "grants": {
           "optional": true,

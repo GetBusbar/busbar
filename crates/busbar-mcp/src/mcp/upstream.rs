@@ -103,9 +103,6 @@ pub(crate) struct Authorised {
     /// which one it is — that is the axis rule, and it is what keeps a second transport from
     /// becoming a second dispatch path.
     pub(crate) transport: busbar_contract::transport::transport::Transport,
-    /// The spawn recipe for a child-process upstream, carried verbatim from the snapshot. `None` on
-    /// every registration that is reached over a network.
-    pub(crate) stdio: Option<super::client::stdio::StdioCommand>,
     /// The addressing posture for the dispatch-time SSRF check.
     pub(crate) policy: SsrfPolicy,
     /// THE PER-SERVER GRANTS for the three authority asks a peer can make. Carried onto the leg so
@@ -267,7 +264,6 @@ pub(crate) fn authorise(
         key: Some(key),
         url: server.url.clone(),
         transport: server.transport,
-        stdio: server.stdio.clone(),
         policy,
         grants: server.grants,
         roots: server.roots.clone(),
@@ -342,7 +338,6 @@ pub(crate) fn authorise_verb(
         key: None,
         url: server.url.clone(),
         transport: server.transport,
-        stdio: server.stdio.clone(),
         policy: SsrfPolicy {
             allow_private: server.upstream.allow_private,
         },
@@ -556,7 +551,6 @@ pub(crate) async fn call(
         policy: auth.policy,
         timeout: auth.timeout,
         server: auth.server.as_str(),
-        command: auth.stdio.as_ref(),
         grants: auth.grants,
     };
     // THE OUTCOME IS CLASSIFIED WHERE THE STRUCTURE STILL EXISTS — the Stage-1 normalizer for this
@@ -643,16 +637,10 @@ pub(crate) async fn call(
 ///   the same `Network` transient (a server that cannot be connected to is exactly what the
 ///   breaker exists for), and the ONE wire failure reported `BeforeFirstByte`: a reroute of it
 ///   duplicates nothing, by the transport's own testimony.
-/// - `Io` — the socket failed, the deadline expired, or a stdio child died mid-exchange: the
+/// - `Io` — the socket failed or the deadline expired: the
 ///   transient the breaker exists for. `Network` rather than a guessed `Timeout` split, because
 ///   both classify to the same `TransientUpstream` disposition and the wire does not distinguish
 ///   them in structure. `AfterDispatch`: the request may have landed.
-/// - `Supervision` — the stdio crash-loop supervisor refused (backoff, quarantine) and spawned
-///   NOTHING. Recording it would be DOUBLE ACCOUNTING: the child crash that armed the supervisor
-///   was already recorded here as the `Io` failure of the exchange it killed, and the supervisor's
-///   refusal is busbar's own fast answer, not a new fact about the upstream. The two breakers
-///   CO-EXIST and share no state — the core cell trips on the crashes, the supervisor guards the
-///   respawns — exactly the audit's stdio row. Nothing left busbar, so `BeforeFirstByte`.
 /// - `Refused` — busbar's OWN dispatch-time refusal (SSRF, a malformed target): nothing left
 ///   busbar and the upstream answered nothing, so nothing is recorded against it.
 ///   `BeforeFirstByte` for the same reason.
@@ -669,9 +657,9 @@ fn classify_wire_failure(err: &TransportError) -> (busbar_kernel::failover::Stag
             (busbar_kernel::failover::Stage::BeforeFirstByte, network())
         }
         TransportError::Io(_) => (busbar_kernel::failover::Stage::AfterDispatch, network()),
-        // Nothing left busbar (supervisor backoff / busbar's own dispatch refusal): `Nothing`, so no
-        // fact is recorded against the target's cell. See the doc above for the double-accounting rule.
-        TransportError::Supervision(_) | TransportError::Refused(_) => (
+        // Nothing left busbar (busbar's own dispatch refusal): `Nothing`, so no fact is recorded
+        // against the target's cell.
+        TransportError::Refused(_) => (
             busbar_kernel::failover::Stage::BeforeFirstByte,
             LegOutcome::Nothing,
         ),
@@ -852,27 +840,12 @@ mod roots_satisfy_tests;
 #[path = "tests/sampling_satisfy_tests.rs"]
 mod sampling_satisfy_tests;
 
-// THE STDIO ARM, driven through the same front door. It hangs here rather than under `client/`
-// because the claim is about the JOIN — an inbound `tools/call` reaching a child process — and the
-// supervisor being reachable at all is the whole property under test.
-#[cfg(all(test, feature = "test-support"))]
-#[path = "tests/stdio_dispatch_tests.rs"]
-mod stdio_dispatch_tests;
-
-// THE STREAMABLE-HTTP CLIENT COLUMN, the sibling of `stdio_client_leg_tests.rs`. It hangs here for
-// the same reason that one does: the claim is about the JOIN — a verb reaching a real peer through
-// the real gate — and it asserts the half a child process has no analogue for, which is the mirrored
-// headers and the exchanged credential.
+// THE STREAMABLE-HTTP CLIENT COLUMN. It hangs here because the claim is about the JOIN — a verb
+// reaching a real peer through the real gate — and it asserts the mirrored headers and the exchanged
+// credential.
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/http_client_leg_tests.rs"]
 mod http_client_leg_tests;
-
-// THE WHOLE STDIO CLIENT COLUMN — every method busbar ISSUES and every message a child SENDS,
-// against a real child process. It hangs here for the same reason its neighbour does: the claim is
-// about the JOIN, and `Authorised` has exactly one constructor, which is the gate.
-#[cfg(all(test, feature = "test-support"))]
-#[path = "tests/stdio_client_leg_tests.rs"]
-mod stdio_client_leg_tests;
 
 // PROVEN AS A PAIR — this property is meaningless with only one direction built: an inbound
 // surface with no upstream cannot demonstrate that the outbound credential followed the

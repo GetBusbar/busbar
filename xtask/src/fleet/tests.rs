@@ -880,7 +880,6 @@ fn the_committed_registry_is_all_twins() {
         "busbar-plane-decisions",
         "busbar-transport-http",
         "busbar-transport-ws",
-        "busbar-transport-stdio",
         "busbar-transport-grpc",
         "busbar-hook-ranking",
         "busbar-store-memory",
@@ -890,6 +889,14 @@ fn the_committed_registry_is_all_twins() {
         assert!(p.pending_crate && !p.released, "{repo}");
     }
     assert!(!fleet.plugin("busbar-transport-tcp").unwrap().pending_crate);
+    // Its crates are in its own repo; busbar's default build does not link it (OWNER 2026-10-02), and
+    // that is busbar's manifest's business, not the registry's: it is a full member, never pending.
+    assert!(
+        !fleet
+            .plugin("busbar-transport-stdio")
+            .unwrap()
+            .pending_crate
+    );
     assert_eq!(
         fleet.plugins.iter().filter(|p| p.pending_crate).count(),
         pending.len()

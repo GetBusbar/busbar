@@ -10800,12 +10800,12 @@ mod plant_tests {
         assert_green(&real);
         assert!(!real.detail.contains("unregistered"), "{}", real.detail);
 
-        let plant = wire_unregistered(&cx, "stdio").expect("the root composes stdio");
+        let plant = wire_unregistered(&cx, "ws").expect("the root composes ws");
         assert_bites(&cx, &plant);
         let planted = cx.with_overlay(plant);
         assert_red_naming(
             &rule_wires(&planted, &crates_of(&planted).0),
-            &["unregistered-wire", "busbar-transport-stdio"],
+            &["unregistered-wire", "busbar-transport-ws"],
         );
     }
 
@@ -10814,19 +10814,15 @@ mod plant_tests {
     #[test]
     fn a_manifest_row_is_the_wires_one_registration() {
         let cx = ws();
-        let alone = cx.with_overlay(wire_linked_by_row(&cx, "stdio").expect("plantable"));
+        let alone = cx.with_overlay(wire_linked_by_row(&cx, "ws").expect("plantable"));
         assert_green(&rule_wires(&alone, &crates_of(&alone).0));
 
-        let plant = wire_row_and_source(&cx, "stdio").expect("plantable");
+        let plant = wire_row_and_source(&cx, "ws").expect("plantable");
         assert_bites(&cx, &plant);
         let planted = cx.with_overlay(plant);
         assert_red_naming(
             &rule_wires(&planted, &crates_of(&planted).0),
-            &[
-                "second-registration",
-                "busbar-transport-stdio",
-                LINKED_TABLE,
-            ],
+            &["second-registration", "busbar-transport-ws", LINKED_TABLE],
         );
     }
 }

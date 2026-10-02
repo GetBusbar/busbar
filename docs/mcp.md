@@ -105,27 +105,24 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `pin` | object | **yes** | — | The out-of-band trust root. Required even when it is `unpinned`. |
 | `pin.mechanism` | `pinned_pubkey` \| `cert_spki` \| `mtls` \| `unpinned` | **yes** | — | A pin whose mechanism is inferred is a pin whose meaning changes when the inference changes. |
 | `pin.key` | string | required for the three rooted mechanisms; **refused** for `unpinned` | — | Issuer public key, or certificate SPKI hash. |
-| `transport` | `streamable_http` \| `stdio` | no | `streamable_http` | See [Transports](#transports). |
-| `url` | string | **yes** for `streamable_http`; **refused** for `stdio` | `""` | `http://` or `https://`. |
-| `command` | string | **yes** for `stdio`; **refused** otherwise | — | ABSOLUTE path of the binary Busbar spawns. |
-| `args` | list of strings | no; **refused** on non-stdio | `[]` | The child's argv, verbatim. Never split on spaces. |
-| `env` | map of name → string \| secret ref | no; **refused** on non-stdio | `{}` | The child's WHOLE environment. |
-| `cwd` | string | no; **refused** on non-stdio | Busbar's own | Absolute. |
+| `transport` | `streamable_http` | no | `streamable_http` | See [Transports](#transports). `stdio` is **refused** at boot: stdio MCP servers are not available in 1.6.0. |
+| `url` | string | **yes** | `""` | `http://` or `https://`. |
+| `command`, `args`, `env`, `cwd` | — | **refused** | — | They describe a local server for Busbar to launch, which 1.6.0 does not do; each fails boot with that sentence rather than being ignored. |
 | `verify_ttl` | `<n><s\|m\|h\|d>` | no | `5s` (`mcp/config.rs`) | The longest an observation of this upstream's tool list may be reused on the `tools/call` path before it is re-fetched and re-verified. `0` = strict-live (re-verify every call); a larger value is an explicit security downgrade. Renamed from `refresh_ttl` in 1.6.0 — see [Tool and agent trust](/docs/tool-and-agent-trust/). |
 | `timeout` | `<n><s\|m\|h\|d>` | no | `30s` (`mcp/upstream.rs:72`) | Wall-clock budget for one outbound leg (the tool call; separately, the RFC 8693 exchange). `0` is refused. |
 | `tools_allow` | map of tool name → object | no | `{}` | The approved tools. A map, not a list, because every tool needs a slot for its approved schema hash. |
 | `prompts_allow` | map of prompt name → object | no | `{}` | |
 | `resources_allow` | map of URI → object | no | `{}` | |
 | `resource_templates_allow` | map of URI template → object | no | `{}` | RFC 6570 **level 1 only**. |
-| `aud` | absolute http(s) URI | required when `token_exchange:` is set; **refused** on `stdio` | — | The RFC 8707 resource indicator for the OUTBOUND token. Not Busbar's own audience — that is `mcp.canonical_uri`. |
+| `aud` | absolute http(s) URI | required when `token_exchange:` is set | — | The RFC 8707 resource indicator for the OUTBOUND token. Not Busbar's own audience — that is `mcp.canonical_uri`. |
 | `grants` | object of three booleans | no | all `false` | `sampling`, `elicitation`, `roots` — what this upstream may ask Busbar for. |
 | `roots` | list of `{uri, name?}` | no | `[]` | `file://` only. The satisfier behind `grants.roots`. |
 | `sampling` | object | no | absent | The satisfier behind `grants.sampling`. All three fields required. |
-| `allow_private` | bool | no; **refused** on `stdio` | `false` | Permits a private / loopback / CGNAT address for this one server. Never permits cloud-metadata addresses. |
-| `token_exchange` | object | no; **refused** on `stdio` | absent | RFC 8693 exchange. Absent ⇒ no credential is sent at all. |
+| `allow_private` | bool | no | `false` | Permits a private / loopback / CGNAT address for this one server. Never permits cloud-metadata addresses. |
+| `token_exchange` | object | no | absent | RFC 8693 exchange. Absent ⇒ no credential is sent at all. |
 | `max_input_required_rounds` | u32 | no | `3` (`mcp/config.rs:623`) | Cap on rounds Busbar will satisfy an UPSTREAM's `input_required` for, per dispatch. `0` means never. |
 | `max_caller_ask_rounds` | u32 | no | `3` (`mcp/config.rs:633`) | Cap on rounds Busbar asks ITS OWN CALLER for. `0` is an operator kill switch for every `ask_caller` on this server. |
-| `upstream_credentials` | `own` \| `passthrough` | no; **refused** on `stdio` | section value, else engine default | |
+| `upstream_credentials` | `own` \| `passthrough` | no | section value, else engine default | |
 | `hooks` | list of bare names | no | `[]` | Adds to `tools.hooks:`. |
 
 **`tools_allow.<tool>`** (`crates/busbar-mcp/src/mcp/config.rs:182-269`):
@@ -181,17 +178,8 @@ All of these are checked by `validate_server` / `validate_endpoint`, which is ca
 | Refusal | Condition | `mcp/config.rs` |
 |---|---|---|
 | server id may not contain `_` | the id is the first half of the `<server>_<tool>` routing key; with a separator inside it two different `(server, tool)` pairs render the same key and one `mcp_tool` grant silently names both. **Tool names may contain `_`** — only the id may not | `1202-1212` |
-| `command:` / `args:` / `env:` / `cwd:` on a network registration | those describe a child process | `1062-1076` |
-| `url:` missing / not http(s) on a network registration | | `1077-1087` |
-| `url:` present on `transport: stdio` | the registration named two different servers | `1091-1096` |
-| `command:` missing on `transport: stdio` | there is no default and Busbar will not guess one | `1097-1107` |
-| `command:` not an absolute path | a bare name is resolved through `PATH`, so whoever controls Busbar's environment chooses the binary. Checked with `Path::is_absolute`, which is platform-correct (a drive-relative `\foo` on Windows is refused for the same reason) | `1123-1129` |
-| `cwd:` not absolute | | `1130-1137` |
-| `env:` name empty, or containing `=` or NUL | not a variable an exec can carry | `1138-1149` |
-| `token_exchange:` on `stdio` | a pipe has no header block to carry a bearer. Refused rather than silently dropped | `1154-1160` |
-| `aud:` on `stdio` | stdio mints no outbound token | `1161-1166` |
-| `upstream_credentials:` on `stdio` | stdio makes no network hop | `1167-1172` |
-| `allow_private:` on `stdio` | there is no address for it to widen | `1175-1180` |
+| `transport: stdio`, or any of `command:` / `args:` / `env:` / `cwd:` | each names a local MCP server for Busbar to launch, and stdio MCP servers are not available in 1.6.0. Refused rather than ignored, so a server you believe Busbar runs is never silently absent | `validate_endpoint` |
+| `url:` missing / not http(s) | | `validate_endpoint` |
 | rooted `pin.mechanism` with no `pin.key` | a pin with nothing to verify with is not a pin | `1218-1225` |
 | `pin.mechanism: unpinned` carrying `pin.key` | key material never verified against reads as protection that does not exist | `1226-1232` |
 | `verify_ttl:` unparseable | parsed at boot so it lands on the operator, not on a silent fallback later | `mcp/config.rs` |
@@ -358,51 +346,13 @@ A transport is not a wire format. Every MCP transport carries the same JSON-RPC 
 
 The revision Busbar implements is `2026-07-28`, and it is the only one (`crates/busbar-mcp/src/mcp/envelope.rs:61-67`). An unsupported protocol version answers `-32022`.
 
-### Inbound: `busbar --mcp-stdio`
-
-For an MCP host that runs Busbar as a child process (Claude Desktop-class), `busbar --mcp-stdio` serves the MCP plane on Busbar's own stdin and stdout, newline-delimited JSON-RPC, and **binds no listener at all** — a child that opened ports would be a network server its supervisor never asked for (`crates/busbar/src/main.rs:934-951`).
-
-The **same boot** runs: config load, plugin preflight, governance and the flusher. Every line read from stdin is fed to the same serve sequence the HTTP endpoint runs, with the same envelope rules and the same dispatch, so a request the HTTP plane would refuse is refused here with the same code and the same sentence (`crates/busbar-mcp/src/mcp/stdio_serve.rs:7-15`). The mirrored routing headers are synthesised from the body — a pipe has no header block and no intermediary — so a body defect stays a body defect rather than being converted into a header defect.
-
-**Governance is bound once, at boot, for the whole session.** A stdio caller presents no per-request bearer, so `BUSBAR_MCP_STDIO_CREDENTIAL` carries the same credential the HTTP plane accepts, judged by the same sequence: the RFC 8707 audience pre-filter against `mcp.canonical_uri`, then the configured auth chain, then the one identity resolution the HTTP middleware itself calls (`crates/busbar-mcp/src/mcp/stdio_serve.rs:29-47`, `:108-111`). A credential the HTTP door would refuse is refused here; one it would admit binds the session to the same principal, the same budgets, the same audit attribution and the same hooks. **A configured chain with no credential, or a refused one, is a refusal to serve** — nonzero exit, a sentence on stderr — exactly as the HTTP door answers `401`.
-
-The credential rides an environment variable and not a flag, because argv is world-readable on most platforms and an MCP host's `env` block already has exactly this shape.
-
-The identity is **frozen for the life of the session**: a key revoked mid-session keeps being honoured until the process ends. The party able to end the session is the party that started it, and killing the child *is* the revocation — which no network peer can say of an HTTP stream.
-
-Because stdout is the MCP channel, logging moves to stderr in this mode (`crates/busbar/src/main.rs:723-727`).
-
-`--mcp-stdio` requires the `mcp:` block. Two live asks and one round cap are transport-local belts: a 30-second timeout on one live ask, and a cap of 8 live MRTR rounds per request on top of the operator's own `max_caller_ask_rounds` (`crates/busbar-mcp/src/mcp/stdio_serve.rs:109-118`).
-
 ### Outbound: `transport: streamable_http`
 
 The default, and the only network transport. The leg is SSRF-checked, address-pinned and connection-pooled, and it carries a credential selected under the **inbound caller's** grant.
 
-### Outbound: `transport: stdio`
+### Not in 1.6.0: stdio
 
-Busbar spawns a local MCP server that has no URL — a filesystem, database or git server. The SSRF guard is the defence on the HTTP wire and has nothing to say about a child process, so `validate_endpoint` stands in its place, at boot, where the operator who wrote it is standing (`crates/busbar-mcp/src/mcp/config.rs:1046-1057`). Four decisions, each fail-closed (`crates/busbar-mcp/src/mcp/client/stdio.rs:15-49`):
-
-1. **No shell, ever.** The program goes to `Command::new` and the arguments through `.args()`. There is no `sh -c`, no string split on spaces, and therefore no metacharacter with meaning. An operator who wants a shell writes `/bin/sh` as the program.
-2. **The program is an absolute path**, refused at boot otherwise. A bare name is resolved through `PATH`, which would make the binary that actually runs a property of the environment Busbar was started in rather than of the file you wrote.
-3. **The environment is not inherited.** `env_clear()` runs first and only the named `env:` entries are put back. Busbar's own process environment holds provider API keys, store credentials and admin tokens; handing that set to an operator-configured child would make every stdio registration a credential-exfiltration primitive, silently. A value that is itself a secret is written as a secret reference and is **resolved at spawn, never earlier**, so the snapshot never holds plaintext and rotating the secret needs no restart (`crates/busbar-mcp/src/mcp/config.rs:896-926`).
-4. **The arguments come from config only.** Nothing on the dispatch path can add to, reorder or substitute into them — a tool call's `arguments` reach the child as JSON on its stdin, which is data, and never as argv.
-
-> **Windows operators must name more variables than unix ones, and the reason is the OS.** On unix an empty environment is a working environment. On Windows the process environment is load-bearing for the platform itself (`SystemRoot`, `windir` during DLL resolution and Winsock init) and interpreter-based children want `PATH`, `TEMP`/`TMP` and often `APPDATA`. An `env_clear()`ed child on Windows can fail to start, or start and fail on its first socket. The posture is not relaxed — it is the same secret on both platforms — so a Windows `env:` block is explicit about the platform variables the child needs. This is reasoned rather than observed; see the note in [operations.md](/docs/operations/).
-
-**The child has a lifecycle, not a fire-and-forget spawn.** `Spawning → Ready → Draining → Dead`, with a crash from any state landing in `Dead` (`crates/busbar-mcp/src/mcp/client/stdio.rs:55-71`). A dispatch is sent only in `Ready`: a write to a pipe whose reader has not started is a write that succeeds and is lost.
-
-**The restart policy is a circuit breaker, not a retry loop.** A child that crashes on startup will crash on every startup, so an unbounded restart loop against a broken binary is a fork bomb with a config file behind it. Exponential backoff from the crash count, capped, and a quarantine that stops restarting entirely past a threshold inside a window (`crates/busbar-mcp/src/mcp/client/stdio.rs:150-158`):
-
-| Knob | Value | Configurable |
-|---|---|---|
-| first backoff after a crash | 100 ms | no |
-| backoff ceiling | 30 s | no |
-| crashes that quarantine the child | 5 | no |
-| the window they are counted over | 60 s | no |
-
-A successful start **does not clear the crash history** — a child that crashes, restarts, serves one call and crashes again is crash-looping, and clearing the window on every successful start is how a breaker is written that never trips. The history ages out by time (`crates/busbar-mcp/src/mcp/client/stdio.rs:220-230`). The supervisor outlives the child, deliberately: a quarantine that lived on the child would be forgotten the moment the child was dropped, which is the moment it is always reached.
-
-Defaults are chosen to make a crash-looping child visible within seconds rather than to maximise availability: an MCP server that will not start is a configuration error, and hiding it behind retries delays the fix.
+Busbar does not launch a local MCP server as a child process (`transport: stdio`, `command:`), and it does not serve MCP on its own stdin/stdout. Both are out of 1.6.0; a `tools:` registration naming a local server is refused at boot with the sentence `stdio MCP servers are not available in 1.6.0`. The stdio *transport* itself ships as a separate, signed plugin (`busbar-transport-stdio`) that the default build does not link.
 
 ---
 

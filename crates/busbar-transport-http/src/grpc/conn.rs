@@ -16,8 +16,8 @@ use busbar_contract::wire::Frame;
 use busbar_contract::StreamId;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
-/// The opaque handle the kernel is given. Carries identity only — see `busbar-transport-stdio`'s
-/// identical note on why the real state cannot live on `Conn` itself.
+/// The opaque handle the kernel is given. Carries identity only: `Conn` is sealed and opaque, so the
+/// real state lives in this transport's own side table keyed by its id, never on `Conn` itself.
 pub(crate) struct GrpcConnHandle {
     pub(crate) id: u64,
     pub(crate) peer: String,

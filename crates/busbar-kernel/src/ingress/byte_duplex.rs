@@ -7,19 +7,20 @@
 //!
 //! ## What a transport owns, and NOTHING a plane means
 //!
-//! An inbound stdio-class channel is one bidirectional byte pipe shared by everything. What that
-//! carrier owns is exactly four things, and this module is exactly those four:
+//! An inbound full-duplex message channel (an upgraded WebSocket, a voice carrier) is one
+//! bidirectional pipe shared by everything. What that carrier owns is exactly four things, and this
+//! module is exactly those four:
 //!
-//! 1. **Framing** — one frame per line (bytes split on `0x0A`), a final unterminated line still a
-//!    frame, a blank line not a frame. Frames cross as [`Vec<u8>`]; this module NEVER parses one.
-//! 2. **A single write lock** — two answers interleaving inside one line would be a frame no reader
-//!    could parse, so every outbound frame passes one [`tokio::sync::Mutex`] over the writer.
+//! 1. **Framing** — one frame per message, as the already-upgraded channel delivers it. Frames cross
+//!    as [`Vec<u8>`]; this module NEVER parses one.
+//! 2. **A single write lock** — two answers interleaving on the one sink would be frames no reader
+//!    could pair, so every outbound frame passes one [`tokio::sync::Mutex`] over the sink.
 //! 3. **Correlation** — a caller on this side may issue a frame and await the one that answers it.
 //!    The pairing is keyed on a [`CallRef`], a bare monotonic `u64` this module mints; the plane
 //!    embeds it into its own frame however its wire spells an id, and its [`DuplexPlane::classify`]
 //!    reads it back out. This module knows the number and nothing about where it lives in the bytes.
-//! 4. **The session lifecycle** — the reader loop runs until EOF (zero bytes) or a read error, then
-//!    drains in-flight handlers under a bound and flushes.
+//! 4. **The session lifecycle** — the reader loop runs until the stream ends (the peer's close, or a
+//!    dropped sender), then drains in-flight handlers under a bound and flushes.
 //!
 //! ## The plane is TWO callbacks and no more
 //!
@@ -42,7 +43,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
 /// A neutral correlation key: the identity of ONE call awaiting its answer on this channel, as a
@@ -105,14 +105,6 @@ const MAX_QUEUED_FRAMES: usize = MAX_INFLIGHT_HANDLERS;
 /// that is merely within both bounds but faster than the dispatcher's next poll.
 const QUEUE_DEPTH: usize = MAX_INFLIGHT_HANDLERS + MAX_QUEUED_FRAMES;
 
-/// The largest ONE inbound frame may be on the byte path. A frame is a line, so a peer that never
-/// writes the terminator is writing a single frame that grows for as long as it keeps typing — with
-/// no cap, until the allocation fails. The bar is the same one an inbound request body is held to
-/// ([`crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES`]): a payload this transport carries may
-/// not be larger than one the gateway would accept through its front door. Reaching it is a framing
-/// fault, not a big frame, and the session ends there.
-const MAX_FRAME_BYTES: usize = crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES;
-
 /// The two callbacks a plane supplies to bind this transport. The transport is generic over the
 /// concrete implementor, so there is no boxing on the hot per-frame path; the implementor is shared
 /// across concurrent handlers, hence `Send + Sync + 'static`.
@@ -131,7 +123,7 @@ pub trait DuplexPlane: Send + Sync + 'static {
 }
 
 /// The write-and-call side of the channel, handed to every handler and returned to the caller of
-/// [`serve`]. Cloneable and cheap: it is a shared handle onto the one writer and the one correlation
+/// [`serve_messages`]. Cloneable and cheap: it is a shared handle onto the one writer and the one correlation
 /// table. Every method here is transport-level — it moves bytes and pairs a call with its answer,
 /// and reads none of what those bytes mean.
 #[derive(Clone)]
@@ -140,16 +132,14 @@ pub struct DuplexHandle {
 }
 
 impl DuplexHandle {
-    /// Write ONE frame under the single write lock, framed however the bound [`FrameSink`] frames.
-    /// Over the newline byte sink (the [`serve`] path) that is the bytes then the `0x0A` terminator, so
-    /// a caller composing such a frame must not embed a newline; over the message sink (the
-    /// [`serve_messages`] path) the frame IS one whole message and no terminator is added. The handle
-    /// stays framing-agnostic: it hands the sink one frame and the sink decides the wire shape.
+    /// Write ONE frame under the single write lock: the frame IS one whole message and no terminator
+    /// is added. The handle stays framing-agnostic: it hands the sink one frame and the sink decides
+    /// the wire shape.
     ///
     /// `Err` means the frame did NOT reach the far end. The transport does not decide what that
     /// costs — only the caller knows what it was writing, and the answers genuinely differ: an
     /// answer to a request the far end is blocked on is a lost obligation (the caller must say so),
-    /// while a fire-and-forget notification is a line worth a diagnostic and nothing more. What the
+    /// while a fire-and-forget notification is a frame worth a diagnostic and nothing more. What the
     /// transport must NOT do is what it used to: discard the error and report success.
     pub async fn emit(&self, frame: Vec<u8>) -> std::io::Result<()> {
         let mut out = self.shared.sink.lock().await;
@@ -211,12 +201,12 @@ impl Drop for PendingCall {
 
 /// The shared spine of one channel: the locked sink, the correlation table, the ref mint, and the
 /// in-flight handler registry. Non-generic over the sink — it is type-erased at the entry point
-/// ([`serve`] or [`serve_messages`]) so a [`DuplexHandle`] a plane holds carries neither the writer
+/// ([`serve_messages`]) so a [`DuplexHandle`] a plane holds carries neither the writer
 /// type nor the framing it speaks.
 struct Shared {
     /// ONE sink, ONE lock — see the module header, rule 2. Type-erased to a boxed [`FrameSink`] so a
     /// [`DuplexHandle`] a plane holds carries neither the concrete writer type nor which framing
-    /// (newline bytes vs one-message-per-frame) the bound transport speaks.
+    /// the bound transport speaks.
     sink: tokio::sync::Mutex<Box<dyn FrameSink>>,
     /// Calls issued on this side awaiting their answer, keyed on the raw [`CallRef`] number.
     pending: Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>,
@@ -253,9 +243,8 @@ struct Shared {
 
 /// THE PLUGGABLE WRITE HALF — one outbound frame in, framed onto the wire however the bound transport
 /// frames. The pump's [`DuplexHandle::emit`] hands a frame here and reads nothing of the wire shape;
-/// which shape (newline-terminated bytes vs one whole message per frame) is exactly the difference
-/// between [`NewlineSink`] and [`MessageSink`]. Private: the crate exposes the two entry points
-/// ([`serve`], [`serve_messages`]) that pick the sink, not the sink trait itself.
+/// [`MessageSink`] is the one shape this build serves. Private: the crate exposes the entry point
+/// ([`serve_messages`]) that picks the sink, not the sink trait itself.
 #[async_trait::async_trait]
 trait FrameSink: Send {
     /// Write ONE frame, framed for this transport, and flush it. `Err` means the frame did NOT reach
@@ -264,26 +253,6 @@ trait FrameSink: Send {
     async fn send(&mut self, frame: Vec<u8>) -> std::io::Result<()>;
     /// Flush any buffered bytes at end-of-session.
     async fn flush(&mut self) -> std::io::Result<()>;
-}
-
-/// The BYTE framing: a frame is its bytes then the `0x0A` terminator — byte-for-byte the wire the
-/// stdio pump always spoke. Wraps any `AsyncWrite`.
-struct NewlineSink<W> {
-    writer: W,
-}
-
-#[async_trait::async_trait]
-impl<W: AsyncWrite + Unpin + Send> FrameSink for NewlineSink<W> {
-    async fn send(&mut self, mut frame: Vec<u8>) -> std::io::Result<()> {
-        frame.push(b'\n');
-        // The write AND the flush both carry: a `write_all` that succeeded into a buffer the flush
-        // then failed to drain is a line that never reached the far end, which is the same loss.
-        self.writer.write_all(&frame).await?;
-        self.writer.flush().await
-    }
-    async fn flush(&mut self) -> std::io::Result<()> {
-        self.writer.flush().await
-    }
 }
 
 /// The MESSAGE framing: a frame IS one whole message, emitted with no terminator. Wraps any
@@ -298,7 +267,7 @@ impl<Sk: Sink<Vec<u8>> + Unpin + Send> FrameSink for MessageSink<Sk> {
     async fn send(&mut self, frame: Vec<u8>) -> std::io::Result<()> {
         // `SinkExt::send` feeds then flushes; the message is one frame, so there is no terminator to
         // add. A closed sink REFUSES the frame, and says so: the caller's own policy decides what
-        // that costs, exactly as on the byte path. The sink's error type is the caller's and carries
+        // that costs. The sink's error type is the caller's and carries
         // no bound this module can name, so the loss is reported without it.
         self.sink
             .send(frame)
@@ -531,7 +500,7 @@ async fn drain_and_flush(
     // Whatever handlers are STILL in `inflight` past the bound above are not killed — see
     // [`spawn_handler`] for why forcing them is exactly the interruption hold-discipline rules out.
     // They keep the `Arc<Shared>` alive and finish on their own; this session simply stops waiting for
-    // them so a wedged handler never holds `serve`/`serve_messages` open past its bound.
+    // them so a wedged handler never holds `serve_messages` open past its bound.
     let stragglers = shared.inflight.lock().unwrap().len();
     if stragglers > 0 {
         tracing::debug!(
@@ -549,66 +518,15 @@ async fn drain_and_flush(
     }
 }
 
-/// SERVE one inbound byte-duplex channel over any `AsyncRead`/`AsyncWrite` pair until EOF, driving
-/// `plane`'s two callbacks. Returns when the reader reaches EOF (or errors) and the bounded in-flight
-/// drain completes. Generic so a plane serves its real process stdin/stdout and a test drives an
-/// in-memory duplex through the identical path.
-pub async fn serve<R, W, P>(reader: R, writer: W, plane: Arc<P>)
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin + Send + 'static,
-    P: DuplexPlane,
-{
-    let shared = new_shared(Box::new(NewlineSink { writer }));
-    let handle = DuplexHandle {
-        shared: shared.clone(),
-    };
-    let (frames, dispatcher, stop_dispatcher) = spawn_dispatcher(&shared, &handle, &plane);
-    let mut lines = tokio::io::BufReader::new(reader);
-    let mut buf: Vec<u8> = Vec::new();
-    loop {
-        buf.clear();
-        // One frame per line, split on 0x0A, and never more than one frame's worth of bytes: the read
-        // is limited to the cap plus the terminator, so a peer that never writes one cannot make this
-        // buffer grow past it. EOF — zero bytes read — ends the session; a final unterminated line is
-        // still one frame.
-        let read = (&mut lines)
-            .take((MAX_FRAME_BYTES + 1) as u64)
-            .read_until(b'\n', &mut buf)
-            .await;
-        match read {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-        } else if buf.len() > MAX_FRAME_BYTES {
-            // The cap was reached with no terminator in sight: these bytes are not a frame and no
-            // later byte can make them one. A framing fault ends the session — there is no plane-side
-            // meaning to refuse it with, and reading on would only buffer more of the same.
-            break;
-        }
-        if buf.iter().all(u8::is_ascii_whitespace) {
-            continue; // a blank line is not a frame
-        }
-        if offer_frame(&shared, &plane, &frames, std::mem::take(&mut buf)) == Offered::Overrun {
-            break;
-        }
-    }
-    drain_and_flush(&shared, dispatcher, stop_dispatcher).await;
-}
-
 /// SERVE one inbound MESSAGE-duplex channel until the stream ends, driving the SAME `plane` callbacks,
-/// correlation table and drain lifecycle as [`serve`] — the difference is framing, and nothing else.
+/// correlation table and drain lifecycle.
 ///
-/// Where [`serve`] frames a byte stream on `0x0A`, this takes a channel that is ALREADY
-/// message-oriented: `stream` yields one frame per message and `sink` accepts one message per frame,
+/// This takes a channel that is ALREADY message-oriented: `stream` yields one frame per message and `sink` accepts one message per frame,
 /// with no newline convention. That is exactly the shape of an already-upgraded WebSocket, whose HTTP
 /// upgrade, routing and message-kind handling (text/binary vs ping/pong/close) a caller performs at
 /// the upgrade site and reduces to `Vec<u8>` frames here — so the neutral pump names no protocol and
 /// stays out of the transport handshake. The stream ending (the peer's close, or a dropped sender)
-/// ends the session, mirroring EOF on the byte path.
+/// ends the session.
 pub async fn serve_messages<St, Sk, P>(mut stream: St, sink: Sk, plane: Arc<P>)
 where
     St: Stream<Item = Vec<u8>> + Unpin,

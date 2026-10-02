@@ -323,25 +323,13 @@ fn log_levels() -> (
 /// Install the process-wide `tracing` subscriber once at startup: always a stderr `fmt` layer
 /// (level from `RUST_LOG`, default `info`) so spans/warnings are visible out of the box, plus the
 /// `traces` record producer ([`crate::export::traces`]) under the span floor (see [`log_levels`]).
-///
-/// `stdout_reserved`: set by a caller whose transport uses this process's own stdout as its wire
-/// channel — the framed protocol on stdout forbids any byte that is not one of its own messages —
-/// so every log line moves to stderr instead, which is where such a transport's spec sends a
-/// server's diagnostics anyway. The listener modes keep stdout, unchanged. Returns whether the
-/// subscriber installed.
-pub fn init_logging(stdout_reserved: bool) -> bool {
-    use tracing_subscriber::fmt::writer::BoxMakeWriter;
+/// Returns whether the subscriber installed.
+pub fn init_logging() -> bool {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
     use tracing_subscriber::Layer as _;
     let (stderr_filter, otlp_filter) = log_levels();
-    let make_writer = if stdout_reserved {
-        BoxMakeWriter::new(std::io::stderr)
-    } else {
-        BoxMakeWriter::new(std::io::stdout)
-    };
     let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_writer(make_writer)
         .with_target(false)
         .with_filter(stderr_filter);
     // `try_init` also makes `tracing-log`'s `LogTracer` this process's `log` logger. A compiled-in

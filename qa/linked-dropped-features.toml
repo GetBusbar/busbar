@@ -26,21 +26,6 @@ item = "tokio/signal"
 
 [[finding]]
 rule = "linked-dropped-features:unified-deps"
-file = "crates/busbar-transport-stdio/Cargo.toml"
-item = "tokio/net"
-
-[[finding]]
-rule = "linked-dropped-features:unified-deps"
-file = "crates/busbar-transport-stdio/Cargo.toml"
-item = "tokio/rt-multi-thread"
-
-[[finding]]
-rule = "linked-dropped-features:unified-deps"
-file = "crates/busbar-transport-stdio/Cargo.toml"
-item = "tokio/signal"
-
-[[finding]]
-rule = "linked-dropped-features:unified-deps"
 file = "crates/busbar-transport-ws/Cargo.toml"
 item = "tokio/io-std"
 

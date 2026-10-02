@@ -399,10 +399,15 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the stdio transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-stdio/declares.json"
-    # A twin repo seeded by `cargo xtask fleet sync` (owner, 2026-09-30: every plugin repo a twin);
-    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    # A FULL FLEET MEMBER that busbar's default build does not link (OWNER 2026-10-02: "keep
+    # busbar-transport-stdio in the release coding path, we just dont compile it in as its unused";
+    # "a user may write a plugin needing our stdio transport plugin and thats fine, its there and prod
+    # ready"). Its crates live in its own repo (no `pending_crate`), so qa-gate, release-check and
+    # `fleet check` cover it like every other entry, and its signed tarball is published for an
+    # operator to drop in. Nothing in this registry distinguishes "linked by default" from
+    # "available": linking is busbar's manifest's business (crates/busbar/Cargo.toml carries no
+    # stdio row), never this file's. Its first release is cut with the core version that pins it.
     released: false
-    pending_crate: true
   - repo: busbar-transport-grpc
     kind: transport
     alias: grpc

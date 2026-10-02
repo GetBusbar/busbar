@@ -535,8 +535,8 @@ async fn a_stream_delivers_only_what_it_acknowledged() {
 /// `mcp|streamable-http|server|server|notifications/resources/updated`.
 ///
 /// The event enters through the pool's own recording seam — the same
-/// [`crate::mcp::client::pool::ResourceUpdates::record`] the HTTP and stdio client legs call when
-/// a peer announces (proven at THEIR ends by `http_peer_tests` and `stdio_client_leg_tests`), so
+/// [`crate::mcp::client::pool::ResourceUpdates::record`] the HTTP client leg calls when a peer
+/// announces (proven at its end by `http_peer_tests`), so
 /// the two halves of the relay meet on one structure rather than each being tested against a
 /// double of the other.
 #[tokio::test]

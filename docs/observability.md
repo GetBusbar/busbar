@@ -101,8 +101,7 @@ agent tasks are compared with `sum by (plane)`. On those planes `pool` currently
 (the plane's door counts the request before its routing target is resolved).
 
 `ingress_protocol` reads `jsonrpc` on the `mcp` plane, because JSON-RPC 2.0 is the one wire format
-that plane speaks — a transport is not a wire format, and MCP over streamable HTTP and MCP over
-stdio are the same message shape. **On the `a2a` plane it names the binding leg the request
+that plane speaks — a transport is not a wire format. **On the `a2a` plane it names the binding leg the request
 actually arrived on**: `jsonrpc`, `http+json` or `grpc`. That plane declares three wire formats and
 labels its own requests from inside the reader, because two of the three are spoken at the same
 door and only the reader knows which one spoke, so `sum by (ingress_protocol)

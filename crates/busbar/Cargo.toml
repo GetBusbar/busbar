@@ -159,7 +159,6 @@ busbar-transport-http = { path = "../busbar-transport-http" }
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
 busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
-busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
@@ -342,11 +341,10 @@ transport-http = "busbar-transport-http"
 transport-sse = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
 transport-grpc = "busbar-transport-http"
-transport-stdio = "busbar-transport-stdio"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
-# `ws-arrivals`, `on-host`, `compose`, `stdio-serve`, `exports` — each an item of the crate's entry
+# `ws-arrivals`, `on-host`, `compose`, `exports` — each an item of the crate's entry
 # module — and the root-bound seams it drives: `egress`, `plane-sections`, `admin-envelope`.
 # `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
 # `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
@@ -357,7 +355,7 @@ transport-stdio = "busbar-transport-stdio"
 # `auths`: a `kind: auth` plugin's SDK boundary (`BUSBAR_COLD_ENTRY`), under its `linked-name` key.
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
-plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
+plane-mcp = "plane claims protocols diagnostics egress gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
 plane-decisions = "plane claims"
@@ -373,7 +371,6 @@ transport-http = "transport"
 transport-sse = "transport"
 transport-ws = "transport"
 transport-grpc = "transport"
-transport-stdio = "transport"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
@@ -441,9 +438,9 @@ reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }
 http-body-util = { workspace = true }
 futures = { workspace = true }
-# tests/mcp_stdio_serve.rs encodes the MRTR requestState fixtures it drives over the process's
-# own stdin/stdout the same way the engine does; the binary crate no longer pulls base64 as a
-# runtime dep after the core split, so the integration test needs its own copy.
+# tests/qa_a2a.rs and tests/qa_mcp_integrity.rs encode their fixtures the way the engine does; the
+# binary crate no longer pulls base64 as a runtime dep after the core split, so the integration
+# tests need their own copy.
 base64 = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
@@ -461,18 +458,8 @@ busbar-export-file-plugin = { workspace = true }
 # the library a tarball of the sink carries, found in this target dir by what it loads as. The
 # sink's own both-doors conformance lives in its repo (GetBusbar/busbar-export-prometheus).
 busbar-export-prometheus-plugin = { workspace = true }
-# The REAL token-verifying auth module the dropped-in auth proofs load (R-FIX2; the owner's FIXTURES
-# ruling: real plugins are the proofs): GetBusbar/busbar-auth-oidc's cdylib crate at a pinned rev. Nothing
-# links it; the dev edge is what makes this crate's test build carry its cdylib (under `deps/`,
-# hashed), which the child-process session battery signs into a temp `plugins/` directory and drives
-# with JWTs a local issuer signs. Its busbar-contract resolves to this tree through the `[patch]`
-# table in the workspace manifest.
-busbar-auth-oidc-plugin = { workspace = true }
-# The local issuer those proofs verify against: the module's OWN test issuer (its logic crate's
-# `testkit` feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the
-# module trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
-busbar-auth-oidc = { workspace = true, features = ["testkit"] }
-# That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
+# `root/tests/linked.rs`'s served-arm proof calls the router it built as the tower service it is
+# (`ServiceExt::oneshot`). The
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.
 tower = { workspace = true, features = ["util"] }

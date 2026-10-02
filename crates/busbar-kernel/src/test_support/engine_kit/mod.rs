@@ -22,7 +22,7 @@
 //! installs — precisely what the construction gate's uninstalled-seam rule exists to refuse.
 //!
 //! Every type on these signatures is neutral: the substrate's own `EngineHost` / `PlaneSlots` /
-//! `LiveHostFactory` / `BreakerState` / `TokenSigner` / `NewKeySpec` / `CallRecorded`, the
+//! `BreakerState` / `TokenSigner` / `NewKeySpec` / `CallRecorded`, the
 //! `busbar_contract` store contracts (`Store`, `VirtualKey`, `MeteringRow`, `AuditRecord`), axum's
 //! `Router` / `Method`, `serde_json::Value` for config documents the engine parses itself, and an
 //! opaque `Box<dyn Any>` for the one fixture (the hook plugin environment) that has no neutral shape.
@@ -36,7 +36,7 @@ use crate::plane::calllog::CallRecorded;
 use crate::plane::registry::CardIssuer;
 use crate::plane::store::PlaneStore;
 use crate::plane::PlaneAdmission;
-use crate::plane_host::{EngineHost, LiveHostFactory, PlaneSlots};
+use crate::plane_host::{EngineHost, PlaneSlots};
 use crate::store::BreakerState;
 use crate::trust::validate::GovResolve;
 use busbar_contract::abi::hot::GuardClass;
@@ -183,17 +183,14 @@ pub trait GovKit: Any + Send + Sync {
     ) -> Result<DerivedUsage, String>;
 }
 
-/// THE SWAPPABLE HANDLE over a built App — the engine's live snapshot holder the route adapter, the
-/// stdio session and the subscription streams read through, so a test can swap a second App in
+/// THE SWAPPABLE HANDLE over a built App — the engine's live snapshot holder the route adapter and the
+/// subscription streams read through, so a test can swap a second App in
 /// mid-session exactly as a config apply does. `Any` so it upcasts to the type-erased
 /// `Arc<dyn Any + Send + Sync>` a neutral request context carries the live engine as.
 pub trait EngineHandle: Any + Send + Sync {
     /// Mint the neutral host over the handle's CURRENT snapshot (retains the live handle, so the
     /// slot-read paths see a swap that lands after admission).
     fn engine_host(self: Arc<Self>) -> Arc<dyn EngineHost>;
-    /// A factory minting a fresh host over the handle per call — the shape a per-frame transport
-    /// (stdio) takes.
-    fn live_host_factory(self: Arc<Self>) -> LiveHostFactory;
     /// The current snapshot.
     fn load(&self) -> Arc<dyn EngineApp>;
     /// Replace the snapshot with `next`, running the engine's swap hooks (the plane's `on_swap`).

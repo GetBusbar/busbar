@@ -226,7 +226,7 @@ unit-b = "beta"
         "the plane axis's HOT lane references the entry's C-ABI decl: {out}"
     );
     assert!(
-        out.contains("    stdio_serve: &[],\n"),
+        out.contains("    compose: &[],\n"),
         "an axis nobody lists is empty: {out}"
     );
     assert!(out.contains("    &crate::root::beta::ROOT_UNIT,\n];"));

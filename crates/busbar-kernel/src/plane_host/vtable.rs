@@ -75,10 +75,11 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    `VerifyGate` now lives in the neutral substrate and names `reverify::due` directly. ─────
         verify_decide: Some(trust::verify_decide_q),
         approval_redeem_q: Some(trust::approval_redeem_q),
-        // ── The byte-duplex PIPE tier (CLUSTER-3 egress): raw-connection / subprocess byte channels,
-        //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
-        pipe_read: Some(super::pipe::pipe_read),
-        pipe_write: Some(super::pipe::pipe_write),
+        // ── The byte-duplex PIPE tier (CLUSTER-3 egress): no host backs it. The subprocess tier's
+        //    child-process wiring was busbar's own stdio use and is parked out of 1.6.0
+        //    (OWNER 2026-10-02); the raw-connection tier is an honest Phase-2 `Unsupported`. ────────
+        pipe_read: None,
+        pipe_write: None,
         // ── The DURABLE journal seam (minor-9): each slot wired over the store-backed
         //    `audit::journal::Journal<PlaneJournalRecord>` in `super::journal`. ───────────────────────
         journal_register: Some(super::journal::journal_register),

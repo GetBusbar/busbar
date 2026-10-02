@@ -17,7 +17,7 @@ does not exist.
 ### Additive planes
 
 - **MCP.** Busbar is an MCP server (`mcp:`) and a governed gateway in front of your MCP tool estate
-  (`tools:`), over HTTP and over stdio. See [the MCP guide](docs/mcp.md).
+  (`tools:`), over HTTP. See [the MCP guide](docs/mcp.md).
 - **A2A.** Busbar serves A2A over all three of that specification's bindings (JSON-RPC, HTTP+JSON,
   gRPC) in front of registered agents (`agents:`). See [the A2A guide](docs/a2a.md).
 - **Streaming.** A `streams:` block declares the streaming plane: full-duplex realtime sessions
@@ -752,15 +752,6 @@ each dialect translates, field by field, is listed in the generated
   `completion/complete`, the SEP-2663 task methods (`tasks/get`, `tasks/update`, `tasks/cancel`)
   and `subscriptions/listen`. What a caller sees and what it may call are one decision taken from that
   caller's own key grants, so two callers get two different catalogues from one deployment.
-- **`transport: stdio` fronts a local MCP server that has no URL** — a filesystem, database or git
-  server that an agent launches rather than dials. A registration takes `command:` (absolute path,
-  always), `args:`, `env:` and `cwd:`. The child is spawned with a cleared environment and only the
-  variables you name, never through a shell, and a crash-looping child is quarantined rather than
-  restarted forever.
-- **`busbar --mcp-stdio` serves the MCP plane on Busbar's own stdin and stdout**, so a Claude
-  Desktop-class host can run Busbar as a child process. Governance is a boot-time session
-  credential (`BUSBAR_MCP_STDIO_CREDENTIAL`) judged by the same auth chain as the HTTP door; a
-  governed deployment refuses an uncredentialed session outright.
 - **Every MCP tool call is written to a tamper-evident, per-caller durable record.** Point Busbar
   at a durable store and each inbound `tools/call` appends one hash-linked row: who called, which
   tool, under which approved schema, and whether it went out. Refusals are recorded as deliberately
@@ -887,10 +878,6 @@ each dialect translates, field by field, is listed in the generated
   rejected outright.
 - **Unmodeled request fields dropped at the cross-protocol seam are now named in the log.** Around
   forty keys went silently; most are correctly untranslatable, and the silence was the defect.
-- **`transport: stdio` is configurable on Windows at all.** The boot check requiring `command:` to
-  be an absolute path tested it with the unix spelling, so every drive-qualified or UNC path was
-  refused. It now refuses a bare name, a relative path and a drive-relative path in each platform's
-  own spelling.
 - **`GET /admin/plugins` no longer hides an installed plugin on Windows because of its filename's
   case.** The scan matched `.dll` case-sensitively on a case-insensitive filesystem, so a loadable
   plugin was reported absent on the one surface that answers "did my install land".
@@ -900,7 +887,7 @@ each dialect translates, field by field, is listed in the generated
 - **The Windows platform gaps are written down.** [The operations guide](docs/operations.md) now
   states plainly that the `0600`/`0700` modes protecting the config overlay, the signing key and
   the plugin staging directory do not exist on Windows, that `BUSBAR_CONFIG` is effectively
-  required there, and what an `env_clear`ed stdio child needs named explicitly.
+  required there.
 - **An idle busbar no longer crashes after serving a large body.** On a build without jemalloc's
   background purge threads — macOS, and the static-musl release binaries — busbar runs its own idle
   purge instead, and that purge put every memory arena back to the global setting. The arena that

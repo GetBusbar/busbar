@@ -39,12 +39,8 @@ use busbar_kernel::net_guard::PinnedTarget;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// One upstream's pooled clients, keyed by pinned address — and the live stdio children.
-///
-/// The children ride here rather than on a second field of `AppState` because they are the same
-/// thing at the same lifetime: busbar's live connections to registered MCP upstreams, owned by the
-/// engine, threaded to every send site already. A separate handle would be a second thing to
-/// remember to pass, and the site that forgot would be the one that could not reach a stdio server.
+/// One upstream's pooled clients, keyed by pinned address: busbar's live connections to registered
+/// MCP upstreams, owned by the engine, threaded to every send site already.
 #[derive(Default)]
 pub(crate) struct McpConnectionPool {
     /// The pinned-client pool, keyed by the judged `(host, address)` — now the shared core backend
@@ -52,9 +48,6 @@ pub(crate) struct McpConnectionPool {
     /// every plane shares (the refusing resolver, `tls_info` so the peer SPKI is observable, and the
     /// canonical connection knobs).
     clients: busbar_kernel::egress::PinnedClientPool,
-    /// The supervised child processes. Empty on every deployment that registers no stdio server,
-    /// and it costs a `BTreeMap` to be so.
-    pub(crate) children: super::stdio::StdioPool,
     /// PEER-SIGNALLED REFRESHES, rate-limited. See [`RefreshTriggers`].
     pub(crate) triggers: RefreshTriggers,
     /// PEER-ANNOUNCED RESOURCE UPDATES, bounded. See [`ResourceUpdates`].
@@ -81,7 +74,7 @@ pub(crate) struct McpConnectionPool {
 ///
 /// ## Why it lives on the POOL
 ///
-/// The same argument the stdio children ride here on: this is engine-owned state at the lifetime of
+/// This is engine-owned state at the lifetime of
 /// busbar's connections to upstreams, and the pool is already threaded to every send site. A
 /// separate handle would be a second thing to remember to pass, and the site that forgot would be
 /// the one that could not record a trigger.
@@ -94,7 +87,7 @@ pub(crate) struct RefreshTriggers {
 /// The floor between two peer-signalled refreshes of the SAME server.
 ///
 /// Sixty seconds: long enough that a peer emitting a notification per tool per change cannot turn
-/// one edit into a fetch storm, short enough that an operator who edits a child's tool set sees the
+/// one edit into a fetch storm, short enough that an operator who edits a server's tool set sees the
 /// change land within a minute rather than only at the next call's `verify_ttl:` window.
 const PEER_TRIGGER_FLOOR_MS: u64 = 60_000;
 
@@ -245,7 +238,6 @@ impl std::fmt::Debug for McpConnectionPool {
         // internal addresses into logs. Presence and size only.
         f.debug_struct("McpConnectionPool")
             .field("pinned_clients", &self.clients.len())
-            .field("stdio_children", &self.children.len())
             .finish()
     }
 }

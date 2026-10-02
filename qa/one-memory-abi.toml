@@ -106,11 +106,6 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/pipe.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/busbar-kernel/src/plane_host/trust.rs"
 item = "extern 'C-unwind'"
 

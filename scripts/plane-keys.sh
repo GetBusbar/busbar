@@ -101,7 +101,7 @@ unset _lp _od
 plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src …", canonical order.
   local k out=""
   # BOTH HALVES, AND BOTH DERIVED FROM THE KEY. Every plane is TWO crates since the codec split:
-  # `busbar-<k>` kept its I/O half (the axum routes, the stdio serve loop, the tokio transports, the
+  # `busbar-<k>` kept its I/O half (the axum routes, the tokio transports, the
   # telephony dial, the WS accept) and shed its pure half — the codecs, the record vocabularies, the
   # duplex IR, the dialect grammars — into `busbar-<k>-codec`, which a PURE kind may name. The gate
   # scans sources, not manifests, so both halves must be named or the bulk of a plane stops being

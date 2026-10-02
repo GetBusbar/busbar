@@ -342,8 +342,6 @@ dependencies = [
  "base64 0.23.1",
  "busbar-a2a",
  "busbar-auth-admin-tokens-plugin",
- "busbar-auth-oidc",
- "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connector",
@@ -373,7 +371,6 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-store-memory",
  "busbar-transport-http",
- "busbar-transport-stdio",
  "busbar-transport-tcp",
  "busbar-transport-ws",
  "busbar-voice",
@@ -1021,17 +1018,6 @@ dependencies = [
  "tonic",
  "tower",
  "url",
-]
-
-[[package]]
-name = "busbar-transport-stdio"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-plugin-loader",
- "busbar-transport-stdio",
- "futures",
- "tokio",
 ]
 
 [[package]]

@@ -1278,9 +1278,8 @@ async fn tools_call_via_gauntlet(
 /// — this check sits BEFORE [`CallLog::open`] runs at all, never after, so an oversized name never
 /// has a `CallLog` to be written through in the first place.
 ///
-/// 256, matching the ceilings this crate already enforces at comparable doors:
-/// `stdio_serve::MAX_RESOURCE_SUBS` (a session's retained resource-subscription set) and
-/// `stdio_serve::MAX_RESOURCE_SUB_URI_BYTES` (one retained subscription uri).
+/// 256, matching the crate's other per-item ceilings (`tasks::MAX_TASK_ANSWERS`,
+/// `MAX_INTERLEAVED_MESSAGES`).
 const MAX_TOOL_NAME_BYTES: usize = 256;
 
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.

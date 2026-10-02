@@ -52,12 +52,12 @@
     "number": 7063,
     "class": "plane",
     "slug": "mcp-stdio-read-error",
-    "title": "MCP stdio serve read error on stdin (session ending)",
+    "title": "MCP stdio serve read error on stdin (session ending) — RETIRED",
     "severity": "benign_recurring",
-    "summary": "The MCP stdio server hit a read error on stdin and is shutting the session down. This is the expected outcome when the peer closes the pipe, so it is logged at debug rather than as an operator alert.",
-    "action": "None — self-heals. Expected when a stdio MCP client disconnects.",
+    "summary": "RETIRED. The MCP stdio server hit a read error on stdin and is shutting the session down. This is the expected outcome when the peer closes the pipe, so it is logged at debug rather than as an operator alert.",
+    "action": "Nothing emits this code. The MCP stdio serve mode is not part of this release.",
     "since": "1.6.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-7064",

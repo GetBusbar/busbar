@@ -53,15 +53,15 @@ One or more MCP upstream servers were quarantined before the last restart and th
 **What to do:** Investigate why each named server was demoted and either remediate it or clear its demotion. Until then, requests routed to it are refused by design.
 
 <a id="mcp-stdio-read-error"></a>
-### BUSBAR-7063 — MCP stdio serve read error on stdin (session ending)
+### BUSBAR-7063 — MCP stdio serve read error on stdin (session ending) — RETIRED *(retired)*
 
 - **Severity:** benign_recurring
 - **Since:** 1.6.0
 - **Slug:** `mcp-stdio-read-error`
 
-The MCP stdio server hit a read error on stdin and is shutting the session down. This is the expected outcome when the peer closes the pipe, so it is logged at debug rather than as an operator alert.
+RETIRED. The MCP stdio server hit a read error on stdin and is shutting the session down. This is the expected outcome when the peer closes the pipe, so it is logged at debug rather than as an operator alert.
 
-**What to do:** None — self-heals. Expected when a stdio MCP client disconnects.
+**What to do:** Nothing emits this code. The MCP stdio serve mode is not part of this release.
 
 <a id="mcp-ask-recogniser-missed"></a>
 ### BUSBAR-7064 — MCP input-required result reached the terminal check (ask recogniser missed)

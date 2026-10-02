@@ -223,8 +223,7 @@ impl Transport for SseTransport {
                         // as an error, never delivered as a shorter answer that arrived
                         // (`qa/evidence/inventory/1.5.5-proxy-hooks.md:406-407` — the mid-stream and
                         // pre-first-byte rows, both of which end the body stream with an error). So
-                        // it is a framing error, which is also the reading the sibling `stdio` crate
-                        // gives a line the peer never finished.
+                        // it is a framing error.
                         //
                         // Only when the leftover is actually an event. The layer below hands up a
                         // trailer section as a frame of its own, and a header block is not a

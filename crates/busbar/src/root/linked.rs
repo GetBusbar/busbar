@@ -39,17 +39,13 @@ use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
 use busbar_kernel::plane::PlaneAdmission;
-use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
+use busbar_kernel::plane_host::EngineHost;
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
 use busbar_kernel::preflight::{LinkedAuth, LinkedHook, LinkedStore, RegistryIn, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
 pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve)>;
-
-/// The stdio serve mode: frames on stdin/stdout instead of a listener; resolves to the exit code.
-pub type StdioServe =
-    fn(LiveHostFactory) -> std::pin::Pin<Box<dyn std::future::Future<Output = i32>>>;
 
 /// One row a plane declares for `busbar --help`: `(slot, text)`. Slot `"tagline"` is the one-line
 /// description the help opens with; slot `"flag"` is a row of the `Flags:` block, whose first word is
@@ -88,8 +84,6 @@ pub struct Linked {
     pub on_host: &'static [fn(&Arc<dyn EngineHost>)],
     /// Providers composed off the resolved configuration (see [`Compose`]).
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
-    /// The stdio serve mode (see [`StdioServe`]).
-    pub stdio_serve: &'static [StdioServe],
     /// The CLI-help axis: each linked plane's rows of `busbar --help` (see [`CliHelpRow`]).
     pub cli_help: &'static [&'static [CliHelpRow]],
     /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).

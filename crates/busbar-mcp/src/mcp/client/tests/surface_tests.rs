@@ -29,13 +29,10 @@ fn an_http_registration_carries_the_url_the_transport_will_post_to() {
             url: "https://fs.example/mcp".into(),
         },
     );
-    // EXHAUSTIVE, and that is the point. This was an irrefutable `let` while `Endpoint` had one arm,
-    // and it stopped compiling the day `Stdio` landed — which is the prompt the enum exists to give.
-    // It stays a `match` with every arm named rather than becoming an `if let` with an `else`: an
-    // `else` would silently keep passing for the THIRD transport.
+    // EXHAUSTIVE, and that is the point: a `match` with every arm named rather than an `if let` with
+    // an `else`, which would silently keep passing for a second transport.
     match &reg.endpoint {
         Endpoint::Http { url } => assert_eq!(url, "https://fs.example/mcp"),
-        Endpoint::Stdio { command } => panic!("registered an HTTP endpoint, got {command:?}"),
     }
     // And the credential defaults to the fail-closed arm.
     assert!(matches!(reg.credential, UpstreamCredential::None));

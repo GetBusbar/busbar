@@ -107,7 +107,7 @@ const ACTIVE_TASK_ABANDON_MS: u64 = 86_400_000;
 /// not made to fail. Without a ceiling that same tolerance is the hole: a caller parked in
 /// `input_required` can repeat `tasks/update` under freshly-invented keys forever, growing one
 /// task's map without bound. 256, matching the lost fix and the crate's other per-item ceilings
-/// (`stdio_serve::MAX_RESOURCE_SUBS`, `method::MAX_TOOL_NAME_BYTES`).
+/// (`method::MAX_TOOL_NAME_BYTES`).
 pub(crate) const MAX_TASK_ANSWERS: usize = 256;
 
 /// Has this caller declared the tasks extension?
@@ -657,7 +657,7 @@ pub(crate) struct Runner {
 /// The worker's SHUTDOWN WATCH is captured HERE, at spawn on the request's own thread — the same
 /// moment the detached tracker is captured, and for the same reason: the registration is
 /// thread-local to the worker, and the runner future must carry its own copy because it outlives
-/// the request. `None` (a non-worker thread — the stdio serve mode, a test that registered
+/// the request. `None` (a non-worker thread — a test that registered
 /// nothing) leaves the runner's shutdown arm inert.
 pub(crate) fn spawn(task: Arc<McpTask>, runner: Runner) {
     let shutdown = busbar_kernel::detached::worker_shutdown();

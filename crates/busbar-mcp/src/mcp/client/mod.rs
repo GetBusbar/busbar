@@ -18,7 +18,6 @@
 //! | [`jsonrpc`] | the `2026-07-28` outbound wire, and the rules for answering an upstream's ask |
 //! | [`wire`] | the vtable one built JSON-RPC message rides, and the two channels' shared types |
 //! | [`transport`] | the streamable-HTTP stateless transport — the primary target |
-//! | [`stdio`] | the child-process transport: spawn, supervise, backoff, crash-loop quarantine |
 //! | [`pool`] | engine-owned connection pooling, keyed by the PINNED address |
 //! | [`ssrf`] | dispatch-time resolve-then-pin |
 //! | [`argguard`] | the schema-aware walk of nested tool arguments for URL and host fields |
@@ -58,15 +57,10 @@
 //! authenticated to busbar's own resource server — in `crate::mcp::tests/deputy_pair_tests.rs`,
 //! rather than against a principal a test constructed.
 //!
-//! **stdio IS A TRANSPORT THIS BUILD HAS, OUTBOUND.** A `tools:` entry carrying `transport: stdio`
-//! and a `command:` spawns a supervised child and dispatches `tools/call` down its stdin; the arm is
-//! [`busbar_contract::transport::transport::Transport::upstream_wire`] and the supervisor is [`stdio`]. It was DELETED once,
-//! as unreachable security-relevant code that read as shipped, and it is back with a caller rather
-//! than with an `#![allow(dead_code)]` — which is the only difference that ever mattered. The
-//! INBOUND direction (busbar itself launched as a child by an agent, serving MCP on its own stdin)
-//! is not built YET: its old waiver's own text called it "a product decision, not a technical
-//! block", so per the 2026-08-14 waiver-list-to-zero ruling the whole family is owed work, pinned
-//! in `qa/method-coverage.missing` as the queue's next unit.
+//! **stdio IS NOT A TRANSPORT THIS BUILD HAS.** Launching a local MCP server as a child process, and
+//! serving MCP on busbar's own stdin/stdout, are parked out of 1.6.0 on their own branch
+//! (OWNER 2026-10-02). A `tools:` entry carrying `transport: stdio` or a `command:` is REFUSED at boot
+//! by `mcp::config`; the cells are owed work in `qa/method-coverage.missing`.
 //!
 //! What is still NOT wired, and is stated rather than softened:
 //!
@@ -89,12 +83,11 @@ pub(crate) mod issue;
 /// THE OUTBOUND WIRE, defined in the plane crate (reached as `crate::plane_client::jsonrpc`) and
 /// re-exported under this path, so every `client::jsonrpc::…` caller resolves the same items.
 pub(crate) use crate::plane_client::jsonrpc;
-/// WHAT A CHILD SENDS BUSBAR: the `busbar-as-client / server-originated` half of the matrix, and
+/// WHAT A PEER SENDS BUSBAR: the `busbar-as-client / server-originated` half of the matrix, and
 /// the deny-by-default gate on the three asks that would spend busbar's own authority.
 pub(crate) use crate::plane_client::peer;
 pub(crate) mod pool;
 pub(crate) mod ssrf;
-pub(crate) mod stdio;
 pub(crate) mod transport;
 /// THE CLOSED SET OF METHODS BUSBAR ISSUES to an upstream MCP server — one enum, so the column of
 /// the coverage matrix this leg owns is a value a test can enumerate rather than a property of its
@@ -123,18 +116,14 @@ use ssrf::SsrfPolicy;
 // its caller the build says so. That is the point: the gap stays visible in the code rather than in
 // a tracking document nobody reads.
 #[allow(dead_code)]
-/// How busbar reaches one upstream. TWO ARMS, because this build speaks two transports.
+/// How busbar reaches one upstream. ONE ARM, because this build speaks one client transport.
 ///
-/// An enum rather than the bare URL it once held: the type is the place a transport is ADDED, and
-/// every match on it is a place that is then forced to decide. A `String` would have let stdio be
-/// bolted on with no such prompt — and stdio has no URL to put in one.
+/// An enum rather than a bare URL: the type is the place a transport is ADDED, and every match on it
+/// is a place that is then forced to decide.
 #[derive(Clone, Debug)]
 pub(crate) enum Endpoint {
     /// Streamable HTTP, stateless. THE primary target of this revision.
     Http { url: String },
-    /// A supervised child process. Carries the operator's spawn recipe verbatim; see
-    /// [`stdio::StdioCommand`] for why every field of it is operator-only.
-    Stdio { command: stdio::StdioCommand },
 }
 
 #[allow(dead_code)]

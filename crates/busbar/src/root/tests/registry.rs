@@ -35,7 +35,7 @@ fn linked_registry() -> Registry {
 /// The shipped transport fold (`<wire key> <composed over, or ->` rows, in build order), as data.
 const TRANSPORT_FOLD: &str = include_str!("fixtures/transport_fold.txt");
 
-/// The sealed walk over the fifty-one declared claims, most specific first. The decisions plane's two
+/// The sealed walk over the fifty declared claims, most specific first. The decisions plane's two
 /// exact paths (item 251) sit among the other exact paths, ahead of every pattern that could also
 /// describe them.
 ///
@@ -77,18 +77,18 @@ const DECISION: bool = cfg!(feature = "plane-decisions");
 /// Every transport and every plane goes into one registry, and both counts are what the design
 /// says they are. This is the half of the seal that does not depend on the claims.
 #[test]
-fn six_transports_and_five_planes_register() {
+fn five_transports_and_five_planes_register() {
     let registry = linked_registry();
     assert_eq!(
         registry.count(PluginKind::Transport),
-        if session_linked() { 6 } else { 5 }
+        if session_linked() { 5 } else { 4 }
     );
     // Every linked plane and the core one: a plane this build does not link registers nothing.
     assert_eq!(
         registry.count(PluginKind::Plane),
         crate::LINKED.claims.len() + 1
     );
-    for key in ["tcp", "http", "sse", "grpc", "stdio"] {
+    for key in ["tcp", "http", "sse", "grpc"] {
         assert!(
             registry.resolve(PluginKind::Transport, key).is_some(),
             "transport `{key}` is not registered"
@@ -142,7 +142,7 @@ fn six_transports_and_five_planes_register() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_planes_declare_fifty_one_claims() {
+fn the_planes_declare_fifty_claims() {
     let claims = linked_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     // One `<plane key> <claims>` row per plane, pinned as fixture DATA so this source names none.
@@ -172,7 +172,7 @@ fn the_planes_declare_fifty_one_claims() {
         claims.len(),
         "every claim belongs to a pinned plane"
     );
-    assert_eq!(claims.len(), 51);
+    assert_eq!(claims.len(), 50);
 }
 
 /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -311,7 +311,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// The sealed order of the fifty-one, written out.
+/// The sealed order of the fifty, written out.
 ///
 /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
 /// against is the thing this file produces, and a change to it is a change to which plane
@@ -322,7 +322,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_sealed_order_of_the_fifty_one_claims_is_pinned() {
+fn the_sealed_order_of_the_fifty_claims_is_pinned() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
@@ -611,8 +611,8 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default())
         .expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), 51);
-    assert_eq!(sealed.precedence.len(), 51);
+    assert_eq!(sealed.claims.len(), 50);
+    assert_eq!(sealed.precedence.len(), 50);
 }
 
 /// The operator's request-body cap reaches every linked transport.

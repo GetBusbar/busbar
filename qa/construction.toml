@@ -1871,7 +1871,6 @@ busbar-transport-http = [
   "tokio-util", "memchr", "futures", "tokio", "rustls", "hyper", "hyper-util",
   "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
 ]
-busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
@@ -2207,7 +2206,6 @@ known_sites = [
   "crates/busbar-plane-streaming/src/tests/harness.rs",
   "crates/busbar-transport-http/src/grpc/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
-  "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-kernel-egress/src/tests/harness.rs",
@@ -2365,7 +2363,6 @@ known_sites = [
   "crates/busbar-kernel/src/plane_host/guard.rs",
   "crates/busbar-kernel/src/plane_host/identity_admit.rs",
   "crates/busbar-kernel/src/plane_host/journal.rs",
-  "crates/busbar-kernel/src/plane_host/pipe.rs",
   "crates/busbar-kernel/src/plane_host/trust.rs",
   "crates/busbar-kernel/src/plane_host/vtable.rs",
   # was crates/busbar-core/src/plane/registry.rs (R099)
@@ -3180,8 +3177,8 @@ plane_crates = 4
 #   * `auth` 2 -> 1. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES": "real
 #     plugins are the examples"; ARCHITECT R-FIX2): `crates/auth-static-plugin` was deleted. The auth
 #     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/busbar-auth-oidc (pinned by
-#     git: busbar-kernel `auth/tests/plugin_chain_tests.rs`, `crates/busbar/tests/mcp_stdio_serve.rs`,
-#     busbar-plugin-loader `auth_conformance_tests`), and the removed ci.yml `plugin-proofs` proves
+#     git: busbar-kernel `auth/tests/plugin_chain_tests.rs` and busbar-plugin-loader
+#     `auth_conformance_tests`), and the removed ci.yml `plugin-proofs` proves
 #     GetBusbar/busbar-auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
 #
 # ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────
@@ -3228,7 +3225,7 @@ auth = 0
 secret = 0
 store = 1
 export = 0
-transport = 4
+transport = 3
 loader = 1
 abi = 1
 

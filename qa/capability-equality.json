@@ -67,7 +67,7 @@
   },
   "planes": {
     "llm": "model traffic: app -> busbar -> provider, HTTP incl. SSE/binary streams (one plane, both halves)",
-    "mcp-client": "busbar's outbound leg to registered MCP servers -- streamable-HTTP and stdio; where the transport changes the answer, the cell's note says so",
+    "mcp-client": "busbar's outbound leg to registered MCP servers -- streamable-HTTP (stdio is not in 1.6.0, OWNER 2026-10-02)",
     "mcp-server": "busbar's MCP front door: inbound methods from clients and agents",
     "a2a-client": "busbar issuing A2A requests: the relay leg to backend agents (JsonRpc, HttpJson, Grpc -- one relay below the transport axis), originate, card fetch",
     "a2a-server": "busbar's A2A front door: inbound tasks/messages, plus this role's own outbound webhook push delivery",
@@ -181,7 +181,7 @@
       "capability": "breaker-fastfail",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails",
+      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it",
       "root": {
         "state": "none",
         "leg": "root-mcp",

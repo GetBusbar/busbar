@@ -83,19 +83,21 @@ pub const MCP_DEMOTIONS_RESTORED: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// The serve loop could not read its standard input, so the session ends.
+/// RETIRED before 1.6.0 shipped: the MCP stdio serve mode that raised this code is not in 1.6.0
+/// (OWNER 2026-10-02). The number is kept so a log line from a pre-release build still resolves to
+/// an entry that says what happened.
 pub const MCP_STDIO_READ_ERROR: Diagnostic = Diagnostic {
     code: 7063,
     class: Class::Plane,
     slug: "mcp-stdio-read-error",
-    title: "MCP stdio serve read error on stdin (session ending)",
+    title: "MCP stdio serve read error on stdin (session ending) — RETIRED",
     severity: Severity::BenignRecurring,
-    summary: "The MCP stdio server hit a read error on stdin and is shutting the session down. This \
-              is the expected outcome when the peer closes the pipe, so it is logged at debug rather \
-              than as an operator alert.",
-    action: "None — self-heals. Expected when a stdio MCP client disconnects.",
+    summary: "RETIRED. The MCP stdio server hit a read error on stdin and is shutting the session \
+              down. This is the expected outcome when the peer closes the pipe, so it is logged at \
+              debug rather than as an operator alert.",
+    action: "Nothing emits this code. The MCP stdio serve mode is not part of this release.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// MCP input-required result reached the terminal check (ask recogniser missed).

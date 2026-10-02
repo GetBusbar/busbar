@@ -31,23 +31,6 @@ pub const CARRIER_HTTP: &str = "http";
 /// claim is made against this key and the request is made against the one above.
 pub const CARRIER_SSE: &str = "sse";
 
-/// The transport a locally launched server speaks over.
-pub const CARRIER_STDIO: &str = "stdio";
-
-/// Whether `key` is the locally-launched-server claim key above.
-///
-/// A NAMED QUESTION rather than a comparison at each call site, and the naming is the whole point.
-/// These constants are `&str` CLAIM KEYS — the vocabulary a claim is made against — and not the
-/// engine's `Transport` axis, but they are spelled with the word "transport" in them, so every
-/// `if transport == claims::CARRIER_STDIO` reads to a type-blind reader (and to the axis lint,
-/// which is one) as the agnostic core forking on the wire carrier it is forbidden to see. Asking
-/// the question by name states what is actually being asked, and leaves exactly one line in the
-/// tree that compares against this constant: this one, in the plane that owns it.
-#[must_use]
-pub fn is_stdio(key: &str) -> bool {
-    key == CARRIER_STDIO
-}
-
 /// The credential scheme this plane's claims sit under.
 ///
 /// One scheme with alternatives, not several schemes: which alternative a unit uses is the
@@ -56,15 +39,16 @@ const SCHEME: &str = "mcp-inbound";
 
 /// The alternatives a unit may be narrowed to.
 ///
-/// The bearer form is what a caller over the document transport presents. The environment form is
-/// what a locally launched server is handed, because there is no request to carry a header on.
+/// The bearer form is what a caller over the document transport presents, and the only form: this
+/// plane is not served over a carrier without a request to carry a header on (OWNER 2026-10-02:
+/// MCP stdio-serve is not in 1.6.0).
 ///
 /// There is no third, anonymous form. There used to be one, invented as a scheme alternative
 /// because a claim could not say "these units carry no credential" any other way — and a scheme
 /// alternative meaning "none" is exactly what makes the authenticate step's narrowing check
 /// toothless, because narrowing DOWN to it would pass. The discovery document says it in the one
 /// place it belongs instead: its own claim declares no scheme.
-const SCHEME_ALTS: &[&str] = &["bearer", "environment"];
+const SCHEME_ALTS: &[&str] = &["bearer"];
 
 /// The ONE path this protocol is served at. It is fixed, not operator-configurable: a plane's
 /// inbound paths are its own compile-time claims, so a configured address naming any other path is
@@ -77,9 +61,6 @@ pub const DEFAULT_MOUNT: &str = "/mcp";
 
 /// The discovery document for the default mount.
 pub const DEFAULT_METADATA: &str = "/.well-known/oauth-protected-resource/mcp";
-
-/// The named stream a locally launched server's frames arrive on.
-pub const STDIO_STREAM: &str = "mcp";
 
 /// Build one claim over a selector on a named transport.
 const fn claim(transport: &'static str, selector: Selector) -> Claim {
@@ -121,13 +102,11 @@ pub const CLAIMS: &[Claim] = &[
     claim(CARRIER_HTTP, Selector::ExactPath(DEFAULT_MOUNT)),
     // The streamed answer arrives on the same path, framed as events.
     claim(CARRIER_SSE, Selector::ExactPath(DEFAULT_MOUNT)),
-    // A locally launched server has no path at all: its frames arrive on a named stream.
-    claim(CARRIER_STDIO, Selector::StreamName(STDIO_STREAM)),
 ];
 
 /// Whether this plane declares a claim on `key`.
 ///
-/// A NAMED QUESTION on the plane's own declaration, for the same reason `is_stdio` above is one.
+/// A NAMED QUESTION on the plane's own declaration rather than a comparison at the call site.
 /// The arrival step must establish that the claim it was handed is one of THIS plane's — a plane
 /// may not answer a unit on a surface it never declared — and the only honest source for that
 /// answer is the claim table itself. Asked at the call site it reads as `claim.transport ==

@@ -7,7 +7,7 @@
 //! `qa/parity-bindings.md`, and the shadow-oracle `neutrality|boot-lines` cell this
 //! test pins as a fast, always-on regression guard beside it).
 //!
-//! Boots the REAL binary, captures stdout (busbar's default log destination outside `--mcp-stdio`),
+//! Boots the REAL binary, captures stdout (busbar's default log destination),
 //! SIGTERMs it, and asserts the exact ORDERED set of INFO/WARN/ERROR lines after blanking the three
 //! fields that are expected to vary run-to-run: the timestamp, the version literal, and a
 //! `diag=BUSBAR-nnnn` suffix. The one line-group whose RELATIVE order is itself nondeterministic on

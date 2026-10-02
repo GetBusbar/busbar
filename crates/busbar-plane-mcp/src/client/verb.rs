@@ -44,15 +44,14 @@
 //!   busbar does not get to choose the child's revision; the operator chose it by installing it.
 //!
 //! A leg that could not send a handshake could not talk to the stdio ecosystem at all. So the
-//! handshake is BUILT, and it is sent as the child's first message by
-//! the engine's `mcp::client::stdio` — see `StdioChild::handshake`.
+//! handshake is BUILT here, in the shared verb set; the stdio leg that sends it is parked out of
+//! 1.6.0 (OWNER 2026-10-02).
 //!
 //! ## Params are DATA, never argv
 //!
 //! Every variant's payload is serialised into the JSON-RPC `params` object and travels on the
-//! child's stdin. Nothing here can reach `StdioCommand::args`, which is config-only. That is the
-//! fourth spawn decision in the engine's `mcp::client::stdio`'s header, expressed here as the absence of any path from
-//! a verb to an argument vector.
+//! wire. Nothing here can reach an argument vector, which is the absence of any path from a verb to
+//! a spawn.
 
 use super::jsonrpc::{envelope, OutboundRequest};
 use crate::codec::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION, PROTOCOL_VERSION};
@@ -84,10 +83,10 @@ const CLIENT_NAME: &str = "busbar";
 /// `ToolsList` is built by the engine's `mcp::connect::refresh` on every scheduled and operator-driven
 /// re-pull, and `ToolsCall`'s wire form is `super::jsonrpc::tools_call` on the dispatch path. The
 /// other twenty-one variants are reached by the engine's `mcp::client::issue::issue` — which is itself reached today
-/// only from the batteries in the engine's `mcp::tests/stdio_client_leg_tests.rs`, because busbar's own
-/// FRONT DOOR does not yet expose a `prompts/list` that proxies through to an upstream's. The verb
-/// exists, is governed, is audited and is proven against a real child process; what is missing is
-/// the inbound method that would call it, and that is the server plane's surface rather than this
+/// only from the batteries in the engine's `mcp::tests/http_client_leg_tests.rs`, because busbar's own
+/// FRONT DOOR does not expose a `prompts/list` that proxies through to an upstream's. The verb
+/// exists, is governed, is audited and is proven against a real HTTP peer; what is missing is the
+/// inbound method that would call it, and that is the server plane's surface rather than this
 /// module's.
 ///
 /// The allow is on the ENUM and states that, rather than being a blanket over the module: anything

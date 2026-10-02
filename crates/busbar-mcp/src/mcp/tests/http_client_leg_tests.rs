@@ -4,23 +4,17 @@
 //! EVERY METHOD BUSBAR ISSUES OVER STREAMABLE HTTP, driven at a REAL peer on a REAL socket, through
 //! the REAL gate — the `mcp|streamable-http|client|client` column of `qa/method-inventory.json`.
 //!
-//! ## The sibling battery, and what is deliberately NOT duplicated here
+//! ## What this file asserts
 //!
-//! `crate::mcp::tests::stdio_client_leg_tests` drives the same
-//! [`crate::mcp::client::verb::UpstreamVerb`] and the same
-//! [`crate::mcp::client::issue::issue`] down a child process's stdin. Neither the verb set nor the
-//! governed path is this file's to re-prove — one enum, one send site, two transports, which is the
-//! whole point of `Transport::mcp_wire()` being the only place in the tree that asks the axis which
-//! variant it is.
-//!
-//! What is HTTP's alone, and is therefore what this file asserts, is everything a child process has
-//! no analogue for:
+//! The verb set ([`crate::mcp::client::verb::UpstreamVerb`]) and the governed path
+//! ([`crate::mcp::client::issue::issue`]) are driven here against a real HTTP peer, and what the
+//! HTTP carrier owes on top of them:
 //!
 //! - the MIRRORED HEADERS this revision REQUIRES on a request — `Mcp-Method`, `Mcp-Protocol-Version`
-//!   and `Mcp-Name` — which stdio does not have and cannot check, and which busbar's OWN front door
-//!   answers `-32020` to when they disagree with the body;
+//!   and `Mcp-Name` — which busbar's OWN front door answers `-32020` to when they disagree with the
+//!   body;
 //! - the `Authorization` header carrying an RFC 8693 EXCHANGED token, and the down-scope in the
-//!   exchange request, neither of which exists on a local child;
+//!   exchange request;
 //! - the SSRF-checked, address-pinned destination the POST actually goes to.
 //!
 //! ## THE DENOMINATOR IS DERIVED, NOT WRITTEN DOWN
@@ -131,8 +125,8 @@ fn owed_here() -> BTreeSet<String> {
 
 /// The verbs this battery drives: every [`UpstreamVerb`] whose method this transport owes.
 ///
-/// Filtered from `UpstreamVerb::all()` — the same sample set the stdio battery sweeps — rather than
-/// re-listed, so a variant whose params change shape here cannot drift from there.
+/// Filtered from `UpstreamVerb::all()` rather than re-listed, so a variant whose params change shape
+/// cannot drift from the enum.
 fn verbs_here() -> Vec<UpstreamVerb> {
     let owed = owed_here();
     UpstreamVerb::all()

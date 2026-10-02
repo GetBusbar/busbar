@@ -76,8 +76,8 @@ pub(crate) enum Issued {
 ///
 /// ## NO INBOUND CALLER YET, stated rather than softened
 ///
-/// Reached today from `crate::mcp::tests/stdio_client_leg_tests.rs`, which drives it against a real
-/// child process through the real gate. What does not exist is the SERVER-plane method that would
+/// Reached today from `crate::mcp::tests/http_client_leg_tests.rs`, which drives it against a real
+/// HTTP peer through the real gate. What does not exist is the SERVER-plane method that would
 /// proxy a caller's `prompts/list` to an upstream's — that is `crate::mcp::method`'s surface, not
 /// this module's. The gap is named here rather than papered over, and the allow is on this function
 /// alone so anything else in the file losing its caller still breaks the build.
@@ -185,7 +185,6 @@ pub(crate) async fn issue(
         policy: auth.policy,
         timeout: auth.timeout,
         server: server.as_str(),
-        command: auth.stdio.as_ref(),
         grants: auth.grants,
     };
     // (2) THE SEND. A notification takes the one-way arm — see `super::wire::McpWire::notify` for
@@ -209,13 +208,12 @@ pub(crate) async fn issue(
 
     let response = match super::wire::send(auth.transport, &leg, &outbound).await {
         Ok(r) => r,
-        // `e.is_own_refusal()` is true for `TransportError::Refused` (the dispatch-time SSRF guard)
-        // and `TransportError::Supervision` (the crash-loop supervisor's own backoff/quarantine):
-        // NEITHER ever opened a socket, so `OUTCOME_DISPATCHED` here would tell an investigator
+        // `e.is_own_refusal()` is true for `TransportError::Refused` (the dispatch-time SSRF guard),
+        // which never opened a socket, so `OUTCOME_DISPATCHED` here would tell an investigator
         // reading the audit chain that busbar sent something to a destination the guard blocked
         // pre-connect — a record that asserts something that did not happen. `OUTCOME_REFUSED`
         // already exists for exactly this shape of refusal (see the credential-plan and argguard
-        // arms above); this is the same fact, narrowed to the two arms that never left busbar.
+        // arms above); this is the same fact, narrowed to the arm that never left busbar.
         Err(e) if e.is_own_refusal() => {
             let reason = e.to_string();
             record(OUTCOME_REFUSED, reason.clone());
@@ -279,7 +277,7 @@ pub(crate) async fn issue(
     }
 }
 
-// THE BATTERY FOR THIS MODULE LIVES IN `crate::mcp::tests/stdio_client_leg_tests.rs`, beside the
-// other upstream-leg files and not here. The claim is about the JOIN — a verb reaching a real child
-// process through the real gate — and a test that could construct an `Authorised` without going
+// THE BATTERY FOR THIS MODULE LIVES IN `crate::mcp::tests/http_client_leg_tests.rs`, beside the
+// other upstream-leg files and not here. The claim is about the JOIN — a verb reaching a real peer
+// through the real gate — and a test that could construct an `Authorised` without going
 // through `crate::mcp::upstream::authorise` would be proving the gate ran by asserting that it did.
