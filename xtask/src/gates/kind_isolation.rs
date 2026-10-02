@@ -10673,9 +10673,12 @@ mod plant_tests {
             .expect("the absent exemplar is looked up")
             .as_ref()
             .unwrap_or_else(|e| panic!("the pinned exemplar resolves: {e}"));
+        // Its entries as the shape rule counts them (ARCHITECT 2026-09-30, option A): its `impl
+        // Transport` blocks PLUS its door tails. The exemplar is a door, so the one entry it states
+        // is its tail; an `impl` count alone reads zero for it and proves nothing.
         assert_eq!(
-            idx.impls[key].get("Transport").copied(),
-            Some(1),
+            entry_count(&idx, key, "transport", "Transport"),
+            1,
             "the pinned exemplar states exactly one entry"
         );
         let row = rule_shape(&crates, &idx, &pinned);
