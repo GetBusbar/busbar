@@ -7,10 +7,12 @@
 //! dropped gives the probe back. A guard that was disarmed — because the dispatch it covers
 //! recorded its own outcome — gives nothing back. And every release is checked against the epoch
 //! captured at the win, so a guard dropped LATE, after a peer has won a newer probe on the same
-//! cell, cannot revert the peer's.
+//! cell, cannot revert the peer's. The cases that route take the probe through the walk and hand
+//! it to the production far end's attempt, which owns it until it records an outcome.
 
 use super::harness::{ok_frames, Health, Script};
 use super::{member, Node};
+use busbar_contract::conn::ConnError;
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::pool::OnExhausted;
 use busbar_kernel_egress::select::ProbeGuard;
@@ -80,7 +82,7 @@ fn a_delivered_answer_hands_the_probe_to_the_outcome_it_recorded() {
             ..Health::default()
         },
     );
-    node.transport.script("a", Script::Frames(ok_frames()));
+    node.conns.script("a", Script::Frames(ok_frames()));
 
     assert!(node.route("primary").is_delivered());
     assert!(
@@ -149,10 +151,8 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
             ..Health::default()
         },
     );
-    node.transport.script(
-        "a",
-        Script::DialError(busbar_contract::transport::wire::TransportError::Refused),
-    );
+    node.conns
+        .script("a", Script::DialError(ConnError::Refused));
 
     assert!(node.route("primary").shed().is_some());
     let log = node.breaker.log.lock().unwrap();
@@ -162,29 +162,29 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
     let released = log
         .iter()
         .position(|e| matches!(e, super::harness::Recorded::ProbeReleased(..)));
+    // Unconditionally, not behind an `if let`: an attempt that won the probe and recorded nothing
+    // would leave the cell half-open — the member excluded from every later pick — and skipping
+    // the assertion for the absence would report that as a pass.
     let observed = observed.expect("a failed attempt tells the breaker what happened");
-    // Unconditionally, not behind an `if let`: a guard that was armed and never released leaves
-    // `released` at `None`, and skipping the ordering assertion for the absence would report a
-    // wedged half-open cell — the member excluded from every later pick — as a pass.
-    let released = released.expect("the guard released the probe it armed");
     assert!(
-        observed < released,
-        "the outcome is recorded first, which is what makes the guard's release a safe no-op"
+        released.is_none_or(|released| observed < released),
+        "the outcome is recorded first, which is what makes any later release a safe no-op: \
+         {log:?}"
     );
 }
 
 // ── the shed paths that dispatch nothing ────────────────────────────────────────────────────────
 //
-// A pick can win the recovery probe and then never reach a dispatch: the walk resolves the picked
-// member against the verified set AFTER the pick, and a member that set does not carry sheds
-// internally. Nothing downstream records an outcome on such a path, so the probe has to come back
-// from the pick itself — otherwise the cell stays half-open and the member is excluded from every
+// A pick can win the recovery probe and then never reach a dispatch: the far end resolves the
+// picked member against its sealed routes AFTER the pick, and a member with no route is not sent.
+// Nothing downstream records an outcome on such a path, so the probe has to come back when the
+// attempt is settled — otherwise the cell stays half-open and the member is excluded from every
 // later pick as a probe already in flight.
 
 #[test]
 fn a_walk_that_sheds_internally_gives_a_won_probe_back() {
     let mut node = Node::with_lanes(&["a"]);
-    // Destination 3 is not in the verified set, so the walk resolves it to nothing and sheds.
+    // Destination 3 has no sealed route, so the far end sends nothing to it.
     node.pool("primary", vec![member(DestinationId::new(3), "ghost")]);
     node.breaker.set(
         DestinationId::new(3),

@@ -1,40 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The harness every test in this crate drives the unit through.
+//! The harness every test in this module drives the walk through.
 //!
-//! It is a whole node in miniature: a scripted transport, a plane that reads the script's frames,
-//! a breaker with a settable state per cell, a permit store with a settable ceiling per member, a
-//! clock that never really sleeps, and counters that record what was called. Nothing here talks to
-//! a network, a runtime or a wall clock, which is why the whole walk — including its one bounded
-//! wait — runs on a single thread and answers the same way every time.
+//! It is a node in miniature over the PRODUCTION far end: a scripted connection table, a breaker
+//! with a settable state per cell, a permit store with a settable ceiling per member, a clock on
+//! the harness's own paused runtime, and counters that record what was called. Nothing here talks
+//! to a network or a wall clock, which is why every route — its timeouts, its one bounded wait and
+//! a far end that drips its answer — answers the same way every time.
 //!
-//! The clock deserves its own sentence, because two tests depend on it exactly. `sleep(0)` is
-//! ready at once; every longer sleep is pending on its first poll and ready on its second. That
-//! makes a deadline lose to work that can finish now and win against work that cannot, which is
-//! precisely what a real timer does and what the two race orders in the unit are written against.
+//! The clock deserves its own sentence. It reads the paused runtime's time plus whatever a test
+//! moved it by, so the walk's deadline, the far end's caps and a scripted far end's pace are all
+//! one timeline: a far end that says nothing is cut exactly when its cap says, and a test that
+//! spends the walk's budget by hand spends it without waiting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+use std::time::Duration;
 
-use busbar_contract::transport::registry::status_ns;
-use busbar_contract::transport::wire::ArrivalRecord;
-use busbar_contract::transport::wire::Conn;
-use busbar_contract::transport::wire::ConnHandle;
-use busbar_contract::transport::wire::Decode;
-use busbar_contract::transport::wire::Direction;
-use busbar_contract::transport::wire::Encode;
-use busbar_contract::transport::wire::FrameMeta;
-use busbar_contract::transport::wire::TransportError;
-use busbar_contract::transport::wire::WireStatus;
-use busbar_contract::transport::wire::WireStatusClass;
-use busbar_contract::{
-    AdmitFacts, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts, EgressBody,
-    Frame, Ingress, Ir, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress, Refusal, RoutePlan,
-    ScopeFacts, ScratchBytes, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle, Unit,
-    UnitEnd, UsageLocators, VerifiedDestination,
+use busbar_contract::conn::{
+    ConnError, ConnId, Conns, InstanceId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
 };
+use busbar_contract::ids::StreamId;
+use busbar_contract::transport::registry::status_ns;
+use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
+use busbar_contract::transport::ConnFacts;
 use busbar_kernel_breaker::classify::{
     GRPC_ABORTED, GRPC_DATA_LOSS, GRPC_DEADLINE_EXCEEDED, GRPC_INTERNAL, GRPC_PERMISSION_DENIED,
     GRPC_RESOURCE_EXHAUSTED, GRPC_UNAUTHENTICATED, GRPC_UNAVAILABLE, GRPC_UNKNOWN,
@@ -42,62 +36,69 @@ use busbar_kernel_breaker::classify::{
 
 use busbar_kernel_egress::ports::{
     disposition, Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
-    Disposition, DurabilityUnavailable, EgressAuth, Journal, OutboundRequest, Outcome, Permit,
-    PermitHandle, Telemetry, Unavailable, UpstreamStatus,
+    Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
+    Unavailable, UpstreamStatus,
 };
 
-/// The seal the kernel-built views below are handed. `KernelSeal` is SEALED — no crate outside
-/// `busbar-contract` can implement it — and this crate is the kernel, so a fixture presents a real
-/// `Pass<Route>` minted through the kernel seal rather than the contract's `test-seal` type.
-fn kernel_seal() -> busbar_contract::caps::Pass<busbar_contract::caps::Route> {
+/// The route step's pass, minted through the kernel seal as the kernel's own loop mints it; this
+/// crate is the kernel, so a fixture presents a real `Pass<Route>`.
+pub fn route_token() -> busbar_contract::caps::Pass<busbar_contract::caps::Route> {
     busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
 }
 
 // ── the clock ───────────────────────────────────────────────────────────────────────────────────
 
-/// A clock the test moves by hand.
-#[derive(Debug, Default)]
+/// A clock on the harness's paused runtime, which a test can also move by hand.
+#[derive(Debug)]
 pub struct TestClock {
-    secs: AtomicU64,
-    millis: AtomicU64,
+    /// The runtime whose (paused) time this clock reads.
+    handle: tokio::runtime::Handle,
+    /// The runtime's time when the clock was made.
+    epoch: tokio::time::Instant,
+    /// The reading at the epoch, plus every hand-made move since, in milliseconds.
+    offset_millis: AtomicU64,
     /// Every `ms` a caller has asked this clock to sleep for, in call order.
-    ///
-    /// `sleep`'s own readiness (see [`TwoPollSleep`]) is blind to this value once it is nonzero —
-    /// it resolves at the same poll count whatever the duration — so a test that wants to pin the
-    /// VALUE a caller computed and handed to `sleep` (rather than the order two sleeps resolve in)
-    /// has to read it back from here.
     pub durations: Mutex<Vec<u64>>,
 }
 
 impl TestClock {
-    pub fn at(secs: u64) -> Self {
+    /// A clock reading `secs` now, on `handle`'s runtime.
+    pub fn at(handle: tokio::runtime::Handle, secs: u64) -> Self {
+        let epoch = {
+            let _in = handle.enter();
+            tokio::time::Instant::now()
+        };
         Self {
-            secs: AtomicU64::new(secs),
-            millis: AtomicU64::new(secs * 1000),
+            handle,
+            epoch,
+            offset_millis: AtomicU64::new(secs * 1000),
             durations: Mutex::new(Vec::new()),
         }
     }
 
-    /// Move time forward.
+    /// Move time forward by hand.
     pub fn advance_secs(&self, by: u64) {
-        self.secs.fetch_add(by, Ordering::Relaxed);
-        self.millis.fetch_add(by * 1000, Ordering::Relaxed);
+        self.offset_millis.fetch_add(by * 1000, Ordering::Relaxed);
     }
 
-    /// Move time forward by milliseconds, keeping the whole-second reading consistent with it.
-    pub fn advance_millis(&self, by: u64) {
-        let millis = self.millis.fetch_add(by, Ordering::Relaxed) + by;
-        self.secs.store(millis / 1000, Ordering::Relaxed);
+    fn millis(&self) -> u64 {
+        let ran = {
+            let _in = self.handle.enter();
+            tokio::time::Instant::now().duration_since(self.epoch)
+        };
+        self.offset_millis
+            .load(Ordering::Relaxed)
+            .saturating_add(u64::try_from(ran.as_millis()).unwrap_or(u64::MAX))
     }
 }
 
 impl Clock for TestClock {
     fn now_secs(&self) -> u64 {
-        self.secs.load(Ordering::Relaxed)
+        self.millis() / 1000
     }
 
     fn now_millis(&self) -> u128 {
-        u128::from(self.millis.load(Ordering::Relaxed))
+        u128::from(self.millis())
     }
 
     fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
@@ -105,31 +106,8 @@ impl Clock for TestClock {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(ms);
-        Box::pin(TwoPollSleep {
-            ready_now: ms == 0,
-            polled: false,
-        })
-    }
-}
-
-struct TwoPollSleep {
-    ready_now: bool,
-    polled: bool,
-}
-
-impl std::future::Future for TwoPollSleep {
-    type Output = ();
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
-        if self.ready_now || self.polled {
-            return std::task::Poll::Ready(());
-        }
-        self.polled = true;
-        cx.waker().wake_by_ref();
-        std::task::Poll::Pending
+        let _in = self.handle.enter();
+        Box::pin(tokio::time::sleep(Duration::from_millis(ms)))
     }
 }
 
@@ -568,7 +546,7 @@ impl Capacity for TestCapacity {
     }
 }
 
-// ── the journal, the decoration, the counters ───────────────────────────────────────────────────
+// ── the journal and the counters ───────────────────────────────────────────────────────────────
 
 /// A journal that records every dispatch and can be told to fail.
 #[derive(Debug, Default)]
@@ -601,50 +579,6 @@ impl Journal for TestJournal {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(record.clone());
-    }
-}
-
-/// A decoration that adds one field, and can be told to move the lane.
-#[derive(Debug, Default)]
-pub struct TestEgressAuth {
-    /// When set, the decoration writes this value into the lane field — the exact thing the lane
-    /// cross-check exists to catch.
-    pub rewrite_lane_to: Mutex<Option<String>>,
-    pub lane_field: Mutex<Option<String>>,
-}
-
-impl TestEgressAuth {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl EgressAuth for TestEgressAuth {
-    fn decorate(
-        &self,
-        request: &mut OutboundRequest<'_>,
-    ) -> Result<(), busbar_kernel_egress::ports::DecorationRefused> {
-        request
-            .fields
-            .push(("authorization".to_string(), b"decorated".to_vec()));
-        let rewrite = self
-            .rewrite_lane_to
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let field = self
-            .lane_field
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        if let (Some(value), Some(field)) = (rewrite, field) {
-            for (name, slot) in request.fields.iter_mut() {
-                if *name == field {
-                    *slot = value.clone().into_bytes();
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -703,100 +637,138 @@ impl Telemetry for TestTelemetry {
     }
 }
 
-// ── the transport ───────────────────────────────────────────────────────────────────────────────
+// ── the far end ─────────────────────────────────────────────────────────────────────────────────
 
-/// What one member does when it is dialled.
+/// One answering piece a scripted far end sends: the status class, the exact number and the wait
+/// it asked for, on the answer's first piece; its body bytes.
+#[derive(Clone, Debug)]
+pub struct Reply {
+    pub status: Option<WireStatusClass>,
+    pub code: Option<WireStatus>,
+    pub retry_after: Option<u64>,
+    pub body: &'static str,
+}
+
+/// What one member's far end does when the walk opens a connection to it.
 #[derive(Clone, Debug)]
 pub enum Script {
-    /// Answer with these frames.
-    Frames(Vec<Frame>),
-    /// Refuse the dial.
-    DialError(TransportError),
-    /// Accept the dial and then say nothing at all — the hang the per-attempt cap detects.
+    /// Answer with these pieces, then complete.
+    Frames(Vec<Reply>),
+    /// Refuse the open.
+    DialError(ConnError),
+    /// Open and then say nothing at all — the hang the per-attempt cap detects.
     Hang,
-    /// Answer with a first frame and then die before the terminal one.
-    Truncated(Frame),
-    /// Answer with these frames, with `step_ms` of the clock's time passing before each one
-    /// arrives. This is the trickle an upstream produces when it emits just enough to look alive:
-    /// every frame on its own is well inside any bound, and the answer as a whole is not.
+    /// Answer with a first piece and then drop the connection before the answer completes.
+    Truncated(Reply),
+    /// Answer with these pieces, `step_ms` of the runtime's time apart (the first one `step_ms`
+    /// after the open): the trickle a far end produces when it sends just enough to look alive.
+    /// `complete` ends the answer with its last piece; otherwise it never ends.
     Drip {
-        /// The frames, in arrival order.
-        frames: Vec<Frame>,
-        /// How much time passes before each of them.
+        replies: Vec<Reply>,
         step_ms: u64,
-        /// The clock that time passes on.
-        clock: Arc<TestClock>,
+        complete: bool,
     },
 }
 
-/// A response frame with the transport's own status reading on it.
-pub fn frame(status: Option<WireStatusClass>, body: &str) -> Frame {
+/// An answering piece with the far end's status class on it.
+pub fn frame(status: Option<WireStatusClass>, body: &'static str) -> Reply {
     frame_with_upstream(status, None, None, body)
 }
 
-/// A response frame carrying the whole status leg a real transport reads off an answer: the coarse
-/// class, the exact number the upstream put on it, and the wait it asked for.
+/// An answering piece carrying the whole status leg a connector reads off an answer: the coarse
+/// class, the exact number the far end put on it (in its numbering), and the wait it asked for.
 pub fn frame_with_upstream(
     status: Option<WireStatusClass>,
-    status_code: Option<WireStatus>,
-    retry_after_secs: Option<u64>,
-    body: &str,
-) -> Frame {
-    Frame {
-        direction: Direction::Inbound,
-        stream: StreamId(0),
-        bytes: SlabBytes::new(Arc::from(body.as_bytes().to_vec().into_boxed_slice())),
-        meta: FrameMeta {
-            bytes: body.len() as u64,
-            transport_units: None,
-            status,
-            status_code,
-            retry_after_secs,
-        },
+    code: Option<WireStatus>,
+    retry_after: Option<u64>,
+    body: &'static str,
+) -> Reply {
+    Reply {
+        status,
+        code,
+        retry_after,
+        body,
     }
 }
 
-/// A two-frame success: an answer and its terminal.
-pub fn ok_frames() -> Vec<Frame> {
+/// A two-piece success.
+pub fn ok_frames() -> Vec<Reply> {
     vec![
         frame(Some(WireStatusClass::Success), "head"),
         frame(Some(WireStatusClass::Success), "end"),
     ]
 }
 
-#[derive(Debug)]
-struct TestConn(u64);
-
-impl ConnHandle for TestConn {
-    fn id(&self) -> u64 {
-        self.0
-    }
-
-    fn peer(&self) -> String {
-        format!("test-peer-{}", self.0)
-    }
+/// What a read gets once a connection's scripted pieces are spent.
+#[derive(Clone, Copy, Debug)]
+enum Tail {
+    /// Nothing more, ever (the answer completed, or the far end hangs).
+    Silent,
+    /// The connection drops.
+    Reset,
 }
 
-/// A transport that answers from a per-member script and records what it was asked to write.
-#[derive(Debug, Default)]
-pub struct TestTransport {
+/// One open connection's script, as it plays out.
+struct Answer {
+    /// The pieces, their bytes and when each may be read (`None`: at once).
+    pieces: VecDeque<(Piece, Vec<u8>, Option<tokio::time::Instant>)>,
+    tail: Tail,
+    /// The timer a read that came early is waiting on, and what it waits for.
+    timer: Option<(tokio::time::Instant, Pin<Box<tokio::time::Sleep>>)>,
+}
+
+fn body_piece(reply: &Reply) -> (Piece, Vec<u8>) {
+    (
+        Piece {
+            kind: PieceKind::Body,
+            stream: StreamId(0),
+            len: reply.body.len(),
+            end: false,
+            status: reply.status,
+            status_code: reply.code.map(|c| c.code),
+            status_namespace: reply.code.map(|c| c.namespace.to_string()),
+            retry_after_secs: reply.retry_after,
+            reason: None,
+        },
+        reply.body.as_bytes().to_vec(),
+    )
+}
+
+fn completion() -> (Piece, Vec<u8>) {
+    (
+        Piece {
+            kind: PieceKind::Completion,
+            stream: StreamId(0),
+            len: 0,
+            end: true,
+            status: None,
+            status_code: None,
+            status_namespace: None,
+            retry_after_secs: None,
+            reason: None,
+        },
+        Vec::new(),
+    )
+}
+
+/// A connection table whose far ends answer from a per-lane script (the target's host is
+/// `<lane>.test`), recording every open.
+#[derive(Default)]
+pub struct TestConns {
     scripts: Mutex<HashMap<String, Script>>,
-    pub dialled: Mutex<Vec<String>>,
-    pub written: Mutex<Vec<Vec<u8>>>,
-    /// Where each envelope this transport rendered was put, as an address into the arena.
-    pub encoded_at: Mutex<Vec<usize>>,
-    /// Where each buffer handed to `write` began. Comparing the two lists is how a test tells the
-    /// arena's own bytes from a copy of them: the same address is the same allocation.
-    pub written_at: Mutex<Vec<usize>>,
-    pub closed: Mutex<usize>,
+    /// Every open, in order: the lane it reached and the attempt cap it was handed, ms.
+    pub opened: Mutex<Vec<(String, u64)>>,
+    live: Mutex<HashMap<u64, Answer>>,
+    next: AtomicU64,
+    pub closed: AtomicU64,
 }
 
-impl TestTransport {
+impl TestConns {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// What the member on this lane does when it is dialled.
+    /// What the member on this lane does when it is opened.
     pub fn script(&self, lane: &str, script: Script) {
         self.scripts
             .lock()
@@ -804,555 +776,147 @@ impl TestTransport {
             .insert(lane.to_string(), script);
     }
 
-    fn script_for(&self, lane: &str) -> Script {
-        self.scripts
+    /// The lanes opened, in order.
+    pub fn dialled(&self) -> Vec<String> {
+        self.opened
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(lane)
+            .iter()
+            .map(|(lane, _)| lane.clone())
+            .collect()
+    }
+}
+
+impl Conns for TestConns {
+    fn open(
+        &self,
+        _: InstanceId,
+        _: busbar_contract::conn::NeedId,
+        d: &OpenDesc<'_>,
+    ) -> Result<ConnId, ConnError> {
+        let lane = d
+            .target
+            .split("://")
+            .nth(1)
+            .and_then(|r| r.split('/').next())
+            .and_then(|h| h.strip_suffix(".test"))
+            .unwrap_or_default()
+            .to_string();
+        self.opened
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((lane.clone(), d.timeout_ms));
+        let script = self
+            .scripts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&lane)
             .cloned()
-            .unwrap_or_else(|| Script::Frames(ok_frames()))
-    }
-
-    fn lane_of(dest: &VerifiedDestination) -> String {
-        dest.lane().map(|l| l.to_string()).unwrap_or_default()
-    }
-}
-
-impl Plugin for TestTransport {
-    fn key(&self) -> &'static str {
-        "test-transport"
-    }
-
-    fn kind(&self) -> Kind {
-        Kind::Transport
-    }
-
-    fn abi(&self) -> busbar_contract::transport::AbiVersion {
-        busbar_contract::transport::AbiVersion(1)
-    }
-}
-
-impl busbar_contract::Transport for TestTransport {
-    fn arrival(&self, _conn: &Conn) -> ArrivalRecord {
-        ArrivalRecord {
-            source: "test".to_string(),
-            port: 0,
-            alpn: None,
-            sni: None,
-            peer_cert: None,
-            transport_chain: vec!["test-transport"],
-        }
-    }
-
-    fn listen<'a>(
-        &'a self,
-        _cfg: &'a dyn busbar_contract::TransportConfigView,
-        _keys: &'a TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Listener> {
-        Box::pin(async { Err(TransportError::Refused) })
-    }
-
-    fn accept<'a>(
-        &'a self,
-        _l: &'a busbar_contract::transport::wire::Listener,
-    ) -> busbar_contract::Fut<'a, Conn> {
-        Box::pin(async { Err(TransportError::Refused) })
-    }
-
-    fn dial<'a>(
-        &'a self,
-        dest: &'a VerifiedDestination,
-        _keys: &'a TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, Conn> {
-        let lane = Self::lane_of(dest);
-        Box::pin(async move {
-            self.dialled
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(lane.clone());
-            match self.script_for(&lane) {
-                Script::DialError(e) => Err(e),
-                _ => Ok(Conn::new(Arc::new(TestConn(1)))),
+            .unwrap_or_else(|| Script::Frames(ok_frames()));
+        let now = tokio::time::Instant::now();
+        let at = |p: (Piece, Vec<u8>), due: Option<tokio::time::Instant>| (p.0, p.1, due);
+        let (pieces, tail) = match script {
+            Script::DialError(e) => return Err(e),
+            Script::Frames(replies) => {
+                let mut pieces: VecDeque<_> =
+                    replies.iter().map(|r| at(body_piece(r), None)).collect();
+                pieces.push_back(at(completion(), None));
+                (pieces, Tail::Silent)
             }
-        })
-    }
-
-    fn frames(&self, _conn: Conn) -> busbar_contract::transport::FrameStream {
-        // The stream is built from the LAST dialled lane's script, which is the connection that
-        // was just opened — the harness dials one member at a time, exactly as the walk does.
-        let lane = self
-            .dialled
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .last()
-            .cloned()
-            .unwrap_or_default();
-        match self.script_for(&lane) {
-            Script::Frames(frames) => Box::pin(futures::stream::iter(
-                frames.into_iter().map(|f| Ok((StreamId(0), f))),
-            )),
+            Script::Hang => (VecDeque::new(), Tail::Silent),
             Script::Truncated(first) => {
-                Box::pin(futures::stream::iter(vec![Ok((StreamId(0), first))]))
+                (VecDeque::from([at(body_piece(&first), None)]), Tail::Reset)
             }
-            Script::Hang => Box::pin(futures::stream::pending()),
             Script::Drip {
-                frames,
+                replies,
                 step_ms,
-                clock,
-            } => Box::pin(futures::StreamExt::map(
-                futures::stream::iter(frames),
-                move |f| {
-                    // The closure runs as the item is pulled, so the time passes when the reader
-                    // waits for the frame rather than all at once when the stream is built.
-                    clock.advance_millis(step_ms);
-                    Ok((StreamId(0), f))
-                },
-            )),
-            Script::DialError(e) => Box::pin(futures::stream::iter(vec![Err(e)])),
-        }
+                complete,
+            } => {
+                let mut due = now;
+                let mut pieces = VecDeque::new();
+                for r in &replies {
+                    due += Duration::from_millis(step_ms);
+                    pieces.push_back(at(body_piece(r), Some(due)));
+                }
+                if complete {
+                    pieces.push_back(at(completion(), Some(due)));
+                }
+                (pieces, Tail::Silent)
+            }
+        };
+        let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+        self.live.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            id,
+            Answer {
+                pieces,
+                tail,
+                timer: None,
+            },
+        );
+        Ok(ConnId(id))
     }
 
-    fn write<'a>(
-        &'a self,
-        _conn: &'a Conn,
-        _stream: StreamId,
-        bytes: ScratchBytes<'a>,
-    ) -> busbar_contract::Fut<'a, usize> {
-        let len = bytes.len();
-        Box::pin(async move {
-            self.written_at
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(bytes.as_slice().as_ptr() as usize);
-            self.written
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(bytes.as_slice().to_vec());
-            Ok(len)
-        })
+    fn write(&self, _: InstanceId, _: ConnId, b: &[u8], _: bool) -> Result<usize, ConnError> {
+        Ok(b.len())
     }
 
-    fn encode_envelope<'a>(
-        &self,
-        fields: &[(&str, &[u8])],
-        body: &[u8],
-        arena: &'a dyn busbar_contract::PlaneAlloc,
-    ) -> Result<busbar_contract::ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
-        // The fixture's own wire shape, standing in for a real transport's: every field, then the
-        // body. What the tests assert is that the cross-check and the write see the SAME bytes,
-        // and one buffer is what makes that true whatever the layout is.
-        let mut out = Vec::new();
-        for (name, value) in fields {
-            out.extend_from_slice(name.as_bytes());
-            out.extend_from_slice(b": ");
-            out.extend_from_slice(value);
-            out.push(b'\n');
-        }
-        out.push(b'\n');
-        out.extend_from_slice(body);
-        let encoded = arena
-            .alloc_bytes(&out)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)?;
-        self.encoded_at
+    fn read(&self, _: InstanceId, _: ConnId, _: Ticket, _: &mut [u8]) -> Result<Piece, ConnError> {
+        Err(ConnError::Pending)
+    }
+
+    fn wait(&self, _: InstanceId, _: &[ConnId], _: Ticket) -> Result<usize, ConnError> {
+        Err(ConnError::Pending)
+    }
+
+    fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
+        Ok(ConnFacts::default())
+    }
+
+    fn close(&self, _: InstanceId, conn: ConnId) -> Result<(), ConnError> {
+        self.live
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(encoded.as_slice().as_ptr() as usize);
-        Ok(encoded)
-    }
-
-    fn adopt<'a>(
-        &'a self,
-        _from: &'a dyn busbar_contract::Transport,
-        _conn: Conn,
-        _keys: &'a TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, Conn> {
-        Box::pin(async { Err(TransportError::HandoffMismatch) })
-    }
-
-    fn detach(&self, _conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
-        None
-    }
-
-    fn composed_over(&self) -> Option<&'static str> {
-        None
-    }
-
-    fn close(&self, _conn: Conn, _reason: busbar_contract::transport::wire::CloseReason) {
-        *self.closed.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-    }
-
-    fn unit0_refusal<'a>(
-        &'a self,
-        _conn: Conn,
-        _stream: Option<busbar_contract::StreamId>,
-        _refusal: &'a Refusal,
-        _bytes: ScratchBytes<'a>,
-    ) -> busbar_contract::Fut<'a, ()> {
-        Box::pin(async { Ok(()) })
+            .remove(&conn.0);
+        self.closed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
-// ── the plane ───────────────────────────────────────────────────────────────────────────────────
-
-/// A plane that encodes a fixed body and reads the script's frames back.
-///
-/// It is as small as the trait allows: the unit calls exactly two of its methods on the egress
-/// path, and the rest are here because the contract has no default bodies — a plane that could
-/// decline to answer would be indistinguishable from one that answered.
-#[derive(Debug, Default)]
-pub struct TestPlane {
-    /// When set, the egress encode refuses — the assemble failure the attempt bails on.
-    pub refuse_encode: Mutex<bool>,
-    /// The envelope field the lane name goes in, where the test wants one written.
-    pub lane_field: Mutex<Option<String>>,
-    pub decoded: Mutex<usize>,
-}
-
-impl TestPlane {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl Plugin for TestPlane {
-    fn key(&self) -> &'static str {
-        "test-plane"
-    }
-
-    fn kind(&self) -> Kind {
-        Kind::Plane
-    }
-
-    fn abi(&self) -> busbar_contract::transport::AbiVersion {
-        busbar_contract::transport::AbiVersion(1)
-    }
-}
-
-impl busbar_contract::Plane for TestPlane {
-    fn decode_ingress<'u>(
+impl PollConns for TestConns {
+    fn poll_read(
         &self,
-        _frames: &mut busbar_contract::FrameCursor<'u>,
-        _st: Option<&mut busbar_contract::PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<Ingress<'u>, Decode> {
-        Ok(Ingress::NeedMore)
-    }
-
-    fn encode_egress<'u>(
-        &self,
-        _u: &Unit<'u>,
-        dest: &VerifiedDestination,
-        _st: Option<&mut busbar_contract::PlaneSessionState>,
-        ctx: &Ctx<'u>,
-    ) -> Result<EgressBody<'u>, Encode> {
-        if *self.refuse_encode.lock().unwrap_or_else(|e| e.into_inner()) {
-            return Err(Encode::Unrepresentable);
-        }
-        let mut envelope = TransportEnvelope::default();
-        if let (Some(field), Some(lane)) = (
-            self.lane_field
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
-            dest.lane(),
-        ) {
-            let name = ctx
-                .arena()
-                .alloc_str(&field)
-                .map_err(|_| Encode::ScratchExhausted)?;
-            let value = ctx
-                .arena()
-                .alloc_bytes(lane.as_str().as_bytes())
-                .map_err(|_| Encode::ScratchExhausted)?;
-            envelope
-                .fields
-                .push(busbar_contract::EnvelopeField { name, value })
-                .map_err(|_| Encode::ScratchExhausted)?;
-        }
-        let body = ctx
-            .arena()
-            .alloc_bytes(b"request")
-            .map_err(|_| Encode::ScratchExhausted)?;
-        Ok(EgressBody {
-            envelope,
-            body,
-            auth: busbar_contract::SchemeKey::new("test-scheme"),
-        })
-    }
-
-    fn encode_ingress_frame<'u>(
-        &self,
-        _u: &Unit<'u>,
-        _f: &Frame,
-        _dest: &VerifiedDestination,
-        _st: Option<&mut busbar_contract::PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
-        Ok(None)
-    }
-
-    fn decode_response<'u>(
-        &self,
-        frames: &mut busbar_contract::FrameCursor<'u>,
-        _dest: &VerifiedDestination,
-        _st: Option<&mut busbar_contract::PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<Progress<'u>, Decode> {
-        *self.decoded.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-        let Some(frame) = frames.next_frame() else {
-            return Ok(Progress::NeedMore);
+        _: InstanceId,
+        conn: ConnId,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<Piece, ConnError>> {
+        let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(answer) = live.get_mut(&conn.0) else {
+            return Poll::Ready(Err(ConnError::Closed));
         };
-        let response = busbar_contract::Response {
-            ir: Ir::new(&[], &[]),
-            finish: if frame.bytes.as_slice() == b"end" {
-                busbar_contract::FinishClass::Complete
-            } else {
-                busbar_contract::FinishClass::Partial
-            },
-            facts: busbar_contract::Facts::new(),
+        let Some(due) = answer.pieces.front().map(|p| p.2) else {
+            return match answer.tail {
+                // A silent far end never answers (and never wakes).
+                Tail::Silent => Poll::Pending,
+                Tail::Reset => Poll::Ready(Err(ConnError::Closed)),
+            };
         };
-        if frame.bytes.as_slice() == b"end" {
-            Ok(Progress::Terminal {
-                for_: None,
-                r: Box::new(response),
-            })
-        } else {
-            Ok(Progress::Frame {
-                for_: None,
-                r: Box::new(response),
-            })
+        if let Some(due) = due {
+            if tokio::time::Instant::now() < due {
+                if answer.timer.as_ref().map(|(at, _)| *at) != Some(due) {
+                    answer.timer = Some((due, Box::pin(tokio::time::sleep_until(due))));
+                }
+                if let Some((_, timer)) = answer.timer.as_mut() {
+                    if timer.as_mut().poll(cx).is_pending() {
+                        return Poll::Pending;
+                    }
+                }
+            }
         }
+        let Some((piece, bytes, _)) = answer.pieces.pop_front() else {
+            return Poll::Pending;
+        };
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Poll::Ready(Ok(piece))
     }
-
-    fn encode_response<'u>(
-        &self,
-        _r: &busbar_contract::Response<'u>,
-        _st: Option<&mut busbar_contract::PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<ScratchBytes<'u>, Encode> {
-        Ok(ScratchBytes::new(&[]))
-    }
-
-    fn encode_refusal<'u>(
-        &self,
-        _refusal: &Refusal,
-        _draft: Option<&busbar_contract::UnitDraft<'u>>,
-        _st: Option<&busbar_contract::PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<ScratchBytes<'u>, Encode> {
-        Ok(ScratchBytes::new(&[]))
-    }
-
-    fn encode_end<'u>(
-        &self,
-        _u: &Unit<'u>,
-        _end: &UnitEnd,
-        _st: Option<&mut busbar_contract::PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
-        Ok(None)
-    }
-
-    fn authenticate<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
-        CredentialLocator::default()
-    }
-
-    fn verify<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
-        DestinationFacts::Upstream {
-            transport: "test-transport",
-            address: busbar_contract::transport::dest::UpstreamAddress::socket("test-host"),
-            lane: LaneId::new("test-lane"),
-        }
-    }
-
-    fn approve<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        ScopeFacts::default()
-    }
-
-    fn admit<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        AdmitFacts::default()
-    }
-
-    fn route<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {
-        RoutePlan::default()
-    }
-
-    fn meter<'u>(
-        &self,
-        _u: &Unit<'u>,
-        _r: &busbar_contract::Response<'u>,
-        _ctx: &Ctx<'u>,
-    ) -> UsageLocators {
-        UsageLocators::default()
-    }
-
-    fn audit<'u>(&self, _u: &Unit<'u>, _out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
-        AuditFacts {
-            op_class: busbar_contract::OpClassId::new("test-op"),
-            finish: busbar_contract::FinishClass::Complete,
-        }
-    }
-
-    fn plane_facts<'u>(
-        &self,
-        _verb: busbar_contract::AdminVerbId,
-        _subject: Option<&'u str>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<PlaneFacts<'u>, Decode> {
-        Ok(PlaneFacts::default())
-    }
-
-    fn content_facts<'u>(
-        &self,
-        _u: &Unit<'u>,
-        _r: &busbar_contract::Response<'u>,
-        _ctx: &Ctx<'u>,
-    ) -> ContentFacts<'u> {
-        ContentFacts::default()
-    }
-}
-
-// ── the context ─────────────────────────────────────────────────────────────────────────────────
-
-/// An arena that leaks. Every allocation lives for the process, which is exactly right for a test
-/// and exactly wrong for a node — the real arena is fixed-size and reset per unit.
-#[derive(Debug, Default)]
-pub struct LeakPlaneAlloc;
-
-impl busbar_contract::PlaneAlloc for LeakPlaneAlloc {
-    fn alloc_bytes<'a>(
-        &'a self,
-        src: &[u8],
-    ) -> Result<ScratchBytes<'a>, busbar_contract::PlaneAllocBudget> {
-        Ok(ScratchBytes::new(Box::leak(
-            src.to_vec().into_boxed_slice(),
-        )))
-    }
-
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, busbar_contract::PlaneAllocBudget> {
-        Ok(Box::leak(src.to_string().into_boxed_str()))
-    }
-
-    fn alloc_spans<'a>(
-        &'a self,
-        src: &[(&'a str, busbar_contract::Span)],
-    ) -> Result<&'a [(&'a str, busbar_contract::Span)], busbar_contract::PlaneAllocBudget> {
-        Ok(Box::leak(src.to_vec().into_boxed_slice()))
-    }
-
-    fn remaining(&self) -> usize {
-        usize::MAX
-    }
-}
-
-/// A configuration view with nothing in it.
-#[derive(Debug, Default)]
-pub struct EmptyConfig;
-
-impl busbar_contract::ConfigView for EmptyConfig {
-    fn get_str(&self, _key: &str) -> Option<&str> {
-        None
-    }
-
-    fn get_int(&self, _key: &str) -> Option<i64> {
-        None
-    }
-
-    fn get_bool(&self, _key: &str) -> Option<bool> {
-        None
-    }
-}
-
-/// The transport stack under the test unit.
-#[derive(Debug, Default)]
-pub struct TestTransportView;
-
-impl busbar_contract::TransportView for TestTransportView {
-    fn key(&self) -> &'static str {
-        "test-transport"
-    }
-
-    fn chain(&self) -> &[&'static str] {
-        &["test-transport"]
-    }
-
-    fn fact(&self, _key: &str) -> Option<&str> {
-        None
-    }
-}
-
-/// Everything the plane is called with, owned so a test can hold it for the length of a walk.
-pub struct PlaneContext {
-    pub arena: LeakPlaneAlloc,
-    pub config: EmptyConfig,
-    pub transport: TestTransportView,
-    pub labels: Labels<'static>,
-}
-
-impl Default for PlaneContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PlaneContext {
-    pub fn new() -> Self {
-        Self {
-            arena: LeakPlaneAlloc,
-            config: EmptyConfig,
-            transport: TestTransportView,
-            labels: Labels::new(),
-        }
-    }
-
-    pub fn ctx(&self) -> Ctx<'_> {
-        Ctx::new(
-            busbar_contract::Clock {
-                unix_secs: 0,
-                monotonic_nanos: 0,
-            },
-            &self.config,
-            None,
-            &self.transport,
-            &self.labels,
-            &self.arena,
-        )
-    }
-}
-
-/// The unit the plane is handed. Built with the kernel-side marker, because a plane that could
-/// build one could write its own evidence.
-pub fn test_unit() -> Unit<'static> {
-    Unit::new(
-        &kernel_seal(),
-        busbar_contract::UnitKey::new(1),
-        busbar_contract::Origin::Client,
-        None,
-        Some(StreamId(0)),
-        Direction::Outbound,
-        None,
-        busbar_contract::OpClassId::new("test-op"),
-        Ir::new(&[], &[]),
-        busbar_contract::bounded::Facts::new(),
-        None,
-    )
-}
-
-/// A sealed destination on the named lane.
-pub fn sealed(lane: &'static str) -> VerifiedDestination {
-    VerifiedDestination::seal(
-        &kernel_seal(),
-        DestinationFacts::Upstream {
-            transport: "test-transport",
-            address: busbar_contract::transport::dest::UpstreamAddress::socket("test-host"),
-            lane: LaneId::new(lane),
-        },
-        "test-transport",
-        None,
-    )
-}
-
-/// The transport key material handle.
-pub fn keys() -> TransportKeyHandle {
-    TransportKeyHandle::issue(&kernel_seal(), 0, "test-fingerprint")
 }
