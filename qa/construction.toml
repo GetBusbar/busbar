@@ -394,12 +394,6 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 # ── THE KERNEL CEILING, RE-ARMED BY THE P1 CORE UNIT (KIND-SHARE, KERNEL-AUTH-ZERO, BOOT-CHAIN, CONNECTOR-19,
 #    HEAD-FIELDS, CONNECTOR-19-U12; OWNER GRANT 2026-09-29 (3)) — one declaration over BIG for the stacked unit
 
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-file    = "qa/construction.toml"
-from    = 55537
-to      = 55545
-because = "REARM FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02: kernel +6 approved as explained): busbar-kernel measured 55611 at the lane tip on predev aabb4d8ac (lane-fold-a2a gates7) against today's ceiling 55605 = predev's measurement: +6 (re-summed on predev e6b44624e, kernel 55599 after train/cg-65: 55599 + 6 = 55605; re-summed again on predev d3b42d2ad after D3 #191 lowered it to 55537: 55537 + 6 = 55543, the hop's measurement) = the Origin rule leaving ingress/protocol.rs for its one home in the contract (about -37) and plane/config.rs judging the plane's stated caller-credential refusal (C1, about +45). Repaid at the a2a flip (C2c slice 8). THEN B7 (ARCHITECT B1-B10 rulings 2026-10-02, kernel delta self-approved): the route pump treats a no-member body-piece answer with nothing for the far end as local, whatever its windows: +2 at the measurement (lane-fold-a2a b7-2: 55611 -> 55613; re-summed 55543 -> 55545)."
-
 # [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 54254 -> 55817 (the P1 core unit over BIG, S3S4-KERNEL-67 at
 # 55691, then K-SERVE +320) — EXPIRED AND STRUCK: its commits reached the base, where kernel_ceiling reads 55789 (CONVERGER
 # cg-60: 55440 + DEST-PIN +29 + K-SERVE +320), so the entry described no raise at the base and `ceiling-rose` reported it.
@@ -528,12 +522,6 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
 
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 29397
-to      = 29583
-because = "REARM FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02: approved up to +200 over today's ceiling, after the SDK records/dest.judge connector wrappers were cut): busbar-contract measured 29578 by cargo xtask gate construction at the lane tip on predev aabb4d8ac (lane-fold-a2a gates7), against today's ceiling 29392 = predev's measurement: +186. Re-summed on predev e6b44624e (contract 29397 after train/cg-65): 29397 + 186 = 29583. Sources, all approved: P-GEN Generations<T,P>/Keyed (abi/sdk/publish.rs, C2b), CLAIM_PATTERN and the caller-credential refusal tail on abi/plane v1 with their checks (abi/plane/check.rs, mod.rs, C1), the Origin rule's one home moved into the contract (jsonrpc.rs), out.rs's publish helper, Host::of public. P-GEN's lines leave this lane if FOLD-MCP #159 lands it first."
-
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
 
@@ -560,12 +548,6 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 29397
-to      = 29583
-because = "REARM FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02: approved up to +200 over today's ceiling, after the SDK records/dest.judge connector wrappers were cut): busbar-contract measured 29578 by cargo xtask gate construction at the lane tip on predev aabb4d8ac (lane-fold-a2a gates7), against today's ceiling 29392 = predev's measurement: +186. Re-summed on predev e6b44624e (contract 29397 after train/cg-65): 29397 + 186 = 29583. Sources, all approved: P-GEN Generations<T,P>/Keyed (abi/sdk/publish.rs, C2b), CLAIM_PATTERN and the caller-credential refusal tail on abi/plane v1 with their checks (abi/plane/check.rs, mod.rs, C1), the Origin rule's one home moved into the contract (jsonrpc.rs), out.rs's publish helper, Host::of public. P-GEN's lines leave this lane if FOLD-MCP #159 lands it first."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -596,9 +578,17 @@ from    = 233
 to      = 236
 because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2026-09-30 (URL-PARSE audit) SEAM puts the one URL and host reader at busbar-contract/src/net.rs (BUSBAR-1.6.0.md, the engine-folds paragraph). The three hits are the web scheme names the reader must spell: net.rs:398 (the http literal of strip_scheme, moved verbatim from busbar-kernel-egress trust::net) and net.rs:518 (the http and ws arms of UrlFamily::of, folded from the two split_ws_url copies). The pair nets down in the same commit: busbar-kernel-egress x transport 56 -> 55 and x plane 16 -> 13 (net -1). Measured by cargo xtask gate kind-isolation --report on predev 8a4b18692: 233 at the base, 236 at the tip."
 
-# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 29392 -> 29397 (train/cg-65 MONEY-CHAIN UNITS_FLOOR +5) — EXPIRED AND STRUCK: its commit reached the base, where the pair reads 29397.
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 29392
+to      = 29397
+because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over predev 29392, after the union drain), merge-steward delegation <= +150 (ARCHITECT 2026-10-01). Predev arms 29392."
 
-# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 29392 -> 29397 (train/cg-65 MONEY-CHAIN UNITS_FLOOR +5) — EXPIRED AND STRUCK: its commit reached the base, where the pair reads 29397.
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 29392
+to      = 29397
+because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over 29392, after the union drain), merge-steward delegation <= +150. Predev arms 29392."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -911,8 +901,7 @@ because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A deletes the dead hot/cold ABI; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-# ── RE-ARMED 29397 -> 29583 by FOLD-A2A (PR #141, ARCHITECT-approved +186), declared above.
-contract_caps = 29583
+contract_caps = 29397
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1566,10 +1555,7 @@ kernel_crate = "busbar-kernel"
 #    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
 # ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
 #    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
-# ── LOWERED 55599 -> 55537 by D3 (#191) at the measurement (egress/interface.rs and ingress/path_ingress.rs deleted).
-# ── RE-ARMED 55537 -> 55543 by FOLD-A2A (PR #141, ARCHITECT-approved +6), declared above.
-# ── RE-ARMED 55543 -> 55545 by FOLD-A2A B7 (route pump local answer, +2, self-approved), declared above.
-kernel_ceiling = 55545
+kernel_ceiling = 55534
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
@@ -1699,8 +1685,7 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-# ── RE-ARMED 29397 -> 29583 by FOLD-A2A (PR #141, ARCHITECT-approved +186), declared above.
-caps_contract_ceiling = 29583
+caps_contract_ceiling = 29397
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
