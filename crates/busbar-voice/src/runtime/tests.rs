@@ -9,7 +9,6 @@
 //! count (what a count is WORTH is proven over the real engine in the composition root's tests).
 
 use crate::ir::codec::{OpenAiRealtimeCodec, WireEvent};
-use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::metering::{SessionMetering, TurnMeter, TurnVerdict};
 use crate::runtime::scope::SessionHandle;
