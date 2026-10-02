@@ -376,11 +376,10 @@ abi = ["crates/busbar-contract"]
 # ── THE TEST ANCHORS OF RESOLVE-PIN'S FAILOVER-AFTER-REFUSAL TEST (ARCHITECT 2026-10-01; busbar-llm rows
 #    expire at LLM-ENGINE-DELETE)
 
-[gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-llm"]
-file    = "qa/construction.toml"
-from    = 990
-to      = 55691
-because = "Test anchors for the failover-after-refusal test the ARCHITECT asked for (RESOLVE-PIN; ARCHITECT 2026-10-01, approved as test-only re-pins at the measured figures). Expires at LLM-ENGINE-DELETE: busbar-llm goes, and these lines with it. The five lines: crates/busbar-llm/src/engine/tests/dial_refusal_failover_tests.rs:19 (busbar_kernel::egress::engine::{with_scoped_dial, DialTable}), :20 (egress::fixtures::RebindingResolver), :21 (net_guard::DialDenylist), :22 (store::now), :64 (test_support::BuiltAppSeam). Measured by cargo xtask gate construction: 990 on url-seam-final 9f2563a05, 995 at the tip. Then the step-34a proof test (the plane driver's DriverConfig::status over the llm plane's refusal rows against 64 golden/1.5.5 cells) moved from the root into crates/busbar-llm/tests (ARCHITECT ruling under GRANT 2, 2026-09-30): it names busbar_kernel::plane_driver once, +1: 995 -> 996. Drains at D3."
+# [gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-llm"] 990 -> 996 (RESOLVE-PIN test anchors, then the
+# step-34a proof test) — EXPIRED AND STRUCK: its commit reached the base, where busbar-llm reads 996. The entry read
+# `to = 55691` from 8eba7940c on, whose kernel re-arm rewrote this block's `to` line instead of the kernel's, so
+# `ceiling-rose` reported it as a declared raise that is not a raise at the base.
 
 [gate.ceiling_raises."cell[crate=busbar-llm,kind=transport].count"]
 file    = "qa/kind-isolation.toml"
@@ -395,11 +394,9 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 # ── THE KERNEL CEILING, RE-ARMED BY THE P1 CORE UNIT (KIND-SHARE, KERNEL-AUTH-ZERO, BOOT-CHAIN, CONNECTOR-19,
 #    HEAD-FIELDS, CONNECTOR-19-U12; OWNER GRANT 2026-09-29 (3)) — one declaration over BIG for the stacked unit
 
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-file    = "qa/construction.toml"
-from    = 54254
-to      = 55817
-because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254. Then the llm fold (step 34a and the plane ABI v1 refusal/arrival edits: the plane driver chooses a refusal's status from the plane's stated rows, keeps a refused arrive's own code and 4xx and the unit key, and hands refusal the reason, unit, code, target and the method on arrive), +41 measured over the plane driver core: 54254 + 41 = 54295. Then the production far end and money seam for the plane driver, +1313 at the measurement (ARCHITECT cap from the itemised table, 2026-10-01): step 15's budget modes +80; the walk's pick in the pump +33; the far end over the kernel's egress walk and the connector +831 and its follow-ups +116; the production money seam +180 and its checked sums and once-only ledger +68; the piece's claim, dialect and caller reference +64; one identity re-export home +3; drains -64: 54295 + 1313 = 55608. Then the hold sizing and fee refund on the plane driver (step 17) at the measurement, +185: the estimate budget mode +45; a plane's fee refund off its own fee lane and the refund primitive +40; the fee-unit report decides the refund +30; ledgering and metering under the serving member +60; the driver names the serving member at the answer's commit +10: 55608 + 185 = 55793. Measured on the stacked unit tip: 55799 (+6 over the summed ledger, the driver's own verify seat beside the forwarded seats). THEN (summed on the trunk by CONVERGER, +18 -> 55817): OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over BIG 54254 (the P1 core unit: KIND-SHARE A3/A4/TL, KERNEL-AUTH-ZERO, BOOT-CHAIN, CONNECTOR-19 item 2, HEAD-FIELDS, CONNECTOR-19-U12): BOOT-CHAIN +22 (the One Statement, claims and conns fill; lane-measured 52136 -> 52158, GRANT 3), KERNEL-AUTH-ZERO -3 (lane-measured 52136 -> 52133), the rest 0; composed and measured by cargo xtask gate construction on the unit tip: 54272 (+18; the one-line difference from +19 is the composition). Then the S3+S4 chunk measured 55691 at 83743044b: ARCHITECT S3S4-KERNEL-67 2026-10-01 grants exactly 55691 (q176 Q17-6 refund +48 ruled GRANT3; the S3/S4 stacking resolutions and fmt +19), consuming the 73-line R-KERNEL reservation. Then R-KERNEL exception, ARCHITECT C2c S5 K-SERVE 2026-10-01 (escalate.q 17:29:52Z Q1-Q6: serve layer + admin mount; 17:31:11Z Q4: the abi/plane append): the plane serve driver (crates/busbar-kernel/src/plane_driver/serve.rs), +320 at the measurement: 55440 at predev 8fc5e67e2 -> 55760 at the lane tip; the ceiling re-arms 55691 -> 55760 (within this declaration's 55817). Repaid at the a2a flip (C2c S8)."
+# [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 54254 -> 55817 (the P1 core unit over BIG, S3S4-KERNEL-67 at
+# 55691, then K-SERVE +320) — EXPIRED AND STRUCK: its commits reached the base, where kernel_ceiling reads 55789 (CONVERGER
+# cg-60: 55440 + DEST-PIN +29 + K-SERVE +320), so the entry described no raise at the base and `ceiling-rose` reported it.
 
 # ── THE KERNEL CEILING, RE-ARMED BY TRAIN BIG 53148 -> 54254 (E12 lowers, URL-SEAM + RESOLVE-PIN, H2) — EXPIRED
 #    AND STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above, which declares the next
