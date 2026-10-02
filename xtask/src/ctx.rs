@@ -1,0 +1,1270 @@
+//! `Ctx` — the shared context every gate reads the tree through, and the overlay that lets a
+//! self-test plant a violation without a scratch copy, a restore step or a hand-maintained
+//! `TOUCHED` list (the fragile half of `scripts/construction-gate/plant.py`). An overlay is *by
+//! construction* per-plant: `with_overlay` returns a new `Ctx` and never mutates the base, so
+//! plants cannot stack and "exactly one FAIL row" can never be produced by a leftover.
+//!
+//! [`WalkSpec`] reproduces the tree's dominant `find` idiom
+//! (`find crates -name '*.rs' -not -path '*/tests/*' | sort`) including the sort, several gates'
+//! outputs being order-sensitive — and including the two things `find` gets wrong:
+//! a missing root is silently dropped, and an empty result reads exactly like a clean tree. Here a
+//! missing root is [`WalkError::MissingRoot`] and a result under [`WalkSpec::min_files`] is
+//! [`WalkError::BelowFloor`]. The floor is not optional decoration; it is the single most repeated
+//! fix in the shell gates it replaces.
+//!
+//! It also gets one thing `find` never knew: the walk HONOURS THE TREE'S OWN IGNORE RULES
+//! ([`Ctx::drop_ignored`]). A scan set that includes whatever a build, a cache or an editor left
+//! behind is a gate that goes red on a byte nobody wrote — `testing/shadow-oracle/__pycache__` is
+//! the case that proved it — and a gate that reds for a reason unrelated to its rule is how a
+//! runner earns a `|| true`. The two refusals are unaffected: they are evaluated around the filter,
+//! not through it, so an ignore rule that swallowed a scan set trips the floor.
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+
+use crate::gitp;
+use crate::scan;
+
+/// What an overlay says about one path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// The file's bytes, as the gate must see them.
+    Content(String),
+    /// The file is absent, whatever the real tree says.
+    Absent,
+    /// The path IS there — a walk lists it — and reading it FAILS.
+    ///
+    /// It is a third state because "absent" and "unreadable" are two different claims and the gates
+    /// answer them differently: an absent input is often a tree that legitimately has not got one,
+    /// while an input that is listed and will not read is an input the rule cannot measure and must
+    /// refuse. Every gate that treats a read error as "found nothing" is a gate that goes green on
+    /// a corrupt tree, and there was no fixture in the harness that could plant one.
+    Unreadable(String),
+}
+
+/// A per-plant view of the tree: path overrides plus canned outputs for the few derived inputs
+/// (today `cargo metadata`) a gate cannot read as a file.
+#[derive(Debug, Clone, Default)]
+pub struct Overlay {
+    files: BTreeMap<PathBuf, Change>,
+    commands: BTreeMap<String, String>,
+}
+
+impl Overlay {
+    pub fn new() -> Overlay {
+        Overlay::default()
+    }
+
+    pub fn set(&mut self, rel: impl AsRef<Path>, content: impl Into<String>) {
+        self.files
+            .insert(rel.as_ref().to_path_buf(), Change::Content(content.into()));
+    }
+
+    pub fn remove(&mut self, rel: impl AsRef<Path>) {
+        self.files
+            .insert(rel.as_ref().to_path_buf(), Change::Absent);
+    }
+
+    /// WITHDRAW EVERY CLAIM ABOUT `rel`: the gate reads whatever the real tree has there.
+    ///
+    /// NOT THE SAME AS [`Overlay::remove`], and the difference is the whole point. `remove` asserts
+    /// the path is ABSENT — a claim `crate::gates::prove_red` now refuses when the tree has not got
+    /// the path anyway, because removing nothing is not a plant. This one un-says an earlier `set`,
+    /// which is what a builder that lays down a fixture and then wants one file of it missing
+    /// actually means when the file was never in the tree to begin with.
+    pub fn unset(&mut self, rel: impl AsRef<Path>) {
+        self.files.remove(rel.as_ref());
+    }
+
+    /// The path stays in every walk and every read of it fails with `why`.
+    pub fn unreadable(&mut self, rel: impl AsRef<Path>, why: impl Into<String>) {
+        self.files
+            .insert(rel.as_ref().to_path_buf(), Change::Unreadable(why.into()));
+    }
+
+    /// Override a derived input keyed by a stable string (e.g. `cargo-metadata:xtask/Cargo.toml`).
+    pub fn set_command(&mut self, key: impl Into<String>, stdout: impl Into<String>) {
+        self.commands.insert(key.into(), stdout.into());
+    }
+
+    pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
+        self.files.keys()
+    }
+
+    /// EVERY CLAIM THIS OVERLAY MAKES, path and change together.
+    ///
+    /// [`Overlay::paths`] answers "which files does this plant touch"; a reader that must decide
+    /// whether the plant CHANGES anything needs the other half. `crate::gates::prove_red` is that
+    /// reader: a `Change::Absent` over a path the tree has not got removes nothing, and a plant
+    /// that removes nothing proves nothing.
+    pub fn changes(&self) -> impl Iterator<Item = (&PathBuf, &Change)> {
+        self.files.iter()
+    }
+
+    /// A derived input this overlay stands in for, by its key.
+    pub fn command(&self, key: &str) -> Option<&String> {
+        self.commands.get(key)
+    }
+
+    /// Whether this overlay stands in for any derived input. A canned `cargo metadata` is a real
+    /// change to what the gate reads even when not one file is touched.
+    pub fn has_commands(&self) -> bool {
+        !self.commands.is_empty()
+    }
+
+    /// THIS OVERLAY WITH `top` LAID OVER IT: every claim `top` makes wins, every claim only this
+    /// one makes survives.
+    ///
+    /// The shape a self-test needs when the unplanted tree is already red on the row a case is
+    /// about. The case is then proven over a GREEN BASE — a fixture overlay that clears the
+    /// standing red — and the planted run must read the base AND the plant, because
+    /// [`Ctx::with_overlay`] replaces the context's overlay rather than stacking on it.
+    pub fn layered(&self, top: &Overlay) -> Overlay {
+        let mut out = self.clone();
+        for (path, change) in &top.files {
+            out.files.insert(path.clone(), change.clone());
+        }
+        for (key, stdout) in &top.commands {
+            out.commands.insert(key.clone(), stdout.clone());
+        }
+        out
+    }
+
+    /// An overlay that claims nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.commands.is_empty()
+    }
+
+    /// A STABLE STRING FOR "THIS EXACT OVERLAY", for keying a cache on the tree a gate will read.
+    ///
+    /// It is the claims themselves rather than a hash of them: an overlay is a handful of entries,
+    /// a collision here would mis-attribute one plant's baseline to another, and a digest buys
+    /// nothing a `BTreeMap`'s own ordering has not already given.
+    pub fn fingerprint(&self) -> String {
+        let mut out = String::new();
+        for (path, change) in &self.files {
+            out.push_str(&path.to_string_lossy());
+            match change {
+                Change::Content(c) => {
+                    out.push_str("\u{1}content:");
+                    out.push_str(&c.len().to_string());
+                    out.push(':');
+                    out.push_str(c);
+                }
+                Change::Absent => out.push_str("\u{1}absent"),
+                Change::Unreadable(why) => {
+                    out.push_str("\u{1}unreadable:");
+                    out.push_str(why);
+                }
+            }
+            out.push('\u{2}');
+        }
+        for (key, stdout) in &self.commands {
+            out.push_str(key);
+            out.push('\u{1}');
+            out.push_str(stdout);
+            out.push('\u{2}');
+        }
+        out
+    }
+}
+
+/// A planted edit. `apply` reads through the [`Ctx`] it is given, so an edit is always expressed
+/// against what the gate would otherwise have seen.
+#[derive(Debug, Clone)]
+pub enum Edit {
+    Append(String),
+    Replace(String),
+    Create(String),
+    Delete,
+}
+
+impl Edit {
+    pub fn apply(&self, cx: &Ctx, rel: impl AsRef<Path>, ov: &mut Overlay) -> Result<(), String> {
+        let rel = rel.as_ref();
+        match self {
+            Edit::Append(s) => {
+                let mut base = cx.read(rel)?;
+                base.push_str(s);
+                ov.set(rel, base);
+            }
+            Edit::Replace(s) => {
+                cx.read(rel)?;
+                ov.set(rel, s.clone());
+            }
+            Edit::Create(s) => {
+                if cx.exists(rel) {
+                    return Err(format!(
+                        "{}: Create planted over a file that already exists",
+                        rel.display()
+                    ));
+                }
+                ov.set(rel, s.clone());
+            }
+            Edit::Delete => {
+                if !cx.exists(rel) {
+                    return Err(format!(
+                        "{}: Delete planted over a file that is already absent",
+                        rel.display()
+                    ));
+                }
+                ov.remove(rel);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A file the walk yielded.
+#[derive(Debug, Clone)]
+pub struct SourceFile {
+    /// Path relative to the workspace root, `/`-separated in its string form.
+    pub rel: PathBuf,
+    pub abs: PathBuf,
+    pub text: String,
+}
+
+impl SourceFile {
+    pub fn rel_str(&self) -> String {
+        self.rel.to_string_lossy().replace('\\', "/")
+    }
+
+    /// The file's production lines, through the one scanner.
+    pub fn production_lines(&self) -> Vec<(usize, String)> {
+        scan::production_lines(&self.text)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WalkSpec {
+    roots: Vec<String>,
+    ext: Option<String>,
+    exclude: Vec<String>,
+    min_files: usize,
+    allow_empty: bool,
+}
+
+impl WalkSpec {
+    pub fn new<I, S>(roots: I) -> WalkSpec
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        WalkSpec {
+            roots: roots.into_iter().map(Into::into).collect(),
+            ..WalkSpec::default()
+        }
+    }
+
+    pub fn ext(mut self, ext: impl Into<String>) -> WalkSpec {
+        self.ext = Some(ext.into());
+        self
+    }
+
+    /// Path fragments matched against the `/`-prefixed relative path, the `-not -path '*/tests/*'`
+    /// half of the idiom.
+    pub fn exclude<I, S>(mut self, fragments: I) -> WalkSpec
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.exclude.extend(fragments.into_iter().map(Into::into));
+        self
+    }
+
+    /// The denominator floor. A walk that yields fewer files than this is an error, not a pass.
+    pub fn min_files(mut self, n: usize) -> WalkSpec {
+        self.min_files = n;
+        self
+    }
+
+    /// DECLARE THAT ZERO FILES IS A REAL ANSWER FOR THIS SCOPE, and not the instrument going blind.
+    ///
+    /// Every scope refuses an empty result by default ([`WalkError::Empty`]), because an empty scan
+    /// and a clean tree are the same bytes on the terminal and only one of them is a verdict. A few
+    /// scopes genuinely mean "whatever is here, and nothing is a legitimate here" — a plugin
+    /// directory before the first plugin lands, an optional overlay tree, a census that COUNTS what
+    /// it finds rather than banning something in it. Those say so, at the call site, one at a time.
+    ///
+    /// It is deliberately not a default and deliberately not a convenience: each use is a written
+    /// claim that this particular rule still means something over an empty set, and a reviewer can
+    /// grep for every such claim in one command.
+    pub fn allow_empty(mut self) -> WalkSpec {
+        self.allow_empty = true;
+        self
+    }
+
+    pub fn roots(&self) -> &[String] {
+        &self.roots
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum WalkError {
+    MissingRoot {
+        root: String,
+    },
+    /// The roots ARE on disk and the filters left nothing. Distinct from
+    /// [`WalkError::MissingRoot`] because the failure is different: the address is right and the
+    /// scope is empty, which is the shape a rule takes when its `ext`, its `exclude` or an ignore
+    /// rule has quietly eaten the whole set.
+    Empty {
+        roots: Vec<String>,
+    },
+    BelowFloor {
+        found: usize,
+        floor: usize,
+        roots: Vec<String>,
+    },
+    Io {
+        path: PathBuf,
+        message: String,
+    },
+}
+
+impl fmt::Display for WalkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WalkError::MissingRoot { root } => write!(
+                f,
+                "walk root `{root}` does not exist. `find` drops a missing root silently and then \
+                 scans nothing of it, and zero is the passing answer to every ban — so a root that \
+                 moved is an error here, never a narrower scan."
+            ),
+            WalkError::Empty { roots } => write!(
+                f,
+                "walk over [{}] yielded ZERO files. The roots are on disk and the filters left \
+                 nothing, so this rule is being asked about an empty set — and zero is the passing \
+                 answer to every ban. If the scope moved, move it in a reviewed diff; if zero is \
+                 genuinely a real answer for this rule, say so at the call site with \
+                 `WalkSpec::allow_empty`.",
+                roots.join(", ")
+            ),
+            WalkError::BelowFloor {
+                found,
+                floor,
+                roots,
+            } => write!(
+                f,
+                "walk over [{}] yielded {found} file(s), under its floor of {floor}. An empty or \
+                 shrunken scan reads exactly like a clean tree; it is not one.",
+                roots.join(", ")
+            ),
+            WalkError::Io { path, message } => write!(f, "walk {}: {message}", path.display()),
+        }
+    }
+}
+
+/// Environment the gates read, captured once so a gate never reaches for `std::env` itself.
+#[derive(Debug, Clone, Default)]
+pub struct Env {
+    pub github_step_summary: Option<PathBuf>,
+    pub runner_temp: Option<PathBuf>,
+    pub report_only: bool,
+    /// `--write`: the gate REGENERATES the artefact it otherwise only diffs. A generator's write
+    /// arm and its drift arm are the same derivation, so they cannot disagree; what the flag
+    /// changes is whether the answer is compared or committed.
+    pub write: bool,
+    /// `CONFIG_SCHEMA_BASELINE_REF` — which git ref the config-schema gate's additive-only check
+    /// reads its baseline from. Captured here rather than read by the gate because
+    /// `scripts/verify-1.6.0-done.sh` refuses a DONE run that sets it, and a variable a gate reads
+    /// straight out of the process environment is one no runner can see it reading.
+    pub config_baseline_ref: Option<String>,
+    /// `CONFIG_SCHEMA_BOOTSTRAP` — that gate's declared, one-run escape from having no baseline at
+    /// all. Declared, never inferred; it announces itself and it is not a pass.
+    pub config_bootstrap: bool,
+    /// `XTASK_SCAN_AUDIT=1` — trace every resolved scope and its FILE COUNT to stderr, one
+    /// tab-separated line per walk.
+    ///
+    /// It exists so the question "what is this rule actually looking at" has a mechanical answer
+    /// instead of a reading of the source. A rule whose scope silently narrowed to four files still
+    /// prints the same green it printed over four hundred, and the only way to notice is to be able
+    /// to SEE the denominator. Diagnostic only: it changes no verdict and writes to stderr, so a
+    /// runner that captures stdout is unaffected.
+    pub scan_audit: bool,
+}
+
+impl Env {
+    fn capture() -> Env {
+        Env {
+            github_step_summary: std::env::var_os("GITHUB_STEP_SUMMARY").map(PathBuf::from),
+            runner_temp: std::env::var_os("RUNNER_TEMP").map(PathBuf::from),
+            report_only: false,
+            write: false,
+            config_baseline_ref: std::env::var("CONFIG_SCHEMA_BASELINE_REF")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            config_bootstrap: std::env::var("CONFIG_SCHEMA_BOOTSTRAP").as_deref() == Ok("1"),
+            scan_audit: std::env::var("XTASK_SCAN_AUDIT").as_deref() == Ok("1"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Ctx {
+    root: PathBuf,
+    overlay: Option<Arc<Overlay>>,
+    scratch: PathBuf,
+    env: Env,
+    /// `git check-ignore`'s answers, per path, SHARED by every clone and every overlay of this
+    /// context. See [`Ctx::ignored_among`].
+    ignore_memo: Arc<std::sync::Mutex<std::collections::BTreeMap<String, bool>>>,
+    /// The DISK'S OWN ANSWER to "what is under this directory, recursively", per absolute root,
+    /// SHARED by every clone and every overlay of this context — same rationale as `ignore_memo`,
+    /// same shape.
+    ///
+    /// A self-test case is a fresh `Ctx::with_overlay` over the same base, and a battery is
+    /// hundreds of cases: `kind-isolation`'s alone call [`Ctx::walk`] on `crates/**/*.rs` from four
+    /// separate rules, so one selftest run walked the ~1 700-file `crates/` subtree (a real
+    /// `read_dir` recursion, not a memo lookup) on the order of a thousand times before this cache
+    /// existed — the plant never touches the walk's OWN roots or extensions, only the bytes of the
+    /// one or two files it overlays, so the recursive listing itself is identical on every one of
+    /// those calls. THE LISTING IS DISK-ONLY: it is computed before the overlay is ever consulted
+    /// (see [`Ctx::list`]), so it is safe to memo for the life of one process — nothing here runs
+    /// with `--write` truly touching the tree mid-battery, an overlay is simulated in memory, and a
+    /// selftest never grows a NEW directory on disk between cases.
+    walk_memo: Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<Vec<PathBuf>>>>>,
+    /// EVERY FILE'S BYTES, read once per absolute path and shared the same way. `Ctx::read`'s
+    /// overlay check happens first and is unaffected: this only remembers what the REAL FILE last
+    /// read as, so an overlaid path never consults it and a plain path never reads its own bytes
+    /// off disk twice in one process.
+    read_memo: Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<ReadResult>>>>,
+}
+
+/// One file's disk read, memoized — named so [`Ctx`]'s `read_memo` field does not trip clippy's
+/// `type_complexity` lint over what is, underneath, an ordinary `Result<String, String>`.
+type ReadResult = Result<String, String>;
+
+impl Ctx {
+    /// Open a context over `root`, proving the scratch directory writable BY WRITING A BYTE rather
+    /// than by asking the filesystem whether it thinks it is writable.
+    pub fn new(root: impl Into<PathBuf>) -> Result<Ctx, String> {
+        let root = root.into();
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&scratch)
+            .map_err(|e| format!("scratch {}: {e}", scratch.display()))?;
+        // A UNIQUE probe per opener: two contexts opening at once must not race each other's
+        // cleanup and report an unwritable scratch dir that is perfectly writable.
+        let probe = scratch.join(format!(
+            ".writable-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&probe, b"x").map_err(|e| format!("scratch {}: {e}", probe.display()))?;
+        std::fs::remove_file(&probe).map_err(|e| format!("scratch {}: {e}", probe.display()))?;
+        Ok(Ctx {
+            root,
+            overlay: None,
+            scratch,
+            env: Env::capture(),
+            ignore_memo: Arc::default(),
+            walk_memo: Arc::default(),
+            read_memo: Arc::default(),
+        })
+    }
+
+    /// A context over `root` whose scratch dir is somewhere else — for driving a gate over a
+    /// fixture tree without writing a byte into it.
+    pub fn at(root: impl Into<PathBuf>, scratch: impl Into<PathBuf>) -> Result<Ctx, String> {
+        let scratch = scratch.into();
+        std::fs::create_dir_all(&scratch)
+            .map_err(|e| format!("scratch {}: {e}", scratch.display()))?;
+        Ok(Ctx {
+            root: root.into(),
+            overlay: None,
+            scratch,
+            env: Env::capture(),
+            ignore_memo: Arc::default(),
+            walk_memo: Arc::default(),
+            read_memo: Arc::default(),
+        })
+    }
+
+    /// The workspace root, resolved at RUNTIME ([`workspace_root`]), never the tree the binary was
+    /// compiled in.
+    pub fn workspace() -> Result<Ctx, String> {
+        Ctx::new(workspace_root()?)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn scratch(&self) -> &Path {
+        &self.scratch
+    }
+
+    pub fn env(&self) -> &Env {
+        &self.env
+    }
+
+    pub fn report_only(mut self, yes: bool) -> Ctx {
+        self.env.report_only = yes;
+        self
+    }
+
+    pub fn write_mode(mut self, yes: bool) -> Ctx {
+        self.env.write = yes;
+        self
+    }
+
+    /// A FRESH context with this overlay. The base is untouched.
+    pub fn with_overlay(&self, overlay: Overlay) -> Ctx {
+        Ctx {
+            overlay: Some(Arc::new(overlay)),
+            ..self.clone()
+        }
+    }
+
+    pub fn overlay(&self) -> Option<&Overlay> {
+        self.overlay.as_deref()
+    }
+
+    /// A canned derived input, when one has been planted. The gates that delegate a measurement to
+    /// another instrument read it through here, so a self-test can plant that instrument's ANSWER
+    /// — an overlay lives in this process and a subprocess cannot see it.
+    pub fn overlay_command(&self, key: &str) -> Option<String> {
+        self.overlay().and_then(|o| o.command(key)).cloned()
+    }
+
+    pub fn abs(&self, rel: impl AsRef<Path>) -> PathBuf {
+        self.root.join(rel)
+    }
+
+    /// Read a file, consulting the overlay first.
+    pub fn read(&self, rel: impl AsRef<Path>) -> Result<String, String> {
+        let rel = rel.as_ref();
+        if let Some(ov) = self.overlay() {
+            match ov.files.get(rel) {
+                Some(Change::Content(c)) => return Ok(c.clone()),
+                Some(Change::Absent) => {
+                    return Err(format!("{}: absent (overlay)", rel.display()));
+                }
+                Some(Change::Unreadable(why)) => {
+                    return Err(format!("{}: {why} (overlay)", rel.display()));
+                }
+                None => {}
+            }
+        }
+        self.read_disk_memoized(rel, &self.abs(rel))
+    }
+
+    /// Write REAL BYTES to `rel` on disk (a `--write` gate's own ledger, never a plant — an
+    /// overlay is never written through this) and forget whatever [`Ctx::read`] cached for it.
+    ///
+    /// THE HAZARD THIS CLOSES: `read_disk_memoized` remembers a file's bytes for the life of the
+    /// process, which is correct only as long as nothing REAL changes under it — true of every
+    /// plant (an overlay, never a byte on disk) but not of a `--write` gate, which edits its own
+    /// ledger and then, in the same process, may read it again (a second gate, a later case, or the
+    /// same run's own verification pass) and must see what it just wrote, not what was there
+    /// before. Every in-tree `std::fs::write(cx.abs(...), …)` this crate has goes through here
+    /// instead so that hazard has exactly one place to be closed, not eight.
+    ///
+    /// THE SAME HAZARD REACHES `walk_memo` when the write is a NEW file: a cached `collect()` for
+    /// any root that is an ancestor of `rel` was taken before this file existed, and a `list`/
+    /// `walk` over that root afterward must see it. Every cached root under which `rel` sits is
+    /// forgotten too — unconditionally, on every write, not only a create: a plain overwrite's
+    /// listing is unchanged so the drop just costs one more `collect()` next time it is asked, and
+    /// that is far cheaper than a second code path that has to prove "this path was already
+    /// there" correctly.
+    ///
+    /// Returns `std::io::Result` — the same type `std::fs::write` itself returns — so every
+    /// existing call site's `Ok(()) => …, Err(e) => … {e} …` arm reads exactly as it did before.
+    pub fn write_file(
+        &self,
+        rel: impl AsRef<Path>,
+        content: impl AsRef<[u8]>,
+    ) -> std::io::Result<()> {
+        let abs = self.abs(rel);
+        std::fs::write(&abs, content)?;
+        self.read_memo
+            .lock()
+            .expect("the read memo mutex is never poisoned")
+            .remove(&abs);
+        self.walk_memo
+            .lock()
+            .expect("the walk memo mutex is never poisoned")
+            .retain(|root, _| !abs.starts_with(root));
+        Ok(())
+    }
+
+    /// THE REAL FILE'S BYTES, memoized by absolute path for the life of this process. Never
+    /// consulted for a path the overlay claims — [`Ctx::read`] resolves the overlay first — so a
+    /// plant's bytes are never the ones remembered here, and the disk's own bytes never go stale
+    /// mid-run because nothing in a selftest battery writes a real byte to the tree. The error
+    /// text still names `rel` — the CALLER'S path — exactly as an uncached read always did; only
+    /// the cache key (`abs`) is new.
+    fn read_disk_memoized(&self, rel: &Path, abs: &Path) -> Result<String, String> {
+        // THE LOCK IS HELD ONLY FOR THE LOOKUP (an `Arc` clone — a refcount bump), NEVER FOR THE
+        // CONTENT CLONE below. Eighteen workers hammer this map per file per case; holding the
+        // mutex across a multi-KB `String::clone` would serialize them onto it exactly as hard as
+        // if there were no cache at all, which is not a speed-up, it is a single-lane bridge with a
+        // sign on it.
+        let hit = self
+            .read_memo
+            .lock()
+            .expect("the read memo mutex is never poisoned")
+            .get(abs)
+            .cloned();
+        if let Some(hit) = hit {
+            return (*hit).clone();
+        }
+        let result = std::fs::read_to_string(abs).map_err(|e| format!("{}: {e}", rel.display()));
+        self.read_memo
+            .lock()
+            .expect("the read memo mutex is never poisoned")
+            .insert(abs.to_path_buf(), Arc::new(result.clone()));
+        result
+    }
+
+    pub fn exists(&self, rel: impl AsRef<Path>) -> bool {
+        let rel = rel.as_ref();
+        if let Some(ov) = self.overlay() {
+            match ov.files.get(rel) {
+                Some(Change::Content(_)) => return true,
+                // An unreadable file IS on disk; it is the READ that fails, not the stat.
+                Some(Change::Unreadable(_)) => return true,
+                Some(Change::Absent) => return false,
+                None => {}
+            }
+        }
+        self.abs(rel).exists()
+    }
+
+    /// The repo walk. Sorted, floor-checked, missing-root-checked, overlay-aware.
+    pub fn walk(&self, spec: &WalkSpec) -> Result<Vec<SourceFile>, WalkError> {
+        let kept = self.list(spec)?;
+        let mut out = Vec::new();
+        for rel in kept {
+            let text = self.read(&rel).map_err(|message| WalkError::Io {
+                path: rel.clone(),
+                message,
+            })?;
+            out.push(SourceFile {
+                abs: self.abs(&rel),
+                rel,
+                text,
+            });
+        }
+        out.sort_by_key(SourceFile::rel_str);
+
+        if out.len() < spec.min_files {
+            return Err(WalkError::BelowFloor {
+                found: out.len(),
+                floor: spec.min_files,
+                roots: spec.roots.clone(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// THE RECURSIVE DIRECTORY LISTING under one absolute root, disk-only (no overlay, no ext
+    /// filter — both are applied by the caller after this returns), memoized for the life of this
+    /// process. A `read_dir` recursion over `crates/` is the expensive half of every walk over it,
+    /// and it is IDENTICAL on every call: the overlay is consulted only after this returns (see
+    /// [`Ctx::list`]), so a plant changes which paths are KEPT downstream, never what this recursion
+    /// finds on disk.
+    fn collect_memoized(&self, abs: &Path) -> Result<Arc<Vec<PathBuf>>, WalkError> {
+        if let Some(hit) = self
+            .walk_memo
+            .lock()
+            .expect("the walk memo mutex is never poisoned")
+            .get(abs)
+        {
+            return Ok(Arc::clone(hit));
+        }
+        let mut rels = Vec::new();
+        collect(abs, &self.root, &mut rels)?;
+        let rels = Arc::new(rels);
+        self.walk_memo
+            .lock()
+            .expect("the walk memo mutex is never poisoned")
+            .insert(abs.to_path_buf(), Arc::clone(&rels));
+        Ok(rels)
+    }
+
+    /// THE WALK WITHOUT THE READ — the same roots, the same overlay, the same ignore rules, the
+    /// same ext and exclude filters, sorted, and NO floor.
+    ///
+    /// It exists because a caller that wants EVERY file a crate ships cannot ask [`Self::walk`] for
+    /// it: `walk` reads each path as UTF-8 and a repository is entitled to carry a `.gz` or a
+    /// `.png`. A caller that must SKIP those and still be able to NAME the ones it skipped needs
+    /// the list before the read, which is this. The floor stays with `walk` because the floor is a
+    /// property of a scan set, and a list is not yet one.
+    pub fn list(&self, spec: &WalkSpec) -> Result<Vec<PathBuf>, WalkError> {
+        let mut rels: Vec<PathBuf> = Vec::new();
+        for root in &spec.roots {
+            let abs = self.abs(root);
+            let overlay_adds_it = self
+                .overlay()
+                .map(|ov| {
+                    ov.paths()
+                        .any(|p| p.to_string_lossy().starts_with(&format!("{root}/")))
+                })
+                .unwrap_or(false);
+            if !abs.exists() && !overlay_adds_it {
+                return Err(WalkError::MissingRoot { root: root.clone() });
+            }
+            rels.extend(self.collect_memoized(&abs)?.iter().cloned());
+        }
+
+        if let Some(ov) = self.overlay() {
+            for (path, change) in &ov.files {
+                let s = path.to_string_lossy().replace('\\', "/");
+                // `.` IS THE WHOLE TREE, AND A PLANT INTO A DIRECTORY THAT DOES NOT EXIST YET IS
+                // STILL UNDER IT. A gate that walks the repository for every manifest — the census
+                // `kind-isolation:registry` runs — is proven by planting `vendor/…/Cargo.toml`,
+                // and the prefix test `"vendor/…".starts_with("./")` is false, so the plant would
+                // have been filtered out of the very walk it exists to be found by.
+                let under_a_root = spec
+                    .roots
+                    .iter()
+                    .any(|r| r == "." || s.starts_with(&format!("{r}/")) || &s == r);
+                match change {
+                    Change::Absent => rels.retain(|p| p != path),
+                    Change::Unreadable(_) | Change::Content(_) => {
+                        if under_a_root && !rels.contains(path) {
+                            rels.push(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut kept: Vec<PathBuf> = Vec::new();
+        for rel in rels {
+            let s = rel.to_string_lossy().replace('\\', "/");
+            if let Some(ext) = &spec.ext {
+                if !s.ends_with(&format!(".{ext}")) {
+                    continue;
+                }
+            }
+            let probe = format!("/{s}");
+            if spec
+                .exclude
+                .iter()
+                .any(|frag| probe.contains(frag.as_str()))
+            {
+                continue;
+            }
+            kept.push(rel);
+        }
+        let mut kept = self.drop_ignored(kept);
+        kept.sort();
+        // THE GENERAL RULE. A scope that resolves to nothing is refused here, at the one place every
+        // rule in every gate resolves its scope, rather than in the handful of gates that thought to
+        // set a floor. Fifty-five of the eighty-eight scan sets in this tree carried no floor at
+        // all: their roots existed, their filters returned nothing, and they printed the same green
+        // a genuinely clean tree prints. An instrument that cannot produce a NO is not a check.
+        if kept.is_empty() && !spec.allow_empty {
+            return Err(WalkError::Empty {
+                roots: spec.roots.clone(),
+            });
+        }
+        if self.env.scan_audit {
+            eprintln!("scan-audit\t{}\t{}", kept.len(), spec.roots.join("+"));
+        }
+        Ok(kept)
+    }
+
+    /// Drop the paths the working tree's own ignore rules exclude.
+    ///
+    /// `find` has no idea what `.gitignore` says, so a walk that reproduced it exactly read
+    /// whatever a build, a cache or an editor happened to leave in the tree — and a gate whose scan
+    /// set includes `__pycache__/*.pyc` fails on a byte nobody wrote and nobody can fix by editing
+    /// source. That is not a stricter gate; it is a gate that goes red for a reason unrelated to the
+    /// rule, which is how a runner earns a `|| true`.
+    ///
+    /// Two refusals stay exactly where they were: a MISSING ROOT and a set BELOW ITS FLOOR are
+    /// still errors, and the floor is applied AFTER this filter, so an ignore rule that swallowed
+    /// the scan set is caught by the floor rather than reported as a clean tree.
+    ///
+    /// AN UNUSABLE IGNORE ORACLE FILTERS NOTHING. Over a throwaway fixture tree there is no
+    /// repository to ask, and a `git` that cannot answer must leave the walk WIDER rather than
+    /// narrower: the failure direction of this helper is "a ban scanned a file it need not have",
+    /// never "a ban stopped scanning".
+    ///
+    /// AN OVERLAY PLANT IS FILTERED ON THE SAME TERMS as a file on disk, and that is not an
+    /// oversight. The overlay exists to show a gate the tree a real commit would show it; a plant
+    /// into an ignored path is a file CI would never see, so a gate that went red on one would be
+    /// proven by a fixture the rule cannot encounter. It is also what makes this filter provable
+    /// at all — the self-test plants an ignored file and requires the gate to stay green.
+    /// THE IGNORE FILTER, EXPOSED — for the one rule whose subject IS the ignore list rather than
+    /// its effect.
+    ///
+    /// [`Ctx::drop_ignored`] uses this to keep a build artefact out of a scan set, which is the
+    /// right answer for every rule that reads source. It is the WRONG answer for a file the
+    /// compiler links: `crates/*/src/target/leak.rs` is dropped by the walker and by the bare
+    /// `target/` in `.gitignore`, and compiled anyway. A rule that wants to say so has to be able
+    /// to ask which paths the filter claims, so it can ask that question of the COMPILED set.
+    ///
+    /// A tracked path is never reported by `git check-ignore` (it consults the index), so the
+    /// answer is exactly the population that is both ignored and live.
+    pub fn ignored(&self, rels: &[String]) -> std::collections::BTreeSet<String> {
+        self.ignored_among(rels).unwrap_or_default()
+    }
+
+    /// WHICH OF `asked` THE TREE'S IGNORE RULES CLAIM — `git check-ignore`, asked ONCE PER PATH per
+    /// context rather than once per walk.
+    ///
+    /// Every walk used to spawn its own `git check-ignore` over its whole path list, and a gate
+    /// walks many times per run: `kind-isolation` sixteen, `no-float-money` twenty-seven, once per
+    /// scan root. A self-test case IS a gate run, so a battery paid that per case — 973 `git`
+    /// processes for `no-float-money`'s 36 cases, 2 700 for `kind-isolation`'s 167 — to re-ask
+    /// questions whose answers had not changed. Process spawns are also the cost that stretches
+    /// most under load while the arithmetic work-unit ruler barely moves, which is how a battery
+    /// with no regression in it reads as one on a busy box.
+    ///
+    /// THE ANSWER IS A FUNCTION OF THE PATH AND THE REPOSITORY'S IGNORE RULES ON DISK, never of an
+    /// overlay: `git` cannot see an overlay, so a planted path was always asked about against the
+    /// real rules, and still is. The memo lives on the context (a fresh [`Ctx::new`]/[`Ctx::at`]
+    /// starts empty, a clone or [`Ctx::with_overlay`] shares it), so its lifetime is one gate run
+    /// or one battery over one tree. A `.gitignore` edited on disk DURING that lifetime is not
+    /// seen by it — the same snapshot the walk it serves has always taken of the directory tree.
+    /// A failed `git` is not remembered: the caller gets the error, exactly as before.
+    /// How many paths this context (and every clone and overlay of it) holds an ignore answer for —
+    /// what a walk that has been taken before does NOT ask `git` again. Read by the exit test that
+    /// pins the memo; a count, so it says nothing about which paths are ignored.
+    pub fn ignore_answers_held(&self) -> usize {
+        self.ignore_memo
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    fn ignored_among(
+        &self,
+        asked: &[String],
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        let unknown: Vec<String> = {
+            let memo = self.ignore_memo.lock().unwrap_or_else(|e| e.into_inner());
+            let mut seen = std::collections::BTreeSet::new();
+            asked
+                .iter()
+                .filter(|p| !memo.contains_key(p.as_str()) && seen.insert(p.as_str()))
+                .cloned()
+                .collect()
+        };
+        if !unknown.is_empty() {
+            let claimed: std::collections::BTreeSet<String> =
+                gitp::check_ignore(&self.root, &unknown)?
+                    .into_iter()
+                    .collect();
+            let mut memo = self.ignore_memo.lock().unwrap_or_else(|e| e.into_inner());
+            for p in unknown {
+                let yes = claimed.contains(&p);
+                memo.insert(p, yes);
+            }
+        }
+        let memo = self.ignore_memo.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(asked
+            .iter()
+            .filter(|p| memo.get(p.as_str()).copied().unwrap_or(false))
+            .cloned()
+            .collect())
+    }
+
+    fn drop_ignored(&self, rels: Vec<PathBuf>) -> Vec<PathBuf> {
+        let asked: Vec<String> = rels
+            .iter()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let Ok(ignored) = self.ignored_among(&asked) else {
+            return rels;
+        };
+        if ignored.is_empty() {
+            return rels;
+        }
+        rels.into_iter()
+            .filter(|r| !ignored.contains(&r.to_string_lossy().replace('\\', "/")))
+            .collect()
+    }
+
+    /// Write the overlaid view of `paths` into `dest`, for the gates not yet converted that must
+    /// still shell out over a tree on disk.
+    pub fn materialize(&self, dest: &Path, paths: &[&str]) -> Result<(), String> {
+        for rel in paths {
+            let content = self.read(rel)?;
+            let target = dest.join(rel);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            std::fs::write(&target, content).map_err(|e| format!("{}: {e}", target.display()))?;
+        }
+        Ok(())
+    }
+
+    /// `git`, as a process, always `-C <root>`, never a `cd`.
+    pub fn git(&self, args: &[&str]) -> Result<String, String> {
+        gitp::git(&self.root, args)
+    }
+
+    /// Tracked paths a `.gitignore` rule of THIS TREE also matches — `git ls-files -ci
+    /// --exclude-standard`, the exact query that intersects "in the index" with "an ignore rule
+    /// would otherwise exclude it".
+    ///
+    /// THE HAZARD THIS NAMES is the one `kind_isolation`'s own selftest already carries in its
+    /// wording: "a compiled source in a walker-skipped, gitignored directory is source no rule has
+    /// read". That case is about a file the WALKER never lists; this is about a file GIT ITSELF
+    /// tracks despite an ignore rule that says nothing here should be — a distinct way for a path
+    /// to go blind to every scanner that trusts `.gitignore` to bound its own scan set, and the one
+    /// that put `.fix/*.orig` into a shipped commit in the first place. Tracking beats ignoring in
+    /// git's own precedence, so the file is live, reviewed and shipped; every gate that skips
+    /// ignored paths (or skips a directory `.gitignore` names) never looks at it.
+    ///
+    /// Overlay-answerable so a self-test can plant the FINDING without a real git index: proving
+    /// this for real would mean force-adding a fixture path under an ignored directory and
+    /// committing it, which is the exact hazard this rule exists to refuse ever landing again.
+    pub fn tracked_ignored(&self) -> Result<Vec<String>, String> {
+        let key = "git-ls-files-ci-exclude-standard";
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(key) {
+                return Ok(out
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect());
+            }
+        }
+        self.git_lines(&["ls-files", "-ci", "--exclude-standard"])
+    }
+
+    pub fn git_lines(&self, args: &[&str]) -> Result<Vec<String>, String> {
+        gitp::git_lines(&self.root, args)
+    }
+
+    /// Does `r` name a commit this repository can resolve?
+    ///
+    /// SYNTHETIC REFS ARE DECLARED, NOT DISCOVERED. An overlay may plant `git-ref:<r>` to describe
+    /// a ref that does not exist in the real repository, which is what lets the config-schema
+    /// gate's self-test drive its baseline arms — a ref that does not resolve, a ref that resolves
+    /// and carries no snapshot, a ref carrying a PLANTED baseline — without writing an object, a
+    /// branch or a commit into the tree the developer is standing in. `"1"` resolves, anything else
+    /// does not.
+    ///
+    /// A ref the overlay says nothing about is asked of git, so the ordinary run is unaffected.
+    pub fn git_ref_resolves(&self, r: &str) -> bool {
+        if let Some(planted) = self.planted_ref(r) {
+            return planted == "1";
+        }
+        gitp::git(
+            &self.root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{r}^{{commit}}"),
+            ],
+        )
+        .is_ok()
+    }
+
+    /// `git show <r>:<path>` — the bytes `path` had at `r`, never the working tree's.
+    ///
+    /// THE BASELINE IS READ FROM A REF FOR A REASON: rewriting the committed snapshot must not be
+    /// able to launder a break, so the additive check's left-hand side comes from history and not
+    /// from the file the same commit is free to edit.
+    ///
+    /// A SYNTHETIC REF IS ANSWERED ENTIRELY FROM THE OVERLAY. When `git-ref:<r>` is planted, this
+    /// ref is the self-test's and git is never consulted: an overlay that planted the ref but no
+    /// `git-show:<r>:<path>` is describing a ref that RESOLVES AND CARRIES NO SUCH FILE, which is
+    /// the arm that used to be a free bypass and must stay reachable in a test. Falling through to
+    /// the real repository there would answer with the real HEAD's snapshot and quietly turn that
+    /// case green.
+    pub fn git_show(&self, r: &str, path: &str) -> Result<String, String> {
+        let key = format!("git-show:{r}:{path}");
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(&key) {
+                return Ok(out.clone());
+            }
+        }
+        if self.planted_ref(r).is_some() {
+            return Err(format!(
+                "ref '{r}' resolves but carries no {path} (planted)"
+            ));
+        }
+        gitp::git(&self.root, &["show", &format!("{r}:{path}")])
+    }
+
+    /// The overlay's answer for `git-ref:<r>`, if it planted one.
+    fn planted_ref(&self, r: &str) -> Option<&str> {
+        self.overlay()?
+            .commands
+            .get(&format!("git-ref:{r}"))
+            .map(String::as_str)
+    }
+
+    /// Run a command and REFUSE to hand back stdout on a non-zero status. The shell's
+    /// `h=$(scan "$f") || true` discarded its producer's exit status, so a broken scanner produced
+    /// empty output for every file and read as "no findings" gate-wide.
+    pub fn run_checked(&self, program: &str, args: &[String]) -> Result<String, String> {
+        let out = Command::new(program)
+            .args(args)
+            .current_dir(&self.root)
+            .output()
+            .map_err(|e| format!("{program}: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "{program} {} exited {}: {}",
+                args.join(" "),
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        String::from_utf8(out.stdout).map_err(|e| format!("{program}: non-utf8 stdout: {e}"))
+    }
+
+    /// `cargo tree -e no-dev … -f {p}`, overlay-overridable on the same terms as
+    /// [`Ctx::cargo_metadata`].
+    ///
+    /// THE RESOLVE IS SEPARATED FROM THE COUNT, and that separation is the whole point.
+    /// `cargo tree … 2>/dev/null | grep -c` folded four different things into the number 0: the
+    /// crate is absent (the answer a ban wants), cargo is not installed, a feature name in the
+    /// argument list no longer exists, and the workspace does not build. Three of those are
+    /// failures and all three printed the ban's PASS with the diagnostic already discarded. So a
+    /// non-zero status is an `Err`, and so is a tree that resolved and named NO PACKAGE AT ALL —
+    /// "absent" is exactly the claim an unresolved tree fakes.
+    pub fn cargo_tree(&self, args: &[&str]) -> Result<String, String> {
+        let key = format!("cargo-tree:{}", args.join(" "));
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(&key) {
+                return if out.trim().is_empty() {
+                    Err(format!(
+                        "`cargo tree {}` resolved and named no package at all. A tree with no \
+                         packages in it carries no crate, and carrying no crate is the passing \
+                         answer to every dependency ban.",
+                        args.join(" ")
+                    ))
+                } else {
+                    Ok(out.clone())
+                };
+            }
+        }
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let mut argv: Vec<String> = vec!["tree".into(), "-e".into(), "no-dev".into()];
+        argv.extend(args.iter().map(|a| (*a).to_string()));
+        argv.push("-f".into());
+        argv.push("{p}".into());
+        let out = self.run_checked(&cargo, &argv)?;
+        if out.trim().is_empty() {
+            return Err(format!(
+                "`cargo tree {}` resolved and named no package at all. A tree with no packages in \
+                 it carries no crate, and carrying no crate is the passing answer to every \
+                 dependency ban.",
+                args.join(" ")
+            ));
+        }
+        Ok(out)
+    }
+
+    /// `cargo metadata` for one manifest, overlay-overridable so a self-test can plant a dependency
+    /// closure without a fixture workspace.
+    pub fn cargo_metadata(&self, manifest_rel: &str) -> Result<String, String> {
+        let key = format!("cargo-metadata:{manifest_rel}");
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(&key) {
+                return Ok(out.clone());
+            }
+        }
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        self.run_checked(
+            &cargo,
+            &[
+                "metadata".to_string(),
+                "--format-version".to_string(),
+                "1".to_string(),
+                "--manifest-path".to_string(),
+                self.abs(manifest_rel).display().to_string(),
+            ],
+        )
+    }
+}
+
+fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkError> {
+    if dir.is_file() {
+        if let Ok(rel) = dir.strip_prefix(root) {
+            out.push(rel.to_path_buf());
+        }
+        return Ok(());
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // SKIP EVERY DOTDIR, not just `.git`. Naming the two known offenders was the bug: this walk
+        // also descended into `.claude/worktrees/`, where agent worktrees accumulate — 114 of them,
+        // ~14 GB, each a full checkout of this same tree. `workspace-deps` is documented at ~234ms
+        // and instead ran past its own 300s ceiling with one process at 9.3 GB RSS, so the gate read
+        // as HUNG rather than as walking the wrong tree. A dotdir at the repo root is tooling state
+        // by universal convention; none of it is the source this walk exists to enumerate, and the
+        // next tool to park a cache under one would reintroduce the same hang under a new name.
+        if name == "target" || name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            collect(&path, root, out)?;
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.push(rel.to_path_buf());
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE WORKSPACE ROOT, AT RUNTIME
+// ---------------------------------------------------------------------------------------------
+
+/// An explicit root (`cargo xtask --root <dir> …`), set once by the CLI before any context opens.
+static ROOT_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Record `--root <dir>`. The first call wins; the CLI makes exactly one.
+pub fn set_root_override(dir: PathBuf) {
+    let _ = ROOT_OVERRIDE.set(dir);
+}
+
+/// THE TREE A GATE READS IS THE ONE IT WAS RUN IN, NOT THE ONE IT WAS BUILT IN.
+///
+/// This used to be `env!("CARGO_MANIFEST_DIR")/..`, fixed at COMPILE time. With one target dir
+/// shared by several worktrees, `cargo xtask` in worktree B could run the binary last built in
+/// worktree A (cargo found nothing to rebuild) and every gate then read A's tree while reporting
+/// on B — a RED base once read GREEN that way, and every base-vs-candidate comparison was exposed.
+/// So the root is resolved when the binary RUNS: an explicit `--root`, else the current directory's
+/// `git rev-parse --show-toplevel`. The compile-time directory is used only when neither answers,
+/// and only when the current directory lies inside it; otherwise this refuses, naming both trees.
+pub fn workspace_root() -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("the current directory: {e}"))?;
+    let toplevel = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+    let compiled = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or("xtask/Cargo.toml has no parent directory")?;
+    resolve_root(ROOT_OVERRIDE.get().cloned(), toplevel, &cwd, &compiled)
+}
+
+/// The decision [`workspace_root`] makes, over its inputs, so every arm is testable.
+pub fn resolve_root(
+    explicit: Option<PathBuf>,
+    toplevel: Option<PathBuf>,
+    cwd: &Path,
+    compiled: &Path,
+) -> Result<PathBuf, String> {
+    let is_tree = |p: &Path| p.join("xtask").join("Cargo.toml").is_file();
+    if let Some(root) = explicit {
+        return if is_tree(&root) {
+            Ok(root)
+        } else {
+            Err(format!(
+                "--root {} is not a busbar tree (no xtask/Cargo.toml under it)",
+                root.display()
+            ))
+        };
+    }
+    if let Some(root) = toplevel {
+        return if is_tree(&root) {
+            Ok(root)
+        } else {
+            Err(format!(
+                "the current directory's git tree {} is not a busbar tree (no xtask/Cargo.toml); \
+                 run xtask from inside the tree to gate, or pass --root <dir>",
+                root.display()
+            ))
+        };
+    }
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    if canon(cwd).starts_with(canon(compiled)) {
+        Ok(compiled.to_path_buf())
+    } else {
+        Err(format!(
+            "no git tree at the current directory {} and no --root, and this binary was built in \
+             {}: refusing to read the BUILD tree in place of the one you are in. Pass --root <dir>.",
+            cwd.display(),
+            compiled.display()
+        ))
+    }
+}
+
+#[cfg(test)]
+mod read_write_memo_tests {
+    use super::Ctx;
+
+    /// THE HAZARD `Ctx::write_file` EXISTS TO CLOSE: `read_disk_memoized` remembers a file's
+    /// bytes for the life of the process, and a `--write` gate is the one caller that changes a
+    /// real byte under it mid-run. A write through the raw `std::fs::write` this replaced would
+    /// leave the OLD content cached; a write through `Ctx::write_file` must not — a `read`
+    /// straight after a `write_file` must see what was just written, not what `read` cached
+    /// before it.
+    #[test]
+    fn a_read_straight_after_write_file_sees_the_new_bytes_not_the_cached_ones() {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-ctx-write-memo-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
+        let rel = "probe.txt";
+        std::fs::write(root.join(rel), "before").expect("seed write");
+
+        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+
+        // Populate the memo with the ORIGINAL bytes, exactly as a `--write` gate's own read of
+        // its ledger would before rewriting it.
+        assert_eq!(cx.read(rel).as_deref(), Ok("before"));
+
+        cx.write_file(rel, "after").expect("write_file writes");
+
+        // A memo that was never invalidated would still answer "before" here.
+        assert_eq!(cx.read(rel).as_deref(), Ok("after"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// THE SAME HAZARD ONE LEVEL UP: `collect_memoized` remembers a directory's LISTING, and a
+    /// `write_file` that creates a file the walk had never seen must un-remember it too, not just
+    /// the bytes. A `list` straight after a create-via-`write_file` must name the new file, not
+    /// whatever `list` cached before it existed.
+    #[test]
+    fn a_list_straight_after_write_file_creates_a_file_sees_it() {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-ctx-walk-memo-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let sub = root.join("sub");
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&sub).expect("sub dir creates");
+        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
+
+        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+        let spec = super::WalkSpec::new(["sub"]).ext("txt").allow_empty();
+
+        // Populate the walk memo with a listing that does NOT have the file yet.
+        assert_eq!(
+            cx.list(&spec).expect("first list"),
+            Vec::<std::path::PathBuf>::new()
+        );
+
+        cx.write_file("sub/new.txt", "hi")
+            .expect("write_file creates a file the first list never saw");
+
+        // A walk memo that was never invalidated would still list nothing here.
+        let after = cx.list(&spec).expect("second list");
+        assert_eq!(after, vec![std::path::PathBuf::from("sub/new.txt")]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

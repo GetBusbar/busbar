@@ -1,0 +1,55 @@
+# Golden input data for busbar-plugin-loader's own tests: the REAL on-disk names of the plugin
+# artifacts the dlopen-seam tests locate. Each value must equal what that artifact's own build (or
+# the oracle's fetch script) produces, or the test points at a file that does not exist. The loader
+# names no instance; the tests read these names here, as data. One `key = value` per line; `#`
+# starts a comment.
+
+# The sibling `GetBusbar/<checkout>` repo whose release cdylib is the preferred kind:store fixture.
+sibling_store_checkout = busbar-store-sqlite
+sibling_store_plugin = store-sqlite-plugin
+sibling_store_cdylib = busbar_store_sqlite_plugin
+
+# The in-tree `kind: hook` fixture crate (`crates/hook-test-plugin`) the dlopen-seam tests in
+# `hook_tests.rs` build and load over the real ABI. The loader names no instance; the test reads
+# this name here, as data.
+hook_fixture_cdylib = busbar_hook_test_plugin
+
+# The oracle cache's directory for the published store tarball (testing/shadow-oracle/fetch-plugin.sh
+# <plugin-id> fills `plugins/<plugin-id>`).
+published_store_plugin_id = store-sqlite
+
+# The REAL plugin repos that prove the secret and auth kinds (`src/tests/plugin_proof_tests.rs`;
+# the removed ci.yml `plugin-proofs` builds them into BUSBAR_PLUGIN_PROOF_DIR). The cdylib names are what those
+# repos' own builds produce; the rest is what each plugin's own code answers.
+proof_secret_cdylib = busbar_secret_vault_plugin
+proof_secret_config = {"addr": "https://127.0.0.1:9", "token": "busbar-proof", "timeout_secs": 2}
+proof_secret_reference = kv/data/proof#field
+proof_secret_resolve_error = request to Vault (https://127.0.0.1:9/v1/kv/data/proof) failed
+proof_secret_refusal = hashicorp-vault plugin requires config (addr, token); none provided
+proof_auth_cdylib = busbar_auth_github_plugin
+proof_auth_redirect_uri = https://busbar.example/auth/token
+proof_auth_config = {"client_id": "Iv1.busbar-proof"}
+proof_auth_authorize_prefix = https://github.com/login/oauth/authorize?response_type=code&client_id=Iv1.busbar-proof&redirect_uri=https%3A%2F%2Fbusbar.example%2Fauth%2Ftoken&scope=
+proof_auth_refusal = github plugin requires config (client_id); none provided
+
+# The REAL plugin repos that prove the store and hook kinds' dropped-in doors (R-FIX2): the durable
+# store (GetBusbar/busbar-store-sqlite: a durable file, a restart, two handles on one file) and the
+# forwarding hook (GetBusbar/busbar-hook-webrequest, against the proof's local mock upstream). the removed ci.yml
+# `plugin-proofs` builds each at the rev it pins into BUSBAR_PLUGIN_PROOF_DIR.
+proof_store_cdylib = busbar_store_sqlite_plugin
+proof_store_path_key = db_path
+proof_store_refusal = invalid sqlite plugin config: `db_path` must be a string, got 5
+proof_hook_cdylib = busbar_hook_webrequest
+proof_hook_url_key = url
+proof_hook_timeout_key = timeout_ms
+proof_hook_timeout_error = webrequest: request failed
+proof_hook_refusal = webrequest: settings.url is required
+
+# The `kind: auth` both-ways witness (`src/tests/auth_conformance_tests.rs`) is the REAL OIDC module
+# (GetBusbar/busbar-auth-oidc). Its open-time config, with a JWKS endpoint nothing listens on (so every
+# verification it attempts fails closed identically through either door) and explicit login
+# endpoints (so `open` performs no discovery); a token-shaped credential it must try to verify; and
+# the prefix of the authorize URL its login start builds.
+both_ways_auth_config = {"issuer": "https://issuer.both-ways.invalid", "audience": "api://both-ways", "jwks_url": "https://127.0.0.1:9/jwks", "authorization_endpoint": "https://issuer.both-ways.invalid/authorize", "token_endpoint": "https://issuer.both-ways.invalid/token", "jwks_min_refetch_secs": 3600, "jwks_ttl_secs": 3600}
+both_ways_auth_token = eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImJvdGgtd2F5cyJ9.eyJpc3MiOiJodHRwczovL2lzc3Vlci5ib3RoLXdheXMuaW52YWxpZCIsImF1ZCI6ImFwaTovL2JvdGgtd2F5cyIsInN1YiI6ImFsaWNlIiwiZXhwIjo0MTAyNDQ0ODAwfQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+both_ways_auth_authorize_prefix = https://issuer.both-ways.invalid/authorize?

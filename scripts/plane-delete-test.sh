@@ -1,0 +1,1831 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# plane-delete-test.sh — THE STRONG-FORM DELETION TEST.
+#
+# WHY THIS EXISTS (docs/design/BUSBAR-1.6.0.md Part 3):
+#   The owner's literal requirement for a plane P ∈ {llm, mcp, a2a}: run `git rm -r crates/busbar-<P>`
+#   and the NEUTRAL crates — busbar-core, busbar-substrate, busbar-api — must STILL COMPILE, and the
+#   binary must still boot serving no P protocol. A protocol plane is a self-contained plugin merely
+#   compiled in for convenience; take its crate away and core is unmoved.
+#
+#   busbar-core and busbar-substrate NO LONGER EXIST BY THOSE NAMES: busbar-core's whole ~130k LOC
+#   was absorbed into busbar-kernel, and busbar-substrate's engine half was absorbed into
+#   busbar-kernel too (its pure-value half split out, then went to busbar-contract and
+#   busbar-kernel, #83a SD-8). "The NEUTRAL crates" this test proves survive a plane's removal are
+#   therefore busbar-kernel and busbar-contract today — see NEUTRAL_PKGS below, the one place that
+#   pair is named.
+#
+#   the removed ci.yml already runs the WEAK form of this (the `deletion-test-matrix` job): build the neutral
+#   crates with a plane's cargo FEATURE off. That proves the neutral crates do not *reference* the
+#   plane behind its feature, but it does NOT prove the crate can be *removed* — a `#[path]` witness
+#   dual-compile, a dev-dependency back-edge, or a stray `../busbar-<P>/src` include all survive a
+#   feature flip and only surface when the directory is actually gone. THIS script is the strong form:
+#   it PHYSICALLY REMOVES `crates/busbar-<P>` in a scratch copy of the workspace and asserts the
+#   neutral crates + bin still `cargo check`.
+#
+# THE SCRATCH MECHANISM (why a copy, and why THIS copy):
+#   The neutral crates reach the plane sources through RELATIVE `#[path = "../../../busbar-<P>/src/…"]`
+#   includes that escape the crate into a sibling directory, so the removal has to be tested against a
+#   whole, self-consistent workspace tree — not a single crate in isolation. We build that tree by
+#   TAR-COPYING the working tree (excluding target/, .git, .claude) into a fresh scratch dir, then
+#   mutate the copy. This is the "cp -r excluding target/" option from the design, done with tar so the
+#   exclude is portable to macOS bsdtar (which has no `cp --exclude`) and so a multi-GB target/ is never
+#   copied. It is preferred over `git worktree add` for three reasons: it reflects the CURRENT working
+#   tree (uncommitted edits included), it needs no git-registry bookkeeping / teardown, and it works
+#   from inside a linked worktree where `git worktree add` to an external temp dir is refused. cargo is
+#   driven with `--manifest-path "$SCRATCH/Cargo.toml"` so the real tree is never touched and `#[path]`
+#   resolution (relative to each source file's own directory, inside the scratch) stays correct.
+#
+# WHAT IT MUTATES in the scratch, per plane P (the literal `git rm -r` + manifest fixups):
+#   (a) rm -rf  crates/busbar-<P>
+#   (b) drop    "crates/busbar-<P>"   from the workspace `members` in the root Cargo.toml
+#   (c) in the bin (crates/busbar/Cargo.toml): delete the `busbar-<P> = { path = … , optional = true }`
+#       dependency, strip the `dep:busbar-<P>` token from the feature that names it (leaving any neutral
+#       forward such as `busbar-kernel/plane-<P>` intact), and drop that feature from `default` so a
+#       default build of the bin is coherent without the plane.
+#   Then `cargo check` the NEUTRAL_PKGS crates (with the removed plane's feature off, the others kept)
+#   and the bin (default features, now minus the plane). Both compiling = the strong form PASSES for P.
+#
+#   BOOT+SERVE, EVERY PLANE, AGAINST A MEASURED CONTROL (tracker C13): compiling is not booting, so
+#   each plane's strong-form removal additionally BUILDS (not just checks) the bin from the same
+#   scratch and BOOTS it — twice, since an `mcp:` block forces a closed auth chain and every other
+#   plane is probed on an open one. The verdict is never a bare 404: the gate first builds and boots
+#   the UNMUTATED tree and MEASURES what each plane's probe answers with its crate present, and a
+#   plane's 404 counts only as a DIFFERENCE from that control, with every neighbour still serving.
+#   This leg used to exist for `llm` alone, and its one assertion was a 404 that the calibration
+#   proved was the answer either way. See `boot_serve` / `judge_codes` below.
+#
+# MODES (same posture as scripts/plane-purity-lint.sh — informational until the extraction lands):
+#   --selftest        Prove the harness itself works before its verdict is trusted (run FIRST in CI):
+#                     that the removal logic really removes the crate/member/dep (grep the scratch), and
+#                     that the check-runner reports FAIL on a genuinely-coupled scratch (RED control) and
+#                     PASS on a properly-neutralised one (GREEN control). Detects, never hard-codes, which
+#                     planes the current tree couples. Green self-test is the acceptance bar.
+#   --baseline        INFORMATIONAL. Runs the strong form for every plane in $PLANES (scripts/
+#                     plane-keys.sh's PLANE_KEYS_DELETE — llm, mcp, a2a, voice, plane-decisions today)
+#                     and prints per-plane PASS/FAIL with evidence, PLUS a roster-coverage line against
+#                     the five-plane LOCKED roster (PLANE_KEYS_LOCKED: llm, mcp, a2a, streaming,
+#                     decisions) so a plane this harness cannot reach is named rather than silently
+#                     absent. ALWAYS exits 0 — surfaced on every push
+#                     WITHOUT reddening CI until the extraction lands, exactly like
+#                     plane-purity-lint.sh --baseline.
+#   <plane>           BLOCKING (fail-closed). Run the strong form for one plane in $PLANES; exit 0 =
+#                     PASS (neutral crates + bin compile without the crate), exit 1 = FAIL (still
+#                     coupled). This is the permanent per-plane gate the the removed ci.yml matrix leg calls once
+#                     the extraction is done.
+#   --all             BLOCKING for every plane in $PLANES at once (exit 1 if ANY plane still couples),
+#                     plus the same roster-coverage line --baseline prints — a PASS here is a pass for
+#                     $PLANES, never silently read as a pass for the five-plane locked roster.
+#
+# WITNESS PROBE (--with-witness, informational): additionally `cargo check` busbar-kernel with the
+#   `test-support` feature on. That turns on the `#[path]` dual-compile of the plane sources, so with the
+#   crate gone it FAILS wherever the witness build still reaches around the ABI — the exact PATH-INCLUDE
+#   coupling scripts/plane-purity-lint.sh already ledgers. It is reported separately from the shipped-build
+#   verdict because a test-only dual-compile is not what "still compile" means to an operator.
+#
+# Fail-closed bash 3.2 + POSIX (awk for the manifest edits, tar for the copy, python3 stdlib only for
+# the llm boot leg's port-pair picker — the same TOCTOU-minimising helper proto-deletion-gate.sh uses).
+# No git-write — the same bare-runner posture as proto-deletion-gate.sh / plane-purity-lint.sh.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+REPO="$(pwd)"
+
+red()  { printf '\033[31m%s\033[0m\n' "$*"; }
+grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
+ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
+note() { printf '  %s\n' "$*"; }
+hdr()  { printf '\n== %s ==\n' "$*"; }
+
+# The plane key set is single-sourced (scripts/plane-keys.sh) so this test cannot silently no-op on
+# a plane it was never told about — adding a plane there arms this harness for it automatically.
+# shellcheck source=scripts/plane-keys.sh
+. "$(dirname "$0")/plane-keys.sh"
+PLANES="$PLANE_KEYS_DELETE"
+
+# ── ROSTER TRUTH vs COVERAGE TRUTH — be careful and honest here ────────────────────────────────────
+# `PLANES` ($PLANE_KEYS) is what this harness can MECHANICALLY operate on today: each entry is a
+# literal `crates/busbar-<P>` directory `remove_crate_dir`/`neutralise_bin`/`boot_and_probe` below
+# knows how to strip and probe, and every per-plane table further down (`bin_feature`, `neutral_keep`,
+# `plane_probe_*`, `plane_config_sections`) has a real entry for. scripts/plane-keys.sh's
+# `PLANE_KEYS_LOCKED` is the five-plane DOCTRINE roster this repo is locked to (DECISIONS #18/#48:
+# llm, mcp, a2a, streaming, decisions). The two differ on the CURRENT tree, and `--all`/`--baseline`
+# used to iterate `$PLANE_KEYS` alone and print a verdict that read as "the whole roster, four planes,
+# all clean" — proving nothing about the two planes where the locked name and the on-disk name part
+# ways. `plane_ondisk_key` (scripts/plane-keys.sh) says which locked plane is reachable under which
+# tested name today:
+#   * `streaming` IS covered — tested here under its still-current on-disk name `voice`, because
+#     DECISIONS #18's crate rename has not landed yet. Reporting it as a gap would be dishonest in
+#     the OTHER direction: the plane genuinely is strong-form removable today, just not under its
+#     locked spelling.
+#   * `decisions` IS covered — tested as `plane-decisions`: the plane is ONE crate,
+#     `crates/busbar-plane-decisions`, with no I/O host crate beside it, so `git rm -r` of that one
+#     directory removes the whole plane. `$PLANES` is `PLANE_KEYS_DELETE` (scripts/plane-keys.sh),
+#     which carries that on-disk key without adding the bare word to `PLANE_KEYS`. The plane serves
+#     no route yet (`plane_unserved` below), so its boot leg's route probe carries no weight and the
+#     refusal witness is its presence/absence evidence.
+# Computed from PLANE_KEYS_LOCKED against PLANES via the alias, never hard-coded, so a plane that
+# gains an on-disk stand-in (a rename landing, or a new one-crate plane) drops out of
+# the gap with no edit here, and a locked plane added with no stand-in yet lands in it automatically.
+LOCKED_GAPS=""
+for _lp in $PLANE_KEYS_LOCKED; do
+  _od="$(plane_ondisk_key "$_lp")"
+  case " $PLANES " in
+    *" ${_od:-__no_ondisk_key__} "*) : ;;
+    *) LOCKED_GAPS="${LOCKED_GAPS:+$LOCKED_GAPS }$_lp" ;;
+  esac
+done
+unset _lp _od
+
+# report_coverage — the one place the roster-vs-coverage truth is printed, called by every mode that
+# claims a verdict (`--all`, `--baseline`) and by `--help`, so a reader of any of them sees the gap
+# without cross-referencing scripts/plane-keys.sh by hand.
+report_coverage() {
+  hdr "roster coverage (locked: $PLANE_KEYS_LOCKED)"
+  local lp od
+  for lp in $PLANE_KEYS_LOCKED; do
+    od="$(plane_ondisk_key "$lp")"
+    case " $LOCKED_GAPS " in
+      *" $lp "*)
+        red "  $lp: NOT COVERED — no on-disk plane crate this harness can strong-form test yet"
+        ;;
+      *)
+        if [ "$od" = "$lp" ]; then
+          grn "  $lp: covered (tested as \`$od\`)"
+        else
+          grn "  $lp: covered (tested under its on-disk name \`$od\`)"
+        fi
+        ;;
+    esac
+  done
+  if [ -n "$LOCKED_GAPS" ]; then
+    ylw "  $(printf '%s' "$LOCKED_GAPS" | wc -w | tr -d ' ') of $(printf '%s' "$PLANE_KEYS_LOCKED" | wc -w | tr -d ' ') locked plane(s) NOT deletion-tested by this run: $LOCKED_GAPS"
+  fi
+}
+
+# NEUTRAL_PKGS — the neutral crates a plane's removal must leave compiling, i.e. the cargo package
+# NAMES this file's own `strong_form`/self-test legs pass to `cargo check -p`. This is NOT the same
+# list as scripts/plane-keys.sh's `neutral_src_roots` (a `crates/<x>/src` SOURCE-ROOT list consumed by
+# plane-noun-gate.sh/plane-grep-gate.sh) — this one is PACKAGE names for cargo's package selector, a
+# distinct namespace this script alone owns, so it is declared here rather than borrowed. Was
+# `busbar-core busbar-substrate busbar-api`; both busbar-core and busbar-substrate were deleted (see
+# the header above) — busbar-kernel is their direct successor for this purpose (it carries the
+# `plane-mcp`/`plane-a2a`/`plane-streaming` features `neutral_keep` below names, the `openapi-schema`
+# forward to each plane crate, and the dev-dependency back-edge on busbar-mcp/busbar-a2a
+# `strip_workspace_edges` exists to sever); busbar-substrate-values (the pure-value half that split
+# off busbar-substrate) was deleted too, its values to busbar-contract and busbar-kernel (#83a SD-8). A name here that stops
+# existing hits the same cargo refusal `run_check` already surfaces as a FAIL (cargo errors fast on an
+# unknown `-p` package spec) — loud, not a silent narrowing of what got checked. busbar-api retired
+# into busbar-contract (fold F4), so the other neutral crate is the contract, the same pair the removed ci.yml's
+# deletion-test matrix builds.
+NEUTRAL_PKGS="busbar-kernel busbar-contract"
+neutral_pkg_args() {   # echo "-p busbar-kernel -p busbar-contract"
+  local n out=""
+  for n in $NEUTRAL_PKGS; do out="${out:+$out }-p $n"; done
+  printf '%s' "$out"
+}
+# The one NEUTRAL_PKGS member whose Cargo.toml carries the plane back-edges the FEATURE-REF plant
+# self-test exercises (the successor of what used to be busbar-core's manifest).
+NEUTRAL_EDGE_PKG_DIR="busbar-kernel"
+
+command -v tar   >/dev/null 2>&1 || { echo "plane-delete-test: tar not found"   >&2; exit 2; }
+command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" >&2; exit 2; }
+
+# ── per-plane metadata ────────────────────────────────────────────────────────────────────────────
+# The bin FEATURE that names the plane's `dep:busbar-<P>` (llm rides `proto-llm`; mcp/a2a ride the
+# plane-kind name). The NEUTRAL feature set to keep ON for the neutral-crate check (every default plane
+# EXCEPT the one being removed) — llm has no neutral-side feature of its own, so removing it keeps both
+# plane-mcp and plane-a2a. A crate/feature that appears or moves is a one-line edit here.
+# `voice` (busbar-voice, Plane 4) is WIRED into the bin and DEFAULT-ON, on both of its features: it has
+# a `dep:busbar-voice` optional dependency and the `plane-streaming` bin feature, whose forwards to the
+# plane crate are `dep:busbar-voice`, `busbar-voice?/runtime` and `busbar-voice?/openapi-schema` — all
+# three stripped by neutralise_bin. Its bin_feature is `plane-streaming`; its neutral_keep is the full
+# default plane set (removing voice touches neither mcp nor a2a). A feature that FORWARDS to
+# `plane-streaming` would leave the bin's default build incoherent without the crate until it came out
+# too — which is what neutralise_bin's forwarding closure is for.
+bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
+neutral_keep() {
+  case "$1" in
+    llm) echo "plane-mcp,plane-a2a" ;;
+    mcp) echo "plane-a2a" ;;
+    a2a) echo "plane-mcp" ;;
+    voice) echo "plane-mcp,plane-a2a" ;;
+    plane-decisions) echo "plane-mcp,plane-a2a" ;;
+  esac
+}
+valid_plane() { case " $PLANES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# plane_contract_crate <plane> → the contract plane crate (`busbar-plane-<locked>`) for an on-disk
+# plane key, DERIVED through scripts/plane-keys.sh's alias rather than spelled `busbar-plane-<P>`.
+# The spelled form named `busbar-plane-voice`, which does not exist -- voice's contract plane is
+# `busbar-plane-streaming` -- and leg 1b's bare `[ -d ]` then did nothing for voice, silently,
+# while the gate printed PASS for it (item 505). Empty when no locked plane maps to <plane>.
+plane_contract_crate() {
+  local lp
+  for lp in $PLANE_KEYS_LOCKED; do
+    if [ "$(plane_ondisk_key "$lp")" = "$1" ]; then printf 'busbar-plane-%s' "$lp"; return 0; fi
+  done
+  printf ''
+}
+
+# ── scratch lifecycle ─────────────────────────────────────────────────────────────────────────────
+# Scratch tree base: TMPDIR by default (CI house-style, same as proto-deletion-gate.sh). Overridable so
+# a sandboxed run can put it under the repo's own target/ (which is excluded from the copy, so no
+# self-recursion). A SHARED cargo target dir under target/ (gitignored) is reused across planes so the
+# ~130 external deps compile once, not once per plane.
+SCRATCH_BASE="${PLANE_DELETE_SCRATCH_BASE:-${TMPDIR:-/tmp}}"
+CACHE_TARGET="${PLANE_DELETE_CARGO_TARGET:-$REPO/target/plane-delete-cache}"
+# THE TEARDOWN LIST IS A FILE, NOT A VARIABLE. Every caller runs `s="$(make_scratch)"`, i.e. in a
+# command-substitution SUBSHELL, so a `SCRATCHES="$SCRATCHES $s"` inside make_scratch appended to the
+# subshell's copy and the parent's list stayed empty for the life of the run: the EXIT/INT/TERM/HUP
+# trap iterated nothing and every scratch -- a full copy of the working tree -- was left behind
+# (item 503). A file is shared by the subshell and the trap alike.
+SCRATCH_REGISTRY="$(mktemp "${TMPDIR:-/tmp}/plane-delete-scratches.XXXXXX")" \
+  || { echo "plane-delete-test: cannot create the scratch registry" >&2; exit 2; }
+
+cleanup() {
+  local d
+  if [ -f "$SCRATCH_REGISTRY" ]; then
+    while IFS= read -r d; do [ -n "$d" ] && rm -rf "$d" 2>/dev/null; done <"$SCRATCH_REGISTRY"
+    rm -f "$SCRATCH_REGISTRY"
+  fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM HUP
+
+# make_scratch → echoes a fresh scratch dir populated with a copy of the working tree. The dir is
+# registered for teardown BEFORE it is populated, so an interrupted copy is torn down too.
+make_scratch() {
+  local s
+  s="$(mktemp -d "$SCRATCH_BASE/plane-delete-test.XXXXXX")" || return 1
+  printf '%s\n' "$s" >>"$SCRATCH_REGISTRY" || return 1
+  # Copy the working tree, excluding the heavy/irrelevant dirs. Excluding ./target also auto-excludes an
+  # in-repo SCRATCH_BASE (which lives under target/), so the copy never ingests itself.
+  ( cd "$REPO" && tar --exclude='./target' --exclude='./.git' --exclude='./.claude' -cf - . ) \
+    | ( cd "$s" && tar -xf - ) || return 1
+  printf '%s\n' "$s"
+}
+
+# ── the mutations (awk/sed, operating on files INSIDE the scratch) ─────────────────────────────────
+# remove_crate_dir  — the literal `git rm -r crates/busbar-<P>`.
+remove_crate_dir() { rm -rf "$1/crates/busbar-$2"; }
+
+# drop_member — delete the `"crates/busbar-<P>",` line from the root workspace members.
+drop_member() {
+  local s="$1" p="$2" f="$1/Cargo.toml" t
+  t="$f.plane-delete.tmp"
+  awk -v pat="\"crates/busbar-$p\"" '
+    index($0, pat) > 0 { next }   # the members entry (only place this exact token appears)
+    { print }
+  ' "$f" >"$t" && mv "$t" "$f"
+}
+
+# neutralise_bin — (c): drop the dep line; strip the `dep:busbar-<P>` token from its feature; strip any
+# `busbar-<P>/…` feature reference wherever it appears (e.g. openapi-schema) — those become
+# manifest-load ERRORS the moment the optional dep is gone, so they must go too; drop the plane feature
+# from `default` so a default bin build is coherent.
+#
+# BOTH SPELLINGS of that reference, and the second one is why this note exists. Cargo writes an
+# optional dependency's feature as `busbar-<P>?/<feature>` when the reference must not ENABLE the
+# dep, and as `busbar-<P>/<feature>` when it may — and the bin once used the second form for its
+# node switch (`busbar-llm/teller-waist`). A pattern that matched only the `?` form left that one
+# behind, and the scratch's manifest then failed to LOAD ("feature … includes `busbar-llm/teller-waist`,
+# but `busbar-llm` is not a dependency"), which aborts before a single line is compiled — so all three
+# legs reported the llm plane as still coupled when what they had measured was the removal's own
+# manifest hygiene.
+#
+# The plane feature leaves `default` together with EVERY DEFAULT FEATURE THAT FORWARDS TO IT.
+#
+# The closure is the load-bearing word, and it is what an operator doing the literal `git rm -r` has to
+# do by hand. Dropping only the plane's own feature leaves any SWITCH-OVER feature that forwards to it
+# (`root-<P> = ["plane-<P>"]`) sitting in `default`, quietly turning the plane feature straight back on:
+# the crate is gone, the feature is on, and the composition root's module for that plane names a crate
+# that no longer exists. That reads as source coupling and is not — it is a manifest the removal left
+# half-done. Computed as a fixpoint over the [features] table rather than listed, because a list here
+# would be a second answer to "which features reach this plane", and the manifest is the first one.
+reaching_features() {
+  awk -v feat="$2" '
+    /^\[/ { in_f = ($0 ~ /^\[features\]/) }
+    !in_f { next }
+    /^[A-Za-z0-9_-]+[[:space:]]*=[[:space:]]*\[/ {
+      name = $0; sub(/[[:space:]]*=.*/, "", name)
+      body = $0;  sub(/^[^\[]*\[/, "", body); sub(/\].*$/, "", body)
+      names[++n] = name; bodies[name] = body
+    }
+    END {
+      # The reached set is carried as an ORDERED LIST, not as the keys of an associative array.
+      # Reading `a[k]` in awk CREATES `a[k]`, so a membership test written as a lookup quietly
+      # enrolls every name it asks about and the closure answers "everything" — which is not a
+      # conservative over-approximation here, it is the whole default set deleted.
+      rn = 1; rl[1] = feat; is_reached[feat] = 1
+      do {
+        # Two phases per round: decide, then add. Growing a set mid-scan is a set nobody can
+        # predict the contents of.
+        add_n = 0
+        for (i = 1; i <= n; i++) {
+          nm = names[i]
+          if (nm == "default" || (nm in is_reached)) continue
+          for (j = 1; j <= rn; j++) {
+            if (index(bodies[nm], "\"" rl[j] "\"") > 0) { add[++add_n] = nm; break }
+          }
+        }
+        for (i = 1; i <= add_n; i++) { rl[++rn] = add[i]; is_reached[add[i]] = 1 }
+      } while (add_n > 0)
+      for (j = 1; j <= rn; j++) printf "%s\n", rl[j]
+    }
+  ' "$1"
+}
+
+neutralise_bin() {
+  local s="$1" p="$2" f="$1/crates/busbar/Cargo.toml" t feat reach
+  feat="$(bin_feature "$p")"
+  # SPACE-separated, not newline: `awk -v` refuses a literal newline in an assignment, and a feature
+  # name never contains a space, so the flatter list loses nothing.
+  reach="$(reaching_features "$f" "$feat" | tr '\n' ' ')"
+  t="$f.plane-delete.tmp"
+  awk -v p="$p" -v feat="$feat" -v reach="$reach" '
+    function norm(line) {
+      gsub(/,[[:space:]]*,/, ", ", line)      # normalise a comma left behind by a stripped token
+      gsub(/\[[[:space:]]*,/, "[", line)
+      gsub(/,[[:space:]]*\]/, "]", line)
+      gsub(/\[[[:space:]]*\]/, "[]", line)
+      return line
+    }
+    BEGIN {
+      deppat  = "^busbar-" p "[[:space:]]*=[[:space:]]*\\{[[:space:]]*path[[:space:]]*=[[:space:]]*\"\\.\\./busbar-" p "\""
+      featpat = "^" feat "[[:space:]]*=[[:space:]]*\\["
+      optpat  = "\"busbar-" p "\\??/[^\"]*\""   # a dep feature ref, either spelling: "busbar-<P>[?]/<feature>"
+      deptok  = "\"dep:busbar-" p "\""
+      nreach  = split(reach, reachtok, " ")
+    }
+    { line = $0 }
+    line ~ deppat { next }                      # (c1) delete the optional dependency line entirely
+    { gsub(optpat, "", line) }                  # (c2) strip busbar-<P>[?]/… refs (openapi-schema, …)
+    line ~ featpat { gsub(deptok, "", line) }   # (c3) strip dep:busbar-<P> from its own feature
+    # (c4) drop the removed plane feature AND every feature forwarding to it from `default`
+    line ~ /^default[[:space:]]*=[[:space:]]*\[/ {
+      for (i = 1; i <= nreach; i++) if (reachtok[i] != "") gsub("\"" reachtok[i] "\"", "", line)
+    }
+    { print norm(line) }
+  ' "$f" >"$t" && mv "$t" "$f"
+}
+
+# strip_workspace_edges — remove any dangling `busbar-<P> = { path = … }` dependency line from EVERY
+# OTHER crate's manifest (normal / dev / build). This is the load-bearing subtlety of the STRONG form:
+# `busbar-kernel` carries a DEV-dependency back-edge on busbar-mcp / busbar-a2a (for its own cross-plane
+# integration tests). A plain `cargo check` never COMPILES a dev-dep, but cargo still LOADS every member
+# manifest to resolve the virtual workspace, and a path dep whose directory is gone makes it REFUSE
+# before compiling a single line — so without this we would measure manifest hygiene, not source
+# coupling. Removing a now-dangling path dep is mechanical `git rm -r` cleanup, not a design change; the
+# crates that carried such an edge are RECORDED in EDGE_CRATES and reported as residual coupling (a bare
+# `git rm -r` would dangle them, so the removal severs the back-edge too (the plane-purity lint ledgers it).
+EDGE_CRATES=""
+strip_workspace_edges() {
+  local s="$1" p="$2" f t base
+  EDGE_CRATES=""
+  for f in "$s"/crates/*/Cargo.toml; do
+    [ "$f" = "$s/crates/busbar/Cargo.toml" ] && continue   # the bin is handled by neutralise_bin
+    if grep -q "^busbar-$p[[:space:]]*=[[:space:]]*{" "$f" 2>/dev/null; then
+      base="$(basename "$(dirname "$f")")"
+      EDGE_CRATES="$EDGE_CRATES $base"
+      t="$f.plane-delete.tmp"
+      awk -v p="$p" '$0 ~ ("^busbar-" p "[[:space:]]*=[[:space:]]*\\{") { next } { print }' "$f" >"$t" && mv "$t" "$f"
+    fi
+  done
+}
+
+# strip_feature_edges — remove any [features]-table entry that NAMES the removed plane crate, in EVERY
+# manifest in the scratch (root + every crate, including the bin): the hard forward
+# `"busbar-<P>/<feature>"`, the optional forward `"busbar-<P>?/<feature>"`, and the bare optional-dep
+# token `"dep:busbar-<P>"`. This is the dangle strip_workspace_edges (path deps only) cannot see: a
+# NEUTRAL crate can name the plane in its OWN feature table without the plane ever being a normal
+# dependency of that crate — busbar-kernel's `openapi-schema` forwards to
+# `busbar-llm/openapi-schema`, `busbar-mcp/openapi-schema`, `busbar-a2a/openapi-schema` while busbar-kernel
+# depends on those crates only as DEV-dependencies (which strip_workspace_edges already severs). Once the
+# crate is gone and its back-edge dep line is stripped, that feature string names a package that is no
+# longer ANY dependency of the manifest declaring it, and cargo refuses to load the manifest before a
+# single line compiles — the same manifest-load refusal strip_workspace_edges exists to prevent, one
+# table over. Removing a now-dangling feature ref is mechanical `git rm -r` cleanup, not a design change;
+# the crates that carried one are RECORDED in FEATURE_EDGE_CRATES and reported as residual coupling
+# exactly like EDGE_CRATES.
+FEATURE_EDGE_CRATES=""
+strip_feature_edges() {
+  local s="$1" p="$2" f t hit
+  FEATURE_EDGE_CRATES=""
+  for f in "$s/Cargo.toml" "$s"/crates/*/Cargo.toml; do
+    [ -f "$f" ] || continue
+    hit="$(grep -c -E "\"busbar-$p\\??/[^\"]*\"|\"dep:busbar-$p\"" "$f" 2>/dev/null)"; hit="${hit:-0}"
+    [ "$hit" -eq 0 ] && continue
+    FEATURE_EDGE_CRATES="$FEATURE_EDGE_CRATES $(basename "$(dirname "$f")")"
+    t="$f.plane-delete.tmp"
+    awk -v p="$p" '
+      function norm(line) {
+        gsub(/,[[:space:]]*,/, ", ", line)
+        gsub(/\[[[:space:]]*,/, "[", line)
+        gsub(/,[[:space:]]*\]/, "]", line)
+        gsub(/\[[[:space:]]*\]/, "[]", line)
+        return line
+      }
+      BEGIN {
+        hardpat = "\"busbar-" p "/[^\"]*\""
+        optpat  = "\"busbar-" p "\\?/[^\"]*\""
+        deptok  = "\"dep:busbar-" p "\""
+      }
+      {
+        line = $0
+        gsub(optpat, "", line)
+        gsub(hardpat, "", line)
+        gsub(deptok, "", line)
+        print norm(line)
+      }
+    ' "$f" >"$t" && mv "$t" "$f"
+  done
+}
+
+# apply_removal — the literal `git rm -r` reversal for one plane, in one scratch: (a) the crate dir,
+# (b) the workspace member, (c) the bin dep + feature, (d) any dangling path-dep back-edge elsewhere,
+# (e) any dangling feature-table reference (hard/optional forward or bare `dep:` token) elsewhere.
+apply_removal() {
+  local s="$1" p="$2"
+  remove_crate_dir     "$s" "$p"
+  drop_member          "$s" "$p"
+  neutralise_bin       "$s" "$p"
+  strip_workspace_edges "$s" "$p"
+  strip_feature_edges   "$s" "$p"
+}
+
+# remove_codec_and_assert <scratch> <plane> → 0 removed and proven / 1 failed / 2 no codec half.
+#
+# A PLANE IS TWO CRATES WHILE THE CODEC SPLIT STANDS (scripts/plane-keys.sh `plane_src_roots`):
+# `busbar-<P>` (the I/O half) and `busbar-<P>-codec` (the pure half -- dialects, record vocabularies,
+# the bulk of the plane). The strong form removed only the first, and its verdict read as if the
+# whole plane were gone while `crates/busbar-<P>-codec` stayed a workspace member (item 504). This
+# removes the second half with the same `git rm -r` mechanics and the same asserted evidence as
+# `remove_and_assert`: the directory existed and is gone, the root manifest changed and no longer
+# lists it, and no manifest anywhere still declares a dependency on it.
+CODEC_EDGE_CRATES=""
+remove_codec_and_assert() {
+  local s="$1" c="$2-codec" pre_root left
+  [ -d "$s/crates/busbar-$c" ] || return 2
+  pre_root="$s/.plane-delete-pre-codec-root.toml"
+  cp "$s/Cargo.toml" "$pre_root" 2>/dev/null || { red "  cannot read the scratch's root manifest"; return 1; }
+  remove_crate_dir      "$s" "$c"
+  drop_member           "$s" "$c"
+  strip_workspace_edges "$s" "$c"
+  CODEC_EDGE_CRATES="$EDGE_CRATES"
+  strip_feature_edges   "$s" "$c"
+  if [ -d "$s/crates/busbar-$c" ]; then
+    red "  crates/busbar-$c is STILL PRESENT after the removal"; return 1
+  fi
+  if grep -q "\"crates/busbar-$c\"" "$s/Cargo.toml" 2>/dev/null || cmp -s "$pre_root" "$s/Cargo.toml"; then
+    red "  the root manifest still lists crates/busbar-$c, or was not rewritten"; return 1
+  fi
+  left="$(grep -l "^busbar-$c[[:space:]]*=" "$s/Cargo.toml" "$s"/crates/*/Cargo.toml 2>/dev/null | tr '\n' ' ')"
+  if [ -n "$left" ]; then
+    red "  a manifest still declares busbar-$c after the removal: $left"; return 1
+  fi
+  rm -f "$pre_root"
+  return 0
+}
+
+# ── PICKING A FREE PORT PAIR ─────────────────────────────────────────────────────────────────────
+# Same TOCTOU-minimising approach as scripts/proto-deletion-gate.sh's `free_port`: bind a
+# CONSECUTIVE PAIR (data + admin) low in the range and hold both until the moment we print, so a
+# sibling gate's own boot cannot steal the number between our check and busbar's bind.
+free_port_pair() {
+  python3 - <<'PYEOF' 2>/dev/null
+import socket, random
+for _ in range(200):
+    base = random.randrange(46000, 46998, 2)
+    socks = []
+    try:
+        for port in (base, base + 1):
+            s = socket.socket()
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            s.bind(("127.0.0.1", port))
+            socks.append(s)
+        print(base)
+        break
+    except OSError:
+        continue
+    finally:
+        for s in socks:
+            s.close()
+PYEOF
+}
+
+# ── BOOT+SERVE LEG, FOR EVERY PLANE, WITH A POSITIVE CONTROL (tracker C13) ───────────────────────
+#
+# The `strong_form` legs above are cargo-CHECK only — they prove the neutral crates and the bin still
+# COMPILE with `crates/busbar-<P>` physically gone. "Compiles" is not "boots and serves", so this
+# leg BUILDS the bin for real from the mutated scratch, BOOTS it, and asks the running server
+# whether the removed plane's route is actually gone.
+#
+# TWO THINGS WERE WRONG WITH THE SHAPE THIS REPLACES, and they compounded.
+#
+#  1. THE LEG EXISTED FOR `llm` ALONE. `strong_form` ran it under `if [ "$p" = "llm" ]`, so mcp, a2a
+#     and voice were proven only to COMPILE without their crate. A plane whose crate is gone but
+#     whose route is still mounted from somewhere else (a re-exported router, a leftover fallback,
+#     a neutral-side registration that outlived the crate) is exactly the coupling this gate exists
+#     to catch, and for three of the four planes nothing was looking. Every plane gets the leg now;
+#     the probe table below is the only per-plane knowledge.
+#
+#  2. THE 404 ASSERTION HAD NO POSITIVE CONTROL. The whole claim rested on one line —
+#     `POST /v1/chat/completions` answers 404 — and NOTHING anywhere established that this request
+#     is non-404 when the plane IS present. A 404 is the answer an HTTP server gives to a great many
+#     mistakes: a renamed route, a typo'd path, a wrong method, a config that never mounted the
+#     plane in the first place, a body the router rejects before dispatch. Every one of those makes
+#     the assertion pass while proving nothing about the deletion. An unfalsifiable green.
+#
+# THE FIX IS A CALIBRATION, NOT A LIST OF EXPECTED CODES. The gate does not hard-code what a mounted
+# plane answers — it MEASURES it. Before any verdict, it builds and boots the UNMUTATED tree and
+# probes every plane's route with the byte-identical request it will later send to the mutated
+# binary. That run is the CONTROL: it is what "this plane is present" looks like through this exact
+# probe, on this exact config, on this exact server. A control code of 404 is itself a hard failure
+# — it means the probe cannot tell presence from absence, so no verdict taken with it is worth
+# anything, which is the state the gate was silently in.
+#
+# The verdict for plane P is then a DIFFERENCE against that control, which is the only form in which
+# an absence code carries information. `absent` is ITSELF measured per boot, by probing a path no
+# plane can own (404 on the open boot; 401 on the closed one, where the auth middleware refuses an
+# unlisted path before routing) — spelling it "404" everywhere reads a correctly-deleted MCP route
+# as a surviving one:
+#     control[P] != absent   the probe reaches a real route when P is compiled in (the positive control)
+#     subject[P] == absent   and the same request reads absent once P's crate is gone (the deletion)
+#     subject[Q] != absent   while every neighbour Q that the control mounted still serves
+# The third line is the neighbour control: it separates "P's route left with P's crate" from "this
+# boot mounted nothing / the server is broken / the config was rejected", which produce 404 for
+# every plane at once and used to be indistinguishable from a pass.
+#
+# TWO BOOT CONFIGS, not one, and the reason is auth. An `mcp:` block REFUSES to boot on an open
+# chain (config_validate: "auth.chain is empty ... serves the MCP server endpoint to ANONYMOUS
+# callers"), so mounting MCP forces a closed `auth: { chain: [keys] }` — under which an
+# unauthenticated probe is 401'd before routing is ever consulted, masking "the route is gone"
+# behind "the request wasn't authenticated". So MCP is probed on its own closed boot via its one
+# unauthenticated route (the protected-resource metadata), and every other plane is probed on an
+# OPEN boot where auth cannot be the reason for anything. `plane_probe_boot` says which is which.
+#
+# ── AND THE THIRD THING THIS LEG GOT WRONG: IT BOOTED THE DELETED PLANE'S OWN CONFIG ─────────────
+#
+# The boot fixture above is a SHARED config that NAMES EVERY PLANE — `mcp:` on the closed boot,
+# `agents:` on the open one — and it was handed unchanged to the mutated binary. But busbar refuses,
+# fail-closed at config parse, to boot a config that configures a plane the build was compiled
+# WITHOUT: the pre-pass lifts only the sections the REGISTERED planes declare, so the section reaches
+# the frozen top-level struct and is refused as an unknown key ("unknown field `agents`, expected one
+# of ..." — Option A, S11b (c) / Q67; the kernel cannot name a plane it does not have). So for mcp and a2a
+# the subject binary never came up at all and the leg reported "the binary did not come up" — a gate
+# failing for a reason other than the property it measures, and worse, failing on the product doing
+# EXACTLY the right thing.
+#
+# The product is not the defect here; the fixture is. The gate's own subject is a build with the
+# plane compiled out, and an operator running `git rm -r crates/busbar-<P>` also removes the `<P>:`
+# blocks from their config — leaving them in is a misconfiguration the product is supposed to refuse.
+# So the SUBJECT boot for plane P is the same fixture MINUS the sections plane P owns
+# (`plane_config_sections`), and the refusal itself is promoted from an accident into EVIDENCE:
+#
+#   REFUSAL WITNESS (`refusal_witness`): the mutated binary is ALSO booted on the UNSTRIPPED
+#   fixture — the one that still names P's section — and it must REFUSE, naming that section as an
+#   unknown field. The control binary boots that identical config fine. That pair is a far
+#   sharper presence/absence discriminator than any status code: the config the plane's own build
+#   accepts is the config the plane-less build rejects, at the plane's own section.
+#
+#   Because P's routes MOUNT FROM P's config section (a2a's routes exist only with `agents:` +
+#   `public_url`; mcp's are derived from the `mcp:` endpoint), P's 404 on the STRIPPED subject boot
+#   is a NECESSARY condition and not, on its own, a sufficient one — the refusal witness is what
+#   makes it sufficient. For a plane that owns no section in the fixture (llm, voice) the subject
+#   config is byte-identical to the control's and the 404 carries the whole verdict by itself, which
+#   is why `refusal_witness` reports "not applicable" rather than inventing a section to strip.
+
+# ── THE PER-PLANE PROBE TABLE ────────────────────────────────────────────────────────────────────
+# The ONLY per-plane knowledge in this leg: which boot mounts the plane, and the exact request that
+# reaches its route. Adding a plane is four lines here. Every code these probes produce is measured,
+# never assumed — see the calibration above.
+plane_probe_boot() {   # which boot config mounts this plane: `mcp` (closed chain) or `open`
+  case "$1" in mcp) echo mcp ;; *) echo open ;; esac
+}
+# plane_unserved <plane> → 0 when the plane is compiled in and configured but MOUNTS NO ROUTE yet.
+# `plane-decisions` is one: its `POST /v1/systemone` is served by the kernel plane driver
+# (`BUSBAR-1.6.0.md` Part 3, §12), which has not landed, so with the plane present the probe reads
+# exactly what absence reads and the route leg can prove nothing. For such a plane the judge REQUIRES
+# the control to read absent (a plane that starts serving while still marked here is RED, so the mark
+# cannot go stale) and the REFUSAL WITNESS carries the presence/absence verdict. Strike the mark the
+# moment the plane serves; the route leg then judges it like every other plane.
+plane_unserved() { case "$1" in plane-decisions) return 0 ;; *) return 1 ;; esac; }
+# THE LLM PROBE IS A `GET`, AND THAT IS THE WHOLE POINT — see the calibration note below.
+plane_probe_method() { case "$1" in mcp | llm) echo GET ;; *) echo POST ;; esac; }
+plane_probe_path() {
+  case "$1" in
+    llm)   echo "/v1/chat/completions" ;;
+    mcp)   echo "/.well-known/oauth-protected-resource/mcp" ;;
+    a2a)   echo "/a2a" ;;
+    voice) echo "/v1/realtime/client_secrets" ;;
+    plane-decisions) echo "/v1/systemone" ;;
+  esac
+}
+plane_probe_body() {
+  case "$1" in
+    a2a)   printf '{"jsonrpc":"2.0","method":"message/send","id":1}' ;;
+    voice) printf '{"model":"gpt-realtime"}' ;;
+    plane-decisions) printf '{"state":{},"context":{}}' ;;
+    llm | mcp) printf '' ;;
+  esac
+}
+# WHICH TOP-LEVEL CONFIG KEYS IN THE BOOT FIXTURE BELONG TO THIS PLANE — the sections a `git rm -r`
+# of the plane crate obliges the operator to delete from their config too, and therefore the sections
+# the SUBJECT boot must not carry. Space-separated; empty for a plane the fixture does not configure.
+# This is the same fail-closed pairing the product enforces at resolve: the section exists only while
+# the plane that owns it is compiled in.
+plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
+# section_omitted <section> <omit-list> → 0 when <section> is in the space-separated <omit-list>.
+section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# ── WHAT THE CALIBRATION FOUND THE FIRST TIME IT RAN, and why the llm probe is the shape it is ────
+#
+# The probe this leg INHERITED was `POST /v1/chat/completions` with a chat body. Run against the
+# UNMUTATED tree — busbar-llm present, compiled in, its router mounted — it answers **404**. Not
+# because the plane is missing: because the request names a model, and this boot deliberately
+# configures ZERO models, so the money path answers "no such model" with a 404 envelope.
+#
+# So the single assertion the old llm leg rested on — "POST /v1/chat/completions is 404, therefore
+# the LLM plane's route left with the crate" — was true before the deletion, true after it, and true
+# of a binary that never had busbar-llm at all. It could not have failed. It was measured, not
+# reasoned: `--probe-control` printed 404 for llm on the first run of this calibration.
+#
+# `GET /v1/chat/completions` separates the two questions, because axum answers them differently:
+#   route mounted, method not allowed  ->  405   (the plane is compiled in)
+#   no such route at all               ->  404   (the plane left with its crate)
+# It interrogates the SAME money-path route the tracker row names, and its answer moves when — and
+# only when — the plane does. The other three planes' probes were measured at the same time and do
+# discriminate as written: mcp 200, a2a 503, voice 501, all non-404 with their crates present.
+#
+# Nothing here is trusted on the strength of that paragraph. Every one of these codes is re-measured
+# by `control_codes` on every run, and a probe that has drifted back to 404 fails the positive
+# control instead of quietly passing the gate.
+
+# write_boot_config <mode> <dir> <port> <admin_port> [omit-sections] — the two configs, into <dir>.
+#   mcp   closed chain (`auth.chain: [keys]`), `mcp:` mounted. Only the metadata route is open.
+#   open  no chain at all; `agents:`/`public_url` (A2A) and the realtime block (voice) mounted, so
+#         a 404 on this boot can never be an auth refusal in disguise.
+# Both name ZERO providers and ZERO models: a plane's ROUTE must mount from its crate being
+# compiled in, never from a pool happening to be configured.
+#
+# [omit-sections] is the space-separated list of PLANE SECTIONS to leave out — `plane_config_sections`
+# for the plane being deleted, empty for the control. The config is therefore assembled from a
+# plane-free BASE plus one appended block per plane section, rather than printed as one literal, so
+# "omit this plane's section" is a decision the writer takes once per section instead of a second
+# copy of the fixture that can drift from the first.
+write_boot_config() {
+  local mode="$1" dir="$2" port="$3" admin_port="$4" omit="${5:-}" f="$2/config.yaml"
+  printf '{}\n' >"$dir/providers.yaml"
+  # BASE — plane-free, and identical in both modes bar the auth posture below.
+  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\n' \
+    "$port" "$admin_port" >"$f"
+  case "$mode" in
+    mcp)
+      printf 'identity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  chain: [keys]\n  admin_auth: [admin-tokens]\n' \
+        >>"$f"
+      section_omitted mcp "$omit" || \
+        printf 'mcp:\n  canonical_uri: https://busbar.example.com/mcp\n  authorization_servers:\n    - https://login.example.com\n' >>"$f"
+      ;;
+    open)
+      section_omitted agents "$omit" || \
+        printf 'agents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' >>"$f"
+      # THE STREAMING PLANE'S OWN SECTION. Under Law 7 a plane with no config section mounts
+      # nothing, so without `streams:` the control boot never mounted the realtime routes and the
+      # voice probe read 404 with the plane compiled in: a positive control that could not pass.
+      section_omitted streams "$omit" || \
+        printf 'streams:\n  context_window_tokens: 16384\n' >>"$f"
+      # THE DECISIONS PLANE'S OWN SECTION. `upstream_credentials` is a member the plane declares, so
+      # the block is CONTENT (not the empty section) and names no provider or model — the fixture
+      # stays free of upstreams. A build without the plane refuses it as an unknown field.
+      section_omitted decisions "$omit" || \
+        printf 'decisions:\n  upstream_credentials: own\n' >>"$f"
+      ;;
+  esac
+}
+
+# boot_and_probe <bin> <mode> <label> <outfile> [omit-sections]
+#   Boot <bin> on the <mode> config (minus [omit-sections]), probe EVERY plane whose
+#   `plane_probe_boot` is <mode>, and append one `<plane>=<http-code>` line per plane to <outfile>.
+#   Returns non-zero only if the binary never came up — the codes themselves are data for the caller
+#   to judge, never a verdict taken here.
+boot_and_probe() {
+  local bin="$1" mode="$2" label="$3" out="$4" omit="${5:-}"
+  local ports port admin_port fix pid up probe code p method path body
+
+  ports="$(free_port_pair)"; [ -n "$ports" ] || { red "  boot leg ($label/$mode): no free port pair"; return 1; }
+  port="$ports"; admin_port=$((port + 1))
+  fix="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-boot.XXXXXX")" || { red "  boot leg ($label/$mode): mktemp failed"; return 1; }
+  write_boot_config "$mode" "$fix" "$port" "$admin_port" "$omit"
+
+  MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
+  BUSBAR_ADMIN_TOKEN=admin-token-for-plane-delete-boot \
+  BUSBAR_CONFIG="$fix/config.yaml" BUSBAR_PROVIDERS="$fix/providers.yaml" \
+  exec "$bin" >"$fix/boot.log" 2>&1 &
+  pid=$!
+
+  # THE UP-SIGNAL IS "THE SERVER ANSWERED AT ALL", NOT "THIS ROUTE SUCCEEDED", and on one route no
+  # plane owns — so waiting for it can never presume the answer to the question this leg is asking.
+  # It used to wait on `curl -f` against the MCP METADATA ROUTE for the closed boot, which is both
+  # circular (that route is also mcp's probe) and unreachable the moment the `mcp:` section is
+  # omitted for the mcp subject boot: a live server would have been declared dead. `/stats` behind a
+  # closed chain answers 401 — a refusal is still an answer, and only a socket that is not listening
+  # yet gives curl no status code at all (`000`).
+  probe="http://127.0.0.1:$port/stats"
+  up=""
+  for _ in $(seq 1 60); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$probe" 2>/dev/null)"
+    if [ -n "$code" ] && [ "$code" != "000" ]; then up=1; break; fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if [ -z "$up" ]; then
+    red "  boot leg ($label/$mode): the binary did not come up"
+    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /'
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+    return 1
+  fi
+
+  # ── THE ABSENCE CALIBRATION ────────────────────────────────────────────────────────────────────
+  # WHAT DOES "THERE IS NO SUCH ROUTE" ANSWER, ON THIS BOOT? The leg used to answer "404" from first
+  # principles, and that is wrong on the CLOSED boot: with `auth.chain: [keys]` the auth middleware
+  # refuses a path that is not in the route table with **401**, before routing is ever consulted. So
+  # deleting the MCP plane moved its probe 200 -> 401, and a judge that spelled absence "404" read a
+  # correctly-deleted route as a surviving one — the mirror image of the unfalsifiable green this leg
+  # exists to prevent, and a gate failing for a reason other than the property it measures.
+  # It is measured for exactly the same reason every other code here is: one GET, on this same boot,
+  # to a path NO plane can own. Whatever that answers IS what absence looks like on this boot.
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$port/.plane-delete-test/no-such-route-any-plane-could-own")"
+  printf '__absent-%s=%s\n' "$mode" "$code" >>"$out"
+
+  for p in $PLANES; do
+    [ "$(plane_probe_boot "$p")" = "$mode" ] || continue
+    method="$(plane_probe_method "$p")"; path="$(plane_probe_path "$p")"; body="$(plane_probe_body "$p")"
+    if [ "$method" = "GET" ]; then
+      code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$path")"
+    else
+      code="$(curl -s -o /dev/null -w '%{http_code}' -X "$method" "http://127.0.0.1:$port$path" \
+        -H 'content-type: application/json' -d "$body")"
+    fi
+    printf '%s=%s\n' "$p" "$code" >>"$out"
+  done
+
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+  return 0
+}
+
+# build_bin <manifest-dir> <tag> → echoes the path to a built bin COPIED ASIDE under <tag>.
+# The copy matters: every build in this script shares one CARGO_TARGET_DIR (so the ~130 external
+# deps compile once), which means `debug/busbar` is overwritten by the next build. A control binary
+# that has been overwritten by its own subject is not a control.
+build_bin() {
+  local dir="$1" tag="$2" log rc kept
+  log="$CACHE_TARGET/.plane-delete-$tag-build.log"; mkdir -p "$CACHE_TARGET"
+  CARGO_TARGET_DIR="$CACHE_TARGET" cargo build --manifest-path "$dir/Cargo.toml" -p busbar >"$log" 2>&1; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    red "  boot leg ($tag): bin FAILED to build (not just check)"
+    grep -m4 -E "error(\[|:)|couldn't read" "$log" | sed 's/^/      /'
+    return 1
+  fi
+  [ -x "$CACHE_TARGET/debug/busbar" ] || { red "  boot leg ($tag): built binary not found"; return 1; }
+  kept="$CACHE_TARGET/busbar-$tag"
+  cp "$CACHE_TARGET/debug/busbar" "$kept" || return 1
+  printf '%s\n' "$kept"
+}
+
+# probe_codes <bin> <label> <outfile> [omit-sections] — both boots, every plane, one file of
+# `<plane>=<code>` lines. [omit-sections] is empty for the control and `plane_config_sections <P>`
+# for a subject binary with plane P's crate deleted (see the refusal note above): a build compiled
+# without P refuses, by design, to boot a config that still names P's section.
+probe_codes() {
+  local bin="$1" label="$2" out="$3" omit="${4:-}" fail=0
+  : >"$out"
+  boot_and_probe "$bin" mcp  "$label" "$out" "$omit" || fail=1
+  boot_and_probe "$bin" open "$label" "$out" "$omit" || fail=1
+  return "$fail"
+}
+
+# ── THE REFUSAL WITNESS ──────────────────────────────────────────────────────────────────────────
+# judge_refusal <boot-log> <exit-code> <plane> → 0 (the refusal is the RIGHT refusal) / 1.
+#
+# A pure function over a captured log and an exit status, for the same reason `judge_codes` is one:
+# the judgement is the part that must be RED-provable without a cargo build or a boot. Two ways this
+# goes red, and the second is the one that matters — a binary that fails to start for an unrelated
+# reason (port taken, unreadable config, a panic) also "refuses", and counting that as evidence
+# would make the witness pass on a build that still carries the plane.
+judge_refusal() {
+  local log="$1" rc="$2" p="$3"
+  if [ "$rc" -eq 0 ]; then
+    red "  refusal witness ($p): the binary ACCEPTED a config naming busbar-$p's section with the crate GONE"
+    note "    A build compiled without a plane must refuse the config that configures it (fail-closed at"
+    note "    parse). Accepting it means either the plane is still compiled in, or the refusal was lost."
+    return 1
+  fi
+  local sec named=""
+  for sec in $(plane_config_sections "$p"); do
+    grep -qF "unknown field \`$sec\`" "$log" 2>/dev/null && named=1
+  done
+  if [ -z "$named" ]; then
+    red "  refusal witness ($p): the binary failed to start, but NOT with the unknown-field refusal naming its section"
+    note "    An exit for an unrelated reason (a taken port, an unreadable config, a panic) is not"
+    note "    evidence about the plane. The log's last lines:"
+    tail -10 "$log" 2>/dev/null | sed 's/^/      /'
+    return 1
+  fi
+  return 0
+}
+
+# refusal_witness <bin> <plane> → 0/1. Boot the MUTATED binary on the UNSTRIPPED fixture — the very
+# config the control booted clean — and require it to refuse, naming a plane this build was compiled
+# without. Not applicable (and reported as such, never silently skipped) for a plane the fixture
+# configures no section for.
+refusal_witness() {
+  local bin="$1" p="$2" mode secs ports port admin_port fix pid rc waited
+  secs="$(plane_config_sections "$p")"
+  if [ -z "$secs" ] && plane_unserved "$p"; then
+    red "  refusal witness ($p): the plane is UNSERVED and the fixture configures no section it owns — there is no evidence at all"
+    note "    An unserved plane's route leg proves nothing, so its section refusal is the only witness. Give it a section."
+    return 1
+  fi
+  if [ -z "$secs" ]; then
+    note "refusal witness ($p): not applicable — the boot fixture configures no section this plane owns,"
+    note "    so its subject config is byte-identical to the control's and the 404 above stands alone"
+    return 0
+  fi
+  mode="$(plane_probe_boot "$p")"
+  ports="$(free_port_pair)"; [ -n "$ports" ] || { red "  refusal witness ($p): no free port pair"; return 1; }
+  port="$ports"; admin_port=$((port + 1))
+  fix="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-refuse.XXXXXX")" || { red "  refusal witness ($p): mktemp failed"; return 1; }
+  write_boot_config "$mode" "$fix" "$port" "$admin_port" ""    # NO omission: the section stays in
+
+  MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
+  BUSBAR_ADMIN_TOKEN=admin-token-for-plane-delete-boot \
+  BUSBAR_CONFIG="$fix/config.yaml" BUSBAR_PROVIDERS="$fix/providers.yaml" \
+  exec "$bin" >"$fix/boot.log" 2>&1 &
+  pid=$!
+
+  # A refusal happens at config resolve, long before the listener binds, so it is a fast exit. A
+  # process still alive at the deadline has ACCEPTED the config — that is the rc=0 verdict, reached
+  # by stopping the child this function itself started.
+  rc=""; waited=0
+  while [ "$waited" -lt 60 ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then wait "$pid" 2>/dev/null; rc=$?; break; fi
+    sleep 0.5; waited=$((waited + 1))
+  done
+  if [ -z "$rc" ]; then
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rc=0    # it was still serving: the config was ACCEPTED
+  fi
+
+  if judge_refusal "$fix/boot.log" "$rc" "$p"; then
+    grn "  refusal witness ($p): the same config the control boots is REFUSED (\`$secs:\` is an unknown field without the plane)"
+    rm -rf "$fix"; return 0
+  fi
+  rm -rf "$fix"; return 1
+}
+
+code_for() { # code_for <file> <plane> → the recorded code, or the empty string
+  awk -F= -v p="$2" '$1 == p { print $2; exit }' "$1" 2>/dev/null
+}
+
+# ── THE CONTROL: what a MOUNTED plane answers, measured on the unmutated tree ────────────────────
+# Built and probed at most ONCE per run and memoised in a file, because it is the same answer for
+# every plane and it costs a full bin build plus two boots.
+CONTROL_CODES=""
+control_codes() {
+  local bin
+  if [ -n "$CONTROL_CODES" ]; then printf '%s\n' "$CONTROL_CODES"; return 0; fi
+  mkdir -p "$CACHE_TARGET"
+  local out="$CACHE_TARGET/.plane-delete-control-codes.txt"
+  bin="$(build_bin "$REPO" control)" || return 1
+  probe_codes "$bin" control "$out" || return 1
+  CONTROL_CODES="$out"
+  printf '%s\n' "$out"
+}
+
+# ── THE VERDICT, AS A PURE FUNCTION OVER TWO CODE FILES ──────────────────────────────────────────
+# judge_codes <control-file> <subject-file> <plane> → 0 (PASS) / 1 (FAIL).
+#
+# Deliberately separated from the booting: the judgement is the part that was WRONG (a bare 404 read
+# as proof), and a judgement welded to a full bin build plus four boots is a judgement nobody can
+# RED-prove. As a pure function over two files of `<plane>=<code>` lines it is driven directly by
+# `--selftest` over planted codes — a vacuous probe, a surviving route, a boot that mounted nothing —
+# in milliseconds, with no cargo and no network.
+judge_codes() {
+  local ctl="$1" sub="$2" p="$3" fail=0 q cc sc
+
+  # WHAT ABSENCE LOOKS LIKE ON THIS BOOT, measured by `boot_and_probe`'s absence calibration against
+  # a path no plane can own — 404 on the open boot, 401 on the closed one (where the auth middleware
+  # refuses an unlisted path before routing). Never assumed: a judge that spells absence "404"
+  # everywhere reads a correctly-deleted MCP route (401) as a surviving one.
+  local ab
+  ab="$(code_for "$ctl" "__absent-$(plane_probe_boot "$p")")"
+  if [ -z "$ab" ]; then
+    red "  boot leg ($p): the control run recorded no ABSENCE CALIBRATION for the $(plane_probe_boot "$p") boot"
+    note "    Without it there is no measured answer to \"what does a route that does not exist say here?\","
+    note "    and every verdict below would be taken against a guess."
+    return 1
+  fi
+
+  # THE POSITIVE CONTROL. If the probe for this plane already reads as ABSENT on a tree where the
+  # plane's crate is PRESENT, the probe cannot tell presence from absence and its verdict below
+  # would mean nothing.
+  cc="$(code_for "$ctl" "$p")"
+  if [ -z "$cc" ]; then
+    red "  boot leg ($p): the control run recorded no code for this plane — the probe never ran"
+    return 1
+  fi
+  # AN UNSERVED PLANE (`plane_unserved`): the plane is present and mounts no route, so its probe must
+  # read ABSENT on the control too. Anything else means it serves now and its mark is stale — RED, so
+  # the route leg starts judging it. The subject must read absent as well. Neither half is evidence
+  # that the plane left; that is the refusal witness's, which `boot_serve` requires for this plane.
+  if plane_unserved "$p"; then
+    if [ "$cc" != "$ab" ]; then
+      red "  boot leg ($p): marked UNSERVED, but $(plane_probe_method "$p") $(plane_probe_path "$p") answers $cc with the plane present (absence here reads $ab)"
+      note "    The plane serves this route now. Strike its \`plane_unserved\` mark so the route leg judges the deletion."
+      return 1
+    fi
+    sc="$(code_for "$sub" "$p")"
+    if [ "$sc" != "$ab" ]; then
+      fail=1
+      red "  boot leg ($p): marked UNSERVED, and the plane-less build answers ${sc:-<no answer>} on its route, not the absence code $ab"
+    else
+      note "boot leg ($p): UNSERVED — $(plane_probe_method "$p") $(plane_probe_path "$p") reads absent ($ab) with and without the plane; the route leg carries no weight here and the refusal witness is the verdict"
+    fi
+  elif [ "$cc" = "$ab" ]; then
+    red "  boot leg ($p): POSITIVE CONTROL FAILED — $(plane_probe_method "$p") $(plane_probe_path "$p") is $cc"
+    note "    on the UNMUTATED tree, where crates/busbar-$p is present and compiled in — and $ab is exactly"
+    note "    what a route that DOES NOT EXIST answers on this boot. A probe that reads absent whether or"
+    note "    not the plane exists proves nothing about the deletion; the assertion below would be"
+    note "    unfalsifiable. Fix the probe (path/method/body) or the boot config that is supposed to mount"
+    note "    this plane — do not read this as a pass."
+    return 1
+  else
+    note "positive control ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answers $cc with the plane present (absence on this boot reads $ab)"
+
+    # THE DELETION: the byte-identical request must now read as ABSENT.
+    #
+    # For a plane whose section the subject boot had to OMIT (`plane_config_sections`, because the
+    # product refuses a config naming a compiled-out plane), this is NECESSARY but not sufficient on
+    # its own — P's routes mount from P's section, so an omitted section makes the probe read absent
+    # too. The sufficient half is `refusal_witness`, which `boot_serve` requires alongside this. Said
+    # out loud here so a reader of the green line never reads more into it than it carries.
+    sc="$(code_for "$sub" "$p")"
+    if [ "$sc" = "$ab" ]; then
+      if [ -n "$(plane_config_sections "$p")" ]; then
+        note "boot leg ($p): the same request now answers $sc — absent on this boot (necessary; the subject boot omits \`$(plane_config_sections "$p"):\`, so the refusal witness carries sufficiency)"
+      else
+        note "boot leg ($p): the same request now answers $sc — absent on this boot; the plane's route left with the crate"
+      fi
+    else
+      fail=1
+      red "  boot leg ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answered ${sc:-<no answer>}, not the measured absence code $ab — the route survived deletion"
+    fi
+  fi
+
+  # THE NEIGHBOUR CONTROL: every OTHER plane the control mounted must still serve on this binary.
+  # Without it, a boot that mounted nothing at all reads absent everywhere and looks like a clean
+  # deletion. Each neighbour is judged against ITS OWN boot's absence code, not this plane's.
+  local qab
+  for q in $PLANES; do
+    [ "$q" = "$p" ] && continue
+    qab="$(code_for "$ctl" "__absent-$(plane_probe_boot "$q")")"
+    cc="$(code_for "$ctl" "$q")"
+    [ -z "$cc" ] || [ -z "$qab" ] || [ "$cc" = "$qab" ] && continue   # the control never mounted it; it controls nothing
+    sc="$(code_for "$sub" "$q")"
+    if [ -z "$sc" ] || [ "$sc" = "$qab" ]; then
+      fail=1
+      red "  boot leg ($p): neighbour $q answered ${sc:-<no answer>} (control: $cc, absence: $qab) — this boot lost a plane it did not delete"
+      note "    Every plane reading absent at once is a boot that mounted nothing, not a clean deletion."
+    else
+      note "boot leg ($p): neighbour $q still serves ($sc, control $cc)"
+    fi
+  done
+
+  return "$fail"
+}
+
+# boot_serve <scratch> <plane> → 0/1. The whole leg for one plane: measure the control (once per
+# run), build and boot the mutated bin, then hand both code files to `judge_codes`.
+boot_serve() {
+  local s="$1" p="$2" bin ctl sub fail=0
+  ctl="$(control_codes)" || { red "  boot leg ($p): the CONTROL build/boot failed — no verdict is possible"; return 1; }
+  bin="$(build_bin "$s" "delete-$p")" || return 1
+  sub="$CACHE_TARGET/.plane-delete-$p-codes.txt"
+  # The SUBJECT boots on the fixture MINUS the sections plane P owns — a build compiled without P
+  # refuses, by design, to boot a config that still configures P (see the refusal note above).
+  probe_codes "$bin" "delete-$p" "$sub" "$(plane_config_sections "$p")" || return 1
+  judge_codes     "$ctl" "$sub" "$p" || fail=1
+  # …and that same fail-closed refusal, on the UNSTRIPPED config, IS the presence/absence evidence.
+  refusal_witness "$bin" "$p"        || fail=1
+  if [ "$fail" -eq 0 ]; then
+    grn "  boot leg ($p): binary BOOTS with busbar-$p physically gone; its route reads ABSENT, every neighbour still serves"
+    return 0
+  fi
+  return 1
+}
+
+# ── the check runner ──────────────────────────────────────────────────────────────────────────────
+# run_check <scratch> <logfile> -- <cargo args…>   → returns cargo's exit code.
+# A SHARED target dir keeps external-dep artifacts warm across planes. `--locked` is deliberately NOT
+# passed: we edited Cargo.toml, so the lock is intentionally a superset and must not gate the build.
+run_check() {
+  local s="$1" log="$2"; shift 2
+  [ "$1" = "--" ] && shift
+  CARGO_TARGET_DIR="$CACHE_TARGET" cargo check --manifest-path "$s/Cargo.toml" "$@" >"$log" 2>&1
+}
+
+# remove_and_assert <scratch> <plane> → 0 / 1. Performs `apply_removal` and PROVES it happened.
+#
+# ── THE REMOVAL IS ASSERTED, NOT NOTED ────────────────────────────────────────────────────────────
+# This block used to PRINT its evidence ("all must read GONE/0") and check none of it, which made
+# the whole gate unfalsifiable in one specific and entirely reachable way: `rm -rf` on a path that
+# does not exist succeeds silently, and every manifest stripper is a `grep`/`awk` filter that
+# rewrites a file containing no matches into an identical file, also silently. So the moment a
+# plane crate is RENAMED — the ordinary outcome of an extraction, which is precisely the work this
+# gate exists to police — `apply_removal` removes NOTHING, the neutral crates compile because
+# nothing was taken away from them, and the gate reports PASS on a deletion that never happened.
+# A green would then mean "busbar-<P> is removable" while `crates/busbar-<P>` sat untouched in the
+# scratch. That is the worst verdict a gate can produce, because it is indistinguishable from the
+# real one.
+#
+# Three facts are therefore recorded BEFORE the mutation and asserted AFTER it: the crate directory
+# EXISTED and is now gone, no manifest still names it, and the manifests were actually REWRITTEN
+# (a byte-identical root manifest means `drop_member` matched nothing). All three are hard
+# failures that return before a single `cargo check` runs — a compile result taken on a tree that
+# was never mutated says nothing at all, so it must not be printed as if it did.
+remove_and_assert() {
+  local s="$1" p="$2"
+  local pre_dir pre_root pre_bin pre_dep
+  pre_dir="$([ -d "$s/crates/busbar-$p" ] && echo PRESENT || echo ABSENT)"
+  pre_root="$s/.plane-delete-pre-root.toml"
+  pre_bin="$s/.plane-delete-pre-bin.toml"
+  cp "$s/Cargo.toml" "$pre_root" 2>/dev/null || { red "  cannot read the scratch's root manifest"; return 1; }
+  cp "$s/crates/busbar/Cargo.toml" "$pre_bin" 2>/dev/null || { red "  cannot read the scratch's bin manifest"; return 1; }
+  pre_dep="$(grep -c "^busbar-${p}[[:space:]]*=[[:space:]]*{" "$pre_bin" 2>/dev/null)"; pre_dep="${pre_dep:-0}"
+
+  apply_removal "$s" "$p"
+
+  local ev_dir ev_mem ev_dep
+  ev_dir="$([ -d "$s/crates/busbar-$p" ] && echo PRESENT || echo GONE)"
+  ev_mem="$(grep -c "\"crates/busbar-$p\"" "$s/Cargo.toml" 2>/dev/null)"; ev_mem="${ev_mem:-0}"
+  ev_dep="$(grep -c "^busbar-${p}[[:space:]]*=[[:space:]]*{" "$s/crates/busbar/Cargo.toml" 2>/dev/null)"; ev_dep="${ev_dep:-0}"
+  note "removed: crate dir=$pre_dir->$ev_dir  members-refs=$ev_mem  bin-dep-lines=$pre_dep->$ev_dep"
+
+  if [ "$pre_dir" != "PRESENT" ]; then
+    red "  crates/busbar-$p DID NOT EXIST before the removal — there was nothing to delete."
+    note "    \`rm -rf\` on an absent path succeeds, so this run would have compiled an UNMUTATED tree"
+    note "    and reported it as proof that busbar-$p is removable. Renamed crate? Fix the plane key"
+    note "    in scripts/plane-keys.sh; do not read this as a pass."
+    return 1
+  fi
+  if [ "$ev_dir" != "GONE" ]; then
+    red "  crates/busbar-$p is STILL PRESENT after apply_removal — the mutation did not take"
+    return 1
+  fi
+  if [ "$ev_mem" -ne 0 ] || [ "$ev_dep" -ne 0 ]; then
+    red "  a manifest still names busbar-$p after removal (members-refs=$ev_mem bin-dep-lines=$ev_dep)"
+    return 1
+  fi
+  if cmp -s "$pre_root" "$s/Cargo.toml"; then
+    red "  the root workspace manifest is BYTE-IDENTICAL after the removal — nothing was stripped."
+    note "    \`drop_member\` rewrites the file whether or not it matched, so an unchanged manifest is"
+    note "    the signature of a member entry that is not spelled \"crates/busbar-$p\"."
+    return 1
+  fi
+  if [ "$pre_dep" -gt 0 ] && cmp -s "$pre_bin" "$s/crates/busbar/Cargo.toml"; then
+    red "  the bin manifest declared busbar-$p and is BYTE-IDENTICAL after the removal — nothing was stripped."
+    return 1
+  fi
+  note "  removal ASSERTED: the crate existed, is gone, is named by no manifest, and the manifests changed"
+  rm -f "$pre_root" "$pre_bin"
+  return 0
+}
+
+# strong_form <plane>  → 0 (PASS) / 1 (FAIL). Prints the two legs (neutral crates, bin) with evidence.
+strong_form() {
+  local p="$1" s keep log rc pc fail=0
+  keep="$(neutral_keep "$p")"
+  s="$(make_scratch)" || { red "  scratch copy failed"; return 1; }
+
+  # A compile verdict on a tree that was never mutated is not a verdict. Nothing below this line
+  # runs unless the removal is proven to have happened.
+  remove_and_assert "$s" "$p" || return 1
+
+  if [ -n "$EDGE_CRATES" ]; then
+    ylw "  residual manifest back-edge: neutral/other crate(s) declared a path-dep on busbar-$p —${EDGE_CRATES}"
+    note "    (stripped as part of the removal; a bare \`git rm -r\` would dangle it)"
+  fi
+  if [ -n "$FEATURE_EDGE_CRATES" ]; then
+    ylw "  residual feature-table back-edge: manifest(s) named busbar-$p in a [features] entry —${FEATURE_EDGE_CRATES}"
+    note "    (stripped as part of the removal; a bare \`git rm -r\` would dangle the feature string)"
+  fi
+
+  # Leg 1 — the NEUTRAL crates (the owner's literal requirement).
+  log="$CACHE_TARGET/.plane-delete-$p-neutral.log"; mkdir -p "$CACHE_TARGET"
+  # shellcheck disable=SC2086  # neutral_pkg_args expands to multiple -p flags, splitting is the point
+  run_check "$s" "$log" -- $(neutral_pkg_args) \
+    --no-default-features --features "$keep"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    grn "  neutral crates compile without busbar-$p (features: ${keep:-none})"
+  else
+    fail=1; red "  neutral crates DO NOT compile without busbar-$p — still coupled"
+    grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+  fi
+
+  # Leg 1b — the CONTRACT PLANE crate itself, ALL TARGETS, with the plugin crate gone.
+  #
+  # Legs 1 and 2 ask only whether the NEUTRAL crates and the bin survive the removal. They never
+  # compile `busbar-plane-<P>`, so a plane crate that reaches into `../busbar-<P>/src` — an
+  # `include_str!` in a `#[cfg(test)]` module is the shape that actually occurred, and it is
+  # invisible to both the manifest and to `cargo check` without `--all-targets` — passed all the
+  # way through a green run. That is a green that says a plane is independently buildable when it
+  # is not, and the whole point of the strong form is that it cannot say that. `--all-targets` is
+  # load-bearing: a test-only include only exists under it.
+  #
+  # NEVER SILENT. The crate is derived (plane_contract_crate); if it cannot be named or is not on disk
+  # this leg FAILS, because a leg that quietly does nothing for one plane is a PASS nobody earned.
+  log="$CACHE_TARGET/.plane-delete-$p-plane.log"
+  pc="$(plane_contract_crate "$p")"
+  if [ -n "$pc" ] && [ "$pc" = "busbar-$p" ]; then
+    # A ONE-CRATE PLANE: its contract plane crate IS the crate removed above, so there is no second
+    # crate left to compile and the property this leg guards (a plane crate reaching into its plugin
+    # crate) has no second crate to hold. Said, not skipped.
+    note "  leg 1b: $pc is the whole plane (one crate), removed above — there is no separate plane crate to compile"
+  elif [ -z "$pc" ] || [ ! -d "$s/crates/$pc" ]; then
+    fail=1; red "  leg 1b: no contract plane crate for '$p' (derived: '${pc:-<none>}') — the plane crate was NOT compiled"
+  else
+    run_check "$s" "$log" -- -p "$pc" --all-targets; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      grn "  $pc compiles (all targets) without busbar-$p"
+    else
+      fail=1; red "  $pc DOES NOT compile without busbar-$p — the plane reaches into the plugin"
+      grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+    fi
+  fi
+
+  # Leg 2 — the composition-root BIN with the plane's feature off (neutral crates + bin).
+  log="$CACHE_TARGET/.plane-delete-$p-bin.log"
+  run_check "$s" "$log" -- -p busbar; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    grn "  bin (busbar) compiles with $(bin_feature "$p") off and busbar-$p gone"
+  else
+    fail=1; red "  bin (busbar) DOES NOT compile without busbar-$p"
+    grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+  fi
+
+  # Leg 3 (EVERY plane, tracker C13) — BOOT+SERVE, not just compile: build the bin for real from
+  # this same scratch (crates/busbar-<P> already physically gone) and prove the running server has
+  # lost that plane's route and kept every other plane's, judged against the control measured on the
+  # unmutated tree. This used to run for `llm` alone, leaving mcp/a2a/voice proven only to compile.
+  # Skipped only when leg 2 already failed: a boot leg over a bin that does not compile has nothing
+  # to say, and `--skip-boot-leg` exists for the same reason the witness probe is opt-in — it is the
+  # expensive half (a full bin build plus boots, plus the one-off control build).
+  if [ "$rc" -eq 0 ] && [ "${SKIP_BOOT_LEG:-0}" != "1" ]; then
+    boot_serve "$s" "$p" || fail=1
+  fi
+
+  # Optional witness probe (informational): the test-support #[path] dual-compile.
+  if [ "${WITH_WITNESS:-0}" = "1" ]; then
+    log="$CACHE_TARGET/.plane-delete-$p-witness.log"
+    run_check "$s" "$log" -- -p busbar-kernel --no-default-features --features "$keep,test-support"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      note "witness probe: test-support build ALSO compiles without busbar-$p (no #[path] dual-compile reaches it)"
+    else
+      ylw "  witness probe: test-support build reaches AROUND the ABI into the removed busbar-$p (PATH-INCLUDE ledger)"
+      grep -m2 -E "couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+    fi
+  fi
+
+  # Leg 1c — THE OTHER HALF OF THE PLANE (item 504). Legs 1/1b/2/3 above ran with
+  # `busbar-<P>-codec` still present: the bin compiles in the contract plane crate, which adapts over
+  # the codec, so those legs prove the I/O half is removable and say nothing about the codec half.
+  # Now take the codec away too and re-check the NEUTRAL crates — the owner's literal requirement is
+  # that they survive the plane's removal, and the codec is the bulk of the plane.
+  remove_codec_and_assert "$s" "$p"; rc=$?
+  case "$rc" in
+    2) note "  no busbar-$p-codec on disk — busbar-$p is the whole I/O plane crate; nothing further to remove" ;;
+    0)
+      [ -n "$CODEC_EDGE_CRATES" ] && note "  codec dependents severed with it:${CODEC_EDGE_CRATES}"
+      log="$CACHE_TARGET/.plane-delete-$p-codec-neutral.log"
+      # shellcheck disable=SC2086  # neutral_pkg_args expands to multiple -p flags, splitting is the point
+      run_check "$s" "$log" -- $(neutral_pkg_args) --no-default-features --features "$keep"; rc=$?
+      if [ "$rc" -eq 0 ]; then
+        grn "  neutral crates compile without busbar-$p AND busbar-$p-codec (the whole plane)"
+        note "  (the bin legs above ran with busbar-$p-codec present: the compiled-in contract plane crate adapts over it)"
+      else
+        fail=1; red "  neutral crates DO NOT compile without busbar-$p-codec — the neutral side still needs the plane's codec half"
+        grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+      fi
+      ;;
+    *) fail=1; red "  busbar-$p-codec exists but its removal could not be proven — no whole-plane verdict" ;;
+  esac
+
+  return "$fail"
+}
+
+# plant_feature_ref — SELF-TEST ONLY: insert a synthetic `plant-feature-ref = [...]` entry naming plane
+# $2 (both the hard and optional forward forms) into the `[features]` table of manifest $1 — NOT
+# appended at end-of-file, which would land it in whatever table happens to be LAST in the manifest
+# (busbar-kernel's last table is `[dev-dependencies]`, where an array value is a TOML type error of its
+# own and would mask the thing being tested).
+plant_feature_ref() {
+  local f="$1" rp="$2" t
+  t="$f.plane-delete.tmp"
+  awk -v rp="$rp" '
+    { print }
+    /^\[features\]/ && !done {
+      printf "plant-feature-ref = [\"busbar-%s/plant\", \"busbar-%s?/plant\"]\n", rp, rp
+      done = 1
+    }
+  ' "$f" >"$t" && mv "$t" "$f"
+}
+
+# ── SELF-TEST — the harness cannot be lied to ─────────────────────────────────────────────────────
+run_selftest() {
+  hdr "plane-delete-test SELF-TEST (the removal + verdict machinery proves itself)"
+  local fail=0 p s core_toml rc pc
+
+  # (1) REMOVAL EVIDENCE for EVERY plane (fast, no compile): the mutation really removes the crate dir,
+  #     the members entry, and the bin dependency line. This is the unfakeable mechanism proof, and it
+  #     now runs through `remove_and_assert` — the same function `strong_form` uses — rather than a
+  #     second, parallel copy of the checks, so the thing proven here is the thing the gate runs.
+  for p in $PLANES; do
+    s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+    if remove_and_assert "$s" "$p" \
+       && [ "$(grep -c "\"dep:busbar-$p\"" "$s/crates/busbar/Cargo.toml")" -eq 0 ]; then
+      note "PASS  removal($p): crate dir + members entry + bin dep + dep: token all gone, and asserted"
+    else
+      fail=1; note "FAIL  removal($p): the removal did not take, or was not proven"
+    fi
+    rm -rf "$s"
+  done
+
+  # (1c) THE CODEC HALF IS REMOVED TOO (item 504), with evidence, for every plane that has one; and a
+  #      plane with none is reported as such (status 2), never as a removal that happened.
+  for p in $PLANES; do
+    [ -d "$REPO/crates/busbar-$p-codec" ] || continue
+    s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+    if remove_and_assert "$s" "$p" >/dev/null 2>&1 && remove_codec_and_assert "$s" "$p" \
+       && [ ! -d "$s/crates/busbar-$p-codec" ] \
+       && ! grep -q "\"crates/busbar-$p-codec\"" "$s/Cargo.toml"; then
+      note "PASS  codec removal($p): crates/busbar-$p-codec + its member + every dependency on it gone, and asserted"
+    else
+      fail=1; note "FAIL  codec removal($p): busbar-$p-codec is on disk and the strong form did not remove it"
+    fi
+    rm -rf "$s"
+  done
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  remove_codec_and_assert "$s" "mcp" >/dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 2 ]; then
+    note "PASS  codec removal control: a plane with no -codec crate answers 'none on disk' (2), not a removal"
+  else
+    fail=1; note "FAIL  codec removal control: a plane with no -codec crate returned $rc, not 2"
+  fi
+  rm -rf "$s"
+
+  # (1d) THE TEARDOWN WORKS FROM WHERE IT IS CALLED (item 503). Every call site is
+  #      `s="$(make_scratch)"`; run exactly that in a child of this script, let it exit, and the
+  #      scratch it made must be gone. A teardown list kept in a variable the subshell appends to
+  #      is empty in the parent, and the scratch — a full tree copy — survives.
+  local leaked
+  leaked="$(bash "$REPO/scripts/$(basename "$0")" --selftest-scratch-probe 2>/dev/null | tail -1)"
+  if [ -n "$leaked" ] && [ ! -e "$leaked" ]; then
+    note "PASS  teardown: a scratch made via \$(make_scratch) is removed when the run exits"
+  else
+    fail=1; note "FAIL  teardown: the scratch '${leaked:-<none printed>}' survived the run that made it"
+    [ -n "$leaked" ] && case "$leaked" in "$SCRATCH_BASE"/plane-delete-test.*) rm -rf "$leaked" ;; esac
+  fi
+
+  # (1b) THE RED CONTROL FOR THE REMOVAL ITSELF — a REAL crate planted under a name the harness does
+  #      not know, which is exactly what a renamed plane crate looks like from here.
+  #
+  #      This is the case the old evidence block could not catch, because it PRINTED its evidence and
+  #      asserted none of it. `rm -rf crates/busbar-<gone>` on an absent path succeeds; `drop_member`
+  #      and `neutralise_bin` rewrite manifests that contain no matches into identical manifests. So
+  #      the whole mutation became a no-op, the neutral crates compiled (nothing had been taken from
+  #      them), and the gate printed PASS for a deletion that never happened.
+  #
+  #      The plant is a real, compilable crate directory with a real members entry and a real bin
+  #      dependency, registered under `busbar-plantedplane`, and the harness is then asked to remove
+  #      `busbar-renamedplane` — the same crate under the name it USED to have. Every stripper
+  #      no-ops, and `remove_and_assert` must REFUSE rather than report a clean removal.
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  mkdir -p "$s/crates/busbar-plantedplane/src"
+  printf '[package]\nname = "busbar-plantedplane"\nversion = "0.0.0"\nedition = "2021"\n\n[dependencies]\n' \
+    >"$s/crates/busbar-plantedplane/Cargo.toml"
+  printf 'pub fn planted() -> u8 { 7 }\n' >"$s/crates/busbar-plantedplane/src/lib.rs"
+  awk '
+    { print }
+    /^members = \[/ && !done { print "  \"crates/busbar-plantedplane\","; done = 1 }
+  ' "$s/Cargo.toml" >"$s/Cargo.toml.plant" && mv "$s/Cargo.toml.plant" "$s/Cargo.toml"
+  printf 'busbar-plantedplane = { path = "../busbar-plantedplane", optional = true }\n' \
+    >>"$s/crates/busbar/Cargo.toml"
+
+  # (1b-i) the plant is REAL: removing it by its real name must succeed and be asserted.
+  if remove_and_assert "$s" "plantedplane" >/dev/null 2>&1; then
+    note "PASS  planted crate: a REAL crate dir + member + bin dep is removed, and the removal is asserted"
+  else
+    fail=1; note "FAIL  planted crate: the harness could not remove a crate it genuinely planted — the control is broken"
+  fi
+  rm -rf "$s"
+
+  # (1b-ii) THE RED CONTROL: the same plant, removed under a name nothing in the tree carries.
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  mkdir -p "$s/crates/busbar-plantedplane/src"
+  printf '[package]\nname = "busbar-plantedplane"\nversion = "0.0.0"\nedition = "2021"\n' \
+    >"$s/crates/busbar-plantedplane/Cargo.toml"
+  printf 'pub fn planted() -> u8 { 7 }\n' >"$s/crates/busbar-plantedplane/src/lib.rs"
+  if remove_and_assert "$s" "renamedplane" >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  renamed-crate control: removing an ABSENT crate reported a clean removal."
+    note "      Every stripper no-ops on a name the tree does not carry, so the gate would then"
+    note "      compile an UNMUTATED tree and report PASS for a deletion that never happened."
+  else
+    note "PASS  renamed-crate control: a removal with nothing to remove is REFUSED, not reported clean"
+  fi
+  rm -rf "$s"
+
+  # A representative plane for the compile controls (bounded self-test time; the mechanism is identical
+  # for all three, proven above). `mcp` keeps the other two planes' shape intact around it.
+  local rp=mcp
+
+  # (2) RED CONTROL — a genuinely-coupled scratch MUST report FAIL. We remove the crate dir + member but
+  #     DELIBERATELY SKIP the bin neutralisation, so the bin still carries `dep:busbar-<rp>` pointing at a
+  #     now-missing path. cargo resolution must fail, and the harness must return non-zero. This proves
+  #     the FAIL path fires on real coupling — WITHOUT hard-coding that any particular plane fails today.
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  remove_crate_dir "$s" "$rp"
+  drop_member      "$s" "$rp"     # note: neutralise_bin intentionally OMITTED
+  local log
+  log="$CACHE_TARGET/.plane-delete-selftest-red.log"; mkdir -p "$CACHE_TARGET"
+  run_check "$s" "$log" -- -p busbar; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    note "PASS  RED control: dangling dep:busbar-$rp → harness check returns non-zero (coupling → FAIL)"
+  else
+    fail=1; note "FAIL  RED control: a scratch with a dangling busbar-$rp dep compiled — the gate would miss coupling"
+  fi
+  rm -rf "$s"
+
+  # (3) GREEN CONTROL — a PROPERLY neutralised scratch MUST report PASS: the full removal, then the
+  #     neutral crates compile. This is the positive control mirroring the RED one.
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  apply_removal "$s" "$rp"
+  log="$CACHE_TARGET/.plane-delete-selftest-green.log"
+  # shellcheck disable=SC2086  # neutral_pkg_args expands to multiple -p flags, splitting is the point
+  run_check "$s" "$log" -- $(neutral_pkg_args) \
+    --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    note "PASS  GREEN control: full removal of busbar-$rp → neutral crates compile (verdict machinery clean-passes)"
+  else
+    fail=1; note "FAIL  GREEN control: neutral crates did not compile after a clean removal of busbar-$rp"
+    grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+  fi
+  rm -rf "$s"
+
+  # (4) FEATURE-REF PLANT — the manifest-level bug strip_feature_edges exists to close: a NEUTRAL crate's
+  #     OWN [features] table can name the removed plane without the plane ever being a normal dependency
+  #     of that crate (busbar-kernel's `openapi-schema` does exactly this for llm/mcp/a2a via a
+  #     dev-dependency back-edge). Plant a synthetic feature entry onto NEUTRAL_EDGE_PKG_DIR naming $rp
+  #     in BOTH forms — hard `busbar-<rp>/plant` and optional `busbar-<rp>?/plant` — and prove: (RED)
+  #     the removal WITHOUT strip_feature_edges leaves it dangling and cargo refuses to load the
+  #     manifest; (GREEN) the real apply_removal (which calls strip_feature_edges) strips it and the
+  #     neutral crate compiles.
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  core_toml="$s/crates/$NEUTRAL_EDGE_PKG_DIR/Cargo.toml"
+  plant_feature_ref     "$core_toml" "$rp"
+  remove_crate_dir      "$s" "$rp"
+  drop_member           "$s" "$rp"
+  neutralise_bin        "$s" "$rp"
+  strip_workspace_edges "$s" "$rp"     # strip_feature_edges DELIBERATELY OMITTED
+  log="$CACHE_TARGET/.plane-delete-selftest-featref-red.log"
+  run_check "$s" "$log" -- -p "$NEUTRAL_EDGE_PKG_DIR" --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    note "PASS  FEATURE-REF RED control: a planted busbar-$rp feature ref, left unstripped, → harness check returns non-zero"
+  else
+    fail=1; note "FAIL  FEATURE-REF RED control: a planted busbar-$rp feature ref compiled without being stripped — the gate would miss this class of coupling"
+  fi
+  rm -rf "$s"
+
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  core_toml="$s/crates/$NEUTRAL_EDGE_PKG_DIR/Cargo.toml"
+  plant_feature_ref "$core_toml" "$rp"
+  apply_removal "$s" "$rp"
+  if grep -qE "\"busbar-$rp/plant\"|\"busbar-$rp\\?/plant\"" "$core_toml"; then
+    fail=1; note "FAIL  FEATURE-REF GREEN control: apply_removal left the planted busbar-$rp feature ref in place"
+  else
+    log="$CACHE_TARGET/.plane-delete-selftest-featref-green.log"
+    run_check "$s" "$log" -- -p "$NEUTRAL_EDGE_PKG_DIR" --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      note "PASS  FEATURE-REF GREEN control: apply_removal strips the planted busbar-$rp feature ref, neutral crate compiles"
+    else
+      fail=1; note "FAIL  FEATURE-REF GREEN control: planted-then-stripped feature ref still fails to compile"
+      grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+    fi
+  fi
+  rm -rf "$s"
+
+  # (5) THE BOOT LEG'S JUDGEMENT — the part that used to be a bare, unfalsifiable 404.
+  #
+  #     `judge_codes` is a pure function over two files of `<plane>=<code>` lines (the control run on
+  #     the unmutated tree, and the subject run on the plane-deleted one), so every way it must go
+  #     RED is provable here in milliseconds — no cargo, no boot, no network. These are the cases
+  #     that had NO instrument at all before: the leg existed for `llm` only, and its single
+  #     assertion was "the route answered 404", which is also what a typo'd path, a wrong method, a
+  #     plane the config never mounted, and a server that mounted nothing all answer.
+  local jd ctl sub
+  jd="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-judge.XXXXXX")" || { red "mktemp failed"; return 1; }
+  ctl="$jd/control.txt"; sub="$jd/subject.txt"
+
+  # EVERY planted control below carries the ABSENCE CALIBRATION the real runs measure — what a route
+  # that does not exist answers on each boot. The open boot 404s; the CLOSED one 401s, because its
+  # auth middleware refuses an unlisted path before routing is consulted. Planting the real pair is
+  # what makes these fixtures the same shape the gate actually judges.
+  local CAL='__absent-open=404\n__absent-mcp=401\n'
+
+  # (5a) GREEN: the plane was mounted (200), is now gone (404 = absent here), neighbours untouched.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    note "PASS  boot-judge GREEN: mounted-then-absent with neighbours serving is a clean deletion"
+  else
+    fail=1; note "FAIL  boot-judge GREEN: refused a textbook clean deletion"
+  fi
+
+  # (5b) RED — THE VACUOUS PROBE. The control itself 404s, i.e. the request never reached a route
+  #      even with the plane compiled in. The old leg had no such check, so this state read as PASS.
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  boot-judge POSITIVE CONTROL: a probe that 404s on the UNMUTATED tree was accepted."
+    note "      A 404 that is the answer whether or not the plane exists proves nothing; this is the"
+    note "      exact unfalsifiable green the positive control exists to make impossible."
+  else
+    note "PASS  boot-judge POSITIVE CONTROL: a probe that 404s with the plane PRESENT is refused"
+  fi
+
+  # (5c) RED — the control never ran for this plane at all (no line recorded).
+  printf "${CAL}mcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge: accepted a verdict with no control measurement for the plane"
+  else
+    note "PASS  boot-judge: a plane the control never probed is refused, not assumed"
+  fi
+
+  # (5d) RED — THE ROUTE SURVIVED: the deleted plane still answers, i.e. not the absence code.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge: a route that still serves after its crate was deleted was accepted"
+  else
+    note "PASS  boot-judge: a surviving route is refused"
+  fi
+
+  # (5e) RED — THE NEIGHBOUR CONTROL: a boot that mounted NOTHING 404s every plane at once, which
+  #      under the old single-assertion shape is indistinguishable from a clean deletion.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=401\na2a=404\nvoice=404\n" >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  boot-judge NEIGHBOUR CONTROL: a boot where EVERY plane read absent was a clean deletion."
+    note "      That is a server that mounted nothing, not a plane whose route left with its crate."
+  else
+    note "PASS  boot-judge NEIGHBOUR CONTROL: every-plane-absent is refused, not read as a deletion"
+  fi
+
+  # (5f) a neighbour the CONTROL never mounted controls nothing, and must not manufacture a failure.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=404\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=404\n" >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    note "PASS  boot-judge: a neighbour the control never mounted is excluded from the neighbour control"
+  else
+    fail=1; note "FAIL  boot-judge: an unmounted neighbour was treated as a lost plane"
+  fi
+
+  # (5g) THE ABSENCE CALIBRATION IS PER-BOOT, AND THE CLOSED BOOT'S ABSENCE IS 401. This is the
+  #      defect the calibration closes: with `auth.chain: [keys]` the auth middleware refuses a path
+  #      that is not in the route table BEFORE routing, so a deleted MCP route answers 401, not 404.
+  #      Judged against a hard-coded 404 that read as "the route survived deletion" — a gate red on
+  #      the deletion having WORKED. Both directions are proven: 401 is the deletion on that boot,
+  #      and a route still answering 200 there is still not.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=401\na2a=200\nvoice=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" mcp >/dev/null 2>&1; then
+    note "PASS  boot-judge ABSENCE CALIBRATION: 401 on the CLOSED boot is the deletion, not a survival"
+  else
+    fail=1
+    note "FAIL  boot-judge ABSENCE CALIBRATION: a deleted route answering the closed boot's own"
+    note "      absence code (401) was read as a route that survived — the gate reds on a clean deletion."
+  fi
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" mcp >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge ABSENCE CALIBRATION: an mcp route still answering 200 was accepted as deleted"
+  else
+    note "PASS  boot-judge ABSENCE CALIBRATION: a closed-boot route still answering 200 is a survival"
+  fi
+
+  # (5h) RED — NO CALIBRATION AT ALL. Without the measured absence code there is no answer to "what
+  #      does a route that does not exist say here?", and every verdict would be taken against a
+  #      guess. Refused, not defaulted to 404.
+  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
+  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge: a verdict was taken with no absence calibration for the boot"
+  else
+    note "PASS  boot-judge: a control with no absence calibration is refused, not defaulted"
+  fi
+  # (5j) AN UNSERVED PLANE (`plane_unserved`). Its probe reading absent on the control is expected,
+  #      not a vacuous probe; the same probe answering anything else means the plane serves now and
+  #      its mark is stale, which must be RED so the route leg starts judging it.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
+    note "PASS  boot-judge UNSERVED: an unserved plane reading absent with and without its crate is judged by its refusal witness"
+  else
+    fail=1; note "FAIL  boot-judge UNSERVED: an unserved plane reading absent on both builds was refused"
+  fi
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=200\n" >"$ctl"
+  if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge UNSERVED: a plane marked unserved that SERVES its route was accepted — the mark went stale silently"
+  else
+    note "PASS  boot-judge UNSERVED: a plane marked unserved that serves its route is RED (strike the mark)"
+  fi
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge UNSERVED: the plane-less build serving the unserved plane's route was accepted"
+  else
+    note "PASS  boot-judge UNSERVED: a route appearing on the plane-less build is RED"
+  fi
+
+  # (5i) THE SUBJECT BOOT MUST NOT CONFIGURE THE PLANE IT JUST DELETED. This is the fixture defect
+  #      the refusal witness exists beside: the shared boot config NAMES every plane, and busbar
+  #      refuses — correctly, fail-closed — to boot a config that configures a plane the build was
+  #      compiled without, so handing the subject binary the unstripped fixture made the gate red on
+  #      the product doing the right thing. Proven on the WRITER, not on a boot: for every plane that
+  #      owns a section, the omitted config must not carry it AND the unomitted one must (a writer
+  #      that omits nothing, or everything, fails one of the two).
+  local cfgdir sec mode secs
+  cfgdir="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-cfg.XXXXXX")" || { red "mktemp failed"; return 1; }
+  for p in $PLANES; do
+    secs="$(plane_config_sections "$p")"
+    [ -n "$secs" ] || continue
+    mode="$(plane_probe_boot "$p")"
+    for sec in $secs; do
+      write_boot_config "$mode" "$cfgdir" 46000 46001 ""
+      if ! grep -q "^$sec:" "$cfgdir/config.yaml"; then
+        fail=1; note "FAIL  boot fixture($p): the CONTROL config does not configure \`$sec:\` — there is nothing for the deletion to remove, and the control never mounted the plane"
+        continue
+      fi
+      write_boot_config "$mode" "$cfgdir" 46000 46001 "$secs"
+      if grep -q "^$sec:" "$cfgdir/config.yaml"; then
+        fail=1
+        note "FAIL  boot fixture($p): the SUBJECT config still configures \`$sec:\` after omission."
+        note "      A build with busbar-$p compiled out REFUSES that config (fail-closed at resolve),"
+        note "      so the subject binary never boots and the leg reds on correct product behaviour."
+      else
+        note "PASS  boot fixture($p): \`$sec:\` is configured for the control and omitted for the subject"
+      fi
+    done
+  done
+  # …and the omission is SURGICAL: everything that is not the omitted section survives it, or the
+  # subject boot is a different experiment from the control rather than the same one minus a plane.
+  write_boot_config open "$cfgdir" 46000 46001 ""
+  local open_full open_stripped
+  open_full="$(grep -c . "$cfgdir/config.yaml")"
+  write_boot_config open "$cfgdir" 46000 46001 "$(plane_config_sections a2a)"
+  open_stripped="$(grep -c . "$cfgdir/config.yaml")"
+  if [ "$open_stripped" -lt "$open_full" ] && grep -q "^listen:" "$cfgdir/config.yaml" \
+     && grep -q "^public_url:" "$cfgdir/config.yaml"; then
+    note "PASS  boot fixture: omitting a plane section shrinks the config and leaves the plane-free base intact"
+  else
+    fail=1; note "FAIL  boot fixture: the omission removed nothing, or took the plane-free base with it ($open_full -> $open_stripped lines)"
+  fi
+  rm -rf "$cfgdir"
+
+  # (5j) THE REFUSAL WITNESS' JUDGEMENT — the evidence that replaces the (now merely necessary) 404
+  #      for a plane whose section the subject boot had to omit. Pure over a log and an exit status,
+  #      so all four verdicts are provable here without building or booting anything.
+  local rl
+  rl="$jd/refusal.log"
+  printf 'Error: config: unknown field `agents`, expected one of `listen`, `admin_listen` at line 6 column 1\n' >"$rl"
+  if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
+    note "PASS  refusal-judge GREEN: a non-zero exit whose log refuses the plane's section as an unknown field is the refusal"
+  else
+    fail=1; note "FAIL  refusal-judge GREEN: refused a textbook fail-closed refusal"
+  fi
+  if judge_refusal "$rl" 0 a2a >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  refusal-judge: a binary that ACCEPTED a config naming its own deleted plane was passed."
+    note "      That is the plane still being compiled in, or the fail-closed refusal having been lost."
+  else
+    note "PASS  refusal-judge: accepting the config (exit 0 / still serving) is refused"
+  fi
+  printf 'error: Address already in use (os error 48)\n' >"$rl"
+  if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  refusal-judge: a start failure for an UNRELATED reason counted as the plane's refusal."
+    note "      A taken port, an unreadable config or a panic all exit non-zero and say nothing about"
+    note "      the plane; counting them would green the witness on a build that still carries it."
+  else
+    note "PASS  refusal-judge: a non-zero exit that is not the section's unknown-field refusal is not evidence"
+  fi
+  printf 'Error: config: unknown field `zz_other`, expected one of `listen`, `admin_listen`\n' >"$rl"
+  if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  refusal-judge: an unknown-field refusal naming ANOTHER key counted as the plane's refusal."
+  else
+    note "PASS  refusal-judge: an unknown-field refusal must name the deleted plane's OWN section"
+  fi
+  rm -rf "$jd"
+
+  # (6) THE PROBE TABLE COVERS EVERY PLANE. The leg is only universal if the table is: a plane with
+  #     no path/method/body is a plane the boot leg silently never probes — the same class of
+  #     no-op as the llm-only `if` this replaced, one layer down.
+  for p in $PLANES; do
+    if [ -z "$(plane_probe_path "$p")" ] || [ -z "$(plane_probe_method "$p")" ] || [ -z "$(plane_probe_boot "$p")" ]; then
+      fail=1; note "FAIL  probe table: plane '$p' has no probe (path/method/boot) — the boot leg would skip it silently"
+    else
+      note "PASS  probe table($p): $(plane_probe_method "$p") $(plane_probe_path "$p") on the $(plane_probe_boot "$p") boot"
+    fi
+  done
+
+  # (6b) LEG 1b HAS A REAL CRATE FOR EVERY PLANE (item 505). A plane whose contract plane crate the
+  #      harness cannot name, or names wrongly, is a plane whose leg 1b does nothing.
+  for p in $PLANES; do
+    pc="$(plane_contract_crate "$p")"
+    if [ -n "$pc" ] && [ -d "$REPO/crates/$pc" ]; then
+      note "PASS  contract plane crate($p): $pc exists — leg 1b compiles it"
+    else
+      fail=1; note "FAIL  contract plane crate($p): '${pc:-<none>}' is not on disk — leg 1b would compile nothing for $p"
+    fi
+  done
+
+  # (7) THE ROSTER-COVERAGE GAP IS COMPUTED, NAMED, AND NEVER SILENT. `--all`/`--baseline` iterate
+  #     $PLANES (today: llm, mcp, a2a, voice) and used to let that stand in for "the whole roster" —
+  #     proving nothing about the two planes (streaming, decisions) where the locked name and the
+  #     on-disk name diverge. This proves the computation itself against the REAL plane-keys.sh
+  #     state, not a fixture, because the fixture would only prove the arithmetic and this defect was
+  #     never about the arithmetic — it was about a real gap reading as a clean pass.
+  if [ -z "$PLANE_KEYS_LOCKED" ]; then
+    fail=1; note "FAIL  roster coverage: PLANE_KEYS_LOCKED is empty — there is no locked roster to check coverage against"
+  else
+    note "PASS  roster coverage: locked roster is non-empty ($PLANE_KEYS_LOCKED)"
+  fi
+  # `streaming` must resolve to a covered plane (aliased to `voice`, which IS in $PLANES) — a locked
+  # plane whose on-disk stand-in is untested must never be misreported as a gap, or the opposite
+  # failure (a false RED where the plane genuinely is deletion-tested today) is introduced.
+  case " $LOCKED_GAPS " in
+    *" streaming "*)
+      fail=1; note "FAIL  roster coverage: 'streaming' reported as a GAP, but it is tested today under its pre-rename name 'voice'"
+      ;;
+    *)
+      note "PASS  roster coverage: 'streaming' is NOT reported as a gap (covered via its on-disk name 'voice')"
+      ;;
+  esac
+  # `decisions` is covered under its on-disk key `plane-decisions` (the one-crate plane
+  # `crates/busbar-plane-decisions`), which must be in $PLANES and must not be reported as a gap.
+  case " $LOCKED_GAPS " in
+    *" decisions "*)
+      fail=1; note "FAIL  roster coverage: 'decisions' reported as a GAP, but it is tested as 'plane-decisions'"
+      ;;
+    *)
+      if valid_plane plane-decisions && [ -d "$REPO/crates/busbar-plane-decisions" ]; then
+        note "PASS  roster coverage: 'decisions' is covered (tested as 'plane-decisions', crates/busbar-plane-decisions)"
+      else
+        fail=1; note "FAIL  roster coverage: 'decisions' is not a gap, yet 'plane-decisions' is not a runnable plane on disk"
+      fi
+      ;;
+  esac
+  # And the RED control for the mechanism itself: a locked key with no `plane_ondisk_key` mapping AND
+  # no matching entry in a plane's own $PLANES must land in the gap set — proven directly against
+  # `plane_ondisk_key`, not re-derived, so a mapping bug in scripts/plane-keys.sh is caught here rather
+  # than only downstream in whichever plane it happens to silently misreport.
+  if [ "$(plane_ondisk_key nonexistent-locked-plane)" != "" ]; then
+    fail=1; note "FAIL  roster coverage: plane_ondisk_key invented an on-disk name for a key it does not know"
+  else
+    note "PASS  roster coverage: plane_ondisk_key returns empty for an unknown locked key (forces a named gap, never a guess)"
+  fi
+
+  if [ "$fail" -eq 0 ]; then
+    grn "plane-delete-test self-test: ALL GREEN (removal real; FAIL reported on coupling, PASS on a clean removal)"
+    return 0
+  fi
+  red "plane-delete-test self-test: FAILED — do not trust the tree verdict below"
+  return 1
+}
+
+# ── baseline (informational) ──────────────────────────────────────────────────────────────────────
+run_baseline() {
+  hdr "STRONG-FORM deletion test — per-plane (INFORMATIONAL: always exits 0)"
+  note "each plane: crates/busbar-<P> PHYSICALLY REMOVED, then neutral crates + bin cargo-checked"
+  local p any_fail=0 nplanes
+  nplanes="$(printf '%s' "$PLANES" | wc -w | tr -d ' ')"
+  for p in $PLANES; do
+    hdr "plane: $p"
+    if strong_form "$p"; then grn "  → $p: STRONG-FORM PASS"; else ylw "  → $p: STRONG-FORM FAIL (still coupled)"; any_fail=1; fi
+  done
+  report_coverage
+  hdr "verdict"
+  if [ "$any_fail" -eq 0 ]; then
+    grn "plane-delete: all $nplanes tested plane(s) are strong-form removable today. Arm the ci.yml matrix leg."
+  else
+    ylw "plane-delete: at least one plane still couples — a regression (this baseline mode is informational)."
+    note "The baseline is informational and never reddens CI; a coupled plane here is a regression to fix."
+    note "The blocking gate is \`plane-delete-test.sh <plane>\`, wired per-plane into the ci.yml deletion matrix."
+  fi
+  if [ -n "$LOCKED_GAPS" ]; then
+    ylw "plane-delete: the baseline above covers $nplanes of the locked $(printf '%s' "$PLANE_KEYS_LOCKED" | wc -w | tr -d ' ')-plane roster — it is NOT a verdict on: $LOCKED_GAPS"
+  fi
+  return 0
+}
+
+# ── modes ─────────────────────────────────────────────────────────────────────────────────────────
+case "${1:-}" in
+  --selftest) run_selftest; exit $? ;;
+  # SELF-TEST HELPER (item 503): make one scratch the way every caller does, print it, and exit so the
+  # EXIT trap runs. The self-test then checks the directory is gone.
+  --selftest-scratch-probe) s="$(make_scratch)" || exit 1; printf '%s\n' "$s"; exit 0 ;;
+  # DIAGNOSTIC: build and boot the UNMUTATED tree and print what each plane's probe answers with its
+  # crate present. This is the calibration every boot-leg verdict is taken against, so being able to
+  # look at it directly is how a failing positive control gets diagnosed (bad path? bad method? a
+  # config that never mounted the plane?) without deleting anything.
+  --probe-control)
+    hdr "boot-leg CONTROL — every plane's probe against the UNMUTATED tree"
+    ctl="$(control_codes)" || { red "control build/boot failed"; exit 1; }
+    for p in $PLANES; do
+      code="$(code_for "$ctl" "$p")"
+      # Judged against the boot's MEASURED absence code, not a hard-coded 404 — the closed boot's
+      # "no such route" is a 401 from the auth middleware.
+      absent="$(code_for "$ctl" "__absent-$(plane_probe_boot "$p")")"
+      if [ -z "$code" ] || [ -z "$absent" ] || [ "$code" = "$absent" ]; then
+        red "  $p: $(plane_probe_method "$p") $(plane_probe_path "$p") -> ${code:-<no answer>} (VACUOUS: this is also what absence answers on the $(plane_probe_boot "$p") boot, ${absent:-<uncalibrated>})"
+      else
+        grn "  $p: $(plane_probe_method "$p") $(plane_probe_path "$p") -> $code (absence on the $(plane_probe_boot "$p") boot is $absent: the probe reaches a real route)"
+      fi
+    done
+    exit 0
+    ;;
+  --baseline) run_baseline; exit 0 ;;
+  --all)
+    fail=0
+    nplanes="$(printf '%s' "$PLANES" | wc -w | tr -d ' ')"
+    for p in $PLANES; do
+      hdr "plane: $p"
+      strong_form "$p" || fail=1
+    done
+    report_coverage
+    hdr "verdict"
+    if [ "$fail" -eq 0 ]; then
+      grn "plane-delete gate: PASS — all $nplanes tested plane(s) strong-form removable"
+      if [ -n "$LOCKED_GAPS" ]; then
+        ylw "plane-delete gate: PASS covers $nplanes of the locked $(printf '%s' "$PLANE_KEYS_LOCKED" | wc -w | tr -d ' ')-plane roster only — NOT a pass for: $LOCKED_GAPS"
+      fi
+      exit 0
+    fi
+    red "plane-delete gate: FAIL — a plane's neutral crates still need its crate to compile"; exit 1
+    ;;
+  --with-witness) export WITH_WITNESS=1; shift; cleanup; exec "$0" "${1:---baseline}" ;;
+  # The boot leg is the expensive half (a bin build per plane plus the one-off control build and two
+  # boots each). It is ON by default — it is the only leg that can tell a mounted route from a
+  # deleted one — and this flag turns it off for a compile-only pass on a machine that cannot boot.
+  --skip-boot-leg) export SKIP_BOOT_LEG=1; shift; cleanup; exec "$0" "${1:---baseline}" ;;
+  -h | --help) sed -n '2,74p' "$0" ;;
+  "" ) echo "usage: $0 [--selftest | --baseline | --all | <$(printf '%s' "$PLANES" | tr ' ' '|')>] [--with-witness] [--skip-boot-leg]" >&2
+       [ -n "$LOCKED_GAPS" ] && echo "  (locked five-plane roster: $PLANE_KEYS_LOCKED — NOT YET testable here: $LOCKED_GAPS)" >&2
+       exit 2 ;;
+  *)
+    if valid_plane "$1"; then
+      hdr "STRONG-FORM deletion test — plane: $1"
+      if strong_form "$1"; then
+        if [ -d "$REPO/crates/busbar-$1-codec" ]; then
+          grn "plane-delete gate ($1): PASS — neutral crates + bin compile with busbar-$1 physically gone; neutral crates also with busbar-$1-codec gone"
+        else
+          grn "plane-delete gate ($1): PASS — neutral crates + bin compile with busbar-$1 physically gone"
+        fi
+        exit 0
+      fi
+      red "plane-delete gate ($1): FAIL — a neutral crate or the bin still needs busbar-$1 to compile"
+      exit 1
+    fi
+    # A LOCKED plane name that is not directly runnable — say WHY, rather than a bare usage error
+    # that reads the same for a typo as for "this plane is real but not wired yet".
+    case " $PLANE_KEYS_LOCKED " in
+      *" $1 "*)
+        od="$(plane_ondisk_key "$1")"
+        if [ -n "$od" ] && [ "$od" != "$1" ]; then
+          echo "plane-delete-test: '$1' is not a runnable plane key here — it is tested under its on-disk name: run \`$0 $od\`" >&2
+        else
+          echo "plane-delete-test: '$1' is in the locked five-plane roster but has no on-disk plane crate yet — nothing exists to strong-form remove." >&2
+        fi
+        exit 2
+        ;;
+    esac
+    echo "usage: $0 [--selftest | --baseline | --all | <$(printf '%s' "$PLANES" | tr ' ' '|')>] [--with-witness]" >&2; exit 2
+    ;;
+esac

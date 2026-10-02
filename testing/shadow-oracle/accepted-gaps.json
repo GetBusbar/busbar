@@ -1,0 +1,134 @@
+{
+  "_comment": [
+    "Ids from owed-baseline.txt that the CURRENT golden no longer owes (moved to SKIP/FAIL, or",
+    "dropped from cells.json) — named here with an owner and a rationale so the loss is a decision,",
+    "not silence. replay.sh reads this file; an id it does not cover is RED. `cells` is a regex over",
+    "the cell id (same convention as accepted-differences.json's `cells` field).",
+    "Coverage GROWING (a new id owed that was not in the baseline) needs no entry here — it is",
+    "always allowed and just printed; only a SHRINK needs to be named.",
+    "Nothing has been dropped from the 1.5.5 golden since owed-baseline.txt was generated from",
+    "golden/1.5.5/ledger.tsv's PASS rows. The entries below are cells that have NEVER been owed:",
+    "each is a `needs_fixture` SKIP that carries an accepted-differences.json entry naming a",
+    "deliberate 1.6.0 improvement over 1.5.5, so recording it would produce a divergence the",
+    "improvement register cannot forgive without an owner decision (a usage/status class ->",
+    "kind=breaking) OR needs a capability the oracle may not build for itself (a pinned-mock verb,",
+    "a concurrent-window-roll driver). They are named here so the reason each is not recorded is",
+    "written down and owned, and so the entry is already in place the day the cell is baselined and",
+    "then re-loses its fixture. Two of the five dormant accepted-differences ids reviewed alongside",
+    "these carry NO cell to name and stay documented solely in accepted-differences.json: PR2-D5",
+    "(route.failover|fb|member-slow does not exist -- closing it needs a fallback-pool member",
+    "override in oracle-config.sh, a new cell, and a fresh 1.5.5 recording) and S-14 (no gemini",
+    "speech/TTS cell exists -- every llm cell is op=chat, and a speech leaf needs a fixture, a",
+    "pinned-mock speech verb, and the product's refusal-envelope decision).",
+    "TODO item 51 added the entries from `boot-refusal-needs-a-feature-off-binary` onward: every OTHER",
+    "in-scope cell (any cell outside the mcp/a2a conformance-rig families) that the committed golden",
+    "does not owe, each with the reason it has no golden reference. They carry no accepted-differences",
+    "twin. scripts/verify-1.6.0-done.sh (assert_golden_bookkeeping, run by its --selftest over this",
+    "tree) refuses an in-scope cell the golden does not owe and no entry here names.",
+    "The three entries from `admin-kernel-verbs-new-in-1.6.0` onward name the 83 admin.ops cells the admin corpus gained when it was reconciled against the served router: operations 1.5.5 never had, so the 1.5.5 golden cannot owe them. Each regex enumerates its operations; none is a family blanket."
+  ],
+  "accepted": [
+    {
+      "id": "gemini-tool-use-token-term",
+      "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens$",
+      "owner": "llm-plane",
+      "rationale": "needs a tool-use verb in the pinned mock; product decision on the six-dialect tool-use response shape. The cell declared a mock_control the mock resolves to no verb, and an unresolvable control is served as a healthy 200 — so the cell would have recorded the tool-less happy path while claiming to pin usageMetadata.toolUsePromptTokenCount. The control is removed and the cell stays needs_fixture (SKIP) until the mock can answer with the tool-use token term and the product decides what that answer looks like in each of the six dialects; inventing either here would put the oracle's own guess into the golden. Twin of accepted-differences.json 'G-1': that register would forgive `body` when the cell records, but the same recording also moves `effects.usage` (1.5.5 bills 190, 1.6.0 bills 222), which an improvement entry may not waive — so recording is blocked on the owner promoting G-1 to kind=breaking, a product decision, not silence here."
+    },
+    {
+      "id": "stream-upstream-error",
+      "cells": "^llm\\|[a-z_]+\\|[a-z_]+\\|request\\|stream_upstream_error$",
+      "owner": "llm-plane",
+      "rationale": "twin of accepted-differences.json 'M-2 a mid-stream upstream failure is not billed as a completion'. The six diagonal cells (one per streaming backend) exist and carry mock_control {\"stream-error\": true}, but stay needs_fixture (SKIP): the pinned mock answers stream-error for the OpenAI-compatible arm (openai_chat_stream_error emits the inline `data: {\"error\":...}` chunk M-2 shape (1) names) but NOT for the terminal `finish_reason: \"ERROR\"` Cohere shape (2), so recording all six needs a mock verb the oracle may not add here. And when they record, 1.6.0 diverges from 1.5.5 on `status` and `effects.usage` (the failed stream stops being billed as a completion), classes M-2's body-only improvement entry may not waive; per M-2's own rationale the entry deliberately stays fail-closed (an UNACCEPTED divergence is RED) until the owner rescopes it — its `cells` regex still names the stale outcome token `mid-stream-error`, and widening it is the owner's call, never an auditor's. Named here so the SKIP is an owned decision while it waits on both."
+    },
+    {
+      "id": "boot-refusal-needs-a-feature-off-binary",
+      "cells": "^boot\\.refusal\\|BOOT-(059a|079|094)\\|validate$",
+      "owner": "boot",
+      "rationale": "BOOT-059a and BOOT-079 fire only on a binary built WITHOUT `hooks-ranking`, BOOT-094 only on one built WITHOUT `auth-admin-tokens` (fixtures/boot-mutations.json notes). The published 1.5.5 binary carries both features, so the branch is unreachable in the only binary the golden may be taken from; no config, env or argument can reach it. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
+    },
+    {
+      "id": "boot-refusal-shadowed-by-the-legacy-detector",
+      "cells": "^boot\\.refusal\\|BOOT-(074b|077)\\|validate$",
+      "owner": "boot",
+      "rationale": "From config.yaml both refusals are pre-empted by an earlier stage: an inline `auth.chain` map entry or `chain: [tokens]` trips the legacy-config detector (BOOT-P41) before deserialization, and a `token:` on a named definition trips BOOT-074c first (fixtures/boot-mutations.json notes). Reaching them needs an admin-API/overlay fixture the recorder does not have. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
+    },
+    {
+      "id": "boot-refusal-construction-twins-behind-validation",
+      "cells": "^boot\\.refusal\\|BOOT-(160|161)\\|boot$",
+      "owner": "boot",
+      "rationale": "BOOT-160 and BOOT-161 are the construction-path twins of BOOT-010 and BOOT-043b; config_validate runs first on every boot, so neither branch is reachable from config.yaml without a validation-bypass fixture, and none exists (fixtures/boot-mutations.json notes). It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
+    },
+    {
+      "id": "boot-refusal-governance-second-key-read",
+      "cells": "^boot\\.refusal\\|BOOT-173\\|boot$",
+      "owner": "boot",
+      "rationale": "BOOT-173's `all_keys()` repeats the identical store read `Self::load()` makes one step earlier against the same unchanged file, so every corruption that could fail it fails the first read and surfaces as BOOT-175 instead; measured against the live 1.5.5 binary (fixtures/boot-mutations.json notes). The path is not reproducible with any fixture available. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
+    },
+    {
+      "id": "boot-refusal-runtime-fault-injection",
+      "cells": "^boot\\.refusal\\|BOOT-(182|183)\\|boot$",
+      "owner": "boot",
+      "rationale": "BOOT-182 needs a listener that fails after bind and BOOT-183 is a panic on tokio runtime construction whose worker count is capped at 128; neither is reachable from config, env or arguments, and each needs a runtime or OS-level fault-injection fixture (thread limit / RLIMIT_NPROC) the recorder does not provide (fixtures/boot-mutations.json notes). It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
+    },
+    {
+      "id": "oversize-on-a-plane-mount",
+      "cells": "^http\\.crosscut\\|413\\|(a2a-jsonrpc|mcp-streamable-http)$",
+      "owner": "shadow-oracle",
+      "rationale": "The 413 answer on the A2A JSON-RPC mount (/a2a) and the MCP streamable-http mount (/mcp) is only reachable when the recorder's config mounts the `agents:` / `mcp:` blocks; the oracle baseline config mounts neither, so both cells are needs_fixture in cells.json. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
+    },
+    {
+      "id": "bedrock-cachepoint-before-document",
+      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok_cachepoint_document$",
+      "owner": "llm-plane",
+      "rationale": "The cell's request puts a `cachePoint` before a native `document` block, the index-space case the `ping` fixture's single text block cannot produce; it is needs_fixture in cells.json. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
+    },
+    {
+      "id": "responses-url-citation",
+      "cells": "^llm\\|responses\\|responses\\|request\\|ok_citation$",
+      "owner": "llm-plane",
+      "rationale": "The cell's answer carries a URL citation (mock_control {\"citation\": true}), the annotation shape the `ok` fixture's bare-text answer never exercises; it is needs_fixture in cells.json. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
+    },
+    {
+      "id": "admin-kernel-verbs-new-in-1.6.0",
+      "cells": "^admin\\.ops\\|(GetAuditHead|GetAuditKeys|GetAuditRange|GetLedgerCheckpoints|GetLedgerMigration|GetLedgerOpenapiJson|GetLedgerReconciliation|GetLedgerTotals|GetPlaneFacts|GetVerify|PostAdjust|PostApprove|PostChainBreak|PostCommitUpgrade|PostDisputeMaxAge|PostDisputesResolve|PostDualControl|PostEscrow|PostExportKeyset|PostLedgerAmendRateHistory|PostOperatorKey|PostOverdraftCeiling|PostPlaneRecordWrite|PostResealEpochFloor|PostSlicesResolve|PostStoreRestore)\\|(ok|unauth)$|^admin\\.ops\\|PostStoreRestore\\|bad-body$",
+      "owner": "admin",
+      "rationale": "The 53 admin.ops cells (ok + unauth for each of the 26 operations the node's administrative kernel loop serves, plus PostStoreRestore's bad-body) that the admin corpus gained when it was reconciled against the served router (items 44/45/46). It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) was taken before the cell existed and the published 1.5.5 binary has no such operation: its served document (admin.ops|GetOpenapiJson|ok, 49 paths) names none of these paths, so a 1.5.5 recording could only capture the router's unmatched-path 404. This is NEW 1.6.0 surface, not a difference from 1.5.5, so no accepted-differences.json twin exists or is owed; the cell is judged by its own contract (the served-surface reconciliation test, crates/busbar-core-admin/src/v1/json/tests/served_surface.rs) until the 1.6.0 golden is cut."
+    },
+    {
+      "id": "admin-tools-plane-ops-new-in-1.6.0",
+      "cells": "^admin\\.ops\\|(DeleteToolsName|GetTools|GetToolsName|GetToolsNameChanges|GetToolsNameHealth|PatchToolsNameSettings|PostToolsNameConnect|PutToolsName)\\|(ok|unauth)$",
+      "owner": "admin",
+      "rationale": "The 16 admin.ops cells (ok + unauth for each of the 8 `tools:` plane admin operations, mounted only when `tools:` is configured) that the admin corpus gained in the same reconciliation; the ok cells are needs_fixture in cells.json because the oracle config mounts no `tools:` section. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) was taken before the cell existed and the published 1.5.5 binary has no such operation: its served document (admin.ops|GetOpenapiJson|ok, 49 paths) names none of these paths, so a 1.5.5 recording could only capture the router's unmatched-path 404. This is NEW 1.6.0 surface, not a difference from 1.5.5, so no accepted-differences.json twin exists or is owed; the cell is judged by its own contract (the served-surface reconciliation test, crates/busbar-core-admin/src/v1/json/tests/served_surface.rs) until the 1.6.0 golden is cut."
+    },
+    {
+      "id": "admin-agents-plane-ops-new-in-1.6.0",
+      "cells": "^admin\\.ops\\|(DeleteAgentsName|GetAgents|GetAgentsName|PatchAgentsNameSettings|PostAgentsNameApprove|PostAgentsNameConnect|PutAgentsName)\\|(ok|unauth)$",
+      "owner": "admin",
+      "rationale": "The 14 admin.ops cells (ok + unauth for each of the 7 `agents:` plane admin operations, mounted only when `agents:` is configured) that the admin corpus gained in the same reconciliation; the ok cells are needs_fixture in cells.json because the oracle config mounts no `agents:` section. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) was taken before the cell existed and the published 1.5.5 binary has no such operation: its served document (admin.ops|GetOpenapiJson|ok, 49 paths) names none of these paths, so a 1.5.5 recording could only capture the router's unmatched-path 404. This is NEW 1.6.0 surface, not a difference from 1.5.5, so no accepted-differences.json twin exists or is owed; the cell is judged by its own contract (the served-surface reconciliation test, crates/busbar-core-admin/src/v1/json/tests/served_surface.rs) until the 1.6.0 golden is cut."
+    },
+    {
+      "id": "boot-refusal-mcp-mount-new-in-1.6.0",
+      "cells": "^boot\\.refusal\\|BOOT-MCP-01\\|validate$",
+      "owner": "boot",
+      "rationale": "The boot.refusal cell b74ba3aee (CG-17) added for the mcp plane's fixed /mcp mount: a `mcp.canonical_uri` naming any other path refuses `--validate` (CanonicalUriPathNotClaimed). It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5) was taken before the cell existed and the refusal is NEW 1.6.0 surface, not a difference from 1.5.5, so no accepted-differences.json twin exists or is owed; the cell is judged by its own contract (crates/busbar-mcp/src/mcp/tests/config_tests.rs, a_canonical_uri_naming_any_other_path_is_refused) until the 1.6.0 golden is cut."
+    },
+    {
+      "id": "predev-fence-no-1.5.5-baseline",
+      "cells": "^(a2a|mcp)\\|fence\\|",
+      "owner": "oracle / ARCHITECT (fence re-records)",
+      "rationale": "no 1.5.5 baseline; predev fence. 1.5.5 had no a2a or mcp plane, so golden/1.5.5 cannot owe what busbar sends their upstreams. These cells are owed instead by testing/shadow-oracle/fence/predev-275cbd80b/ (recorded twice, byte-identical, from a clean release build of predev 275cbd80b; ARCHITECT ruling 2026-09-28), which bin/oracle replay judges in its own 'predev fence' section. They are never merged into golden/1.5.5, and they are re-recorded only under an ARCHITECT ruling."
+    },
+    {
+      "id": "decisions-plane-no-1.5.5-baseline",
+      "cells": "^decisions\\|",
+      "owner": "decisions plane (KERNEL<>PLUGINS step 33/34)",
+      "rationale": "no 1.5.5 baseline; predev fence. 1.5.5 had no decisions plane. On predev the plane is inert, so there is nothing to fence yet: it claims no path, admits no caller, has no build or routes, and places no byte on the wire (crates/busbar/src/root/plane_decisions.rs PLANE_HOOKS: claims empty, admission/build/routes None). A `decisions:` block reaches only the config-validation surface. The fence for its metering and egress is recorded from a named predev build, into fence/predev-<sha>/ under the same ARCHITECT rules, in the landing that makes the plane serve. Until then no decisions| cell exists, and this entry names that on purpose."
+    },
+    {
+      "id": "streams-family",
+      "cells": "^streams\\|",
+      "owner": "streaming-plane",
+      "rationale": "the streams family is a 1.6.0 plane: 1.5.5 never served it, so the 1.5.5 golden holds no reference for these cells and owed-baseline.txt never listed them. Their reference is golden/1.6.0-pre/, recorded from the pinned pre-fold predev build, and the cells carry no 1.5.5 claim."
+    }
+  ]
+}

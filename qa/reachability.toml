@@ -1,0 +1,124 @@
+# qa/reachability.toml — WHERE "THIS CODE DOES NOT RUN YET" IS WRITTEN DOWN.
+#
+# Read by `cargo xtask gate reachability` (xtask/src/gates/reachability.rs).
+#
+# WHY THIS FILE EXISTS. Three money faults landed in `crates/busbar/src/root/units_a2a.rs` on
+# 2026-09-22 — an accrual in the wrong denomination, a hardcoded `rate_card_version: 0`, and a
+# `UnitKey::new(0)` colliding every audit record onto one key — and NO corpus cell and NO rig leg
+# could have caught any of them, because the module does not run: its unit's only construction site
+# in the whole crate is under `#[cfg(test)]`. There was no behaviour to witness, so no behavioural
+# witness could exist. The only instrument that can see that class is one that measures the ABSENCE
+# of a caller, which is the gate this file feeds.
+#
+# It was also the second time in one day that unreachability was mistaken for something else: two
+# findings were escalated as live vulnerabilities and were not, and this one was pre-wired
+# scaffolding that read as live. Both confusions are about one fact that was written down nowhere.
+#
+# WHAT THE GATE DOES WITH THIS FILE. Some of this code is legitimately pre-wired ahead of a
+# switch-on; `crates/busbar/src/root/mod.rs` already says so, in a `#![allow(dead_code)]` comment
+# ("the root is BUILT before any plane is SWITCHED onto it... every item here is constructed by its
+# own tests and by nothing else"). That is true and reasonable, and it is also invisible: it is a
+# source comment, it names no module, it carries no expiry, and it was sitting directly above a
+# file with three money bugs in it. So the declaration gets a place to live.
+#
+#   * An UNDECLARED unreachable unit path is RED.
+#   * A DECLARED one is a TRACKED ROW: it passes, and it prints its own reason and switch on every
+#     run, so nobody can be unaware of it.
+#   * A declaration whose subject is REACHED again is STALE and reds — strike the row in the same
+#     commit that switches the module on. The ledger cannot outlive the debt it tracked.
+#
+# The file going EMPTY is the goal state, not a bug: it means every plane in #48's roster is served
+# by a unit path the composition root actually reaches from `fn main()`.
+#
+# THE ROW SHAPE. Both a subject and a reason, the way `qa/construction.toml`'s ceiling raises name
+# both their numbers and their reason:
+#
+#   [[dormant]]
+#   subject = "a2a"          # a #48 roster key (llm|mcp|a2a|streaming|decision) for the first three
+#                            # aspects, or a `root/` module stem for `root-module`
+#   aspect  = "unit-path"    # registered | unit-path | root-reach | root-module
+#   module  = "crates/busbar/src/root/units_a2a.rs"   # must exist, or the row is stale
+#   reason  = "..."          # >= 40 characters. A shrug is not a reason.
+#   switch  = "..."          # the event that retires this row
+#
+# The per-module construction-site evidence behind every red row is written up once, citably, in
+# qa/reachability-evidence.md — so the agents folding these modules read it rather than tracing it
+# a third time. The gate names that file in its own failure details.
+#
+# ── DECLARATIONS ─────────────────────────────────────────────────────────────────────────────────
+#
+# NONE. The one row this file ever carried was `decision`/`registered`, and it was STRUCK by the
+# commit its own `switch` named — the one that adds the `busbar-plane-decisions` dependency edge to
+# crates/busbar/Cargo.toml and pushes a `&PlaneDecl` for it in `register_planes()`. The row read
+# "DELIBERATELY UNWIRED — no root Cargo.toml entry, no main.rs entry"; both are now false, and a
+# declaration that outlived its debt is the one thing `reachability:stale-declaration` exists to
+# catch. It did: the run on the wiring commit, before this strike, reported
+# "`decision`/`registered` is declared dormant and is REACHED again", which is the expiry working
+# rather than a red anybody had to remember.
+#
+# ONE THING THE STRIKE DOES NOT CLAIM, AND WHAT THE GATE NOW SAYS ABOUT IT (item 180, re-scoped
+# 2026-09-25 by K2a, ruling R1). `reachability:unit-path:decision` and
+# `reachability:root-reach:decision` are RED, which is the true answer. Since R1 the rows ask about
+# the LIVE unit path — the kernel-loop runner registered for the plane's capability key (the #28
+# rider: `gauntlet_install::install()` flips llm, mcp, a2a and streaming onto `GauntletKernelUnit`),
+# or a `Units` impl the plane's linked entry exports — and no longer about whether a
+# `root/units_<plane>.rs` exists:
+#
+#   reachability:unit-path:decision   "NO LIVE UNIT PATH: … Rider: no non-test line routes a
+#                                     `busbar_plane_decisions::…` key into
+#                                     `register_gauntlet_runner`/`register_session_runner` … Linked
+#                                     entry: `crates/busbar/src/root/plane_decisions.rs` declares no
+#                                     `impl … Units for`."
+#   reachability:root-reach:decision  "NO UNIT PATH REACHED: …"
+#
+# The plane's entry is a declaration with the inert hooks trio (`claims`, `admission`, `build` —
+# no path, no audience, no runtime slot): there is no served door to put a unit on. The plane is
+# SHIPPED (registered, in `default`, its config section live) and has NO UNIT PATH.
+#
+# SO IT IS NOT DECLARED DORMANT HERE, deliberately. A `[[dormant]]` row would turn both rows into
+# tracked PASSes for a plane #48 puts in the shipped roster — the excuse this file exists to refuse
+# for a shipped plane. Whether 1.6.0 serves the plane or ships it declared-only is OWNER question
+# Q72(3) (ruling R8); until it is ruled, both rows stay RED and are listed as owner-blocked.
+#
+# Nothing is declared. See below for why the four standing findings are not.
+
+# THE OTHER FOUR FINDINGS ARE DELIBERATELY NOT DECLARED ON THE COMMIT THAT INTRODUCED THE GATE. The gate is RED on this tree today, on
+# five named rows, and that red IS the instrument working — it is the red-before-green proof that it
+# can see the known case. Declaring those rows here in the same commit would have shipped a gate
+# with its own findings pre-suppressed, which teaches nobody anything. The owning agents either
+# switch their module on or write the sentence here; either way somebody decides on purpose.
+#
+# WHAT IT FOUND ON THE TREE THAT INTRODUCED THIS FILE, 2026-09-22 (`cargo xtask gate reachability`,
+# 44 files, 883 items, 422 of them reached from `fn main()`) — five findings, one of them since
+# retired by the commit that wired the decisions plane:
+#
+#   reachability:unit-path:mcp        `crates/busbar/src/root/units_mcp.rs` is 1 884 lines of a
+#                                     module named for a unit path and declares NO `impl … Units
+#                                     for` at all. Its four siblings each declare one. Its sole
+#                                     production caller is `seal()` (main.rs), which reads
+#                                     compile-time statics; `mount()` has one caller and it is
+#                                     `root/tests/units_mcp.rs`.
+#   reachability:unit-path:a2a        `A2aUnits` is built at crates/busbar/src/root/units_a2a.rs:845
+#                                     (its own constructor) and crates/busbar/src/root/tests/
+#                                     units_a2a.rs:1858 (test). Nowhere else, in the whole crate.
+#   reachability:unit-path:streaming  `VoiceUnit` has 49 construction sites: one is its own
+#                                     constructor (units_voice.rs:1133) and the other 48 are all in
+#                                     crates/busbar/src/root/tests/units_voice.rs. The NODE half IS
+#                                     live (main.rs builds a `VoiceNode` and installs `NodeCalls`);
+#                                     the ten-step UNIT it is a node for is not.
+#   [STRUCK 2026-09-22] reachability:registered:decision — this finding is GONE, and it is the only
+#                                     one of the five that is. `crates/busbar/Cargo.toml` names
+#                                     `busbar-plane-decisions` and `register_planes()` pushes a
+#                                     `&PlaneDecl` for it, so the row now passes on its own merits
+#                                     rather than on a declaration. The declaration it used to
+#                                     stand on is struck above.
+#   reachability:root-module          `money_book` and `vocabulary` are declared by `root/mod.rs`
+#                                     and named by nothing else in the crate, so no chain from
+#                                     `fn main()` arrives at either. `money_book.rs` calls itself
+#                                     dormant in its own doc; `vocabulary.rs` does the OPPOSITE and
+#                                     reads as live infrastructure. The gate believes neither doc.
+#
+# `llm` passes all three of its rows. Its units are the plane's own, handed to the root's plane-free
+# node (crates/busbar/src/root/plane_node.rs, formerly `units_llm.rs`; K2i), which `fn main()`
+# reaches through the generated `ROOT_UNITS` table (the manifest's `root-units` row) and the
+# linked table's `node` axis.

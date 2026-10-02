@@ -1,0 +1,489 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Tests for the host end of the plugin observability envelope (#85).
+//!
+//! These prove the REFUSALS, because the refusals are what make "the plugin REPORTS; the host
+//! DECIDES" a real split rather than a comment. A plugin that could name any series, mint any
+//! diagnostic code and pick its own severity would be mutating host state with extra steps.
+
+use super::*;
+
+/// A well-formed banner for a REGISTERED code resolves; the resolved entry is the catalogue's, so
+/// its severity and title are the host's words and not the plugin's.
+#[test]
+fn a_registered_code_resolves_to_the_catalogue_entry() {
+    let d = crate::diagnostics::PLUGINS_DIR_FINGERPRINT_FAILED;
+    let banner = format!("BUSBAR-{}", d.code);
+    let got = resolve_code(&banner).expect("a registered code resolves");
+    assert_eq!(got.code, d.code);
+    assert_eq!(got.slug, d.slug);
+}
+
+/// A CODE THE CATALOGUE DOES NOT HOLD IS DROPPED. A `BUSBAR-NNNN` banner promises that pasting it
+/// into the docs lands on an entry saying what to do; a plugin cannot be allowed to mint that
+/// promise, so an unregistered code resolves to nothing and never reaches a log line.
+#[test]
+fn an_unregistered_code_is_refused() {
+    assert!(resolve_code("BUSBAR-65535").is_none());
+}
+
+/// Nor can a plugin get a banner by spelling one that is not a banner.
+#[test]
+fn a_malformed_code_is_refused() {
+    for bad in [
+        "",
+        "1234",
+        "BUSBAR1234",
+        "busbar-1234",
+        "BUSBAR-",
+        "BUSBAR-abc",
+        "BUSBAR-99999999",
+        "BUSBAR-1234 ",
+    ] {
+        assert!(resolve_code(bad).is_none(), "{bad} must not resolve");
+    }
+}
+
+/// THE SEVERITY IS THE CATALOGUE'S, NOT THE PLUGIN'S. A condition the catalogue classifies as
+/// benign-recurring is capped at `debug` however loudly the plugin claims it — otherwise a plugin
+/// pages an operator at 3am by asserting that it should.
+#[test]
+fn a_benign_recurring_condition_cannot_be_escalated() {
+    use busbar_contract::abi::cold::observe::DiagLevel;
+    for claimed in [
+        DiagLevel::Error,
+        DiagLevel::Warn,
+        DiagLevel::Info,
+        DiagLevel::Debug,
+    ] {
+        assert_eq!(
+            clamp_level(claimed, crate::diagnostics::Severity::BenignRecurring),
+            DiagLevel::Debug
+        );
+    }
+}
+
+/// An ACTIONABLE condition keeps the plugin's claimed level: the catalogue has said this one is
+/// worth an operator's attention, so how loud it is at this particular occurrence is exactly the
+/// thing only the plugin knows.
+#[test]
+fn an_actionable_condition_keeps_the_reported_level() {
+    use busbar_contract::abi::cold::observe::DiagLevel;
+    for claimed in [DiagLevel::Error, DiagLevel::Warn, DiagLevel::Debug] {
+        assert_eq!(
+            clamp_level(claimed, crate::diagnostics::Severity::Actionable),
+            claimed
+        );
+        assert_eq!(
+            clamp_level(claimed, crate::diagnostics::Severity::Fatal),
+            claimed
+        );
+    }
+}
+
+/// PROVENANCE CANNOT BE FORGED OR DROPPED. The `plugin` label is the host's, taken from the loaded
+/// handle; a plugin that reports its own `plugin` label has that label dropped rather than allowed
+/// to shadow the host's — a duplicate label name is a Prometheus parse error that costs the WHOLE
+/// scrape, not just the sample.
+#[test]
+fn the_provenance_label_cannot_be_shadowed() {
+    let m: crate::hooks::wire::HookMetric = serde_json::from_value(serde_json::json!({
+        "name": "x_total",
+        "type": "counter",
+        "labels": {"plugin": "somebody-else", "sink": "audit"}
+    }))
+    .expect("decode");
+    let labels = labels_for(Some("the-real-name"), &m);
+    let plugin_labels: Vec<_> = labels
+        .iter()
+        .filter(|l| l.key() == PLUGIN_LABEL)
+        .map(|l| l.value())
+        .collect();
+    assert_eq!(plugin_labels, vec!["the-real-name"]);
+    assert!(labels.iter().any(|l| l.key() == "sink"));
+}
+
+/// The plugin's OWN labels survive alongside the host's, so the per-dimension breakdown a real sink
+/// reports is not flattened away by the provenance label.
+#[test]
+fn a_plugins_own_labels_are_carried() {
+    let m: crate::hooks::wire::HookMetric = serde_json::from_value(serde_json::json!({
+        "name": "x_total",
+        "type": "counter",
+        "labels": {"sink": "audit", "reason": "full"}
+    }))
+    .expect("decode");
+    let labels = labels_for(Some("p"), &m);
+    assert_eq!(labels.len(), 3);
+}
+
+/// A THREAD-LOCAL capture of what the fold REGISTERS — every series key it asked a recorder for,
+/// rendered `name{k=v,…}` — so the fold runs for real under `metrics::with_local_recorder` without
+/// touching the process-global recorder no unit test may install into.
+#[derive(Default)]
+struct Registered(std::sync::Mutex<Vec<String>>);
+
+impl Registered {
+    fn note(&self, key: &metrics::Key) {
+        let labels: Vec<String> = key
+            .labels()
+            .map(|l| format!("{}={}", l.key(), l.value()))
+            .collect();
+        let mut seen = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        seen.push(format!("{}{{{}}}", key.name(), labels.join(",")));
+    }
+}
+
+impl metrics::Recorder for Registered {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        self.note(key);
+        metrics::Counter::noop()
+    }
+    fn register_gauge(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        self.note(key);
+        metrics::Gauge::noop()
+    }
+    fn register_histogram(
+        &self,
+        key: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        self.note(key);
+        metrics::Histogram::noop()
+    }
+}
+
+/// THE FIRST-PARTY NAMESPACE (K9a S1), end to end through the fold: a series the loader GRANTED a
+/// first-party plugin renders exactly as declared — its reserved name, no `plugin=` label — while
+/// the RED arms keep today's rule: the same name from a plugin granted nothing, an undeclared
+/// reserved name, and the declared name at a type it was not declared as are all refused, and an
+/// ordinary name from the granted plugin still carries its provenance label.
+#[test]
+fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted() {
+    use busbar_contract::abi::cold::observe::SeriesDecl;
+    let declared = [SeriesDecl::new("busbar_s1_fold_total", "counter")];
+    grant("s1-first-party", &declared);
+    let entry =
+        |name: &str, kind: &str| serde_json::json!({"name": name, "type": kind, "value": 1});
+    let recorder = Registered::default();
+    metrics::with_local_recorder(&recorder, || {
+        fold_metrics(
+            &*TEST_GRANTS,
+            "s1-first-party",
+            &[
+                entry("busbar_s1_fold_total", "counter"),
+                entry("busbar_s1_undeclared_total", "counter"),
+                entry("busbar_s1_fold_total", "gauge"),
+                entry("s1_own_total", "counter"),
+            ],
+        );
+        fold_metrics(
+            &*TEST_GRANTS,
+            "s1-third-party",
+            &[entry("busbar_s1_fold_total", "counter")],
+        );
+    });
+    let seen = recorder.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(
+        seen,
+        vec![
+            "busbar_s1_fold_total{}".to_string(),
+            "s1_own_total{plugin=s1-first-party}".to_string(),
+        ]
+    );
+}
+
+/// THE RESERVED NAMESPACE. A plugin metric named `busbar_*` is dropped so no plugin can impersonate
+/// a first-party series or type-conflict with one. Asserted on the predicate the fold branches on,
+/// because the fold itself writes to a process-global recorder no unit test may install into.
+#[test]
+fn the_reserved_namespace_is_refused() {
+    assert!("busbar_file_logs_rotated_total".starts_with(RESERVED_PREFIX));
+    assert!(!"file_logs_rotated_total".starts_with(RESERVED_PREFIX));
+}
+
+/// ONE VALIDATOR, AND IT IS 1.5.5'S. The entries the host folds are the entries the hook validator
+/// admits — same caps, same charset, same fail-open drop-the-entry rule — so a plugin of any kind
+/// gets exactly the bounding a hook has had since 1.5.5 and no second implementation exists to
+/// drift from it.
+#[test]
+fn the_fold_validates_through_the_one_hook_validator() {
+    let raw = vec![
+        // Valid.
+        serde_json::json!({"name": "good_total", "type": "counter", "value": 1}),
+        // Invalid NAME charset — dropped whole.
+        serde_json::json!({"name": "Bad-Name", "type": "counter", "value": 1}),
+        // Unknown TYPE — dropped whole.
+        serde_json::json!({"name": "other_total", "type": "summary", "value": 1}),
+        // Non-finite value cannot even be expressed in JSON, so the validator's finiteness rule is
+        // exercised by its own tests; here the missing `type` stands for a structurally bad entry.
+        serde_json::json!({"name": "no_type_total"}),
+    ];
+    let kept = crate::hooks::wire::parse_status_metrics(&raw);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].name, "good_total");
+}
+
+/// **THE CARDINALITY BUDGET ON THE COLD LANE — bounded emitter admitted, unbounded refused.**
+///
+/// The cold lane's validator caps labels at 8 PER ENTRY and entries at 64 PER REPLY, and neither
+/// bounds what accumulates across replies: a sink reporting a fresh series name on every delivery
+/// passes both caps every time and still grows the registry without limit. This is the bound that
+/// was missing, and it is the same one the hot lane asks.
+#[test]
+fn the_cold_lane_bounds_series_cardinality() {
+    const PLUGIN: &str = "cold-cardinality-plugin";
+    forget_cardinality(PLUGIN);
+    // A bounded emitter: the same series, forever.
+    for _ in 0..(MAX_SERIES_PER_PLUGIN * 4) {
+        assert!(admits_cardinality(PLUGIN, "steady_total", 0));
+    }
+    // An unbounded one: a new name every time. One slot is spent, so the ceiling admits N-1 more.
+    let mut admitted = 1usize;
+    for i in 0..(MAX_SERIES_PER_PLUGIN * 2) {
+        if admits_cardinality(PLUGIN, &format!("churn_{i}_total"), 0) {
+            admitted += 1;
+        }
+    }
+    assert_eq!(admitted, MAX_SERIES_PER_PLUGIN);
+    // The established series survives the flood — a misbehaving shape must not evict a good one.
+    assert!(admits_cardinality(PLUGIN, "steady_total", 0));
+}
+
+/// The LABEL half on the cold lane. Here the labels ARE interpreted (a validated `BTreeMap`), so
+/// the fingerprint is taken over the canonical rendering — and two identical label sets fingerprint
+/// identically however the plugin ordered them on the wire.
+#[test]
+fn the_cold_lane_bounds_label_set_cardinality() {
+    const PLUGIN: &str = "cold-label-plugin";
+    forget_cardinality(PLUGIN);
+    let mut admitted = 0usize;
+    for i in 0..(MAX_LABEL_SETS_PER_SERIES * 3) {
+        let labels: std::collections::BTreeMap<String, String> =
+            [("request_id".to_string(), i.to_string())]
+                .into_iter()
+                .collect();
+        if admits_cardinality(PLUGIN, "one_series_total", fingerprint_pairs(Some(&labels))) {
+            admitted += 1;
+        }
+    }
+    assert_eq!(
+        admitted, MAX_LABEL_SETS_PER_SERIES,
+        "labelling by request id must hit a ceiling, not explode the registry"
+    );
+}
+
+/// THE FINGERPRINT IS ORDER-STABLE. Two plugins that report the same dimensions in different wire
+/// order must spend ONE budget slot, not two — otherwise a well-behaved sink burns its ceiling on
+/// what is really one series.
+#[test]
+fn an_identical_label_set_fingerprints_identically() {
+    let a: std::collections::BTreeMap<String, String> = [
+        ("model".to_string(), "m".to_string()),
+        ("strategy".to_string(), "dedupe".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let b: std::collections::BTreeMap<String, String> = [
+        ("strategy".to_string(), "dedupe".to_string()),
+        ("model".to_string(), "m".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(fingerprint_pairs(Some(&a)), fingerprint_pairs(Some(&b)));
+    // And a DIFFERENT set does not collide with it (not a guarantee of the hash, but a guard
+    // against a fingerprint that ignores its input).
+    let c: std::collections::BTreeMap<String, String> =
+        [("model".to_string(), "other".to_string())]
+            .into_iter()
+            .collect();
+    assert_ne!(fingerprint_pairs(Some(&a)), fingerprint_pairs(Some(&c)));
+    // No labels is its own set, distinct from any labelled one.
+    assert_ne!(fingerprint_pairs(None), fingerprint_pairs(Some(&a)));
+}
+
+/// THE BUDGET IS PER PLUGIN. One noisy sink must not be able to spend another's ceiling — otherwise
+/// a single misbehaving plugin silences every other plugin's telemetry, which is a denial of service
+/// against the operator's own observability.
+#[test]
+fn one_plugins_flood_does_not_spend_anothers_budget() {
+    const NOISY: &str = "noisy-plugin";
+    const QUIET: &str = "quiet-plugin";
+    forget_cardinality(NOISY);
+    forget_cardinality(QUIET);
+    for i in 0..(MAX_SERIES_PER_PLUGIN * 2) {
+        admits_cardinality(NOISY, &format!("n_{i}_total"), 0);
+    }
+    assert!(!admits_cardinality(NOISY, "one_more_total", 0));
+    assert!(admits_cardinality(QUIET, "polite_total", 0));
+}
+
+/// THE HOOK FREEZE. A hook may now put samples on the envelope — the wire is uniform — but the host
+/// does NOT fold them, because doing so would give hook metrics a second path with a different
+/// freshness and a different exposition, and the hook kind's behaviour is frozen for 1.6.0.
+///
+/// Asserted by observing that the hook arm returns before touching anything: the call is made with
+/// entries that WOULD be folded for any other kind, and it must complete having emitted nothing.
+/// (The absence is what is provable here without installing a process-global recorder; the positive
+/// half — that a non-hook kind DOES fold — is proven end-to-end by the compiled-in/dropped-in
+/// equivalence test, which is the only place a recorder legitimately exists.)
+#[test]
+fn hook_envelope_metrics_are_carried_but_not_folded() {
+    let entries = vec![serde_json::json!({"name": "x_total", "type": "counter", "value": 1})];
+    // Must not panic, must not emit. The kind constant is read from the ABI so a kind rename cannot
+    // silently turn the freeze off.
+    KernelPluginObserver.observe(
+        &*TEST_GRANTS,
+        "some-hook",
+        busbar_contract::abi::cold::kind::HOOK,
+        &entries,
+        &[serde_json::json!({"code": "BUSBAR-65535"})],
+    );
+}
+
+/// THE HOOK FREEZE IS A METRICS FREEZE; A HOOK'S DIAGNOSTIC STILL REACHES THE LOG (item 556).
+///
+/// The early return for the hook kind used to skip `fold_diagnostics` as well as `fold_metrics`,
+/// while every word of its justification was about metrics — a second path with a different
+/// freshness and exposition. Diagnostics have no second path (`hooks::scrape` knows none), so the
+/// return silenced a hook's catalogue banner outright. A hook's registered diagnostic must now be
+/// emitted exactly as any other kind's is, and its metrics must still not be folded.
+#[test]
+fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let d = crate::diagnostics::PLUGINS_DIR_FINGERPRINT_FAILED;
+    let banner = format!("BUSBAR-{}", d.code);
+    let cap = WarnCapture::capturing_debug();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        KernelPluginObserver.observe(
+            &*TEST_GRANTS,
+            "some-hook",
+            busbar_contract::abi::cold::kind::HOOK,
+            &[serde_json::json!({"name": "x_total", "type": "counter", "value": 1})],
+            &[serde_json::json!({
+                "code": banner,
+                "message": "hook-raised-condition-556",
+            })],
+        );
+    });
+    assert!(
+        cap.contains("hook-raised-condition-556"),
+        "a hook's registered diagnostic must reach the operator's log; captured: {:?}",
+        cap.messages()
+    );
+}
+
+/// K9c: A FIRST-PARTY plugin's diagnostic is written as the host writes its own — the catalogue
+/// line a `diag_*!` site writes, byte for byte: its message, `diag=`, then its fields in the order
+/// it attached them, with no `plugin=` provenance label and no `fields=` bag. Any other plugin's
+/// keeps the provenance shape.
+#[test]
+fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
+    use std::io::Write;
+    #[derive(Clone, Default)]
+    struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let d = *crate::diagnostics::REGISTRY
+        .iter()
+        .find(|d| d.severity == crate::diagnostics::Severity::Actionable)
+        .expect("an actionable code");
+    grant("k9c-first-party", &[]);
+    let entry = serde_json::to_value(
+        busbar_contract::abi::cold::observe::PluginDiagnostic::warn(
+            format!("BUSBAR-{}", d.code),
+            "it broke",
+        )
+        .field("webhook_url", "\"https://a/\"")
+        .field("status", "503"),
+    )
+    .unwrap();
+    let buf = Buf::default();
+    let writer = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_target(false)
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let url = String::from("https://a/");
+        crate::diagnostics::diag_warn!(d, webhook_url = url, status = 503u16, "it broke");
+        KernelPluginObserver.observe(
+            &*TEST_GRANTS,
+            "k9c-first-party",
+            "export",
+            &[],
+            std::slice::from_ref(&entry),
+        );
+        KernelPluginObserver.observe(&*TEST_GRANTS, "k9c-third-party", "export", &[], &[entry]);
+    });
+    let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert_eq!(lines[0], lines[1], "the first-party line is the host's own");
+    assert!(lines[2].contains("plugin=k9c-third-party"), "{text}");
+}
+
+/// What the loader granted at open, as these tests state it: the composition root hands the
+/// loader's own answers to every observe call in a booted process; these tests hand this one. A plugin not named
+/// here (a third party) is granted nothing.
+#[derive(Default)]
+struct TestGrants(std::sync::Mutex<std::collections::HashMap<String, Vec<(String, String)>>>);
+
+impl Grants for TestGrants {
+    fn first_party(&self, plugin: &str) -> bool {
+        self.0.lock().unwrap().contains_key(plugin)
+    }
+    fn first_party_series(&self, plugin: &str, name: &str, kind: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .get(plugin)
+            .is_some_and(|s| s.iter().any(|(n, k)| n == name && k == kind))
+    }
+}
+
+static TEST_GRANTS: std::sync::LazyLock<TestGrants> = std::sync::LazyLock::new(TestGrants::default);
+
+/// Grant `plugin` first-party with `declared` series.
+fn grant(plugin: &str, declared: &[busbar_contract::abi::cold::observe::SeriesDecl]) {
+    TEST_GRANTS.0.lock().unwrap().insert(
+        plugin.to_string(),
+        declared
+            .iter()
+            .map(|d| (d.name.clone(), d.kind.clone()))
+            .collect(),
+    );
+}

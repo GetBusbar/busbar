@@ -1,0 +1,46 @@
+[package]
+name = "busbar-transport-stdio"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The stdio transport: a duplex framed byte pump over a process's own stdin/stdout, or over a spawned child's pipes."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_transport_stdio"
+path = "src/lib.rs"
+# rlib: the linked door (a build that links this crate holds its `StdioCarrier` as the contract's
+# `Carrier`) and the tests. cdylib: the dropped-in door — the same carrier lowered by the contract's
+# `export_carrier!` to the HOT decl, exported as `busbar_transport_decl` for the loader to `dlopen`
+# (#3: a transport is swappable, compiled in OR dropped in, over the HOT lane).
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# THE DROPPED-IN DOOR (`exports`): this crate's carrier, lowered and registered as its image's one door
+# through the contract's shared door. OFF in a build that links this crate (the linked door is
+# `StdioCarrier` itself); the dropped-in artifact is built on its own:
+# `cargo build -p busbar-transport-stdio --release --features dropped-in`.
+dropped-in = []
+
+# DEPENDENCY POLICY. A transport is a plugin (#3): its closure is `busbar-contract` plus the runtime
+# and stream plumbing it needs. It carries the byte-level framing only: one frame per line, a single write
+# lock, and the process/child lifecycle. No protocol meaning (JSON-RPC ids, verbs, correlation)
+# lives here; that stays with the planes that ride this transport.
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "io-std", "process", "sync", "time"] }
+futures = { workspace = true }
+
+[dev-dependencies]
+# The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
+# fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
+# forge their own. Dev-only and feature-gated, so it is absent from every release build.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "io-std", "process", "sync", "time"] }
+# THE BOTH-WAYS WITNESS (tests/conformance.rs, its only user): the linked carrier, the carrier over
+# its own decl and the dropped-in cdylib run one script over the real admission, scan and open
+# (#2 rule (1), #3). This crate names itself with its dropped-in door on, so `cargo test` builds the
+# cdylib that test opens. Dev-only: absent from every release build.
+busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-transport-stdio = { path = ".", features = ["dropped-in"] }

@@ -1,0 +1,11 @@
+# A synthetic pure crate with NO unusual dependency at all, whose own src/ reaches a banned
+# std path directly — proving `cargo xtask denylist` catches that even when no Cargo dependency
+# announces it. Also carries a `#[cfg(test)] mod` using a different banned path, to prove test
+# code is excluded from the scan.
+[workspace]
+
+[package]
+name = "xtask-fixture-dirty-src"
+version = "0.0.0"
+edition = "2021"
+publish = false

@@ -1,0 +1,9 @@
+# One of two "via" crates for the via-multi fixture: depends directly on `libc`.
+[package]
+name = "xtask-fixture-via-multi-a"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = "0.2"

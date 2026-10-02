@@ -1,0 +1,169 @@
+{
+  "max_json_depth": 128,
+  "about": "The JSON depth floor both copies of the JSON seam guard with: each case is accepted or refused by the host's seam and by the LLM plane's seam alike. `shape` cases nest `depth` levels of arrays, objects, or both alternating around a scalar; `raw` cases are the literal body.",
+  "cases": [
+    {
+      "shape": "arrays",
+      "depth": 1,
+      "accepted": true
+    },
+    {
+      "shape": "objects",
+      "depth": 1,
+      "accepted": true
+    },
+    {
+      "shape": "mixed",
+      "depth": 1,
+      "accepted": true
+    },
+    {
+      "shape": "arrays",
+      "depth": 2,
+      "accepted": true
+    },
+    {
+      "shape": "objects",
+      "depth": 2,
+      "accepted": true
+    },
+    {
+      "shape": "mixed",
+      "depth": 2,
+      "accepted": true
+    },
+    {
+      "shape": "arrays",
+      "depth": 64,
+      "accepted": true
+    },
+    {
+      "shape": "objects",
+      "depth": 64,
+      "accepted": true
+    },
+    {
+      "shape": "mixed",
+      "depth": 64,
+      "accepted": true
+    },
+    {
+      "shape": "arrays",
+      "depth": 127,
+      "accepted": true
+    },
+    {
+      "shape": "objects",
+      "depth": 127,
+      "accepted": true
+    },
+    {
+      "shape": "mixed",
+      "depth": 127,
+      "accepted": true
+    },
+    {
+      "shape": "arrays",
+      "depth": 128,
+      "accepted": true
+    },
+    {
+      "shape": "objects",
+      "depth": 128,
+      "accepted": true
+    },
+    {
+      "shape": "mixed",
+      "depth": 128,
+      "accepted": true
+    },
+    {
+      "shape": "arrays",
+      "depth": 129,
+      "accepted": false
+    },
+    {
+      "shape": "objects",
+      "depth": 129,
+      "accepted": false
+    },
+    {
+      "shape": "mixed",
+      "depth": 129,
+      "accepted": false
+    },
+    {
+      "shape": "arrays",
+      "depth": 130,
+      "accepted": false
+    },
+    {
+      "shape": "objects",
+      "depth": 130,
+      "accepted": false
+    },
+    {
+      "shape": "mixed",
+      "depth": 130,
+      "accepted": false
+    },
+    {
+      "shape": "arrays",
+      "depth": 256,
+      "accepted": false
+    },
+    {
+      "shape": "objects",
+      "depth": 256,
+      "accepted": false
+    },
+    {
+      "shape": "mixed",
+      "depth": 256,
+      "accepted": false
+    },
+    {
+      "shape": "arrays",
+      "depth": 10000,
+      "accepted": false
+    },
+    {
+      "shape": "objects",
+      "depth": 10000,
+      "accepted": false
+    },
+    {
+      "shape": "mixed",
+      "depth": 10000,
+      "accepted": false
+    },
+    {
+      "raw": "{\"s\":\"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[\"}",
+      "accepted": true
+    },
+    {
+      "raw": "{\"s\":\"\\\"{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{\\\"\"}",
+      "accepted": true
+    },
+    {
+      "raw": "[\"\\\\\",[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "accepted": false
+    },
+    {
+      "raw": "[\"\\\"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[",
+      "accepted": false
+    },
+    {
+      "raw": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+      "accepted": true
+    },
+    {
+      "raw": "",
+      "accepted": false
+    },
+    {
+      "raw": "not json",
+      "accepted": false
+    }
+  ]
+}

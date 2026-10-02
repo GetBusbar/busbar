@@ -1,0 +1,1132 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Prometheus metrics: a process-wide recorder + the `/metrics` exposition.
+//!
+//! `init()` installs a single global `metrics-exporter-prometheus` recorder. Emission sites
+//! across the codebase use the `metrics` facade macros (`counter!`/`histogram!`/`gauge!`), which
+//! route to that recorder. `render()` produces the current Prometheus text exposition, served by
+//! `handler()` on `GET /metrics`.
+//!
+//! ## Scrape-time gauges
+//!
+//! Four families of gauges are REFRESHED AT SCRAPE TIME (in `handler()`) from already-available
+//! in-process reads. They are NOT emitted on the request hot path:
+//!
+//! * **`busbar_key_spend_cents`** — per-virtual-key accumulated spend in the current budget window
+//!   (cents). Only populated when governance is enabled.
+//! * **`busbar_key_budget_remaining_cents`** — max_budget_cents minus spend for keys that carry a
+//!   budget cap. Enables Prometheus burn-rate alerts on a bounded, operator-configured label space.
+//! * **`busbar_key_tokens_total`** — accumulated tokens consumed by each virtual key in the current
+//!   budget window. Useful for token-cost dashboards.
+//! * **`busbar_lane_state`** — per-(pool, lane) breaker gauge read from THAT pool's own breaker
+//!   cell: 0 = healthy/closed, 1 = a half-open recovery probe is in flight on this cell, 2 =
+//!   tripped (this cell Open, or the lane hard-down). Emitted for every plane's pools and
+//!   destinations. Labels use ONLY configured pool names / registered target keys and lane MODEL
+//!   strings / member positions (the model string matches the request-counter emission sites below
+//!   so gauge and counters PromQL-join on `lane`) — all bounded by operator config, never
+//!   client-supplied values.
+//!
+//! ## Cardinality invariant
+//!
+//! Every label on every metric in this module is drawn from a FINITE, OPERATOR-CONTROLLED set:
+//! * `pool` — the name of a configured pool (`app.pools` key-set), or the sentinel `"unresolved"`.
+//! * `key` — the virtual-key id (a hex prefix of the key's secret hash, operator-issued, bounded
+//!   by the count of created keys — never the raw bearer token).
+//! * `lane` — the lane's configured MODEL string (bounded by the count of configured lanes, a
+//!   startup constant). Identical on the LANE_STATE gauge and every counter that carries `lane`, so
+//!   they can be PromQL-joined on the label.
+//! * `plane` — the key of the plane the request arrived on (the primary/fallback plane's own key,
+//!   or a mounted plane consumer's registered key). Bounded by the small, fixed set of plane
+//!   consumers a build can mount.
+//! * Fixed enumerations (`outcome`, `disposition`, `reason`, `from`, `to`, `ingress_protocol`).
+//!
+//! Client-supplied values (raw model strings from request bodies, user-facing key secrets, etc.)
+//! MUST NOT appear as metric labels. See the taxonomy constant block below for per-metric notes.
+
+use std::sync::OnceLock;
+
+use crate::diagnostics::diag_warn;
+use crate::state::App;
+
+/// THE MONEY GAUGES — per-key and per-bucket spend, budget-remaining and token counts. A file of its
+/// own because it is money end to end and `no-float-money` scans it WHOLE (`KERNEL_MONEY_FILES`);
+/// the rest of this module is routing weights, durations and lane health, all legitimate floats.
+mod money;
+
+// ── THE RECORDER INSTALL, RE-EXPORTED BY IDENTITY FROM THE NEUTRAL SUBSTRATE ─────────────────────
+//
+// The opt-in flag, the install, the maintenance drain, the HELP/TYPE registrations, `render()` and
+// every metric NAME moved DOWN to `busbar_kernel::metrics` (all `App`-free; see there). These are
+// the SAME items at their historical `crate::metrics::…` paths — one registry, one exposition — so
+// every core call site below and elsewhere resolves unchanged. The `App`-shaped half
+// (`refresh_scrape_gauges`, `emit_lane_gauges`, the per-request handle caches) stays here.
+// The test-only arg-less initializer carries its historical gate: there is still deliberately no
+// arg-less installer outside tests, so no shipped build path can install metrics without a named
+// retention window.
+// The builder seam and the shipped gauge idle window the reaping battery below drives. Test-only on
+// both sides of the seam, so core's shipped surface gains nothing.
+//
+// `recorder_builder`/`GAUGE_IDLE_TIMEOUT` are defined directly below (unconditionally `pub`) now
+// that busbar-core's substrate is absorbed into this crate; `recorder_internals` re-exports them
+// for the test/`test-support` axis. A `use` here of the same two names, into the very module that
+// defines them, is a leftover from when they lived in a separate `busbar-core` crate — it now
+// collides with their own definitions (E0255) rather than importing anything new.
+// The maintenance drain and the retention decision are driven from PRODUCTION down in the substrate
+// (the maintenance thread and `HistogramSlot::record`); core names them only from the batteries that
+// pin the drain-on-a-timer and the three-state retention truth table, so the re-export is test-only.
+// The scrape-time gauge NAMES: `describe()` registers them down in the substrate and
+// `refresh_scrape_gauges`/`emit_lane_gauges` below emit them here, so this is a module-private
+// `use` — core's own surface gains nothing, exactly as when they were private consts here.
+
+// ─── PER-REQUEST HANDLE CACHE ─────────────────────────────────────────────────────────────────────
+//
+// `finish_inner` emits exactly two metrics on EVERY served request: the `REQUESTS_TOTAL` counter and
+// the `REQUEST_DURATION_SECONDS` histogram. Emitting them through the `counter!`/`histogram!` macros
+// re-runs, per request: three owned-`String` label allocations (`plane` + `ingress_protocol` + `pool`), a `Key`
+// build, and a recorder registry hash+lookup — for a label set drawn from a FINITE, operator-bounded
+// space (`|protocols| × (|pools| + 1) × |outcomes|`). `metrics::Counter`/`Histogram` are cheap-to-
+// clone `Arc`-backed handles straight to the metric's storage that SURVIVE recorder swaps, so caching
+// one per label set turns the steady-state hot path into a lock-free map read + an atomic increment —
+// no per-request allocation and no registry lookup.
+//
+// The cache is a `RwLock<HashMap<Box<str>, Handle>>` keyed on a COMPACT single key built by joining
+// the (bounded) label values with a `\x1f` unit separator — a byte that cannot appear in a protocol
+// or pool name, so the join is unambiguous. Building that key is a single small allocation, but the
+// steady-state path performs the lookup under a shared read lock and never touches the metrics
+// registry (which would allocate the two `Label` Strings AND a `Key` AND hash+probe its own map);
+// net, one small alloc replaces two label allocs + a `Key` build + a registry probe.
+//
+// Correctness vs. the recorder-install ordering the module contract calls out (a handle minted before
+// `init()` installs the recorder binds to the no-op recorder FOREVER): the cache is populated ONLY
+// once the recorder is installed (`HANDLE == Some(Some(_))`). Before that — `init()` not yet run, or
+// install failed — these helpers fall through to the plain macro (itself a no-op against the default
+// recorder), caching nothing. So a pre-`init()` emission is never cached, and every cached handle is
+// bound to the real Prometheus recorder. In production `init()` runs at startup before any request
+// reaches `finish_inner`, so the steady state is always the cached fast path.
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+/// Unit separator joining label values into the compact cache key — a control byte that cannot occur
+/// in an ingress-protocol or pool name, so `"a\x1fb"` can never collide with `"a"` + `"\x1fb"`.
+const CACHE_KEY_SEP: char = '\u{1f}';
+
+static REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> = OnceLock::new();
+static DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> = OnceLock::new();
+// The mounted plane consumers' families keep their OWN caches: the `plane` label makes their key
+// space distinct from the primary-plane series above, and keeping them separate is what lets the
+// primary-plane series stay label-identical to v1.5.4.
+static PLANE_REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> =
+    OnceLock::new();
+static PLANE_DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> =
+    OnceLock::new();
+
+/// Increment `REQUESTS_TOTAL` for `(ingress_protocol, pool, outcome)` via a CACHED counter handle —
+/// no registry lookup and no per-request `Label`/`Key` construction on the steady-state path. Falls
+/// back to the plain macro until the recorder is installed (see the cache-module note above).
+/// Byte-for-byte the same series and value the macro produced. This is the primary plane's family
+/// and carries NO `plane` label, so its exposition is identical to v1.5.4 (`incr_plane_requests_total`
+/// is the mounted-plane-consumer counterpart).
+pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
+    let key = || format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}");
+    let make = || {
+        metrics::counter!(
+            REQUESTS_TOTAL,
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string(),
+            "outcome" => outcome
+        )
+    };
+    with_handle(&REQUESTS_HANDLES, key, make, |h| h.increment(1));
+}
+
+/// Increment `PLANE_REQUESTS_TOTAL` for `(plane, ingress_protocol, pool, outcome)` — the
+/// mounted-plane-consumer counterpart of [`incr_requests_total`]. SEPARATE family and SEPARATE cache
+/// so the primary-plane series stays label-identical to v1.5.4; same cached-handle contract
+/// otherwise.
+pub(crate) fn incr_plane_requests_total(
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    outcome: &'static str,
+) {
+    let key = || {
+        format!(
+            "{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}"
+        )
+    };
+    let make = || {
+        metrics::counter!(
+            PLANE_REQUESTS_TOTAL,
+            "plane" => plane.to_string(),
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string(),
+            "outcome" => outcome
+        )
+    };
+    with_handle(&PLANE_REQUESTS_HANDLES, key, make, |h| h.increment(1));
+}
+
+/// Record a `REQUEST_DURATION_SECONDS` observation for `(ingress_protocol, pool)` via a CACHED
+/// histogram handle. Same caching contract as [`incr_requests_total`]; the primary plane's family,
+/// with NO `plane` label (see [`record_plane_request_duration`] for the mounted-plane-consumer
+/// counterpart).
+pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, seconds: f64) {
+    let key = || format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    let make = || {
+        metrics::histogram!(
+            REQUEST_DURATION_SECONDS,
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string()
+        )
+    };
+    with_handle(&DURATION_HANDLES, key, make, |h| h.record(seconds));
+}
+
+/// Record a `PLANE_REQUEST_DURATION_SECONDS` observation for `(plane, ingress_protocol, pool)` — the
+/// mounted-plane-consumer counterpart of [`record_request_duration`], in a SEPARATE family/cache.
+pub(crate) fn record_plane_request_duration(
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    seconds: f64,
+) {
+    let key = || format!("{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    let make = || {
+        metrics::histogram!(
+            PLANE_REQUEST_DURATION_SECONDS,
+            "plane" => plane.to_string(),
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string()
+        )
+    };
+    with_handle(&PLANE_DURATION_HANDLES, key, make, |h| h.record(seconds));
+}
+
+/// THE ONE CACHED-HANDLE PATH every family above goes through: before the recorder is installed,
+/// `use_it` gets a fresh `make()` (the plain macro, a no-op) and nothing is cached; after, the
+/// handle cached under `key()` (a shared read on the steady-state path), registered once on a miss.
+fn with_handle<H>(
+    cache: &OnceLock<RwLock<HashMap<Box<str>, H>>>,
+    key: impl FnOnce() -> String,
+    make: impl FnOnce() -> H,
+    use_it: impl FnOnce(&H),
+) {
+    // Pre-install traffic never caches a handle bound to the no-op recorder. The recorder installs
+    // once per process and never uninstalls, so no unit test reaches this branch once any test has
+    // run `init()`; before install both branches call the same no-op macro, so none could tell them
+    // apart.
+    if !recorder_installed() {
+        use_it(&make());
+        return;
+    }
+    let cache = cache.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = key();
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        use_it(h);
+        return;
+    }
+    let handle = make();
+    use_it(&handle);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Refresh all scrape-time gauges from in-process reads. Called on every `/metrics` scrape so
+/// values are current at observation time. The reads are all side-effect-free:
+/// * Governance: `GovState::usage_for` queries the SQLite store (offloaded to the blocking pool
+///   by the caller when in async context, or inline in unit tests).
+/// * Lane health: `store.snapshot()` + each cell's own `breaker_state_snapshot_in()` /
+///   `cooldown_remaining_in()` (and the plane-neutral breaker cells' own readings) — pure atomic
+///   reads that do NOT trigger Open→HalfOpen transitions or acquire the single-flight recovery probe.
+///
+/// No-op when governance is disabled (the governance arc is `None`). Pool and lane label spaces
+/// are bounded by the operator's configuration; virtual-key ids are bounded by the set of
+/// keys the admin has created. No client-supplied label values are ever emitted.
+pub fn refresh_scrape_gauges(app: &App) {
+    let now = busbar_kernel::store::now();
+
+    // ── Governance: per-key spend, budget-remaining, tokens ────────────────────────────────────
+    // The MONEY gauges (spend, budget-remaining and the token counts they are priced from) are
+    // published by [`money`], a file of its own so `no-float-money` can scan it whole: every figure
+    // stays an integer there up to ONE named exporter boundary. Same `now` as the lane gauges below.
+    money::refresh_money_gauges(app, now);
+
+    // ── Lane health: per-(pool, lane-index) breaker state ──────────────────────────────────────
+    // For each configured pool, iterate the pool's lane members. The lane state is derived from
+    // the pool's own breaker cell (its FSM state and its own cooldown), which are pure atomic
+    // reads — no FSM transitions are triggered. The `lane` label value is the lane's
+    // MODEL string (matching the request-counter emission sites above; bounded
+    // one-per-configured-lane, a startup constant), not a numeric index.
+    //
+    // State derivation (3-state: 0=healthy, 1=half-open, 2=tripped) reads the POOL'S OWN cell
+    // only — see `lane_state_value`. A sibling pool's healthy cell on the same lane never masks
+    // this pool's trip.
+    //
+    // `snapshot()` is LANE-GLOBAL (indexed by lane, not scoped to a pool) and `now` is fixed for the
+    // whole scrape, so a lane shared across K pools would otherwise recompute the identical (now-2x)
+    // breaker-cell fold K times. Memoize it per lane_idx here and reuse across every pool that shares
+    // the lane (and across the by_model loop below). Per-POOL facts (`classify(pool, …)`,
+    // `cooldown_remaining_in(pool, …)`) stay per-iteration — only the lane-global snapshot is cached.
+    let mut snap_cache: std::collections::HashMap<usize, busbar_kernel::store::LaneSnapshot> =
+        std::collections::HashMap::new();
+    // The routing tables through the NEUTRAL read seam (money-path Phase 3-4 B): the scrape reads pool
+    // label spaces, per-pool member lane indices, a lane's model string, and the per-pool queue depth
+    // as neutral projections, so `/metrics` names no `Lane`/`WeightedLane` and need not relocate when
+    // the tables move into an out-of-tree plugin crate. Cold scrape path — the projections may allocate.
+    let view = app.engine_tables_view();
+    for (pool_name, member_idxs) in view.pools() {
+        // Render the LIVE per-pool `on_exhausted: queue` park depth. `queued_depth` is the
+        // RAII-maintained source incremented while a request waits on a candidate lane's semaphore
+        // (see `walk.rs` `handle_queue` + `state::QueuedDepth`); a pool that never queues reads 0.
+        metrics::gauge!(POOL_QUEUED, "pool" => pool_name.to_string())
+            .set(view.queued_depth(pool_name) as f64);
+        for lane_idx in member_idxs {
+            let snap = snap_cache
+                .entry(lane_idx)
+                .or_insert_with(|| app.store.snapshot(lane_idx, now));
+            // THIS pool's own cell, nothing lane-global: its FSM state and its own cooldown.
+            let state_val = lane_state_value(
+                app.store.breaker_state_snapshot_in(pool_name, lane_idx),
+                app.store.cooldown_remaining_in(pool_name, lane_idx, now),
+                now,
+            );
+            // The `lane` label is the lane's MODEL string (NOT a numeric index), matching the
+            // request-counter emission sites above so the gauge and counters can be PromQL-joined on
+            // `lane`. It is bounded one-per-configured-lane (a startup constant), so cardinality
+            // stays safe.
+            let lane_label = view
+                .lane_view(lane_idx)
+                .expect("pool member lane index is in range")
+                .model
+                .to_string();
+            metrics::gauge!(
+                LANE_STATE,
+                "pool" => pool_name.to_string(),
+                "lane" => lane_label.clone()
+            )
+            .set(state_val);
+            // Render the lane's availability from the SAME per-(pool, lane) `classify`
+            // routing dispatches on — this IS the pool cell the pool routes through.
+            let avail = app.store.classify(pool_name, lane_idx, now);
+            emit_lane_gauges(pool_name, &lane_label, snap, &avail, now);
+        }
+    }
+
+    // Direct-model lanes (reachable via `by_model` routing, no pool required) get a lane-state
+    // gauge too, labeled with the model name as `pool` — the same convention the counters use
+    // for model-routed traffic (empty pool name → model string),
+    // so gauge and counters PromQL-join. Cardinality: bounded by |configured models|, a startup
+    // constant. Without this, a pool-less config (the docs' minimal getting-started config)
+    // exposes NO lane gauges at all — a fresh boot rendered an empty /metrics (harness finding,
+    // 2026-07-09). The breaker cell is the lane-default `""` cell, matching model-routed
+    // fault attribution.
+    for (model, lane_idx) in view.model_indices() {
+        // Reuse the lane-global snapshot cached in the pool loop above (or compute+cache on miss for a
+        // pool-less lane) — same lane_idx, same fixed `now`.
+        let snap = snap_cache
+            .entry(lane_idx)
+            .or_insert_with(|| app.store.snapshot(lane_idx, now));
+        let state_val = lane_state_value(
+            app.store.breaker_state_snapshot_in("", lane_idx),
+            app.store.cooldown_remaining_in("", lane_idx, now),
+            now,
+        );
+        let lane_model = view
+            .lane_view(lane_idx)
+            .expect("the routed lane index is in range")
+            .model
+            .to_string();
+        metrics::gauge!(
+            LANE_STATE,
+            "pool" => model.to_string(),
+            "lane" => lane_model.clone()
+        )
+        .set(state_val);
+        // Direct-model lane: classify against the lane-default (`""`) cell, matching model-routed
+        // fault attribution (the same cell `LANE_STATE` reads via `cooldown_remaining_in("", ...)`).
+        let avail = app.store.classify("", lane_idx, now);
+        emit_lane_gauges(model, &lane_model, snap, &avail, now);
+    }
+
+    // Every OTHER plane's destinations: the plane-neutral breaker cells secondary planes dispatch
+    // through, read from the one shared handle. The `pool` label is the cell's key exactly as the
+    // plane keyed it (a registered target id or a pool name, already qualified by the plane so it
+    // cannot collide with a bare pool name above); the `lane` label is the member's position in
+    // that pool (`0` for a single registered target). Only cells a dispatch has materialized
+    // exist, so the label space is bounded by the configured targets and pools.
+    for (key, member, state, cooldown) in app.plane_breakers.cell_readings(now) {
+        metrics::gauge!(
+            LANE_STATE,
+            "pool" => key.to_string(),
+            "lane" => member.to_string()
+        )
+        .set(lane_state_value(state, cooldown, now));
+    }
+}
+
+/// `busbar_lane_state` for ONE breaker cell, read from that cell alone — never folded with any
+/// other pool's cell on the same lane:
+/// * `1` — the cell is HalfOpen: a recovery probe is in flight on THIS cell right now.
+/// * `2` — the cell refuses: Open with its cooldown still running (a dead lane reads Open with a
+///   never-elapsing cooldown), or Closed but inside a pending cooldown.
+/// * `0` — the cell admits: Closed with no cooldown, or Open with its cooldown elapsed (the next
+///   request through it is the recovery probe).
+fn lane_state_value(
+    state: busbar_kernel::store::BreakerState,
+    cooldown_remaining: u64,
+    now: u64,
+) -> f64 {
+    use busbar_kernel::store::BreakerState;
+    match state {
+        BreakerState::HalfOpen => 1.0,
+        BreakerState::Open { until } if until > now => 2.0,
+        _ if cooldown_remaining > 0 => 2.0,
+        _ => 0.0,
+    }
+}
+
+/// Emit the per-(pool, lane) availability + depth gauges. `avail` is the SAME
+/// `classify(pool, lane, now)` verdict routing dispatches on, so `busbar_lane_available` (1=Ok/0=Err)
+/// and `busbar_lane_recovery_hint_ms` (from `Unavailable::recovery_hint_ms`, 0 when available or no
+/// self-recovery basis) can never drift from behaviour. `busbar_lane_inflight` is always emitted;
+/// `busbar_lane_available_permits` only for BOUNDED lanes (an unbounded lane has no meaningful permit
+/// count, so it emits no sample rather than a misleading infinite one). The breaker (`LANE_STATE`) and
+/// capacity (`available_permits`) axes stay INDEPENDENT of the collapsed `LANE_AVAILABLE` bool.
+/// Shared by the pool loop and the by_model loop so the two label conventions (`pool`=pool name /
+/// `pool`=model name) stay identical to `LANE_STATE`.
+fn emit_lane_gauges(
+    pool_label: &str,
+    lane_label: &str,
+    snap: &busbar_kernel::store::LaneSnapshot,
+    avail: &Result<(), busbar_kernel::store::Unavailable>,
+    now: u64,
+) {
+    // Build the `pool`/`lane` labels ONCE per lane (the two `to_string()` allocations) and clone the
+    // pair per gauge, instead of re-allocating both Strings on each of the 3-4 gauge emits (was a
+    // closure called every time). The two label values are identical across every gauge here.
+    let pool_l = metrics::Label::new("pool", pool_label.to_string());
+    let lane_l = metrics::Label::new("lane", lane_label.to_string());
+    metrics::gauge!(LANE_AVAILABLE, vec![pool_l.clone(), lane_l.clone()]).set(if avail.is_ok() {
+        1.0
+    } else {
+        0.0
+    });
+    // Honest recovery hint: 0 when available (Ok) or the reason has no self-recovery basis (None).
+    let hint_ms = avail
+        .as_ref()
+        .err()
+        .and_then(|u| u.recovery_hint_ms(now))
+        .unwrap_or(0);
+    metrics::gauge!(LANE_RECOVERY_HINT_MS, vec![pool_l.clone(), lane_l.clone()])
+        .set(hint_ms as f64);
+    metrics::gauge!(LANE_INFLIGHT, vec![pool_l.clone(), lane_l.clone()]).set(snap.inflight as f64);
+    if let Some(available) = snap.available {
+        metrics::gauge!(LANE_AVAILABLE_PERMITS, vec![pool_l, lane_l]).set(available as f64);
+    }
+}
+
+// `GET /metrics` (the Prometheus text exposition) is no longer served by a core route here: 1.5.3
+// lifted the DISTRIBUTION half out to the `prometheus` exporter, and 1.6.0 made it an export sink
+// on the export axis. The host's scrape ([`crate::export::scrape`]) refreshes the scrape-time
+// gauges via [`refresh_scrape_gauges`], snapshots the SAME registry through [`render`], and serves
+// what that sink renders. COLLECTION (this recorder + the emit sites + the gauge derivation) stays
+// core.
+
+#[cfg(test)]
+#[path = "../tests/metrics_tests.rs"]
+mod tests;
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+/// Routing-policy selections: incremented once per request whose pool resolved a non-default routing
+/// policy that produced a ranked order (Prefer / on_error: first). `policy` is the native/transport
+/// NAME (a fixed enumeration: cheapest/fastest/least_busy/usage/webhook/script) and `pool` is the
+/// configured pool name (bounded at startup) — both safe, bounded labels (no request-derived data).
+pub const ROUTE_POLICY_SELECTIONS_TOTAL: &str = "busbar_route_policy_selections_total"; // labels: policy, pool
+
+/// Routing-policy REJECTIONS (the hook's reject verb — a guardrail said no; a 4xx to the caller,
+/// no upstream dispatched). `status` is hook-influenced but BOUNDED: the forward seam that
+/// constructs `RejectRequest` clamps it to 400..=499 for EVERY producer (wire-normalized or
+/// direct-constructed), so the worst-case label fan-out is 100 per (policy, pool) — a safe label.
+pub const ROUTE_POLICY_REJECTIONS_TOTAL: &str = "busbar_route_policy_rejections_total"; // labels: policy, pool, status
+
+/// A hook content projection whose serialized size exceeded `limits.hook_content_max_bytes`, so the
+/// content was OMITTED WHOLE (never truncated mid-value) and the hook was sent an empty content
+/// projection. Unlabeled: the cap is a global ceiling, not a per-hook one. A steady non-zero rate
+/// means a content-granted hook is being asked to screen requests it is not being shown; raise the
+/// ceiling or narrow what reaches the hook.
+pub const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_total";
+
+/// Same-protocol non-stream responses whose billing-side buffer hit the translate-body cap before the
+/// terminal `usage` block, so token usage could not be parsed and the request billed zero despite a
+/// full 2xx reaching the client. Incremented once per truncated response. Unlabeled. An operator
+/// alerts on a non-zero rate to detect an over-cap billing gap. (The client response is unaffected —
+/// it streams verbatim; only the billing side-channel is capped.)
+pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total"; // no labels
+
+/// Journal segments whose damaged remainder boot recovery set aside in a quarantine file: a record
+/// failed its checksum with whole, verifying records behind it, so acknowledged postings and holds
+/// are no longer on the book. Incremented once per quarantine, at boot. Unlabeled. Any non-zero
+/// value is an incident: the node's figures read lower than what it served (see "Journal corruption
+/// at boot" in docs/operations.md). A torn tail after a crash is NOT counted here.
+pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total"; // no labels
+
+// ── THE RECORDER INSTALL (relocated from busbar-core, verbatim) ──────────────────────────────────
+//
+// The process-global Prometheus recorder — the opt-in decision, the install itself, the retention
+// window, the scrape-independent maintenance drain, the HELP/TYPE registrations and `render()` — is
+// `App`-free: it talks only to `metrics-exporter-prometheus` and to the neutral telemetry bank next
+// door (`crate::telemetry::flush_to_recorder`). It lives here so a plane's tests can install the SAME
+// single registry and read the SAME exposition without naming `busbar-core`. Core's `crate::metrics`
+// re-exports every item below at its historical path, so every existing core call site, every metric
+// NAME and the exposition format are byte-identical; the `App`-shaped half (`refresh_scrape_gauges`
+// and the per-request handle caches) stays in core.
+
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use std::time::Duration;
+
+use crate::diag_error;
+use crate::diagnostics::{
+    METRICS_MAINTENANCE_THREAD_SPAWN_FAILED, PROMETHEUS_RECORDER_INSTALL_FAILED,
+};
+
+// without panicking: `None` = install was attempted and failed; `Some(handle)` = installed. The
+// `OnceLock` still serializes the single global `install_recorder()` call across threads/tests.
+static HANDLE: OnceLock<Option<PrometheusHandle>> = OnceLock::new();
+
+/// Whether the operator opted in to metrics (`observability.metrics` present). Set SYNCHRONOUSLY by
+/// [`configure`] at startup, before the router is built, while the recorder install itself happens on
+/// a background thread — so route mounting reads a settled decision rather than racing the install.
+/// Unset ⇒ `false`: a build that never calls `configure` (and every test that does not ask for
+/// metrics) has them off.
+static ENABLED: OnceLock<bool> = OnceLock::new();
+
+/// Did the operator opt in to metrics? Gates the `/metrics` routes; the recorder's own absence is
+/// what makes the hot path free.
+pub fn enabled() -> bool {
+    ENABLED.get().copied().unwrap_or(false)
+}
+
+/// Apply the operator's `observability.metrics` decision. `None` = the block was absent = metrics
+/// OFF: no recorder is installed, so every emission macro and bank helper is a no-op, `/metrics` is
+/// not mounted, and nothing UNBOUNDED is retained (the per-thread histogram sample buffers this
+/// gates via [`retaining`] are dropped rather than buffered). `Some(buffer)` = opted in with a
+/// declared retention window.
+///
+/// NOT a literal "nothing is retained" contract: `CounterSlot::add` stays unconditional even when
+/// metrics are off (see its doc comment) — a small, FIXED footprint bounded by thread count x chunk
+/// count survives regardless, because counters are cumulative and must not lose pre-install adds.
+/// What this rules out is UNBOUNDED, traffic-proportional retention, which is what the histogram
+/// buffers were doing before [`retaining`] existed.
+///
+/// Called once, synchronously, from `run()` after config load. The RECORDER install is deferred to a
+/// background thread because its one-time clock calibration (~200 ms) would otherwise delay the
+/// listener bind; the enabled flag is set here, in the foreground, so the router sees it.
+/// THE HOST END of the plugin observability envelope (DECISIONS #85) — it validates, bounds and
+/// folds what a plugin reported on `{ result, metrics[], diagnostics[] }`.
+///
+/// A submodule of THIS module rather than a peer at the crate root, because that is what it is: the
+/// fold's whole job is to decide what a plugin is allowed to have put into the recorder this module
+/// owns (the composition root installs it before any plugin loads), and the one rule it enforces
+/// ([`observe::admits_metric_name`]) is the rule this crate applies to every series it exposes.
+/// Its file stays at `src/observe.rs` — the path attribute says so — because a module's home in the
+/// tree is a statement about what it belongs to, and a module's home on disk is not.
+#[path = "../observe.rs"]
+pub mod observe;
+
+pub fn configure(buffer: Option<Duration>) {
+    let _ = ENABLED.set(buffer.is_some());
+    if let Some(buffer) = buffer {
+        std::thread::spawn(move || init_with(buffer));
+    }
+}
+
+/// Should a histogram slot RETAIN a newly-recorded sample right now? Three states, not two:
+///
+/// * Recorder INSTALLED (`HANDLE` resolved to `Some(_)`) -> `true`. Samples will reach `/metrics`.
+/// * Not yet installed but the operator OPTED IN (`HANDLE` unresolved, [`enabled`] true) -> `true`.
+///   This is the ~200 ms boot window between `configure` setting `ENABLED` synchronously and
+///   `init_with` finishing recorder install on its background thread (see `configure`'s doc
+///   comment). An operator who opted in has traffic flowing during that window; gating on recorder
+///   installation alone would silently drop it even though the samples WILL be drained once install
+///   completes.
+/// * Recorder install PERMANENTLY FAILED (`HANDLE` resolved to `Some(None)`), or metrics were never
+///   configured / the operator opted out (`HANDLE` unresolved, `enabled()` false) -> `false`.
+///   Nothing will ever drain these samples, so a histogram slot must not buffer them.
+///
+/// Deliberately NOT `recorder_installed()` alone — see the boot-window case above, verified real
+/// against `configure`/`init_with`'s actual timing, not assumed.
+#[inline]
+pub fn retaining() -> bool {
+    retaining_from(HANDLE.get().map(Option::is_some), enabled)
+}
+
+/// The decision table behind [`retaining`], factored out as a pure function of explicit inputs so
+/// it is unit-testable: `HANDLE`/`ENABLED` are process-global `OnceLock`s that can only be set once
+/// per test binary, so a test cannot drive the real globals through every state in one run.
+///
+/// `handle_installed` mirrors `HANDLE.get().map(Option::is_some)`'s three shapes: `None` = `HANDLE`
+/// not yet resolved (pre-install, boot window or metrics off); `Some(false)` = resolved to install
+/// FAILURE; `Some(true)` = resolved to install SUCCESS. `opted_in` is called ONLY in the `None`
+/// (not-yet-resolved) case, matching `retaining`'s lazy call to `enabled()` — it must not be called
+/// eagerly, or a test double could observe it being invoked when the real code path wouldn't.
+pub fn retaining_from(handle_installed: Option<bool>, opted_in: impl FnOnce() -> bool) -> bool {
+    match handle_installed {
+        Some(installed) => installed,
+        None => opted_in(),
+    }
+}
+
+/// The canonical busbar metric taxonomy. Names are referenced here so the emission sites and the
+/// descriptions below stay in one authoritative list.
+///
+/// BOUNDED-CARDINALITY CONTRACT — the `pool` label.
+/// Every metric below that carries a `pool` label is part of a finite, operator-controlled label
+/// space. The value of `pool` MUST be EITHER the canonical name of a pool configured in `app.pools`
+/// (resolved via `app.by_model`), OR the fixed sentinel `"unresolved"` used when a request is
+/// terminated before its model is resolved to a configured pool (e.g. a governance rejection —
+/// 400/401/403/429 — that fires before pool resolution).
+///
+/// Emission sites MUST NOT pass the raw, client-supplied model string as `pool`. A virtual key with
+/// a restricted `allowed_pools` list could otherwise submit unbounded distinct model strings, each
+/// rejected yet each minting a brand-new time series, growing the Prometheus registry without bound
+/// — a low-effort memory-exhaustion DoS that also bloats every `/metrics` scrape. The label space
+/// is bounded BY CONSTRUCTION: |configured pools| + 1. The same rule applies to any request-log /
+/// webhook field that mirrors `pool`. The `lane`, `reason`, `disposition`, `outcome`,
+/// `ingress_protocol`, `from`, and `to` labels are likewise drawn from fixed enumerations, never
+/// from free-form client input.
+pub const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: ingress_protocol, pool (bounded), outcome
+                                                          // UPSTREAM_ATTEMPTS_TOTAL / UPSTREAM_FAILURES_TOTAL metric NAMES moved DOWN to the neutral substrate
+                                                          // alongside their hostless emit fns (`busbar_kernel::telemetry`); re-exported here so this file's
+                                                          // `describe_counter!` registrations and every `crate::metrics::UPSTREAM_*` call site resolve unchanged.
+pub use crate::telemetry::{UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL}; // labels: pool (bounded), lane[, disposition]
+pub const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total"; // labels: pool (bounded), lane
+pub const FAILOVERS_TOTAL: &str = "busbar_failovers_total"; // labels: pool (bounded), reason
+pub const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds"; // histogram; labels: ingress_protocol, pool (bounded)
+pub const TRANSLATIONS_TOTAL: &str = "busbar_translations_total"; // labels: from, to
+
+// Per-plane request families for the MOUNTED (non-model) planes — MCP and A2A. Kept SEPARATE from
+// the two families above precisely so the model-plane series `busbar_requests_total` /
+// `busbar_request_duration_seconds` stay byte-for-byte label-identical to v1.5.4 (which had no
+// `plane` label and knew only the model plane). A pure-LLM deployment never emits these, so its
+// `/metrics` exposition is unchanged; a deployment that mounts MCP/A2A gets per-plane counts here
+// via `sum by (plane)` without ever touching the pre-existing model series' label set.
+pub const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total"; // labels: plane, ingress_protocol, pool (bounded), outcome
+pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds"; // histogram; labels: plane, ingress_protocol, pool (bounded)
+
+// The ROUTE_POLICY_{SELECTIONS,REJECTIONS}_TOTAL metric NAMES moved DOWN to the neutral substrate
+// (`busbar_kernel::metrics`) so the LLM plane's `pipeline.rs` emission sites name them via the ABI;
+// re-exported here so the `describe_counter!` registrations below and every `crate::metrics::ROUTE_*`
+// call site resolve unchanged. Pure `&str` — no registry moved, scrape byte-identical.
+// ROUTE_POLICY_* are defined at the top of this module.
+
+// The request-log WEBHOOK sink's `busbar_webhook_logs_dropped_total` is the `busbar-export-webhook`
+// sink's own, declared first-party (its shed counter) in its manifest (K9c).
+
+// The request-log FILE sink's three series (`busbar_file_logs_{dropped,rotated,rotate_failed}_total`)
+// are the `busbar-export-file` sink's own, declared first-party in its manifest (K9b).
+
+// App-retype WEDGE 3: the `busbar_tap_notifications_dropped_total` metric NAME moved to the substrate
+// tap fan-out (`busbar_kernel::proxy::proxy_vocab::spawn_bounded_tap`) with core's `spawn_bounded_tap`
+// retirement — the ONE shared 1024-permit tap gate now lives there and emits this counter byte-identically,
+// so core no longer names the const (the string is pinned equal substrate-side).
+
+// The HOOK_CONTENT_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::metrics` so the LLM
+// plane's `hooks.rs` emission site names it via the ABI; re-exported here so `crate::metrics::…` call
+// sites resolve unchanged. Unlabeled counter: a hook content projection whose serialized size
+// exceeded `limits.hook_content_max_bytes`, so the content was OMITTED WHOLE (never truncated
+// mid-value) and the hook was sent an empty content projection. A steady non-zero rate means a
+// content-granted hook is being asked to screen requests it is not being shown; raise the ceiling or
+// narrow what reaches the hook.
+// HOOK_CONTENT_TRUNCATED_TOTAL is defined at the top of this module.
+
+// A same-protocol 2xx response body the usage tap could not decode into token usage, so the request
+// was billed 0 tokens. Labeled by `protocol` (the ingress protocol, a fixed enumeration) and
+// `reason` (`unknown_protocol` / `bad_json` / `decode`). This is the per-request VOLUME signal for the
+// tap-decode fault class: the log site is warn-once-per-(protocol,reason) to avoid per-request spam,
+// so this counter — not the log — is what an operator alerts on. A steady non-zero rate means a live
+// protocol/dialect the tap reader cannot decode, i.e. silent under-billing.
+// Labels: `protocol`, `reason`. Its warn-once latch is `handlers::usage_tap_decode_fail_should_warn`.
+pub const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_total";
+
+// A request/task denied entry by a `limits::admission::AdmissionGate` because its permit cap was
+// saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"webhook"`/`"tap"`/
+// `"request-log-file"` today — one
+// per `AdmissionGate::new` call site in the binary, so the label space is bounded at compile time,
+// never client-influenced). This is the GATE-level mechanic counter shared by every admission site;
+// it does NOT replace a site's own policy-specific drop counter (e.g. `WEBHOOK_LOGS_DROPPED_TOTAL`,
+// `TAP_NOTIFICATIONS_DROPPED_TOTAL`) where one already exists — those stay, so existing dashboards
+// and alerts keep working unchanged. This counter exists so every gate (including ones with no
+// bespoke counter of their own, like the inbound cap) is uniformly observable.
+pub const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total"; // labels: gate
+
+// The BILLING_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::metrics` so the LLM plane's
+// `response_body.rs` emission site names it via the ABI; re-exported here so the `init_with` pre-touch
+// (below), the `describe_counter!` registration, and every `crate::metrics::…` call site resolve
+// unchanged. Unlabeled counter: same-protocol non-stream responses whose billing-side buffer hit the
+// translate-body cap before the terminal `usage` block, so token usage could not be parsed and the
+// request billed zero despite a full 2xx reaching the client. An operator alerts on a non-zero rate to
+// detect an over-cap billing gap. (The client response is unaffected — only the billing side-channel
+// is capped.)
+// BILLING_TRUNCATED_TOTAL is defined at the top of this module.
+
+// The write-behind metering accumulator (`pending_metering`) was at its cap when a NEW
+// `(key_id, bucket, model, provider)` cell arrived — a sustained governance-store outage with diverse
+// keys/models. The arriving cell's counts are COALESCED into a per-bucket overflow sentinel rather
+// than dropped, so billable token/request totals are preserved for the day and only per-key/model
+// ATTRIBUTION is collapsed. Incremented once per coalesced cell. Unlabeled. A non-zero rate means the
+// store has been unreachable long enough to overflow the cap; usage is not lost but its attribution is
+// degrading, so alert and restore the store. (Contrast BILLING_TRUNCATED_TOTAL, which is a genuine
+// per-response gap.)
+pub const METERING_PENDING_COALESCED_TOTAL: &str = "busbar_metering_pending_coalesced_total"; // no labels
+
+// A plugin HTTP-endpoint route's INBOUND request header count exceeded
+// `plugin_routes::MAX_PLUGIN_HEADERS` before the projection was forwarded to the plugin's
+// `handle_http`. The projection is still sent (truncated, never silently — see
+// `plugin_routes::PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER`, which the plugin can inspect), so this
+// counts a plugin having made an auth/governance/routing decision on an INCOMPLETE header set.
+// Unlabeled: a global signal, not per-route. A steady non-zero rate means either a client's header
+// count is routinely large (raise the cap) or a route needs investigating for hostile flooding.
+pub const PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL: &str =
+    "busbar_plugin_request_headers_truncated_total"; // no labels
+
+// A plugin HTTP-endpoint route's OUTBOUND response header count exceeded
+// `plugin_routes::MAX_PLUGIN_HEADERS`. Unlike the request-side counter above, this response reaches an
+// EXTERNAL client, so the OWNER PRINCIPLE (a consumer never receives a silently-shortened data set)
+// leaves no truncate-and-mark fallback: the whole response is REJECTED (502) instead, and this counter
+// records the rejection. Unlabeled: a global signal. A non-zero rate means a plugin is emitting an
+// over-cap header set — either the plugin is hostile/buggy (investigate the route named in the
+// accompanying error log) or the cap needs raising.
+pub const PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL: &str =
+    "busbar_plugin_response_headers_rejected_total"; // no labels
+
+// ── Scrape-time gauges (new in feat/observability-depth) ────────────────────────────────────────
+//
+// These are REFRESHED each scrape from in-process reads (governance SQLite + breaker state).
+// They are NOT emitted on the hot request path and carry no request-time client data.
+//
+// CARDINALITY PROOF:
+// * `busbar_key_spend_cents` / `busbar_key_budget_remaining_cents` / `busbar_key_tokens_total`:
+//   label `key` = the virtual-key id (a `vk_<16-hex-char>` prefix derived from the secret hash).
+//   The label space = {all virtual keys ever created}, which is strictly bounded by the operator
+//   (keys are minted via the admin API; an operator can only create as many as they choose). The
+//   raw bearer secret is NEVER used as a label value; only the operator-visible `id` field is used.
+//   Client requests cannot mint new keys or introduce new label values.
+//
+// * `busbar_lane_state`: labels `pool` (configured pool name set — bounded by Cargo at startup) and
+//   `lane` (the lane's configured MODEL string — bounded by N = number of configured lanes, a
+//   startup constant; identical to the `lane` label on the proxy engine counters so the gauge and
+//   counters PromQL-join). For the plane-neutral breaker cells, `pool` is the cell's registered
+//   target / pool key and `lane` the member position (bounded by the pool member ceiling); only
+//   cells a dispatch to a registered target materialized are emitted. Neither label can be
+//   influenced by a client request.
+
+/// Per-virtual-key spend in cents for the current budget window. Scrape-time gauge.
+/// Label: `key` = virtual-key id (operator-bounded). Only emitted when governance is enabled.
+pub const KEY_SPEND_CENTS: &str = "busbar_key_spend_cents";
+
+/// Accumulated tokens consumed by each virtual key in the current budget window. Scrape-time gauge.
+/// Label: `key` = virtual-key id. Only emitted when governance is enabled.
+pub const KEY_TOKENS_TOTAL: &str = "busbar_key_tokens_total";
+
+/// Per-(bucket, model, tier) token counters for the bucket's CURRENT budget window. Scrape-time
+/// gauge, derived from the token ledger. `bucket` is a virtual-key id or `group:<name>` (both
+/// operator-bounded); `model` is bounded by the configured fleet (an ad-hoc passthrough model is
+/// only possible with pricing off); `tier` is one of the four fixed pricing tiers. Key-bucket
+/// series additionally echo the key's mint-time labels, so external dashboards can
+/// `sum by (team)` without busbar knowing what "team" means.
+pub const BUCKET_TOKENS: &str = "busbar_bucket_tokens";
+
+/// DERIVED spend (cents, abstract minor units) per BUDGET-GROUP bucket for its current window,
+/// recomputed from the token ledger x the CURRENT rate card at scrape time (reprice-on-read).
+/// Label: `bucket` = `group:<name>`. Key-bucket spend stays on `busbar_key_spend_cents`.
+pub const BUCKET_SPEND_CENTS: &str = "busbar_bucket_spend_cents";
+
+/// Cap minus derived spend per BUDGET-GROUP bucket. Label: `bucket` = `group:<name>`. The
+/// external-alerting linchpin: Alertmanager fires at 80% burn without busbar shipping any
+/// alerting of its own.
+pub const BUCKET_BUDGET_REMAINING_CENTS: &str = "busbar_bucket_budget_remaining_cents";
+
+/// Per-(pool, lane-model) circuit-breaker health gauge.
+/// Read from the POOL'S OWN breaker cell, never folded with a sibling pool's cell on the same lane.
+/// Values: 0 = healthy (Closed, or Open with its cooldown elapsed so the next request probes), 1 =
+/// a half-open recovery probe is in flight on this cell, 2 = tripped (this cell Open or inside a
+/// pending cooldown, or the lane hard-down). Scrape-time gauge; side-effect-free (does not trigger
+/// Open→HalfOpen transitions). Labels: `pool` (configured pool name, bounded) and `lane` (the lane's
+/// MODEL string, bounded — matches the proxy engine counter sites so the gauge and counters can be
+/// PromQL-joined on `lane`); for the plane-neutral breaker cells every other plane dispatches
+/// through, `pool` is the cell's registered target / pool key and `lane` the member position.
+pub const LANE_STATE: &str = "busbar_lane_state";
+
+/// Per-(pool, lane-model) availability gauge — the UNIFIED capacity+breaker signal. `1` =
+/// the lane's per-(pool, lane) `classify` returns `Ok` (it would admit a request right now); `0` = it
+/// returns `Err(_)` for ANY reason (breaker Open, at-capacity, dead, budget, probe-in-flight). This
+/// is rendered from the SAME `classify` taxonomy routing dispatches on, so the gauge cannot drift from
+/// behaviour. The ORTHOGONAL axes stay separately legible: `busbar_lane_state` exposes the
+/// breaker and `busbar_lane_available_permits` exposes capacity, so an Open+at-capacity lane is not
+/// hidden behind this one collapsed bool. Replaces the ad-hoc `busbar_lane_at_capacity`. Same
+/// `pool`/`lane` label convention as `busbar_lane_state`.
+pub const LANE_AVAILABLE: &str = "busbar_lane_available";
+
+/// Per-(pool, lane-model) recovery hint in milliseconds, rendered from the SAME
+/// `Unavailable::recovery_hint_ms` that feeds `Retry-After`/least_bad. `0` when the lane is available
+/// or the reason has no self-recovery basis (dead/budget); otherwise the honest lower bound on when
+/// the lane could next serve (breaker `until`, the at-capacity floor, etc.). Same label convention.
+pub const LANE_RECOVERY_HINT_MS: &str = "busbar_lane_recovery_hint_ms";
+
+/// Per-(pool, lane-model) in-flight request count (held concurrency permits) — the depth companion to
+/// `busbar_lane_available`. Emitted for every lane. Same label convention as the gauges above.
+pub const LANE_INFLIGHT: &str = "busbar_lane_inflight";
+
+/// Per-(pool, lane-model) available concurrency permits, for BOUNDED lanes only (an unbounded lane
+/// counts nothing, so it emits no sample here). The capacity depth signal (`0` = saturated), kept
+/// INDEPENDENT of `busbar_lane_available` so the capacity axis stays legible. Same label
+/// convention as the gauges above.
+pub const LANE_AVAILABLE_PERMITS: &str = "busbar_lane_available_permits";
+
+/// Per-pool count of requests currently PARKED in the `on_exhausted: queue` bounded wait. Rendered
+/// at scrape time from the live `state::QueuedDepth` source, so the queue implementation only
+/// increments/decrements a counter and never touches `metrics.rs`. Label
+/// `pool` = configured pool name (bounded), the same convention as the lane gauges.
+pub const POOL_QUEUED: &str = "busbar_pool_queued";
+
+/// Prometheus text exposition format content-type (version 0.0.4), returned by the `/metrics`
+/// scrape handler. Defined as a constant so the string is not duplicated across handler and tests.
+pub const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
+
+/// Install the global Prometheus recorder. Idempotent: safe to call once at startup and
+/// repeatedly from tests (the global recorder can only be installed once per process, so the
+/// `OnceLock` guards it). Also registers HELP/TYPE descriptions for the taxonomy.
+/// Install the recorder for an operator who OPTED IN, retaining `buffer` seconds of observations.
+///
+/// `buffer` is `observability.metrics.buffer_seconds` — a REQUIRED config field, so this value is
+/// always one a human named. It sets both halves of the retention contract: the rolling-summary
+/// window (quantiles cover the last `buffer`; anything older is dropped) and, divided by
+/// [`SUMMARY_BUCKETS`], how often parked raw samples are folded into it — that quotient is the
+/// bucket width AND the [`spawn_maintenance`] tick.
+///
+/// NOT called unless `observability.metrics` is present. With no recorder installed, every emission
+/// macro and every bank helper is a no-op against the default recorder, so an operator who did not
+/// opt in records nothing and retains nothing.
+pub fn init_with(buffer: Duration) {
+    // Retention is split across a few rolling buckets so quantiles degrade smoothly as the window
+    // slides, instead of the whole window vanishing at once on rollover. The buckets SUM to
+    // `buffer`, which is the operator's declared retention.
+    let bucket = buffer
+        .checked_div(SUMMARY_BUCKETS.get())
+        .unwrap_or(buffer)
+        .max(Duration::from_millis(1));
+    // The global recorder can only be installed once per process, so the `OnceLock` runs this
+    // initializer exactly once and serializes concurrent callers (startup + tests). On install
+    // FAILURE — typically because another library already installed a global recorder — we log and
+    // store `None` rather than panicking: this runs on a background thread (main.rs) where a
+    // panic would be silent, leaving `/metrics` empty with no operator-visible cause. Storing `None`
+    // degrades gracefully (empty exposition) AND emits an error log so the cause is discoverable.
+    HANDLE.get_or_init(|| match build_recorder(bucket) {
+        Ok(handle) => {
+            describe();
+            // Pre-register the unlabeled counter so `/metrics` is non-empty from the first
+            // scrape. The exporter renders only touched metrics; without this, a freshly
+            // booted gateway that has served no traffic exposes an EMPTY body, and an
+            // operator wiring up Prometheus before sending traffic reasonably concludes
+            // the endpoint is broken (found by the acceptance harness, 2026-07-09).
+            // Only the unlabeled family is pre-touched: labeled families would require
+            // inventing label values, which the cardinality contract above forbids. The
+            // labeled gauges appear on the first scrape via `refresh_scrape_gauges`.
+            metrics::counter!(BILLING_TRUNCATED_TOTAL).absolute(0);
+            // NOT pre-registered: unlike BILLING_TRUNCATED_TOTAL (a 1.5.5 series), the
+            // write-behind coalesce sentinel must not appear on `/metrics` until it is actually
+            // incremented (a sustained store outage overflowed the accumulator). Pre-touching it
+            // at 0 would expose the series on an idle 1.5.5-style config, which 1.5.5 never did;
+            // it is still described (below) and rendered with HELP/TYPE the moment it fires.
+            spawn_maintenance(bucket);
+            Some(handle)
+        }
+        Err(e) => {
+            diag_error!(
+                PROMETHEUS_RECORDER_INSTALL_FAILED,
+                "prometheus recorder install failed; /metrics will be empty: {e}"
+            );
+            None
+        }
+    });
+}
+
+/// Number of rolling buckets the retention window is split across (see [`init_with`]).
+const SUMMARY_BUCKETS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(3) {
+    Some(n) => n,
+    None => unreachable!(),
+};
+
+/// How long a gauge whose subject no longer exists keeps appearing in the exposition.
+///
+/// Per-key gauges are only `set` while iterating LIVE keys, so a deleted key's series would
+/// otherwise be re-rendered with its final value for the life of the process — `/metrics` grows
+/// with the operator's lifetime key churn, and dashboards show a deleted key's spend as current.
+///
+/// Deliberately its own constant rather than a reuse of the histogram retention window: that window
+/// is sized by raw-sample memory cost, and coupling the two would let a memory-budget choice
+/// silently decide how long a deleted key lingers. GAUGES ONLY — expiring a counter would reset it
+/// and break `rate()`, and expiring a histogram would discard its summary.
+///
+/// A live series can never be caught by this: `refresh_scrape_gauges` runs inside `render`, so every
+/// live gauge is re-set microseconds before it is rendered regardless of the scrape interval.
+pub const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Build the Prometheus recorder with the operator's retention window and install it globally.
+/// Split out of [`init_with`] so the fallible builder chain reads in one place.
+fn build_recorder(
+    bucket: Duration,
+) -> Result<PrometheusHandle, metrics_exporter_prometheus::BuildError> {
+    recorder_builder(bucket, GAUGE_IDLE_TIMEOUT)?.install_recorder()
+}
+
+/// The builder itself, with the idle timeout as a parameter so a test can drive expiry on a short
+/// window instead of the shipped one. Installing is global and once-per-process; building is not,
+/// which is what makes the reaping behaviour testable at all.
+pub fn recorder_builder(
+    bucket: Duration,
+    gauge_idle: Duration,
+) -> Result<PrometheusBuilder, metrics_exporter_prometheus::BuildError> {
+    Ok(PrometheusBuilder::new()
+        .set_bucket_duration(bucket)?
+        .set_bucket_count(SUMMARY_BUCKETS)
+        .idle_timeout(metrics_util::MetricKindMask::GAUGE, Some(gauge_idle)))
+}
+
+/// Test-only entry point: install the recorder with a retention window long enough that no test's
+/// samples age out mid-assertion. Production ALWAYS goes through [`init_with`] with the operator's
+/// configured `buffer_seconds`; there is deliberately no arg-less initializer outside tests, so no
+/// build path can install metrics without a named retention window.
+#[cfg(any(test, feature = "test-support"))]
+pub fn init() {
+    let _ = ENABLED.set(true);
+    init_with(Duration::from_secs(3600));
+}
+
+// ── SCRAPE-INDEPENDENT MAINTENANCE ───────────────────────────────────────────────────────────────
+//
+// THE INVARIANT: an observation costs BOUNDED memory whether or not anyone ever scrapes `/metrics`.
+//
+// Two layers buffer raw per-request observations on the way to their bounded aggregate form:
+//   1. the telemetry BANK — each thread appends one `f64` per request to its own sample `Vec`
+//      (`telemetry::HistogramSlot::record`), drained by `telemetry::flush_to_recorder`;
+//   2. the Prometheus recorder — `metrics-exporter-prometheus` parks every histogram sample handed
+//      to it in an `AtomicBucket` (a linked list of 64-slot blocks, ~8.4 B/sample) until something
+//      calls `run_upkeep()`/render, which folds them into the FIXED-SIZE rolling summary.
+//
+// Both drains used to happen ONLY inside `render()` — i.e. only when a scrape arrived. A gateway
+// nobody scrapes therefore retained one f64 per request FOREVER: RSS grew linearly with total
+// requests served (measured: ~23 B/request; 18.1 M requests → +389 MiB, with no plateau and no
+// release when the load stopped), instead of tracking the live working set. That is a leak by any
+// ordinary definition — `/metrics` is an OPTIONAL endpoint, and memory must not depend on whether
+// an operator wired Prometheus up (or on whether their scrape job is currently healthy).
+//
+// The fix is one choke point: a maintenance tick that performs EXACTLY the same two drains a scrape
+// performs, on a timer, so the buffered depth is bounded by one interval's traffic instead of by the
+// process lifetime. It changes no metric value: `_sum`/`_count` are cumulative either way, and the
+// quantile window becomes a true rolling window (samples land in the bucket matching when they were
+// observed) rather than every sample since the last scrape being crammed into the scrape instant.
+
+// The tick cadence is DERIVED from the operator's `buffer_seconds` rather than picked here: it is
+// one rolling bucket (`buffer / 3`), so parked raw samples never exceed a third of the declared
+// retention window, and every sample lands in the bucket its own timestamp belongs to.
+
+/// Fold every buffered observation into its bounded aggregate storage — the drain half of a scrape,
+/// without rendering. Idempotent and safe to call at any time (a no-op before the recorder is
+/// installed, and when nothing is buffered).
+pub fn drain_pending() {
+    // Test-only: keep `run_upkeep`'s bucket frees on the same thread as the drain that fed them —
+    // see `telemetry::drain_serial`. Re-entrant, so the nested `flush_to_recorder` is free.
+    #[cfg(any(test, feature = "test-support"))]
+    let _serial = crate::telemetry::drain_serial::lock();
+    // Outer `None` = `init()` has not run; inner `None` = install failed. Both mean there is no
+    // recorder to drain into, and the bank's own emit helpers are no-ops in that state.
+    let Some(Some(handle)) = HANDLE.get() else {
+        return;
+    };
+    // 1. bank → recorder (per-thread sample buffers + counter deltas)
+    crate::telemetry::flush_to_recorder();
+    // 2. recorder's per-sample buckets → fixed-size distributions
+    handle.run_upkeep();
+}
+
+/// Start the maintenance tick. Called once, from the successful branch of [`init`], so every build
+/// that has a recorder also has the drain — no configuration, no operator action, no dependency on
+/// anyone scraping. A dedicated OS thread (not a Tokio task) because the drain is synchronous and
+/// takes the bank's locks: it must never occupy an executor worker, and it must keep running even
+/// if the runtime is saturated. Best-effort: if the thread cannot be spawned we log and continue —
+/// the pre-existing scrape-driven drain still applies.
+fn spawn_maintenance(interval: Duration) {
+    let spawned = std::thread::Builder::new()
+        .name("busbar-metrics-drain".into())
+        .spawn(move || loop {
+            std::thread::sleep(interval);
+            drain_pending();
+        });
+    if let Err(e) = spawned {
+        diag_warn!(
+            METRICS_MAINTENANCE_THREAD_SPAWN_FAILED,
+            error = %e,
+            "could not spawn the metrics maintenance thread; buffered observations now drain only \
+             on a /metrics scrape"
+        );
+    }
+}
+
+fn describe() {
+    use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
+    describe_counter!(
+        REQUESTS_TOTAL,
+        "Total ingress requests, by ingress protocol, pool, and outcome"
+    );
+    describe_counter!(
+        PLANE_REQUESTS_TOTAL,
+        "Total mounted-plane requests, by plane, ingress protocol, pool, and outcome"
+    );
+    describe_counter!(
+        UPSTREAM_ATTEMPTS_TOTAL,
+        "Upstream call attempts, by pool and lane"
+    );
+    describe_counter!(
+        UPSTREAM_FAILURES_TOTAL,
+        "Upstream failures, by pool, lane, and breaker disposition"
+    );
+    describe_counter!(
+        BREAKER_TRIPS_TOTAL,
+        "Circuit-breaker trips, by pool and lane"
+    );
+    describe_counter!(FAILOVERS_TOTAL, "Failover events, by pool and reason");
+    describe_counter!(
+        ROUTE_POLICY_SELECTIONS_TOTAL,
+        "Requests whose routing policy produced a ranked order, by policy name and pool"
+    );
+    describe_counter!(
+        ROUTE_POLICY_REJECTIONS_TOTAL,
+        "Requests deliberately rejected by the routing policy's reject verb, by policy name, pool, and status"
+    );
+    describe_counter!(
+        TRANSLATIONS_TOTAL,
+        "Cross-protocol translations, by source and target protocol"
+    );
+    describe_counter!(
+        BILLING_TAP_DECODE_FAIL_TOTAL,
+        "Same-protocol 2xx bodies the usage tap could not decode (billed 0 tokens), by protocol and reason"
+    );
+    describe_counter!(
+        METERING_PENDING_COALESCED_TOTAL,
+        "Metering cells coalesced into a per-bucket overflow sentinel because the write-behind accumulator was at its cap (sustained store outage); totals preserved, per-key attribution collapsed"
+    );
+    describe_histogram!(
+        REQUEST_DURATION_SECONDS,
+        Unit::Seconds,
+        "End-to-end request duration in seconds"
+    );
+    describe_histogram!(
+        PLANE_REQUEST_DURATION_SECONDS,
+        Unit::Seconds,
+        "End-to-end mounted-plane request duration in seconds, by plane"
+    );
+    // Scrape-time gauges.
+    describe_gauge!(
+        KEY_SPEND_CENTS,
+        Unit::Count,
+        "Per-virtual-key accumulated spend in cents for the current budget window (scrape-time)"
+    );
+    describe_gauge!(
+        BUCKET_TOKENS,
+        "Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)"
+    );
+    describe_gauge!(
+        BUCKET_SPEND_CENTS,
+        Unit::Count,
+        "Derived spend (abstract minor units) per budget-group bucket for its current window, recomputed from the token ledger x the current rate card at scrape time"
+    );
+    describe_gauge!(
+        BUCKET_BUDGET_REMAINING_CENTS,
+        Unit::Count,
+        "Budget-group cap minus derived spend for the current window"
+    );
+    describe_gauge!(
+        KEY_TOKENS_TOTAL,
+        Unit::Count,
+        "Per-virtual-key accumulated tokens consumed in the current budget window (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_STATE,
+        Unit::Count,
+        "Per-(pool,lane) circuit-breaker health: 0=healthy, 1=half-open, 2=tripped (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_AVAILABLE,
+        Unit::Count,
+        "Per-(pool,lane) availability from the shared classify taxonomy: 1 = would admit, 0 = unavailable for any reason (breaker/capacity/dead/budget) (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_RECOVERY_HINT_MS,
+        Unit::Milliseconds,
+        "Per-(pool,lane) honest lower bound (ms) on when an unavailable lane could next serve; 0 when available or no self-recovery basis (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_INFLIGHT,
+        Unit::Count,
+        "Per-(pool,lane) in-flight requests (held concurrency permits) (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_AVAILABLE_PERMITS,
+        Unit::Count,
+        "Per-(pool,lane) available concurrency permits for a BOUNDED lane (scrape-time; unbounded lanes emit no sample)"
+    );
+    describe_gauge!(
+        POOL_QUEUED,
+        Unit::Count,
+        "Per-pool requests currently parked in the on_exhausted queue bounded wait (scrape-time)"
+    );
+}
+
+/// True once the global Prometheus recorder is INSTALLED (not merely that `init()` was attempted).
+/// Gating handle caching on this guarantees a cached handle can never be bound to the no-op recorder
+/// that stands in before install.
+#[inline]
+pub fn recorder_installed() -> bool {
+    matches!(HANDLE.get(), Some(Some(_)))
+}
+
+/// Render the current Prometheus exposition text. Empty until `init()` has run.
+///
+/// Flushes the TELEMETRY BANK (per-thread hot-path cells; see `telemetry.rs`) into the recorder
+/// first, so every scrape — and every test that reads the exposition — observes up-to-date totals
+/// for the banked hot-path counters/histograms alongside the macro-emitted ones.
+pub fn render() -> String {
+    // Test-only: a scrape is a drain too — see `telemetry::drain_serial`.
+    #[cfg(any(test, feature = "test-support"))]
+    let _serial = crate::telemetry::drain_serial::lock();
+    // Outer `None` = `init()` not yet run; inner `None` = recorder install failed. Both render an
+    // empty exposition rather than panicking.
+    match HANDLE.get() {
+        Some(Some(h)) => {
+            crate::telemetry::flush_to_recorder();
+            h.render()
+        }
+        _ => String::new(),
+    }
+}
+
+/// THE RECORDER BUILDER'S INTERNALS, revealed to a TEST BUILD ONLY.
+///
+/// `recorder_builder` is deliberately split out of the install so a test can drive gauge expiry on a
+/// short window instead of the shipped one, and `GAUGE_IDLE_TIMEOUT` is the shipped window that same
+/// battery pins. Installing is global and once-per-process; BUILDING is not, which is what makes the
+/// reaping behaviour testable at all — so the two are reachable from a test build and from nowhere
+/// else, on the same test/`test-support` axis the rest of the test surface uses.
+#[cfg(any(test, feature = "test-support"))]
+pub mod recorder_internals {
+    pub use super::{recorder_builder, GAUGE_IDLE_TIMEOUT};
+}

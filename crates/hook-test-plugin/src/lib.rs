@@ -15,7 +15,7 @@
 //! ```
 //! Both optional: absent `order` → abstain; absent `reject_if_contains` → never rejects on content.
 
-use busbar_plugin_sdk::HookHandler;
+use busbar_contract::abi::sdk::HookHandler;
 use serde::Deserialize;
 
 /// The plugin's opaque config: how this trivial gate behaves.
@@ -43,6 +43,12 @@ struct HookConfig {
     /// fail-closed 403).
     #[serde(default)]
     raw_decide_reply: Option<serde_json::Value>,
+    /// A raw reply shape to return VERBATIM from `transform` (the `prompt: rw` rewrite pass), overriding
+    /// the default fixed rewrite — the transform-path twin of `raw_decide_reply`. Lets a test drive an
+    /// arbitrary rewrite reply (e.g. `{"rewrite": {"messages": [{"role":"user","content": {..new
+    /// args..}}]}}`) through the engine's fail-closed transform normalizer + a plane's apply seam.
+    #[serde(default)]
+    raw_transform_reply: Option<serde_json::Value>,
     /// Sleep this many milliseconds inside `decide` before replying — lets a test drive the engine's
     /// hard wall-clock `budget` timeout (a slow gate → the caller's `on_error`).
     #[serde(default)]
@@ -55,16 +61,33 @@ struct HookConfig {
     /// version) — lets a test prove a NACK'd configure does not commit (Err over the seam).
     #[serde(default)]
     nack_configure: bool,
-    /// PANIC inside `decide` — proves a plugin panic is caught (SDK catch_unwind → STATUS_PROTOCOL,
+    /// PANIC inside `decide` — proves a plugin panic is caught (SDK catch_unwind → STATUS_PANIC,
     /// and the engine's own catch_unwind as defense in depth) and surfaces as a fail-closed `Err`,
-    /// never a torn-down runtime or a crossed unwind.
+    /// never a torn-down runtime or a crossed unwind. The status is the DISTINCT panic code, NOT
+    /// STATUS_PROTOCOL: that distinction is the whole point of the code existing, since the loader
+    /// keys its safe-default fallback on the unsupported/protocol shapes and a panic must never be
+    /// able to reach it.
     #[serde(default)]
     panic_decide: bool,
+    /// PANIC inside `transform` — the rewrite-path twin of `panic_decide`, and the fixture a plane
+    /// needs to establish what a panicking `prompt: rw` hook ACTUALLY produces at its apply site.
+    /// The answer is not a torn-down task: the SDK's export boundary catches it (STATUS_PANIC), the
+    /// engine's `ffi_guard` maps it to a transport error, and `DlopenPolicy` turns that into
+    /// `TransformOutcome::Failed` — so it is the operator's `on_error` that decides, and the
+    /// plane's `spawn_blocking` join never sees a `JoinError`.
+    #[serde(default)]
+    panic_transform: bool,
     /// Report from `decide` that the hook COULD NOT ANSWER (`HookReply::Failed`) — the shape a gate
     /// takes when its own dependency is down. Distinct from an abstain, and the engine must resolve
     /// the caller's `on_error` chain for it rather than letting the request proceed.
     #[serde(default)]
     fail_decide: Option<String>,
+    /// Report from `transform` that the hook COULD NOT ANSWER — the rewrite-path twin of
+    /// `fail_decide`. A screening/compressing gate whose classifier is unreachable takes this shape,
+    /// and it is NOT the same as returning "no changes": the engine must resolve the caller's
+    /// `on_error` chain for it rather than forward the untouched body.
+    #[serde(default)]
+    fail_transform: Option<String>,
 }
 
 struct TestGate {
@@ -73,11 +96,14 @@ struct TestGate {
     reject_status: i64,
     restrict_tags: Option<Vec<String>>,
     raw_decide_reply: Option<serde_json::Value>,
+    raw_transform_reply: Option<serde_json::Value>,
     sleep_ms: Option<u64>,
     empty_management: bool,
     nack_configure: bool,
     panic_decide: bool,
+    panic_transform: bool,
     fail_decide: Option<String>,
+    fail_transform: Option<String>,
     /// A monotonically incrementing decide count, surfaced via `status` — proves the control-plane
     /// scrape reads a real observed metric back over the ABI. `AtomicU64` keeps `&self` (the handler
     /// is shared behind the ABI handle).
@@ -121,6 +147,16 @@ impl HookHandler for TestGate {
         Ok(self.decide(payload))
     }
 
+    /// The fallible rewrite entry point. A rewrite gate whose dependency is down reports that it
+    /// could not answer; collapsing that into an abstain forwards the very request it exists to
+    /// screen, with its body untouched.
+    fn transform_result(&self, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
+        if let Some(msg) = &self.fail_transform {
+            return Err(msg.clone());
+        }
+        Ok(self.transform(payload))
+    }
+
     fn decide(&self, payload: &serde_json::Value) -> serde_json::Value {
         self.decides
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -150,10 +186,19 @@ impl HookHandler for TestGate {
     }
 
     fn transform(&self, payload: &serde_json::Value) -> serde_json::Value {
+        // A panicking REWRITE gate, the `panic_decide` twin: proves a `prompt: rw` hook's panic is
+        // caught at the boundary and reaches the engine as a hook FAILURE the operator's `on_error`
+        // disposes of — never an unwind that crosses the ABI, and never a plane-side join failure.
+        assert!(!self.panic_transform, "test gate panic_transform");
         // A rw gate that also screens: reject on the token, else rewrite the body to a fixed marker
         // (proves the rewrite arm rides the ABI and is applied only under the rw grant).
         if self.should_reject(payload) {
             return serde_json::json!({"reject": {"status": 451, "message": "screened"}});
+        }
+        // The raw-transform escape hatch wins over the fixed rewrite: lets a test drive an arbitrary
+        // rewrite reply (e.g. a replacement arguments OBJECT for the invoke-family apply) over the ABI.
+        if let Some(raw) = &self.raw_transform_reply {
+            return raw.clone();
         }
         serde_json::json!({"rewrite": {"messages": [{"role": "user", "content": "rewritten by test gate"}]}})
     }
@@ -204,10 +249,14 @@ impl HookHandler for TestGate {
 
 /// Construct the gate from the engine-passed JSON config. An empty config is fine (a pure-abstain
 /// gate that never rejects); malformed JSON is a fail-closed load error.
-fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
+///
+/// `pub` so the COMPILED-IN arm of the hook both-ways test constructs exactly the handler the
+/// `cdylib`'s `busbar_open` constructs, and drives it through the `dispatch_compiled_in` twin
+/// `export_hook_plugin!` emits beside `busbar_call`.
+pub fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     // Exercises the host log bridge from the one place it matters most — a constructor, where a
     // plugin has something worth reporting and where `tracing::warn!` inside a cdylib goes nowhere.
-    busbar_plugin_sdk::hostlog::warn("test-hook plugin opened (host log bridge check)");
+    busbar_contract::abi::sdk::hostlog::warn("test-hook plugin opened (host log bridge check)");
     // A PLAIN `tracing` call, the shape every plugin library crate already uses. It reaches the
     // operator only because the SDK forwards this cdylib's own dispatcher into the host sink.
     tracing::warn!(
@@ -237,14 +286,21 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
         reject_status: c.reject_status.unwrap_or(403),
         restrict_tags: c.restrict_tags,
         raw_decide_reply: c.raw_decide_reply,
+        raw_transform_reply: c.raw_transform_reply,
         sleep_ms: c.sleep_ms,
         empty_management: c.empty_management,
         nack_configure: c.nack_configure,
         panic_decide: c.panic_decide,
+        panic_transform: c.panic_transform,
         fail_decide: c.fail_decide,
+        fail_transform: c.fail_transform,
         decides: std::sync::atomic::AtomicU64::new(0),
         notifies: std::sync::atomic::AtomicU64::new(0),
     }))
 }
 
-busbar_plugin_sdk::export_hook_plugin!(open);
+busbar_contract::abi::sdk::export_hook_plugin!(open);
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

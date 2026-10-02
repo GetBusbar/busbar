@@ -1,0 +1,1109 @@
+//! The plane itself: seventeen methods, each of them a few lines over the codec's own vocabulary.
+//!
+//! Every method here returns FACTS AND LOCATORS. Not an amount, not a decision, not a credential,
+//! not a price. Nothing in this file opens a connection, reads a file, reads a clock other than the
+//! one the context hands it, or keeps a byte across a call.
+//!
+//! ## The one shape worth reading before the code
+//!
+//! The intermediate representation the contract asks a plane to build carries the body AND the
+//! resolved pointer spans, and `view` builds both: it resolves the pointers this plane declares
+//! through the contract's own span grammar and allocates the resulting table in the unit's arena,
+//! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
+//! handed back an empty table because the arena could not allocate one; it can, and this does.
+
+use busbar_contract::bounded::{BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span};
+use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
+use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
+use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
+use busbar_contract::plane::{
+    Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
+};
+use busbar_contract::unit::{
+    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
+    Unit, UnitEnd, UsageLocator, UsageLocators,
+};
+use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
+
+use crate::facts as f;
+use crate::jsonrpc;
+use crate::meta::{self, CLASS_BYTES, CLASS_TOOL_CALLS};
+use crate::ops;
+use crate::records as rec;
+use crate::McpPlane;
+
+/// The per-connection codec state this plane keeps.
+///
+/// It holds two counts and nothing else. This protocol frames one document per frame, so there is no
+/// partial document to carry across a call; what a connection does need to remember is how far into
+/// a held stream it is, and how many rounds an upstream has asked for during one call — the second
+/// because a round cap is only a cap if something counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Codec {
+    /// How many event frames of a held stream this half has read.
+    pub events_read: u32,
+    /// How many times an upstream has asked for something during the call on this half.
+    pub rounds_asked: u32,
+}
+
+/// The credential scheme the outbound hop is decorated under.
+///
+/// The plane NAMES the scheme and never holds what is behind it. Which secret the scheme resolves,
+/// and whether the caller may use it at all, is the egress-auth unit's answer.
+const EGRESS_SCHEME: &str = "mcp-egress";
+
+/// The envelope member naming the document type of an outbound body.
+const FIELD_CONTENT_TYPE: &str = "content-type";
+
+/// The document type every body of this protocol is.
+const CONTENT_TYPE_JSON: &[u8] = b"application/json";
+
+/// The envelope member naming which revision the hop is made under.
+const FIELD_PROTOCOL_VERSION: &str = crate::codec::H_PROTOCOL_VERSION;
+
+/// The fact key the per-name projection reports the registration's own name under.
+const SUBJECT_FACT_NAME: &str = "name";
+
+/// The fact key the per-name projection reports the priced lane under.
+const SUBJECT_FACT_LANE: &str = "lane";
+
+/// The fact key the per-name projection reports the dialling transport under.
+const SUBJECT_FACT_TRANSPORT: &str = "transport";
+
+/// The fact key the per-name projection reports a locally launched registration under.
+const SUBJECT_FACT_LOCAL: &str = "local";
+
+/// The kind of resource a registered server is, in this plane's own vocabulary.
+const RESOURCE_KIND_SERVER: &str = "mcp_server";
+
+/// The kind of resource one tool is, in this plane's own vocabulary.
+const RESOURCE_KIND_TOOL: &str = "mcp_tool";
+
+impl McpPlane {
+    /// A leg reaching one of this plane's own records.
+    fn record_leg(schema: busbar_contract::ids::RecordSchemaId, op: &'static str) -> Leg {
+        Leg {
+            destination: DestinationFacts::PlaneRecord { schema, op },
+        }
+    }
+
+    /// A leg reaching the configured server, or an unreachable one when none is configured.
+    fn upstream_leg(&self) -> Leg {
+        Leg {
+            destination: self.upstream_destination(),
+        }
+    }
+
+    /// Where a hop to the configured server goes.
+    ///
+    /// A plane with nothing configured answers honestly rather than panicking or inventing a host:
+    /// the empty host is refused by the trust unit against the allow-list, which is the right place
+    /// for that refusal to happen.
+    fn upstream_destination(&self) -> DestinationFacts {
+        match self.servers().first() {
+            Some(server) => DestinationFacts::Upstream {
+                transport: server.transport,
+                address: busbar_contract::UpstreamAddress::socket(server.host),
+                lane: server.lane,
+            },
+            None => DestinationFacts::Upstream {
+                transport: crate::claims::CARRIER_HTTP,
+                address: busbar_contract::UpstreamAddress::socket(""),
+                lane: LaneId::new(""),
+            },
+        }
+    }
+
+    /// Which method row a unit's operation class came from, where the class names one.
+    fn row_for_op(op: busbar_contract::ids::OpClassId) -> Option<&'static ops::MethodRow> {
+        ops::METHODS.iter().find(|r| r.op == op)
+    }
+}
+
+/// The span view of a body, built from the pointers this plane declared.
+///
+/// One scan of one closed grammar, into the unit's own arena, so the loop reads the spans the plane
+/// resolved instead of walking the same bytes a second time. The arena refusing is a decode
+/// failure at the step that asked for the bytes, which is what the arena's budget means.
+fn view<'u>(body: &'u [u8], pointers: &[&'u str], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let spans = busbar_contract::spans::resolve(body, pointers, ctx.arena())
+        .map_err(|_| Decode::Oversize)?;
+    Ok(Ir::new(body, spans))
+}
+
+/// The string value at one pointer of a body, with its quotes stripped.
+fn read_str<'u>(body: &'u [u8], pointer: &str) -> Option<&'u str> {
+    let raw = read_raw(body, pointer)?;
+    let inner = raw.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
+    core::str::from_utf8(inner).ok()
+}
+
+/// The raw bytes at one pointer of a body.
+///
+/// Through the contract's own span grammar, which is the kernel's: this plane used to carry a
+/// scanner of its own, and a closed grammar with a second reading is two grammars.
+fn read_raw<'u>(body: &'u [u8], pointer: &str) -> Option<&'u [u8]> {
+    match busbar_contract::spans::resolve_pointer(body, pointer) {
+        busbar_contract::spans::Resolved::Found(span) => body.get(span.start..span.end),
+        _ => None,
+    }
+}
+
+/// Whether a body has a member at one pointer at all.
+fn has(body: &[u8], pointer: &str) -> bool {
+    read_raw(body, pointer).is_some()
+}
+
+/// The facts a request body yields, read once.
+fn request_facts<'u>(body: &'u [u8], envelope: &jsonrpc::Envelope) -> Facts<'u> {
+    let mut facts = Facts::new();
+    if let Some(method) = envelope.method_str(body) {
+        let _ = facts.set(f::FACT_METHOD, FactValue::Str(method));
+        if let Some(row) = ops::row_for(method) {
+            // The subject is what the request is ABOUT, read from where the codec's own table says
+            // it lives — never from the request's content.
+            if let Some(pointer) = row.name_pointer {
+                if let Some(subject) = read_str(body, pointer) {
+                    let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
+                }
+            }
+        }
+    }
+    if let Some(raw) = envelope.id_bytes(body) {
+        if let Ok(text) = core::str::from_utf8(raw) {
+            let _ = facts.set(f::FACT_RPC_ID, FactValue::Str(text));
+        }
+    }
+    // The caller's own metadata block, read for the two members the loop needs and no others. The
+    // block's keys carry separators, which a pointer would read as levels, so the whole block is
+    // located by pointer and its members are read by name out of it.
+    if let Some(block) = read_raw(body, "/params/_meta") {
+        if let Some(version) = member_of(block, f::META_PROTOCOL_VERSION) {
+            let _ = facts.set(f::FACT_PROTOCOL_VERSION, FactValue::Str(version));
+        }
+        if let Some(token) = member_of(block, f::META_PROGRESS_TOKEN) {
+            let _ = facts.set(f::FACT_PROGRESS_TOKEN, FactValue::Str(token));
+        }
+    }
+    facts
+}
+
+/// One quoted member of an object, by its exact name, one level down and no further.
+///
+/// The metadata block's own keys contain separators, and a pointer reads a separator as a level, so
+/// they cannot be reached by pointer at all. This walks the block's own members instead.
+///
+/// It used to scan the block's bytes for the quoted name and take whatever followed. That finds the
+/// name wherever it appears — as a key of a NESTED object, or written inside another member's
+/// string value — and hands back a value the caller never put at that name. The progress token in
+/// particular is a correlation, and a correlation read off a decoy answers the wrong request.
+///
+/// A member spelled twice reads as the LAST one. This is the only place a member is read without
+/// the span grammar, and the span grammar takes the last occurrence because serde_json and the
+/// servers' own parsers do; a walk that stopped at the first would let the client attribute a fact
+/// to a value the server never sees, which is the same decoy in a different spelling.
+fn member_of<'u>(object: &'u [u8], name: &str) -> Option<&'u str> {
+    let mut i = skip_space(object, 0);
+    if object.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    let mut latest: Option<&'u str> = None;
+    loop {
+        i = skip_space(object, i);
+        match object.get(i) {
+            Some(b'}') => return latest,
+            None => return None,
+            Some(b',') => {
+                i += 1;
+                continue;
+            }
+            Some(b'"') => {}
+            Some(_) => return None,
+        }
+        let (key, after_key) = string_at(object, i)?;
+        i = skip_space(object, after_key);
+        if object.get(i) != Some(&b':') {
+            return None;
+        }
+        i = skip_space(object, i + 1);
+        let matched = key_is(key, name);
+        if object.get(i) == Some(&b'"') {
+            let (value, after_value) = string_at(object, i)?;
+            if matched {
+                // A member present as a string reads as its own bytes, unescaped no more than
+                // before.
+                latest = core::str::from_utf8(value).ok();
+            }
+            i = after_value;
+        } else {
+            i = skip_value(object, i)?;
+            if matched {
+                // A member present and not a string reads as absent, as it always has — and a later
+                // spelling that is not a string takes the answer back off an earlier one that was,
+                // because the last spelling is the one the server reads.
+                latest = None;
+            }
+        }
+    }
+}
+
+/// Past any whitespace, from one position.
+fn skip_space(bytes: &[u8], mut i: usize) -> usize {
+    while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        i += 1;
+    }
+    i
+}
+
+/// The content of the quoted string beginning at `i`, and the position just past its closing quote.
+fn string_at(bytes: &[u8], i: usize) -> Option<(&[u8], usize)> {
+    if bytes.get(i) != Some(&b'"') {
+        return None;
+    }
+    let start = i + 1;
+    let mut j = start;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => j += 2,
+            b'"' => return Some((bytes.get(start..j)?, j + 1)),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Whether one member's raw key names exactly this member.
+///
+/// The comparison is against the key as WRITTEN, which is what a name is: the two-character escapes
+/// stand for the characters they name, and a `\u` escape is answered "not this member" rather than
+/// half-decoded — no key this plane looks for is spelled that way, and a wrong answer here is a
+/// fact attributed to the wrong member.
+fn key_is(raw: &[u8], name: &str) -> bool {
+    let mut want = name.bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        let (byte, width) = match raw[i] {
+            b'\\' => match raw.get(i + 1) {
+                Some(b'"') => (b'"', 2),
+                Some(b'\\') => (b'\\', 2),
+                Some(b'/') => (b'/', 2),
+                Some(b'n') => (b'\n', 2),
+                Some(b't') => (b'\t', 2),
+                Some(b'r') => (b'\r', 2),
+                Some(b'b') => (0x08, 2),
+                Some(b'f') => (0x0c, 2),
+                _ => return false,
+            },
+            other => (other, 1),
+        };
+        if want.next() != Some(byte) {
+            return false;
+        }
+        i += width;
+    }
+    want.next().is_none()
+}
+
+/// Past one whole non-string member value, from its first byte.
+///
+/// Objects and arrays are stepped over by depth, with strings inside them consumed whole so a brace
+/// written in one does not move the depth. Anything else runs to the member separator.
+fn skip_value(bytes: &[u8], mut i: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    loop {
+        match bytes.get(i)? {
+            b'"' => {
+                let (_, after) = string_at(bytes, i)?;
+                i = after;
+                if depth == 0 {
+                    return Some(i);
+                }
+                continue;
+            }
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            b',' if depth == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
+/// A JSON boolean literal, and nothing else.
+///
+/// `isError` is a boolean in the specification. A value that is not one (the string `"true"`, a
+/// number, an object) says nothing either way, so it yields NO fact rather than `false`: reading it
+/// as `false` reported a failing tool as a succeeding one. The answer itself is relayed unchanged,
+/// as the served engine relays it; only the fact changes.
+fn bool_literal(raw: &[u8]) -> Option<bool> {
+    match raw {
+        b"true" => Some(true),
+        b"false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Which code and words this dialect answers one refusal reason with.
+///
+/// ## What this mapping is, and what it is not
+///
+/// The existing codec renders a refusal through builders that are visible to its own crate only, so
+/// this table cannot be read off them. What IS pinned is the ENVELOPE — the member order, the
+/// always-written identifier on an error, the omitted one on a success, and the code table, all
+/// asserted byte for byte in the envelope module's own tests. What is NOT pinned is the message
+/// TEXT, which the composition root must compare against the battery's recorded answers on the day
+/// it switches this plane on. That is stated here rather than left for someone to discover.
+fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
+    // THE MATCH IS TOTAL — there is no `_` arm. Before this, only nine of the 42 reasons were mapped
+    // and the rest collapsed to `CODE_INTERNAL`, so a rate limit, an open breaker, a drain or a spent
+    // budget reached the caller as "this node broke" — a node fault a client retries the wrong way.
+    // This protocol has its own code for a policy refusal (`CODE_REFUSED`), so a busbar admission /
+    // rate / budget refusal is a policy refusal and says so; only a genuine node fault is internal,
+    // and each is listed explicitly so a new reason is a compile error, never a silent collapse.
+    match reason {
+        RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
+        RefusalReason::DecodeFailed => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request could not be read",
+        ),
+        RefusalReason::SchemeNotDeclared
+        | RefusalReason::CredentialRejected
+        | RefusalReason::SessionUnbound
+        | RefusalReason::CredentialBudget => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request did not carry usable authority",
+        ),
+        // The caller is known and may not do this. This protocol has its own code for a policy
+        // refusal, and it is outside the range the specification reserves for itself.
+        RefusalReason::ScopeMissing
+        | RefusalReason::Vetoed
+        | RefusalReason::Revoked
+        | RefusalReason::PoolNotPermitted => (
+            jsonrpc::CODE_REFUSED,
+            "the caller may not perform this operation",
+        ),
+        // There is nowhere for it to go, or the way there is shut, which this protocol names
+        // specifically.
+        RefusalReason::NoDestination
+        | RefusalReason::DestinationUnreachable
+        | RefusalReason::BreakerOpen
+        | RefusalReason::DestinationBudgetExhausted => (
+            jsonrpc::CODE_UPSTREAM_UNAVAILABLE,
+            "no server is reachable for this request",
+        ),
+        // Every busbar-specific admission / capacity / rate / budget / drain refusal. A policy said
+        // no; the caller is told that and nothing about the money, the buckets or the store.
+        RefusalReason::InFlightCap
+        | RefusalReason::CursorBudget
+        | RefusalReason::SessionBudget
+        | RefusalReason::OpenSlotBusy
+        | RefusalReason::OverBudget
+        | RefusalReason::GroupFrozen
+        | RefusalReason::Unpriced
+        | RefusalReason::OverdraftCeiling
+        | RefusalReason::StaleSlice
+        | RefusalReason::TierMismatch
+        | RefusalReason::SpillBudget
+        | RefusalReason::ScratchExhausted
+        | RefusalReason::RateLimited
+        | RefusalReason::ChallengeExhausted
+        | RefusalReason::NoRate
+        | RefusalReason::Replayed
+        | RefusalReason::InFlight
+        | RefusalReason::Drain
+        | RefusalReason::Superseded
+        | RefusalReason::ClientGone
+        | RefusalReason::DeadlineExceeded
+        | RefusalReason::Stalled => (
+            jsonrpc::CODE_REFUSED,
+            "the request could not be served at this time",
+        ),
+        // A genuine node-internal fault — this node did break, and the caller is owed that fact and
+        // not a false policy refusal.
+        RefusalReason::DurabilityUnavailable
+        | RefusalReason::MeterDisputed
+        | RefusalReason::HandoffMismatch
+        | RefusalReason::PlanePanic
+        | RefusalReason::TaskLost
+        | RefusalReason::SecretPlaceholder => (
+            jsonrpc::CODE_INTERNAL,
+            "the request could not be served at this time",
+        ),
+    }
+}
+
+/// THE nested destination a sampling request reaches, named ONCE.
+///
+/// `verify` seals a destination and `route` then dials one, and a unit routed somewhere it was not
+/// verified for is the failure this seam exists to make impossible. Two hand-written copies of the
+/// same pair are two things that can drift; one expression cannot.
+const fn sampling_destination() -> DestinationFacts {
+    DestinationFacts::NestedPlane {
+        op: meta::SAMPLING_OP,
+    }
+}
+
+/// The finish class one unit ending is.
+fn finish_of(end: &UnitEnd, event_framed: bool) -> FinishClass {
+    // One mapping, written once in the contract and read by every plane. All this plane decides is
+    // what a COMPLETED unit is, which is a question about the exchange and not about the ending: a
+    // streamed unit ends a turn of a session that continues, a unary one ends the whole answer.
+    busbar_contract::unit::finish_class_of(
+        end,
+        if event_framed {
+            FinishClass::TurnComplete
+        } else {
+            FinishClass::Complete
+        },
+    )
+}
+
+impl Plane for McpPlane {
+    fn decode_ingress<'u>(
+        &self,
+        frames: &mut FrameCursor<'u>,
+        _st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<Ingress<'u>, Decode> {
+        let Some(frame) = frames.next_frame() else {
+            return Ok(Ingress::NeedMore);
+        };
+        let body = frame.bytes.as_slice();
+        if body.is_empty() {
+            return Ok(Ingress::NeedMore);
+        }
+        let envelope = jsonrpc::read(body)?;
+        let method = envelope.method_str(body).ok_or(Decode::Malformed)?;
+        let facts = request_facts(body, &envelope);
+
+        // A message with no identifier is a NOTICE. The specification forbids answering one, so a
+        // notice this plane recognises opens a unit that ends without writing anything, and one it
+        // does not recognise is DROPPED — never refused, because a refusal is an answer.
+        if !envelope.is_request() {
+            if !ops::is_known_notification(method) {
+                return Ok(Ingress::Discard {
+                    reason: DiscardCode::Unsupported,
+                });
+            }
+            return Ok(Ingress::OneShot(Box::new(UnitDraft {
+                op: ops::OP_NOTIFICATION,
+                body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
+                correlates: None,
+                correlation_out: None,
+                facts,
+            })));
+        }
+
+        let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
+        // A method an UPSTREAM sends is not one a caller may send. Reading it here would let a
+        // caller open a unit that only a paired server is allowed to open.
+        if row.sender == ops::Sender::Provider {
+            return Err(Decode::UnsupportedOperation);
+        }
+        let draft = UnitDraft {
+            op: row.op,
+            body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
+            correlates: None,
+            correlation_out: envelope
+                .id_bytes(body)
+                .and_then(|raw| f::correlation_for(raw, ctx.arena())),
+            facts,
+        };
+        if row.event_framed {
+            Ok(Ingress::Open(Box::new(draft)))
+        } else {
+            Ok(Ingress::OneShot(Box::new(draft)))
+        }
+    }
+
+    fn encode_egress<'u>(
+        &self,
+        u: &Unit<'u>,
+        dest: &VerifiedDestination,
+        _st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<EgressBody<'u>, Encode> {
+        // The caller's envelope goes on unchanged. This protocol names its operation in the body,
+        // so there is nothing in an outbound request that this node rewrites — and rewriting one
+        // would be a byte on the wire that is not there today.
+        //
+        // The relay is a BORROW, not a copy. These bytes already live for the unit that is about to
+        // carry them, so copying them into the arena spent the unit's whole bounded budget on a
+        // second copy of what it was already holding — and a request larger than that budget could
+        // not be relayed at all, however small the hop it was going out on.
+        let body = ScratchBytes::new(u.body().body());
+        let mut envelope = TransportEnvelope::default();
+        let content_type = ctx
+            .arena()
+            .alloc_bytes(CONTENT_TYPE_JSON)
+            .map_err(|_| Encode::ScratchExhausted)?;
+        let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
+            name: FIELD_CONTENT_TYPE,
+            value: content_type,
+        });
+        if let Some(version) = ctx
+            .session()
+            .and_then(|s| s.session_fact(f::FACT_PROTOCOL_VERSION))
+        {
+            let value = ctx
+                .arena()
+                .alloc_bytes(version.as_bytes())
+                .map_err(|_| Encode::ScratchExhausted)?;
+            let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
+                name: FIELD_PROTOCOL_VERSION,
+                value,
+            });
+        }
+        if !matches!(
+            dest.facts(),
+            DestinationFacts::Upstream { .. } | DestinationFacts::SessionUpstream { .. }
+        ) {
+            return Err(Encode::Unrepresentable);
+        }
+        Ok(EgressBody {
+            envelope,
+            body,
+            auth: busbar_contract::ids::SchemeKey::new(EGRESS_SCHEME),
+        })
+    }
+
+    fn encode_ingress_frame<'u>(
+        &self,
+        _u: &Unit<'u>,
+        _f: &Frame,
+        _dest: &VerifiedDestination,
+        _st: Option<&mut PlaneSessionState>,
+        _ctx: &Ctx<'u>,
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
+        // An OPEN unit of this plane is a HELD STREAM: the request that opened it was complete in
+        // one frame, and what flows afterwards flows outward. So an inbound frame arriving under an
+        // open unit belongs to no outbound request, and the honest answer is that it is consumed and
+        // nothing goes out for it.
+        Ok(None)
+    }
+
+    fn decode_response<'u>(
+        &self,
+        frames: &mut FrameCursor<'u>,
+        _dest: &VerifiedDestination,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<Progress<'u>, Decode> {
+        let Some(frame) = frames.next_frame() else {
+            return Ok(Progress::NeedMore);
+        };
+        let body = frame.bytes.as_slice();
+        if body.is_empty() {
+            return Ok(Progress::NeedMore);
+        }
+
+        // A document arriving from a server that names a METHOD is the server ASKING for something,
+        // not answering. It opens a unit of its own and runs all seven steps, and what answers it
+        // costs money on this node's budget rather than on the server's.
+        if has(body, jsonrpc::PTR_METHOD) {
+            let envelope = jsonrpc::read(body)?;
+            let method = envelope.method_str(body).ok_or(Decode::Malformed)?;
+            let mut facts = Facts::new();
+            let _ = facts.set(f::FACT_METHOD, FactValue::Str(method));
+            if let Some(raw) = envelope.id_bytes(body) {
+                if let Ok(text) = core::str::from_utf8(raw) {
+                    let _ = facts.set(f::FACT_RPC_ID, FactValue::Str(text));
+                }
+            }
+            if let Some(state) = st {
+                if let Some(codec) = state.get_mut::<Codec>() {
+                    codec.rounds_asked = codec.rounds_asked.saturating_add(1);
+                }
+            }
+            let Some(row) = ops::row_for(method) else {
+                // A notice a server sends is dropped, exactly as one a caller sends is.
+                return Ok(Progress::Discard {
+                    reason: DiscardCode::Unsupported,
+                });
+            };
+            // THE MIRROR OF THE INGRESS CHECK, and it must stay a mirror.
+            //
+            // Ingress refuses a caller who names a `Sender::Provider` method, because that would
+            // let a caller open a unit only a paired server may open. The same asymmetry runs the
+            // other way and is worse: `row_for` searches the WHOLE vocabulary, so without this an
+            // upstream could name `tools/call` — a `Sender::Client` method — on the response leg
+            // and have it minted as a genuine unit. That unit then runs all seven governance steps
+            // under the ORIGINAL CALLER's identity, budget and approval grant, for work the caller
+            // never asked for. A compromised or hostile upstream spending its victim's authority is
+            // the textbook confused deputy.
+            //
+            // Exactly three methods are server-initiated (`sampling/createMessage`, `roots/list`,
+            // `elicitation/create`). Everything else arriving with a method on this leg is refused.
+            if row.sender != ops::Sender::Provider {
+                return Ok(Progress::Discard {
+                    reason: DiscardCode::Unsupported,
+                });
+            }
+            // The subject is read HERE, at the one step entitled to read the bytes, so the steps
+            // after this one read it off the draft rather than scanning the request a second time.
+            if let Some(pointer) = row.name_pointer {
+                if let Some(subject) = read_str(body, pointer) {
+                    let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
+                }
+            }
+            return Ok(Progress::OneShot(Box::new(UnitDraft {
+                op: row.op,
+                body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
+                // A server's own request answers nothing; it is answered.
+                correlates: None,
+                correlation_out: envelope
+                    .id_bytes(body)
+                    .and_then(|raw| f::correlation_for(raw, ctx.arena())),
+                facts,
+            })));
+        }
+
+        let id = read_raw(body, jsonrpc::PTR_ID);
+        let is_error = has(body, jsonrpc::PTR_ERROR);
+        let mut facts = Facts::new();
+        if let Some(raw) = id {
+            if let Ok(text) = core::str::from_utf8(raw) {
+                let _ = facts.set(f::FACT_RPC_ID, FactValue::Str(text));
+            }
+        }
+        if let Some(kind) = read_str(body, jsonrpc::PTR_RESULT_TYPE) {
+            let _ = facts.set(f::FACT_RESULT_TYPE, FactValue::Str(kind));
+        }
+        if let Some(flag) = read_raw(body, jsonrpc::PTR_IS_ERROR).and_then(bool_literal) {
+            let _ = facts.set(f::FACT_IS_ERROR, FactValue::Bool(flag));
+        }
+        if let Some(code) = read_raw(body, jsonrpc::PTR_ERROR_CODE) {
+            if let Ok(text) = core::str::from_utf8(code) {
+                let _ = facts.set(f::FACT_ERROR_CODE, FactValue::Str(text));
+            }
+        }
+        if let Some(state) = st {
+            if let Some(codec) = state.get_mut::<Codec>() {
+                codec.events_read = codec.events_read.saturating_add(1);
+            }
+        }
+        // A result whose discriminator says it is finished IS finished. One that asks the caller for
+        // something, or hands back a task, is a turn rather than an ending: the exchange continues.
+        //
+        // COMPLETE IS EARNED, NOT ASSUMED. A JSON-RPC answer carries exactly one of `result` or
+        // `error`; a document with NEITHER is not a terminal answer at all. It used to fall through to
+        // the `else` and bill `Complete` — charging the caller for a full answer that never came, a
+        // money boundary crossed on an empty envelope. Complete now requires the `result` member to
+        // be present; an envelope with no result and no error is `Partial` (what arrived, arrived)
+        // and is billed as such, never as a completed turn.
+        let has_result = has(body, jsonrpc::PTR_RESULT);
+        let kind = read_str(body, jsonrpc::PTR_RESULT_TYPE);
+        let finish = if is_error {
+            FinishClass::Error
+        } else if !has_result {
+            FinishClass::Partial
+        } else if matches!(
+            kind,
+            Some(jsonrpc::RESULT_TYPE_INPUT_REQUIRED | jsonrpc::RESULT_TYPE_TASK)
+        ) {
+            FinishClass::TurnComplete
+        } else {
+            FinishClass::Complete
+        };
+        let r = Response {
+            ir: view(body, jsonrpc::RESPONSE_PTRS, ctx)?,
+            finish,
+            facts,
+        };
+        // Every answer of this protocol is one document. There is no partial answer to relay: the
+        // frame that carries a result carries all of it.
+        Ok(Progress::Terminal {
+            for_: id.and_then(|raw| f::correlation_for(raw, ctx.arena())),
+            r: Box::new(r),
+        })
+    }
+
+    fn encode_response<'u>(
+        &self,
+        r: &Response<'u>,
+        _st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        let body = r.ir.body();
+        // An answer that already IS an envelope goes back exactly as it arrived. This is the common
+        // path and it is byte-identical by construction: the server answered the caller's own
+        // identifier, because the caller's own envelope is what was relayed.
+        if has(body, jsonrpc::PTR_VERSION) {
+            return ctx
+                .arena()
+                .alloc_bytes(body)
+                .map_err(|_| Encode::ScratchExhausted);
+        }
+        // An answer this node composed itself arrives as a bare result and is wrapped here, with
+        // the identifier the decode step recorded and the discriminator this node chose.
+        let id = match r.facts.get(f::FACT_RPC_ID) {
+            Some(FactValue::Str(text)) => Some(jsonrpc::id_value(text.as_bytes())?),
+            _ => None,
+        };
+        let kind = match r.facts.get(f::FACT_RESULT_TYPE) {
+            Some(FactValue::Str(text)) => text,
+            _ => jsonrpc::RESULT_TYPE_COMPLETE,
+        };
+        let bytes = jsonrpc::success(id.as_ref(), body, kind)?;
+        ctx.arena()
+            .alloc_bytes(&bytes)
+            .map_err(|_| Encode::ScratchExhausted)
+    }
+
+    fn encode_refusal<'u>(
+        &self,
+        refusal: &Refusal,
+        draft: Option<&UnitDraft<'u>>,
+        _st: Option<&PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        let id = match draft.and_then(|d| d.facts.get(f::FACT_RPC_ID)) {
+            Some(FactValue::Str(text)) => Some(jsonrpc::id_value(text.as_bytes())?),
+            _ => None,
+        };
+        let (code, message) = refusal_render(refusal.reason);
+        // A reason that implies a wait says so, under the member a caller can act on. Nothing else
+        // about why is disclosed.
+        let data = refusal
+            .retry_after_secs
+            .map(|secs| serde_json::json!({ "retryAfterSeconds": secs }));
+        let bytes = jsonrpc::error(id.as_ref(), code, message, data)?;
+        ctx.arena()
+            .alloc_bytes(&bytes)
+            .map_err(|_| Encode::ScratchExhausted)
+    }
+
+    fn encode_end<'u>(
+        &self,
+        _u: &Unit<'u>,
+        _end: &UnitEnd,
+        _st: Option<&mut PlaneSessionState>,
+        _ctx: &Ctx<'u>,
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
+        // This protocol writes nothing to end a unit. An answer ends when its document has been
+        // written; a held stream ends when the connection does. Emitting a closing frame would be a
+        // byte on the wire that is not there today.
+        Ok(None)
+    }
+
+    fn authenticate<'u>(&self, _u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
+        // A locally launched server has no request to carry a header on: its credential is handed to
+        // it when it starts. Everything on the document transport presents a bearer credential.
+        let over_stdio = crate::claims::is_stdio(ctx.transport().key());
+        let alt = if over_stdio { "environment" } else { "bearer" };
+        // A notice asks for nothing, and it used to be narrowed to an invented "anonymous"
+        // alternative for that reason. A notice arrives on the SAME claim a request does, though,
+        // and that claim declares a scheme; the surface that genuinely carries no credential is the
+        // discovery document, and it says so on its own claim. So a notice narrows like everything
+        // else on the mount, and what its credential resolves to is the auth unit's answer.
+        CredentialLocator {
+            narrowing: Some(SchemeAlt::new(alt)),
+            from_session: ctx
+                .session()
+                .is_some_and(busbar_contract::unit::SessionView::is_bound),
+        }
+    }
+
+    fn verify<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
+        match u.op() {
+            // The listings this node answers out of its own catalogue reach a record, not a server.
+            ops::OP_DISCOVER
+            | ops::OP_TOOLS_LIST
+            | ops::OP_PROMPTS_LIST
+            | ops::OP_RESOURCES_LIST
+            | ops::OP_RESOURCE_TEMPLATES_LIST => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_CATALOGUE,
+                op: rec::OP_SCAN,
+            },
+            // A held stream delivers back to the caller that opened it.
+            ops::OP_SUBSCRIPTIONS_LISTEN => DestinationFacts::Client {
+                selector: "opener",
+                mode: busbar_contract::dest::ClientMode::Deliver,
+            },
+            // A completion is answered out of the catalogue this node already holds. It is named
+            // here rather than left to fall through to the server, because the routing step gives it
+            // one leg and that leg is the catalogue: a unit VERIFIED for a server it is never routed
+            // to has an upstream sealed, and the admission that seals one is spent whether or not
+            // anything is ever dialled.
+            ops::OP_COMPLETION => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_CATALOGUE,
+                op: rec::OP_GET,
+            },
+            // The task operations are answered out of this node's own task records.
+            ops::OP_TASK_GET => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_TASK,
+                op: rec::OP_GET,
+            },
+            ops::OP_TASK_UPDATE | ops::OP_TASK_CANCEL => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_TASK,
+                op: rec::OP_PUT,
+            },
+            // A notice reaches nothing and answers nothing. It is recorded and that is all.
+            ops::OP_NOTIFICATION => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_CATALOGUE,
+                op: rec::OP_PUT,
+            },
+            // A server asking for a completion is answered by the OTHER plane, one level down. This
+            // is the one nested destination this plane names, and it is written once so that what
+            // this step seals and what `route` dials are the same expression, not two agreeing ones.
+            ops::OP_SAMPLING => sampling_destination(),
+            // A server asking which roots it may work under is answered from configuration, which
+            // this plane reads through its own settings records.
+            ops::OP_ROOTS_LIST => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_SETTINGS,
+                op: rec::OP_GET,
+            },
+            // A server asking the CALLER for something goes back to the caller.
+            ops::OP_ELICITATION => DestinationFacts::Client {
+                selector: "opener",
+                mode: busbar_contract::dest::ClientMode::Deliver,
+            },
+            // Everything else is a hop to the server.
+            _ => self.upstream_destination(),
+        }
+    }
+
+    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
+        let mut facts = ScopeFacts::default();
+        // The resource is the registered server, under the kind the codec already names it by. The
+        // plane says WHAT is being asked for; which scope that requires, and whether this principal
+        // holds it, is the scope unit's answer and never this plane's.
+        if let Some(server) = self.servers().first() {
+            let _ = facts.resources.push(ResourceLocator {
+                kind: RESOURCE_KIND_SERVER,
+                name: server.id,
+            });
+            // A call names a second resource: the tool itself. The tool's own name is on the
+            // request, which is not a name that outlives the unit, so what is offered here is the
+            // configured server's tool namespace and the scope unit reads the request for the rest.
+            if u.op() == ops::OP_TOOL_CALL {
+                let _ = facts.resources.push(ResourceLocator {
+                    kind: RESOURCE_KIND_TOOL,
+                    name: server.id,
+                });
+            }
+        }
+        facts
+    }
+
+    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
+        AdmitFacts {
+            // The lane is not in the request. It is a property of the server the operator
+            // configured, and the trust unit re-derives it against the allow-list.
+            lane_locator: None,
+            // This protocol gives a caller no way to declare a ceiling on the answer, so no
+            // place is named for one.
+            max_response_ptrs: BoundedVec::new(),
+            // The priced input is the whole request document.
+            input_span: Some(Span {
+                start: 0,
+                end: u.body().body().len(),
+            }),
+        }
+    }
+
+    fn route<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {
+        let mut plan = RoutePlan::default();
+        let mut leg = |l: Leg| {
+            let _ = plan.legs.push(l);
+        };
+        match u.op() {
+            // A call is the whole point, and it is the only operation with an approval to spend.
+            ops::OP_TOOL_CALL => {
+                // Resolve the tool, spend the grant that says this caller may use it, hop, then
+                // record what happened. The grant is spent BEFORE the hop, because a grant spent
+                // after a hop is a grant a failed hop leaves unspent for a retry to spend again.
+                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET));
+                leg(Self::record_leg(rec::SCHEMA_DEMOTION, rec::OP_GET));
+                leg(Self::record_leg(rec::SCHEMA_APPROVAL, rec::OP_REDEEM));
+                leg(self.upstream_leg());
+                leg(Self::record_leg(rec::SCHEMA_CALL, rec::OP_APPEND));
+            }
+            ops::OP_DISCOVER
+            | ops::OP_TOOLS_LIST
+            | ops::OP_PROMPTS_LIST
+            | ops::OP_RESOURCES_LIST
+            | ops::OP_RESOURCE_TEMPLATES_LIST => {
+                // A listing is answered from what was approved, minus what is quarantined.
+                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_SCAN));
+                leg(Self::record_leg(rec::SCHEMA_DEMOTION, rec::OP_SCAN));
+            }
+            ops::OP_PROMPT_GET | ops::OP_RESOURCE_READ => {
+                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET));
+                leg(self.upstream_leg());
+                leg(Self::record_leg(rec::SCHEMA_CALL, rec::OP_APPEND));
+            }
+            ops::OP_COMPLETION => leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET)),
+            ops::OP_TASK_GET => leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET)),
+            ops::OP_TASK_UPDATE | ops::OP_TASK_CANCEL => {
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
+            }
+            ops::OP_SUBSCRIPTIONS_LISTEN => {
+                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_SCAN));
+                leg(Leg {
+                    destination: DestinationFacts::Client {
+                        selector: "opener",
+                        mode: busbar_contract::dest::ClientMode::Deliver,
+                    },
+                });
+            }
+            // A server asking for a completion opens a child unit of the other plane, with its own
+            // hold drawn from this node's own budget.
+            ops::OP_SAMPLING => {
+                leg(Self::record_leg(rec::SCHEMA_APPROVAL, rec::OP_REDEEM));
+                leg(Leg {
+                    destination: sampling_destination(),
+                });
+            }
+            ops::OP_ROOTS_LIST => leg(Self::record_leg(rec::SCHEMA_SETTINGS, rec::OP_GET)),
+            ops::OP_ELICITATION => leg(Leg {
+                destination: DestinationFacts::Client {
+                    selector: "opener",
+                    mode: busbar_contract::dest::ClientMode::Deliver,
+                },
+            }),
+            // A notice is recorded and answered with nothing.
+            ops::OP_NOTIFICATION => leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_PUT)),
+            // An operation class this plane does not carry gets no legs, which is an empty plan and
+            // a refusal at the routing step. Not a panic, and not a guess.
+            _ => {}
+        }
+        plan
+    }
+
+    fn meter<'u>(&self, u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
+        let mut locators = UsageLocators::default();
+        // A call that was answered is a call that was made. This is a count, and it is flat: the
+        // codec meters one attributed event per round, and this is the same statement in the
+        // contract's own vocabulary.
+        if u.op() == ops::OP_TOOL_CALL {
+            let _ = locators.lines.push(UsageLocator {
+                class: CLASS_TOOL_CALLS,
+                location: None,
+                quantity: Some(1),
+                lane: None,
+            });
+        }
+        let _ = locators.lines.push(UsageLocator {
+            class: CLASS_BYTES,
+            // The quantity is not at a pointer: it is the size of the document the plane just read.
+            // So the locator carries the value and no location, which the contract allows precisely
+            // for the case where the plane already has the number in front of it.
+            location: None,
+            quantity: Some(r.ir.body().len() as u64),
+            // This protocol's answers do not name a lane. The lane is the server's, and the trust
+            // unit sealed it; a plane naming a second one would be a second opinion.
+            lane: None,
+        });
+        locators
+    }
+
+    fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
+        let event_framed = Self::row_for_op(u.op()).is_some_and(|r| r.event_framed);
+        AuditFacts {
+            // The DRAFT's class is the one that priced the unit, and this is that class read back
+            // off the unit. A plane that named a different class here would be disputing its own
+            // earlier answer, which is exactly what the loop treats it as.
+            op_class: u.op(),
+            finish: finish_of(out, event_framed),
+        }
+    }
+
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
+        let _ = ctx;
+        let mut facts = Facts::new();
+        match verb {
+            v if v == crate::meta::VERB_TOOLS => {
+                let _ = facts.set("count", FactValue::Int(self.servers().len() as i64));
+                for server in self.servers() {
+                    // The server's name is the key and the lane it is priced on is the value.
+                    // Nothing here is a credential, a price or an address: an operator reading this
+                    // learns which servers are registered and on which lane, which is what an
+                    // introspection verb is for.
+                    let _ = facts.set(server.id, FactValue::Str(server.lane.as_str()));
+                }
+            }
+            v if v == crate::meta::VERB_SERVER => {
+                // The projection over ONE registration. A subject that names no registration is an
+                // unsupported operation rather than an empty answer: "there is no such server" and
+                // "that server has nothing to report" are different facts.
+                let name = subject.ok_or(Decode::UnsupportedOperation)?;
+                let server = self
+                    .servers()
+                    .iter()
+                    .find(|s| s.id == name)
+                    .ok_or(Decode::UnsupportedOperation)?;
+                let _ = facts.set(SUBJECT_FACT_NAME, FactValue::Str(server.id));
+                let _ = facts.set(SUBJECT_FACT_LANE, FactValue::Str(server.lane.as_str()));
+                let _ = facts.set(SUBJECT_FACT_TRANSPORT, FactValue::Str(server.transport));
+                // Whether this node launches the server itself, which is the one structural thing
+                // about a registration an operator cannot read off the name. The host itself stays
+                // out: an address is not introspection, it is configuration.
+                let _ = facts.set(SUBJECT_FACT_LOCAL, FactValue::Bool(server.host.is_empty()));
+            }
+            _ => return Err(Decode::UnsupportedOperation),
+        }
+        Ok(PlaneFacts { facts })
+    }
+
+    fn content_facts<'u>(
+        &self,
+        u: &Unit<'u>,
+        r: &Response<'u>,
+        _ctx: &Ctx<'u>,
+    ) -> ContentFacts<'u> {
+        let body = r.ir.body();
+        let mut facts = Facts::new();
+        // Only the declared keys, and only what was actually read. The tool's own output never
+        // appears here, and neither does anything the caller presented as authority.
+        if let Some(kind) = read_str(body, jsonrpc::PTR_RESULT_TYPE) {
+            let _ = facts.set(f::FACT_RESULT_TYPE, FactValue::Str(kind));
+        }
+        if let Some(flag) = read_raw(body, jsonrpc::PTR_IS_ERROR).and_then(bool_literal) {
+            let _ = facts.set(f::FACT_IS_ERROR, FactValue::Bool(flag));
+        }
+        if let Some(code) = read_raw(body, jsonrpc::PTR_ERROR_CODE) {
+            if let Ok(text) = core::str::from_utf8(code) {
+                let _ = facts.set(f::FACT_ERROR_CODE, FactValue::Str(text));
+            }
+        }
+        // What the request was FOR travels with what came back, so the record joins them without a
+        // second read of the request: decode already found the subject and the unit carries it.
+        if let Some(FactValue::Str(subject)) = u.draft_facts().get(f::FACT_SUBJECT) {
+            let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
+        }
+        if let Some(server) = self.servers().first() {
+            let _ = facts.set(f::FACT_SERVER, FactValue::Str(server.id));
+        }
+        ContentFacts { facts }
+    }
+}
+
+impl SessionPlane for McpPlane {
+    fn open_session<'u>(&self, _ctx: &Ctx<'u>) -> PlaneSessionState {
+        PlaneSessionState::new(Codec::default())
+    }
+
+    fn open_upstream<'u>(&self, _dest: &VerifiedDestination, _ctx: &Ctx<'u>) -> PlaneSessionState {
+        PlaneSessionState::new(Codec::default())
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/plane.rs"]
+mod tests;

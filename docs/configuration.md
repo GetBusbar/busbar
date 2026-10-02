@@ -2,10 +2,14 @@
 
 Busbar reads **two YAML files** at startup:
 
-| File | Default path | Env override | Purpose |
+| File | Default path | Override | Purpose |
 |---|---|---|---|
-| Provider catalog | `/etc/busbar/providers.yaml` | `BUSBAR_PROVIDERS` | Shipped map of provider names → protocol, base URL, error map. Operators rarely edit this. |
-| Deployment config | `/etc/busbar/config.yaml` | `BUSBAR_CONFIG` | Your site's providers (with secret references for credentials), models, pools, auth, groups, pricing, store, and telemetry export. |
+| Provider catalog | `providers.yaml` next to config.yaml | `--providers <path>` flag, or `providers_file:` in config.yaml | Shipped map of provider names → protocol, base URL, error map. Operators rarely edit this. |
+| Deployment config | `/etc/busbar/config.yaml` | `-c`/`--config <path>` flag, or `BUSBAR_CONFIG` env | Your site's providers (with secret references for credentials), models, pools, auth, groups, pricing, store, and telemetry export. |
+
+**Flag-first (1.6.0).** The config path resolves **`-c`/`--config` flag > `BUSBAR_CONFIG` env >
+`/etc/busbar/config.yaml`**; the provider-catalog path resolves **`--providers` flag > `providers_file:`
+in config.yaml > `providers.yaml` next to the resolved config.yaml**.
 
 Both files support `${VAR}` environment interpolation before YAML is parsed. A missing or malformed env var reference is a fatal startup error, Busbar refuses to boot rather than run with an incomplete config.
 
@@ -58,15 +62,19 @@ These are the only environment variables read by Busbar (excluding test-only `BU
 
 | Variable | Where read | Purpose / default |
 |---|---|---|
-| `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. **The one bootstrap env var** — it locates config.yaml itself. |
-| `BUSBAR_PROVIDERS` | `main.rs` | **Deprecated (1.5.3)** — use the top-level `providers_file:` key. Path to `providers.yaml`; still honored (with a warning) for one release. Default: `providers.yaml` next to `config.yaml`. |
+| `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. **The one bootstrap env var**: it locates config.yaml itself. Overridden by the `-c`/`--config` flag. |
 | `RUST_LOG` | `observability.rs` | Log level: `error`, `warn`, `info`, `debug`, or `trace`. Default: `info`. |
-| *(each provider's `api_key: { env: VAR }` reference)* | `main.rs` | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider. |
+| *(each provider's `api_key: { env: VAR }` reference)* | `main.rs` | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider; unset is a fatal boot error (use `api_key: none` for a keyless upstream). |
 | *(any `${VAR}` in `config.yaml`)* | `config.rs` | Expanded before YAML is parsed. Unset → fatal boot error. |
 
 `BUSBAR_ADMIN_TOKEN` is not special-cased in the code. It appears in the shipped `config.yaml` only because the file references `{ env: BUSBAR_ADMIN_TOKEN }` under `auth.admin_auth`. Any variable name works.
 
-**Operational env vars moved into `config.yaml` (1.5.3).** `BUSBAR_PROVIDERS` → `providers_file:`, `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`. Each old env var still works for one release (with a deprecation warning). Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` remain env-native. See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
+**CLI flags for the input files (1.6.0).** `-c`/`--config <path>` (also `--config=<path>`) points
+Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <path>` (also
+`--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
+See [Operations → Process configuration](operations.md#process-configuration).
+
+**Operational env vars moved into `config.yaml` (1.5.3); the old names are deprecated but still honoured.** `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`, and `BUSBAR_PROVIDERS` → `providers_file:` (or the `--providers` flag). Each was deprecated in 1.5.3 and is read in 1.6.0 exactly as it was in 1.5.5, with a boot warning (BUSBAR-3021) naming the config.yaml key that replaces it; move each into config.yaml at your convenience. Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` are env-native by design (`TOKIO_WORKER_THREADS` is still a fallback for `advanced.worker_threads`). See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
 
 ### `config`
 
@@ -77,11 +85,11 @@ config:
   locked: false                 # false = mutable (admin API may change config); true = immutable/GitOps
   overlay:
     file: busbar-overlay.json    # where mutations persist; relative paths resolve next to config.yaml
-    # `overlay: false` disables persistence entirely — valid ONLY with `locked: true`.
+    # `overlay: false` disables persistence entirely. Valid ONLY with `locked: true`.
 ```
 
-- **`locked: true`** — admin-API config mutations are refused at runtime; change config by editing `config.yaml` + `POST /config/reload`. The overlay is ignored.
-- **Boot invariant — `locked` XOR a writable overlay.** A mutable config with no writable overlay (you set `overlay: false`, or the config dir is read-only) **refuses to boot**, with a message naming the two fixes (a writable `config.overlay.file`, or `config.locked: true`). This makes a silently-non-durable mutation unreachable.
+- **`locked: true`**: admin-API config mutations are refused at runtime; change config by editing `config.yaml` + `POST /config/reload`. The overlay is ignored.
+- **Boot invariant: `locked` XOR a writable overlay.** A mutable config with no writable overlay (you set `overlay: false`, or the config dir is read-only) **refuses to boot**, with a message naming the two fixes (a writable `config.overlay.file`, or `config.locked: true`). This makes a silently-non-durable mutation unreachable.
 - The `overlay:` map names its backend by key (`file:` today), mirroring `store: { module, settings }`, so a future durable-store overlay backend is additive.
 
 ---
@@ -113,31 +121,31 @@ subsystem at boot. Interpolation remains for non-secret values (hosts, paths, na
 | Value contains a control character (`\n`, `\r`, `\t`, NUL, DEL, U+0085, U+2028, U+2029) | Fatal boot error, prevents newline-based YAML-structure injection via env vars |
 | Value would change the config's YAML STRUCTURE when substituted (see below) | Fatal boot error, names the offending variable(s) where identifiable |
 
-Ordinary punctuation (`: / @ . - # " , { } [ ] &` etc.) in env var values is allowed — there is no fixed forbidden-character list. Interpolation scans the entire raw file, including commented-out lines, so a `${VAR}` in a comment must still resolve.
+Ordinary punctuation (`: / @ . - # " , { } [ ] &` etc.) in env var values is allowed. There is no fixed forbidden-character list. Interpolation scans the entire raw file, including commented-out lines, so a `${VAR}` in a comment must still resolve.
 
 ### Structural-equivalence check
 
 Beyond the control-character check above, every interpolated document is verified to keep the same
-YAML *shape* the template declares. Concretely: the raw template is interpolated twice — once with
-real values, once with an inert placeholder standing in for each `${VAR}` — both results are parsed,
+YAML *shape* the template declares. Concretely: the raw template is interpolated twice (once with
+real values, once with an inert placeholder standing in for each `${VAR}`), both results are parsed,
 and the two parse trees must have the same map keys, the same sequence lengths, and the same node
 kind (map / sequence / scalar) at every position. A substituted value may change what a scalar leaf
-*contains* — that's the entire point of interpolation — but it may never change how many keys a map
+*contains* (that's the entire point of interpolation), but it may never change how many keys a map
 has, how long a sequence is, or what kind of node sits at a given position.
 
 This closes a class of injection the control-character check alone cannot see: inside a YAML flow
-collection (`{ }` / `[ ]` — used by this project's own examples, e.g. `client_tokens: [ "${VAR}" ]`),
+collection (`{ }` / `[ ]`, used by this project's own examples, e.g. `client_tokens: [ "${VAR}" ]`),
 a value containing a bare `,`, `"`, or `'` can splice in extra structure on a single line, with no
 newline involved at all. Because the check is about *shape*, not content, it has no forbidden-character
 list to maintain and no false positives on legitimate values that happen to contain YAML-"special"
-characters but do not actually change the parsed shape — an LDAP DN with mandatory commas, a Windows
+characters but do not actually change the parsed shape. An LDAP DN with mandatory commas, a Windows
 path with backslashes, a URL with a query string, or a value that changes a scalar's *inferred type*
-(e.g. `port: ${PORT}` — a real `8080` infers as a number, but the check does not compare scalar values
-or types, only shape) all interpolate normally. Only a value that actually widens/narrows the parsed
+(e.g. `port: ${PORT}`, where a real `8080` infers as a number, but the check does not compare scalar
+values or types, only shape) all interpolate normally. Only a value that actually widens/narrows the parsed
 structure is rejected.
 
 A value containing an unescaped `"` still breaks a double-quoted scalar exactly as YAML's own grammar
-says it does (that is not this check's job to prevent — it is the control-character check's cousin
+says it does (that is not this check's job to prevent: it is the control-character check's cousin
 concern, and an ordinary YAML parse error results either way, not a silent injection). A JSON blob
 therefore does NOT interpolate cleanly if it is spliced into a double-quoted scalar: use a `{ file: ...
 }` secret reference for that case instead of `${VAR}`.
@@ -160,7 +168,7 @@ A map of provider name → `ProviderDef`. The shipped catalog is a curated set o
 | `auth` | string | no | Protocol's native auth | The egress auth mechanism. `bearer` (sends `Authorization: Bearer <key>`) · `api-key` (sends `api-key: <key>`, for Azure OpenAI) · `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523: mints + auto-refreshes a bearer from a service-account key resolved via `api_key`; e.g. Google Vertex AI) · `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4: the `api_key` reference resolves to `client_id:client_secret`, exchanged at `token_url` for a bearer; e.g. Azure OpenAI via Entra ID). When unset, each protocol uses its native scheme: bearer for anthropic/openai/responses/cohere, `x-goog-api-key` for gemini, AWS SigV4 for bedrock. |
 | `token_url` | string | no | none | OAuth token endpoint for `auth: oauth-client-credentials`, where Busbar POSTs the client credentials for a bearer. Required for that auth; must be https for a public host. |
 | `scope` | string | no | none | OAuth scope for `auth: oauth-client-credentials`. Required for that auth. |
-| `subject` | string | no | none | JWT-bearer assertion `sub` claim (RFC 7523 §3) for `auth: jwt-bearer`. **Opt-in only** — leave unset for a plain (non-delegated) service account, e.g. the default Vertex AI setup; setting it (to any value) switches a Google service-account grant into domain-wide-delegation/impersonation semantics, so only set it when impersonating a specific principal or when a non-Google IdP's jwt-bearer profile requires `sub`. Ignored for every other auth style. |
+| `subject` | string | no | none | JWT-bearer assertion `sub` claim (RFC 7523 §3) for `auth: jwt-bearer`. **Opt-in only**: leave unset for a plain (non-delegated) service account, e.g. the default Vertex AI setup; setting it (to any value) switches a Google service-account grant into domain-wide-delegation/impersonation semantics, so only set it when impersonating a specific principal or when a non-Google IdP's jwt-bearer profile requires `sub`. Ignored for every other auth style. |
 | `health` | object | no | none | Active health-probe config. See [Health probing](#health-probing). |
 
 Example entries:
@@ -209,7 +217,7 @@ anthropic:
     timeout_secs: 5
 ```
 
-A provider whose `api_key` reference resolves to an empty value will not be probed regardless of the `health` block.
+A provider declaring `api_key: none` (a keyless local upstream) is not probed regardless of the `health` block: the probe would go out unauthenticated, which says nothing about a lane that never authenticates.
 
 ---
 
@@ -267,7 +275,7 @@ Front-door identity for the data plane plus the admin chain and role policy.
 **1.5.3: define once, reference by name.** Every identity provider is DEFINED once in the top-level
 `identity-providers:` map (`name -> {module, settings, max_admin_scope, token, browser_login}`) and
 REFERENCED BY BARE NAME from `auth.chain:`, `auth.admin_auth:` and `auth.role_bindings:`. One IdP that
-serves both planes is therefore configured ONCE — under the retired grammar it had to be written
+serves both planes is therefore configured ONCE. Under the retired grammar it had to be written
 inline in both chains, and nothing stopped the two copies from drifting. The built-ins `keys` (the
 signed-key verifier) and `admin-tokens` (the operator credential) are referenced bare and need a
 definition only when they carry config.
@@ -276,7 +284,7 @@ Static token allowlists are GONE in 1.5.0: every caller carries either a minted 
 credential a chain provider verifies.
 
 Giving a provider definition a `browser_login:` block also lets developers **self-serve** their own
-budgeted key by signing in — Busbar exposes a `GET`/`POST /auth/token` exchange automatically. (1.5.3
+budgeted key by signing in. Busbar exposes a `GET`/`POST /auth/token` exchange automatically. (1.5.3
 folded the retired parallel `auth.methods:` map into the provider definition: a client id/secret
 belongs to ONE IdP registration, so it belongs on that provider.) See
 [Token exchange (self-serve keys)](token-exchange.md).
@@ -303,38 +311,38 @@ auth:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (`{ file: … }` / `{ env: … }` / a secret plugin — never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts) — generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
-| `chain` | list of provider NAMES | no | `[]` | The ordered DATA-PLANE authentication chain — the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare NAME: either a built-in (`keys`) or a key of the top-level `identity-providers:` map. A name that is neither is a **hard startup error** (fail-closed — never a silently-skipped identity provider). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin-tokens` provider with a `token:`, an admin provider granting `full`, or an explicit open `admin_auth: []`) — otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is likewise a **hard startup error**. |
+| `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (`{ file: … }` / `{ env: … }` / a secret plugin, never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts). Generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
+| `chain` | list of provider NAMES | no | `[]` | The ordered DATA-PLANE authentication chain: the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare NAME: either a built-in (`keys`) or a key of the top-level `identity-providers:` map. A name that is neither is a **hard startup error** (fail-closed: never a silently-skipped identity provider). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin-tokens` provider with a `token:`, an admin provider granting `full`, or an explicit open `admin_auth: []`). Otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded (missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure) is likewise a **hard startup error**. |
 | `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
 
-**`identity-providers:` — the definition map.** `name -> { module, settings?, max_admin_scope?, token?, browser_login? }`.
+**The `identity-providers:` definition map.** `name -> { module, settings?, max_admin_scope?, token?, browser_login? }`.
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `module` | string | **yes** | — | Which `kind: auth` plugin (or built-in) backs this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth` plugin name/alias. The SAME module may back SEVERAL named providers (different issuers, different ceilings) — the NAME is the instance. |
+| `module` | string | **yes** | n/a | Which `kind: auth` plugin (or built-in) backs this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth` plugin name/alias. The SAME module may back SEVERAL named providers (different issuers, different ceilings). The NAME is the instance. |
 | `settings` | map | no | `{}` | The module's own opaque config, pushed verbatim (SecretRef-typed values resolve first). |
-| `max_admin_scope` | string | no | `read-only` | This provider's ADMIN ceiling, regardless of what `role_bindings` grants. The accepted tokens are exactly `read-only` \| `full`; any other value (including `none`) is an unknown scope token and fails `--validate`/boot. OMIT the key to get the MOST RESTRICTIVE default (`read-only`) — there is no lower ceiling to write. The built-in `admin-tokens` operator credential is exempt (full by definition). `full` from an external IdP is always an explicit opt-in. To give a provider NO admin authority at all, leave this omitted and grant no `admin_scope` under its `role_bindings`. |
-| `token` | secret reference | no | none | The operator ADMIN credential — only meaningful on a provider whose `module` is the built-in `admin-tokens`; anywhere else it is a boot error. |
+| `max_admin_scope` | string | no | `read-only` | This provider's ADMIN ceiling, regardless of what `role_bindings` grants. The accepted tokens are exactly `read-only` \| `full`; any other value (including `none`) is an unknown scope token and fails `--validate`/boot. OMIT the key to get the MOST RESTRICTIVE default (`read-only`). There is no lower ceiling to write. The built-in `admin-tokens` operator credential is exempt (full by definition). `full` from an external IdP is always an explicit opt-in. To give a provider NO admin authority at all, leave this omitted and grant no `admin_scope` under its `role_bindings`. |
+| `token` | secret reference | no | none | The operator ADMIN credential, only meaningful on a provider whose `module` is the built-in `admin-tokens`; anywhere else it is a boot error. |
 | `browser_login` | map | no | none | `{ client_id?, client_secret? }`. PRESENCE puts a button on the hosted login page; a provider without it is headless-only (still usable via `POST /auth/token`). |
 
-**Where did `auth.upstream_credentials` go?** To `pools.upstream_credentials` (1.5.3) — whose credential reaches the provider is a ROUTING property, not an inbound-auth one. See [`pools`](#pools).
+**Where did `auth.upstream_credentials` go?** To `pools.upstream_credentials` (1.5.3): whose credential reaches the provider is a ROUTING property, not an inbound-auth one. See [`pools`](#pools).
 
 **Token extraction order (data plane):** `Authorization: Bearer`, then `x-api-key`, then
 `x-goog-api-key`. Blank values are treated as absent.
 
-**Three orthogonal axes (as of 1.5.2).** Data-plane admission, admin-API access, and governance
+**Three orthogonal axes (as of 1.5.3).** Data-plane admission, admin-API access, and governance
 enforcement are independent, each with one local source of truth:
 
 - **Data-plane admission** is decided **solely** by `auth.chain`: `[]` = open/anonymous, `[keys]` =
-  a virtual key is required and resolved, an IdP/plugin chain requires that IdP. Nothing else — in
-  particular **not** the admin token — decides whether a data-plane request needs a credential.
+  a virtual key is required and resolved, an IdP/plugin chain requires that IdP. Nothing else, in
+  particular **not** the admin token, decides whether a data-plane request needs a credential.
 - **Admin-API access** is decided **solely** by `auth.admin_auth`; it gates `/api/v1/admin/*` and
   never touches the data plane. Minting lives behind it simply because mint is an admin endpoint.
 - **Governance enforcement** is automatic: it applies to whatever principal-with-group the chain
   resolved. An open chain resolves no principal, so there is nothing to enforce.
 
-This makes **"protected admin API + open (anonymous) relay for users"** expressible — set
+This makes **"protected admin API + open (anonymous) relay for users"** expressible: set
 `chain: []` with an `admin_auth` operator credential. (Before 1.5.2, configuring an admin token
 silently forced a virtual key onto every data-plane request, so that posture was impossible.)
 
@@ -355,7 +363,7 @@ still hold independent grants.
 |---|---|
 | `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the 1.5.0 config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
 | `group` | The `groups:` bucket this role's principals charge through. Absent = no group (authed + unlimited). With several bound groups the first in role order wins. |
-| `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting provider's `max_admin_scope` ceiling caps it (a `read-only` ceiling — the default, and the recommended posture for an external IdP — reduces a `full` grant to `read-only`). Omitting `admin_scope` here is how a role gets no admin authority at all. |
+| `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting provider's `max_admin_scope` ceiling caps it (a `read-only` ceiling, which is the default and the recommended posture for an external IdP, reduces a `full` grant to `read-only`). Omitting `admin_scope` here is how a role gets no admin authority at all. |
 
 Admin access is therefore EITHER a role's `admin_scope` (through an identity provider named in `admin_auth`)
 OR the `admin-tokens` operator token. The admin chain is live-mutable over the API
@@ -364,14 +372,14 @@ OR the `admin-tokens` operator token. The admin chain is live-mutable over the A
 #### identity-provider plugins
 
 Any `identity-providers:` definition whose `module:` is not a built-in (`keys` / `admin-tokens`) is a
-**`kind: auth` plugin** — an identity provider loaded in-process at boot over the signed plugin ABI,
+**`kind: auth` plugin**: an identity provider loaded in-process at boot over the signed plugin ABI,
 the same trust and loader path as store and secret plugins (see
 [plugins.md](plugins.md#auth-plugins-kind-auth)). Install it like any other plugin: set
 `plugins.enabled: true`, drop the signed tarball in the plugins directory, define the provider under
 `identity-providers:`, then name that provider in `auth.chain:` / `auth.admin_auth:`. Its `settings:`
 map is passed to the plugin verbatim as its config.
 
-Role policy is nested under the **provider NAME you chose** in `identity-providers:` — the definition
+Role policy is nested under the **provider NAME you chose** in `identity-providers:`, the definition
 key, not the plugin's own runtime `name()`. That is what lets the same plugin back two providers with
 independent bindings and independent `max_admin_scope` ceilings.
 
@@ -380,41 +388,41 @@ validates it and asserts the token's claims as roles, which Busbar maps through 
 to pools, limits, and (optionally) an admin scope capped by that provider's `max_admin_scope`.
 
 Each auth plugin defines its own `settings:` (issuer, audience, claim mapping, and so on) and ships its
-own setup guide. For the first-party OIDC/SSO plugin — JWKS verification, claim-to-role mapping, and a
-full Microsoft Entra ID (Azure AD) example — see the **[OIDC auth plugin](/plugins/auth/oidc/)**.
+own setup guide. For the first-party OIDC/SSO plugin, see the **[OIDC auth plugin](/plugins/auth/oidc/)**:
+JWKS verification, claim-to-role mapping, and a full Microsoft Entra ID (Azure AD) example.
 
 > **Entra ID gotcha: app roles vs. security groups.** The single most common OIDC misconfiguration.
-> The `oidc` plugin's `role_claim` setting picks ONE of two, entirely different Entra objects — mixing
+> The `oidc` plugin's `role_claim` setting picks ONE of two, entirely different Entra objects. Mixing
 > them up produces a token that verifies fine but binds to nothing (silent no-match, not an error):
 >
 > | `role_claim` | Reads | Claim value | Where you define it in Entra |
 > |---|---|---|---|
 > | `roles` | **App roles** | The role's **Value** string, verbatim (e.g. `busbar.dev`) | App registration → App roles (allowed member types: Users/Groups), then assign it under Enterprise application → Users and groups |
-> | `groups` | **Security groups** | The group's **Object ID** — a GUID, never the display name | App registration → Token configuration → Add groups claim → Security groups (must be enabled, it's off by default) |
+> | `groups` | **Security groups** | The group's **Object ID**, a GUID, never the display name | App registration → Token configuration → Add groups claim → Security groups (must be enabled, it's off by default) |
 >
-> A security group named `busbar.dev` does **not** satisfy `role_claim: roles` — app roles and security
+> A security group named `busbar.dev` does **not** satisfy `role_claim: roles`. App roles and security
 > groups are different Entra objects, full stop. It only matches under `role_claim: groups`, bound by
 > its GUID:
 > ```yaml
-> # role_claim: roles (app role) — binding key is the role's Value, human-readable
+> # role_claim: roles (app role): binding key is the role's Value, human-readable
 > role_bindings:
 >   oidc:
 >     "busbar.dev": { group: engineering }
 >
-> # role_claim: groups (security group) — binding key is the group's Object ID (GUID)
+> # role_claim: groups (security group): binding key is the group's Object ID (GUID)
 > role_bindings:
 >   oidc:
 >     "3fa85f64-5717-4562-b3fc-2c963f66afa6": { group: engineering }
 > ```
 > **Recommended pattern:** keep `role_claim: roles` for a readable config, then **assign the app role to
-> your security group** (Enterprise application → Users and groups → add the group → assign the role) —
-> members inherit the role through the group, so you manage access by group membership while
+> your security group** (Enterprise application → Users and groups → add the group → assign the role).
+> Members inherit the role through the group, so you manage access by group membership while
 > `role_bindings` keeps naming a human-readable role instead of a GUID.
 
 ##### Walkthrough: configuring OIDC with Microsoft Entra ID
 
 The rest of this section is the reference; this is the click-by-click path through Entra's portal.
-Blade names matter — App registrations and Enterprise applications are two different areas of the
+Blade names matter: App registrations and Enterprise applications are two different areas of the
 same app object, and steps 4 and 5 below live on **different** blades. Follow it in order.
 
 1. **Create (or locate) the app registration.** Entra admin center → **App registrations** → New
@@ -423,27 +431,27 @@ same app object, and steps 4 and 5 below live on **different** blades. Follow it
    - **Application (client) ID** → `audience: "<client-id>"`
 
 2. **Client secret.** App registration → **Certificates & secrets** → New client secret. Copy the
-   secret's **Value** column (a string like `kqf8Q~...`) immediately — it's shown once. This goes to
+   secret's **Value** column (a string like `kqf8Q~...`) immediately. It's shown once. This goes to
    `browser_login.client_secret` (as a secret reference, e.g. `{ env: OIDC_CLIENT_SECRET }`).
-   Do **not** copy the **Secret ID** column next to it — that's a GUID that identifies the secret
+   Do **not** copy the **Secret ID** column next to it: that's a GUID that identifies the secret
    record itself, not a credential, and it will fail to authenticate.
 
 3. **Redirect URI.** App registration → **Authentication** → Add a platform → **Web** (not
-   *Single-page application*). Busbar is a confidential client — it holds the client secret
-   server-side — so it needs the **Web** platform type; SPA is for public, PKCE-only clients with no
+   *Single-page application*). Busbar is a confidential client (it holds the client secret
+   server-side), so it needs the **Web** platform type; SPA is for public, PKCE-only clients with no
    secret and will reject the exchange. Set the URI to `<public_url>/auth/token` (busbar's own
    callback route, built from your `public_url`). Entra permits `http://localhost:<port>/auth/token`
    for local dev.
 
 4. **Choose app roles or security groups for `role_claim`, and set it up on the right blade(s).**
    This is the step people get lost on, because "define" and "assign" happen in two different places:
-   - **App roles (recommended — `role_claim: roles`).** *Define* the role under App registration →
+   - **App roles (recommended, `role_claim: roles`).** *Define* the role under App registration →
      **App roles** → Create app role (allowed member types: Users/Groups). Its **Value** field (e.g.
-     `busbar.dev`) is what lands verbatim in the token's `roles` claim — that string is your
+     `busbar.dev`) is what lands verbatim in the token's `roles` claim. That string is your
      `role_bindings` key. Then, on the **other** blade, *assign* it: **Enterprise applications** →
      your app → **Users and groups** → Add user/group → pick a user or a security group → select the
      role. Members of an assigned security group inherit the app role.
-   - **Security groups (`role_claim: groups`).** First enable the claim — it's off by default: App
+   - **Security groups (`role_claim: groups`).** First enable the claim (it's off by default): App
      registration → **Token configuration** → Add groups claim → check **Security groups**. Group
      membership then appears in the token as each group's **Object ID (a GUID)**, never its display
      name, so the `role_bindings` key must be that GUID.
@@ -484,12 +492,12 @@ same app object, and steps 4 and 5 below live on **different** blades. Follow it
 
 | Mistake | Fix |
 |---|---|
-| Redirect URI set to **Single-page application** | Use **Web** — busbar holds a client secret server-side |
+| Redirect URI set to **Single-page application** | Use **Web**: busbar holds a client secret server-side |
 | Pasted the **Secret ID** (GUID) instead of the secret **Value** | Copy the **Value** column at creation time; it's shown once |
-| Created a security group and expect `role_claim: roles` to see it | App roles and security groups are different objects — either switch to `role_claim: groups` + the group's GUID, or assign the app role to the group |
+| Created a security group and expect `role_claim: roles` to see it | App roles and security groups are different objects. Either switch to `role_claim: groups` + the group's GUID, or assign the app role to the group |
 | Defined an app role but never assigned it | Definition (App registrations → App roles) and assignment (Enterprise applications → Users and groups) are separate steps on separate blades |
 | Bound a `role_bindings` key to a group's display name under `role_claim: groups` | The claim carries the group's **Object ID (GUID)**, never the name |
-| `groups` claim missing from the token entirely | It's off by default — enable it under App registration → Token configuration → Add groups claim |
+| `groups` claim missing from the token entirely | It's off by default. Enable it under App registration → Token configuration → Add groups claim |
 
 ---
 
@@ -541,7 +549,7 @@ groups:
   stream completes. Rejection: 429, no `Retry-After`. Takes no `pool:` (the gauge is per group).
 
 **Pool-scoped limits (`pool:`).** A windowed limit may carry `pool: <name>`, making it account and
-enforce per `(group, pool)` instead of group-wide — the per-tier budget split:
+enforce per `(group, pool)` instead of group-wide, the per-tier budget split:
 
 ```yaml
 groups:
@@ -556,7 +564,7 @@ the `frontier` budget blocks only requests dispatched through `frontier` (the re
 pool), while `value` traffic still admits against its untouched bucket. Group-wide limits (no
 `pool:`) still count ALL traffic, and everything ANDs across the chain as usual. Token accrual and
 non-2xx refunds mirror the admission exactly: they touch only the buckets the request's pool
-charged. The named pool must exist in `pools:` — a dangling qualifier fails validation (it would
+charged. The named pool must exist in `pools:`. A dangling qualifier fails validation (it would
 be an unenforced budget).
 
 **Budgets that teach (`on_exhaust: downgrade`).** A pool-scoped `budget` limit may declare what
@@ -572,11 +580,11 @@ groups:
 ```
 
 When the frontier budget runs dry, a frontier request is **re-admitted and dispatched through
-`value`** — the caller's expensive calls get cheaper, not blocked. The charge lands on the
+`value`**. The caller's expensive calls get cheaper, not blocked. The charge lands on the
 effective pool's buckets (accounting follows the traffic), the key's pool ACL is re-checked on
-every hop (a downgrade can never route a key into a pool it may not use — a denied hop falls back
+every hop (a downgrade can never route a key into a pool it may not use: a denied hop falls back
 to the plain quota rejection), and cascades are cycle-bounded. Absent (or `on_exhaust: block`),
-exhaustion rejects with the vendor's quota status — today's default. `downgrade` requires
+exhaustion rejects with the vendor's quota status, today's default. `downgrade` requires
 `downgrade_to:` naming a different existing pool, a `pool:` scope, and the `budget` metric (all
 validated at the door).
 
@@ -596,7 +604,7 @@ groups:
 
 The template's `limits:` use the same shape as any group's `limits:`. Resolution is
 **nearest-ancestor-wins**: provisioning walks up from the immediate parent and copies the first
-`child_default` it finds — a leaf under `engineering` gets the 2000 budget, one under `accounting`
+`child_default` it finds: a leaf under `engineering` gets the 2000 budget, one under `accounting`
 inherits the org's 500. No template anywhere on the chain means the new child is **inherit-only**:
 no limits of its own, capped solely by the parent chain. `child_default` never changes what the
 declaring group itself enforces, and pool qualifiers inside a template are validated like any
@@ -606,26 +614,73 @@ other limit's.
 
 ### `rate_card` and `per_request_fee`
 
-The ONLY cost source. Tokens are the ledger; every dollar figure is DERIVED at read time as
-`tokens x rate_card + requests x per_request_fee`, so correcting a rate is a config edit + reload
-with no re-billing and no data migration.
+The ONLY cost source. Every billable class a plane declares is the ledger (the four reserved LLM
+token tiers, plus any OPEN class a plane counts — a rerank's `search_units`, an A2A hop's `bytes`);
+every dollar figure is DERIVED at read time as `sum(class_count x class_rate) + requests x
+per_request_fee`, so correcting a rate is a config edit + reload with no re-billing and no data
+migration.
 
 ```yaml
 rate_card:
-  sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75 }
-  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0 }
+  sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
+                       units: { search_units: 0 } }     # open class: free, but explicitly configured
+  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0, units: { search_units: 0 } }
 per_request_fee: 0
 ```
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `rate_card` | map | absent (token pricing = 0) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per token; an omitted tier prices 0. ALL-OR-NOTHING: absent = every model's tokens price at 0 (budgets count only the flat fee); present = AUTHORITATIVE and COMPLETE: every configured model must have an entry or boot/`--validate` fail with a paste-ready stub of exactly the missing models. With a card present, a request for an arbitrary passthrough model with no rate is rejected pre-forward. |
+| `rate_card` | map | absent (billing off) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per unit; an omitted `*_utok` tier prices 0. ALL-OR-NOTHING at TWO levels: (1) present = every configured model needs an entry, or boot/`--validate` fail with a paste-ready stub of exactly the missing models; (2) present = every billable class the LLM plane declares — `input`, `output`, `cache_read`, `cache_write`, and the open `search_units` class a rerank counts — must be configured on SOME entry, or boot/`--validate` refuse naming the section and every missing class. The four reserved tiers count as configured by the card's mere presence (an omitted `*_utok` field is a configured `0`); `search_units` is not reserved, so it needs an explicit `units: { search_units: <rate> }` on at least one entry (`0` makes it free). With a card present, a request for an arbitrary passthrough model with no rate is also rejected pre-forward. |
+| `units` | map, per entry | `{}` | Rates for OPEN (non-reserved) billable classes, alongside a model's four `*_utok` tiers: `{ <class>: <rate> }`, same MICRO-units-per-unit scale. The wire form is a non-negative integer, or an exact decimal STRING (`"0.5"`); a bare YAML/JSON float is refused — it has already lost precision through a binary double by the time serde sees it. A rate finer than 0.001 micro-units per unit, negative, or past ~1.8e16 is refused at parse ("finer than one nano-unit, the finest rate the card holds; round it to three decimal places"). A reserved class name (`input`, `output`, `cache_read`, `cache_write`) under `units:` is refused — it already has its own `*_utok` field. An unpriced class under a card that IS configured for the model REFUSES at the point it is hit, rather than silently billing `0` (see [Virtual keys and enforcement](#virtual-keys-and-enforcement)). |
 | `per_request_fee` | integer | `0` | Flat charge per request in abstract cents, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
 
 The rate numbers are **abstract cost units**: Busbar does pure integer math and never knows what
 currency they represent. Currency, symbols, and FX are display concerns owned by your dashboard.
 Routing's `cheapest` strategy derives its per-member scalar from the card as
 `(input_utok + output_utok) / 2`; pool members carry no cost fields.
+
+A configured rate the card cannot hold is a BOOT refusal, not a silent unpriced cell: a `*_utok`
+tier below half a nano-unit (e.g. `0.0004`) or past ~1.8e16 fails validation naming the model, the
+tier and the rate —
+
+```text
+rate_card['<model>'].<tier> = <rate> micro-units per token is a rate the card cannot hold
+(non-zero rates run from 0.0005 to about 1.8e16), so the class would bill as unpriced;
+configure 0 to make it free, or a rate in range
+```
+
+— rather than booting and refusing on the first hit. Configure an explicit `0`, or a rate inside
+the representable range.
+
+#### Per-plane rate cards (`tools.rate_card`, `agents.rate_card`, `streams.rate_card`, `decisions.rate_card`)
+
+The reserved `rate_card` key is also accepted, core-owned, under every non-LLM plane's own section —
+`tools:`, `agents:`, `streams:`, `decisions:` — one card per plane, resolved independently of the
+flat/`pools` card above and of every other plane's card. Each entry is the same `{ *_utok fields,
+units: {...} }` shape (a non-LLM plane's classes are all OPEN, so only `units:` is meaningful for
+it); the shipped field-by-field grammar and per-plane boot refusals for each are in
+[mcp.md](mcp.md) (`tools.rate_card`, keyed by tool name — prices `tool_calls` and `bytes`),
+[a2a.md](a2a.md) (`agents.rate_card`, keyed `agent:<id>` — prices `bytes`, the request + response
+body bytes an A2A hop relayed both ways), and [voice.md](voice.md) (`streams.rate_card`). The same
+rule applies everywhere: a plane section with no `rate_card` of its own bills that plane's traffic
+at `0` (no refusal); a plane section WITH a card must configure every class the plane declares (the
+generic boot rule above) and REFUSES a hit against a class or lane it left silent, rather than
+billing it `0`. `GET /usage`, `/groups/{name}/usage` and `/keys/{id}/usage` surface that refusal as
+`409 unpriced_class` (`{"error":{"code":"unpriced_class","message":"usage cannot be priced: the
+rate card in force names no price for class \`<class>\` of \`<lane>\`"}}`) instead of a bare `500
+internal`; no figure moves, only the status and code the caller sees change.
+
+> **Upgrading from 1.5.5.** Every 1.5.5 deployment with a `rate_card:` now FAILS BOOT until the card
+> configures every class its plane declares — in practice, add `units: { search_units: 0 }` to any
+> one entry of the flat/`pools` card (or price it, if you bill reranks). The declared classes per
+> plane are: `pools` (LLM) = `input`, `output`, `cache_read`, `cache_write`, `search_units`; `tools`
+> (MCP) = `tool_calls`, `bytes`; `agents` (A2A) = `bytes`; `decisions` = `decision`; `streams`
+> (voice) = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`, `text_tokens_out`,
+> `audio_seconds_in`, `tool_calls`. (`cached_tokens` is reported by both duplex dialects but is
+> a SUBSET of the input token classes above, not a class beside them — pricing it too would
+> double-bill the same cached input, so it is not a declared billable class; it is carried,
+> unbilled, as attribution only.) A plane with no `rate_card` of its own is unaffected (absent =
+> billing off, no refusal).
 
 ---
 
@@ -646,7 +701,7 @@ store:
 | `memory` (default) | compiled in, no plugin | none |
 | `sqlite` / `busbar-store-sqlite` | `busbar-store-sqlite-<ver>-<target>.tar.gz` | `db_path` (file path), `busy_timeout_ms` (default 5000) |
 | `postgres` / `busbar-store-postgres` | `busbar-store-postgres-<ver>-<target>.tar.gz` | `url` (`postgres://` libpq URL); cluster-shared |
-| `valkey` / `busbar-store-valkey-plugin` | `busbar-store-valkey-<ver>-<target>.tar.gz` | `url` (`redis://`, `rediss://` for TLS); cluster-shared |
+| `valkey` / `busbar-store-valkey` | `busbar-store-valkey-<ver>-<target>.tar.gz` | `url` (`redis://`, `rediss://` for TLS); cluster-shared |
 
 `settings` is the store module's OWN opaque configuration, passed through verbatim; a third-party
 store plugin documents its own keys. A non-`memory` store requires `plugins.enabled: true` and the
@@ -660,13 +715,13 @@ between flushes N nodes splitting traffic can admit up to ~N times a configured 
 not a synchronous cluster-wide gate.
 
 **Metering retention (ALL backends, not just Valkey):** `usage_metering` rows are one per (key,
-metering-bucket day, model, provider), accumulated forever — Busbar has no prune path on any store
+metering-bucket day, model, provider), accumulated forever. Busbar has no prune path on any store
 backend (sqlite, postgres, valkey, or a third-party plugin), because metering is observability only,
 never consulted for enforcement (`add_metering`'s own doc comment, `crates/api/src/store.rs`). Row
 CARDINALITY is bounded by your config (keys × buckets × models × providers), but the TIME dimension
 is not, so the table grows without bound unless you retain it yourself. `list_metering(bucket)` reads
 exactly one day, so deleting rows for buckets older than N days is safe and cannot affect admission,
-billing, or any other enforcement path — it is a plain `DELETE` against your store's own schema, on
+billing, or any other enforcement path. It is a plain `DELETE` against your store's own schema, on
 your own retention horizon; Busbar does not choose one for you.
 
 **Backend caveats:** the Valkey store supports TLS (`rediss://`), transparent reconnect, and atomic
@@ -684,7 +739,7 @@ Declares which catalog providers this deployment uses and supplies the env var h
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `api_key` | secret reference | **yes** | n/a | The upstream credential as a secret reference: `{ env: VAR }`, `{ file: /path }`, or `{ module: <secret-plugin>, settings: {...} }`. Resolved once at boot. A reference resolving to an empty value logs a startup warning; the lane starts but will fail upstream auth. |
+| `api_key` | secret reference | **yes** | n/a | The upstream credential as a secret reference: `{ env: VAR }`, `{ file: /path }`, `{ module: <secret-plugin>, settings: {...} }`, or the bare scalar `none`. Resolved once at boot, **fail-closed**: a reference that does not resolve (unset variable, missing or empty file, unknown module, secret-plugin error) **refuses boot** under `BUSBAR-8020` and fails `--validate` — it never degrades to an empty credential. `api_key: none` declares an upstream that takes NO credential (a local ollama or vLLM): the lane starts, no auth header is sent, and the health prober skips it. `none` is rejected with `auth: jwt-bearer` and `auth: oauth-client-credentials`, which mint their token FROM the credential. Omitting `api_key` is still an error. |
 | `protocol` | string | no | Catalog value | Override the catalog protocol. Rarely needed. |
 | `base_url` | string | no | Catalog value | Override the upstream base URL. Must use `https://` for public/external hosts. Plain `http://` is permitted only for private or loopback hosts (e.g. a local Ollama or vLLM instance). Cloud-metadata hosts are blocked regardless of scheme (see SSRF guard). |
 | `error_map` | map<string, string> | no | `{}` merged onto catalog | Merged with the catalog's `error_map`; deployment entries win per code. |
@@ -693,7 +748,7 @@ Declares which catalog providers this deployment uses and supplies the env var h
 | `auth` | string | no | Catalog value | `bearer`, `api-key`, `jwt-bearer` (OAuth service-account, e.g. Vertex AI), or `oauth-client-credentials` (e.g. Azure Entra ID). |
 | `token_url` | string | no | Catalog value | OAuth token endpoint for `oauth-client-credentials`. |
 | `scope` | string | no | Catalog value | OAuth scope for `oauth-client-credentials`. |
-| `subject` | string | no | Catalog value | JWT-bearer assertion `sub` claim (RFC 7523 §3) for `jwt-bearer`. Opt-in — see the catalog `subject` row above; unset means no `sub` claim, the correct default for a plain Vertex AI service account. |
+| `subject` | string | no | Catalog value | JWT-bearer assertion `sub` claim (RFC 7523 §3) for `jwt-bearer`. Opt-in. See the catalog `subject` row above; unset means no `sub` claim, the correct default for a plain Vertex AI service account. |
 | `health` | object | no | Catalog value | Override the catalog's health probe config. |
 | `allow_metadata_hosts` | list<string> | no | `[]` | Per-provider surgical exception: hosts/IPs to unblock from the cloud-metadata SSRF denylist for **this provider only**. See [Security: Provider upstreams & SSRF](/docs/security/#the-control-matrix). |
 
@@ -826,11 +881,13 @@ pools:
 | `tier` | string | no | none | Operator-declared routing tier label (e.g. `"primary"`, `"overflow"`, `"large"`, `"small"`). Inert for plain weighted pools (no hooks). Exposed to gate hooks as the `tier` field on each candidate. See [Pool `hooks`](#pool-hooks-ordering-and-gates). |
 | `tags` | list<string> | no | `[]` | Free-form string labels (e.g. `["opus", "large-context"]`). The `restrict` gate verb intersects the candidate set against these tags (compliance pinning). Exposed to gate hooks for tag-based candidate selection. Inert for plain weighted pools. |
 
+The member object above is the canonical form and the one `busbar --migrate-config` preserves as written. A pool whose members carry nothing but a weight may instead list them as bare model names with a pool-level `weights: { <model>: <n> }` map; the two spellings are equivalent, may be mixed, and an inline `weight:` wins over the map for that member. With `weights:` absent and bare names only, the pool is an ordered failover list with the first member as primary.
+
 Selection uses Nginx-style smooth weighted round-robin (SWRR) across the healthy subset. A tripped, dead, or capacity-exhausted member is skipped and its share redistributes to the remaining members automatically. Selection state is isolated per-pool (separate SWRR shard), so unrelated pools that share a lane select independently.
 
 **Empty `members` list is a startup error.**
 
-A pool spanning members that use different underlying protocols produces a startup **warning** (not an error). Cross-protocol requests are translated via the IR (intermediate representation), which is lossless for all standard fields. Source-only fields (e.g. OpenAI `logprobs`, `n`) are dropped before reaching a foreign backend.
+A pool spanning members that use different underlying protocols produces a startup **warning** (not an error). Cross-protocol requests are translated via the IR (intermediate representation), which carries every field it models into the target's native shape. Source-only fields (e.g. OpenAI `logit_bias`) are dropped before reaching a foreign backend, and so are the few standard ones with no representation on the target at all; the list is in [Fields the target protocol cannot express](https://getbusbar.com/docs/protocols/#fields-the-target-protocol-cannot-express), and every drop emits a `warn!` naming the field. Attachments (documents, audio, video) cross. Same-protocol members are unaffected: those requests are forwarded byte-for-byte.
 
 ---
 
@@ -905,7 +962,7 @@ Guard rails, applied automatically: the budget is clamped to leave at least 1024
 #### Pool `hooks`: ordering and gates
 
 **1.5.3: hooks are DEFINED once, at the top level, and REFERENCED by bare name.** The top-level
-`hooks:` map is the definition surface — `<instance-name>: { module, settings, … }`. Every ATTACH
+`hooks:` map is the definition surface: `<instance-name>: { module, settings, … }`. Every ATTACH
 point (the reserved all-pools `pools.hooks:` list and each pool's own `hooks:` list) carries BARE
 NAMES only. Inline hook instances are gone, and so is the removed top-level `global_hooks:` list.
 The SAME module may back several named hooks: a different scope or different settings is a new NAME,
@@ -916,11 +973,11 @@ A pool's `hooks:` list therefore holds two kinds of bare name:
 - a **built-in ordering strategy**: `weighted` \| `cheapest` \| `fastest` \| `least_busy` \| `usage`
   (at most one per pool: it sets the base ranking; the default is `weighted`, the zero-cost SWRR
   baseline);
-- a **defined hook name** — a key of the top-level `hooks:` map. Its `module:` names a loaded
+- a **defined hook name**: a key of the top-level `hooks:` map. Its `module:` names a loaded
   `kind: hook` plugin by signed-manifest name/alias (1.5.0 retired the built-in `socket`/`webhook`
   transports; a hook is now always a signed plugin), so it requires `plugins.enabled: true` and the
   tarball installed in `plugins.dir`. Out-of-process forwarding to an HTTPS sidecar is the
-  first-party `busbar-webrequest-hook` plugin (`settings.url`). An unresolvable `module:`, or a
+  first-party `busbar-hook-webrequest` plugin (`settings.url`). An unresolvable `module:`, or a
   reference to a name that no `hooks:` entry defines, is a fail-closed boot error.
 
 ```yaml
@@ -933,7 +990,7 @@ hooks:                                                 # the DEFINITION map (def
     phase: [request, response]                         # a LIST of stages; omit = all four
     on_error: nothing
   pii:
-    module: busbar-webrequest-hook                     # forwards to an HTTPS sidecar
+    module: webrequest                                 # forwards to an HTTPS sidecar
     settings: { url: "https://sidecar.internal/pii" }
     groups: [engineering]                              # SCOPE: omit or [] = every caller
     kind: gate
@@ -941,7 +998,7 @@ hooks:                                                 # the DEFINITION map (def
     prompt: ro
     on_error: reject
   rank:
-    module: busbar-webrequest-hook                     # the SAME module, a second named hook
+    module: webrequest                                 # the SAME module, a second named hook
     settings: { url: "https://router.internal/rank" }
     kind: gate
     timeout_ms: 5
@@ -975,8 +1032,8 @@ with a pool's own value differently, by TYPE:
 
 | Reserved key | Type | Combine rule |
 |---|---|---|
-| `pools.hooks` | LIST | **ADDITIVE**: a pool fires `pools.hooks` ∪ its own `hooks:`. Deduped by name — a hook named in BOTH lists fires exactly ONCE, at its first position. |
-| `pools.upstream_credentials` | SCALAR (`own` \| `passthrough`) | **OVERRIDE**: a pool's own `upstream_credentials:` replaces the all-pools default outright. `own` (the default) sends the configured provider credential upstream; `passthrough` forwards the caller's own. This is where the retired `auth.upstream_credentials` went — whose credential reaches the provider is a ROUTING property. |
+| `pools.hooks` | LIST | **ADDITIVE**: a pool fires `pools.hooks` ∪ its own `hooks:`. Deduped by name: a hook named in BOTH lists fires exactly ONCE, at its first position. |
+| `pools.upstream_credentials` | SCALAR (`own` \| `passthrough`) | **OVERRIDE**: a pool's own `upstream_credentials:` replaces the all-pools default outright. `own` (the default) sends the configured provider credential upstream; `passthrough` forwards the caller's own. This is where the retired `auth.upstream_credentials` went: whose credential reaches the provider is a ROUTING property. |
 
 **Semantics:**
 
@@ -994,9 +1051,9 @@ with a pool's own value differently, by TYPE:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `module` | string | **required** | The `kind: hook` plugin backing this named instance, by signed-manifest name/alias. The same module may back several named hooks. |
-| `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. For the first-party `busbar-webrequest-hook`, `settings.url` is the sidecar endpoint (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`). |
+| `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. For the first-party `busbar-hook-webrequest`, `settings.url` is the sidecar endpoint (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`). |
 | `groups` | list<string> | `[]` (every caller) | SCOPE: the caller groups this hook fires for. A USER is a leaf group (e.g. `user:bob`); membership walks the [`groups:`](#groups) tree, matching the caller's own group or any ancestor. |
-| `phase` | list<string> | all four stages | The pipeline stages this hook fires at: `request` \| `candidate` \| `routing` \| `response`. A **LIST** — 1.5.3 generalized the single-valued tap `at:` into it (`route`→`candidate`, `attempt`→`routing`, `completion`→`response`). Omitting `phase:` means exactly those four core stages. |
+| `phase` | list<string> | all four stages | The pipeline stages this hook fires at: `request` \| `candidate` \| `routing` \| `response`. A **LIST**. 1.5.3 generalized the single-valued tap `at:` into it (`route`→`candidate`, `attempt`→`routing`, `completion`→`response`). Omitting `phase:` means exactly those four core stages. |
 | `kind` | `tap` \| `gate` | `gate` | `gate` = fire-and-wait (may rank/reject/restrict/rewrite); `tap` = fire-and-forget observation. |
 | `timeout_ms` | integer | `1` | Hard wall-clock deadline for a gate decision. Raise it when the hook does I/O. On timeout the decision is coerced to `on_error`. |
 | `on_error` | keyword or ref | `nothing` | Fallback when a gate times out / errors / saturates: a bare terminal (`nothing` \| `weighted` \| `reject` \| `first`) or a structured hook reference `{ hook: <name> }` (a chain, proven terminating at boot). A gate's deliberate `reject` reply is a decision, not a failure. |
@@ -1015,7 +1072,9 @@ chosen lane.
 
 #### `breaker`
 
-Per-(pool, lane) circuit-breaker tuning. The breaker state is independent per pool: a lane open in pool A can be closed in pool B. Lane-global state (hard-down, lifetime budget, concurrency semaphore) is shared across all pools.
+Circuit-breaker tuning for one target. On the LLM plane a target is a `(pool, lane)` cell, and the state is independent per pool: a lane open in pool A can be closed in pool B. Lane-global state (hard-down, lifetime budget, concurrency semaphore) is shared across all pools.
+
+**This block is accepted under `pools:` and nowhere else.** An earlier version of this reference said `tools.<server>.breaker:` and `agents.<agent>.breaker:` were also accepted. They are not, they never were, and because `tools:` and `agents:` reject unknown keys, a config written against that sentence fails at boot rather than running with the block ignored. MCP and A2A share the one breaker through failover pools in the same neutral top-level `pools:` map (their kind inferred from their `tools:`/`agents:` members; see [circuit-breaker.md](circuit-breaker.md#failover-on-mcp-and-a2a-the-same-server-deployed-twice)), which take `members:` and `repeatable:` only, so those planes run on the built-in breaker defaults. There is no field reference for `mcp:`, `tools:`, `agents:` or those MCP/A2A pools on this page; the complete grammar for each, with every boot refusal, is in [mcp.md](mcp.md) and [a2a.md](a2a.md). The fourth plane noun, `streams:` (live voice), is a singular section rather than a named-definition registry, so it has no `pools:` membership and no `breaker:` block of its own; its complete grammar is in [voice.md](voice.md). The same is true of `tools.<server>.sampling`, the per-upstream bounds on a server-initiated `sampling/createMessage` ask (`max_messages`, `max_prompt_bytes`, `max_stop_sequences`, `max_stop_sequence_bytes`, `temperature_min_milli`/`temperature_max_milli`) — each defaults to a sensible ceiling and each refusal names the exact `tools.<server>.sampling.<key>` to edit; the full grammar is in [mcp.md](mcp.md).
 
 ```yaml
 pools:
@@ -1121,11 +1180,11 @@ A keyword stays bare; a reference is structured (the 1.5.0 `on_X` convention):
 | `reject` | Return `503 Service Unavailable` with a `Retry-After` header. When a member is in breaker cooldown, `Retry-After` is the soonest genuine cooldown expiry; when exhaustion is pure saturation (every member at its `max_concurrent` limit, breakers closed), it is a small saturation floor instead of `1`. This is the default when `on_exhausted` is omitted. No alias spellings. |
 | `least_bad` | Route to the member whose cooldown expires soonest **that still has a free concurrency permit**, even though it is Open. A soonest member that is itself at capacity is skipped in favour of a servable sibling (rather than a hard 503); only when no admissible member has a free permit does it fall through to `reject`. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. No alias spellings. |
 | `{ fallback_pool: <name> }` | Route the request to another named pool and run its full selection logic. Cycles (`primary` to `overflow` back to `primary`) and self-references are detected at startup and are errors. |
-| `{ queue: { max_ms: <ms> } }` | Wait a **bounded** time for a concurrency permit to free on an at-capacity member, then dispatch on the freed lane. The waiter acquires directly on the candidate lanes' own FIFO semaphores, so a freed permit wakes **exactly one** waiter (no lost wakeup, no thundering herd). The wait is bounded by `min(max_ms, remaining failover budget)` and can never block past `failover.timeout_secs`; on winning a permit the lane's breaker is **re-checked** (a lane that tripped Open while queued is dropped and the wait continues on the rest). On deadline, a closed semaphore, or no remaining candidates it falls through to `reject`. Queueing only helps **saturation** (at-capacity) exhaustion — if every excluded member is dead / budget-exhausted / breaker-open it sheds immediately without waiting. `max_ms` is a required inner key. No alias spellings. Live park depth: `busbar_pool_queued{pool}`. |
+| `{ queue: { max_ms: <ms> } }` | Wait a **bounded** time for a concurrency permit to free on an at-capacity member, then dispatch on the freed lane. The waiter acquires directly on the candidate lanes' own FIFO semaphores, so a freed permit wakes **exactly one** waiter (no lost wakeup, no thundering herd). The wait is bounded by `min(max_ms, remaining failover budget)` and can never block past `failover.timeout_secs`; on winning a permit the lane's breaker is **re-checked** (a lane that tripped Open while queued is dropped and the wait continues on the rest). On deadline, a closed semaphore, or no remaining candidates it falls through to `reject`. Queueing only helps **saturation** (at-capacity) exhaustion. If every excluded member is dead / budget-exhausted / breaker-open it sheds immediately without waiting. `max_ms` is a required inner key. No alias spellings. Live park depth: `busbar_pool_queued{pool}`. |
 
 `reject` and `least_bad` are matched as exact bare strings with no alias spellings (a typo or any other spelling is an unknown-keyword boot error). `fallback_pool` and `queue` are structured mappings with no alias spellings either, and take exactly one of `fallback_pool` / `queue` (both present is an error). **Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
 
-`queue.max_ms` is validated at `--validate`/boot: it must be `> 0` (a `0` wait never queues — that is just `reject` with extra machinery) and `<=` the resolved failover budget (`failover.timeout_secs × 1000`, else the global default `120000` ms). A `max_ms` larger than the whole failover budget is clamped to it at runtime and would never reach its ceiling, so it is rejected at boot with an actionable message rather than shipped as a silent dead-letter. Exactly `max_ms == budget` is accepted (only a value strictly greater is rejected).
+`queue.max_ms` is validated at `--validate`/boot: it must be `> 0` (a `0` wait never queues: that is just `reject` with extra machinery) and `<=` the resolved failover budget (`failover.timeout_secs × 1000`, else the global default `120000` ms). A `max_ms` larger than the whole failover budget is clamped to it at runtime and would never reach its ceiling, so it is rejected at boot with an actionable message rather than shipped as a silent dead-letter. Exactly `max_ms == budget` is accepted (only a value strictly greater is rejected).
 
 ---
 
@@ -1195,13 +1254,14 @@ limits:
   default_max_tokens: 4096
   max_keys_per_principal: 0       # 0 = unlimited; >0 caps LIVE keys bound to one group (per-user anti-sprawl)
   max_auto_provisioned_groups: 0  # 0 = unlimited; >0 caps how many groups a mint may auto-provision
+  hook_content_max_bytes: 0       # 0 = unlimited (default); >0 opts in to a ceiling on the content a `prompt: ro|rw` hook is shown
 ```
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. A request that arrives while the cap is full is **shed** — returned a `503` with `Retry-After` immediately — rather than queued behind the cap (the layer is a `tower::limit::GlobalConcurrencyLimitLayer` wrapped in `tower::load_shed`). `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). **Restart-to-apply**: it is captured once in `main()` and baked into the router at process start; a config apply swaps only the `App`, never the router, so the semaphore's permit count cannot change live — `reload_to_apply` flags `limits.max_inbound_concurrent` when set. |
-| `request_body_max_bytes` | integer | `33554432` | Maximum inbound request body size (bytes). Exceeding this returns a protocol-native 413. **Partially restart-to-apply, undocumented in the API today (known gap, tracked for post-1.5.0):** the inbound 413 threshold (`axum::extract::DefaultBodyLimit`) is boot-frozen the same way as `max_inbound_concurrent` above, but the coupled egress translate/buffer cap (`limits::translate_body_max_bytes()`) reads a live snapshot re-installed on every apply. A live `PUT` therefore only half-applies: **lowering** this value moves the egress cap down immediately while the inbound 413 threshold stays at the boot value, so a request body can land in the gap between the two — accepted inbound, but no longer buffer-translatable on a cross-protocol hop, breaking the "accepted implies translatable" invariant. `reload_to_apply` does not flag this field: flagging it dotted would mis-state that the whole field is stored-not-live when three of its four consumers are in fact live. The fix (make the inbound limit read the live snapshot, or otherwise pin the coupling) is deferred past 1.5.0 because it touches the request path and the router layer stack. |
-| `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. **Restart-to-apply**: the upstream `reqwest::Client` is built once at boot and reused across config applies (warm connection pools are kept deliberately), so a live `PUT` changes the stored value but not the running client — `reload_to_apply` flags `limits.upstream_request_timeout_secs` when set. |
+| `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. A request that arrives while the cap is full is **shed**, returned a `503` with `Retry-After` immediately, rather than queued behind the cap (the layer is a `tower::limit::GlobalConcurrencyLimitLayer` wrapped in `tower::load_shed`). `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). **Restart-to-apply**: it is captured once in `main()` and baked into the router at process start; a config apply swaps only the `App`, never the router, so the semaphore's permit count cannot change live. `reload_to_apply` flags `limits.max_inbound_concurrent` when set. |
+| `request_body_max_bytes` | integer | `33554432` | Maximum inbound request body size (bytes). Exceeding this returns a protocol-native 413. **Partially restart-to-apply, undocumented in the API today (known gap, tracked for post-1.5.0):** the inbound 413 threshold (`axum::extract::DefaultBodyLimit`) is boot-frozen the same way as `max_inbound_concurrent` above, but the coupled egress translate/buffer cap (`limits::translate_body_max_bytes()`) reads a live snapshot re-installed on every apply. A live `PUT` therefore only half-applies: **lowering** this value moves the egress cap down immediately while the inbound 413 threshold stays at the boot value, so a request body can land in the gap between the two: accepted inbound, but no longer buffer-translatable on a cross-protocol hop, breaking the "accepted implies translatable" invariant. `reload_to_apply` does not flag this field: flagging it dotted would mis-state that the whole field is stored-not-live when three of its four consumers are in fact live. The fix (make the inbound limit read the live snapshot, or otherwise pin the coupling) is deferred past 1.5.0 because it touches the request path and the router layer stack. |
+| `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. **Restart-to-apply**: the upstream `reqwest::Client` is built once at boot and reused across config applies (warm connection pools are kept deliberately), so a live `PUT` changes the stored value but not the running client. `reload_to_apply` flags `limits.upstream_request_timeout_secs` when set. |
 | `tls_handshake_timeout_secs` | integer | `10` | Wall-clock cap on each inbound TLS handshake; prevents slowloris / handshake-flood. Ignored when `tls:` is absent. |
 | `request_body_read_timeout_secs` | integer | `30` | Maximum time allowed between inbound request-body frames before the connection is dropped. Closes the slow-loris body gap the header-read timeout does not cover. |
 | `pool_max_idle_per_host` | integer | `1024` | HTTP connection pool idle connection limit per upstream host. **Restart-to-apply** (same boot-scoped `UpstreamClients` reuse as above; `reload_to_apply` flags `limits.pool_max_idle_per_host`). |
@@ -1210,15 +1270,16 @@ limits:
 | `upstream_error_body_max_bytes` | integer | `262144` | Maximum bytes buffered from a non-2xx upstream response body for error classification. |
 | `max_honored_retry_after_secs` | integer | `86400` | Maximum value honored from an upstream `Retry-After` header (to prevent overflow). |
 | `default_max_tokens` | integer | `4096` | Gateway-wide default injected on cross-protocol hops to Anthropic when the caller omitted `max_tokens`. Overridden by a per-model `default_max_tokens` when set. |
-| `max_keys_per_principal` | integer | `0` | Anti-sprawl cap: the maximum number of **live** keys (enabled and not revoked) that may be bound to one group — the unbound bucket included. `0` = unlimited. Enforced on `POST /keys` **and** on a `PATCH /keys/{id}` rebind; over cap is a terminal `409 conflict`. |
+| `max_keys_per_principal` | integer | `0` | Anti-sprawl cap: the maximum number of **live** keys (enabled and not revoked) that may be bound to one group, the unbound bucket included. `0` = unlimited. Enforced on `POST /keys` **and** on a `PATCH /keys/{id}` rebind; over cap is a terminal `409 conflict`. |
 | `max_auto_provisioned_groups` | integer | `0` | Anti-sprawl cap on the SHAPE of the limit tree: the maximum size of the runtime group set that `POST /keys` may grow by auto-provisioning (`parent:`). `0` = unlimited. Over ceiling is a terminal `409 conflict`; binding to an existing group is unaffected. |
+| `hook_content_max_bytes` | integer | `0` | Ceiling on the request CONTENT a hook holding a `prompt: ro`/`rw` grant is shown in one projection. `0` = **unlimited (the default)**: the projection is sent uncapped. A non-zero value is an **opt-in** ceiling — when set, over-cap content is omitted **whole** — never truncated mid-value, because a guardrail that screens half a payload and passes it is worse than one that refuses — and the hook receives a present-but-empty content projection, which the wire distinguishes from the absent one an ungranted hook sees; the always-present size fields still report the real totals, so an omission is visible in the payload rather than silent. `busbar_hook_content_truncated_total` counts it. Leaving it at the `0` default keeps a `prompt: rw` redaction gate from being fail-open no-op'd by a blanked projection. Live: a `PUT` takes effect on the next request. This bounds the tool-argument and tool-result content a hook now sees, which on an agent request is limited by neither a context window nor a token count. |
 
 ---
 
 ### `export`
 
 **1.5.3: `export:` is the single telemetry-egress surface, and the `observability:` block is DELETED.**
-It is a NAMED map — `<instance-name>: { module, settings }` — so the SAME module can back SEVERAL
+It is a NAMED map (`<instance-name>: { module, settings }`), so the SAME module can back SEVERAL
 instances, which the retired type-keyed block could not express at all (two request-log webhooks to
 two URLs is a real deployment: app logs plus SIEM). Presence is the switch; an absent/empty block
 leaves collection inert.
@@ -1233,19 +1294,19 @@ export:
 
 | `module` | Stream | `settings` | Notes |
 |---|---|---|---|
-| `prometheus` | Metrics (PULL) | `buffer_seconds` (**required**), `key_gauge_limit` (default 2000) | Installs the recorder and serves `/metrics` (auth-gated, same rules as `/stats`). At most ONE instance — it owns the one well-known route, so a second is a boot error rather than a silent loss. `buffer_seconds: 0` is a boot error (it would retain nothing while still paying the recording cost); OMIT the instance to turn metrics off. |
+| `prometheus` | Metrics (PULL) | `buffer_seconds` (**required**), `key_gauge_limit` (default 2000) | Installs the recorder and serves `/metrics` (auth-gated, same rules as `/stats`). At most ONE instance: it owns the one well-known route, so a second is a boot error rather than a silent loss. `buffer_seconds: 0` is a boot error (it would retain nothing while still paying the recording cost); OMIT the instance to turn metrics off. |
 | `request-log-webhook` | Logs (PUSH) | `url` (**required**, `https://`-only), `auth_header: { name, value }`, `max_inflight_deliveries` (default 64), `delivery_timeout_secs` (default 2) | Fire-and-forget JSON POST per completed request: `{ts, ingress_protocol, pool, outcome, latency_ms}`. SSRF-guarded. Drops rather than queues when saturated. Timeout is PER INSTANCE; the in-flight bound is shared across instances and takes the maximum. |
 | `request-log-file` | Logs (PUSH) | `path` (**required**), `rotate_mb` | Appends each request-log line as JSONL. |
-| `otlp` | Traces | `url` (**required**) | OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default); remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Traces are flushed on graceful shutdown. At most ONE instance (it installs the one process-global tracer subscriber). |
+| `otlp` | Traces | `url` (**required**) | OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default); remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Each request-path span is POSTed as it closes (OTLP/HTTP protobuf, one span per request). At most ONE instance. |
 
 The whole `export:` block is **restart-to-apply**: edit it in `config.yaml` and apply via a plugin
-reload / restart. It is deliberately NOT part of the single-value `PUT /config/settings` overlay — the
+reload / restart. It is deliberately NOT part of the single-value `PUT /config/settings` overlay: the
 sinks seed process-global `OnceLock`s (and, for OTLP, a one-shot `tracing_subscriber` init) that a
 live apply structurally cannot re-point.
 
 **OTLP credential hygiene.** If your OTLP endpoint requires auth, supply credentials in the URL userinfo (`https://user:pass@collector.example.com/…`): Busbar moves them to an `Authorization: Basic` header and strips them from the URL before logging, so they do not appear in logs or spans.
 
-**Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) and the `x-busbar-route-policy` / `x-busbar-route-target` headers are now both `advanced.response_headers` toggles, default `false` — see [`advanced`](#advanced) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. `busbar --migrate-config` moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
+**Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) and the `x-busbar-route-policy` / `x-busbar-route-target` headers are now both `advanced.response_headers` toggles, default `false`. See [`advanced`](#advanced) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. `busbar --migrate-config` moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
 
 ---
 
@@ -1269,7 +1330,7 @@ unlimited (access only).
   "labels": { "team": "growth" }, "expires_in": "7d" }
 ```
 
-- `group` must name a configured `groups:` entry (`400` otherwise). Omitted = unlimited key. **Auto-provision**: when `group` names a leaf that does NOT yet exist and `parent` names an existing group, the leaf is created automatically (limits stamped from the nearest-ancestor `child_default`; inherit-only when none), bound to the key, and live in the enforcement chain immediately. If the group already exists, `parent` must match its actual parent (`409` otherwise — a mint never re-homes). Requires `full` scope.
+- `group` must name a configured `groups:` entry (`400` otherwise). Omitted = unlimited key. **Auto-provision**: when `group` names a leaf that does NOT yet exist and `parent` names an existing group, the leaf is created automatically (limits stamped from the nearest-ancestor `child_default`; inherit-only when none), bound to the key, and live in the enforcement chain immediately. If the group already exists, `parent` must match its actual parent (`409` otherwise: a mint never re-homes). Requires `full` scope.
 - `allowed_pools` omitted = ALL pools; an explicit `[]` = NO pools (C6: an empty list is the
   empty set). The intent is stored exactly as given.
 - `expires_in` / `expires_at` are mutually exclusive; the default lifetime is 90 days.
@@ -1321,6 +1382,12 @@ plugins:
     allow_third_party: false    # default false: signed-but-unknown-publisher plugins are skipped
   min_versions:                 # anti-downgrade floors, keyed by manifest name (third-party;
     acme-store-dynamo: "2.0.0"  # first-party is automatically floored at the binary's version)
+  logs:                         # every plugin instance's own log file
+    dir: logs/plugins           # <dir>/<instance>.log (default: logs/plugins)
+    level: info                 # off | error | warn | info | debug | trace (default: info)
+    levels: { primary: debug }  # per-instance levels, by instance name
+    rotate_mb: 64               # rotate past this size (default: never)
+    keep: 5                     # rotated archives kept (default: 5)
 ```
 
 | Field | Type | Required | Default | Notes |
@@ -1331,6 +1398,11 @@ plugins:
 | `trust.allow_unsigned` | bool | no | `false` | EXPLICIT opt-in to load plugins with no valid signature (unsigned/tampered). Without it they are logged and skipped, never `dlopen`ed. |
 | `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |
 | `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the running binary's version. |
+| `logs.dir` | string | no | `logs/plugins` | Where each plugin instance's own log file goes: `<dir>/<instance>.log`, the instance name with every character outside `[A-Za-z0-9._-]` written as `_`. This build accepts and checks the `logs` keys but writes no per-plugin file yet; plugin log lines reach the Busbar log, as in 1.5.5. |
+| `logs.level` | string | no | `info` | The level of an instance `logs.levels` does not name: `off`, `error`, `warn`, `info`, `debug` or `trace`. Any other word is a boot error naming the key. |
+| `logs.levels` | map | no | empty | Per-instance levels: instance name -> level word. |
+| `logs.rotate_mb` | integer | no | never | Past this size the file is renamed `<file>.1` (older archives shift up) and a new file begins, the request-log file's rotation. `0` is a boot error. |
+| `logs.keep` | integer | no | `5` | How many rotated archives are kept. |
 
 **Fail-closed guarantees:** with plugins enabled, ANY invalid tarball or manifest in `dir` (unparseable, missing/malformed fields, sha256 mismatch, unsupported `abi_version`) aborts boot naming the file and reason; any name/alias conflict between loadable plugins aborts boot naming both. `busbar --validate` runs the exact same pipeline ahead of time (zero side effects, nothing loaded), and `busbar --list-plugins` prints the manifest-only inventory with each plugin's signature verdict and load status.
 
@@ -1535,11 +1607,11 @@ pools:
     on_exhausted: reject
 
 # ---------------------------------------------------------------------------
-# Export: the single telemetry-egress surface — metrics, traces and per-request
+# Export: the single telemetry-egress surface. Metrics, traces and per-request
 # logging are all NAMED instances here (1.5.3 deleted `observability:` and the
 # top-level `metrics:` block). Prometheus is OPT-IN: omit the instance and busbar
 # records nothing and does not mount /metrics. When it IS present,
-# `buffer_seconds` is REQUIRED — how many seconds of observations to retain
+# `buffer_seconds` is REQUIRED: how many seconds of observations to retain
 # (quantiles cover that window; _sum and _count stay cumulative), which is what
 # bounds the memory cost of metrics.
 # ---------------------------------------------------------------------------
@@ -1549,7 +1621,7 @@ export:
   req-log: { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
 
 # ---------------------------------------------------------------------------
-# Response headers — every busbar-injected header is opt-in, default OFF (see
+# Response headers: every busbar-injected header is opt-in, default OFF (see
 # observability.md#response-headers). This example opts into both.
 # ---------------------------------------------------------------------------
 advanced:
@@ -1583,8 +1655,10 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `error_map` value unknown | A value in `error_map` is not one of the nine canonical disposition classes |
 | `auth` value unknown | `auth` field value not `bearer`, `api-key`, `jwt-bearer`, or `oauth-client-credentials` |
 | `affinity.mode` value unknown | `affinity.mode` not `session` (the only supported value) |
-| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` **REGISTRY** block — one with `socket:`/`webhook:` entries, or any entry lacking `module:`; the 1.5.3 `hooks:` DEFINITION map is valid and passes straight through — `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a Busbar 1.x config; run `busbar --migrate-config`" |
+| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` **REGISTRY** block (one with `socket:`/`webhook:` entries, or any entry lacking `module:`; the 1.5.3 `hooks:` DEFINITION map is valid and passes straight through), `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a Busbar 1.x config; run `busbar --migrate-config`" |
 | Retired 1.5.3 key present | A retired grammar key is present (`global_hooks:`, `observability:`, a top-level `metrics:` block, `admin_insecure:`, `auth.upstream_credentials:`, `auth.methods:`, `otlp_url`/`otlp_endpoint`): boot refuses, naming the key AND its 1.5.3 home, with the `busbar --migrate-config` breadcrumb |
+| Provider `api_key` unresolvable | A provider's `api_key` reference does not resolve (unset variable, missing or empty file, unknown module, secret-plugin error). `BUSBAR-8020` names the provider and the reference (`env:VAR`, `file:/path`), never the value. Declare `api_key: none` for an upstream that takes no credential |
+| `api_key: none` where a credential is required | `none` on any secret other than a provider `api_key`, or on a provider using `auth: jwt-bearer` / `auth: oauth-client-credentials` (both mint their token FROM the credential) |
 | `path` malformed | `path` does not begin with `/` |
 | Model name reserved | Model named `admin` |
 | `provider` reference missing | `models.<name>.provider` does not name a configured provider |
@@ -1615,7 +1689,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | Pool `hooks:` bare name not a built-in strategy | An out-of-process hook is an inline `{ module: ... }` ref; bare names are only `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` |
 | Unknown hook module | An inline ref's `module` does not resolve to a loaded `kind: hook` plugin (by manifest name/alias) |
 | Hook plugin subsystem disabled | An inline ref names a plugin while `plugins.enabled` is false, or the tarball is not installed in `plugins.dir` |
-| Hook `busbar-webrequest` SSRF-blocked | RFC-1918, CGNAT, link-local, and metadata hosts are blocked in its `settings.url` (loopback allowed; remote must be `https://`) |
+| Hook `busbar-hook-webrequest` SSRF-blocked | RFC-1918, CGNAT, link-local, and metadata hosts are blocked in its `settings.url` (loopback allowed; remote must be `https://`) |
 | `prompt: rw` on a `kind: tap` hook | A tap observes; it can never rewrite |
 | Groups tree faults | A `parent` that does not exist (paste-ready stub), a cycle (the path is printed), or a chain deeper than 8 |
 | Malformed group limit | A limit without exactly one metric key, a windowed metric without `per:`, or `concurrent` with a `per:` |
@@ -1635,7 +1709,6 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `chain: []` (open front door): no client authentication, development only |
 | `pools.upstream_credentials: passthrough` (or a pool override) with a provider whose credential reference resolves non-empty (credential-leak risk) |
 | Heterogeneous pool (members span more than one backend protocol, cross-protocol translation applies) |
-| A provider `api_key` reference resolves empty at boot (lane will fail auth) |
 | `allowed_pools` on a virtual key (admin API) names a pool not currently configured |
 | The ephemeral `memory` store with minted keys: keys, usage, and the revocation denylist reset on restart (choose a durable `store.module` for persistence) |
 
@@ -1643,24 +1716,25 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 
 ### `advanced`
 
-Internal tuning knobs — normally omitted; each field defaults to its historical value.
+Internal tuning knobs, normally omitted; each field defaults to its historical value.
 
 ```yaml
 advanced:
   rate_sweep_interval: 256          # rate-limiter stale-entry sweep amortization (every Nth check_rate)
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # tokio worker pool size (1.5.3 ← BUSBAR_WORKER_THREADS); omit ⇒ one per core
-  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (1.5.3 ← BUSBAR_UPSTREAM_HTTP1_ONLY)
-  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (1.5.3 ← BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE)
+  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; BUSBAR_WORKER_THREADS is deprecated but still honoured); omit ⇒ one per core
+  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (BUSBAR_UPSTREAM_HTTP1_ONLY is deprecated but still honoured)
+  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is deprecated but still honoured)
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
-    server_timing: false            # `Server-Timing: busbar;dur=<ms>` — formerly observability.emit_server_timing
+    server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
 ```
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are
-not live-mutable via `PUT /config/settings` — a change takes effect on the next restart. The corresponding
-env vars are honored for one release as a deprecated fallback.
+not live-mutable via `PUT /config/settings`. A change takes effect on the next restart. The
+`BUSBAR_*` env vars that used to back these knobs are deprecated but still honoured (each warns with
+BUSBAR-3021 at boot); `TOKIO_WORKER_THREADS` remains, undeprecated, as a fallback for `worker_threads`.
 
 `response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
 composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT` stores the new value
@@ -1670,9 +1744,10 @@ restart. Full catalogue, rationale for defaulting off, and exactly when each hea
 
 ### `providers_file`
 
-Top-level pointer to the provider catalog (1.5.3 ← `BUSBAR_PROVIDERS`). Relative paths resolve against the
-config.yaml directory; absent ⇒ `providers.yaml` next to config.yaml. The two-file model is unchanged — this
-just names the catalog that config.yaml's `providers:` map references.
+Top-level pointer to the provider catalog. Relative paths resolve against the config.yaml directory;
+absent ⇒ `providers.yaml` next to config.yaml. The `--providers <path>` CLI flag (1.6.0) overrides this
+key. The two-file model is unchanged. This just names the catalog that config.yaml's `providers:` map
+references.
 
 ```yaml
 providers_file: providers.yaml

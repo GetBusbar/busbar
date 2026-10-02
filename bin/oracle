@@ -1,0 +1,564 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# The shadow oracle is a separate product now. This is the ONE piece of glue busbar keeps: it
+# obtains the PINNED Rust `busbar-oracle` engine and runs it against this checkout's data.
+#
+# PHASE C CUTOVER (branch-only): the money oracle is now the Rust `busbar-oracle` crate that lives in
+# GetBusbar/busbar-release. This shim builds/obtains that binary from a SOURCE pin
+# (testing/shadow-oracle/oracle-rust.pin: the busbar-release repo + git ref + crate) — the source pin
+# replaces the old archive digest-pin (an unpinned judge is not a judge; money integrity). The argv
+# contract is UNCHANGED (cells / record / replay / diff / normalize / merge / renormalize /
+# harness-rev / owed-baseline / fetch-golden / fetch-plugin / replay-selftest / selftest / tool-dir),
+# so every caller (the removed ci.yml's `./bin/oracle <sub>`, the turnstile's HarnessOracle) is unchanged.
+#
+# TOOL_DIR is a SHIM directory this shim generates beside the binary: `record.sh` there forwards to
+# `busbar-oracle record --native` so the turnstile's HarnessOracle — which drives
+# `$BUSBAR_ORACLE_TOOL_DIR/record.sh` — records 100% natively without a code change; replay is already
+# the in-process Rust differ.
+#
+# THE PRODUCT DATA-DRIVERS NO LONGER SHELL OUT TO PYTHON. `testing/shadow-oracle/scripts/*.sh` used
+# to call `python3 $BUSBAR_ORACLE_TOOL_DIR/{mock-upstream,capture-exec,capture}.py` and
+# `bash $BUSBAR_ORACLE_TOOL_DIR/fetch-plugin.sh` — files the Rust tool dir does not contain, so all 33
+# script-driven cells recorded NOTHING and each one logged itself as a `named gap` rather than a
+# failure. They now call this binary's own subcommands through BUSBAR_ORACLE_BIN (exported below),
+# and `oracle-config.sh` — the one file they still SOURCE — is materialized from the engine.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ── A FILTERED RUN CARRIES ITS FORGIVENESSES' PREMISES ──────────────────────────────────────────
+# An accepted difference forgives its cells only once its PREMISE holds, and the premise probes other
+# cells. A record or replay narrowed by a filter that leaves a premise cell out cannot evaluate it, so
+# the engine WITHHOLDS the owner-signed forgiveness and reports its cells FAIL — a false red that
+# reads exactly like a regression (24 Q40 cells, 2026-09-27, from a filter missing
+# `ops.scrape|metrics|key`). So a filter is widened here to every premise cell of every accepted
+# difference whose cells it selects, and a premise that names a cell the corpus does not have is a
+# refusal naming it. After a filtered replay, a forgiveness still withheld for an unevaluable
+# premise the filter selected is a refusal too, never a FAIL row.
+premise_closure() {  # premise_closure <filter> -> the premise cells the filter's forgivenesses need
+  python3 - "$1" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" <<'PY'
+import json, re, sys
+flt, data = sys.argv[1], sys.argv[2]
+ids = [c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"]]
+universe = set(ids)
+try:
+    sel = re.compile(flt)
+except re.error as e:
+    sys.exit(f"oracle: the filter {flt!r} is not a regex this shim can widen ({e})")
+selected = [i for i in ids if sel.search(i)]
+def cells_of(node, out):
+    if isinstance(node, dict):
+        if isinstance(node.get("cell"), str):
+            out.add(node["cell"])
+        for v in node.values():
+            cells_of(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            cells_of(v, out)
+need, bad = set(), []
+for e in json.load(open(f"{data}/accepted-differences.json"))["accepted"]:
+    if not e.get("premise") or not e.get("cells"):
+        continue
+    try:
+        pat = re.compile(e["cells"])
+    except re.error:
+        continue
+    if not any(pat.search(i) for i in selected):
+        continue
+    probes = set()
+    cells_of(e["premise"], probes)
+    for c in sorted(probes):
+        if c not in universe:
+            bad.append(f"{e.get('id')!r} probes premise cell {c!r}, which cells.json does not have")
+        elif not sel.search(c):
+            need.add(c)
+if bad:
+    sys.exit("oracle: a filtered run cannot evaluate a forgiveness it selects:\n  " + "\n  ".join(bad))
+print("\n".join(sorted(need)))
+PY
+}
+widen_filter() {  # widen_filter <filter> -> the filter plus the premise cells it needs
+  local extra
+  extra="$(premise_closure "$1")" || exit 3
+  if [ -z "$extra" ]; then printf '%s\n' "$1"; return; fi
+  local alt
+  alt="$(printf '%s\n' "$extra" | python3 -c 'import re,sys; print("|".join(re.escape(l.strip()) for l in sys.stdin if l.strip()))')"
+  echo "oracle: the filter is widened to the premise cells its accepted differences probe: $(printf '%s' "$extra" | tr '\n' ' ')" >&2
+  printf '(?:%s)|^(?:%s)$\n' "$1" "$alt"
+}
+# withheld_selected <engine-output-file> <filter> -> nonzero, naming each, when a forgiveness the
+# filter selected was withheld because its premise could not be evaluated.
+withheld_selected() {
+  local closure
+  closure="$(premise_closure "$2")" || return 3
+  python3 - "$1" "$2" "$closure" <<'PY'
+import re, sys
+out, flt, closure = sys.argv[1], sys.argv[2], set(filter(None, sys.argv[3].split("\n")))
+sel = re.compile(flt)
+hits = []
+for line in open(out, errors="replace"):
+    m = re.search(r"entry (.+?) is WITHHELD .*premise UNEVALUABLE: premise probes cell \"([^\"]+)\"", line)
+    if m and (m.group(2) in closure or sel.search(m.group(2))):
+        hits.append(f"{m.group(1)} (premise cell {m.group(2)!r})")
+if hits:
+    print("oracle: a filtered replay could not evaluate the premise of a forgiveness it selected, so "
+          "its cells would report FAIL for a difference the owner signed. Refusing instead:\n  "
+          + "\n  ".join(hits) + "\nRecord the premise cells (bin/oracle record widens its --filter "
+          "to them) and replay again.", file=sys.stderr)
+    sys.exit(3)
+PY
+}
+if [ "${1:-}" = "premise-filter" ]; then widen_filter "${2:?premise-filter <filter>}"; exit 0; fi
+
+# ── A RECORDING OWNS ITS TEMP DIRECTORY ─────────────────────────────────────────────────────────
+# Every busbar the recorder boots sweeps `<TMPDIR>` at startup for plugin staging dirs a dead pid
+# left, and prints `[info] removed N orphaned plugin staging dir(s)…` on stderr when it finds any
+# (1.5.5 and 1.6.0 alike). Inheriting the host TMPDIR made that line a function of whatever other
+# busbar runs on the host had crashed: boot.refusal|BOOT-170 diverged on it (C3 measure, b14d0a1a4),
+# and the 1.5.5 binary prints the same line under the same pollution. So a recording runs with
+# TMPDIR at a fresh private directory (still under the host temp base, so the recorder's temp-path
+# normalization is unchanged) and removes it afterwards, whatever the exit.
+_ptmp=""
+private_tmp() {  # private_tmp <cmd...>: run cmd with TMPDIR at a fresh private dir, removed after
+  local base="${TMPDIR:-/tmp}" rc=0
+  _ptmp="$(mktemp -d "${base%/}/busbar-oracle-tmp.XXXXXX")"
+  trap 'rm -rf "$_ptmp"' EXIT
+  TMPDIR="$_ptmp" "$@" || rc=$?
+  rm -rf "$_ptmp"; trap - EXIT
+  return "$rc"
+}
+if [ "${1:-}" = "private-tmp" ]; then shift; rc=0; private_tmp "$@" || rc=$?; exit "$rc"; fi
+if [ "${1:-}" = "private-tmp-selftest" ]; then
+  # Both record paths (`bin/oracle record` and the generated tool-dir record.sh) run against a copy
+  # of this shim with a stub engine, from a host TMPDIR planted with dead-pid staging dirs in the
+  # 1.5.5 and 1.6.0 layouts. The engine must see none of them, and its private dir must be gone.
+  # An optional argument names the shim under test (a parent revision's, for the red proof).
+  under="${2:-$here/bin/oracle}"
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
+  mkdir -p "$st/repo/bin" "$st/repo/testing/shadow-oracle" "$st/host" "$st/out"
+  cp "$under" "$st/repo/bin/oracle"
+  cp "$here/testing/shadow-oracle/oracle-rust.pin" "$st/repo/testing/shadow-oracle/"
+  dead="$(sh -c 'echo $$')"
+  mkdir -p "$st/host/busbar-plugins-$dead-x" "$st/host/busbar-plugin-staging-$(id -u)/busbar-plugins-$dead-x"
+  cat >"$st/engine" <<'E'
+#!/usr/bin/env bash
+[ "$1" = record ] || exit 0
+n="$(find "${TMPDIR:?}" -name 'busbar-plugins-*' 2>/dev/null | wc -l | tr -d ' ')"
+echo "$TMPDIR $n" >>"$(dirname "$0")/seen"
+E
+  chmod +x "$st/engine"
+  env -u ORACLE_LISTEN_PORT -u ORACLE_ADMIN_PORT -u ORACLE_MOCK_PORT TMPDIR="$st/host" \
+    BUSBAR_ORACLE_RUST_BIN="$st/engine" "$st/repo/bin/oracle" record --bin /x --out "$st/out/a" >/dev/null 2>&1
+  env TMPDIR="$st/host" BUSBAR_ORACLE_RUST_BIN="$st/engine" \
+    "$(find "$st/repo/target" -name record.sh | head -1)" --bin /x --out "$st/out/b" >/dev/null 2>&1
+  fail=0; n=0
+  while read -r dir cnt; do
+    n=$((n + 1))
+    case "$dir" in "$st/host"/busbar-oracle-tmp.*) ;; *) echo "  [FAILED] path $n: TMPDIR was not private: $dir"; fail=1;; esac
+    [ "$cnt" = 0 ] || { echo "  [FAILED] path $n: the engine saw $cnt staging dir(s) from the host"; fail=1; }
+    [ ! -e "$dir" ] || { echo "  [FAILED] path $n: the private TMPDIR outlived the run: $dir"; fail=1; }
+  done <"$st/seen"
+  [ "$n" = 2 ] || { echo "  [FAILED] expected 2 recordings (bin/oracle record, record.sh), saw $n"; fail=1; }
+  [ -d "$st/host/busbar-plugins-$dead-x" ] || { echo "  [FAILED] the host's own temp entries were touched"; fail=1; }
+  [ "$fail" = 0 ] && { echo "oracle private-tmp-selftest: each recording runs in its own private TMPDIR"; exit 0; }
+  echo "oracle private-tmp-selftest: FAILED"; exit 1
+fi
+if [ "${1:-}" = "premise-selftest" ]; then
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  cat >"$tmp/cells.json" <<'J'
+{"cells": [{"id": "fam|forgiven"}, {"id": "fam|other"}, {"id": "probe|premise"}]}
+J
+  cat >"$tmp/accepted-differences.json" <<'J'
+{"accepted": [{"id": "PLANT", "cells": "^fam\\|forgiven$", "premise": {"all": [{"cell": "probe|premise", "status": 200}]}}]}
+J
+  fail=0
+  got="$(BUSBAR_ORACLE_DATA="$tmp" widen_filter '^fam\|forgiven$' 2>/dev/null)"
+  if python3 -c 'import re,sys; r=re.compile(sys.argv[1]); sys.exit(0 if r.search("probe|premise") and r.search("fam|forgiven") and not r.search("fam|other") else 1)' "$got"; then
+    echo "  [ok]     a filter selecting a forgiven cell but not its premise is widened to the premise"
+  else echo "  [FAILED] the premise cell was not added to the filter: $got"; fail=1; fi
+  got="$(BUSBAR_ORACLE_DATA="$tmp" widen_filter '^fam\|other$' 2>/dev/null)"
+  if [ "$got" = '^fam\|other$' ]; then echo "  [ok]     a filter that selects no forgiven cell is left as it is"
+  else echo "  [FAILED] an unrelated filter was widened: $got"; fail=1; fi
+  sed -i.bak 's/probe|premise", "status"/probe|gone", "status"/' "$tmp/accepted-differences.json"
+  if ( BUSBAR_ORACLE_DATA="$tmp" widen_filter '^fam\|forgiven$' ) >/dev/null 2>"$tmp/err"; then
+    echo "  [FAILED] a premise naming a cell the corpus lacks was not refused"; fail=1
+  elif grep -q "probe|gone" "$tmp/err"; then echo "  [ok]     a premise naming a cell the corpus lacks is refused, by name"
+  else echo "  [FAILED] the refusal did not name the premise cell: $(cat "$tmp/err")"; fail=1; fi
+  mv "$tmp/accepted-differences.json.bak" "$tmp/accepted-differences.json"
+  printf "accepted-differences: entry 'PLANT' is WITHHELD — premise UNEVALUABLE: premise probes cell \"probe|premise\", which the build under test did not record\n" >"$tmp/out"
+  if ( BUSBAR_ORACLE_DATA="$tmp" withheld_selected "$tmp/out" '^fam\|forgiven$' ) 2>"$tmp/err2"; then
+    echo "  [FAILED] a withheld forgiveness the filter selected was not refused"; fail=1
+  elif grep -q "probe|premise" "$tmp/err2"; then echo "  [ok]     a replay whose selected forgiveness was withheld refuses, naming the premise"
+  else echo "  [FAILED] the replay refusal did not name the premise"; fail=1; fi
+  if ( BUSBAR_ORACLE_DATA="$tmp" withheld_selected "$tmp/out" '^fam\|other$' ) 2>/dev/null; then
+    echo "  [ok]     a withheld forgiveness the filter did not select is not this run's refusal"
+  else echo "  [FAILED] an unselected withheld forgiveness refused the run"; fail=1; fi
+  [ "$fail" = 0 ] && { echo "oracle premise-selftest: a filtered run evaluates its forgivenesses' premises or refuses by name"; exit 0; }
+  echo "oracle premise-selftest: FAILED"; exit 1
+fi
+
+pin="$here/testing/shadow-oracle/oracle-rust.pin"
+[ -f "$pin" ] || { echo "oracle: missing source pin $pin" >&2; exit 1; }
+_pin() { awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");print;exit}' "$pin"; }
+RELEASE_REPO="$(_pin release_repo)"
+RELEASE_REF="$(_pin release_ref)"
+CRATE="$(_pin crate)"; CRATE="${CRATE:-busbar-release-oracle}"
+BINNAME="$(_pin bin)"; BINNAME="${BINNAME:-busbar-oracle}"
+[ -n "$RELEASE_REF" ] || { echo "oracle: $pin has no release_ref" >&2; exit 1; }
+
+root="$here/target/oracle/rust/$RELEASE_REF"
+shim_dir="$root/tool"
+mkdir -p "$root"
+
+# ── obtain the Rust engine ──────────────────────────────────────────────────────────────────────
+# Precedence (soundest first, per the Phase C ruling "prefer `cargo build --release` from the pinned
+# busbar-release checkout"):
+#   1. BUSBAR_ORACLE_RUST_BIN=<path>   a prebuilt binary (CI builds it once, passes it here).
+#   2. BUSBAR_RELEASE_CHECKOUT=<dir>   a busbar-release checkout to `cargo build --release` from.
+#   3. else                            git clone busbar-release at the pinned ref, then build.
+resolve_bin() {
+  if [ -n "${BUSBAR_ORACLE_RUST_BIN:-}" ]; then
+    [ -x "$BUSBAR_ORACLE_RUST_BIN" ] || { echo "oracle: BUSBAR_ORACLE_RUST_BIN is not executable: $BUSBAR_ORACLE_RUST_BIN" >&2; exit 1; }
+    printf '%s\n' "$BUSBAR_ORACLE_RUST_BIN"; return 0
+  fi
+  local built="$root/checkout/target/release/$BINNAME"
+  if [ -x "$built" ]; then printf '%s\n' "$built"; return 0; fi
+  local checkout
+  if [ -n "${BUSBAR_RELEASE_CHECKOUT:-}" ]; then
+    checkout="$BUSBAR_RELEASE_CHECKOUT"
+  else
+    # busbar-release is a PRIVATE first-party repo, so a plain `git clone https://…` of it fails
+    # unauthenticated on CI (the default GITHUB_TOKEN is scoped to THIS repo, not the sibling).
+    # Fold a token — the first of BUSBAR_RELEASE_TOKEN / GH_TOKEN / GITHUB_TOKEN that is set — into
+    # the github.com https URL as `x-access-token`, exactly as the removed ci.yml already does for this repo's
+    # own authenticated remote. No token set (local dev over ssh / a cached credential helper) →
+    # the URL is used verbatim, so nothing regresses off CI.
+    # A Latchkey runner (`latchkey run`) has no token and no credential helper, so this clone fails
+    # there. Stage the engine instead: `git clone` busbar-release into an untracked `.release/`
+    # beside the packed tree, check out $release_ref, and in the job
+    # `export BUSBAR_RELEASE_CHECKOUT=$PWD/.release` (precedence 2 above; no token leaves the machine).
+    local clone_url="$RELEASE_REPO"
+    local _tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+    if [ -n "$_tok" ]; then
+      case "$RELEASE_REPO" in
+        https://github.com/*) clone_url="https://x-access-token:${_tok}@github.com/${RELEASE_REPO#https://github.com/}" ;;
+      esac
+    fi
+    checkout="$root/checkout"
+    if [ ! -d "$checkout/.git" ]; then
+      git clone --no-checkout "$clone_url" "$checkout" >&2
+    else
+      git -C "$checkout" remote set-url origin "$clone_url" >&2 2>/dev/null || true
+    fi
+    git -C "$checkout" fetch --depth 1 origin "$RELEASE_REF" >&2 2>/dev/null || git -C "$checkout" fetch origin >&2
+    git -C "$checkout" checkout --force "$RELEASE_REF" >&2
+  fi
+  # ASK CARGO WHERE IT PUT THE BINARY; never assume `<checkout>/target/release`. That assumption is
+  # wrong whenever the caller has a target directory of its own — `CARGO_TARGET_DIR` in the
+  # environment (a `cargo test` run launched under one exports it straight through to the test
+  # process, which is how this shim is reached), `CARGO_BUILD_TARGET_DIR`, or a `[build] target-dir`
+  # in any `.cargo/config.toml` above the checkout (the checkout lives UNDER this repo, so this
+  # repo's own config is one of them). In every one of those cases cargo built the engine perfectly
+  # and wrote it somewhere else, and the old hard-coded path turned that into
+  # "build produced no busbar-oracle" — a green build reported as a missing judge.
+  #
+  # `--message-format=json-render-diagnostics` keeps human diagnostics on stderr exactly as before
+  # and puts one `compiler-artifact` JSON line per artifact on stdout; the `--bin` target's line
+  # carries `"executable":"<path>"` (other artifacts carry `"executable":null`, which has no quotes
+  # and so cannot match). Cargo emits the artifact line on a FRESH build too, so the path is
+  # available whether or not anything recompiled.
+  local artifacts
+  artifacts="$( cd "$checkout" && cargo build --release -p "$CRATE" --bin "$BINNAME" --message-format=json-render-diagnostics )"
+  built="$(printf '%s\n' "$artifacts" | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)"
+  # Fallback for an engine/cargo that emitted no artifact line at all: the historical path.
+  [ -n "$built" ] || built="$checkout/target/release/$BINNAME"
+  [ -x "$built" ] || { echo "oracle: build produced no $BINNAME (cargo reported ${built:-no executable}; checkout $checkout)" >&2; exit 1; }
+  printf '%s\n' "$built"
+}
+RUST_BIN="$(resolve_bin)"
+
+# ── the shim tool-dir (record.sh -> native) ─────────────────────────────────────────────────────
+# HarnessOracle drives `$BUSBAR_ORACLE_TOOL_DIR/record.sh --bin <candidate> --out <work>/candidate
+# [--filter <F>]`. Translate that to the native Rust recorder, which writes `<work-dir>/candidate`,
+# so the recording lands exactly where HarnessOracle then loads it.
+mkdir -p "$shim_dir"
+cat >"$shim_dir/record.sh" <<SHIM
+#!/usr/bin/env bash
+# GENERATED by bin/oracle (Phase C) — forwards record.sh's contract to the native Rust recorder.
+set -euo pipefail
+BIN="" OUT="" FILTER="" PLANE="all"
+while [ \$# -gt 0 ]; do case "\$1" in
+  --bin) BIN="\$2"; shift 2;;
+  --out) OUT="\$2"; shift 2;;
+  --filter) FILTER="\$2"; shift 2;;
+  --plane) PLANE="\$2"; shift 2;;
+  --shared-state) shift;;
+  *) shift;;
+esac; done
+[ -n "\$BIN" ] && [ -n "\$OUT" ] || { echo "record.sh(shim): need --bin and --out" >&2; exit 2; }
+# A filtered recording carries the premise cells its forgivenesses probe (bin/oracle premise-filter).
+[ -z "\$FILTER" ] || FILTER="\$("$here/bin/oracle" premise-filter "\$FILTER")"
+# --out is passed through as --out-dir, so the recording lands where the caller asked rather than at
+# <work>/candidate. HarnessOracle happens to name its --out "candidate", so the two used to agree by
+# luck; any other caller silently got an empty --out and read it as a recording of nothing.
+mkdir -p "\$OUT"; OUT="\$(cd "\$OUT" && pwd)"; WORK="\$(cd "\$(dirname "\$OUT")" && pwd)"
+exec "$here/bin/oracle" private-tmp "$RUST_BIN" record --native \\
+  --busbar-repo "\${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}" \\
+  --candidate-bin "\$BIN" \\
+  --oracle-data "\${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" \\
+  --work-dir "\$WORK" \\
+  --out-dir "\$OUT" \\
+  --family "\$PLANE" \${FILTER:+--filter "\$FILTER"}
+SHIM
+chmod +x "$shim_dir/record.sh"
+# replay.sh shim, for any TOOL_DIR-driven caller (the turnstile replays in-process, not via this).
+cat >"$shim_dir/replay.sh" <<SHIM
+#!/usr/bin/env bash
+# GENERATED by bin/oracle (Phase C) — forwards to the native Rust replay/diff.
+exec "$RUST_BIN" replay "\$@"
+SHIM
+chmod +x "$shim_dir/replay.sh"
+# oracle-config.sh, materialized FROM THE ENGINE (it is embedded there). Its `oracle_write_config`
+# forwards to `busbar-oracle config`, so the config bytes have exactly one source — a shell copy that
+# drifted from `config_emit.rs` would move a golden with nobody editing a golden.
+"$RUST_BIN" tool-dir "$shim_dir" --materialize >/dev/null
+
+# ── the tool-location + data contract (unchanged names) ─────────────────────────────────────────
+# The source pin IS the harness's tool half: harness-rev folds this ref instead of the tool's files.
+export BUSBAR_ORACLE_TOOL_DIGEST="rust:${RELEASE_REPO}@${RELEASE_REF}"
+export BUSBAR_ORACLE_PRODUCT_ROOT="${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}"
+export BUSBAR_ORACLE_DATA="${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"
+# TOOL_DIR is the shim dir (record.sh -> native, plus the materialized oracle-config.sh).
+export BUSBAR_ORACLE_TOOL_DIR="${BUSBAR_ORACLE_TOOL_DIR:-$shim_dir}"
+# WHERE THE ENGINE IS. The product's script-driver cells resolve their leaf tools (mock / capture /
+# capture-exec / fetch-plugin / config) as subcommands of this binary, and refuse to run without it
+# (`${BUSBAR_ORACLE_BIN:?}`) rather than degrade into a named gap. The native recorder sets this too,
+# for callers that drive it without going through this shim.
+export BUSBAR_ORACLE_BIN="$RUST_BIN"
+
+# ── argv contract (unchanged for callers) → the Rust CLI ────────────────────────────────────────
+# The committed callers (the removed ci.yml, the removed manual-keep-proof.yml, the turnstile's record.sh shim) speak the
+# historical Python argv. The Rust CLI takes explicit paths; this dispatcher fills the same
+# BUSBAR_ORACLE_DATA-derived defaults the Python tool derived, so `./bin/oracle <sub> …` is unchanged.
+DATA="$BUSBAR_ORACLE_DATA"
+ROOT="$BUSBAR_ORACLE_PRODUCT_ROOT"
+CACHE="${BUSBAR_ORACLE_CACHE:-$HOME/.cache/busbar-oracle}"
+sub="${1:-}"; shift || true
+
+case "$sub" in
+  tool-dir)
+    echo "$BUSBAR_ORACLE_TOOL_DIR"; exit 0 ;;
+
+  cells)
+    # `cells --check` / `--selftest` — default --cells from the data dir (Python read $DATA).
+    has_cells=0; for a in "$@"; do [ "$a" = "--cells" ] && has_cells=1; done
+    if [ "$has_cells" -eq 0 ]; then set -- "$@" --cells "$DATA/cells.json"; fi
+    exec "$RUST_BIN" cells "$@" ;;
+
+  replay-selftest)
+    # the owed-baseline ratchet over the committed golden (Python read $DATA).
+    exec "$RUST_BIN" replay-selftest --golden "$DATA/golden/1.5.5" --baseline "$DATA/owed-baseline.txt" "$@" ;;
+
+  owed-baseline)
+    exec "$RUST_BIN" owed-baseline --baseline "$DATA/owed-baseline.txt" "$@" ;;
+
+  fetch-golden)
+    # WORKAROUND for a parser bug in the pinned Rust engine (busbar-release @ oracle-rust.pin): its
+    # fetch-golden `pinned()` reader does `let (v,a,d)=(f.next()?,f.next()?,f.next()?)` per line, so the
+    # FIRST tab-less comment line in golden-digests.tsv (`# Pinned from …`) makes the `?` return None
+    # from the whole function — it never reaches the data rows and exits 3 ("no pinned digest"). The
+    # sibling `pinned_binary_digests()`/`find_pin()` correctly `continue` on short rows, so only
+    # fetch-golden is affected (replay's --check-golden gate is fine). Feed the engine a de-commented
+    # copy (identical data rows, tabs preserved) until the parser is fixed upstream and re-pinned.
+    clean="$root/golden-digests.clean.tsv"
+    grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$DATA/golden-digests.tsv" > "$clean"
+    exec "$RUST_BIN" fetch-golden --digests "$clean" --cache-dir "$CACHE" "$@" ;;
+
+  fetch-plugin)
+    # `fetch-plugin <name> [--check]` — the data dir carries plugin-digests.tsv.
+    exec "$RUST_BIN" fetch-plugin "$1" --data "$DATA" "${@:2}" ;;
+
+  record)
+    # OLD: record --bin B --plane P --out O [--filter F]  →  native Rust recorder.
+    BIN="" OUT="" PLANE="all" FILTER=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --bin) BIN="$2"; shift 2;;
+      --out) OUT="$2"; shift 2;;
+      --plane) PLANE="$2"; shift 2;;
+      --filter) FILTER="$2"; shift 2;;
+      --shared-state) shift;;
+      *) shift;;
+    esac; done
+    [ -n "$BIN" ] && [ -n "$OUT" ] || { echo "oracle record: need --bin and --out" >&2; exit 2; }
+    # A BOUND BAND NAMES ITS HOLDER. The recorder refuses a band something already listens on, but
+    # it names only the ports, and the usual holder is a busbar a previous recording leaked. Until
+    # that process is found, every later recording on the band is refused or, if it got past the
+    # check, answered by the stale node instead of the candidate. So an explicitly chosen band is
+    # checked here first, and the refusal names each listener's pid and command line. An unset port
+    # is left to the recorder, which picks a free band itself.
+    busy=""
+    for port in ${ORACLE_LISTEN_PORT:-} ${ORACLE_ADMIN_PORT:-} ${ORACLE_MOCK_PORT:-}; do
+      for pid in $(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u); do
+        busy="${busy}  port $port: pid $pid ($(ps -o command= -p "$pid" 2>/dev/null | cut -c1-160))
+"
+      done
+    done
+    if [ -n "$busy" ]; then
+      printf 'oracle record: the recording band is already bound, so nothing is recorded:\n%sStop the stale process (kill <pid>) or choose a free ORACLE_LISTEN_PORT/ORACLE_ADMIN_PORT/ORACLE_MOCK_PORT.\n' "$busy" >&2
+      exit 2
+    fi
+    # --out IS HONOURED, BY BEING PASSED. This used to send only --work-dir and let the recorder
+    # write <work>/candidate, then PRINT that the --out basename "is honored as that dir". It was
+    # not: measured, `--out /tmp/x/money` wrote the recording to /tmp/x/candidate, left /tmp/x/money
+    # empty, and exited 0 saying "recorded 1 cell(s)". A caller that then read its own --out found an
+    # empty directory and reported "0 cells recorded" — which is how a working recorder reads as a
+    # broken one, and is the reported shape of "--filter records nothing". The engine has taken
+    # --out-dir for exactly this since the native cutover; this just stops discarding it.
+    mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"; WORK="$(cd "$(dirname "$OUT")" && pwd)"
+    # A filtered recording carries the premise cells its forgivenesses probe (see premise_closure).
+    [ -z "$FILTER" ] || FILTER="$(widen_filter "$FILTER")"
+    rc=0; private_tmp "$RUST_BIN" record --native --busbar-repo "$ROOT" --candidate-bin "$BIN" \
+      --oracle-data "$DATA" --work-dir "$WORK" --out-dir "$OUT" --family "$PLANE" ${FILTER:+--filter "$FILTER"} || rc=$?
+    exit "$rc" ;;
+
+  replay)
+    # ── THE PREDEV FENCES, IN THEIR OWN SECTION ────────────────────────────────────────────────
+    # testing/shadow-oracle/fence/<name>/ holds cells recorded from a named predev build (no 1.5.5
+    # baseline exists for them: the mcp/a2a/decisions planes). They are judged AFTER the 1.5.5
+    # verdict, each fence against its own recording, under a separate "predev fence" heading —
+    # never merged into golden/1.5.5 and never cited as 1.5.5 evidence. A fence DIVERGENCE is red:
+    # it is a regression, or a change an ARCHITECT ruling re-records the fence for. The replay's exit
+    # is the worse of the two.
+    replay_fences() {  # replay_fences <1.5.5 rc> <id filter or ""> <diff args...>
+      local rc="$1" idf="$2"; shift 2
+      local cand="" out="" a prev=""
+      for a in "$@"; do
+        case "$prev" in --candidate) cand="$a";; --out) out="$a";; esac; prev="$a"
+      done
+      [ -d "$DATA/fence" ] || return "$rc"
+      local f frc worst="$rc" ids
+      for f in "$DATA"/fence/*/; do
+        f="${f%/}"; [ -f "$f/ledger.tsv" ] || continue
+        ids="$(awk -F'\t' 'NF{print $1}' "$f/ledger.tsv" | python3 -c 'import re,sys; print("^("+"|".join(re.escape(l.strip()) for l in sys.stdin if l.strip())+")$")')"
+        if [ -n "$idf" ] && ! awk -F'\t' 'NF{print $1}' "$f/ledger.tsv" | grep -Eq -- "$idf"; then continue; fi
+        echo
+        echo "== predev fence: $(basename "$f") (recorded from a predev build; NOT 1.5.5 evidence) =="
+        set +e
+        "$RUST_BIN" diff --golden "$f" --candidate "$cand" --out "${out:-$(mktemp -d)}/fence-$(basename "$f")" \
+          --cells "$DATA/cells.json" --id-filter "$ids" --allow-harness-skew --strict
+        frc=$?; set -e
+        [ "$frc" -le "$worst" ] || worst="$frc"
+      done
+      return "$worst"
+    }
+    # ── THE DATED FAMILY BASELINES, IN THEIR OWN SECTION ──────────────────────────────────────
+    # testing/shadow-oracle/family-baselines.tsv names a family whose baseline is NOT 1.5.5 because
+    # 1.5.5 never served it, and the dated baseline it is judged against instead (`streams` ->
+    # `golden/1.6.0-pre`, recorded from a pinned pre-fold predev build; OWNER RULING 2026-09-30,
+    # 1.6.0-QUESTIONS.md STREAMS-ORACLE option A). Against 1.5.5 such a family's cells are UNBASELINED
+    # (named, not green, not red); here each is judged against its own baseline by NAME
+    # (`--baseline-version`, which refuses a baseline that does not exist), --strict, under its own
+    # heading. A divergence is red. The replay's exit is the worst of every section.
+    # `--allow-harness-skew` as for the fences: the baseline was recorded at its own pin.
+    family_baseline_rows() {  # -> "family<TAB>version" per row
+      [ -f "$DATA/family-baselines.tsv" ] || return 0
+      grep -vE '^[[:space:]]*(#|$)' "$DATA/family-baselines.tsv" || true
+    }
+    # only_rebaselined <filter> -> 0 when the filter selects at least one cell and every selected
+    # cell's family has a dated baseline of its own (so the 1.5.5 section owes nothing to compare).
+    only_rebaselined() {
+      python3 - "$1" "$DATA/cells.json" "$(family_baseline_rows | cut -f1 | tr '\n' ' ')" <<'PY'
+import json, re, sys
+sel, fams = re.compile(sys.argv[1]), set(sys.argv[3].split())
+cells = [c for c in json.load(open(sys.argv[2]))["cells"] if sel.search(c["id"])]
+sys.exit(0 if cells and all(c.get("family", c.get("plane")) in fams for c in cells) else 1)
+PY
+    }
+    replay_family_baselines() {  # replay_family_baselines <rc so far> <id filter or ""> <diff args...>
+      local rc="$1" idf="$2"; shift 2
+      local cand="" out="" acc="" a prev=""
+      for a in "$@"; do
+        case "$prev" in --candidate) cand="$a";; --out) out="$a";; --accepted) acc="$a";; esac; prev="$a"
+      done
+      local fam ver frc worst="$rc"
+      while IFS=$'\t' read -r fam ver; do
+        [ -n "$fam" ] && [ -n "$ver" ] || continue
+        if [ -n "$idf" ] && ! python3 - "$idf" "$DATA/cells.json" "$fam" <<'PY'
+import json, re, sys
+sel = re.compile(sys.argv[1])
+sys.exit(0 if any(sel.search(c["id"]) and c.get("family") == sys.argv[3]
+                  for c in json.load(open(sys.argv[2]))["cells"]) else 1)
+PY
+        then continue; fi
+        echo
+        echo "== dated baseline: family $fam against golden/$ver (NOT 1.5.5 evidence) =="
+        frc=0
+        "$RUST_BIN" diff --baseline-version "$ver" --candidate "$cand" \
+          --out "${out:-$(mktemp -d)}/baseline-$ver-$fam" --cells "$DATA/cells.json" \
+          ${acc:+--accepted "$acc"} --family "^$(printf '%s' "$fam" | sed 's/[.]/\\./g')\$" \
+          ${idf:+--id-filter "$idf"} --allow-harness-skew --strict || frc=$?
+        [ "$frc" -le "$worst" ] || worst="$frc"
+      done < <(family_baseline_rows)
+      return "$worst"
+    }
+    # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).
+    #
+    # `--allow-harness-skew` IS NO LONGER INJECTED HERE, AND THAT IS THE POINT. It used to be
+    # appended to EVERY `./bin/oracle replay`, which meant the differ's same-revision guard — the
+    # one thing standing between "these two recordings are comparable" and "these two recordings
+    # are not" — could not fire on any run this shim served, including every DONE run. A guard the
+    # wrapper disables invisibly is a guard nobody can be shown failing.
+    #
+    # It is OPT-IN now: a caller that genuinely compares across a harness change passes the flag
+    # itself, at the call site, where a reader can see it and ask why. The two that do are the
+    # workflows diffing a Rust-recorded candidate against the COMMITTED, Python-recorded 1.5.5
+    # golden (the removed ci.yml and the removed oracle-proof.yml); they now say so in their own lines. The DONE oracle
+    # records BOTH sides with this engine, so its revisions agree and it needs no flag — which is
+    # exactly the run the guard should have been armed on all along. Re-recording the committed
+    # golden with the Rust engine (oracle-rerecord workflow) retires the two explicit uses too.
+    # A FILTERED REPLAY: widen --id-filter to the premise cells, and refuse (by name) any selected
+    # forgiveness the engine still withholds for an unevaluable premise.
+    IDF="" args=()
+    while [ $# -gt 0 ]; do case "$1" in
+      --id-filter) IDF="$2"; shift 2;;
+      *) args+=("$1"); shift;;
+    esac; done
+    if [ -z "$IDF" ]; then
+      set +e; "$RUST_BIN" diff "${args[@]}" --cells "$DATA/cells.json"; rc=$?; set -e
+      frc=0; replay_fences "$rc" "" "${args[@]}" || frc=$?
+      brc=0; replay_family_baselines "$frc" "" "${args[@]}" || brc=$?
+      exit "$brc" ; fi
+    # A filter that selects ONLY families with a dated baseline of their own owes the 1.5.5 section
+    # nothing: its --strict would refuse "no owed cells matched", a red that judges nothing.
+    if only_rebaselined "$IDF"; then
+      echo "oracle: the filter selects only families with a dated baseline (family-baselines.tsv); the 1.5.5 section is skipped" >&2
+      brc=0; replay_family_baselines 0 "$IDF" "${args[@]}" || brc=$?; exit "$brc"
+    fi
+    WIDE="$(widen_filter "$IDF")"
+    log="$(mktemp)"; set +e
+    "$RUST_BIN" diff "${args[@]}" --id-filter "$WIDE" --cells "$DATA/cells.json" 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}; set -e
+    withheld_selected "$log" "$IDF" || { rm -f "$log"; exit 3; }
+    rm -f "$log"; frc=0; replay_fences "$rc" "$IDF" "${args[@]}" || frc=$?
+    brc=0; replay_family_baselines "$frc" "$IDF" "${args[@]}" || brc=$?; exit "$brc" ;;
+
+  diff)
+    # The engine's own diff: a FILTERED one gets the same premise widening and refusal as replay.
+    IDF="" args=()
+    while [ $# -gt 0 ]; do case "$1" in
+      --id-filter) IDF="$2"; shift 2;;
+      *) args+=("$1"); shift;;
+    esac; done
+    if [ -z "$IDF" ]; then exec "$RUST_BIN" diff "${args[@]}"; fi
+    WIDE="$(widen_filter "$IDF")"
+    log="$(mktemp)"; set +e
+    "$RUST_BIN" diff "${args[@]}" --id-filter "$WIDE" 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}; set -e
+    withheld_selected "$log" "$IDF" || { rm -f "$log"; exit 3; }
+    rm -f "$log"; exit "$rc" ;;
+
+  *)
+    # normalize / merge / renormalize / harness-rev / selftest / … pass through unchanged.
+    exec "$RUST_BIN" "$sub" "$@" ;;
+esac

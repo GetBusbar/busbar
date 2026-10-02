@@ -1,0 +1,452 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Tests for the network guard AS REACHED THROUGH `busbar_kernel::net_guard`.
+//!
+//! The guard itself is `busbar_kernel_egress::trust::net` and is tested there too. This suite is not
+//! a second copy of that one: it is driven through the SHIM, so it is also the statement that the
+//! shim still resolves to the one judge. A re-grown local definition behind `crate::net_guard`
+//! would have to pass every row below to go unnoticed — including
+//! `the_dialing_guard_and_the_config_guard_know_the_same_metadata_names`, which is the bug that was
+//! actually live.
+
+use super::*;
+// The address type these assertions name. It used to arrive through `use super::*` from
+// the guard's own imports; the shim imports only what IT needs, so a suite that names a type
+// says so itself.
+use std::net::Ipv4Addr;
+
+#[test]
+fn is_cgnat_shared_v4_covers_rfc6598_only() {
+    // 100.64.0.0/10 = first octet 100, second octet's top two bits == 01 (i.e. 64..=127).
+    assert!(is_cgnat_shared_v4(&Ipv4Addr::new(100, 64, 0, 0)));
+    assert!(is_cgnat_shared_v4(&Ipv4Addr::new(100, 100, 100, 200))); // Alibaba metadata
+    assert!(is_cgnat_shared_v4(&Ipv4Addr::new(100, 127, 255, 255)));
+    // Outside the /10: second octet below 64 or above 127, or different first octet.
+    assert!(!is_cgnat_shared_v4(&Ipv4Addr::new(100, 63, 255, 255)));
+    assert!(!is_cgnat_shared_v4(&Ipv4Addr::new(100, 128, 0, 0)));
+    assert!(!is_cgnat_shared_v4(&Ipv4Addr::new(99, 64, 0, 0)));
+    assert!(!is_cgnat_shared_v4(&Ipv4Addr::new(8, 8, 8, 8)));
+}
+
+#[test]
+fn is_unique_local_v6_covers_fc00_slash_7() {
+    // fc00::/7 — first 7 bits 1111110, so fc00.. and fd00.. are in-range.
+    assert!(is_unique_local_v6(&"fc00::1".parse().unwrap()));
+    assert!(is_unique_local_v6(&"fd00:ec2::254".parse().unwrap())); // EC2 IMDSv6
+    assert!(is_unique_local_v6(&"fdff:ffff::".parse().unwrap()));
+    // Outside fc00::/7.
+    assert!(!is_unique_local_v6(&"fe80::1".parse().unwrap())); // link-local, not ULA
+    assert!(!is_unique_local_v6(&"2001:db8::1".parse().unwrap()));
+    assert!(!is_unique_local_v6(&"::1".parse().unwrap()));
+}
+
+#[test]
+fn is_link_local_v6_covers_fe80_slash_10() {
+    // fe80::/10 — first 10 bits 1111111010.
+    assert!(is_link_local_v6(&"fe80::1".parse().unwrap()));
+    assert!(is_link_local_v6(&"febf:ffff::".parse().unwrap()));
+    // Outside fe80::/10.
+    assert!(!is_link_local_v6(&"fec0::1".parse().unwrap())); // site-local (deprecated), not fe80::/10
+    assert!(!is_link_local_v6(&"fc00::1".parse().unwrap())); // ULA, not link-local
+    assert!(!is_link_local_v6(&"2001:db8::1".parse().unwrap()));
+}
+
+#[test]
+fn is_alternate_ipv4_encoding_flags_obfuscated_forms() {
+    assert!(is_alternate_ipv4_encoding("2130706433")); // decimal 127.0.0.1
+    assert!(is_alternate_ipv4_encoding("0x7f000001")); // hex
+    assert!(is_alternate_ipv4_encoding("0X7F000001")); // hex, uppercase prefix
+    assert!(is_alternate_ipv4_encoding("017700000001")); // leading-zero octal
+    assert!(is_alternate_ipv4_encoding("127.1")); // short dotted
+    assert!(is_alternate_ipv4_encoding("10.0.1")); // short dotted
+    assert!(is_alternate_ipv4_encoding("0x7f.0.0.1")); // per-octet hex
+    assert!(is_alternate_ipv4_encoding("0177.0.0.1")); // per-octet octal
+
+    // Canonical dotted-quads are left to the `parse::<IpAddr>()` path, not flagged here.
+    assert!(!is_alternate_ipv4_encoding("127.0.0.1"));
+    assert!(!is_alternate_ipv4_encoding("8.8.8.8"));
+    // DNS names and the empty string are not alternate encodings.
+    assert!(!is_alternate_ipv4_encoding("api.provider.example"));
+    assert!(!is_alternate_ipv4_encoding("example.com"));
+    assert!(!is_alternate_ipv4_encoding(""));
+}
+
+// ══ THE CLASS TEST FOR THE GUARDED-FETCH CHOKE POINT ═════════════════════════════════════════════
+//
+// `ip_is_internal` is the ONE address predicate every plane's outbound guard is required to route
+// through (structure-lint choke point `H-net-guard`). Its table therefore has to be the UNION of
+// what every plane-local copy ever checked, because the tear-out of a copy is only safe if the
+// shared predicate already covers everything that copy covered. Two of the rows below arrived here
+// exactly that way — from `a2a::pushnotify`'s private copy, which checked ranges this one did not.
+//
+// The floor at the end is what stops the table quietly shrinking: a row deleted with the range it
+// guarded is the failure mode this whole exercise exists to prevent.
+
+/// EVERY range a busbar guard must refuse, in one table, asserted through the shared entry point.
+#[test]
+fn the_shared_internal_predicate_covers_every_range_any_plane_ever_checked() {
+    use std::net::IpAddr;
+    let cases: &[(&str, &str)] = &[
+        ("loopback v4 127/8", "127.0.0.1"),
+        ("private 10/8", "10.1.2.3"),
+        ("private 172.16/12", "172.16.5.5"),
+        ("private 192.168/16", "192.168.1.1"),
+        ("link-local 169.254/16", "169.254.1.1"),
+        ("AWS IMDS", "169.254.169.254"),
+        ("ECS task metadata", "169.254.170.2"),
+        ("Alibaba metadata (inside CGNAT)", "100.100.100.200"),
+        ("CGNAT 100.64/10", "100.64.0.1"),
+        ("Azure WireServer (a PUBLIC address)", "168.63.129.16"),
+        ("OCI IMDS (a PUBLIC-shaped address)", "192.0.0.192"),
+        ("unspecified", "0.0.0.0"),
+        // FROM `a2a::pushnotify`'s copy: 0.0.0.0/8 is "this network", and several stacks route the
+        // whole block to the local host — so `is_unspecified()` alone (which is only 0.0.0.0) left
+        // 0.1.2.3 reachable on every plane that used this predicate.
+        ("this-network 0/8", "0.1.2.3"),
+        // FROM `a2a::pushnotify`'s copy: 192.0.0.0/24 IETF protocol assignments (the /24 OCI's
+        // 192.0.0.192 sits inside) and 198.18.0.0/15 benchmarking. Neither is a legitimate
+        // destination and both are reachable inside some fabrics.
+        ("IETF protocol assignments 192.0.0/24", "192.0.0.8"),
+        ("benchmarking 198.18/15", "198.18.0.1"),
+        ("benchmarking 198.19/16", "198.19.0.1"),
+        ("broadcast", "255.255.255.255"),
+        ("multicast v4", "224.0.0.1"),
+        // ALL THREE DOCUMENTATION BLOCKS (RFC 5737), not just TEST-NET-1. `is_documentation()`
+        // covers the other two as well, and leaving them unasserted is how a floor gets written
+        // above the table it guards: these were the rows the count was already reserving room for.
+        ("documentation TEST-NET-1 192.0.2/24", "192.0.2.1"),
+        ("documentation TEST-NET-2 198.51.100/24", "198.51.100.7"),
+        ("documentation TEST-NET-3 203.0.113/24", "203.0.113.9"),
+        ("loopback v6", "::1"),
+        ("unspecified v6", "::"),
+        ("unique-local v6 fc00::/7", "fd00::1"),
+        ("link-local v6 fe80::/10", "fe80::1"),
+        ("multicast v6", "ff02::1"),
+        ("EC2 IMDSv6", "fd00:ec2::254"),
+        // The two embedded-v4 spellings. The COMPATIBLE one is the literal that got through a copy
+        // unwrapping with `to_ipv4_mapped()`; it matches no v6 range at all.
+        ("IPv4-MAPPED metadata", "::ffff:169.254.169.254"),
+        ("IPv4-COMPATIBLE metadata", "::169.254.169.254"),
+        ("IPv4-COMPATIBLE loopback", "::127.0.0.1"),
+    ];
+    let mut checked = 0usize;
+    for (what, spelling) in cases {
+        let ip: IpAddr = spelling.parse().expect(what);
+        assert!(
+            ip_is_internal(&ip),
+            "{what} ({spelling}) must be internal to the SHARED predicate — a plane that routes \
+             through it inherits this row, and a plane that does not is the drift this test exists \
+             to catch"
+        );
+        checked += 1;
+    }
+    // `checked` equals `cases.len()` by construction (one increment per row, no early `continue`),
+    // so the anti-shrink guard is a FLOOR on that count, not an equality that could only restate it.
+    assert!(
+        checked >= 30,
+        "the shared hostile table shrank; a deleted row is a range every plane silently stopped \
+         guarding"
+    );
+}
+
+/// WHITESPACE AROUND A URL MUST NOT BUY A METADATA HOP. The WHATWG basic URL parser begins by
+/// trimming leading and trailing C0 controls AND spaces from the input, and by deleting every ASCII
+/// tab / CR / LF from anywhere inside it — so a connecting stack sees `169.254.169.254` for every
+/// spelling below. Any spelling this guard reads differently from the stack that will dial it is a
+/// bypass: a token endpoint POSTs client credentials to the URL verbatim, so a host the guard failed
+/// to recognize as IMDS is a host that receives those credentials.
+#[test]
+fn whitespace_padded_metadata_urls_are_still_refused() {
+    for spelling in [
+        "http://169.254.169.254/latest/meta-data/ ", // trailing space after the path
+        "http://169.254.169.254 ",                   // trailing space directly after the host
+        " http://169.254.169.254/latest/meta-data/", // leading space (would hide the scheme)
+        "\u{1}http://169.254.169.254/",              // leading C0 control
+        "http://169.254.169.254/\u{1f}",             // trailing C0 control
+        "http://169.254.169\t.254/",                 // interior tab, deleted by the parser
+        "http://169.254.169.254\r\n/",               // interior CR/LF
+        "\t http://169.254.169.254/ \r\n",           // mixed padding, both ends
+    ] {
+        assert_eq!(
+            ssrf_blocked_host(spelling, &[], false, &[]).as_deref(),
+            Some("169.254.169.254"),
+            "{spelling:?} is dialled as the IMDS target once the parser trims and deletes the \
+             whitespace the guard must trim and delete the same way"
+        );
+    }
+}
+
+/// The CONTROL for the trim: whitespace INSIDE a host (not at either end of the input, and not one
+/// of the three deleted bytes) is left alone, so a malformed host stays malformed rather than being
+/// silently repaired into something that matches.
+#[test]
+fn interior_spaces_are_not_trimmed_away() {
+    assert_eq!(
+        extract_normalized_host("http://169.254.169 .254/").as_deref(),
+        Some("169.254.169 .254")
+    );
+    assert_eq!(
+        ssrf_blocked_host("http://169.254.169 .254/", &[], false, &[]),
+        None
+    );
+    assert_eq!(
+        extract_normalized_host("  https://api.provider.example/v1  ").as_deref(),
+        Some("api.provider.example")
+    );
+}
+
+/// The CONTROL. Without it a predicate that returned `true` unconditionally would pass the table
+/// above, and every legitimate upstream in the fleet would be refused.
+#[test]
+fn the_shared_internal_predicate_admits_ordinary_public_addresses() {
+    use std::net::IpAddr;
+    for ok in [
+        "93.184.216.34",
+        "8.8.8.8",
+        "1.1.1.1",
+        // 100.128/9 is OUTSIDE the RFC 6598 /10 and is ordinary public space.
+        "100.128.0.1",
+        // 198.20/16 is outside the 198.18/15 benchmarking block.
+        "198.20.0.1",
+        // 192.0.1.0/24 sits between the IETF-assignments /24 and the documentation /24.
+        "192.0.1.1",
+        "2606:4700:4700::1111",
+        "::ffff:93.184.216.34",
+    ] {
+        let ip: IpAddr = ok.parse().expect(ok);
+        assert!(
+            !ip_is_internal(&ip),
+            "{ok} is ordinary public space and must remain reachable"
+        );
+    }
+}
+
+/// CLOUD METADATA IS A SEPARATE QUESTION FROM INTERNAL, because the two carry different policies:
+/// an operator may opt into internal addressing with `allow_private`, and may never opt into IMDS.
+#[test]
+fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
+    use std::net::IpAddr;
+    for meta in [
+        "169.254.169.254", // AWS / Azure / GCP / OpenStack / DigitalOcean
+        "169.254.170.2",   // ECS task metadata
+        "100.100.100.200", // Alibaba
+        "168.63.129.16",   // Azure WireServer
+        "192.0.0.192",     // OCI
+        "fd00:ec2::254",   // EC2 IMDSv6
+        "::ffff:169.254.169.254",
+        "::169.254.169.254",
+    ] {
+        let ip: IpAddr = meta.parse().expect(meta);
+        assert!(
+            ip_is_cloud_metadata(&ip),
+            "{meta} is a cloud-metadata endpoint and no policy flag may reach it"
+        );
+    }
+    assert!(!ip_is_cloud_metadata(
+        &"93.184.216.34".parse::<IpAddr>().unwrap()
+    ));
+    // An internal address that is NOT metadata: `allow_private` may reach this one.
+    assert!(!ip_is_cloud_metadata(
+        &"10.0.0.1".parse::<IpAddr>().unwrap()
+    ));
+}
+
+/// NAT64 / RFC 6052 EMBEDDING MUST BE JUDGED, not left to fall through to the v6 range checks that
+/// do not cover `64:ff9b::/96` at all.
+///
+/// A DNS64 resolver on an IPv6-only network answers a AAAA query with the NAT64 synthesis of the
+/// queried name's IPv4 address rather than the address itself. A guard that unwraps only
+/// `to_ipv4()` (IPv4-MAPPED/IPv4-COMPATIBLE) does not recognise `64:ff9b::/96` at all, so
+/// `64:ff9b::a9fe:a9fe` — the IMDS target `169.254.169.254` re-encoded — matches no v6 range and
+/// reads as an ordinary public v6 address. This asserts the embedding is judged in both the
+/// well-known (RFC 6052) and RFC 8215 local-use forms, including the local-use form with a
+/// NON-ZERO middle (RFC 8215 Section 6's own `64:ff9b:1:fffe::/96` worked example).
+#[test]
+fn nat64_embedded_ipv4_is_judged_by_the_shared_predicates() {
+    use std::net::{IpAddr, Ipv6Addr};
+
+    for meta in [
+        "64:ff9b::a9fe:a9fe",        // RFC 6052 well-known
+        "64:ff9b:1::a9fe:a9fe",      // RFC 8215 local-use, zero-padded
+        "64:ff9b:1:fffe::a9fe:a9fe", // RFC 8215 local-use, non-zero middle (RFC 8215 Section 6 example)
+    ] {
+        let addr: IpAddr = meta.parse().expect(meta);
+        assert!(
+            ip_is_cloud_metadata(&addr),
+            "{meta} is the NAT64 synthesis of the IMDS target 169.254.169.254 and must be judged \
+             metadata"
+        );
+        assert!(
+            ip_is_internal(&addr),
+            "{meta} is also internal — every cloud-metadata address is internal"
+        );
+    }
+    for internal in [
+        "64:ff9b::7f00:1",         // 127.0.0.1 loopback
+        "64:ff9b::a01:203",        // 10.1.2.3 private
+        "64:ff9b:1::7f00:1",       // local-use loopback
+        "64:ff9b:1:fffe::a01:203", // non-zero-padded local-use private
+    ] {
+        let addr: IpAddr = internal.parse().expect(internal);
+        assert!(
+            ip_is_internal(&addr),
+            "{internal} is a NAT64 embedding of an internal IPv4 target and must be internal"
+        );
+        assert!(
+            !ip_is_cloud_metadata(&addr),
+            "{internal} is internal but not metadata"
+        );
+    }
+
+    // `embedded_ipv4` decodes the low 32 bits regardless of the operator-chosen local-use middle.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b:1:fffe::a9fe:a9fe".parse::<Ipv6Addr>().unwrap()),
+        Some(Ipv4Addr::new(169, 254, 169, 254)),
+    );
+    // RFC 6052 fixes the ENTIRE well-known /96 to zero: a non-zero middle there is an ordinary
+    // address, not an embedding, and must NOT be unwrapped.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b::1:0:a9fe:a9fe".parse::<Ipv6Addr>().unwrap()),
+        None,
+    );
+}
+
+/// THE HOST-STRING GUARDS MUST JUDGE THE NAT64 EMBEDDING TOO, not just the address predicates.
+///
+/// [`ip_is_cloud_metadata`] and [`ip_is_internal`] take an already-parsed `IpAddr` and were fixed
+/// first. The three guards below take a HOST STRING and parse it themselves, and each kept its own
+/// `to_ipv4()` unwrap — so `64:ff9b::a9fe:a9fe` parsed clean, matched no v6 range, and read as an
+/// ordinary public address. That gap was live after the address-level fix landed, which is exactly
+/// why this test exists separately from
+/// `nat64_embedded_ipv4_is_judged_by_the_shared_predicates`: fixing the predicate does NOT fix the
+/// callers that never call it.
+///
+/// [`ssrf_blocked_host`] is the pre-flight guard for OAuth token-endpoint URLs and for MCP
+/// tool-call ARGUMENT hosts — attacker-influenced input on the classic SSRF injection path — so a
+/// bypass here is reachable without any DNS answer at all.
+#[test]
+fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
+    // Every spelling of the IMDS target 169.254.169.254 that a caller can hand us.
+    for meta in [
+        "169.254.169.254",           // bare v4
+        "::ffff:169.254.169.254",    // v4-mapped
+        "64:ff9b::a9fe:a9fe",        // NAT64 well-known (RFC 6052)
+        "64:ff9b:1::a9fe:a9fe",      // NAT64 local-use (RFC 8215), zero middle
+        "64:ff9b:1:fffe::a9fe:a9fe", // NAT64 local-use, non-zero middle
+    ] {
+        let url = format!("http://[{meta}]/latest/meta-data/");
+        let url = if meta.contains(':') {
+            url
+        } else {
+            format!("http://{meta}/latest/meta-data/")
+        };
+        assert!(
+            ssrf_blocked_host(&url, &[], false, &[]).is_some(),
+            "{meta} reaches the cloud-metadata service and must be refused pre-flight; \
+             a NAT64 spelling is the same target as the bare form"
+        );
+    }
+
+    // The private/loopback host predicate must see through the embedding as well.
+    for internal in [
+        "64:ff9b::7f00:1",        // 127.0.0.1
+        "64:ff9b::a01:203",       // 10.1.2.3
+        "64:ff9b:1:fffe::c0a8:1", // 192.168.0.1 via local-use NAT64
+    ] {
+        assert!(
+            host_is_private_or_loopback(internal),
+            "{internal} is a NAT64 embedding of an internal target and must read as internal"
+        );
+    }
+
+    // An operator denylist entry written in the bare v4 form must also catch the NAT64 spelling —
+    // otherwise the denylist is trivially evaded by re-encoding the same address. Asked through the
+    // operator's OWN door rather than through the canonicalizer, and asked on an address the
+    // hardcoded denylist does NOT hold (`10.99.99.99` is a legitimate upstream by default), so the
+    // refusal can only be coming from the entry: the control below shows the same host passing when
+    // the list is empty.
+    const NAT64_OF_10_99_99_99: &str = "https://[64:ff9b::a63:6363]/";
+    assert!(
+        ssrf_blocked_host(
+            NAT64_OF_10_99_99_99,
+            &[],
+            false,
+            &["10.99.99.99".to_string()]
+        )
+        .is_some(),
+        "a denylist entry naming the v4 address must match its NAT64 embedding"
+    );
+    assert!(
+        ssrf_blocked_host(NAT64_OF_10_99_99_99, &[], false, &[]).is_none(),
+        "the control: without the operator entry this host is an ordinary private upstream, so the \
+         assertion above is about the entry and not about the hardcoded denylist"
+    );
+
+    // Public addresses are unaffected: 8.8.8.8 embedded in NAT64 is still public.
+    assert!(
+        !host_is_private_or_loopback("64:ff9b::808:808"),
+        "64:ff9b::808:808 embeds public 8.8.8.8 and must NOT read as internal"
+    );
+}
+
+/// THE DIALING GUARD AND THE CONFIG GUARD MUST KNOW THE SAME METADATA NAMES.
+///
+/// They did not. `ssrf_blocked_host` kept a SIX-name list private to its own body while
+/// `judge_host_name` — the arm the resolve-then-pin dialing path consults — read a TWO-name
+/// module const. Config validation refused `metadata.tencentyun.com`; the socket did not.
+#[test]
+fn the_dialing_guard_and_the_config_guard_know_the_same_metadata_names() {
+    // Every name `ssrf_blocked_host` (config validation) refuses must ALSO be refused by
+    // `judge_host_name`, which is the arm the resolve-then-pin dialing path actually consults.
+    for name in [
+        "metadata.google.internal",
+        "metadata.internal",
+        "metadata.tencentyun.com",
+        "metadata.platformequinix.com",
+        "instance-data",
+        "instance-data.ec2.internal",
+    ] {
+        // Config-validation view.
+        let cfg = ssrf_blocked_host(&format!("https://{name}/"), &[], false, &[]);
+        // Dialing view — the one a socket is opened behind.
+        let dial = judge_host_name(name, GuardPolicy::default());
+        assert!(
+            cfg.is_some(),
+            "{name}: config guard should refuse (this is the 6-name list)"
+        );
+        assert!(
+            dial.is_err(),
+            "{name}: DIALING guard did NOT refuse — config refuses it but the dial path allows it"
+        );
+    }
+}
+
+/// The NAME arm is the ONLY defence for a metadata host that answers on a PUBLIC address.
+///
+/// `ip_is_cloud_metadata` covers link-local /16 plus three literals plus IMDSv6. A metadata
+/// endpoint reachable at a globally-routable address matches NONE of them, so if the name is not
+/// in `METADATA_HOSTS` the resolve-then-pin path dials it.
+#[test]
+fn a_metadata_name_on_a_public_address_is_refused_by_its_name_alone() {
+    struct Stub(IpAddr);
+    impl Resolver for Stub {
+        fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
+            Ok(vec![self.0])
+        }
+    }
+    // Equinix Metal's metadata service answers on a public address, which is exactly why it is on
+    // the denylist by NAME: no address predicate can catch it.
+    let public = IpAddr::V4(Ipv4Addr::new(147, 75, 1, 1));
+    let got = resolve_and_pin(
+        "metadata.platformequinix.com",
+        443,
+        true,
+        &Stub(public),
+        GuardPolicy::default(),
+    );
+    assert!(
+        got.is_err(),
+        "metadata.platformequinix.com resolved to a PUBLIC address was PINNED, not refused: {got:?}"
+    );
+}

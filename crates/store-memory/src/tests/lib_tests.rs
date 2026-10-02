@@ -1,0 +1,987 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Tests for `crates/store-memory/src/lib.rs`.
+
+use super::*;
+use busbar_contract::records::SecretForm;
+
+fn key(id: &str) -> VirtualKey {
+    VirtualKey {
+        id: id.to_string(),
+        generation_hash: format!("h_{id}"),
+        name: "t".to_string(),
+        allowed_scopes: None,
+        enabled: true,
+        created_at: 0,
+        group: None,
+        labels: std::collections::BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 0,
+        ..Default::default()
+    }
+}
+
+fn credential(id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
+    CredentialSecret {
+        meta: CredentialMeta {
+            id: id.to_string(),
+            key_id: key_id.to_string(),
+            kind: "generic".to_string(),
+            slot: 0,
+            public_id: public_id.to_string(),
+            secret_form: SecretForm::Recoverable,
+            created_at: 0,
+            updated_at: 0,
+            expires_at: None,
+            revoked_at: None,
+            revoke_reason: None,
+            revision: 0,
+        },
+        secret: "v1:plain:sek".to_string(),
+    }
+}
+
+fn ledger(requests: u64, model: &str, input: u64, output: u64) -> UsageLedger {
+    UsageLedger {
+        requests,
+        billable_requests: requests,
+        models: vec![busbar_contract::records::ModelTokens {
+            model: model.to_string(),
+            usage_units: [
+                (busbar_contract::records::UNIT_INPUT, input),
+                (busbar_contract::records::UNIT_OUTPUT, output),
+            ]
+            .into_iter()
+            .filter(|(_, v)| *v != 0)
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+        }],
+    }
+}
+
+#[test]
+fn key_crud_and_ledger_roundtrip() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    assert_eq!(s.get_key("a").unwrap().unwrap().id, "a");
+    assert_eq!(s.list_keys().unwrap().len(), 1);
+    // absolute put_usage then read back
+    s.put_usage("a", 0, &ledger(3, "m", 100, 40)).unwrap();
+    let u = s.get_usage("a", 0).unwrap();
+    assert_eq!(u.requests, 3);
+    assert_eq!(u.total_input(), 100);
+    // absolute overwrite (not additive)
+    s.put_usage("a", 0, &ledger(1, "m", 20, 0)).unwrap();
+    assert_eq!(s.get_usage("a", 0).unwrap().total_input(), 20);
+    // unknown window is default-empty
+    assert_eq!(s.get_usage("a", 999).unwrap(), UsageLedger::default());
+}
+
+/// Additive per-model delta accumulate: two adds sum, a second model materializes its own row,
+/// and negative deltas floor at 0 (parity contract with sqlite/postgres/valkey).
+#[test]
+fn add_usage_accumulates_per_model() {
+    let s = MemoryStore::new();
+    let d = UsageDelta {
+        requests: 1,
+        billable_requests: 1,
+        models: vec![busbar_contract::records::ModelTokensDelta {
+            model: "gpt-5".to_string(),
+            usage_units: std::collections::BTreeMap::from([
+                (busbar_contract::records::UNIT_INPUT.to_string(), 10i64),
+                (busbar_contract::records::UNIT_OUTPUT.to_string(), 5),
+                (busbar_contract::records::UNIT_CACHE_READ.to_string(), 1),
+            ]),
+        }],
+    };
+    s.add_usage("bucket", 100, &d).unwrap();
+    s.add_usage("bucket", 100, &d).unwrap();
+    let u = s.get_usage("bucket", 100).unwrap();
+    assert_eq!(u.requests, 2);
+    assert_eq!(
+        (u.total_input(), u.total_output(), u.total_cache_read()),
+        (20, 10, 2)
+    );
+    // Refund floors at zero.
+    s.add_usage(
+        "bucket",
+        100,
+        &UsageDelta {
+            requests: -5,
+            billable_requests: -5,
+            models: vec![],
+        },
+    )
+    .unwrap();
+    assert_eq!(s.get_usage("bucket", 100).unwrap().requests, 0);
+}
+
+#[test]
+fn delete_key_tombstones_and_cascades_usage_and_creds() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    s.put_usage("a", 0, &ledger(1, "m", 5, 0)).unwrap();
+    s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
+    s.delete_key("a").unwrap();
+    // TOMBSTONE, not removed: the row survives, disabled, with deleted_at set.
+    let tombstone = s.get_key("a").unwrap().unwrap();
+    assert!(!tombstone.enabled);
+    assert!(tombstone.deleted_at.is_some());
+    assert_eq!(s.get_usage("a", 0).unwrap(), UsageLedger::default());
+    assert!(s.list_credentials("a").unwrap().is_empty());
+    // Idempotent: a second delete of an already-tombstoned key is a no-op, not an error.
+    s.delete_key("a").unwrap();
+}
+
+#[test]
+fn put_credential_rejects_a_slot_already_holding_a_live_credential() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
+    // Same (key_id, kind, slot), different id/public_id: must fail, not silently clobber.
+    let clobber = credential("c2", "a", "AKIA2");
+    assert!(s.put_credential(&clobber).is_err());
+    // Revoking the occupant frees the slot for a fresh mint.
+    s.revoke_credential("c1", "rotated").unwrap();
+    assert!(s.put_credential(&clobber).is_ok());
+}
+
+#[test]
+fn put_credential_rejects_a_public_id_reused_under_a_different_key() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    s.put_key(&key("b")).unwrap();
+    s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
+    // Different key, different id, SAME (kind, public_id) — the global AccessKeyId->credential
+    // lookup handle must resolve to exactly one credential.
+    let mut dupe = credential("c2", "b", "AKIA1");
+    dupe.meta.slot = 1; // different slot too, so only the public_id clash can reject it
+    assert!(s.put_credential(&dupe).is_err());
+    // A genuinely distinct public_id under the other key is fine.
+    let mut ok = credential("c3", "b", "AKIA2");
+    ok.meta.slot = 1;
+    assert!(s.put_credential(&ok).is_ok());
+}
+
+#[test]
+fn put_credential_public_id_check_excludes_its_own_row_on_reput() {
+    // The uniqueness scan excludes the row with the SAME id (`c.meta.id != secret.meta.id`) —
+    // otherwise a credential could never even be inserted once the id already existed. This
+    // only matters once an id can legitimately be re-put; simulate it by inserting once, then
+    // putting the identical secret again under the identical id/public_id/kind and confirming
+    // it's accepted, not rejected as "colliding with itself".
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    let c = credential("c1", "a", "AKIA1");
+    s.put_credential(&c).unwrap();
+    assert!(
+        s.put_credential(&c).is_ok(),
+        "a row must not collide with itself"
+    );
+}
+
+#[test]
+fn list_credentials_filters_by_key_id_and_since_boundary_is_exclusive() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    s.put_key(&key("b")).unwrap();
+    s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
+    let mut c2 = credential("c2", "b", "AKIA2");
+    c2.meta.slot = 1;
+    s.put_credential(&c2).unwrap();
+
+    let for_a = s.list_credentials("a").unwrap();
+    assert_eq!(for_a.len(), 1, "must not also return key b's credential");
+    assert_eq!(for_a[0].id, "c1");
+
+    // revision boundary: `revision > since` is exclusive of `since` itself. c2 was put after
+    // c1, so it holds the higher revision — use IT as the boundary reference, or c1 (the lower
+    // revision) would still be `> since` and the assertion below would be vacuous. The store's
+    // revision counter is global (shared with `put_key`), so c1's revision is NOT necessarily
+    // `newest_rev - 1` — read it directly rather than assuming adjacency.
+    let oldest_rev = s.list_credentials("a").unwrap()[0].revision;
+    let newest_rev = s.list_credentials("b").unwrap()[0].revision;
+    assert!(newest_rev > oldest_rev);
+    assert_eq!(
+        s.list_credentials_since(newest_rev).unwrap().len(),
+        0,
+        "since == the newest row's own revision must exclude it"
+    );
+    assert_eq!(
+        s.list_credentials_since(oldest_rev - 1).unwrap().len(),
+        2,
+        "since one below the lowest revision must include everything"
+    );
+}
+
+#[test]
+fn list_keys_since_boundary_is_exclusive() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    s.put_key(&key("b")).unwrap();
+    let rev_a = s.get_key("a").unwrap().unwrap().revision;
+    let rev_b = s.get_key("b").unwrap().unwrap().revision;
+    assert!(rev_b > rev_a);
+    assert_eq!(
+        s.list_keys_since(rev_b).unwrap().len(),
+        0,
+        "since == the newest row's own revision must exclude it"
+    );
+    assert_eq!(
+        s.list_keys_since(rev_a).unwrap().len(),
+        1,
+        "must include only b"
+    );
+    assert_eq!(s.list_keys_since(rev_a - 1).unwrap().len(), 2);
+}
+
+#[test]
+fn next_revision_is_strictly_monotonic_starting_above_zero() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    s.put_key(&key("b")).unwrap();
+    let rev_a = s.get_key("a").unwrap().unwrap().revision;
+    let rev_b = s.get_key("b").unwrap().unwrap().revision;
+    assert!(
+        rev_a > 0,
+        "the counter must not hand out 0 as a real revision"
+    );
+    assert_eq!(rev_b, rev_a + 1, "each call must advance by exactly 1");
+}
+
+#[test]
+fn lookup_credential_secret_resolves_by_kind_and_public_id() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
+    let found = s
+        .lookup_credential_secret("generic", "AKIA1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.meta.key_id, "a");
+    assert_eq!(found.secret, "v1:plain:sek");
+    assert!(s
+        .lookup_credential_secret("generic", "unknown")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn scrub_key_requires_tombstone_first() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    // A live key must not be scrubbable — that would be silent, un-auditable data loss on an
+    // active principal.
+    assert!(s.scrub_key("a").is_err());
+    s.delete_key("a").unwrap();
+    s.scrub_key("a").unwrap();
+    let scrubbed = s.get_key("a").unwrap().unwrap();
+    assert!(scrubbed.name.is_empty());
+    assert!(scrubbed.labels.is_empty());
+}
+
+#[test]
+fn metering_accumulates_per_bucket() {
+    let s = MemoryStore::new();
+    let d = MeteringDelta {
+        usage_units: Default::default(),
+        key_id: "a".to_string(),
+        bucket: 7,
+        model: "m".to_string(),
+        provider: "p".to_string(),
+        tokens_input: 10,
+        tokens_output: 5,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+    };
+    s.add_metering(&d).unwrap();
+    s.add_metering(&d).unwrap();
+    let rows = s.list_metering(7).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].tokens_input, 20);
+    assert_eq!(rows[0].requests, 2);
+    assert!(s.list_metering(999).unwrap().is_empty());
+}
+
+/// Regression: `usage` must not grow unbounded forever. A window older than the 31-day
+/// retention ceiling gets swept once `add_usage` has been called `SWEEP_INTERVAL` times
+/// (the amortized sweep cadence), even though nothing ever explicitly deletes it.
+#[test]
+fn add_usage_sweeps_stale_windows() {
+    let s = MemoryStore::new();
+    let old_window = now().saturating_sub(40 * 86_400); // 40 days old > 31-day retention
+    let d = UsageDelta {
+        requests: 1,
+        billable_requests: 1,
+        models: vec![],
+    };
+    for _ in 0..SWEEP_INTERVAL {
+        s.add_usage("old-bucket", old_window, &d).unwrap();
+    }
+    // The sweep fired on the SWEEP_INTERVAL-th write and evicted the stale row (including the
+    // one just written in that same call, since it's aged by its window_start, not by
+    // recency-of-write).
+    assert_eq!(
+        s.get_usage("old-bucket", old_window).unwrap(),
+        UsageLedger::default()
+    );
+
+    // A fresh window written afterward is unaffected.
+    let fresh_window = now();
+    s.add_usage("fresh-bucket", fresh_window, &d).unwrap();
+    assert_eq!(
+        s.get_usage("fresh-bucket", fresh_window).unwrap().requests,
+        1
+    );
+}
+
+/// Regression: the sweep must not over-prune. A window well within the 31-day retention
+/// ceiling survives a sweep triggered by writes to an unrelated, genuinely stale window.
+#[test]
+fn add_usage_sweep_preserves_fresh_windows() {
+    let s = MemoryStore::new();
+    let young_window = now().saturating_sub(5 * 86_400); // 5 days old, well within retention
+    let old_window = now().saturating_sub(40 * 86_400); // 40 days old, past retention
+    let d = UsageDelta {
+        requests: 1,
+        billable_requests: 1,
+        models: vec![],
+    };
+    s.add_usage("young-bucket", young_window, &d).unwrap();
+    for _ in 0..(SWEEP_INTERVAL - 1) {
+        s.add_usage("old-bucket", old_window, &d).unwrap();
+    }
+    // That's SWEEP_INTERVAL total add_usage calls, so the sweep just fired.
+    assert_eq!(
+        s.get_usage("young-bucket", young_window).unwrap().requests,
+        1
+    );
+    assert_eq!(
+        s.get_usage("old-bucket", old_window).unwrap(),
+        UsageLedger::default()
+    );
+}
+
+/// The sweep boundary itself: a window exactly `MAX_RETENTION_SECS` old sits AT the ceiling
+/// (`window_start + MAX_RETENTION_SECS == now`) and must be evicted (`>`, not `>=`, is the
+/// retain condition — a row must be STRICTLY inside the window to survive), while one second
+/// fresher survives.
+#[test]
+fn add_usage_sweep_boundary_is_exact() {
+    let s = MemoryStore::new();
+    let n = now();
+    // Pin the sweep's clock to the SAME `n` the test derives its buckets from, so the retention
+    // ceiling is exact and a wall-clock tick between here and the sweep can't shift it. Without
+    // this, `one_inside` intermittently falls at/below an advanced ceiling and is wrongly evicted.
+    s.pin_clock(n);
+    let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
+    let one_inside = at_ceiling + 1;
+    let d = UsageDelta {
+        requests: 1,
+        billable_requests: 1,
+        models: vec![],
+    };
+    s.add_usage("at-ceiling", at_ceiling, &d).unwrap();
+    s.add_usage("one-inside", one_inside, &d).unwrap();
+    for _ in 0..(SWEEP_INTERVAL - 2) {
+        s.add_usage("filler", one_inside, &d).unwrap();
+    }
+    assert_eq!(
+        s.get_usage("at-ceiling", at_ceiling).unwrap(),
+        UsageLedger::default(),
+        "a window exactly at the retention ceiling must be evicted"
+    );
+    assert_eq!(
+        s.get_usage("one-inside", one_inside).unwrap().requests,
+        1,
+        "a window one second inside the ceiling must survive"
+    );
+}
+
+/// Regression: `metering` must not grow unbounded forever either — same amortized sweep, keyed
+/// by the (day) `bucket` field this time.
+#[test]
+fn add_metering_sweeps_stale_buckets() {
+    let s = MemoryStore::new();
+    let old_bucket = now().saturating_sub(40 * 86_400);
+    let d = MeteringDelta {
+        usage_units: Default::default(),
+        key_id: "k".to_string(),
+        bucket: old_bucket,
+        model: "m".to_string(),
+        provider: "p".to_string(),
+        tokens_input: 1,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+    };
+    for _ in 0..SWEEP_INTERVAL {
+        s.add_metering(&d).unwrap();
+    }
+    assert!(s.list_metering(old_bucket).unwrap().is_empty());
+
+    let fresh_bucket = now();
+    let fresh = MeteringDelta {
+        bucket: fresh_bucket,
+        ..d.clone()
+    };
+    s.add_metering(&fresh).unwrap();
+    assert_eq!(s.list_metering(fresh_bucket).unwrap().len(), 1);
+}
+
+/// Regression: metering sweep must not over-prune fresh buckets either.
+#[test]
+fn add_metering_sweep_preserves_fresh_buckets() {
+    let s = MemoryStore::new();
+    let young_bucket = now().saturating_sub(5 * 86_400);
+    let old_bucket = now().saturating_sub(40 * 86_400);
+    let young = MeteringDelta {
+        usage_units: Default::default(),
+        key_id: "k".to_string(),
+        bucket: young_bucket,
+        model: "m".to_string(),
+        provider: "p".to_string(),
+        tokens_input: 1,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+    };
+    let old = MeteringDelta {
+        bucket: old_bucket,
+        ..young.clone()
+    };
+    s.add_metering(&young).unwrap();
+    for _ in 0..(SWEEP_INTERVAL - 1) {
+        s.add_metering(&old).unwrap();
+    }
+    assert_eq!(s.list_metering(young_bucket).unwrap().len(), 1);
+    assert!(s.list_metering(old_bucket).unwrap().is_empty());
+}
+
+/// Same exact-boundary case as `add_usage_sweep_boundary_is_exact`, for metering's bucket
+/// retention: a bucket exactly `MAX_RETENTION_SECS` old must be evicted, one second fresher
+/// must survive.
+#[test]
+fn add_metering_sweep_boundary_is_exact() {
+    let s = MemoryStore::new();
+    let n = now();
+    // Pin the sweep's clock to the SAME `n` the test derives its buckets from (see the usage
+    // boundary test above) so the retention ceiling is exact and race-free.
+    s.pin_clock(n);
+    let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
+    let one_inside = at_ceiling + 1;
+    let base = MeteringDelta {
+        usage_units: Default::default(),
+        key_id: "k".to_string(),
+        bucket: at_ceiling,
+        model: "m".to_string(),
+        provider: "p".to_string(),
+        tokens_input: 1,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+    };
+    let inside = MeteringDelta {
+        bucket: one_inside,
+        ..base.clone()
+    };
+    s.add_metering(&base).unwrap();
+    for _ in 0..(SWEEP_INTERVAL - 1) {
+        s.add_metering(&inside).unwrap();
+    }
+    assert!(
+        s.list_metering(at_ceiling).unwrap().is_empty(),
+        "a bucket exactly at the retention ceiling must be evicted"
+    );
+    assert_eq!(
+        s.list_metering(one_inside).unwrap().len(),
+        1,
+        "a bucket one second inside the ceiling must survive"
+    );
+}
+
+/// `delete_key` tombstones rows (kept forever, by design, for billing/audit attribution), and
+/// that growth needs its own bound — unlike `usage` and
+/// `metering`, the `keys` map had no retention sweep, so a repeated self-serve refresh loop by
+/// one principal grew it without bound. `put_key` (the hot write path for issue/refresh) now
+/// runs the SAME amortized sweep, pruning only tombstoned rows past the 31-day ceiling; a live
+/// row is NEVER a candidate regardless of age, and a recently-tombstoned row survives.
+#[test]
+fn put_key_sweeps_stale_tombstones() {
+    let s = MemoryStore::new();
+    let n = now();
+    let old_deleted_at = n.saturating_sub(40 * 86_400); // 40 days old > 31-day retention
+
+    // Tombstone one key far in the past (pin the clock at delete time so its `deleted_at` lands
+    // well past the retention ceiling).
+    s.put_key(&key("old-tombstone")).unwrap();
+    s.pin_clock(old_deleted_at);
+    s.delete_key("old-tombstone").unwrap();
+    assert_eq!(
+        s.get_key("old-tombstone").unwrap().unwrap().deleted_at,
+        Some(old_deleted_at)
+    );
+
+    // A live key (never tombstoned) and a recently-tombstoned key.
+    s.put_key(&key("live")).unwrap();
+    s.put_key(&key("recent-tombstone")).unwrap();
+    s.pin_clock(n); // back to "now" — governs both the recent tombstone and the sweep's ceiling
+    s.delete_key("recent-tombstone").unwrap();
+
+    // Fire the amortized sweep with a batch of unrelated writes (mirrors add_usage/add_metering
+    // sweep tests: SWEEP_INTERVAL put_key calls guarantee the sweep fires at least once).
+    for i in 0..SWEEP_INTERVAL {
+        s.put_key(&key(&format!("filler-{i}"))).unwrap();
+    }
+
+    assert!(
+        s.get_key("old-tombstone").unwrap().is_none(),
+        "a tombstone past the 31-day retention ceiling must be pruned"
+    );
+    assert!(
+        s.get_key("live").unwrap().is_some(),
+        "a live (never-deleted) key must never be pruned, regardless of age"
+    );
+    assert!(
+        s.get_key("recent-tombstone").unwrap().is_some(),
+        "a tombstone within the retention window must survive"
+    );
+}
+
+/// Unlike `usage`/`metering`/tombstoned `keys`, the `creds` map had NO
+/// retention sweep at all — its only shrink path was `delete_key`'s cascade, which never fires for
+/// a credential rotated on a LIVE key. A long-lived key's occupied-slot -> revoke -> re-put
+/// rotation cycle (mint into the free slot, revoke the old one) therefore grew `creds` without
+/// bound. `put_credential` now runs the same amortized sweep, pruning only REVOKED rows past the
+/// 31-day ceiling; a live (never-revoked) credential is NEVER a candidate regardless of age, and a
+/// recently-revoked one survives.
+#[test]
+fn put_credential_sweeps_stale_revoked_creds() {
+    let s = MemoryStore::new();
+    let n = now();
+    let old_revoked_at = n.saturating_sub(40 * 86_400); // 40 days old > 31-day retention
+
+    s.put_key(&key("k-old")).unwrap();
+    s.put_credential(&credential("old-revoked", "k-old", "AKIA_OLD"))
+        .unwrap();
+    // Revoke it far in the past (pin the clock at revoke time so `revoked_at` lands well past
+    // the retention ceiling) — `revoke_credential` stamps `revoked_at` from the real wall clock,
+    // not the pinned one, so pin first, revoke, then verify the stamped value directly.
+    s.pin_clock(old_revoked_at);
+    s.revoke_credential("old-revoked", "rotated").unwrap();
+
+    // A live (never-revoked) credential and a recently-revoked one.
+    s.put_key(&key("k-live")).unwrap();
+    s.put_credential(&credential("live", "k-live", "AKIA_LIVE"))
+        .unwrap();
+    s.put_key(&key("k-recent")).unwrap();
+    s.put_credential(&credential("recent-revoked", "k-recent", "AKIA_RECENT"))
+        .unwrap();
+    s.pin_clock(n); // back to "now" — governs both the recent revoke and the sweep's ceiling
+    s.revoke_credential("recent-revoked", "rotated").unwrap();
+
+    // Fire the amortized sweep with a batch of unrelated put_credential calls (mirrors
+    // put_key_sweeps_stale_tombstones): SWEEP_INTERVAL calls guarantee the sweep fires.
+    for i in 0..SWEEP_INTERVAL {
+        let kid = format!("k-filler-{i}");
+        s.put_key(&key(&kid)).unwrap();
+        s.put_credential(&credential(
+            &format!("filler-{i}"),
+            &kid,
+            &format!("AKIA_F{i}"),
+        ))
+        .unwrap();
+    }
+
+    assert!(
+        s.lookup_credential_secret("generic", "AKIA_OLD")
+            .unwrap()
+            .is_none(),
+        "a credential revoked past the 31-day retention ceiling must be pruned"
+    );
+    assert!(
+        s.lookup_credential_secret("generic", "AKIA_LIVE")
+            .unwrap()
+            .is_some(),
+        "a live (never-revoked) credential must never be pruned, regardless of age"
+    );
+    assert!(
+        s.lookup_credential_secret("generic", "AKIA_RECENT")
+            .unwrap()
+            .is_some(),
+        "a credential revoked within the retention window must survive"
+    );
+}
+
+/// A pure READ must not queue behind another pure read. `list_keys` over a large table clones every
+/// row while holding the `keys` lock, and on the governance hot path a `get_key` arriving in that
+/// window is an admit decision waiting: if both take the WRITE side of the `RwLock`, the point read
+/// blocks for the whole listing pass, and a big enough table turns an admin listing into a latency
+/// spike on every request.
+///
+/// The listing's guard is parked here for the whole check (a stand-in for "a very large table"), so
+/// the assertion is deterministic rather than a timing race: with a shared read guard the concurrent
+/// `get_key` completes immediately; with an exclusive one it cannot complete at all until the
+/// listing lets go, and the bounded wait below fails rather than hanging the suite.
+#[test]
+fn a_parked_listing_read_does_not_block_a_concurrent_point_read() {
+    use std::sync::mpsc;
+    let store = std::sync::Arc::new(MemoryStore::new());
+    store.put_key(&key("k1")).unwrap();
+
+    // Exactly the guard `list_keys` holds while it clones the table.
+    let parked = store.keys.read().unwrap_or_else(|e| e.into_inner());
+
+    let (tx, rx) = mpsc::channel();
+    let reader = std::sync::Arc::clone(&store);
+    let handle = std::thread::spawn(move || {
+        let found = reader.get_key("k1").expect("point read").is_some();
+        let _ = tx.send(found);
+    });
+
+    let answered = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or(false);
+    drop(parked);
+    handle.join().expect("the point read thread");
+    assert!(
+        answered,
+        "a concurrent get_key did not complete while a listing read was in flight — the point \
+         read is serialized behind the whole listing pass"
+    );
+}
+
+/// A credential may only hang off a LIVE key. `delete_key` tombstones the key and cascades away
+/// every credential it owned precisely so the secret material stops resolving; a `put_credential`
+/// arriving afterwards (an in-flight rotation, a retry, a hydrating replica) put the material
+/// straight back under a key an operator had just revoked, and `lookup_credential_secret` resolved
+/// it — the tombstone cascade undone through the other door.
+#[test]
+fn put_credential_refuses_a_tombstoned_or_absent_key() {
+    let s = MemoryStore::new();
+
+    // No such key at all: nothing to own the credential.
+    assert!(
+        s.put_credential(&credential("orphan", "ghost", "AKIA_GHOST"))
+            .is_err(),
+        "a credential whose owning key names no row must be refused"
+    );
+
+    s.put_key(&key("a")).unwrap();
+    s.delete_key("a").unwrap();
+    assert!(
+        s.put_credential(&credential("c1", "a", "AKIA1")).is_err(),
+        "a credential minted onto a TOMBSTONED key must be refused"
+    );
+    assert!(
+        s.lookup_credential_secret("generic", "AKIA1")
+            .unwrap()
+            .is_none(),
+        "the refused credential must not resolve — that is the whole point of the cascade"
+    );
+}
+
+/// The key+credential mint is ATOMIC or it is nothing. The trait's default is the two-call sequence
+/// (`put_key` then `put_credential`), and the credential leg fails on an ordinary operator mistake —
+/// a `public_id` already in use. Under the default the key leg has already committed by then, so the
+/// mint reports failure while leaving a live key with no credential behind it: a row the
+/// caller does not know exists and will never clean up.
+#[test]
+fn put_key_with_credential_leaves_no_key_behind_when_the_credential_is_refused() {
+    let s = MemoryStore::new();
+    s.put_key(&key("incumbent")).unwrap();
+    s.put_credential(&credential("c-incumbent", "incumbent", "AKIA_TAKEN"))
+        .unwrap();
+
+    // The mint the operator asks for, colliding on the global (kind, public_id) handle.
+    let mut minted = credential("c-new", "fresh", "AKIA_TAKEN");
+    minted.meta.key_id = "fresh".to_string();
+    assert!(
+        s.put_key_with_credential(&key("fresh"), &minted).is_err(),
+        "a mint whose credential collides on public_id must fail"
+    );
+    assert!(
+        s.get_key("fresh").unwrap().is_none(),
+        "the failed mint left the key committed — the pair went in one leg at a time"
+    );
+    assert!(
+        s.list_credentials("fresh").unwrap().is_empty(),
+        "and no credential row may survive the refusal either"
+    );
+
+    // The success path still writes BOTH rows.
+    let ok = credential("c-ok", "fresh", "AKIA_FREE");
+    s.put_key_with_credential(&key("fresh"), &ok)
+        .expect("a clean mint writes both rows");
+    assert!(s.get_key("fresh").unwrap().is_some());
+    assert_eq!(s.list_credentials("fresh").unwrap().len(), 1);
+}
+
+/// The spent-token ledger is bounded by the tokens' own expiry: a row past its `expires_at` can
+/// never be presented again, so redeeming anything sweeps the lapsed rows out in the same call.
+/// The ledger is keyed by `(kind, token)`, so the same nonce under a different kind is its own
+/// single-use grant rather than a collision.
+#[test]
+fn redeem_plane_token_sweeps_lapsed_rows_and_separates_kinds() {
+    let s = MemoryStore::new();
+    assert!(s.redeem_plane_token("ask", "n1", 100, 50).unwrap());
+    assert!(!s.redeem_plane_token("ask", "n1", 100, 50).unwrap());
+
+    // Same nonce, different kind: a separate grant, not the same spent row.
+    assert!(s.redeem_plane_token("other", "n1", 100, 50).unwrap());
+
+    // Past its own expiry the row is dropped — nothing upstream can present it again anyway, and
+    // keeping it only grows the map.
+    assert!(s.redeem_plane_token("ask", "n2", 300, 200).unwrap());
+    assert_eq!(
+        s.plane_tokens.read().unwrap().len(),
+        1,
+        "the two lapsed rows must be swept by the redemption that came after them"
+    );
+}
+
+/// THE `records` MAP IS BOUNDED, LIKE EVERY OTHER MAP IN THIS FILE.
+///
+/// It was the only one that was not. `usage`/`metering` sweep against `MAX_RETENTION_SECS` on a
+/// `SWEEP_INTERVAL` ticker, tombstoned `keys` and revoked `creds` likewise, and `plane_tokens` drops
+/// lapsed rows on every redemption — each with a sweep cell above. The map added for the contract's
+/// record leg had no sweep, no ticker and no TTL, and the contract declares NO delete verb at all
+/// (`busbar_contract::abi::sdk::store::StoreSlots` gives `record_put`/`record_get`/`record_scan`, and this crate
+/// does not implement the stream-keyed `purge_before`), so no caller — internal or external — could
+/// ever prune it. `MemoryStore` is the DEFAULT `db` backend of a long-lived proxy process, so
+/// sustained record-leg traffic under ever-new `(schema, key)` pairs grew it for the life of the
+/// process.
+///
+/// The bound is the SAME one the sibling maps use: rows past the 31-day ceiling go, on an amortized
+/// pass every `SWEEP_INTERVAL` writes. It keys on the row's own WRITE time (there is no timestamp
+/// column in a record's key or body — the value is opaque bytes), so a row rewritten by a later
+/// `record_put` is fresh again, which is the correct reading of "still in use".
+#[test]
+fn record_put_sweeps_stale_records() {
+    const SCHEMA: RecordSchemaId = RecordSchemaId::new("task");
+    let body = |b: &[u8]| RecordBytes::new(b.to_vec()).expect("inside the record ceiling");
+
+    let s = MemoryStore::new();
+    let n = now();
+    // Written 40 days ago — past the 31-day ceiling.
+    s.pin_clock(n.saturating_sub(40 * 86_400));
+    s.record_put(SCHEMA, b"stale", &body(b"old")).unwrap();
+    // …and one written a day ago, comfortably inside it.
+    s.pin_clock(n.saturating_sub(86_400));
+    s.record_put(SCHEMA, b"fresh", &body(b"recent")).unwrap();
+
+    s.pin_clock(n); // back to "now" — this governs the sweep's ceiling
+    assert_eq!(
+        s.record_get(SCHEMA, b"stale").unwrap(),
+        Some(body(b"old")),
+        "sanity: nothing has swept yet, the ticker has not come round"
+    );
+
+    // Fire the amortized sweep, exactly as the usage/metering/keys/creds cells do: SWEEP_INTERVAL
+    // writes guarantee the ticker comes round at least once.
+    for i in 0..SWEEP_INTERVAL {
+        s.record_put(SCHEMA, format!("filler-{i}").as_bytes(), &body(b"f"))
+            .unwrap();
+    }
+
+    assert_eq!(
+        s.record_get(SCHEMA, b"stale").unwrap(),
+        None,
+        "a record past the 31-day ceiling must be swept — this map has no delete verb, so the \
+         sweep is its ONLY shrink path"
+    );
+    assert_eq!(
+        s.record_get(SCHEMA, b"fresh").unwrap(),
+        Some(body(b"recent")),
+        "the sweep must not over-prune: a row well inside the ceiling survives a pass triggered \
+         by unrelated writes"
+    );
+}
+
+/// The sweep boundary is EXACT and the same `>` the sibling maps use: a row written exactly
+/// `MAX_RETENTION_SECS` ago sits AT the ceiling and goes; one second fresher stays. And a stale row
+/// REWRITTEN before the pass survives, because `record_put` REPLACES and the freshness rides the
+/// write rather than the key.
+#[test]
+fn record_put_sweep_boundary_is_exact_and_a_rewrite_refreshes_the_row() {
+    const SCHEMA: RecordSchemaId = RecordSchemaId::new("task");
+    let body = |b: &[u8]| RecordBytes::new(b.to_vec()).expect("inside the record ceiling");
+
+    let s = MemoryStore::new();
+    let n = now();
+    s.pin_clock(n.saturating_sub(MAX_RETENTION_SECS));
+    s.record_put(SCHEMA, b"at-ceiling", &body(b"v")).unwrap();
+    s.record_put(SCHEMA, b"rewritten", &body(b"v1")).unwrap();
+    s.pin_clock(n.saturating_sub(MAX_RETENTION_SECS - 1));
+    s.record_put(SCHEMA, b"one-inside", &body(b"v")).unwrap();
+
+    // The rewrite lands at "now", so its row is fresh again even though its first write was not.
+    s.pin_clock(n);
+    s.record_put(SCHEMA, b"rewritten", &body(b"v2")).unwrap();
+
+    // Three writes are already on the ticker, so SWEEP_INTERVAL more guarantees a pass.
+    for i in 0..SWEEP_INTERVAL {
+        s.record_put(SCHEMA, format!("f-{i}").as_bytes(), &body(b"f"))
+            .unwrap();
+    }
+
+    assert_eq!(
+        s.record_get(SCHEMA, b"at-ceiling").unwrap(),
+        None,
+        "written_at + MAX_RETENTION_SECS == now is AT the ceiling and must go (`>`, not `>=`)"
+    );
+    assert_eq!(
+        s.record_get(SCHEMA, b"one-inside").unwrap(),
+        Some(body(b"v")),
+        "one second inside the ceiling must survive"
+    );
+    assert_eq!(
+        s.record_get(SCHEMA, b"rewritten").unwrap(),
+        Some(body(b"v2")),
+        "a rewrite refreshes the row: freshness rides the write, not the key"
+    );
+}
+
+/// An upsert-kind plane record (`task`): `parent` is `None` and `seq` is `0`, so `plane_key`
+/// resolves its identity to its own `id` and it lands where `get_plane_record`/`plane_token_live`
+/// point-read.
+fn plane_task(id: &str, disposition: PlaneDisposition) -> PlaneRecord {
+    PlaneRecord {
+        kind: "task".to_string(),
+        id: id.to_string(),
+        parent: None,
+        seq: 0,
+        ts: 0,
+        disposition,
+        body: b"opaque".to_vec(),
+    }
+}
+
+/// `plane_token_live` is the MULTI-use, time-and-disposition-bounded capability check, NOT the
+/// single-use `redeem_plane_token` test-and-set. On the default in-memory backend it answers `true`
+/// while a matching `(kind, token)` record is present, still `Active`, and unexpired — and it must be
+/// REPEATABLE, spending nothing, because the A2A push-callback verify-live leg calls back several
+/// times against one long-running task. The trait default returns `Ok(false)`, which would refuse
+/// every legitimate callback out of the box; this proves the override answers `true` for the live
+/// case and stays fail-closed for every other.
+#[test]
+fn plane_token_live_is_true_while_active_and_unexpired_and_is_repeatable() {
+    let s = MemoryStore::new();
+    s.upsert_plane_record(plane_task("t1", PlaneDisposition::Active).view())
+        .unwrap();
+
+    // Present, Active, and now (100) is before expires_at (1000): live.
+    assert!(s.plane_token_live("task", "t1", 1000, 100).unwrap());
+    // MULTI-use: asking again answers the same, and spends nothing — the record is untouched.
+    assert!(s.plane_token_live("task", "t1", 1000, 100).unwrap());
+    assert!(
+        s.get_plane_record("task", "t1").unwrap().is_some(),
+        "a live-check must not consume or remove the record (unlike a redeem)"
+    );
+    assert!(
+        s.plane_token_live("task", "t1", 1000, 100).unwrap(),
+        "still live after repeated checks — the capability is 'work still in flight', not 'unused'"
+    );
+}
+
+/// Fail-closed on every non-live case: unknown `(kind, token)`, a terminal disposition, and a lapsed
+/// deadline (`now >= expires_at`) each yield `Ok(false)`.
+#[test]
+fn plane_token_live_is_false_for_unknown_terminal_and_expired() {
+    let s = MemoryStore::new();
+
+    // Unknown (kind, token): fail-closed.
+    assert!(!s.plane_token_live("task", "missing", 1000, 100).unwrap());
+    // Wrong kind for an existing token is also unknown.
+    s.upsert_plane_record(plane_task("t1", PlaneDisposition::Active).view())
+        .unwrap();
+    assert!(!s.plane_token_live("other", "t1", 1000, 100).unwrap());
+
+    // Expired: now == expires_at is already past (`now < expires_at` is the live predicate), and
+    // now > expires_at likewise.
+    assert!(
+        !s.plane_token_live("task", "t1", 1000, 1000).unwrap(),
+        "now == expires_at is not before the deadline"
+    );
+    assert!(!s.plane_token_live("task", "t1", 1000, 1001).unwrap());
+
+    // Terminal disposition: the task has finished, so the token is dead even before its deadline.
+    s.upsert_plane_record(plane_task("t1", PlaneDisposition::Terminal).view())
+        .unwrap();
+    assert!(
+        !s.plane_token_live("task", "t1", 1000, 100).unwrap(),
+        "a terminal record refuses further callbacks even while unexpired"
+    );
+}
+
+/// An APPEND-ONLY plane record (`task_event`): `parent`/`seq` identify its position in a durable
+/// chain, exactly like the `task_event`/`call` rows the journal seam appends.
+fn plane_event(parent: &str, seq: u64, body: &[u8]) -> PlaneRecord {
+    PlaneRecord {
+        kind: "task_event".to_string(),
+        id: parent.to_string(),
+        parent: Some(parent.to_string()),
+        seq,
+        ts: 0,
+        disposition: PlaneDisposition::Active,
+        body: body.to_vec(),
+    }
+}
+
+/// AUDIT-INTEGRITY FIX: `append_plane_record` must detect a SECOND WRITER forking the chain, exactly
+/// as the legacy `append_audit` already does above (`Some(stored) if stored == entry => Ok(()); Some(_)
+/// => Err(...)`) — the two append-only paths must never disagree about what a fork is. Before this
+/// fix `append_plane_record` was a blind `HashMap::insert`: two busbar processes pointed at one
+/// durable store would silently overwrite each other's `task_event`/`call`/`audit` rows with no
+/// trace.
+#[test]
+fn append_plane_record_refuses_a_second_writers_fork_at_an_occupied_seq() {
+    let s = MemoryStore::new();
+    let first = plane_event("t1", 1, b"first-writer");
+    s.append_plane_record(first.view()).unwrap();
+
+    // Re-appending the IDENTICAL record — the write-through retry path — must stay Ok.
+    s.append_plane_record(first.view())
+        .expect("re-appending the IDENTICAL record is the retry path and must be Ok");
+
+    // A DIFFERENT record at the SAME seq is a second writer forking the chain: refused, not
+    // silently applied.
+    let forked = plane_event("t1", 1, b"second-writer");
+    assert!(
+        s.append_plane_record(forked.view()).is_err(),
+        "a DIFFERENT record on an already-occupied seq was accepted — the chain has forked and the \
+         store said nothing"
+    );
+
+    // The first writer's record must still be intact: neither overwritten nor corrupted.
+    let rows = s
+        .list_plane_records("task_event", &PlaneSelector::Parent("t1".into()))
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![b"first-writer".to_vec()],
+        "the original record must survive the refused fork attempt untouched"
+    );
+}

@@ -1,0 +1,7 @@
+# Canonical authorship. Commits go out under Matthew Jackson's GitHub noreply only.
+# Historical commits authored as dev3@getbusbar.com are canonicalized here for
+# display/blame/shortlog and on GitHub; the definitive author-byte rewrite
+# (git filter-repo --mailmap) runs once at branch consolidation, when no live
+# worktree is pinned to the pre-rewrite SHAs.
+Matthew Jackson <1085847+MattJackson@users.noreply.github.com> <dev3@getbusbar.com>
+Matthew Jackson <1085847+MattJackson@users.noreply.github.com> Matthew <dev3@getbusbar.com>

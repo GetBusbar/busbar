@@ -5,10 +5,10 @@
 # design; this gate is what turns "remembered in five places" into "enforced from one".
 #
 # Checks, in order:
-#   1. Registry shape: required fields, valid kinds/gates, unique repo/alias/crate.
-#   2. qa-gate.yml derives its sibling checkouts from the registry (its clone loop calls this
-#      script's --list mode) — per-plugin hand-written checkout steps are gone by design, so the
-#      check is "the registry-driven step exists", not "a literal step per plugin exists".
+#   1. Registry shape: required fields, valid kinds/gates, unique repo/alias/crate, and every repo is
+#      named busbar-<kind>-<name> for its OWN kind (owner ruling: repo = crate = artifact prefix).
+#   2. (retired with the qa gate's runner: nothing in this repository clones siblings from the
+#      registry any more.)
 #   3. release-check.sh coverage per entry's `gate` kind:
 #        suite  — the registry-driven loop exists (calls --list) AND the entry's `service` has a
 #                 handler arm in release-check.sh (a new service value needs a new container spec).
@@ -16,14 +16,15 @@
 #   4. [network, skipped with --offline] every entry has a published GitHub release on its
 #      version_line WITH >0 assets (a tag+release with no assets is a phantom, not a release).
 #   5. [network, skipped with --offline] reverse sweep: org repos matching plugin naming
-#      (store-*, *-hook, auth-*, or kind-named like hashicorp-*) must be in the registry or in
-#      excluded_repos.
+#      (^busbar-(store|secret|auth|hook|export|plane|transport)-, the one name every plugin repo
+#      carries) must be in the registry or in excluded_repos. EVERY plugin kind lives in its own
+#      repo (owner ruling), so every kind's naming is swept.
 #
 # Usage: scripts/plugin-registry-check.sh [--offline]
 #        scripts/plugin-registry-check.sh --list
 #
 # --list is the machine-readable registry feed the other consumers iterate (release-check.sh's
-# suite loop, qa-gate.yml's clone loop): one tab-separated line per plugin —
+# suite loop): one tab-separated line per plugin —
 #   repo <TAB> dir <TAB> alias <TAB> kind <TAB> service <TAB> release_gate <TAB> gate <TAB> checkout_ref
 # where dir is checkout_dir (falling back to repo) and checkout_ref is "-" when unset. Shape
 # validation (check 1) still runs first, so a malformed registry fails every consumer loudly.
@@ -31,6 +32,179 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 MODE="${1:-}"
+
+# ── --selftest ───────────────────────────────────────────────────────────────────────────────────
+# Drives check 5 (the reverse org sweep) against a STUBBED `gh`, because the case that matters is
+# the one where `gh` fails: an expired token used to make the sweep return None, `or []` turned that
+# into an empty list, the loop body never ran, and the gate printed green having swept nothing.
+# The sweep is the only check that can see a plugin-shaped repo nobody registered, so its silence
+# is the one silence with no second signal behind it.
+#
+# Each case asserts on the check-5 line specifically, not on the exit code: the stub cannot know
+# each plugin's version_line, so check 4 is noisy under it and is not what these cases are about.
+if [ "$MODE" = "--selftest" ]; then
+  tmp="$(mktemp -d)"
+  rc=0
+  # EVERY DECLARED CASE MUST RUN (item 509). An early `exit 0` once ended this selftest after check
+  # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
+  # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
+  # turns a green exit with any case unrun into RED.
+  SELFTEST_CASES=14
+  ran=0
+  selftest_exit() {
+    local st=$?
+    rm -rf "$tmp"
+    if [ "$st" = 0 ] && [ "$ran" != "$SELFTEST_CASES" ]; then
+      echo "plugin-registry-check selftest: FAILED -- only $ran of $SELFTEST_CASES declared case(s) ran;"
+      echo "  a selftest that exits before its cases is not a pass."
+      exit 1
+    fi
+  }
+  trap selftest_exit EXIT
+  mk_stub() {  # mk_stub <orgs-behaviour-script>
+    mkdir -p "$tmp/bin"
+    { printf '#!/usr/bin/env bash\ncase "$2" in\n  */releases/latest) echo %s ;;\n  orgs/*)\n' \
+        "'{\"tag_name\":\"v0.0.0\",\"assets\":[{\"name\":\"a\"}]}'"
+      printf '%s\n' "$1"
+      printf '    ;;\nesac\n'
+    } > "$tmp/bin/gh"
+    chmod +x "$tmp/bin/gh"
+  }
+  probe() {  # probe <label> <want-present|want-absent> <pattern>
+    ran=$((ran + 1))
+    local out; out="$(PATH="$tmp/bin:$PATH" "$0" 2>&1 || true)"
+    if [ "$2" = want-present ]; then
+      if printf '%s' "$out" | grep -qF "$3"; then printf '  [ok]     %s\n' "$1"
+      else printf '  [FAILED] %s (no line matching: %s)\n' "$1" "$3"; rc=1; fi
+    else
+      if printf '%s' "$out" | grep -qF "$3"; then printf '  [FAILED] %s (unexpected line: %s)\n' "$1" "$3"; rc=1
+      else printf '  [ok]     %s\n' "$1"; fi
+    fi
+  }
+  # The org listing a stub serves, as PAGES, the way the real API answers: `gh api --paginate
+  # --slurp` gets every page wrapped in one outer array, a bare `gh api` gets page 1 and nothing more.
+  cat >"$tmp/pages.py" <<'PAGES'
+import json, sys
+spec, argv = json.loads(sys.argv[1]), sys.argv[2:]
+pages = [[{"name": n} for n in page] for page in spec]
+if "--paginate" in argv:
+    print(json.dumps(pages if "--slurp" in argv else [r for p in pages for r in p]))
+else:
+    print(json.dumps(pages[0] if pages else []))
+PAGES
+  echo "plugin-registry-check selftest (check 5, the reverse org sweep)"
+
+  # CASE 1: gh cannot answer at all — an expired token, no read:org, a rate limit.
+  mk_stub '    echo "gh: Bad credentials (HTTP 401)" >&2; exit 1'
+  probe "an expired/failing gh token REDS the org sweep instead of sweeping nothing" \
+    want-present "the reverse org sweep (check 5) COULD NOT RUN"
+
+  # CASE 2: gh answers, with nothing. An empty answer from an API is not an empty org.
+  mk_stub "    python3 '$tmp/pages.py' '[[]]' \"\$@\""
+  probe "an empty org listing REDS the sweep rather than passing it vacuously" \
+    want-present "the reverse org sweep (check 5) saw only 0 org repo(s)"
+
+  # CASE 3: a real-shaped listing containing an unregistered plugin-shaped repo — the sweep's whole
+  # purpose. This is the half that proves the guards above did not just disable the check.
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"busbar-store-bogus\"]]' \"\$@\""
+  probe "a plausible listing still catches an unregistered plugin-shaped repo" \
+    want-present "org repo 'busbar-store-bogus' matches plugin naming"
+
+  # CASE 4: the same listing without the stray repo must not manufacture a finding.
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))')]]' \"\$@\""
+  probe "a clean listing produces no sweep finding" want-absent "matches plugin naming but is not in plugins.yaml"
+
+  # CASE 5 (item 510): the org is bigger than one page, and the stray is on PAGE 2. A sweep that
+  # reads one page of at most 100 repos clears the floor (the registry's own count, ~11) on page 1
+  # alone and never sees it -- a truncated answer indistinguishable from a complete one.
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(100)))')],[\"r100\",\"busbar-store-on-page-two\"]]' \"\$@\""
+  probe "a plugin-shaped repo on the SECOND page of the org listing is still caught" \
+    want-present "org repo 'busbar-store-on-page-two' matches plugin naming"
+
+  # CASES 6-7: the sweep covers EVERY kind's naming, not only the cold kinds that shipped first.
+  # An unregistered export-* and an unregistered transport-* repo are each caught.
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"busbar-export-bogus\"]]' \"\$@\""
+  probe "an unregistered busbar-export-* repo is caught by the org sweep" \
+    want-present "org repo 'busbar-export-bogus' matches plugin naming"
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"busbar-transport-bogus\"]]' \"\$@\""
+  probe "an unregistered busbar-transport-* repo is caught by the org sweep" \
+    want-present "org repo 'busbar-transport-bogus' matches plugin naming"
+
+  # ── CHECK 1, THE NAME. A registered repo outside busbar-<kind>-<name>, or named for another kind,
+  # is RED; the committed registry (the control) is not. Planted in a copy of plugins.yaml.
+  echo
+  echo "plugin-registry-check selftest (check 1, every repo is busbar-<its kind>-<name>)"
+  c1="$tmp/c1"; mkdir -p "$c1/scripts" "$c1/.github/workflows"
+  cp plugins.yaml "$c1/plugins.yaml"
+  cp scripts/plugin-registry-check.sh scripts/release-check.sh "$c1/scripts/"
+  [ -f scripts/release-check-1.5.2.sh ] && cp scripts/release-check-1.5.2.sh "$c1/scripts/"
+  c1_says() { local out; out="$( (cd "$c1" && ./scripts/plugin-registry-check.sh --offline) 2>&1 || true)"; case "$out" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+  first="$(sed -n 's/^  - repo: //p' plugins.yaml | head -1)"
+  first_kind="$(awk '/^  - repo: /{n++} n==1 && /^    kind: /{print $2; exit}' plugins.yaml)"
+  ran=$((ran + 1))
+  if c1_says "repo name does not match"; then
+    printf '  [FAILED] %s\n' "control: the COMMITTED registry fails the naming check (the check is broken, not the subject)"; rc=1
+  else
+    printf '  [ok]     %s\n' "control: every committed repo is busbar-<its kind>-<name>"
+  fi
+  ran=$((ran + 1))
+  sed -i.bak "s/^  - repo: ${first}\$/  - repo: legacy-${first#busbar-}/" "$c1/plugins.yaml"
+  if c1_says "does not match ^busbar-${first_kind}-"; then
+    printf '  [ok]     %s\n' "a registered repo named outside busbar-<kind>-<name> is RED"
+  else
+    printf '  [FAILED] %s\n' "check 1 passed a repo named legacy-${first#busbar-}"; rc=1
+  fi
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  other="plane"; [ "$first_kind" = plane ] && other="hook"
+  sed -i.bak "s/^  - repo: ${first}\$/  - repo: busbar-${other}-${first#busbar-*-}/" "$c1/plugins.yaml"
+  if c1_says "does not match ^busbar-${first_kind}-"; then
+    printf '  [ok]     %s\n' "a repo named for ANOTHER kind (busbar-${other}-...) is RED"
+  else
+    printf '  [FAILED] %s\n' "check 1 passed a kind:${first_kind} repo named busbar-${other}-..."; rc=1
+  fi
+
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  first_crate="$(awk '/^  - repo: /{n++} n==1 && /^    crate: /{print $2; exit}' plugins.yaml)"
+  sed -i.bak "s/^    crate: ${first_crate}\$/    crate: legacy-${first_crate}/" "$c1/plugins.yaml"
+  if c1_says "is neither ${first} nor ${first}-plugin"; then
+    printf '  [ok]     %s\n' "a cdylib crate named outside <repo> / <repo>-plugin is RED"
+  else
+    printf '  [FAILED] %s\n' "check 1 passed crate legacy-${first_crate}"; rc=1
+  fi
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  awk -v r="$first" '{print} $0=="  - repo: "r {print "    manifest_name: \"" r "-plugin\""}' plugins.yaml > "$c1/plugins.yaml"
+  if c1_says "manifest_name '${first}-plugin' is not the repo name"; then
+    printf '  [ok]     %s\n' "a manifest name that is not the repo name is RED"
+  else
+    printf '  [FAILED] %s\n' "check 1 passed manifest_name ${first}-plugin"; rc=1
+  fi
+  # A `pending_crate: true` entry (registered, its crates not moved in yet) is kept OUT of the --list
+  # feed every cloning/testing consumer iterates, so release-check does not clone or test an
+  # empty repo; an entry WITHOUT it stays in (the RED arm: the filter is the flag, not a blanket drop).
+  c1_list() { (cd "$c1" && ./scripts/plugin-registry-check.sh --list) 2>/dev/null | cut -f1; }
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  awk -v r="$first" '{print} $0=="  - repo: "r {print "    pending_crate: true"}' plugins.yaml > "$c1/plugins.yaml"
+  if c1_list | grep -qx "$first"; then
+    printf '  [FAILED] %s\n' "--list still feeds pending_crate entry ${first}"; rc=1
+  else
+    printf '  [ok]     %s\n' "a pending_crate entry is kept out of the --list feed"
+  fi
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  if c1_list | grep -qx "$first"; then
+    printf '  [ok]     %s\n' "an entry without pending_crate stays in the --list feed"
+  else
+    printf '  [FAILED] %s\n' "--list dropped ${first}, which is not pending_crate"; rc=1
+  fi
+
+  echo
+  [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays, a comment cannot stand in for the registry loop, and a plugin repo is named busbar-<kind>-<name>"; exit 0; }
+  echo "plugin-registry-check selftest: FAILED"; exit 1
+fi
 
 python3 - "$MODE" <<'PYEOF'
 import json, os, re, subprocess, sys
@@ -78,7 +252,8 @@ excluded = set(doc.get("excluded_repos") or [])
 
 # ── 1. Shape.
 REQUIRED = ["repo", "kind", "alias", "crate", "version_line", "service", "release_gate", "gate"]
-KINDS = {"store", "auth", "hook", "secret"}
+# All seven plugin kinds (BUSBAR-1.6.0.md Part 2 #3): every kind ships as its own repo.
+KINDS = {"store", "secret", "auth", "hook", "export", "plane", "transport"}
 GATES = {"suite", "binary", "smoke"}
 seen = {"repo": set(), "alias": set(), "crate": set()}
 for p in plugins:
@@ -94,6 +269,19 @@ for p in plugins:
         if p[k] in seen[k]:
             fail.append(f"duplicate {k} '{p[k]}' in registry")
         seen[k].add(p[k])
+    # THE NAME (owner ruling: repo = crate = artifact prefix): busbar-<kind>-<name>, for its OWN kind.
+    if not re.match(rf"^busbar-{re.escape(p['kind'])}-[a-z0-9]+(-[a-z0-9]+)*$", p["repo"]):
+        fail.append(f"{p['repo']}: repo name does not match ^busbar-{p['kind']}-<name> "
+                    f"(every plugin repo is busbar-<kind>-<name>, for its own kind)")
+    # repo = crate = artifact prefix: the cdylib crate is the repo's own name (a single-crate plugin)
+    # or <repo>-plugin beside the <repo> logic crate; the signed manifest name and the release asset
+    # prefix ARE the repo name (their default), never a second spelling.
+    if p["crate"] not in (p["repo"], p["repo"] + "-plugin"):
+        fail.append(f"{p['repo']}: crate '{p['crate']}' is neither {p['repo']} nor {p['repo']}-plugin "
+                    f"(repo = crate = artifact prefix)")
+    for k in ("manifest_name", "asset_prefix"):
+        if k in p and str(p[k]).strip() != p["repo"]:
+            fail.append(f"{p['repo']}: {k} '{p[k]}' is not the repo name (repo = crate = artifact prefix)")
 if not plugins:
     fail.append("plugins.yaml parsed to an empty plugin list")
 
@@ -105,6 +293,9 @@ if list_mode:
             print(f"  - {f}", file=sys.stderr)
         sys.exit(1)
     for p in plugins:
+        # Registered before its crates moved in: nothing to clone, build or test yet.
+        if str(p.get("pending_crate", "false")).strip().lower() == "true":
+            continue
         print("\t".join([
             p["repo"],
             p.get("checkout_dir") or p["repo"],
@@ -117,24 +308,19 @@ if list_mode:
         ]))
     sys.exit(0)
 
-# ── 2. the qa gate derives its checkouts from the registry (no hand-written per-plugin steps).
-#
-# The loop itself now lives in scripts/qa-gate-run.sh, not inline in the YAML: qa-gate.yml is a thin
-# dispatcher that checks out the triggering SHA and invokes that script from it, so gate logic is
-# versioned with the code it gates instead of frozen on the default branch (`workflow_run` always
-# loads the workflow file from the default branch). This check follows the code rather than the
-# filename: the loop must exist in one of the two files, and it must not be satisfied by a mere
-# comment mentioning the string, so the whole qa-gate surface is scanned as one unit.
-devgate = ""
-for _f in (".github/workflows/qa-gate.yml", "scripts/qa-gate-run.sh"):
-    if os.path.exists(_f):
-        devgate += open(_f, encoding="utf-8").read()
-if "plugin-registry-check.sh --list" not in devgate:
-    fail.append("the qa gate does not clone siblings via the registry (expected qa-gate.yml or "
-                "scripts/qa-gate-run.sh to iterate `scripts/plugin-registry-check.sh --list`)")
+def _code(path):
+    """A file's contents with whole-line comments removed."""
+    if not os.path.exists(path):
+        return ""
+    return "".join(ln for ln in open(path, encoding="utf-8")
+                   if not ln.lstrip().startswith(("#", "//")))
+
 
 # ── 3. release-check.sh coverage, per each entry's declared gate kind.
-relcheck = open("scripts/release-check.sh", encoding="utf-8").read()
+# Comment-stripped (whole-line comments removed): release-check.sh's own prose names both the
+# registry loop and several `../<dir>` sibling paths, so a phase deleted from the code would still
+# have been "found" in the sentence that described it.
+relcheck = _code("scripts/release-check.sh")
 suite_loop_present = "plugin-registry-check.sh --list" in relcheck
 for p in plugins:
     d = p.get("checkout_dir") or p["repo"]
@@ -159,10 +345,7 @@ for p in plugins:
 # whether the loop lives in release-check.sh or the sourced 1.5.2 script.
 tokenx = ""
 for _f in ("scripts/release-check.sh", "scripts/release-check-1.5.2.sh"):
-    try:
-        tokenx += "\n" + open(_f, encoding="utf-8").read()
-    except FileNotFoundError:
-        pass
+    tokenx += "\n" + _code(_f)  # comment-stripped
 tokenx_loop_present = "plugin-registry-check.sh --list" in tokenx and "auth_plugin_flows" in tokenx
 for p in plugins:
     if p["kind"] != "auth":
@@ -180,9 +363,41 @@ for p in plugins:
 
 # ── 4 + 5. Network checks via `gh` (GITHUB_TOKEN in CI).
 if not offline:
-    def gh(path):
-        r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
-        return json.loads(r.stdout) if r.returncode == 0 else None
+    # WHY THIS RETURNS A REASON AND NOT `None`.
+    #
+    # It used to be `return json.loads(r.stdout) if r.returncode == 0 else None`, and the org sweep
+    # below was `repos = gh("orgs/GetBusbar/repos?per_page=100") or []`. Every way `gh` can fail —
+    # an expired GITHUB_TOKEN, a token without `read:org`, a secondary rate limit, gh not on PATH,
+    # DNS — produced None, `or []` turned that into an empty list, the `for r in repos:` body never
+    # ran, and check 5 printed GREEN having swept nothing. That is the whole failure this gate
+    # exists to prevent, in the gate itself: the reverse sweep is the ONLY check that can see a
+    # plugin-shaped repo nobody registered, and an unregistered repo is invisible by construction —
+    # there is no other signal that would have gone red. An empty answer from an API is never
+    # evidence of an empty org.
+    #
+    # So: the call reports WHY it failed, and both callers below treat "could not ask" as RED with
+    # that reason attached, distinct from "asked, and the answer was no".
+    def gh(path, paginate=False):
+        """-> (data, error). Exactly one is non-None. `paginate` walks EVERY page (`--paginate
+        --slurp` answers an array of pages, flattened here) -- a list endpoint read without it is
+        page 1 only, which is indistinguishable from the whole list."""
+        cmd = ["gh", "api", path] + (["--paginate", "--slurp"] if paginate else [])
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            return None, "the `gh` CLI is not on PATH"
+        if r.returncode != 0:
+            why = (r.stderr or r.stdout or "").strip().replace("\n", " ")[:300]
+            return None, f"`gh api {path}` exited {r.returncode}: {why or '<no output>'}"
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError as e:
+            return None, f"`gh api {path}` returned output that is not JSON ({e})"
+        if paginate:
+            if not isinstance(data, list) or not all(isinstance(pg, list) for pg in data):
+                return None, f"`gh api --paginate --slurp {path}` did not answer an array of pages"
+            data = [item for pg in data for item in pg]
+        return data, None
 
     for p in plugins:
         # Pre-release entry (a new plugin whose FIRST release is cut together with the core version it
@@ -191,9 +406,15 @@ if not offline:
         # this published-release arm is deferred. Flip `released: true` (or drop the key) at the cut.
         if str(p.get("released", "true")).strip().lower() == "false":
             continue
-        rel = gh(f"repos/GetBusbar/{p['repo']}/releases/latest")
+        rel, err = gh(f"repos/GetBusbar/{p['repo']}/releases/latest")
         if rel is None:
-            fail.append(f"{p['repo']}: no published release at all")
+            # 404 really is "no published release at all"; anything else is "we could not ask",
+            # and the two need different fixes. Conflating them sent people looking for a missing
+            # release when the actual fault was a token.
+            if "HTTP 404" in (err or "") or "Not Found" in (err or ""):
+                fail.append(f"{p['repo']}: no published release at all")
+            else:
+                fail.append(f"{p['repo']}: could not determine whether a release exists — {err}")
             continue
         tag = str(rel.get("tag_name", ""))
         if not tag.lstrip("v").startswith(p["version_line"] + "."):
@@ -201,14 +422,36 @@ if not offline:
         if not rel.get("assets"):
             fail.append(f"{p['repo']}: release {tag} has ZERO assets — a phantom release, not a release")
 
-    repos = gh("orgs/GetBusbar/repos?per_page=100") or []
-    known = {p["repo"] for p in plugins} | excluded
-    pat = re.compile(r"^(store-.*|.*-hook|auth-.*|hashicorp-.*|secret-.*)$")
-    for r in repos:
-        name = r["name"]
-        if pat.match(name) and name not in known:
-            fail.append(f"org repo '{name}' matches plugin naming but is not in plugins.yaml "
-                        f"(register it or add to excluded_repos with a reason)")
+    # THE FLOOR IS DERIVED, NOT TYPED. Every repo in plugins.yaml — registered or explicitly
+    # excluded — is a repo this registry ASSERTS exists in GetBusbar. A sweep that comes back with
+    # fewer repos than that has not seen repos we already know are there, so it is answering for
+    # something narrower than the org and cannot rule out the unregistered repo it is looking for.
+    # Derived means it tracks the registry: adding a plugin raises the floor by one, automatically.
+    ORG_REPO_FLOOR = len(plugins) + len(excluded)
+
+    # EVERY PAGE (item 510). One page holds at most 100 repos, and the floor above is ~11, so a
+    # single-page read of a bigger org clears the floor while never seeing page 2 onward.
+    repos, err = gh("orgs/GetBusbar/repos?per_page=100", paginate=True)
+    if repos is None:
+        fail.append("the reverse org sweep (check 5) COULD NOT RUN — " + str(err) + ". This is RED, "
+                    "not a pass: the sweep is the only check that can see a plugin-shaped repo "
+                    "nobody registered, so a sweep that inspected zero repos has ruled nothing out. "
+                    "Fix: give this run a GITHUB_TOKEN with read:org, or run --offline, which skips "
+                    "checks 4 and 5 by NAME rather than by accident.")
+    elif not isinstance(repos, list) or len(repos) < ORG_REPO_FLOOR:
+        fail.append(f"the reverse org sweep (check 5) saw only {len(repos) if isinstance(repos, list) else 0} "
+                    f"org repo(s); the floor is {ORG_REPO_FLOOR}. GetBusbar has many more than that, so a "
+                    "list this short means the query answered for something other than the org (a token "
+                    "scoped to one repo, a paginated first page that came back empty). A sweep over an "
+                    "implausibly small set cannot rule out an unregistered plugin repo.")
+    else:
+        known = {p["repo"] for p in plugins} | excluded
+        pat = re.compile(r"^busbar-(store|secret|auth|hook|export|plane|transport)-")
+        for r in repos:
+            name = r["name"]
+            if pat.match(name) and name not in known:
+                fail.append(f"org repo '{name}' matches plugin naming but is not in plugins.yaml "
+                            f"(register it or add to excluded_repos with a reason)")
 
 if fail:
     print("PLUGIN REGISTRY GATE: RED")

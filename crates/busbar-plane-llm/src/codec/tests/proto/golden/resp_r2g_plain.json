@@ -1,0 +1,1 @@
+{"candidates":[{"content":{"parts":[{"text":"Hello there!"}],"role":"model"},"finishReason":"STOP"}],"modelVersion":"gpt-4.1","responseId":"NORMALIZED","usageMetadata":{"candidatesTokenCount":4,"promptTokenCount":12,"totalTokenCount":16}}

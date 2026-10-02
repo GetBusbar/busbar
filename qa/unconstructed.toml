@@ -1,0 +1,226 @@
+# qa/unconstructed.toml — WHERE "THIS CAPABILITY IS BUILT BUT NEVER CONSTRUCTED" IS WRITTEN DOWN.
+#
+# Read by `cargo xtask gate unconstructed` (xtask/src/gates/unconstructed.rs).
+#
+# THE RULE THIS FILE SERVES:
+#
+#   A CAPABILITY THAT IS NEVER CONSTRUCTED IS A CAPABILITY THAT DOES NOT SHIP.
+#   Its tests prove the code works; they prove nothing about whether it runs.
+#
+# WHY THIS FILE EXISTS. On 2026-09-22 the same defect was proven three times in one tree, and three
+# rows that said DONE were wrong in exactly this way:
+#
+#   1. THE PRODUCTION AUDIT CHAIN IS UNSIGNED. `AuditChain::signing_with` is a complete, green,
+#      sixteen-test signing implementation with ZERO non-test callers. The one production
+#      construction site — `crates/busbar/src/root/durability.rs` → `record: AuditChain::new()` —
+#      passes no signer, and no config supplies a key. Every deployed node seals a chain whose
+#      tamper-evidence is unsigned, while the signing sits beside it, green.
+#   2. #79's dated-history derivation has no production feed (a DIFFERENT shape — see THE LIMIT).
+#   3. Neither auth crate carries `#![forbid(unsafe_code)]`; both sit on a `known_missing_forbid`
+#      list. The INVISIBILITY was closed. The debt was not.
+#
+# In all three the code is correct, the tests are green, and the thing does not run. Nothing in this
+# repository measured that. A test suite cannot: it constructs the capability itself, which is the
+# one thing production does not do.
+#
+# WHAT THE GATE DOES WITH THIS FILE.
+#
+#   * A declared capability WITH a production construction site PASSES, and the row prints the site.
+#   * A declared capability WITHOUT one is RED, and the row prints every mention it REJECTED and
+#     why — so the reader sees "five mentions, none of them a call", not a bare absence.
+#   * A capability declared `unshipped = true` is a TRACKED ROW: it passes, and it prints its
+#     reason and its switch on every single run. That is strictly more than a source comment ever
+#     did — the three findings above were all known to somebody and written down nowhere a machine
+#     reads.
+#   * A declaration that OUTLIVES ITS DEBT is RED (`unconstructed:stale-declaration`): an
+#     `unshipped` row that has quietly acquired a construction site must be struck in the same
+#     commit that wires it, and a row naming a symbol its `built` file no longer defines must be
+#     corrected. The ledger cannot outlive the debt it tracked.
+#
+# THE FILE GOING EMPTY IS NOT THE GOAL STATE HERE — unlike qa/reachability.toml. The `required`
+# rows are permanent: they are the capabilities whose construction must never silently regress, and
+# they are what makes the gate a ratchet rather than a one-off audit. Only the `unshipped` rows are
+# meant to drain.
+#
+# THE ROW SHAPE:
+#
+#   [[capability]]
+#   id        = "audit-chain-signing"      # unique; the row id is `unconstructed:site:<id>`
+#   built     = "crates/.../record.rs"     # the file the capability is IMPLEMENTED in. Must exist.
+#   symbol    = "signing_with"             # must be DEFINED in `built`, or the row is stale
+#   construct = [".signing_with("]         # the call shape(s). EVERY ONE MUST END IN `(`.
+#   scope     = ["crates"]      # where a production construction site must appear
+#   why       = "..."                      # >= 40 chars. What is lost when it does not run.
+#   unshipped = true                       # optional; the row then PASSES and PRINTS
+#   switch    = "..."                      # >= 40 chars, REQUIRED when `unshipped`. What retires it.
+#
+# WHY `construct` MUST END IN `(`, AND WHY THAT IS CHECKED ON THE DECLARATION RATHER THAN THE HIT.
+# A construction site is a CALL. A needle that is not call-shaped would be satisfied by a `use`
+# statement, a doc comment or a type alias, and those are exactly the decorations that make an
+# unconstructed capability read as a constructed one. Checking it here means a future editor cannot
+# quietly weaken one row to `construct = ["signing_with"]` and have it pass on an import line: the
+# whole declaration is refused, loudly, before a single file is read.
+#
+# WRITING A ROW FOR A CAPABILITY REACHED BY FUNCTION POINTER. If the capability is an
+# `extern "C"` fn installed into a vtable slot and called across the ABI, its `construct` needle must
+# be the INSTALLATION, not the call: `metrics_emit: Some(` rather than `metrics_emit(`. Such a
+# function is called by nobody BY NAME, so a call-shaped needle yields a FALSE RED — this exact case
+# (`crates/busbar-contract/src/abi/hot/host.rs:958`) came up in the 2026-09-22 sweep and would have been
+# answered by deleting live code. The installation IS the construction decision; scan for that.
+#
+# THE LIMIT, STATED SO NOBODY READS MORE INTO A GREEN ROW THAN IS THERE. This gate proves a
+# production CALL SITE EXISTS. It does not prove that call is reached from `fn main()` — that is
+# `cargo xtask gate reachability`, and the honest claim is the two together. And it does not see
+# proven-instance 2 at all: `booked_lines()` IS called in production
+# (`crates/busbar/src/root/units_admin/mod.rs:1419`); what is missing there is a non-empty FEED, not
+# a construction site. That is a NEIGHBOURING shape — "constructed, but with its input hardwired
+# empty" — and a construction-site scanner cannot express it. It is recorded as an OPEN row in the
+# ledger rather than pretended into this file, because a row here would report it GREEN and be worse
+# than no row at all.
+#
+# ── DECLARATIONS ─────────────────────────────────────────────────────────────────────────────────
+
+# THE RATCHET ROW, AND THE GATE'S OWN POSITIVE CONTROL.
+#
+# `Ledger::dual_writing` is the stronger of two constructors and the composition root correctly
+# chooses it — `durability.rs` even says why in the line above the call: "Not `Ledger::new()`. The
+# reconciliation identity and rollback both require the dual write, and both are release
+# requirements rather than deployment choices." That sentence is a comment; this row is the
+# instrument. If anyone ever swaps it back to `Ledger::new()`, the money path silently loses
+# reconciliation and rollback and every test still passes — which is the precise failure mode this
+# gate exists for, in the one place it would cost the most.
+#
+# It is also what stops the gate being vacuous: this row is GREEN on HEAD, measured, so the RED
+# rows below are a measurement rather than a gate that is red about everything.
+[[capability]]
+id        = "ledger-dual-write"
+built     = "crates/busbar-kernel-ledger/src/settle.rs"
+symbol    = "dual_writing"
+construct = ["Ledger::dual_writing("]
+scope     = ["crates"]
+why       = "The reconciliation identity and rollback both require the dual write and both are release requirements, not deployment choices. Swapping the composition root back to Ledger::new() would keep its own books correctly and lose the legacy mirror, with no test anywhere going red."
+
+# AUDIT — `audit-chain-signing` STRUCK as unshipped 2026-09-26 (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2
+# and PB-13): the composition root binds the deployment keyset (crates/busbar/src/root/keyset.rs) to the chain it builds —
+# minted at the first boot's Bootstrap, cached 0600 under data_dir when one is written, node-local and
+# ephemeral otherwise — so records and checkpoints are signed and GET /audit/keys publishes the key.
+# The row STAYS as a constructed-capability guard: unwiring the signer reds it by name.
+[[capability]]
+id        = "audit-chain-signing"
+built     = "crates/busbar-kernel-audit/src/record.rs"
+symbol    = "signing_with"
+construct = [".signing_with("]
+scope     = ["crates"]
+why       = "Every deployed node seals an audit chain and ledger checkpoints; without the signer the chain walk proves only that records hash to themselves — not that THIS node produced them — and GET /audit/keys publishes nothing to verify against."
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE SWEEP OF 2026-09-22 — capabilities found built, tested and never constructed.
+#
+# Every row below was verified with the SAME absence grep, which anyone can re-run:
+#
+#   grep -rn --include="*.rs" --exclude-dir=target -E '<construct>' . \
+#     | grep -v '/tests/' | grep -v 'tests\.rs' | grep -v '/fuzz/'
+#
+# and in every case the only surviving hit is the DEFINITION itself. None of these is being CLOSED
+# here: this file records that they do not run. The money rows are PARKED-OWNER in the ledger and an
+# owner signs them, not an agent.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+# BREAKER — `breaker-request-budget` STRUCK 2026-09-25 (item 142, the breaker fold; K2-0 one-breaker
+# ruling Q40/Q47): the kernel's admission path now runs on the one breaker, and `HealthState` declares
+# every lane's `max_requests` through `BreakerUnit::set_budget` when it is built (store/in_memory/
+# mod.rs). The lane spends, refunds and reads that same counter — the unit's own, shared by handle —
+# so the cap is counted once, where it always was, and never beside it.
+
+# BREAKER — `breaker-error-map` STRUCK 2026-09-25 (item 142 residue, #47, Q67 one classifier):
+# `BreakerUnit::set_error_map` and `BreakerUnit::classify` are DELETED. They were a second
+# classifier nothing read; the operator's `error_map` is read once, by the plane's own classifier,
+# and the one breaker takes that classifier's verdict.
+
+# BREAKER — `breaker-with-limits` STRUCK 2026-09-25 (item 142, the breaker fold): `HealthState` builds
+# its one breaker with `BreakerUnit::new().with_limits(hard_down_cooldown_secs,
+# max_honored_retry_after_secs)` from the two live `limits.*` keys, and every hard-down trip and every
+# honoured Retry-After ceiling reads them back from the unit. No second copy of either knob remains.
+
+# BUDGET — `budget-pricer-card` STRUCK 2026-09-25 (UC-STRIKE; #43 / item 104 "one function", Q36/Q9):
+# `Pricer::with_card` had no production caller and is DELETED — it was the pre-item-123 reserved-four
+# RateNanos constructor, superseded by `Pricer::from_card` (the ledger's one card). The stub second
+# node's `Pricer::flat(0)` stays with item 245; if that door ever needs a card, it is `from_card`.
+
+# LEDGER — `ledger-checkpoint-seal` and `ledger-checkpoint-journal` STRUCK 2026-09-26 (SEAL-ROOT;
+# OWNER Q71(3), spec #82 one keyset; BUSBAR-1.6.0.md THE DESIGN, §7 cadence, architect ruling 2026-09-26: fixed
+# constants 10,000 entries / 60 s): the root's sealer (crates/busbar/src/root/durability/seal.rs)
+# calls Checkpoint::seal_as_of and Durability::journal_checkpoint on that cadence, signing with the
+# audit chain's own key, and GET /api/v1/admin/ledger/checkpoints serves each seal and its verify_seal.
+
+# LEDGER — `ledger-adjusting-entries` STRUCK 2026-09-25 (UC-STRIKE; #77(2) "no adjusting lines",
+# #77(3) "price is NEVER stored", #79, Q36/Q9): `adjusting_entries`, `Repricing` and
+# `Ledger::record_repricing` had no production caller and are DELETED — an amendment reprices its
+# window as a dated view over stored counts, and books nothing.
+
+# MONEY — the #79 exact pricing view has no production producer.
+# `money-one-function-view` STRUCK 2026-09-24 by owner ruling: the one function is the production
+# money path and GET /admin/usage prices through price_in_view.
+
+# ─── SECURITY AND DURABILITY, from the same sweep ───────────────────────────────────────────────
+
+# STREAMING — `voice-denied-destinations` STRUCK 2026-09-25 (UC-STRIKE; standing rule Q67, revert to
+# 1.5.5, which had no plane-private destination deny-list): `with_denied_destinations`,
+# `denied_destinations`, `destination_denied` and the session gauntlet's unreachable 403 arm had no
+# production writer and are DELETED. Model access stays the key/group pool ACL at the scope step; a
+# deny-list, if the owner wants one, is a new flagged config surface on the folded streaming plane.
+
+# PLANE PLUGINS — `plane-plugin-open` STRUCK 2026-09-25 (UC-GATE): 45a4bea96 (K4 keystone, item 40)
+# wired it. `main.rs` → `register_planes` → `root::linked::dropped_planes_of` →
+# `PluginRegistry::open_planes`, which opens every loadable `kind: plane` plugin through `open_plane`
+# (`crates/plugin-loader/src/registry.rs`), so a node loads a dropped-in plane at boot.
+
+# MID-LOG CORRUPTION — row `wal-corruption-verdict` STRUCK 2026-09-24 by owner ruling:
+# `recover_and_truncate` now branches on the scan's verdict (`.was_torn(`): a torn tail is cut
+# silently; a Corrupt one has its damaged remainder copied and synced to
+# `<segment>.quarantine-<unix_ms>` BEFORE the cut, and the verdict is returned through
+# `Wal::quarantined()` for the root to log, count and journal (`Journal::record_quarantines`).
+
+# THE CRASH-RECOVERY MODULE — row `crash-recovery-open-holds` STRUCK 2026-09-24 (item 127): the
+# boot path calls it. `crates/busbar/src/root/durability.rs` → `build_for_node` reads every hold the
+# journal holds open (written at unit entry by `Durability::open_hold`) back into a `HoldRecord` and
+# hands them to `busbar_kernel::recovery::recover_all`, before anything can settle onto the book.
+# Its note is RECONCILED with the struck `wal-corruption-verdict` row: the log's own
+# `busbar_kernel_wal::TailVerdict` carries the same three arms (Clean / Torn / Corrupt { at }) and
+# the same `truncates()` policy as `busbar_kernel::recovery::TailVerdict` — only a non-Corrupt
+# verdict is cut without a copy.
+
+# `breaker-pool-observation` STRUCK 2026-09-25 (item 142 residue): the root's BreakerPolicy is built
+# `BreakerPolicy::from_pools` from the configured `pools:` (every pool `.with_pool` under its resolved
+# `breaker:` block), and the root's BreakerAdapter is bound `over_kernel` to the kernel lane store's
+# own BreakerUnit — one cell set on the node, not a second one beside it.
+
+# THE ABI MINOR WAS BUMPED 19->20 FOR A CAPABILITY WITH NO PRODUCER AND NO CONSUMER.
+# `plugin-abi-keyed-units` STRUCK 2026-09-24 by owner ruling: the host decodes keyed units on the
+# real metering path (plane_host/govern.rs decode_usage_units), so the capability has a consumer.
+
+# MONEY — `hold-late-accrual-parent-exit` STRUCK 2026-09-26 (UC-HOLD, owner ruling Q71(4)): the
+# loop's one terminal (`crates/busbar-kernel/src/teller.rs` → `at_parent_exit`) converts a child's
+# accrual to its own hold when the parent's cell is already taken at the child's end — sized by the
+# door (`Units::at_parent_exit`; the budget door's `AdmissionUnit::at_parent_exit` draws it against
+# the slice and refuses on the budget block where the slice cannot back it) and swapped into the
+# child's cell, so the exit settles it against a reservation instead of posting it late against
+# nothing. A refused child ends `Failed(Admit, OverBudget)` and its accrual still posts, late.
+
+# MONEY — `rate-card-multi-currency` STRUCK 2026-09-25 (UC-STRIKE, #66 OWNER-LOCKED + spec Q4 "no
+# currency"): the mutators `RateCard::set_rate`/`set_fee` had no production caller and are DELETED —
+# a card is built whole by its constructors, so no second path can move a price.
+
+# ─── THE 1.6.0 MONEY-GOVERNANCE VERBS WITH NO EFFECT BOUND (architect ruling 2026-09-24) ───
+#
+# ALL THIRTEEN STRUCK. FIVE 2026-09-25 (UC-STRIKE, owner ruling 2026-09-08, ARCHITECTURE section
+# 4.7 + BUSBAR-1.6.0.md THE DESIGN, §1): `admin-verb-{set-operator-key,set-escrow,set-dual-control,
+# export-keyset,approve}-effect` — deleted. FOUR 2026-09-26 (UC-VERBS, #77(9), owner answer
+# Q71(1)): `admin-verb-{set-overdraft-ceiling,set-dispute-max-age,resolve-dispute,
+# resolve-slice}-effect` — deleted. FOUR 2026-09-26 (UC-VERBS, owner answer Q71(2)):
+# `admin-verb-{verify,plane-facts,plane-record-write,commit-upgrade}-effect` — BOUND: each has an
+# `effect_bound` arm (`crates/busbar-core-admin/src/verb.rs`) and a production call reached from the
+# composition root's `execute_new_verb` (`crates/busbar/src/root/units_admin/bound.rs`:
+# `verify_effect(`, `plane_facts_effect(`, `plane_record_write_effect(`, `commit_upgrade_effect(`),
+# so the mount serves it and the generated document describes it. A verb added to `NEW_VERBS`
+# without an `effect_bound` arm is unserved by default and needs a row here.

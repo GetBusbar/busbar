@@ -1,0 +1,10 @@
+# The other "via" crate for the via-multi fixture: also depends directly on `libc`, a genuinely
+# separate edge from `mid-a`'s.
+[package]
+name = "xtask-fixture-via-multi-b"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = "0.2"

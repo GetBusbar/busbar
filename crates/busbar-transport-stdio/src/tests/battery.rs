@@ -1,0 +1,797 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The stdio transport battery: byte-exact round trip, half-close, cancel mid-frame, backpressure,
+//! K writers, and honest frame meta. Every test drives the SAME [`StdioTransport`] a real deployment
+//! uses, over an in-memory duplex instead of a real pipe — the same "generic so tests drive it over
+//! an in-memory duplex" seam the 1.5.5-era `serve_io` used.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use tokio::io::{split, AsyncWriteExt};
+
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::{ScratchBytes, Transport};
+
+use crate::StdioTransport;
+
+/// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
+#[path = "mutation_hardening.rs"]
+mod mutation_hardening;
+
+/// Build a connected pair of live connections over an in-memory duplex, standing in for two ends
+/// of a real pipe. `cap` is the duplex's byte capacity, which is what makes the backpressure test
+/// deterministic.
+fn pair(
+    t: &StdioTransport,
+    cap: usize,
+) -> (
+    busbar_contract::transport::wire::Conn,
+    busbar_contract::transport::wire::Conn,
+) {
+    let (end_a, end_b) = tokio::io::duplex(cap);
+    // `tokio::io::duplex` already returns a connected PAIR: writes on `end_a` are what `end_b`
+    // reads, and vice versa. Splitting each end and wrapping the two halves of the SAME end
+    // together (not cross-wired) is what keeps that pairing — swapping either write half here
+    // would make a side read back its own writes instead of its peer's.
+    let (ar, aw) = split(end_a);
+    let (br, bw) = split(end_b);
+    let conn_a = t.wrap_pair(ar, aw, "b");
+    let conn_b = t.wrap_pair(br, bw, "a");
+    (conn_a, conn_b)
+}
+
+#[tokio::test]
+async fn round_trip_byte_exact() {
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+
+    let payload = b"the quick brown fox jumps over the lazy dog \xE2\x9C\x93".to_vec();
+    let n = t
+        .write(
+            &a,
+            busbar_contract::StreamId(0),
+            ScratchBytes::new(&payload),
+        )
+        .await
+        .expect("write succeeds");
+    assert_eq!(n, payload.len());
+
+    let mut frames = t.frames(b);
+    let (stream, frame) = frames
+        .next()
+        .await
+        .expect("a frame arrives")
+        .expect("the frame is not an error");
+    assert_eq!(stream, busbar_contract::StreamId(0));
+    assert_eq!(frame.direction, Direction::Inbound);
+    assert_eq!(frame.bytes.as_slice(), payload.as_slice(), "byte-exact");
+    assert_eq!(frame.meta.bytes, payload.len() as u64, "honest frame meta");
+    assert_eq!(frame.meta.transport_units, None, "DECODES_PAYLOAD is false");
+    assert_eq!(frame.meta.status, None, "STATUS_CLASS is None for stdio");
+}
+
+/// A payload carrying the delimiter is refused, not written through and split at the peer.
+///
+/// This transport's whole framing is one frame per line, and `write` is what appends the newline.
+/// A payload that contains one therefore chooses where this transport's frame ends and what comes
+/// after it: `{"id":1}\n{"method":"admin"}` is not one frame, it is two, injected by whoever
+/// supplied the bytes. The round trip is not even injective — what the peer reads back is not what
+/// was written. The sibling `http` transport refuses a line ending in an envelope for exactly this
+/// reason; a transport whose delimiter a caller can spell is one with no framing at all.
+///
+/// A trailing carriage return goes the same way, for the narrower reason that the reader strips one
+/// before the newline: a payload ending in `\r` comes back a byte shorter than it went out, and a
+/// `write` that reported the full length would have reported a delivery that did not happen.
+#[tokio::test]
+async fn a_payload_carrying_the_delimiter_is_refused_rather_than_split_at_the_peer() {
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+
+    let injected = b"{\"id\":1}\n{\"method\":\"admin\"}".to_vec();
+    let err = t
+        .write(
+            &a,
+            busbar_contract::StreamId(0),
+            ScratchBytes::new(&injected),
+        )
+        .await
+        .expect_err("a payload spelling the frame delimiter must not go on the wire");
+    assert_eq!(err, TransportError::Framing);
+
+    let trailing_cr = b"payload\r".to_vec();
+    let err = t
+        .write(
+            &a,
+            busbar_contract::StreamId(0),
+            ScratchBytes::new(&trailing_cr),
+        )
+        .await
+        .expect_err("a payload the reader would strip a byte off is not one this can carry");
+    assert_eq!(err, TransportError::Framing);
+
+    // Nothing was written, so the peer has nothing to read: a refusal that had already put the
+    // first half on the wire would have injected the frame it claimed to refuse.
+    let mut frames = t.frames(b);
+    let nothing = tokio::time::timeout(Duration::from_millis(200), frames.next()).await;
+    assert!(
+        nothing.is_err(),
+        "a refused write must leave the wire untouched, not half-written"
+    );
+
+    // And a carriage return that is not the last byte still travels, byte-exact.
+    let inner_cr = b"a\rb".to_vec();
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ScratchBytes::new(&inner_cr),
+    )
+    .await
+    .expect("only the delimiter and the byte the reader strips are refused");
+}
+
+#[tokio::test]
+async fn multiple_frames_in_order_no_data_loss() {
+    // Regression coverage for the bug this crate's own report calls out: recreating a `BufReader`
+    // per frame and keeping only its inner reader silently drops whatever the `BufReader` had
+    // already read ahead into its internal buffer. Three frames written back-to-back (likely to
+    // land in the peer's read buffer in one underlying read) must all still arrive, in order,
+    // byte-exact.
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+    for line in ["one", "two", "three"] {
+        t.write(
+            &a,
+            busbar_contract::StreamId(0),
+            ScratchBytes::new(line.as_bytes()),
+        )
+        .await
+        .unwrap();
+    }
+    let mut frames = t.frames(b);
+    for expect in ["one", "two", "three"] {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        assert_eq!(frame.bytes.as_slice(), expect.as_bytes());
+    }
+}
+
+#[tokio::test]
+async fn half_close_peer_sees_clean_eof_and_can_still_be_written_to() {
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ScratchBytes::new(b"last words"),
+    )
+    .await
+    .unwrap();
+
+    // `a` shuts down its OWN write half only — the wire-level half-close — without touching its
+    // read half and without going through `Transport::close` (which the contract defines as
+    // tearing down the whole connection, not one direction of it).
+    let a_state = t.state_of(a.id()).unwrap();
+    {
+        let mut w = a_state.writer.lock().await;
+        w.shutdown().await.unwrap();
+    }
+
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"last words");
+    // The half-close is a clean EOF, not an error: the NEXT poll ends the stream quietly.
+    assert!(
+        frames.next().await.is_none(),
+        "half-close reads as EOF, not Reset"
+    );
+}
+
+#[tokio::test]
+async fn cancel_mid_frame_fences_the_connection() {
+    // A tiny duplex capacity so a large write cannot complete in one poll, giving the test a
+    // window to drop the future mid-write.
+    let t = StdioTransport::new();
+    let (a, _b) = pair(&t, 8);
+
+    let big = vec![b'x'; 1_000_000];
+    let write_fut = t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&big));
+    // Race the write against an immediate timeout: with an 8-byte duplex and a megabyte payload,
+    // the write cannot have finished, so the timeout always wins and the future is dropped.
+    let raced = tokio::time::timeout(Duration::from_millis(1), write_fut).await;
+    assert!(raced.is_err(), "the write did not have time to complete");
+
+    // The connection is now fenced: neither a further write nor a read is served, because the
+    // wire may hold a partial, unterminated line and this transport refuses to guess where it
+    // ends.
+    let small = b"x";
+    let err = t
+        .write(&a, busbar_contract::StreamId(0), ScratchBytes::new(small))
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::Framing);
+
+    // The read arm of the same cell. A `frames()` future dropped while suspended in `read_line`
+    // must leave the connection readable: the reader (and its read-ahead) belongs to the
+    // connection, not to the future that was polling it, so the next pump sees the line that
+    // arrived rather than a silent end-of-stream indistinguishable from the peer closing.
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+    {
+        let mut frames = t.frames(b.clone());
+        let first = frames.next();
+        tokio::pin!(first);
+        let raced = tokio::time::timeout(Duration::from_millis(1), first.as_mut()).await;
+        assert!(
+            raced.is_err(),
+            "the read must still be suspended when dropped"
+        );
+    }
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ScratchBytes::new(b"after the cancel"),
+    )
+    .await
+    .unwrap();
+    let mut frames = t.frames(b);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a cancelled read must not lose the reader")
+        .expect("the stream must not end")
+        .expect("and must not be a fenced error");
+    assert_eq!(frame.bytes.as_slice(), b"after the cancel");
+}
+
+/// Backpressure, in BOTH directions — the name the cell has always carried, now with the second
+/// direction actually driven. One direction proves only that this end's writer stalls; the claim is
+/// that either end's writer stalls against a peer that is not reading, and a duplex is two
+/// independent buffers, so a transport could get one right and the other wrong.
+#[tokio::test]
+async fn backpressure_is_bidirectional() {
+    // An 8-byte duplex: a write larger than the capacity cannot complete until a reader drains
+    // it, which is exactly what "backpressure" means at the byte-stream level.
+    let t = Arc::new(StdioTransport::new());
+    let (a, b) = pair(&t, 8);
+
+    let payload = vec![b'y'; 4096];
+
+    // Drive the write and the drain concurrently, and assert the write only finishes once bytes
+    // are actually read off the other end — the observable shape of backpressure.
+    let writer = tokio::spawn({
+        let t = t.clone();
+        let payload = payload.clone();
+        let a = a.clone_for_test();
+        async move {
+            t.write(
+                &a,
+                busbar_contract::StreamId(0),
+                ScratchBytes::new(&payload),
+            )
+            .await
+        }
+    });
+    // Give the writer a moment to fill the 8-byte duplex and block.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !writer.is_finished(),
+        "an oversized write must block on a full duplex"
+    );
+    let mut b_frames = t.frames(b.clone_for_test());
+    let (_s, frame) = b_frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.len(), payload.len());
+    writer.await.unwrap().unwrap();
+
+    // And the other direction, over the SAME pair: `b` writes, `a` reads. A duplex is two
+    // independent buffers and this transport holds a separate lock per side, so proving one says
+    // nothing about the other.
+    let back = tokio::spawn({
+        let t = t.clone();
+        let payload = payload.clone();
+        async move {
+            t.write(
+                &b,
+                busbar_contract::StreamId(0),
+                ScratchBytes::new(&payload),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !back.is_finished(),
+        "the answering direction must stall on a full duplex too"
+    );
+    let mut a_frames = t.frames(a);
+    let (_s, frame) = a_frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.len(), payload.len());
+    back.await.unwrap().unwrap();
+}
+
+/// A line of nothing but spaces is a PAYLOAD, and this transport declares it decodes none — so
+/// which payloads are worth delivering is not its judgement to make. It was dropped as "blank",
+/// which broke the round trip in one direction only: `write` puts a line of spaces on the wire
+/// quite happily, and the reader then swallowed it. A truly blank line — nothing between two
+/// delimiters — still carries no frame.
+#[tokio::test]
+async fn a_line_of_whitespace_is_a_frame_but_an_empty_line_is_not() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    aw.write_all(b"\n   \nafter\n").await.unwrap();
+
+    let mut frames = t.frames(b);
+    let (_s, first) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        first.bytes.as_slice(),
+        b"   ",
+        "the empty line carries no frame; the line of spaces is the first frame"
+    );
+    let (_s, second) = frames.next().await.unwrap().unwrap();
+    assert_eq!(second.bytes.as_slice(), b"after");
+}
+
+/// A SECOND pump on one connection is told so, rather than handed an empty stream.
+///
+/// A connection is read by exactly one pump. The second caller used to get a bare end-of-stream,
+/// which on a session transport is what the PEER CLOSING looks like — so a caller that had asked
+/// for a reader it may not have was told its peer had gone.
+#[tokio::test]
+async fn a_second_pump_on_one_connection_is_reported_not_handed_a_clean_end() {
+    let t = Arc::new(StdioTransport::new());
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    // Silent and held open, so the first pump stays PARKED on the read — which is when it is
+    // actually holding the connection's reader.
+    let _silent_peer = end_a;
+
+    let mut first = t.frames(b.clone_for_test());
+    let parked = tokio::spawn(async move { first.next().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !parked.is_finished(),
+        "the fixture is only honest while the first pump holds the reader"
+    );
+
+    let mut second = t.frames(b);
+    let err = tokio::time::timeout(Duration::from_secs(5), second.next())
+        .await
+        .expect("a second pump is answered rather than parked")
+        .expect("and answered with a REASON, not an empty stream")
+        .expect_err("a reader it may not have is not a clean end of stream");
+    assert_eq!(err, TransportError::Closed);
+    parked.abort();
+}
+
+#[tokio::test]
+async fn k_writers_serialise_without_interleaving() {
+    let t = Arc::new(StdioTransport::new());
+    let (a, b) = pair(&t, 64 * 1024);
+    const K: usize = 32;
+    let mut handles = Vec::new();
+    for i in 0..K {
+        let t = t.clone();
+        let a = a.clone_for_test();
+        handles.push(tokio::spawn(async move {
+            let line = format!("writer-{i:02}");
+            t.write(
+                &a,
+                busbar_contract::StreamId(0),
+                ScratchBytes::new(line.as_bytes()),
+            )
+            .await
+            .unwrap();
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    let mut frames = t.frames(b);
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..K {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        let line = String::from_utf8(frame.bytes.as_slice().to_vec()).unwrap();
+        assert!(line.starts_with("writer-"), "no interleaving: {line:?}");
+        seen.insert(line);
+    }
+    assert_eq!(
+        seen.len(),
+        K,
+        "every writer's line arrived exactly once, unmangled"
+    );
+}
+
+/// stdio composes over nothing, so a handoff offered to it is one neither leg declared. The refusal
+/// is a mismatch and not a framing error, because the bytes were never the problem.
+#[tokio::test]
+async fn a_handoff_onto_stdio_is_a_mismatch() {
+    let t = StdioTransport::new();
+    let (a, _b) = pair(&t, 4096);
+    let keys = test_key_handle();
+    let err = t.adopt(&t, a, &keys).await.unwrap_err();
+    assert_eq!(err, TransportError::HandoffMismatch);
+    assert!(<crate::StdioCarrier as busbar_contract::TransportMeta>::COMPOSES_OVER.is_empty());
+}
+
+/// The refusal a unit-0 arrival is answered with, for the cells that send one.
+fn a_refusal() -> busbar_contract::unit::Refusal<'static> {
+    busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    }
+}
+
+#[tokio::test]
+async fn unit0_refusal_writes_then_closes() {
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 4096);
+    t.unit0_refusal(a, None, &a_refusal(), ScratchBytes::new(b"refused"))
+        .await
+        .unwrap();
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"refused");
+}
+
+/// A refusal the peer never received is not a refusal that was delivered. With the far end of the
+/// pipe gone every write fails, and answering `Ok` there tells the caller a unit-0 arrival was
+/// turned away in words the peer can read when nothing left this process at all.
+#[tokio::test]
+async fn a_refusal_that_never_reached_the_peer_is_reported() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(4096);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let id = b.id();
+    // The far end goes away, so the child's stdin is closed under this transport's feet.
+    drop(end_a);
+
+    let err = t
+        .unit0_refusal(b, None, &a_refusal(), ScratchBytes::new(b"refused"))
+        .await
+        .expect_err("a refusal that could not be written is not a delivered refusal");
+    assert_eq!(err, TransportError::Reset);
+    // The connection still goes away: a refusal always ends the session, delivered or not.
+    assert!(
+        t.state_of(id).is_none(),
+        "the failure path still closes the connection"
+    );
+}
+
+/// A refusal on a connection the fence has already tripped, or one this transport no longer knows,
+/// has no channel to reach the peer on at all.
+#[tokio::test]
+async fn a_refusal_on_a_fenced_connection_is_reported_closed() {
+    let t = StdioTransport::new();
+    let (a, _b) = pair(&t, 4096);
+    t.state_of(a.id())
+        .unwrap()
+        .poisoned
+        .store(true, std::sync::atomic::Ordering::Release);
+    let err = t
+        .unit0_refusal(a, None, &a_refusal(), ScratchBytes::new(b"refused"))
+        .await
+        .expect_err("a fenced connection cannot carry a refusal");
+    assert_eq!(err, TransportError::Closed);
+}
+
+#[allow(clippy::assertions_on_constants)]
+#[tokio::test]
+async fn transport_meta_matches_the_architecture_row() {
+    use busbar_contract::transport::wire::Unit0Trigger;
+    use busbar_contract::TransportMeta;
+    assert_eq!(<crate::StdioCarrier as TransportMeta>::KEY, "stdio");
+    assert!(<crate::StdioCarrier as TransportMeta>::SESSION);
+    assert!(<crate::StdioCarrier as TransportMeta>::SESSION_BOUND);
+    assert_eq!(
+        <crate::StdioCarrier as TransportMeta>::UNIT0_TRIGGER,
+        Some(Unit0Trigger::FirstMessage)
+    );
+    assert!(<crate::StdioCarrier as TransportMeta>::UPGRADES_TO.is_empty());
+    assert!(<crate::StdioCarrier as TransportMeta>::COMPOSES_OVER.is_empty());
+    assert!(!<crate::StdioCarrier as TransportMeta>::DECODES_PAYLOAD);
+    assert_eq!(<crate::StdioCarrier as TransportMeta>::STATUS_CLASS, None);
+}
+
+fn test_key_handle() -> busbar_contract::TransportKeyHandle {
+    use busbar_contract::plugin::TestKernelSeal as Seal;
+    busbar_contract::TransportKeyHandle::issue(&Seal, 0, "test")
+}
+
+/// Test-only: [`busbar_contract::transport::wire::Conn`] is `Clone` (a cheap `Arc` handle), which is exactly
+/// what lets several tasks hold "the same connection" the way a real caller's writer/closer/frame
+/// pump each hold their own clone. Named to make every call site read as what it is.
+trait CloneForTest {
+    fn clone_for_test(&self) -> Self;
+}
+impl CloneForTest for busbar_contract::transport::wire::Conn {
+    fn clone_for_test(&self) -> Self {
+        self.clone()
+    }
+}
+
+/// The destination's argument vector and environment both reach the child. A single opaque path
+/// could carry neither, so a deployment naming a program with arguments had no way to say so.
+///
+/// UNIX ONLY, like every other spawn cell in this tree: the fixture names `/bin/sh`, which does not
+/// exist on windows, so `spawn` there fails with `TransportError::Refused` and the cell would be
+/// asserting the absence of a shell rather than anything about this transport. The windows leg of
+/// CI runs `cargo test --workspace` over exactly these binaries, so the gate is what keeps it green.
+#[cfg(unix)]
+#[tokio::test]
+async fn argv_and_env_reach_the_spawned_child() {
+    // `sh -c SCRIPT NAME`: the script reads the environment this destination declared and the
+    // argument vector it was spawned with, and writes both back as one line — one stdio frame.
+    let dest = program_dest(
+        &["-c", "printf '%s %s\\n' \"$MARK\" \"$0\""],
+        &[("MARK", "declared")],
+    );
+    let t = StdioTransport::new();
+    let conn = t.dial(&dest, &test_key_handle()).await.unwrap();
+    let mut frames = t.frames(conn.clone_for_test());
+    let (_, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"declared argzero");
+    t.close(conn, busbar_contract::transport::wire::CloseReason::Normal);
+}
+
+/// The environment is cleared before anything the destination declared is set, so a child never
+/// inherits a variable the deployment did not write down. `HOME` is set in this process and
+/// must not survive into a child that was given an empty environment.
+///
+/// UNIX ONLY, for both of the reasons the sibling cell above names: `/bin/sh` is not a program on
+/// windows, and `HOME` is not the variable a windows process carries — so the leak this cell needs
+/// to have something to prove would not be there either.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_child_inherits_no_environment_it_was_not_given() {
+    assert!(
+        std::env::var_os("HOME").is_some(),
+        "the parent has a HOME to leak"
+    );
+    let dest = program_dest(&["-c", "printf 'home=[%s]\\n' \"$HOME\""], &[]);
+    let t = StdioTransport::new();
+    let conn = t.dial(&dest, &test_key_handle()).await.unwrap();
+    let mut frames = t.frames(conn.clone_for_test());
+    let (_, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"home=[]");
+    t.close(conn, busbar_contract::transport::wire::CloseReason::Normal);
+}
+
+/// A sealed destination naming `/bin/sh`, the given argument vector (with `argzero` appended to
+/// stand in for the shell's own `$0`) and the given environment.
+///
+/// Carries the same `#[cfg(unix)]` as its only two callers: left ungated it is dead code on windows,
+/// which that leg's `cargo clippy --workspace --all-targets -- -D warnings` reads as a failure.
+#[cfg(unix)]
+fn program_dest(
+    args: &[&'static str],
+    env: &'static [(&'static str, &'static str)],
+) -> busbar_contract::VerifiedDestination {
+    use busbar_contract::plugin::TestKernelSeal as Seal;
+    let mut argv: Vec<&'static str> = args.to_vec();
+    argv.push("argzero");
+    let argv: &'static [&'static str] = Box::leak(argv.into_boxed_slice());
+    busbar_contract::VerifiedDestination::seal(
+        &Seal,
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "stdio",
+            address: busbar_contract::transport::dest::UpstreamAddress::Program {
+                path: "/bin/sh",
+                args: argv,
+                env,
+                extras: &[],
+            },
+            lane: busbar_contract::LaneId::new("test"),
+        },
+        "stdio",
+        None,
+    )
+}
+
+/// A child that dies mid-line has not sent a frame. `read_until` returns what it has when the peer
+/// hits EOF without a newline, and handing that fragment up as a well-formed frame is the same
+/// "guess where the body ended" this transport already refuses on the write side. The unterminated
+/// tail is a framing error, and the clean EOF on a line boundary stays a clean end of stream.
+#[tokio::test]
+async fn an_unterminated_final_line_is_a_framing_error() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    // One whole line, then half of another, then the peer goes away.
+    aw.write_all(b"{\"id\":1}\n{\"jsonr").await.unwrap();
+    aw.shutdown().await.unwrap();
+
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"{\"id\":1}");
+    let err = frames
+        .next()
+        .await
+        .expect("the fragment must be reported, not swallowed")
+        .expect_err("a half-written line is not a frame");
+    assert_eq!(err, TransportError::Framing);
+}
+
+/// The unterminated tail survives a cancelled read, so the answer to it must too. A pump dropped
+/// mid-line leaves those bytes on the connection (that is the whole point of the reader slot), and
+/// the next pump's own read returns nothing at all when the peer then goes away — so "this call read
+/// zero bytes" is not the same question as "the peer stopped on a line boundary". Only the second
+/// one is a clean end of session.
+#[tokio::test]
+async fn a_partial_line_carried_across_a_cancelled_read_is_still_a_framing_error() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    // Half a line, and no newline is ever coming.
+    aw.write_all(b"abc").await.unwrap();
+    {
+        let mut frames = t.frames(b.clone_for_test());
+        let first = frames.next();
+        tokio::pin!(first);
+        let raced = tokio::time::timeout(Duration::from_millis(50), first.as_mut()).await;
+        assert!(
+            raced.is_err(),
+            "the read must still be suspended, holding the partial line, when dropped"
+        );
+    }
+    aw.shutdown().await.unwrap();
+
+    let mut frames = t.frames(b);
+    let err = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the carried-over fragment must be answered")
+        .expect("a fragment the peer abandoned is not a clean end of session")
+        .expect_err("a half-written line is not a frame");
+    assert_eq!(err, TransportError::Framing);
+}
+
+/// The fence answers a write that may have put bytes on the wire. A write dropped while it was still
+/// waiting its turn for the write lock put none there — nothing was written, so nothing is in doubt,
+/// and fencing the connection over it costs a caller every later write and read on a session that
+/// was never damaged.
+#[tokio::test]
+async fn a_write_dropped_while_queued_for_the_lock_does_not_fence_the_connection() {
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+    let state = t.state_of(a.id()).unwrap();
+
+    // Stand in for another writer holding the lock: the queued write cannot even begin.
+    let held = state.writer.lock().await;
+    {
+        let queued = t.write(
+            &a,
+            busbar_contract::StreamId(0),
+            ScratchBytes::new(b"queued"),
+        );
+        tokio::pin!(queued);
+        let raced = tokio::time::timeout(Duration::from_millis(20), queued.as_mut()).await;
+        assert!(raced.is_err(), "the write cannot have taken the lock");
+    }
+    drop(held);
+
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ScratchBytes::new(b"after the queue"),
+    )
+    .await
+    .expect("a write that never began leaves the connection usable");
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"after the queue");
+}
+
+/// A peer that never writes a newline must not be able to exhaust this process's memory. The child
+/// is operator-launched, so it sits nearer the trusted side than a client does, but it is still a
+/// process this transport does not control and no layer above caps what it sends.
+#[tokio::test]
+async fn a_line_past_the_maximum_is_a_framing_error() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    let over = vec![b'x'; crate::transport::MAX_LINE_BYTES + 1];
+    let flood = tokio::spawn(async move {
+        // Never a newline: without a bound the reader would keep growing instead of answering.
+        let _ = aw.write_all(&over).await;
+        futures::future::pending::<()>().await;
+    });
+
+    let mut frames = t.frames(b);
+    let err = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("an over-long line must be answered, not read forever")
+        .expect("the stream must report it")
+        .expect_err("a line past the maximum is not a frame");
+    assert_eq!(err, TransportError::Framing);
+    flood.abort();
+}
+
+/// The bound does not touch ordinary traffic: a line just under the maximum is still a frame,
+/// byte-exact.
+#[tokio::test]
+async fn a_line_within_the_maximum_is_still_a_frame() {
+    let t = Arc::new(StdioTransport::new());
+    let (a, b) = pair(&t, 64 * 1024);
+    let payload = vec![b'y'; crate::transport::MAX_LINE_BYTES - 1];
+    let writer = tokio::spawn({
+        let t = t.clone();
+        let payload = payload.clone();
+        async move {
+            t.write(
+                &a,
+                busbar_contract::StreamId(0),
+                ScratchBytes::new(&payload),
+            )
+            .await
+            .unwrap()
+        }
+    });
+    let mut frames = t.frames(b);
+    // Bounded: a write that fails silently in the spawned task (never reaching the wire) must not
+    // leave this read parked on a line that will never arrive — that failure mode has to be a fast
+    // panic, not a hang.
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(3), frames.next())
+        .await
+        .expect("a line under the maximum must arrive promptly")
+        .unwrap()
+        .unwrap();
+    assert_eq!(frame.bytes.len(), payload.len());
+    assert!(frame.bytes.as_slice().iter().all(|&c| c == b'y'));
+    writer.await.unwrap();
+}
+
+/// A closed connection delivers nothing more, AND the close is what ends the pump — not the next
+/// line the peer happens to send.
+///
+/// The peer here is silent and stays open: it sends nothing after the close and never hangs up, so
+/// the read the pump is parked on has nothing that will ever return it. A closed flag the pump can
+/// only read once a read has come back is no close at all against that peer — it leaves the pump
+/// parked for the life of the process, holding the connection's reader, while every `write` on the
+/// same connection is already answering `Closed`. Feeding the peer a line to unpark it would have
+/// tested the flag and hidden exactly that.
+#[tokio::test]
+async fn a_closed_connection_delivers_no_further_frames() {
+    let t = Arc::new(StdioTransport::new());
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    // Held, not dropped: dropping it would be the peer hanging up, which ends the read on its own.
+    let _silent_peer = end_a;
+
+    // The pump exists before the close, so removing the registry entry cannot reach it — and it is
+    // already PARKED on the read before the close lands.
+    let mut frames = t.frames(b.clone_for_test());
+    let pump = tokio::spawn(async move { frames.next().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !pump.is_finished(),
+        "the fixture is only honest if the pump is parked on the silent peer"
+    );
+
+    t.close(b, busbar_contract::transport::wire::CloseReason::Normal);
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), pump)
+        .await
+        .expect("a close must WAKE a read the peer will never answer, not merely flag it")
+        .unwrap();
+    assert!(ended.is_none(), "a closed connection yields no frame");
+}

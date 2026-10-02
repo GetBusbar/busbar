@@ -1,0 +1,221 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The per-node, in-process idempotency-replay cache — moved verbatim from
+//! `busbar-core::admin::mod` (`IDEMPOTENCY_TTL_SECS`, `IdemState`, `IdemReservation`, and the
+//! create/rotate call sites' cache logic). Same TTL (600 s) and the same semantics: no body hash,
+//! so a retry with the same key but a DIFFERENT body still replays the first response (parity
+//! clause — 1.5.5 never hashed the body either). The key is `(actor, header)` for a mint and
+//! `(actor, <framed id and header>)` for a rotate; the caller builds it, and see
+//! `verbs::rotate_replay_key` for why the rotate's two halves are length-prefixed rather than
+//! joined on a separator.
+//!
+//! The sweep is NOT the same as 1.5.5's: it steps over the in-flight sentinel. See
+//! [`IdempotencyCache::probe`].
+//!
+//! Generic over the cached value `V` rather than pinned to `serde_json::Value`, because this crate
+//! has no serializer dependency (see the crate-level `// contract:` note in `lib.rs`): the
+//! integrator's codec supplies whatever already-encoded response type it wants replayed.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+// The replay window (600 s) is the store face's own constant now — pulled forward to the ONE ABI
+// crate (DECISIONS #38/#40) so `busbar-plugin-loader`'s sealed store cache and this in-process
+// cache age their slots against one number. Re-exported here so the doc links and the existing
+// `crate::idempotency::IDEMPOTENCY_TTL_SECS` call sites keep resolving.
+pub use busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS;
+
+/// The idempotency cache's encoder seam. This crate has no serializer of its own, so a
+/// replayable verb's cached value must be the EXACT bytes the composition root's own writer would
+/// send as the response body for a fresh call — never an intermediate representation this crate
+/// decodes back into a fresh capability. The composition root binds this to the admin plane's own
+/// writer (the JSON body it was about to send), so a replay returns the post-substitution response
+/// bytes verbatim and can never re-mint a `SecretOnce`: there is no decode step at all, only the
+/// cached `Vec<u8>` returned as-is.
+pub trait ReplayEncoder<T> {
+    /// Encode `value` into the exact bytes a fresh call's response body would carry. The returned
+    /// bytes are what a same-idempotency-key replay returns verbatim for the lifetime of the
+    /// [`IDEMPOTENCY_TTL_SECS`] window.
+    fn encode(&self, value: &T) -> Vec<u8>;
+}
+
+/// One cache slot: `(inserted_at, value)`. `value: None` is the in-flight reservation sentinel
+/// (1.5.5 used `serde_json::Value::Null` for the same purpose; `None` says the same thing without
+/// requiring a JSON value type).
+type Slot<V> = (u64, Option<V>);
+
+/// The durability seam this crate exposes for an idempotency claim (item 271's writer side).
+///
+/// This crate has no dependency on `busbar` (the composition root that owns `Durability` — naming
+/// it here would be the cycle `busbar` -> `busbar-core-admin` -> `busbar` that Cargo already
+/// refuses) and no dependency on `busbar-kernel-audit`. So the record itself is never this crate's
+/// shape: the root binds an impl that closes over ITS OWN `Durability`/`Settling` plumbing and
+/// calls `Durability::journal_claim` from inside [`journal_claim`](ClaimJournal::journal_claim). A
+/// node with no data dir binds nothing (`IdempotencyCache::new`, no journal), so it behaves exactly
+/// as it did before this seam existed — the whole reason [`IdempotencyCache::with_journal`] is an
+/// opt-in constructor rather than a mandatory argument.
+pub trait ClaimJournal: Send + Sync {
+    /// A reservation was just taken for `key` at `now` (unix seconds) — the same instant
+    /// [`IdempotencyCache::probe`] used to insert the in-flight sentinel. Called exactly once per
+    /// first sighting of a key (never on a replay, never on an in-flight refusal, never a second
+    /// time for the same reservation), and under the cache's own lock hold has already been
+    /// released — a slow or failing journal write never holds up the next probe.
+    fn journal_claim(&self, key: &(String, String), now: u64);
+}
+
+/// The cache itself. `(String, String)` is `(actor, header)` for a mint or `(actor, <framed id and
+/// header>)` for a rotate — the caller builds the key, this type only stores it.
+pub struct IdempotencyCache<V> {
+    slots: Mutex<HashMap<(String, String), Slot<V>>>,
+    /// `None` on a node with no data dir (or any composition root that never bound one): the cache
+    /// then behaves exactly as it did before this seam existed. `Some` on a durable node, bound by
+    /// the composition root through [`IdempotencyCache::with_journal`].
+    journal: Option<Arc<dyn ClaimJournal>>,
+}
+
+/// The result of probing the cache before starting a mutating verb.
+pub enum Probe<'a, V: Clone> {
+    /// No `Idempotency-Key` header was presented; proceed and never reserve or replay for this
+    /// call.
+    NoKey,
+    /// First time this key has been seen (or its prior reservation expired): a [`Reservation`] was
+    /// inserted under the same lock hold, and the caller now owns it and must either
+    /// [`Reservation::commit`] or [`Reservation::clear`]/let it drop.
+    Reserved(Reservation<'a, V>),
+    /// A prior call with this key already completed: replay its committed value verbatim, minting
+    /// nothing new.
+    Replay(V),
+    /// A prior call with this key is still in flight (its reservation has not been committed or
+    /// cleared yet): refuse this call rather than double-run the mutation.
+    InFlight,
+}
+
+impl<V: Clone> IdempotencyCache<V> {
+    /// A fresh, empty cache with no claim journal bound — a node with no data dir, or any caller
+    /// that has not opted into durable claim records, behaves exactly as before this seam existed.
+    pub fn new() -> Self {
+        IdempotencyCache {
+            slots: Mutex::new(HashMap::new()),
+            journal: None,
+        }
+    }
+
+    /// A fresh, empty cache that journals every claim it takes through `journal` (item 271's
+    /// writer side). The composition root calls this instead of [`IdempotencyCache::new`] on a
+    /// durable node; a node with no data dir keeps calling `new` and this cache never differs from
+    /// today's.
+    pub fn with_journal(journal: Arc<dyn ClaimJournal>) -> Self {
+        IdempotencyCache {
+            slots: Mutex::new(HashMap::new()),
+            journal: Some(journal),
+        }
+    }
+
+    /// Probe (and, on a first sighting, reserve) `key` at time `now` (unix seconds). Sweeps first.
+    ///
+    /// THE SWEEP APPLIES TO COMMITTED VALUES ONLY. The two things stored under a key answer two
+    /// different questions, and only one of them is bounded by the replay window:
+    ///
+    /// * A committed value answers "what did the completed call reply". That is what
+    ///   [`IDEMPOTENCY_TTL_SECS`] bounds, and dropping one early costs a retry an extra run of a
+    ///   mutation nobody has run yet.
+    /// * A sentinel (`None`) answers "is somebody running this right now". Ten minutes is not an
+    ///   upper bound on a mutation — a store gone slow, a mint blocked on an unreachable signer —
+    ///   and the longer one is stuck the MORE retries arrive to be admitted. Sweeping a sentinel
+    ///   tells the next retry it is the first, so two live reservations exist for one idempotency
+    ///   key and two credentials are minted where the sentinel existed so that one would.
+    ///
+    /// So a sentinel is stepped over however old it is, and is bounded by its own [`Reservation`]
+    /// instead: `commit`, `clear` and `Drop` each release it. The one path that leaves a sentinel
+    /// behind is [`Reservation::leak`], which is reserved for a mutation handed to an uncancellable
+    /// path — so a leaked sentinel is bounded by real work in flight, never by a header a client
+    /// chooses, and this is not a way to grow the map without limit.
+    pub fn probe(&self, key: (String, String), now: u64) -> Probe<'_, V> {
+        let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        guard.retain(|_, (t, v)| v.is_none() || now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
+        match guard.get(&key) {
+            Some((_, Some(v))) => Probe::Replay(v.clone()),
+            Some((_, None)) => Probe::InFlight,
+            None => {
+                guard.insert(key.clone(), (now, None));
+                drop(guard);
+                // The claim is taken (a durable record of it — never a replay, an in-flight
+                // refusal, or a second sighting of the same key) exactly here, outside the lock:
+                // the sentinel is already visible to every other prober, so a slow or failing
+                // journal write never holds up the next probe. A node with no journal bound (no
+                // data dir) takes this branch every time it does today — nothing calls out.
+                if let Some(journal) = &self.journal {
+                    journal.journal_claim(&key, now);
+                }
+                Probe::Reserved(Reservation {
+                    cache: self,
+                    key,
+                    live: true,
+                })
+            }
+        }
+    }
+}
+
+impl<V: Clone> Default for IdempotencyCache<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// An in-flight reservation. Exactly `IdemReservation` in 1.5.5: clears the sentinel on `Drop` (a
+/// parse/validation/store failure before anything irreversible happened), unless the caller
+/// explicitly [`commit`](Reservation::commit)s a real value or [`clear`](Reservation::clear)s it
+/// itself (a store-confirmed failure it already knows is safe to free for retry) or
+/// [`leak`](Reservation::leak)s it (the mutation was handed to an uncancellable execution path —
+/// 1.5.5's `spawn_blocking` — so a caller disconnect after this point must NOT clear the sentinel,
+/// or a retry could double-mint against a mutation that already landed).
+pub struct Reservation<'a, V: Clone> {
+    cache: &'a IdempotencyCache<V>,
+    key: (String, String),
+    live: bool,
+}
+
+impl<'a, V: Clone> Reservation<'a, V> {
+    /// Commit the real value, replacing the sentinel. A later replay of this key returns exactly
+    /// this value.
+    pub fn commit(mut self, value: V, now: u64) {
+        let mut guard = self.cache.slots.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(self.key.clone(), (now, Some(value)));
+        self.live = false;
+    }
+
+    /// Explicitly clear the reservation (a refusal this call already knows is safe to retry).
+    /// Idempotent: clears only if the slot is still this reservation's own sentinel, never a value
+    /// a concurrent commit already placed there.
+    pub fn clear(mut self) {
+        self.clear_inner();
+        self.live = false;
+    }
+
+    /// Mark the reservation as handed to an uncancellable execution path: a subsequent `Drop`
+    /// (caller cancellation) must not clear it. Mirrors 1.5.5's `IdemState::InFlight` transition.
+    pub fn leak(mut self) {
+        self.live = false;
+    }
+
+    fn clear_inner(&self) {
+        let mut guard = self.cache.slots.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(guard.get(&self.key), Some((_, None))) {
+            guard.remove(&self.key);
+        }
+    }
+}
+
+impl<'a, V: Clone> Drop for Reservation<'a, V> {
+    fn drop(&mut self) {
+        if self.live {
+            self.clear_inner();
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/idempotency_tests.rs"]
+mod tests;

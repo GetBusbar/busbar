@@ -1,0 +1,11 @@
+# The "via" crate for the via-bypass fixture: it depends directly on `libc`, same shape as
+# via-only's `mid` — the bypass in this fixture comes from the PARENT crate's own direct
+# dependency on `libc`, not from this crate.
+[package]
+name = "xtask-fixture-via-mid"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = "0.2"

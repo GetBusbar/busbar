@@ -1,0 +1,681 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE 4-PLANE BEHAVIOURAL ISOMORPHISM GATE (Assertion I2 of
+//! docs/design/BUSBAR-1.6.0.md THE DESIGN, §1).
+//!
+//! Owner's ruling, recorded and slipped repeatedly, which is why this is a gate and not a paragraph:
+//!
+//! > *"LLM == MCP == A2A -- just different protocols not different pathway through engine at all."*
+//!
+//! The structural half of isomorphism (Assertion I1) is enforced by the type system already: every
+//! plane crate constructs the SAME registry `PlaneDecl`, naming every field or failing to compile.
+//! What is NOT type-checked is the SEMANTIC half: whether each `None` hook is a legitimate capability
+//! difference or a silent gap. This test fills that hole. It REFLECTS THE ACTUAL Some/None of the
+//! installed `&'static PlaneDecl` values (it does not re-read a ledger to decide the matrix — the
+//! whole point, per Risk 2), and for every hook field where one plane is `Some` while a sibling is
+//! `None`, it FORBIDS the `None` unless it is declared in `qa/plane-hook-isomorphism.allow` AND the
+//! declared capability maps to a real cell in `qa/capability-equality.json` for that plane's ledger
+//! column(s). An undeclared asymmetric `None` is RED (a plane quietly not doing what a sibling does,
+//! nobody having decided that is correct); a declared row that is NOT actually an asymmetric `None` on
+//! the live decls is also RED (a stale exemption). Over- and under-count both fail.
+//!
+//! ## What is reflected, and what is not
+//!
+//! The installed planes are the ones the composition root links and pushes through `install_planes`:
+//! `{llm, mcp, a2a}` (each a `&'static PlaneDecl` referenced directly here — the same consts
+//! `crates/busbar/src/main.rs` installs; this is also the test-support plane registry's content). The
+//! VOICE plane is off-default, feature-gated, and NOT linked into the binary or this test target (see
+//! `docs/design/BUSBAR-1.6.0.md` #15), so its skeleton asymmetries are governed by the
+//! no-deferral gate + the ledger's voice pin, NOT by this reflection. When voice is wired into the
+//! binary at its DoD, adding its decl to [`installed_decls`] arms this reflection over it too.
+//!
+//! Modelled on `crates/busbar/tests/capability_equality.rs` -- the house oracle pattern: one `verify`
+//! fn drives both the real gate and the fixture self-tests, so a self-test proves the REAL gate fires.
+
+mod common;
+
+use busbar_kernel::plane::registry::PlaneDecl;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+/// THE PINNED HOOK-FIELD SET — every `Option<…>` capability hook on the registry `PlaneDecl`, each
+/// paired with the extractor that reads its Some/None off a live decl. This is the "small pinned map"
+/// the design requires; its length is floor-checked ([`MIN_HOOK_FIELDS`]) so it cannot silently shrink
+/// to prove nothing. A hook added to `PlaneDecl` that is not added here is invisible to this gate — the
+/// same inherent limit `capability_equality.rs`'s pinned axes carry; the floor keeps the set honest.
+#[allow(clippy::type_complexity)]
+const HOOK_FIELDS: &[(&str, fn(&PlaneDecl) -> bool)] = &[
+    ("routes", |d| d.routes.is_some()),
+    ("admin_routes", |d| d.admin_routes.is_some()),
+    ("openapi", |d| d.openapi.is_some()),
+    // NOTE: `openapi_schemas` is `#[cfg(feature = "openapi-schema")]`-gated on PlaneDecl, so it is
+    // genuinely ABSENT from the default build this test runs in. Reflecting it would make the hook set
+    // feature-conditional, so it is deliberately not in this set.
+    ("hydrate", |d| d.hydrate.is_some()),
+    ("start", |d| d.start.is_some()),
+    ("config_validate", |d| d.config_validate.is_some()),
+    ("registry_contains", |d| d.registry_contains.is_some()),
+    ("reresolve_gates", |d| d.reresolve_gates.is_some()),
+    ("retain_verify_gates", |d| d.retain_verify_gates.is_some()),
+    ("default_section", |d| d.default_section.is_some()),
+    ("on_swap", |d| d.on_swap.is_some()),
+    ("parse_endpoint", |d| d.parse_endpoint.is_some()),
+    ("lower_endpoint", |d| d.lower_endpoint.is_some()),
+    ("build_runtime", |d| d.build_runtime.is_some()),
+    ("card_signing_domain", |d| d.card_signing_domain.is_some()),
+    ("card_kid_prefix", |d| d.card_kid_prefix.is_some()),
+];
+
+/// Floor on the reflected hook set (sized below today's 17 so an ordinary addition does not trip it,
+/// well above zero so a set that quietly lost its rows cannot report isomorphism of nothing).
+const MIN_HOOK_FIELDS: usize = 15;
+
+/// Floor on the allowlist: an empty allowlist against a decl set that HAS asymmetries could only be a
+/// file that was gutted; today's honest count is well above this.
+const MIN_ASYMMETRIES: usize = 10;
+
+/// The doctrine map: each INSTALLED plane crate key → the directional ledger column(s) it answers to
+/// in `qa/capability-equality.json`. The bidirectional protocols count in both directions. Pinned
+/// (not derived) for the same reason `capability_equality.rs` pins its axes: it is the owner's ruling.
+fn plane_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> {
+    common::doctrine_rows("installed")
+        .into_iter()
+        .map(|r| {
+            let cols: &'static [&'static str] = Box::leak(r[1..].to_vec().into_boxed_slice());
+            (r[0], cols)
+        })
+        .collect()
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("the repository root must exist")
+}
+
+/// The installed planes' actual `&'static PlaneDecl`s — the same consts the composition root pushes
+/// through `install_planes` (and the content of the test-support plane registry). Referenced directly
+/// so the Some/None this test reasons over is the REAL decl, never a restated copy.
+// Each plane crate is only linked when its feature is on. Under `--no-default-features` no plane
+// is installed, so this yields an empty set and the gate test below is vacuous (returns early).
+fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
+    LINKED_PLANES.iter().map(|d| (d.key, d)).collect()
+}
+
+// The linked plane rows (build.rs: every enabled `[package.metadata.busbar.linked]` row carrying the
+// `plane` axis, assembled from its crate's own `linked` entry exactly as the root assembles it).
+include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
+
+/// The Some/None matrix: `field -> (plane -> is_some)`. Computed from the live decls.
+type Matrix = BTreeMap<String, BTreeMap<String, bool>>;
+
+fn reflect(installed: &[(&'static str, &'static PlaneDecl)]) -> Matrix {
+    let mut m: Matrix = BTreeMap::new();
+    for (field, extract) in HOOK_FIELDS {
+        let row = m.entry((*field).to_string()).or_default();
+        for (key, decl) in installed {
+            row.insert((*key).to_string(), extract(decl));
+        }
+    }
+    m
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Summary {
+    /// Every `(field, plane)` where the plane is `None` and a sibling is `Some`.
+    asymmetric_nones: BTreeSet<(String, String)>,
+    /// The asymmetric `None`s that a declared, ledger-anchored allowlist row accounts for.
+    declared: usize,
+}
+
+/// THE ONE VERDICT. Both the real gate and the self-tests drive this exact function over DATA
+/// (matrix + ledger + allowlist as `serde_json::Value`), so a self-test that plants a fixture matrix
+/// proves the REAL join, not a copy of it.
+fn verify(
+    matrix: &Matrix,
+    ledger: &serde_json::Value,
+    allow: &serde_json::Value,
+    columns: &BTreeMap<&str, &[&str]>,
+    min_hook_fields: usize,
+    min_asymmetries: usize,
+) -> Result<Summary, String> {
+    verify_scoped(
+        matrix,
+        ledger,
+        allow,
+        columns,
+        min_hook_fields,
+        min_asymmetries,
+        true,
+    )
+}
+
+/// [`verify`], told whether EVERY plane is linked into this build. With the whole roster the
+/// staleness check is exact. With part of it, an allowlist row can only be judged for a plane that
+/// is linked, and only on the one question the part can answer: the plane that row says is `None`
+/// now FILLS the hook. A row for an unlinked plane, or one whose `Some` sibling is not linked here,
+/// is not stale — it is unobservable in this build.
+fn verify_scoped(
+    matrix: &Matrix,
+    ledger: &serde_json::Value,
+    allow: &serde_json::Value,
+    columns: &BTreeMap<&str, &[&str]>,
+    min_hook_fields: usize,
+    min_asymmetries: usize,
+    every_plane_linked: bool,
+) -> Result<Summary, String> {
+    if matrix.len() < min_hook_fields {
+        return Err(format!(
+            "only {} hook fields reflected (floor {min_hook_fields}). A matrix that lost its rows \
+             would report isomorphism of nothing.",
+            matrix.len()
+        ));
+    }
+
+    let ledger_caps: BTreeSet<String> = ledger["capabilities"]
+        .as_object()
+        .ok_or("qa/capability-equality.json: `capabilities` must be an object")?
+        .keys()
+        .cloned()
+        .collect();
+    // The set of (capability, plane-column) cells the ledger declares — totality makes this the whole
+    // cross product, but we READ it rather than assume it, so a hole in the ledger is caught here too.
+    let mut ledger_cells: BTreeSet<(String, String)> = BTreeSet::new();
+    for cell in ledger["cells"]
+        .as_array()
+        .ok_or("qa/capability-equality.json: `cells` must be an array")?
+    {
+        let cap = cell["capability"]
+            .as_str()
+            .ok_or("a ledger cell has no `capability`")?;
+        let plane = cell["plane"]
+            .as_str()
+            .ok_or("a ledger cell has no `plane`")?;
+        ledger_cells.insert((cap.to_string(), plane.to_string()));
+    }
+
+    // (1) Compute the asymmetric-None set straight off the reflected matrix.
+    let mut asymmetric_nones: BTreeSet<(String, String)> = BTreeSet::new();
+    for (field, row) in matrix {
+        let any_some = row.values().any(|&s| s);
+        if !any_some {
+            continue; // all-None (or all-Some) is symmetric — no asymmetry to account for.
+        }
+        for (plane, &is_some) in row {
+            if !is_some {
+                asymmetric_nones.insert((field.clone(), plane.clone()));
+            }
+        }
+    }
+
+    // (2) Load the declared allowlist rows and validate each against the ledger + the live matrix.
+    let rows = allow["asymmetries"]
+        .as_array()
+        .ok_or("qa/plane-hook-isomorphism.allow: `asymmetries` must be an array")?;
+    if rows.len() < min_asymmetries {
+        return Err(format!(
+            "only {} allowlist rows (floor {min_asymmetries}); an allowlist gutted to nothing cannot \
+             account for a decl set that has asymmetries.",
+            rows.len()
+        ));
+    }
+
+    let mut declared_set: BTreeSet<(String, String)> = BTreeSet::new();
+    for row in rows {
+        let field = row["field"]
+            .as_str()
+            .ok_or("an allowlist row has no `field`")?;
+        let capability = row["capability"]
+            .as_str()
+            .ok_or_else(|| format!("allowlist row for `{field}` has no `capability`"))?;
+        let reason = row["reason"].as_str().unwrap_or("");
+        if reason.trim().len() < 40 {
+            return Err(format!(
+                "allowlist row `{field}` has reason {reason:?}: an accepted asymmetry needs a real \
+                 one-line argument (>= 40 chars) a reviewer could disagree with, not a label."
+            ));
+        }
+        if !matrix.contains_key(field) {
+            return Err(format!(
+                "allowlist row names hook `{field}`, which is not a reflected PlaneDecl hook \
+                 {:?}. Fix the field name or add the hook to HOOK_FIELDS.",
+                matrix.keys().collect::<Vec<_>>()
+            ));
+        }
+        if !ledger_caps.contains(capability) {
+            return Err(format!(
+                "allowlist row `{field}` names capability `{capability}`, which is not declared in \
+                 qa/capability-equality.json. An asymmetry must map to a REAL ledger capability."
+            ));
+        }
+        let planes_none = row["planes_none"]
+            .as_array()
+            .ok_or_else(|| format!("allowlist row `{field}` has no `planes_none` array"))?;
+        for p in planes_none {
+            let plane = p.as_str().ok_or_else(|| {
+                format!("allowlist row `{field}`: a `planes_none` entry is not a string")
+            })?;
+            let cols = columns.get(plane).ok_or_else(|| {
+                format!(
+                    "allowlist row `{field}` names plane `{plane}`, which is not an installed plane \
+                     {:?}.",
+                    columns.keys().collect::<Vec<_>>()
+                )
+            })?;
+            // The asymmetry MUST map to a real cell for EACH of the plane's ledger columns.
+            for &col in *cols {
+                if !ledger_cells.contains(&(capability.to_string(), col.to_string())) {
+                    return Err(format!(
+                        "allowlist row `{field}` for plane `{plane}` maps to capability \
+                         `{capability}`, but qa/capability-equality.json has no cell \
+                         `{capability}×{col}`. The asymmetry maps to no ledger cell."
+                    ));
+                }
+            }
+            if !declared_set.insert((field.to_string(), plane.to_string())) {
+                return Err(format!(
+                    "allowlist row declares `{field}`/`{plane}` twice; two answers for one cell is \
+                     no answer."
+                ));
+            }
+        }
+    }
+
+    // (3) EXACTNESS both ways: every actual asymmetric None must be declared, and every declared
+    //     row must be an actual asymmetric None (no stale exemption).
+    let undeclared: Vec<String> = asymmetric_nones
+        .iter()
+        .filter(|c| !declared_set.contains(*c))
+        .map(|(f, p)| format!("{f}×{p}"))
+        .collect();
+    if !undeclared.is_empty() {
+        return Err(format!(
+            "UNDECLARED asymmetric None(s): {}. A plane is `None` on a hook a sibling fills, with no \
+             qa/plane-hook-isomorphism.allow row accounting for it. Either wire the hook, or declare \
+             the difference with a ledger-anchored argument.",
+            undeclared.join(", ")
+        ));
+    }
+    let stale: Vec<String> = declared_set
+        .iter()
+        .filter(|c| !asymmetric_nones.contains(*c))
+        .filter(|(f, p)| {
+            every_plane_linked || matrix.get(f).and_then(|row| row.get(p)).copied() == Some(true)
+        })
+        .map(|(f, p)| format!("{f}×{p}"))
+        .collect();
+    if !stale.is_empty() {
+        return Err(format!(
+            "STALE allowlist row(s): {}. These declare an asymmetric None that no longer exists on \
+             the live decls (the hook was wired, or the sibling's Some went away). Drop the row so \
+             the allowlist matches the decls.",
+            stale.join(", ")
+        ));
+    }
+
+    Ok(Summary {
+        declared: declared_set.len(),
+        asymmetric_nones,
+    })
+}
+
+fn read_json(path: &Path) -> serde_json::Value {
+    serde_json::from_str(
+        &std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display())),
+    )
+    .unwrap_or_else(|e| panic!("{} does not parse as JSON: {e}", path.display()))
+}
+
+fn columns_map() -> BTreeMap<&'static str, &'static [&'static str]> {
+    plane_ledger_columns().into_iter().collect()
+}
+
+// ---------------------------------------------------------------------------
+// 1. THE GATE: the live decls' asymmetries are all declared, ledger-anchored, and exact.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
+    let decls = installed_decls();
+    if decls.is_empty() {
+        // No plane linked (e.g. --no-default-features): cross-plane isomorphism is vacuous.
+        return;
+    }
+    let root = repo_root();
+    let matrix = reflect(&decls);
+    let ledger = read_json(&root.join("qa/capability-equality.json"));
+    let allow = read_json(&root.join("qa/plane-hook-isomorphism.allow"));
+
+    let summary = verify_scoped(
+        &matrix,
+        &ledger,
+        &allow,
+        &columns_map(),
+        MIN_HOOK_FIELDS,
+        MIN_ASYMMETRIES,
+        cfg!(linked_every_plane),
+    )
+    .unwrap_or_else(|e| panic!("plane isomorphism: {e}"));
+
+    println!(
+        "ISOMORPHISM: {} hook fields × {} installed planes; {} asymmetric None(s), all declared \
+         with a ledger-anchored argument.",
+        matrix.len(),
+        installed_decls().len(),
+        summary.asymmetric_nones.len(),
+    );
+    if cfg!(linked_every_plane) {
+        assert_eq!(
+            summary.declared,
+            summary.asymmetric_nones.len(),
+            "declared count must equal the reflected asymmetric-None count exactly"
+        );
+    }
+}
+
+/// The `root-*` legs THIS BUILD CARRIES, reflected one feature at a time. See the twin in
+/// `capability_equality.rs`: the legs carry no config key, no environment variable and no boot line,
+/// so the only way to ask a build which legs it has is to compile the question in — but the question
+/// must be asked per leg, not as a five-way conjunction, because the planes are switched onto the
+/// root one at a time and every partially-switched build is an ordinary build.
+fn compiled_legs() -> BTreeSet<&'static str> {
+    common::compiled_root_legs()
+}
+
+/// THE ROOT LEG, JOINED TO THE SAME LEDGER — on EVERY build.
+///
+/// Isomorphism has always been about the SHIPPED decls. This adds the other path: every plane the
+/// binary installs must also be answered by a root leg in `qa/capability-equality.json`, on every one
+/// of its directional ledger columns. A plane installed into the binary and driven through the loop
+/// by no leg would be a plane whose loop nobody is judging — the same silent hole one axis over.
+///
+/// This used to be cfg-gated on all five `root-*` features at once, which meant it ran in exactly one
+/// build configuration and in no other — not the default build, and not a single-leg build
+/// either. The join it performs is over DATA (the installed decls and
+/// the ledger), so it is answerable on every build and is asked on every build. What the features
+/// decide is which legs are COMPILED, and that is asserted separately below: a plane installed into
+/// this build whose answering leg this build also carries must be driven through the loop by a leg
+/// that proves at least one cell.
+#[test]
+fn every_installed_plane_is_answered_by_a_root_leg() {
+    let decls = installed_decls();
+    if decls.is_empty() {
+        return;
+    }
+    let ledger = read_json(&repo_root().join("qa/capability-equality.json"));
+    let legs = ledger["root_legs"]
+        .as_object()
+        .expect("qa/capability-equality.json declares `root_legs`");
+    // column -> leg, read off the ledger rather than restated here.
+    let mut answered: BTreeMap<String, String> = BTreeMap::new();
+    for (leg, meta) in legs {
+        for col in meta["columns"].as_array().expect("`columns` is an array") {
+            let col = col.as_str().expect("a column is a string");
+            assert!(
+                answered.insert(col.to_string(), leg.clone()).is_none(),
+                "column `{col}` is claimed by two legs; a plane runs through one leg"
+            );
+        }
+    }
+    // How many cells each leg proves over the loop ON EACH COLUMN, read off the same ledger. Keyed
+    // by (leg, column) and not by leg: a leg answers for two directional columns on the
+    // bidirectional planes (root-mcp is mcp-client AND mcp-server), and a per-leg tally stays
+    // positive while one of its two columns has lost every root-loop proof — the assertion below
+    // names the column, so the count it reads must be the column's (item 264).
+    let leg_proven = proven_per_leg_column(&ledger);
+
+    let compiled = compiled_legs();
+    let columns = columns_map();
+    for (key, _) in &decls {
+        let cols = columns
+            .get(key)
+            .unwrap_or_else(|| panic!("installed plane `{key}` has no ledger columns"));
+        for &col in *cols {
+            let leg = answered.get(col).unwrap_or_else(|| {
+                panic!(
+                    "installed plane `{key}` answers to ledger column `{col}`, which NO root leg \
+                     covers. A plane the binary installs and no leg drives is a loop nobody is \
+                     judging."
+                )
+            });
+            // THE FEATURE-DEPENDENT HALF. If this build INSTALLS the plane and also CARRIES the leg
+            // that answers it, then the loop for that plane is live in this binary and must be
+            // witnessed: a leg that is compiled in and proves nothing on the column it owns is a
+            // plane running through a loop nobody is judging, which is the same hole this test
+            // refuses one level up.
+            if compiled.contains(leg.as_str()) {
+                let proven = leg_proven
+                    .get(&(leg.clone(), col.to_string()))
+                    .copied()
+                    .unwrap_or(0);
+                assert!(
+                    proven > 0,
+                    "installed plane `{key}` answers to column `{col}` through leg `{leg}`, which \
+                     THIS BUILD COMPILES, and that leg proves ZERO `{col}` cells over the loop. A \
+                     plane installed and switched onto a leg nobody drove is a loop nobody is judging."
+                );
+                println!("  {key:<6} {col:<13} -> {leg} [compiled, {proven} cell(s) proven]");
+            } else {
+                println!("  {key:<6} {col:<13} -> {leg} [leg off in this build]");
+            }
+        }
+    }
+    println!(
+        "ROOT-LEG ANSWERS: {} installed plane(s); legs compiled here: {:?}",
+        decls.len(),
+        compiled
+    );
+}
+
+/// Root-proven cells per `(leg, column)` — the unit the root-leg assertion above names.
+fn proven_per_leg_column(ledger: &serde_json::Value) -> BTreeMap<(String, String), usize> {
+    let mut out: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for cell in ledger["cells"].as_array().expect("`cells` is an array") {
+        let r = &cell["root"];
+        if r["state"].as_str() == Some("proven") {
+            if let (Some(leg), Some(col)) = (r["leg"].as_str(), cell["plane"].as_str()) {
+                *out.entry((leg.to_string(), col.to_string())).or_default() += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The tally is per COLUMN: a leg proving seven `mcp-client` cells and no `mcp-server` cell has a
+/// dead `mcp-server` column, and the per-leg count of seven must not stand in for it.
+#[test]
+fn selftest_a_column_whose_root_proofs_are_all_gone_counts_zero_under_a_leg_that_proves_others() {
+    let ledger = serde_json::json!({
+        "cells": [
+            { "capability": "c1", "plane": "p-client", "root": { "state": "proven", "leg": "root-p" } },
+            { "capability": "c2", "plane": "p-client", "root": { "state": "proven", "leg": "root-p" } },
+            { "capability": "c1", "plane": "p-server", "root": { "state": "none", "leg": "root-p" } }
+        ]
+    });
+    let tally = proven_per_leg_column(&ledger);
+    assert_eq!(
+        tally.get(&("root-p".to_string(), "p-client".to_string())),
+        Some(&2)
+    );
+    assert_eq!(
+        tally.get(&("root-p".to_string(), "p-server".to_string())),
+        None,
+        "the server column has no root proof, whatever its leg proves on the client column"
+    );
+}
+
+/// I1 / floor guard: the reflected hook set and the doctrine constants cannot silently shrink.
+#[test]
+fn the_reflected_hook_set_and_constants_are_the_doctrine() {
+    assert!(
+        HOOK_FIELDS.len() >= MIN_HOOK_FIELDS,
+        "the reflected hook set shrank below the floor"
+    );
+    const {
+        assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 10);
+    }
+    // The doctrine's installed-plane axis, verbatim (the same four the composition root installs).
+    let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
+    assert_eq!(
+        keys.len(),
+        4,
+        "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
+    );
+    // With every plane compiled in, the pinned axis is exactly the planes the root installs from
+    // their own linked entries — two artifacts (the doctrine, the linked table) that must agree.
+    #[cfg(linked_every_plane)]
+    {
+        let pinned: BTreeSet<&str> = keys.iter().copied().collect();
+        let installed: BTreeSet<&str> = installed_decls().iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            pinned, installed,
+            "the installed-plane axis is the linked planes"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2. SELF-TEST: the gate is proven to FIRE, on fixtures, through the REAL `verify`.
+//    House rule: a gate that cannot fail is worse than none.
+// ---------------------------------------------------------------------------
+
+/// A tiny fixture: 15 hook fields (to clear the floor) over 2 planes, exactly one asymmetric None
+/// (`h0`: p_a Some, p_b None). A minimal ledger declaring the referenced capability for both planes'
+/// columns, and an allowlist that (by default) accounts for the one asymmetry.
+fn fixtures() -> (
+    Matrix,
+    serde_json::Value,
+    serde_json::Value,
+    BTreeMap<&'static str, &'static [&'static str]>,
+) {
+    let mut matrix: Matrix = BTreeMap::new();
+    for i in 0..15 {
+        let mut row = BTreeMap::new();
+        // h0 is the only asymmetry: p_a=Some, p_b=None. Every other hook is symmetric (both Some).
+        let (a, b) = if i == 0 { (true, false) } else { (true, true) };
+        row.insert("p_a".to_string(), a);
+        row.insert("p_b".to_string(), b);
+        matrix.insert(format!("h{i}"), row);
+    }
+    let ledger = serde_json::json!({
+        "capabilities": { "cap-x": "a fixture capability defined at argument length for the test" },
+        "planes": { "pa-col": "fixture", "pb-col": "fixture" },
+        "cells": [
+            { "capability": "cap-x", "plane": "pa-col", "state": "proven", "test": "x" },
+            { "capability": "cap-x", "plane": "pb-col", "state": "missing" }
+        ]
+    });
+    let allow = serde_json::json!({
+        "asymmetries": [
+            { "field": "h0", "planes_none": ["p_b"], "capability": "cap-x",
+              "reason": "a fixture argument long enough to be an actual reviewable argument here" }
+        ]
+    });
+    let mut columns: BTreeMap<&'static str, &'static [&'static str]> = BTreeMap::new();
+    columns.insert("p_a", &["pa-col"]);
+    columns.insert("p_b", &["pb-col"]);
+    (matrix, ledger, allow, columns)
+}
+
+#[test]
+fn selftest_green_fixture_passes_and_counts_the_one_asymmetry() {
+    let (m, ledger, allow, cols) = fixtures();
+    let s = verify(&m, &ledger, &allow, &cols, 15, 1).expect("the green fixture verifies");
+    assert_eq!(s.asymmetric_nones.len(), 1);
+    assert_eq!(s.declared, 1);
+}
+
+#[test]
+fn selftest_undeclared_asymmetric_none_is_red() {
+    // Drop the only allowlist row: the h0/p_b asymmetry is now undeclared → RED.
+    let (m, ledger, mut allow, cols) = fixtures();
+    allow["asymmetries"] = serde_json::json!([]);
+    let err = verify(&m, &ledger, &allow, &cols, 15, 0)
+        .expect_err("an undeclared asymmetric None must be red");
+    assert!(
+        err.contains("UNDECLARED") && err.contains("h0×p_b"),
+        "got: {err}"
+    );
+}
+
+/// PART OF THE ROSTER LINKED: a row whose `Some` sibling is not linked is unobservable, not stale —
+/// while a row whose own plane now FILLS the hook is still RED. The whole-roster verdict on the same
+/// matrix stays exact.
+#[test]
+fn selftest_a_partial_roster_scopes_staleness_to_what_it_can_observe() {
+    let (full, ledger, allow, cols) = fixtures();
+    // Only `p_b` linked: its `h0` None has no linked `Some` sibling to be asymmetric against.
+    let mut part: Matrix = BTreeMap::new();
+    for (field, row) in &full {
+        let mut r = BTreeMap::new();
+        r.insert("p_b".to_string(), row["p_b"]);
+        part.insert(field.clone(), r);
+    }
+    verify_scoped(&part, &ledger, &allow, &cols, 15, 1, false)
+        .expect("a row whose sibling is not linked is unobservable in a partial build, not stale");
+    let err = verify_scoped(&part, &ledger, &allow, &cols, 15, 1, true)
+        .expect_err("with the whole roster claimed, the same row is stale");
+    assert!(
+        err.contains("STALE") && err.contains("h0×p_b"),
+        "got: {err}"
+    );
+    // A row declaring `p_b` None on a hook `p_b` FILLS is stale in any build.
+    let mut allow_filled = allow.clone();
+    allow_filled["asymmetries"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "field": "h1", "planes_none": ["p_b"], "capability": "cap-x",
+            "reason": "a fixture argument long enough to be an actual reviewable argument here"
+        }));
+    let err = verify_scoped(&part, &ledger, &allow_filled, &cols, 15, 1, false).expect_err(
+        "a plane that fills the hook it is declared None on is stale in a partial build",
+    );
+    assert!(
+        err.contains("STALE") && err.contains("h1×p_b"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn selftest_stale_allowlist_row_is_red() {
+    // Declare an asymmetry that does not exist (h1 is symmetric) → stale row → RED.
+    let (m, ledger, mut allow, cols) = fixtures();
+    allow["asymmetries"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "field": "h1", "planes_none": ["p_b"], "capability": "cap-x",
+            "reason": "a fixture argument long enough to be an actual reviewable argument here"
+        }));
+    let err =
+        verify(&m, &ledger, &allow, &cols, 15, 1).expect_err("a stale allowlist row must be red");
+    assert!(
+        err.contains("STALE") && err.contains("h1×p_b"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn selftest_asymmetry_mapping_to_no_ledger_cell_is_red() {
+    // Point the row at a capability the ledger does not declare → the asymmetry maps to no cell → RED.
+    let (m, ledger, mut allow, cols) = fixtures();
+    allow["asymmetries"][0]["capability"] = "cap-absent".into();
+    let err = verify(&m, &ledger, &allow, &cols, 15, 1)
+        .expect_err("an asymmetry mapping to a non-existent capability must be red");
+    assert!(
+        err.contains("not declared in qa/capability-equality.json"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn selftest_a_token_reason_is_red() {
+    let (m, ledger, mut allow, cols) = fixtures();
+    allow["asymmetries"][0]["reason"] = "n/a".into();
+    let err = verify(&m, &ledger, &allow, &cols, 15, 1).expect_err("a token reason must be red");
+    assert!(err.contains("real"), "got: {err}");
+}

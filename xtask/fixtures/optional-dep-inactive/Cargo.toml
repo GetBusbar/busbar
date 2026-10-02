@@ -1,0 +1,18 @@
+# A synthetic pure crate whose local "mid" dependency declares `libc` as an OPTIONAL dependency
+# that NOTHING here activates. `cargo metadata`'s resolve graph still lists the `mid -> libc` edge
+# (an optional dependency is listed as soon as some version of it is resolvable in the lockfile,
+# regardless of whether its enabling feature is on) — this fixture proves `edge_is_active` treats
+# that edge as inert and does NOT report `libc` for it, matching the real shape found in
+# `busbar-plane-llm`'s closure (`sonic_rs -> faststr -> rkyv -> ...`), where `rkyv` is an optional
+# `faststr` dependency nothing in the workspace turns on.
+[workspace]
+members = [".", "mid"]
+
+[package]
+name = "xtask-fixture-optional-dep-inactive"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+xtask-fixture-optional-mid = { path = "mid" }

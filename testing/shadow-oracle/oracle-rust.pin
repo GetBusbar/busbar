@@ -1,0 +1,184 @@
+# The shadow-oracle ENGINE this checkout is judged by (Phase C cutover).
+#
+# The money oracle is now the Rust `busbar-oracle` crate in GetBusbar/busbar-release. bin/oracle
+# obtains that binary from the SOURCE pin below and runs it against this directory's DATA. This
+# source pin (repo + git ref + crate) is the ONE pin of the judge (the old archive digest-pin and the
+# Python tool are gone): the thing that must not change quietly is which judge ran, and a git ref +
+# `cargo build --locked` from that tree is the reproducible source identity (the Cargo.lock at the ref
+# pins every dependency). The ref moves only by editing this file.
+#
+# 2026-09-22 (DECISION #80): moved to the commit that ports the corpus GENERATOR into the judge, so
+# `./bin/oracle cells --check` regenerates the 2318-cell corpus and refuses byte drift instead of
+# only validating the committed file against itself. busbar's own generator
+# (`testing/shadow-oracle/cells/__init__.py`) is deleted in the same commit as this bump — a judge
+# older than this ref cannot check the corpus it is asked to judge, so the two move together.
+# NOTE: this ref is a feature branch head (`port/oracle-cells-generate`), which is the same shape
+# the previous pin had; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-09-22: moved to the commit that makes `--filter` real on the paths that took it and ignored
+# it. `HarnessArgs::into_config()` discarded `--filter` (so `replay --filter 'zzz-no-such-cell'`
+# printed the same 913 DIVERGED rows as an unfiltered replay), and the record driver put `--family`
+# in `record.sh`'s `--filter` slot while never passing the id regex at all. Selection itself was
+# never broken: `select_cells` is byte-identical to the refs the bug was filed against, and over the
+# committed corpus `^billing\|` selects 14, `ledger` 6, `^(billing|ledger|config)\|` 20. See
+# findings-2026-09-22-record-filter.md for the measurements and what actually caused the original
+# "0 cells" (a fixed port band shared by three concurrent runs, fixed earlier by 00759df).
+# NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same shape as the
+# previous two pins; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-09-22: moved to the commit that lands the three oracle-baseline owner rulings, which together
+# change what a GREEN oracle run is allowed to claim. (1) The clock fields stop normalising: `as_of`,
+# `window.start` and `window.end` flattened to `0` before comparison, so a response carrying a wrong
+# rate-card epoch over a wrong billing window was byte-identical to a right one — measured with the
+# shipped binary on the shape of `ledger|rate-history|as-of`, spend figure identical to the byte. A
+# cell may now declare `"clock": {...}`; the recorder binds it into the request as `{CLOCK:<path>}`
+# (the seam that already binds minted key ids and listener addrs) so busbar is DRIVEN to the instant
+# and the echo is compared EXACTLY, with a fixed `<CLOCK-PIN-MISS:...>` marker keeping the red
+# deterministic. `latency_ms` stays masked and is refused as a pin. An UNPINNED cell normalizes
+# byte-identically to before, so no golden moves and none is re-recorded here. (2) A cell with no
+# prior golden reports UNBASELINED, never PASS: measured over this corpus, 1402 of 2318 cells used to
+# produce no ledger row at all and could not be told from a success; they now carry their own row,
+# `unbaselined.txt`, `totals.unbaselined` and a summary line, and reach the turnstile as NoGolden.
+# It does NOT set the exit code — making gaps red is a separate ruling. (3) The golden is a dated
+# history: `--baseline-version <V>` resolves `golden/<V>` and REFUSES a version that does not exist,
+# naming it and listing what the history holds, instead of silently falling back; `golden_version`
+# is no longer the literal "1.5.5", so `golden/1.6.0` can land at the cut and 1.6.1 be judged
+# against it. `--golden-dir` still works and reads the version off the recording's own meta.json.
+# NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same shape as the
+# previous three pins; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-09-22: moved to the commit that makes `replay-selftest` mean what its label says. Two halves.
+# (1) `owed_ratchet_check` opened the golden with `unwrap_or_default()`, so an ABSENT golden yielded
+# an empty owed set and the containment check over it was vacuously true — measured at 7e00b54,
+# `--golden /tmp/no-such-dir` printed the byte-identical PASS and rc 0 the real 916-cell recording
+# prints. The BASELINE half of the very same function had refused its own empty input since the
+# port; the asymmetry inside one function was the bug. Both halves refuse now, and a golden ledger
+# with rows but zero PASS rows is refused too. (2) The step is labelled "the differ can see a diff"
+# by scripts/verify-1.6.0-done.sh and it never invoked the differ at all — it was a set-containment
+# check over owed-baseline.txt. It now builds its own synthetic recording pair and runs the real
+# differ over it in five legs: the plant is proven ON DISK before any verdict is believed, a clean
+# pair must NOT be reported, the planted divergence MUST be (and the untouched cell must stay PASS),
+# the same-revision guard must REFUSE a candidate under another harness_rev, and
+# `--allow-harness-skew` must be the thing that turns that refusal off. Red-before-green both ways:
+# a `compare()` short-circuited to report nothing reds legs 3 and 5, and a plant made not to plant
+# reds leg 1 and STOPS — a plant that silently fails to plant is indistinguishable from a gate that
+# cannot see. NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same
+# shape as the previous four pins; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-09-24 (owner ruling Q8): moved ab88903 -> 57da1eb, the same branch's next commit — Law 10: an
+# accepted-differences entry's premise is evaluated against the build under test (item 119). Still a
+# feature branch head; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-09-24 (owner ruling Q42, Q8 pattern): moved 57da1eb -> 6067df5 (branch
+# `fix/oracle-candidate-upgrade-step`, cut from 57da1eb) — the OPERATOR UPGRADE STEP. busbar 1.6.0
+# refuses a rate card that does not configure every billable class its plane declares (dbc02c8b9),
+# so at HEAD every cell was unrecordable ("busbar did not come up", ZERO ROWS IS RED). The engine now
+# `--validate`s the config the binary under test is about to run and adds, at 0, exactly the classes
+# that build names (never a hardcoded list), on every entry of the named card — http boot config,
+# exec cell config, `config` subcommand, and a new `upgrade-config` subcommand the script cells call.
+# The published 1.5.5 names none, so the golden side runs every config byte for byte. Still a
+# feature branch head; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-09-24: moved 6067df5 -> 5652f33, the same branch's next commit — the step writes no file beside
+# the config it edits (hazard|no-data-dir|files lists that directory and recorded the step's own log);
+# its record goes to <work>/.oracle-upgrade-step.log beside the precheck log.
+#
+# 2026-09-24 (architect ruling under owner ruling Q42): moved 5652f33 -> 3519882, the same branch's
+# next commit — a rate card a CELL writes through the admin API (the settings PUT, any rate-card write
+# verb) goes through the same step: the build is asked about that card by `--validate` on a probe copy
+# of its booted config, and each class it names is added at 0 on every entry; http cells, their
+# pre-requests and a new `upgrade-body` subcommand for script cells. A body the build names nothing
+# for — every body the 1.5.5 golden is sent — goes byte for byte.
+#
+# 2026-09-24: moved 3519882 -> 3876913 (same branch; e191665 + its exit test) — an exec cell's
+# rewrite of $WORK/config.yaml keeps the upgrade step (every native boot after an exec cell was
+# refused, BUSBAR-9007 x21 in one run), and a boot mutation is applied to the raw baseline, as for the
+# golden (mutating the upgraded one moved NEUT-U-top's `line 157` to `line 175`).
+#
+# 2026-09-28 (owner ruling 2026-09-28): moved 3876913 -> df3019a (same branch) — the corpus generator
+# makes billing|key-usage|refund-across-window a script cell (scripts/refund-across-window.sh, which
+# steps the binary's wall clock with fixtures/clock-shift.c to reproduce a window straddle) instead of
+# a needs_fixture http cell; `cells --generate` changes exactly that cell.
+#
+# 2026-09-28 (KERNEL<>PLUGINS C0): moved df3019a -> c853683, branch `c0/capture-egress-accept` cut from
+# df3019a. It carries the capture driver (a cell owns its boot and config; a capture mock keeps the
+# exact bytes busbar sends: method, target, every header in wire order, body) and its 46 cells. Those
+# are the 44 from the unmerged C0 slot, re-proven from the published v1.5.5, plus two new egress-hop
+# cells: egress.auth|login-hop|oidc (the browser login's token-exchange POST) and
+# egress.fetch|plugins|url (the plugins.fetch GET). `cells --generate` changes exactly those 46 cells.
+# c853683 also applies D-1 (the owner-signed diagnostic code) to the request-log-webhook cell's log tail,
+# as the store.boot capture cells already do.
+# NOTE: a feature branch head, the same shape as the previous pins; re-pin to the merge commit when
+# it lands.
+#
+# 2026-09-29 (ARCHITECT ruling 2026-09-28, predev fences): moved c853683 -> 37a53a8, the same branch's
+# next commit. It adds the two predev fence cells, a2a|fence|egress-message-send and
+# mcp|fence|egress-tools-call, whose bytes are owed by testing/shadow-oracle/fence/predev-275cbd80b/,
+# never by golden/1.5.5. It also adds the driver steps they need: an audience-bound bearer, a card
+# signed at run time for the jws_issuer_key pin, and a JSON-RPC upstream. `cells --generate` changes
+# exactly those two cells (2466 -> 2468).
+#
+# 2026-09-29 (busbar 1.6.0 TODO step 20): moved 37a53a8 -> 35b4a05, the pushed head of busbar-release
+# `step20/wire-capture`, which merges 37a53a8 and keeps cb172db (the oracle that recorded the nine
+# 1.5.5 wire goldens) in history. The capture mock gains the h2c connection transcript (`conn`,
+# `c2s`, `s2c_before`), a second stream on one connection, held answers (a PING answered during the
+# hold) and a TLS ClientHello mode (tls-parser; rustls's seeded extension shuffle is recorded by
+# type, and the view proves it is that shuffle). The driver gains wire-exact cells (a pinned mock
+# port, nothing port-masked), `{FILL:n}` bodies and role `tls` in the default roles. `cells
+# --generate` adds exactly the nine wire.h1 / wire.h2 / wire.tls cells (2468 -> 2477).
+# NOTE: a feature branch head, the same shape as the previous pins; re-pin to the merge commit when
+# it lands.
+#
+# 2026-09-30 (owner ruling, 1.6.0-QUESTIONS.md STREAMS-ORACLE option A): moved 35b4a05 -> 97957ea
+# (branch `streams-oracle`, cut from 35b4a05). Two commits: 6f9b240 makes a PRE-RELEASE baseline
+# (`golden/1.6.0-pre`) one a caller must NAME: `version_key` ranked it above 1.5.5, so the newest-
+# baseline default (the turnstile's HarnessOracle::new, record/replay with no --baseline-version)
+# would have judged the corpus against it; 97957ea adds the seven `streams|*` capture cells (2477 ->
+# 2484) that bin/oracle replay judges against golden/1.6.0-pre (family-baselines.tsv). Still a
+# feature branch head; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-09-30: moved 97957ea -> 2b5f964 (same branch): the corpus sha pins 97957ea wrote were wrong
+# (a count rewrite hit the sha), and two streams cells' `why` now say the build's answer is pinned.
+#
+# 2026-10-01 (ARCHITECT ruling, STORE-PERSIST-RC; owner approved the busbar-release push): moved 2b5f964 ->
+# a73c6fc (branch `store-persist-raw`, cut from 2b5f964). A script cell's $RAW is <out>/raw/<cell id, | -> __>,
+# as the v0.2.2 recorder named it (record.sh:905-906), instead of <work>/raw-cell: store-persist.sh selects its
+# plugins.log line with `grep -w <alias>`, and a raw path that carried the alias picked the wrong line. Only
+# script cells change; the four plugins.store-persist cells record their 1.5.5 bytes again. Still a feature
+# branch head; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-10-01 (ARCHITECT ruling, STANDING-REDS boot.* load flake): moved a73c6fc -> ccef3c1 (branch
+# `oracle-boot-leak`, cut from 6250056 = predev-red-oracle-h2-r2, so it also carries d589e42/6250056, the h2c
+# transcript fix that was waiting for this pin). ccef3c1: a recording boot that fails after its spawn (a key mint
+# outrunning its timeout under host load) stops the busbar it spawned. It used to stay running and registered,
+# the next boot overwrote it unsignalled, and the orphan held the band's listen/admin ports (SO_REUSEPORT) and
+# answered later cells from stale state, outliving the run. Still a feature branch head; re-pin to the
+# integration/merge commit when that branch lands.
+#
+# 2026-10-02 (owner ruling §9.2 OWNER ACTS, lane ORACLE-CELLS): moved ccef3c1 -> 7168e25 (busbar-release
+# branch `lane-oracle-cells`, cut from main 4a5f57d which carries ccef3c1). fe8cc49: the capture driver
+# boots the build under test by ABSOLUTE path. With a relative `--bin target/release/busbar` (ci.yml,
+# oracle-proof.yml, prove-remote.sh) the boot, run with the cell's work dir as cwd, spawned nothing, so
+# `record --native` recorded none of the capture-driver cells (wire.*, egress.*, export.*, ...): every
+# one was FAIL `capture cell: No such file or directory`. Each capture cell now also leaves a
+# diagnostic trail under <out>/raw/. 7168e25: the owner-review cells (574's driven as_of, usage.gemini,
+# money.reserved-tier, egress.image-detail, egress.headers, boot.deprecated-env, plugins.abi), staged
+# for the owner; no golden is recorded by this move. Still a feature branch head; re-pin to the merge
+# commit when it lands.
+#
+# 2026-10-01 (ARCHITECT, lane ORACLE-CELLS-2): moved 7168e25 -> 76e732b -> e58d85c (busbar-release branch
+# `lane-oracle-cells-2` = PR #7 `oracle-capture-reap` + the owner-review cells). 7efd38a: a capture boot
+# that outlives its expected exit is reaped (it used to be dropped unkilled and held the listen port for
+# every later capture cell), a cell never boots beside a listener already on its port, and an expected-
+# exit cell with steps runs them against a boot that did not exit. 237f9fc: the h2 compare drops the
+# client's timing-placed SETTINGS ACK from the frame-order view (1.5.5 recorded egress.auth|h2|bearer as
+# 3 and as 4 frames). 76e732b: the cross-dialect beta cell reaches an upstream, ABI-o1 drives the plugin,
+# 574's clock pin is withdrawn. e58d85c: the corpus fixture re-vendored (2484 -> 2504, the twenty owner-review
+# cells; cells.json moves with it in this commit). No golden is recorded by this move. Feature branch head; re-pin to the
+# merge commit when it lands.
+#
+# To move the pin: set release_ref to the new busbar-release commit and re-run.
+release_repo=https://github.com/GetBusbar/busbar-release.git
+release_ref=e58d85c
+crate=busbar-release-oracle
+bin=busbar-oracle

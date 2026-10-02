@@ -1,0 +1,564 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The plane decl's seams, driven over an IN-MEMORY `PlaneDecl` built in this file rather than a
+//! dlopened fixture: every slot here is a test fn, so each test controls exactly what the plane
+//! answers — an over-claimed size, a state with a counting `free`, an admin/OpenAPI contribution,
+//! and a record of which thread each crossing ran on.
+
+use super::*;
+use busbar_contract::abi::hot::decl::OpaqueHandle;
+use core::mem::MaybeUninit;
+use std::os::raw::c_void;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+/// Serialises the tests in this file: they share the statics below.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+// ── Instruments ───────────────────────────────────────────────────────────────────────────────
+
+/// The name of the thread each noted crossing ran on, in order, beside the path of the plane that
+/// crossed.
+///
+/// KEYED BY THE PLANE'S PATH, because the recorder is the LOADER's, not this file's: every plane's
+/// constructor crossing in this test binary notes itself, and `plane_conformance_tests` drives real
+/// planes' `config_validate`/`build` on other test threads that do not hold [`SERIAL`]. Read
+/// unkeyed, one of those crossings landing between a test's drain and its read was a third entry
+/// in a list that expected two (1 in ~8 Linux runs).
+static THREADS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// Called from inside the loader's guard closure for the constructor crossings: records the thread
+/// the crossing actually ran on, and whose crossing it was.
+pub(super) fn note_thread(plane_path: &str) {
+    THREADS.lock().unwrap_or_else(|p| p.into_inner()).push((
+        plane_path.to_string(),
+        std::thread::current()
+            .name()
+            .unwrap_or("<unnamed>")
+            .to_string(),
+    ));
+}
+
+/// Drain the recorder, returning the threads THIS file's plane (`memplane`, see [`plane_over`])
+/// crossed on; other planes' crossings are dropped.
+fn take_threads() -> Vec<String> {
+    std::mem::take(&mut *THREADS.lock().unwrap_or_else(|p| p.into_inner()))
+        .into_iter()
+        .filter(|(path, _)| path == DECL_PLANE_PATH)
+        .map(|(_, thread)| thread)
+        .collect()
+}
+
+/// How many times the plane's `free` ran.
+static FREES: AtomicUsize = AtomicUsize::new(0);
+
+extern "C-unwind" fn counting_free(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        // SAFETY: allocated as a `Box<u64>` by `t_build`/`t_config_validate`.
+        drop(unsafe { Box::from_raw(ptr as *mut u64) });
+        FREES.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn write_state(out: *mut MaybeUninit<OpaqueHandle>) {
+    let state = OpaqueState {
+        ptr: Box::into_raw(Box::new(7u64)) as *mut c_void,
+        free: Some(counting_free),
+    };
+    // SAFETY: the loader hands a valid out slot.
+    unsafe { (*out).write(state) };
+}
+
+extern "C-unwind" fn t_config_validate(
+    _raw: *const u8,
+    _len: usize,
+    out: *mut MaybeUninit<OpaqueHandle>,
+) -> RawStatus {
+    write_state(out);
+    RawStatus::of(StatusClass::Ok)
+}
+
+extern "C-unwind" fn t_build(
+    _ctx: *const BuildCtx,
+    out: *mut MaybeUninit<OpaqueHandle>,
+) -> RawStatus {
+    write_state(out);
+    RawStatus::of(StatusClass::Ok)
+}
+
+const ROUTES: &[u8] = br#"{"routes":["GET /admin/example"]}"#;
+
+extern "C-unwind" fn t_admin_routes(
+    _state: *mut c_void,
+    buf: *mut u8,
+    cap: usize,
+    written: *mut usize,
+) -> RawStatus {
+    assert!(cap >= ROUTES.len());
+    // SAFETY: the loader hands a `cap`-byte buffer and a valid out-length.
+    unsafe {
+        core::ptr::copy_nonoverlapping(ROUTES.as_ptr(), buf, ROUTES.len());
+        *written = ROUTES.len();
+    }
+    RawStatus::of(StatusClass::Ok)
+}
+
+/// An `openapi` slot that is present and writes NOTHING — the non-vacuity invariant's violation.
+extern "C-unwind" fn t_openapi_vacuous(
+    _state: *mut c_void,
+    _buf: *mut u8,
+    _cap: usize,
+    written: *mut usize,
+) -> RawStatus {
+    // SAFETY: a valid out-length.
+    unsafe { *written = 0 };
+    RawStatus::of(StatusClass::Ok)
+}
+
+/// An `openapi` slot that claims more bytes than the buffer it was handed.
+extern "C-unwind" fn t_openapi_overclaim(
+    _state: *mut c_void,
+    _buf: *mut u8,
+    cap: usize,
+    written: *mut usize,
+) -> RawStatus {
+    // SAFETY: a valid out-length.
+    unsafe { *written = cap + 1 };
+    RawStatus::of(StatusClass::Ok)
+}
+
+const NAME: &[u8] = b"memplane";
+/// The one scope kind the in-memory plane grants: its scope, leading the list.
+static SCOPE_KINDS: [DeclStr; 1] = [DeclStr::new("memplane")];
+
+fn decl() -> PlaneDecl {
+    PlaneDecl {
+        abi: AbiPreamble::CURRENT,
+        size: core::mem::size_of::<PlaneDecl>() as u32,
+        version: busbar_contract::abi::ABI_MINOR,
+        name_ptr: NAME.as_ptr(),
+        name_len: NAME.len(),
+        section_key_ptr: NAME.as_ptr(),
+        section_key_len: NAME.len(),
+        scope_ptr: NAME.as_ptr(),
+        scope_len: NAME.len(),
+        label_ptr: NAME.as_ptr(),
+        label_len: NAME.len(),
+        provided_carriers: IngressCarrier::RequestResponse.bit(),
+        _reserved: 0,
+        config_validate: Some(t_config_validate),
+        build: Some(t_build),
+        hydrate: None,
+        start: None,
+        admin_routes: Some(t_admin_routes),
+        openapi: Some(t_openapi_vacuous),
+        dispatch: None,
+        subject_noun: DeclStr::new("memplane"),
+        admin_noun: DeclStr::new("memplane"),
+        audit_kind: DeclStr::new("memplane"),
+        signing_domain: DeclStr::NONE,
+        signing_kid_prefix: DeclStr::NONE,
+        scope_kinds_ptr: SCOPE_KINDS.as_ptr(),
+        scope_kinds_len: SCOPE_KINDS.len(),
+        ..PlaneDecl::STUB
+    }
+}
+
+/// The path every plane this file assembles is known by.
+const DECL_PLANE_PATH: &str = "memplane";
+
+fn plane_over(d: &PlaneDecl) -> Result<DynPlane, String> {
+    assemble(d, DECL_PLANE_PATH.to_string(), None, None)
+}
+
+// ── Item 389: a decl size over-claim is REFUSED, as the host vtable's is ──────────────────────
+
+#[test]
+fn a_decl_attesting_more_than_this_builds_struct_is_refused() {
+    let _s = serial();
+    let mut d = decl();
+    d.size = u32::MAX;
+    let got = plane_over(&d);
+    assert!(
+        got.as_ref()
+            .is_err_and(|e| e.contains("exceeding this build's own")),
+        "an over-claimed decl size must be refused, not clamped: {:?}",
+        got.map(|p| p.honoured_size)
+    );
+    d.size = core::mem::size_of::<PlaneDecl>() as u32 + 1;
+    assert!(plane_over(&d).is_err());
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    assert_eq!(plane_over(&d).unwrap().name(), "memplane");
+}
+
+// ── Item 410: a decl stamped with the pre-resize airlock is refused at admission ─────────────
+
+#[test]
+fn a_decl_stamped_with_the_pre_resize_airlock_is_refused() {
+    let _s = serial();
+    for abi_minor in [20, 21] {
+        let mut d = decl();
+        d.abi = AbiPreamble {
+            abi_major: 1,
+            abi_minor,
+            ..AbiPreamble::CURRENT
+        };
+        let got = plane_over(&d);
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.contains("preamble refused") && e.contains("MajorMismatch")),
+            "a 1.{abi_minor} decl predates the BuildCtx resize and must not be admitted: {:?}",
+            got.map(|p| p.honoured_size)
+        );
+    }
+}
+
+// ── Item 63: the declaration tail is stated, never defaulted ─────────────────────────────────
+
+#[test]
+fn the_declaration_tail_reads_back_as_stated() {
+    let _s = serial();
+    let plane = plane_over(&decl()).unwrap();
+    assert_eq!(
+        plane.declaration(),
+        &HotDeclaration {
+            fallback: false,
+            subject_noun: "memplane".into(),
+            admin_noun: "memplane".into(),
+            audit_kind: "memplane".into(),
+            signing_domain: None,
+            signing_kid_prefix: None,
+            scope_kinds: vec!["memplane".into()],
+            owned_sections: Vec::new(),
+            billable_classes: Vec::new(),
+            fee_units: Vec::new(),
+            metric_families: Vec::new(),
+            served_op_classes: Vec::new(),
+            record_kinds: Vec::new(),
+            required_sections: Vec::new(),
+        }
+    );
+    let mut d = decl();
+    d.fallback = 1;
+    assert!(plane_over(&d).unwrap().declaration().fallback);
+}
+
+/// The label keys and families of [`the_metric_family_tail_reads_back_as_stated`].
+static FAMILY_KEYS: [DeclStr; 2] = [DeclStr::new("unit"), DeclStr::new("outcome")];
+static FAMILIES: [busbar_contract::abi::hot::decl::DeclMetricFamily; 1] =
+    [busbar_contract::abi::hot::decl::DeclMetricFamily {
+        name: DeclStr::new("memplane_units_total"),
+        kind: DeclStr::new("counter"),
+        label_keys_ptr: FAMILY_KEYS.as_ptr(),
+        label_keys_len: FAMILY_KEYS.len(),
+    }];
+
+/// Minor 25: the metric families a decl states read back as stated, keys in order; a decl that ends
+/// before the tail (an older minor) declares none — an absence, so it adds to nothing.
+#[test]
+fn the_metric_family_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.metric_families_ptr = FAMILIES.as_ptr();
+    d.metric_families_len = FAMILIES.len();
+    assert_eq!(
+        plane_over(&d).unwrap().declaration().metric_families,
+        vec![crate::plane::HotMetricFamily {
+            name: "memplane_units_total".into(),
+            kind: "counter".into(),
+            label_keys: vec!["unit".into(), "outcome".into()],
+        }]
+    );
+    d.size = core::mem::offset_of!(PlaneDecl, metric_families_ptr) as u32;
+    assert!(plane_over(&d)
+        .unwrap()
+        .declaration()
+        .metric_families
+        .is_empty());
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.metric_families_ptr = core::ptr::null();
+    assert!(plane_over(&d).is_err(), "a stated count behind a null list");
+}
+
+/// The served operation classes of [`the_served_op_class_tail_reads_back_as_stated`].
+static SERVED: [busbar_contract::abi::hot::decl::DeclServedOpClass; 1] =
+    [busbar_contract::abi::hot::decl::DeclServedOpClass {
+        op: DeclStr::new("summarize"),
+        name: DeclStr::new("Memplane"),
+    }];
+
+/// Minor 27: the operation classes a decl serves one level down read back as stated; a decl that
+/// ends before the tail (an older minor) serves none, so no nested destination resolves to it.
+#[test]
+fn the_served_op_class_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.served_op_classes_ptr = SERVED.as_ptr();
+    d.served_op_classes_len = SERVED.len();
+    assert_eq!(
+        plane_over(&d).unwrap().declaration().served_op_classes,
+        vec![("summarize".to_string(), "Memplane".to_string())]
+    );
+    d.size = core::mem::offset_of!(PlaneDecl, served_op_classes_ptr) as u32;
+    assert!(plane_over(&d)
+        .unwrap()
+        .declaration()
+        .served_op_classes
+        .is_empty());
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.served_op_classes_ptr = core::ptr::null();
+    assert!(plane_over(&d).is_err(), "a stated count behind a null list");
+}
+
+/// The record kinds of [`the_record_kind_tail_reads_back_as_stated`].
+static KINDS: [DeclStr; 2] = [DeclStr::new("note"), DeclStr::new("note_event")];
+
+/// Minor 29: the plane-record kinds a decl keeps read back as stated; a decl that ends before the
+/// tail (an older minor) keeps none, so no administrative write lands under it.
+#[test]
+fn the_record_kind_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.record_kinds_ptr = KINDS.as_ptr();
+    d.record_kinds_len = KINDS.len();
+    assert_eq!(
+        plane_over(&d).unwrap().declaration().record_kinds,
+        vec!["note".to_string(), "note_event".to_string()]
+    );
+    d.size = core::mem::offset_of!(PlaneDecl, record_kinds_ptr) as u32;
+    assert!(plane_over(&d)
+        .unwrap()
+        .declaration()
+        .record_kinds
+        .is_empty());
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.record_kinds_ptr = core::ptr::null();
+    assert!(plane_over(&d).is_err(), "a stated count behind a null list");
+}
+
+/// The required sections of [`the_required_section_tail_reads_back_as_stated`].
+static REQUIRED: [DeclStr; 2] = [DeclStr::new("providers"), DeclStr::new("models")];
+
+/// Minor 34: the config sections a decl requires read back as stated; a decl that ends before the
+/// tail (an older minor) requires none, so it makes no section required.
+#[test]
+fn the_required_section_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.required_sections_ptr = REQUIRED.as_ptr();
+    d.required_sections_len = REQUIRED.len();
+    assert_eq!(
+        plane_over(&d).unwrap().declaration().required_sections,
+        vec!["providers".to_string(), "models".to_string()]
+    );
+    d.size = core::mem::offset_of!(PlaneDecl, required_sections_ptr) as u32;
+    assert!(plane_over(&d)
+        .unwrap()
+        .declaration()
+        .required_sections
+        .is_empty());
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.required_sections_ptr = core::ptr::null();
+    let got = plane_over(&d).map(|p| p.honoured_size);
+    assert!(
+        got.as_ref().is_err_and(
+            |e| e.contains("declares 2 required config section entries behind a null list")
+        ),
+        "a stated count behind a null list: {got:?}"
+    );
+}
+
+#[test]
+fn a_decl_that_states_no_declaration_is_refused_not_defaulted() {
+    let _s = serial();
+    // A decl built before the tail existed: it ends at the last fn slot.
+    let mut d = decl();
+    d.size = core::mem::offset_of!(PlaneDecl, fallback) as u32;
+    let got = plane_over(&d);
+    assert!(
+        got.as_ref()
+            .is_err_and(|e| e.contains("states no plane declaration")),
+        "{:?}",
+        got.map(|p| p.honoured_size)
+    );
+    // A tail that leaves a stated noun NULL, a flag that is not 0/1, a scope that does not lead the
+    // scope kinds, and a NULL list claiming entries are each refused.
+    type Plant = fn(&mut PlaneDecl);
+    let cases: [(Plant, &str); 4] = [
+        (|d| d.audit_kind = DeclStr::NONE, "states no audit kind"),
+        (|d| d.fallback = 2, "fallback flag 2"),
+        (|d| d.scope_kinds_len = 0, "must lead the scope kinds"),
+        (
+            |d| d.fee_units_len = 1,
+            "1 fee unit entries behind a null list",
+        ),
+    ];
+    for (plant, refusal) in cases {
+        let mut d = decl();
+        plant(&mut d);
+        let got = plane_over(&d);
+        assert!(
+            got.as_ref().is_err_and(|e| e.contains(refusal)),
+            "expected a refusal naming {refusal:?}, got {:?}",
+            got.map(|p| p.honoured_size)
+        );
+    }
+}
+
+// ── Item 386: the plane's state is freed, and cannot outlive the image ───────────────────────
+
+#[test]
+fn an_owned_plane_state_is_freed_through_the_planes_own_free() {
+    let _s = serial();
+    let d = decl();
+    let plane = plane_over(&d).unwrap();
+    FREES.store(0, Ordering::SeqCst);
+
+    let (class, parsed) = plane.config_validate_owned(b"{}");
+    assert_eq!(class, StatusClass::Ok);
+    let parsed = parsed.expect("Ok yields a handle");
+    assert!(!parsed.ptr().is_null());
+    // SAFETY: the plane's `build` ignores `host`; no host call is made.
+    let (class, built) = unsafe { plane.build_owned(core::ptr::null(), HostCtx::NULL, b"{}", &[]) };
+    assert_eq!(class, StatusClass::Ok);
+    let built = built.expect("Ok yields a handle");
+    assert_eq!(
+        FREES.load(Ordering::SeqCst),
+        0,
+        "nothing is freed while held"
+    );
+
+    drop(parsed);
+    assert_eq!(FREES.load(Ordering::SeqCst), 1);
+    drop(built);
+    assert_eq!(
+        FREES.load(Ordering::SeqCst),
+        2,
+        "each handle is freed exactly once"
+    );
+}
+
+// ── Item 387: the admin/OpenAPI slots have a reader ──────────────────────────────────────────
+
+#[test]
+fn the_admin_routes_and_openapi_slots_are_read() {
+    let _s = serial();
+    let mut d = decl();
+    let plane = plane_over(&d).unwrap();
+    let state = core::ptr::null_mut();
+    // SAFETY: the test slots never dereference `state`.
+    unsafe {
+        assert_eq!(plane.admin_routes(state).unwrap().as_deref(), Some(ROUTES));
+        let vacuous = plane.openapi(state);
+        assert!(
+            vacuous.as_ref().is_err_and(|e| e.contains("non-vacuous")),
+            "a present slot that writes nothing is refused: {vacuous:?}"
+        );
+    }
+    d.openapi = Some(t_openapi_overclaim);
+    d.admin_routes = None;
+    let plane = plane_over(&d).unwrap();
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            plane.admin_routes(state).unwrap(),
+            None,
+            "absent slot = no surface"
+        );
+        assert!(
+            plane.openapi(state).is_err(),
+            "a length past the buffer is refused"
+        );
+    }
+}
+
+// ── Item 388: the constructor crossings run on the never-retiring plugin worker ──────────────
+
+#[test]
+fn the_constructor_crossings_run_on_the_plugin_worker() {
+    let _s = serial();
+    let d = decl();
+    let plane = plane_over(&d).unwrap();
+    take_threads();
+    let _ = plane.config_validate_owned(b"{}");
+    // SAFETY: as in the free test.
+    let _ = unsafe { plane.build_owned(core::ptr::null(), HostCtx::NULL, b"{}", &[]) };
+    assert_eq!(
+        take_threads(),
+        vec![
+            "busbar-plugin-ffi".to_string(),
+            "busbar-plugin-ffi".to_string()
+        ],
+        "config_validate and build must cross on the confined worker, not the caller's thread"
+    );
+}
+
+/// HOW THE DISPATCH RUNS (minor 32): the flags read back as stated; a decl ending before the tail is
+/// run as blocking (the way it was run before it could say); a bit this build does not know is
+/// refused, naming it.
+#[test]
+fn the_dispatch_flags_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.dispatch_flags = 0;
+    assert!(!plane_over(&d).expect("admits").dispatch_blocks(), "inline");
+    d.dispatch_flags = busbar_contract::abi::hot::decl::DISPATCH_BLOCKS;
+    assert!(
+        plane_over(&d).expect("admits").dispatch_blocks(),
+        "declared blocking"
+    );
+    d.dispatch_flags = 0;
+    d.size = core::mem::offset_of!(PlaneDecl, dispatch_flags) as u32;
+    assert!(
+        plane_over(&d).expect("admits").dispatch_blocks(),
+        "a decl before the tail is run as blocking"
+    );
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.dispatch_flags = 0b10;
+    let refusal = plane_over(&d).expect_err("an unknown bit");
+    assert_eq!(
+        refusal,
+        "plane 'memplane' declares dispatch flags 0x2; this build knows only 0x1 (dispatch blocks) \
+         — rebuild it against this busbar ABI minor"
+    );
+}
+
+/// A LIVE ANSWER NEEDS A BLOCKING DISPATCH: a plane declaring a response-stream or duplex-session
+/// carrier without `DISPATCH_BLOCKS` is refused at load, naming the plane and the bit — inline, its
+/// stream would reach the caller only after the dispatch returned. With the bit it is admitted, and
+/// a request/response plane needs no bit.
+#[test]
+fn a_live_answering_plane_without_dispatch_blocks_is_refused() {
+    use busbar_contract::abi::hot::decl::DISPATCH_BLOCKS;
+    let _s = serial();
+    for live in [
+        IngressCarrier::ResponseStream,
+        IngressCarrier::DuplexSession,
+    ] {
+        let mut d = decl();
+        d.provided_carriers = IngressCarrier::RequestResponse.bit() | live.bit();
+        d.dispatch_flags = 0;
+        assert_eq!(
+            plane_over(&d).expect_err("a live answer on an inline dispatch"),
+            "plane 'memplane' declares a live answer (a response-stream or duplex-session carrier) \
+             but not DISPATCH_BLOCKS (0x1) in its dispatch flags: a live answer is written while the \
+             caller reads it, so its dispatch must run on its own thread — set the bit",
+            "{live:?}"
+        );
+        d.dispatch_flags = DISPATCH_BLOCKS;
+        assert!(
+            plane_over(&d).expect("admits").dispatch_blocks(),
+            "{live:?}"
+        );
+    }
+    let mut d = decl();
+    d.dispatch_flags = 0;
+    assert!(!plane_over(&d)
+        .expect("a request/response plane runs inline")
+        .dispatch_blocks());
+}

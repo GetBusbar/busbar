@@ -1,0 +1,1654 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Tests for the GENERIC LIMIT ENGINE: `GovState::try_admit` over the resolved group chain.
+//! Every metric (requests / tokens / budget / concurrent), each in its own window; the chain AND
+//! across levels; the `enabled: false` freeze; the key-with-no-group unlimited posture; the RAII
+//! in-flight grant; refunds; hydrate/accrual across the per-(group, window) buckets.
+
+use super::*;
+use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
+use crate::cost::CostModel;
+use std::collections::BTreeMap;
+
+fn gov() -> GovState {
+    GovState::new(Arc::new(MemoryStore::new()), None).expect("memory store constructs")
+}
+
+fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
+    LimitCfg {
+        metric,
+        amount,
+        per,
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    }
+}
+
+fn group_cfg(parent: Option<&str>, enabled: bool, limits: Vec<LimitCfg>) -> GroupCfg {
+    GroupCfg {
+        parent: parent.map(str::to_string),
+        enabled,
+        limits,
+        ..Default::default()
+    }
+}
+
+fn model(groups: &[(&str, GroupCfg)]) -> CostModel {
+    let map: BTreeMap<String, GroupCfg> = groups
+        .iter()
+        .map(|(n, g)| (n.to_string(), g.clone()))
+        .collect();
+    CostModel::resolve_parts(None, 0, &map)
+}
+
+fn model_with_card(groups: &[(&str, GroupCfg)], fee: i64, card: &[(&str, f64, f64)]) -> CostModel {
+    let map: BTreeMap<String, GroupCfg> = groups
+        .iter()
+        .map(|(n, g)| (n.to_string(), g.clone()))
+        .collect();
+    let card: BTreeMap<String, crate::config::RateEntryCfg> = card
+        .iter()
+        .map(|(m, i, o)| {
+            (
+                m.to_string(),
+                crate::config::RateEntryCfg {
+                    input_utok: *i,
+                    output_utok: *o,
+                    cache_read_utok: 0.0,
+                    cache_write_utok: 0.0,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    CostModel::resolve_parts((!card.is_empty()).then_some(&card), fee, &map)
+}
+
+fn key(id: &str, group: Option<&str>) -> VirtualKey {
+    VirtualKey {
+        id: id.to_string(),
+        generation_hash: format!("h:{id}"),
+        name: id.to_string(),
+        allowed_scopes: None,
+        enabled: true,
+        created_at: 0,
+        group: group.map(String::from),
+        labels: BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
+        ..Default::default()
+    }
+}
+
+fn toks(input: u64, output: u64) -> std::collections::BTreeMap<String, u64> {
+    toks_tiers(input, output, 0, 0)
+}
+
+/// The exact blocking bucket must be NAMED: group + metric + window (+ retry for rolling windows).
+#[track_caller]
+fn assert_blocked(
+    err: LimitBlocked,
+    group: &str,
+    metric: &str,
+    window: Option<&str>,
+    has_retry: bool,
+) {
+    match err {
+        LimitBlocked::Limit {
+            group: g,
+            metric: m,
+            window: w,
+            pool: _,
+            downgrade_to: _,
+            retry_after,
+        } => {
+            assert_eq!(g, group, "blocking group");
+            assert_eq!(m, metric, "blocking metric");
+            assert_eq!(w, window, "blocking window");
+            assert_eq!(retry_after.is_some(), has_retry, "retry-after presence");
+        }
+        other => panic!("expected a Limit rejection, got {other:?}"),
+    }
+}
+
+/// `requests` per MINUTE: N admissions charge and pass; N+1 in the same window is rejected naming
+/// (group, requests, minute) with a Retry-After to the minute roll; the NEXT window admits again.
+#[test]
+fn requests_per_minute_enforced_and_window_rolls() {
+    let g = gov();
+    let cm = model(&[(
+        "bob",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 3, Some(LimitWindow::Minute))],
+        ),
+    )]);
+    let k = key("vk_r", Some("bob"));
+    let now = 1_700_000_000; // mid-minute
+    for _ in 0..3 {
+        g.try_admit(&cm, &k, "", now).expect("under the cap");
+    }
+    let err = g.try_admit(&cm, &k, "", now).unwrap_err();
+    assert_blocked(err, "bob", "requests", Some("minute"), true);
+    // The next minute window is fresh.
+    g.try_admit(&cm, &k, "", now + 60)
+        .expect("new window admits");
+}
+
+/// Every windowed granularity resolves and enforces independently: an HOUR cap and a DAY cap on
+/// one group live in separate buckets and the tighter one blocks first.
+#[test]
+fn hour_and_day_windows_enforce_independently() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![
+                limit(LimitMetric::Requests, 2, Some(LimitWindow::Hour)),
+                limit(LimitMetric::Requests, 3, Some(LimitWindow::Day)),
+            ],
+        ),
+    )]);
+    let k = key("vk_hd", Some("g"));
+    let day0 = 1_700_006_400 / super::SECS_PER_DAY * super::SECS_PER_DAY; // a UTC midnight
+    g.try_admit(&cm, &k, "", day0).expect("1st");
+    g.try_admit(&cm, &k, "", day0).expect("2nd");
+    // Hour cap (2) trips first.
+    assert_blocked(
+        g.try_admit(&cm, &k, "", day0).unwrap_err(),
+        "g",
+        "requests",
+        Some("hour"),
+        true,
+    );
+    // Next hour: the hour bucket is fresh but the DAY bucket already holds 2; one more is the
+    // day's 3rd and passes, the next blocks on the day cap.
+    let next_hour = day0 + 3600;
+    g.try_admit(&cm, &k, "", next_hour).expect("day's 3rd");
+    assert_blocked(
+        g.try_admit(&cm, &k, "", next_hour).unwrap_err(),
+        "g",
+        "requests",
+        Some("day"),
+        true,
+    );
+}
+
+/// `total` never rolls: the rejection carries NO Retry-After.
+#[test]
+fn total_window_blocks_without_retry_after() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 1, Some(LimitWindow::Total))],
+        ),
+    )]);
+    let k = key("vk_t", Some("g"));
+    g.try_admit(&cm, &k, "", 100).expect("first");
+    assert_blocked(
+        g.try_admit(&cm, &k, "", 100_000_000).unwrap_err(),
+        "g",
+        "requests",
+        Some("total"),
+        false,
+    );
+}
+
+/// `tokens` per window is BEST-EFFORT post-paid: admission passes until the LEDGERED total crosses
+/// the cap, then the next request is rejected naming (group, tokens, window).
+#[test]
+fn tokens_cap_blocks_after_ledger_crosses() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Tokens, 100, Some(LimitWindow::Minute))],
+        ),
+    )]);
+    let k = key("vk_tok", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now)
+        .expect("no tokens ledgered yet");
+    g.record_usage(&cm, &k, "", "m", &toks(60, 39), now); // 99 < 100
+    g.try_admit(&cm, &k, "", now).expect("still under");
+    g.record_usage(&cm, &k, "", "m", &toks(1, 0), now); // exactly 100 = at the cap
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "tokens",
+        Some("minute"),
+        true,
+    );
+    // A fresh window forgets the tokens.
+    g.try_admit(&cm, &k, "", now + 60).expect("fresh window");
+}
+
+/// A four-tier name-keyed unit-map builder for the per-tier cap tests (zero tiers omitted).
+fn toks_tiers(
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+) -> std::collections::BTreeMap<String, u64> {
+    let mut m = std::collections::BTreeMap::new();
+    for (k, v) in [
+        (busbar_contract::records::UNIT_INPUT, input),
+        (busbar_contract::records::UNIT_OUTPUT, output),
+        (busbar_contract::records::UNIT_CACHE_READ, cache_read),
+        (busbar_contract::records::UNIT_CACHE_WRITE, cache_write),
+    ] {
+        if v != 0 {
+            m.insert(k.to_string(), v);
+        }
+    }
+    m
+}
+
+/// `tokens_input` per window is best-effort post-paid on the UNCACHED-INPUT tier ONLY: admission
+/// passes until the ledgered INPUT crosses the cap, then the next request is rejected naming
+/// (group, tokens_input, window). Output tokens on the same cell do NOT trip it — the cost tiers
+/// are budgeted independently.
+#[test]
+fn tokens_input_cap_blocks_on_input_tier_only() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(
+                LimitMetric::TokensInput,
+                100,
+                Some(LimitWindow::Minute),
+            )],
+        ),
+    )]);
+    let k = key("vk_ti", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now)
+        .expect("no tokens ledgered yet");
+    g.record_usage(&cm, &k, "", "m", &toks(99, 0), now); // input 99 < 100
+    g.try_admit(&cm, &k, "", now).expect("still under on input");
+    // A request that only produces OUTPUT tokens must NOT trip the input cap: 10_000 output
+    // tokens land, input stays 99.
+    g.record_usage(&cm, &k, "", "m", &toks(0, 10_000), now);
+    g.try_admit(&cm, &k, "", now)
+        .expect("output tokens do not count against tokens_input");
+    g.record_usage(&cm, &k, "", "m", &toks(1, 0), now); // input now exactly 100 = at the cap
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "tokens_input",
+        Some("minute"),
+        true,
+    );
+    // A fresh window forgets the input tokens.
+    g.try_admit(&cm, &k, "", now + 60).expect("fresh window");
+}
+
+/// CACHED-READ tokens live in the `cache_read` tier, NOT the input tier: they must never count
+/// against a `tokens_input` cap (matching the cost-tier semantics — a cache-read unit is billed
+/// as cache_read, not uncached input).
+#[test]
+fn cached_read_tokens_do_not_count_against_tokens_input() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(
+                LimitMetric::TokensInput,
+                100,
+                Some(LimitWindow::Minute),
+            )],
+        ),
+    )]);
+    let k = key("vk_tcr", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now).expect("nothing ledgered");
+    // 10_000 cache-read tokens (well over the 100 input cap) but ZERO uncached input.
+    g.record_usage(&cm, &k, "", "m", &toks_tiers(0, 0, 10_000, 0), now);
+    g.try_admit(&cm, &k, "", now)
+        .expect("cache_read tokens do not fill the tokens_input bucket");
+    // And the input cap still bites once real input crosses it.
+    g.record_usage(&cm, &k, "", "m", &toks_tiers(100, 0, 0, 0), now);
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "tokens_input",
+        Some("minute"),
+        true,
+    );
+}
+
+/// Each per-tier cap enforces on its OWN tier: `tokens_cache_write` blocks after the cache-creation
+/// tier crosses, and the rejection names that exact tier.
+#[test]
+fn tokens_cache_write_cap_blocks_on_its_tier() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(
+                LimitMetric::TokensCacheWrite,
+                50,
+                Some(LimitWindow::Hour),
+            )],
+        ),
+    )]);
+    let k = key("vk_tcw", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now).expect("nothing ledgered");
+    // Other tiers do not trip a cache_write cap.
+    g.record_usage(&cm, &k, "", "m", &toks_tiers(1_000, 1_000, 1_000, 0), now);
+    g.try_admit(&cm, &k, "", now)
+        .expect("input/output/cache_read do not count against tokens_cache_write");
+    g.record_usage(&cm, &k, "", "m", &toks_tiers(0, 0, 0, 50), now); // cache_write = 50 = at cap
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "tokens_cache_write",
+        Some("hour"),
+        true,
+    );
+}
+
+/// `budget` per window derives spend from the token ledger x the rate card PLUS the flat fee x
+/// requests, and blocks at/over the cap. Repricing applies on the next check (tokens are truth).
+#[test]
+fn budget_cap_derives_from_ledger_and_rate_card() {
+    let g = gov();
+    // 10 utok/token input; cap 100 cents per month. 100_000 input tokens = 1_000_000 utok
+    // = 100 cents = AT the cap.
+    let cm = model_with_card(
+        &[(
+            "g",
+            group_cfg(
+                None,
+                true,
+                vec![limit(LimitMetric::Budget, 100, Some(LimitWindow::Month))],
+            ),
+        )],
+        0,
+        &[("m", 10.0, 0.0)],
+    );
+    let k = key("vk_b", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now).expect("nothing spent");
+    g.record_usage(&cm, &k, "", "m", &toks(99_000, 0), now); // 99 cents
+    g.try_admit(&cm, &k, "", now).expect("under the cap");
+    g.record_usage(&cm, &k, "", "m", &toks(1_000, 0), now); // 100 cents = at the cap
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "budget",
+        Some("month"),
+        true,
+    );
+}
+
+/// The flat per-request fee is part of a group bucket's derived spend: with fee=10 and a 25-cent
+/// budget, the 3rd admission's prospective spend (2 charged x 10 + 10 = 30) exceeds the cap.
+#[test]
+fn per_request_fee_counts_into_group_budget() {
+    let g = gov();
+    let cm = model_with_card(
+        &[(
+            "g",
+            group_cfg(
+                None,
+                true,
+                vec![limit(LimitMetric::Budget, 25, Some(LimitWindow::Day))],
+            ),
+        )],
+        10,
+        &[],
+    );
+    let k = key("vk_fee", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now).expect("fee 10 <= 25");
+    g.try_admit(&cm, &k, "", now).expect("fee 20 <= 25");
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "budget",
+        Some("day"),
+        true,
+    );
+    // A refund (non-2xx) returns the fee, re-opening the cap (the fee bills 2xx only).
+    g.refund_request(&cm, &k, "", now);
+    g.try_admit(&cm, &k, "", now)
+        .expect("refund re-opened the cap");
+}
+
+/// A REFUND must return the fee (2xx-only billing) WITHOUT
+/// returning the request-LIMIT slot. Otherwise a caller escapes the `requests` cap by hammering
+/// failing requests: each refunds its own slot and the cap only ever counts successes.
+#[test]
+fn refund_returns_the_fee_but_never_the_requests_limit_slot() {
+    let g = gov();
+    // One group with BOTH a requests cap (2/day) and a budget cap fed by a fee.
+    let cm = model_with_card(
+        &[(
+            "g",
+            group_cfg(
+                None,
+                true,
+                vec![
+                    limit(LimitMetric::Requests, 2, Some(LimitWindow::Day)),
+                    limit(LimitMetric::Budget, 1_000, Some(LimitWindow::Day)),
+                ],
+            ),
+        )],
+        10, // fee 10 cents/request
+        &[],
+    );
+    let k = key("vk_split", Some("g"));
+    let now = 1_700_000_000;
+    // Two admissions, both REFUNDED (simulating two non-2xx outcomes).
+    g.try_admit(&cm, &k, "", now).expect("1st admits");
+    g.refund_request(&cm, &k, "", now);
+    g.try_admit(&cm, &k, "", now).expect("2nd admits");
+    g.refund_request(&cm, &k, "", now);
+    // The requests LIMIT saw 2 admissions and was NOT refunded: the 3rd is rejected on the
+    // requests cap even though both prior requests "failed".
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "requests",
+        Some("day"),
+        true,
+    );
+    // The FEE, meanwhile, was refunded: derived spend on the budget bucket is 0 (both fees
+    // returned), so the budget cap is untouched by the two failures.
+    let u = g
+        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .unwrap();
+    assert_eq!(u.requests, 2, "admission count is never refunded");
+    assert_eq!(
+        u.spend_cents, 0,
+        "both fees were refunded (2xx-only billing)"
+    );
+}
+
+/// A request charged just before a window rolls must have its refund reach the cell the charge
+/// reached, not a window that has already gone.
+///
+/// `now` is the arrival epoch, pinned when the request came in, and the charge deliberately lands
+/// IN PLACE on a cell a concurrent admission has already rolled forward rather than resetting it.
+/// The refund is the other half of that same charge, so it has to resolve the cell the same way:
+/// at or past this request's window. Resolving it on equality alone strands the flat fee for a
+/// request that failed upstream on the rolled cell, and the derived spend the budget cap reads
+/// stays one fee too high for the rest of that minute — a caller under its budget refused as
+/// though it were not.
+#[test]
+fn a_refund_after_a_window_roll_reaches_the_cell_the_charge_reached() {
+    let g = gov();
+    let cm = model_with_card(
+        &[(
+            "g",
+            group_cfg(
+                None,
+                true,
+                vec![limit(LimitMetric::Budget, 25, Some(LimitWindow::Minute))],
+            ),
+        )],
+        10, // fee 10 cents/request
+        &[],
+    );
+    let k = key("vk_straddle", Some("g"));
+
+    // A minute boundary, with `before` in the minute the request arrived in and `after` in the
+    // one it was charged and refunded in.
+    let after = 1_700_000_100;
+    let before = after - 1;
+    assert_ne!(
+        crate::governance::budget_window("minute", before),
+        crate::governance::budget_window("minute", after),
+        "the two epochs have to be in different minutes for this to be a straddle at all"
+    );
+
+    // A concurrent admission rolls the cell into the newer minute; our straddler, pinned to the
+    // older one, is then charged in place on that rolled cell. Two fees of 10 against a cap of 25
+    // leaves no room for a third.
+    g.try_admit(&cm, &k, "", after).expect("the roller admits");
+    g.try_admit(&cm, &k, "", before)
+        .expect("the straddler admits");
+    assert_blocked(
+        g.try_admit(&cm, &k, "", after).unwrap_err(),
+        "g",
+        "budget",
+        Some("minute"),
+        true,
+    );
+
+    // The straddler failed upstream, so its fee is not owed. Refunded at the same pinned epoch the
+    // charge used, it has to come off the rolled cell.
+    g.refund_request(&cm, &k, "", before);
+    let u = g
+        .derived_bucket_usage(&cm, "group:g@minute", "minute", true, after)
+        .expect("the rolled cell reads");
+    assert_eq!(
+        u.spend_cents, 10,
+        "one fee remains: the failed straddler's came off the cell it was charged to"
+    );
+    g.try_admit(&cm, &k, "", after)
+        .expect("the returned fee re-opened the budget the failed straddler was holding");
+}
+
+/// `concurrent` is an INSTANTANEOUS in-flight gauge: holds live on the returned grant and release
+/// on drop; a full gauge rejects naming (group, concurrent) with no window and no Retry-After.
+#[test]
+fn concurrent_gauge_holds_and_releases() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(None, true, vec![limit(LimitMetric::Concurrent, 2, None)]),
+    )]);
+    let k = key("vk_c", Some("g"));
+    let now = 1_700_000_000;
+    let g1 = g.try_admit(&cm, &k, "", now).expect("1st in flight");
+    let g2 = g.try_admit(&cm, &k, "", now).expect("2nd in flight");
+    assert_eq!(g1.held(), 1);
+    assert_eq!(g.concurrent_in_flight("g"), 2);
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "concurrent",
+        None,
+        false,
+    );
+    drop(g1);
+    assert_eq!(g.concurrent_in_flight("g"), 1);
+    let _g3 = g.try_admit(&cm, &k, "", now).expect("slot freed");
+    drop(g2);
+    drop(_g3);
+    assert_eq!(g.concurrent_in_flight("g"), 0, "all holds released");
+}
+
+/// A rejected admission must NOT leak a concurrent hold: an inner gauge taken before an outer
+/// (parent) limit blocks is rolled back with the rejection.
+#[test]
+fn rejected_admission_releases_concurrent_holds() {
+    let g = gov();
+    let cm = model(&[
+        (
+            "parent",
+            group_cfg(
+                None,
+                true,
+                vec![limit(LimitMetric::Requests, 1, Some(LimitWindow::Minute))],
+            ),
+        ),
+        (
+            "child",
+            group_cfg(
+                Some("parent"),
+                true,
+                vec![limit(LimitMetric::Concurrent, 10, None)],
+            ),
+        ),
+    ]);
+    let k = key("vk_leak", Some("child"));
+    let now = 1_700_000_000;
+    let held = g.try_admit(&cm, &k, "", now).expect("first admits");
+    // Second: the child's gauge increments, then the parent's requests cap blocks - the gauge
+    // must be released with the rejection.
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "parent",
+        "requests",
+        Some("minute"),
+        true,
+    );
+    drop(held);
+    assert_eq!(
+        g.concurrent_in_flight("child"),
+        0,
+        "no hold leaked by the rejected admission"
+    );
+}
+
+/// CHAIN AND across levels: the parent's cap blocks the child's keys even when the child's own
+/// caps have headroom, and NOTHING is charged on a blocked admission (all-or-nothing).
+#[test]
+fn chain_and_parent_blocks_child_and_charges_nothing() {
+    let g = gov();
+    let cm = model(&[
+        (
+            "acme",
+            group_cfg(
+                None,
+                true,
+                vec![limit(LimitMetric::Requests, 2, Some(LimitWindow::Minute))],
+            ),
+        ),
+        (
+            "growth",
+            group_cfg(
+                Some("acme"),
+                true,
+                vec![limit(LimitMetric::Requests, 100, Some(LimitWindow::Minute))],
+            ),
+        ),
+    ]);
+    let k = key("vk_child", Some("growth"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now).expect("1st");
+    g.try_admit(&cm, &k, "", now).expect("2nd");
+    // Parent cap (2) blocks despite the child's 100-cap headroom.
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "acme",
+        "requests",
+        Some("minute"),
+        true,
+    );
+    // ALL-OR-NOTHING: the child's minute bucket holds exactly the 2 admitted charges (the
+    // rejected attempt charged nothing anywhere).
+    let child = g
+        .derived_bucket_usage(&cm, "group:growth@minute", "minute", true, now)
+        .unwrap();
+    assert_eq!(child.requests, 2);
+}
+
+/// The runtime-mutation bridge: a per-user leaf ADDED at runtime via
+/// `CostModel::with_groups` — the exact rebuild `build_with_group` performs on a `POST /groups` —
+/// enforces exactly like a boot-resolved tree. The team ceiling ANDs ABOVE the leaf, so a generous
+/// personal budget can never let the user spend past the team cap (the over-allocation SAFETY
+/// property). Proves "self-issue a key / raise a budget at runtime" yields live, chain-correct
+/// enforcement — the machinery the whole self-service story rests on.
+#[test]
+fn runtime_added_user_leaf_is_capped_by_the_team_ceiling() {
+    let g = gov();
+    // Boot-time tree: only the team ceiling exists (2 requests/min).
+    let base = model(&[(
+        "team",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 2, Some(LimitWindow::Minute))],
+        ),
+    )]);
+    // Runtime add of `user:bob` under team with a DELIBERATELY LOOSER personal cap (5/min) — the map
+    // build_with_group hands to with_groups after a self-mint / budget raise.
+    let mut map: BTreeMap<String, GroupCfg> = BTreeMap::new();
+    map.insert(
+        "team".into(),
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 2, Some(LimitWindow::Minute))],
+        ),
+    );
+    map.insert(
+        "user:bob".into(),
+        group_cfg(
+            Some("team"),
+            true,
+            vec![limit(LimitMetric::Requests, 5, Some(LimitWindow::Minute))],
+        ),
+    );
+    let cm = base.with_groups(&map);
+    let k = key("vk_bob", Some("user:bob"));
+    let now = 1_700_000_000;
+    // Two admissions fit under the team ceiling; the third is blocked by TEAM, not bob's 5-cap —
+    // the personal budget cannot exceed the shared team pool no matter how generously it's set.
+    g.try_admit(&cm, &k, "", now).expect("1st");
+    g.try_admit(&cm, &k, "", now).expect("2nd");
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "team",
+        "requests",
+        Some("minute"),
+        true,
+    );
+}
+
+/// `enabled: false` FREEZES a group: every request through it (directly or via a descendant) is
+/// rejected as Disabled, before anything is charged; history is kept.
+#[test]
+fn disabled_group_freezes_the_chain() {
+    let g = gov();
+    let build = |parent_enabled: bool| {
+        model(&[
+            (
+                "parent",
+                group_cfg(
+                    None,
+                    parent_enabled,
+                    vec![limit(LimitMetric::Requests, 100, Some(LimitWindow::Minute))],
+                ),
+            ),
+            ("child", group_cfg(Some("parent"), true, vec![])),
+        ])
+    };
+    let k = key("vk_frozen", Some("child"));
+    let now = 1_700_000_000;
+    // Accrue history under the enabled config first.
+    let cm = build(true);
+    g.try_admit(&cm, &k, "", now).expect("enabled admits");
+    // Freeze the ANCESTOR: the child's keys are rejected too (freeze walks the chain).
+    let frozen = build(false);
+    match g.try_admit(&frozen, &k, "", now).unwrap_err() {
+        LimitBlocked::Disabled(name) => assert_eq!(name, "parent"),
+        other => panic!("expected Disabled, got {other:?}"),
+    }
+    // History kept: the parent's minute bucket still holds the pre-freeze charge.
+    let hist = g
+        .derived_bucket_usage(&frozen, "group:parent@minute", "minute", true, now)
+        .unwrap();
+    assert_eq!(hist.requests, 1, "freezing keeps history");
+    // Unfreeze: admission resumes.
+    g.try_admit(&build(true), &k, "", now)
+        .expect("unfrozen admits");
+}
+
+/// A key with NO group is authed + UNLIMITED: every admission passes and only its own attribution
+/// bucket is charged.
+#[test]
+fn key_with_no_group_is_unlimited() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 1, Some(LimitWindow::Minute))],
+        ),
+    )]);
+    let k = key("vk_free", None);
+    let now = 1_700_000_000;
+    for _ in 0..100 {
+        g.try_admit(&cm, &k, "", now).expect("no group = no caps");
+    }
+    let usage = g.usage_for(&cm, "vk_free", now).unwrap();
+    // usage_for reads the store; the key was never persisted, so read the bucket directly.
+    assert!(usage.is_none());
+    let bucket = g
+        .derived_bucket_usage(&cm, "vk_free", super::WINDOW_TOTAL, true, now)
+        .unwrap();
+    assert_eq!(bucket.requests, 100);
+    // The configured (unrelated) group's buckets saw nothing.
+    let other = g
+        .derived_bucket_usage(&cm, "group:g@minute", "minute", true, now)
+        .unwrap();
+    assert_eq!(other.requests, 0);
+}
+
+/// A key bound to a group MISSING from this node's config fails CLOSED at admission.
+#[test]
+fn missing_group_fails_closed() {
+    let g = gov();
+    let cm = model(&[]);
+    let k = key("vk_ghost", Some("ghost"));
+    match g.try_admit(&cm, &k, "", 1_700_000_000).unwrap_err() {
+        LimitBlocked::MissingGroup(name) => assert_eq!(name, "ghost"),
+        other => panic!("expected MissingGroup, got {other:?}"),
+    }
+}
+
+/// Accrual lands the SAME response's tokens on EVERY chain bucket (each window counts all
+/// traffic), and hydrate restores each per-(group, window) bucket for its own current window.
+#[test]
+fn accrual_and_hydrate_cover_every_chain_bucket() {
+    let store = Arc::new(MemoryStore::new());
+    let g = GovState::new(store.clone(), None).unwrap();
+    let cm = model_with_card(
+        &[(
+            "g",
+            group_cfg(
+                None,
+                true,
+                vec![
+                    limit(LimitMetric::Budget, 1_000, Some(LimitWindow::Day)),
+                    limit(LimitMetric::Budget, 10_000, Some(LimitWindow::Month)),
+                ],
+            ),
+        )],
+        0,
+        &[("m", 10.0, 0.0)],
+    );
+    let k = key("vk_acc", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now).expect("admits");
+    g.record_usage(&cm, &k, "", "m", &toks(500, 0), now);
+    for bucket in ["vk_acc", "group:g@day", "group:g@month"] {
+        let window = if bucket == "vk_acc" {
+            super::WINDOW_TOTAL
+        } else if bucket.ends_with("@day") {
+            super::WINDOW_DAY
+        } else {
+            super::WINDOW_MONTH
+        };
+        let u = g
+            .derived_bucket_usage(&cm, bucket, window, true, now)
+            .unwrap();
+        assert_eq!(u.tokens, 500, "bucket {bucket} accrued the tokens");
+    }
+    // Flush to the store, then a FRESH GovState hydrates every bucket back.
+    assert!(g.flush_budgets() >= 1);
+    let g2 = GovState::new(store, None).unwrap();
+    g2.hydrate_budgets(&cm, now).unwrap();
+    let day = g2
+        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .unwrap();
+    assert_eq!(day.tokens, 500, "hydrate restored the day bucket");
+    let month = g2
+        .derived_bucket_usage(&cm, "group:g@month", "month", true, now)
+        .unwrap();
+    assert_eq!(month.tokens, 500, "hydrate restored the month bucket");
+}
+
+/// Headroom derives from the CHAIN's requests/tokens limits: the tightest fraction wins; a chain
+/// with no such limits reports None.
+#[test]
+fn rate_headroom_reads_the_chain() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 4, Some(LimitWindow::Minute))],
+        ),
+    )]);
+    let k = key("vk_head", Some("g"));
+    let now = 1_700_000_000;
+    assert_eq!(
+        g.rate_headroom(&cm, &k, None, now),
+        Some(1.0),
+        "untouched = full"
+    );
+    g.try_admit(&cm, &k, "", now).unwrap();
+    g.try_admit(&cm, &k, "", now).unwrap();
+    let h = g.rate_headroom(&cm, &k, None, now).unwrap();
+    assert!((h - 0.5).abs() < 1e-9, "2 of 4 used = 0.5, got {h}");
+    // No group = no limits = nothing to be near.
+    assert_eq!(g.rate_headroom(&cm, &key("vk_none", None), None, now), None);
+}
+
+// ── pool-scoped limits accounting) ───────────────────────────────────────
+
+fn pooled(metric: LimitMetric, amount: u64, per: LimitWindow, pool: &str) -> LimitCfg {
+    LimitCfg {
+        metric,
+        amount,
+        per: Some(per),
+        scope: Some(ScopeRef::pool(pool)),
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    }
+}
+
+/// The pool-split budget: `{ budget: 25, per: day, pool: frontier }` + the same for `value` on ONE
+/// group account INDEPENDENTLY - exhausting the frontier budget blocks only frontier traffic (the
+/// rejection names the pool), value traffic still admits against its own untouched bucket, and a
+/// pool with no qualified limit is capped by neither.
+#[test]
+fn pool_scoped_budgets_account_independently() {
+    let g = gov();
+    let cm = model_with_card(
+        &[(
+            "team",
+            group_cfg(
+                None,
+                true,
+                vec![
+                    pooled(LimitMetric::Budget, 25, LimitWindow::Day, "frontier"),
+                    pooled(LimitMetric::Budget, 25, LimitWindow::Day, "value"),
+                ],
+            ),
+        )],
+        10,
+        &[],
+    );
+    let k = key("vk_ps", Some("team"));
+    let now = 1_700_000_000;
+    // fee=10: two frontier admissions spend 20; the 3rd would reach 30 > 25.
+    g.try_admit(&cm, &k, "frontier", now).expect("frontier 1st");
+    g.try_admit(&cm, &k, "frontier", now).expect("frontier 2nd");
+    match g.try_admit(&cm, &k, "frontier", now).unwrap_err() {
+        LimitBlocked::Limit {
+            group,
+            metric: "budget",
+            window: Some("day"),
+            pool: Some(pool),
+            downgrade_to: None,
+            retry_after: Some(_),
+        } => {
+            assert_eq!(group, "team");
+            assert_eq!(pool, "frontier", "the rejection names the exhausted pool");
+        }
+        other => panic!("expected the frontier budget to block, got {other:?}"),
+    }
+    // The value pool's own bucket is untouched: the dev's traffic downgrades, it is not locked out.
+    g.try_admit(&cm, &k, "value", now).expect("value 1st");
+    g.try_admit(&cm, &k, "value", now).expect("value 2nd");
+    assert_blocked(
+        g.try_admit(&cm, &k, "value", now).unwrap_err(),
+        "team",
+        "budget",
+        Some("day"),
+        true,
+    );
+    // A pool neither limit names is capped by neither bucket.
+    g.try_admit(&cm, &k, "other", now)
+        .expect("unqualified pool is not pool-capped");
+}
+
+/// A group-wide limit still ANDs across every pool: pool-scoped budgets carve the spend, the
+/// group-wide `requests` ceiling counts ALL traffic regardless of pool.
+#[test]
+fn group_wide_limit_ands_with_pool_scoped() {
+    let g = gov();
+    let cm = model_with_card(
+        &[(
+            "team",
+            group_cfg(
+                None,
+                true,
+                vec![
+                    limit(LimitMetric::Requests, 3, Some(LimitWindow::Day)),
+                    pooled(LimitMetric::Budget, 100, LimitWindow::Day, "frontier"),
+                ],
+            ),
+        )],
+        1,
+        &[],
+    );
+    let k = key("vk_gw", Some("team"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "frontier", now).expect("1st");
+    g.try_admit(&cm, &k, "value", now)
+        .expect("2nd (different pool, same requests ceiling)");
+    g.try_admit(&cm, &k, "frontier", now).expect("3rd");
+    assert_blocked(
+        g.try_admit(&cm, &k, "value", now).unwrap_err(),
+        "team",
+        "requests",
+        Some("day"),
+        true,
+    );
+}
+
+/// Accrual mirrors admission: tokens ledgered under pool A land ONLY in A's pool bucket, so they
+/// exhaust A's budget without touching B's; and the REFUND of a pool-A admission erodes only the
+/// buckets that admission charged.
+#[test]
+fn pool_scoped_accrual_and_refund_mirror_the_charge() {
+    let g = gov();
+    // 10 utok/token: 100_000 input tokens = 100 cents = AT a 100-cent cap. No flat fee.
+    let cm = model_with_card(
+        &[(
+            "team",
+            group_cfg(
+                None,
+                true,
+                vec![
+                    pooled(LimitMetric::Budget, 100, LimitWindow::Month, "frontier"),
+                    pooled(LimitMetric::Budget, 100, LimitWindow::Month, "value"),
+                ],
+            ),
+        )],
+        0,
+        &[("m", 10.0, 0.0)],
+    );
+    let k = key("vk_pa", Some("team"));
+    let now = 1_700_000_000;
+    // Tokens served through the value pool fill ONLY value's bucket.
+    g.record_usage(&cm, &k, "value", "m", &toks(100_000, 0), now);
+    g.try_admit(&cm, &k, "frontier", now)
+        .expect("frontier bucket is untouched by value-pool tokens");
+    match g.try_admit(&cm, &k, "value", now).unwrap_err() {
+        LimitBlocked::Limit {
+            pool: Some(pool), ..
+        } => assert_eq!(pool, "value"),
+        other => panic!("expected value's budget to block, got {other:?}"),
+    }
+    // Refund mirror: a frontier admission's refund re-opens frontier, never value.
+    let g2 = gov();
+    let cm2 = model_with_card(
+        &[(
+            "team",
+            group_cfg(
+                None,
+                true,
+                vec![pooled(
+                    LimitMetric::Budget,
+                    25,
+                    LimitWindow::Day,
+                    "frontier",
+                )],
+            ),
+        )],
+        10,
+        &[],
+    );
+    g2.try_admit(&cm2, &k, "frontier", now).expect("1st");
+    g2.try_admit(&cm2, &k, "frontier", now).expect("2nd");
+    assert!(g2.try_admit(&cm2, &k, "frontier", now).is_err(), "at cap");
+    g2.refund_request(&cm2, &k, "frontier", now);
+    g2.try_admit(&cm2, &k, "frontier", now)
+        .expect("the refunded fee re-opened frontier's bucket");
+}
+
+/// Budget-that-teaches, engine side: a budget block whose limit declared `on_exhaust:
+/// downgrade` NAMES the downgrade pool in the rejection (ingress re-admits there); the most
+/// restrictive of two merged budgets is the one whose behavior governs; and a plain budget
+/// block still carries no downgrade.
+#[test]
+fn budget_block_carries_downgrade_target() {
+    let g = gov();
+    let mut teach = pooled(LimitMetric::Budget, 25, LimitWindow::Day, "frontier");
+    teach.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
+    teach.downgrade_to = Some(ScopeRef::pool("value"));
+    let cm = model_with_card(&[("team", group_cfg(None, true, vec![teach]))], 10, &[]);
+    let k = key("vk_dg", Some("team"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "frontier", now).expect("1st");
+    g.try_admit(&cm, &k, "frontier", now).expect("2nd");
+    match g.try_admit(&cm, &k, "frontier", now).unwrap_err() {
+        LimitBlocked::Limit {
+            metric: "budget",
+            downgrade_to: Some(to),
+            ..
+        } => assert_eq!(to, "value", "the block names where the traffic should go"),
+        other => panic!("expected a downgrade-carrying budget block, got {other:?}"),
+    }
+    // The downgrade pool itself admits (its buckets are untouched).
+    g.try_admit(&cm, &k, "value", now)
+        .expect("the value pool is not capped here");
+
+    // MERGE rule: two budgets on one (window, pool) - the tighter (25) declares downgrade, the
+    // looser (100) does not; the tighter cap is the one that blocks, so its downgrade governs.
+    let g2 = gov();
+    let mut tight = pooled(LimitMetric::Budget, 25, LimitWindow::Day, "frontier");
+    tight.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
+    tight.downgrade_to = Some(ScopeRef::pool("value"));
+    let loose = pooled(LimitMetric::Budget, 100, LimitWindow::Day, "frontier");
+    let cm2 = model_with_card(
+        &[("team", group_cfg(None, true, vec![loose, tight]))],
+        10,
+        &[],
+    );
+    g2.try_admit(&cm2, &k, "frontier", now).expect("1st");
+    g2.try_admit(&cm2, &k, "frontier", now).expect("2nd");
+    match g2.try_admit(&cm2, &k, "frontier", now).unwrap_err() {
+        LimitBlocked::Limit {
+            downgrade_to: Some(to),
+            ..
+        } => assert_eq!(to, "value"),
+        other => panic!("the tighter budget's downgrade governs, got {other:?}"),
+    }
+}
+
+/// ITEM 123 — THE KEYED-UNIT CONVERGENCE, END TO END. An OPEN meter class (a rerank's
+/// `search_units`) priced in config under `rate_card.<model>.units` is CHARGED by the read and
+/// CAPPED by the door, through every layer it used to be dropped at: the config grammar
+/// (`RateEntryCfg` was four floats, `deny_unknown_fields`), the card (`resolve_parts` built only the
+/// reserved four), and the enforcement derivation (`reserved_counts` handed the one function only
+/// the reserved four, so the class priced as nothing and a `budget:` cap never saw it).
+///
+/// 2000 micro-units per search unit = 2,000,000 nano-units = 0.2 cents; a 100-cent daily budget is
+/// reached at exactly 500 search units. Parsed from YAML, not built in Rust, so the grammar is part
+/// of the proof.
+#[test]
+fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
+    let card: BTreeMap<String, crate::config::RateEntryCfg> =
+        serde_yaml::from_str("rerank: { input_utok: 1, units: { search_units: 2000 } }\n")
+            .expect("an open class parses under units:");
+    let groups: BTreeMap<String, GroupCfg> = [(
+        "g".to_string(),
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Budget, 100, Some(LimitWindow::Day))],
+        ),
+    )]
+    .into();
+    let cm = CostModel::resolve_parts(Some(&card), 0, &groups);
+    let g = gov();
+    let k = key("vk_rerank", Some("g"));
+    let now = 1_700_000_000;
+    let search = |n: u64| BTreeMap::from([("search_units".to_string(), n)]);
+
+    g.try_admit(&cm, &k, "", now).expect("nothing spent");
+    g.record_usage(&cm, &k, "", "rerank", &search(499), now);
+    let read = g
+        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .expect("the read prices");
+    assert_eq!(
+        read.spend_cents, 99,
+        "CHARGED: 499 × 0.2 cents, truncated once"
+    );
+    assert_eq!(
+        read.tokens, 0,
+        "a search unit is priced, never counted as a token"
+    );
+    g.try_admit(&cm, &k, "", now).expect("under the cap");
+
+    g.record_usage(&cm, &k, "", "rerank", &search(1), now);
+    let read = g
+        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .expect("the read prices");
+    assert_eq!(read.spend_cents, 100, "500 search units = the whole budget");
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "budget",
+        Some("day"),
+        true,
+    );
+}
+
+/// The two other arms of #42 for the same open class: a PRESENT card silent about it REFUSES (the
+/// door blocks on the budget metric, never a silent 0), and an ABSENT card reads it as nothing.
+#[test]
+fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero() {
+    let groups: BTreeMap<String, GroupCfg> = [(
+        "g".to_string(),
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Budget, 100, Some(LimitWindow::Day))],
+        ),
+    )]
+    .into();
+    let units = BTreeMap::from([("search_units".to_string(), 1u64)]);
+    let now = 1_700_000_000;
+    let k = key("vk_rerank", Some("g"));
+
+    let silent: BTreeMap<String, crate::config::RateEntryCfg> =
+        serde_yaml::from_str("rerank: { input_utok: 1 }\n").expect("parses");
+    let cm = CostModel::resolve_parts(Some(&silent), 0, &groups);
+    assert!(
+        matches!(
+            cm.derive_spend_cents([("rerank", &units)].into_iter(), 0, true),
+            Err(busbar_kernel_ledger::cost::MoneyError::ClassUnpriced { ref class, .. })
+                if class == "search_units"
+        ),
+        "a present card silent about a hit class refuses (#42)"
+    );
+    let g = gov();
+    g.record_usage(&cm, &k, "", "rerank", &units, now);
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "budget",
+        Some("day"),
+        true,
+    );
+
+    let absent = CostModel::resolve_parts(None, 0, &groups);
+    assert_eq!(
+        absent.derive_spend_cents([("rerank", &units)].into_iter(), 0, true),
+        Ok(0),
+        "billing off reads 0"
+    );
+}
+
+/// A plane declaring token-family classes beside a duration class — the streaming plane's shape.
+static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "token-family-plane",
+        fallback: false,
+        config_section: "streams",
+        scope_kinds: &[],
+        subject_noun: "stream",
+        admin_noun: "stream",
+        audit_kind: "stream",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[
+            crate::plane::registry::BillableClass {
+                class: "audio_tokens_in",
+                family: crate::plane::registry::TOKEN_FAMILY,
+            },
+            crate::plane::registry::BillableClass {
+                class: "audio_tokens_out",
+                family: crate::plane::registry::TOKEN_FAMILY,
+            },
+            crate::plane::registry::BillableClass {
+                class: "audio_seconds_in",
+                family: "duration",
+            },
+        ],
+        fee_units: &[],
+        metric_families: &[],
+        record_kinds: &[],
+        required_config_sections: &[],
+        trust_keys: &[],
+        served_op_classes: &[],
+    },
+    wire_format_names: || &[],
+    claims: |_| Vec::new(),
+    admission: |_| None,
+    build: |_| None,
+    routes: None,
+    admin_routes: None,
+    openapi: None,
+    hydrate: None,
+    start: None,
+    config_validate: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    openapi_schemas: None,
+    on_swap: None,
+    parse_section: None,
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    viewer: None,
+    retain_verify_gates: None,
+    default_section: None,
+    resolve_provider: None,
+};
+
+/// A `tokens:` cap counts EVERY class a plane declares in the token family, not only the reserved
+/// four: 60 audio tokens in + 40 out reach a 100-token cap and block the next admission, and the
+/// derived read reports them as tokens. A duration-family class on the same cell (1000 audio
+/// seconds) is priced elsewhere and never counts as a token.
+#[test]
+fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
+    let _iso =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&TOKEN_FAMILY_PLANE]);
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Tokens, 100, Some(LimitWindow::Minute))],
+        ),
+    )]);
+    let k = key("vk_audio", Some("g"));
+    let now = 1_700_000_000;
+    let units = |pairs: &[(&str, u64)]| -> BTreeMap<String, u64> {
+        pairs.iter().map(|(c, n)| (c.to_string(), *n)).collect()
+    };
+    g.try_admit(&cm, &k, "", now).expect("nothing ledgered");
+    g.record_usage(
+        &cm,
+        &k,
+        "",
+        "realtime",
+        &units(&[("audio_tokens_in", 60), ("audio_seconds_in", 1000)]),
+        now,
+    );
+    g.try_admit(&cm, &k, "", now)
+        .expect("60 audio tokens < 100; seconds are not tokens");
+    g.record_usage(
+        &cm,
+        &k,
+        "",
+        "realtime",
+        &units(&[("audio_tokens_out", 40)]),
+        now,
+    );
+    let read = g
+        .derived_bucket_usage(&cm, "group:g@minute", "minute", true, now)
+        .expect("the read derives");
+    assert_eq!(read.tokens, 100, "audio tokens in + out are tokens");
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "tokens",
+        Some("minute"),
+        true,
+    );
+}
+
+/// Q51 (item 404, OWNER RULING Q9): a sealed `adjust` moves EVERY read of the budget book, not only
+/// `GET /admin/usage`. 1,000,000 input units at 2.5 micro-units each are 250 cents; corrected to
+/// 800,000 they are 200 — on the key's usage (`/keys`), its group's bucket (`/groups`) and the
+/// per-model token gauge (`/metrics`). Before the fix all three still read 250 / 1,000,000.
+#[test]
+fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
+    use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
+    use busbar_contract::authz::Scope;
+    use busbar_contract::records::UNIT_INPUT;
+    use busbar_kernel_ledger::cost::whole;
+    let g = gov();
+    let day = limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day));
+    let cm = model_with_card(
+        &[("g", group_cfg(None, true, vec![day]))],
+        0,
+        &[("m", 2.5, 0.0)],
+    );
+    let k = key("vk_q51_adjust_reads", Some("g"));
+    g.store.put_key(&k).expect("key persists");
+    let now = crate::store::now();
+    g.record_usage(&cm, &k, "", "m", &toks(1_000_000, 0), now);
+    let read = |g: &GovState| {
+        let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
+        let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
+        let gauge = g.bucket_model_tokens(&cm, &k.id, super::WINDOW_TOTAL, now);
+        (
+            key.spend_cents,
+            key.tokens,
+            group.spend_cents,
+            gauge[0].1[UNIT_INPUT],
+        )
+    };
+    assert_eq!(read(&g), (250, 1_000_000, 250, 1_000_000), "as recorded");
+    let counts = |n: u64| ClassCounts::from([(UNIT_INPUT.to_string(), whole(n))]);
+    let correction = CountCorrection {
+        amends: "q51-adjust-reads-the-budget-book",
+        principal: Some(&k.id),
+        lane: "m",
+        card_epoch_ms: now * 1_000,
+        now: counts(800_000),
+        authorised_by: "root",
+        reason: "duplicate charge on a retried request",
+        pool: None,
+    };
+    correct_counts(Scope::Full, &counts(1_000_000), correction).expect("root correction seals");
+    assert_eq!(read(&g), (200, 800_000, 200, 800_000), "as corrected");
+}
+
+/// Q64/Q67 fixture: group `group` with a group-wide day budget and a day budget scoped to each of
+/// `pool-a` and `pool-b`; key `id` served 1,000,000 input units through EACH pool at 2.5 micro-units
+/// (250 cents a pool, 500 group-wide). `adjust(pool)` corrects the pool-a unit to 800,000.
+fn q64_two_pools(
+    id: &'static str,
+    group: &'static str,
+) -> (GovState, CostModel, VirtualKey, u64, impl Fn(Option<&str>)) {
+    use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
+    use busbar_contract::records::UNIT_INPUT;
+    use busbar_kernel_ledger::cost::whole;
+    let g = gov();
+    let limits = vec![
+        limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day)),
+        pooled(LimitMetric::Budget, 100_000, LimitWindow::Day, "pool-a"),
+        pooled(LimitMetric::Budget, 100_000, LimitWindow::Day, "pool-b"),
+    ];
+    let cm = model_with_card(
+        &[(group, group_cfg(None, true, limits))],
+        0,
+        &[("m", 2.5, 0.0)],
+    );
+    let k = key(id, Some(group));
+    g.store.put_key(&k).expect("key persists");
+    let now = crate::store::now();
+    g.record_usage(&cm, &k, "pool-a", "m", &toks(1_000_000, 0), now);
+    g.record_usage(&cm, &k, "pool-b", "m", &toks(1_000_000, 0), now);
+    let adjust = move |pool: Option<&str>| {
+        let counts = |n: u64| ClassCounts::from([(UNIT_INPUT.to_string(), whole(n))]);
+        let correction = CountCorrection {
+            amends: id,
+            principal: Some(id),
+            lane: "m",
+            card_epoch_ms: now * 1_000,
+            now: counts(800_000),
+            authorised_by: "root",
+            reason: "duplicate charge on a retried request",
+            pool,
+        };
+        let recorded = counts(1_000_000);
+        correct_counts(busbar_contract::authz::Scope::Full, &recorded, correction)
+            .expect("root correction seals");
+    };
+    (g, cm, k, now, adjust)
+}
+
+/// The usage read: the key's usage (what `GET /admin/usage` agrees with) and, per bucket
+/// (group-wide, pool-a, pool-b), the `/groups` usage spend and the `/metrics` bucket token gauge.
+fn q64_read(
+    g: &GovState,
+    cm: &CostModel,
+    k: &VirtualKey,
+    group: &str,
+    now: u64,
+) -> [(i64, u64); 4] {
+    let key = g.usage_for(cm, &k.id, now).unwrap().unwrap();
+    let bucket = |suffix: &str| {
+        let id = format!("group:{group}@day{suffix}");
+        let spend = (g.derived_bucket_usage(cm, &id, "day", true, now))
+            .unwrap()
+            .spend_cents;
+        let gauge = g.bucket_model_tokens(cm, &id, "day", now);
+        (spend, gauge[0].1[busbar_contract::records::UNIT_INPUT])
+    };
+    [
+        (key.spend_cents, key.tokens),
+        bucket(""),
+        bucket("#pool:pool-a"),
+        bucket("#pool:pool-b"),
+    ]
+}
+
+/// Q64/Q67 (OWNER RULING): an adjust NAMING A POOL moves that pool's scoped bucket as well as the
+/// group-wide one, so its `/groups` usage and `/metrics` gauges agree with `GET /admin/usage` after
+/// the adjust; another pool's scoped bucket is untouched. 1,000,000 → 800,000 input units at 2.5
+/// micro-units on the pool-a unit: key 500 → 450 cents (2,000,000 → 1,800,000 units), group-wide
+/// 500 → 450, pool-a 250 → 200 cents and 1,000,000 → 800,000 units, pool-b stays 250 / 1,000,000.
+/// Before the fix the pool-a bucket still read 250 / 1,000,000 after the adjust.
+#[test]
+fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
+    let (g, cm, k, now, adjust) = q64_two_pools("vk_q64_pooled", "q64p");
+    let read = || q64_read(&g, &cm, &k, "q64p", now);
+    let recorded = [
+        (500, 2_000_000),
+        (500, 2_000_000),
+        (250, 1_000_000),
+        (250, 1_000_000),
+    ];
+    assert_eq!(read(), recorded, "as recorded");
+    adjust(Some("pool-a"));
+    assert_eq!(
+        read(),
+        [
+            (450, 1_800_000),
+            (450, 1_800_000),
+            (200, 800_000),
+            (250, 1_000_000),
+        ],
+        "as corrected: pool-a follows the key, pool-b is untouched"
+    );
+}
+
+/// Q64/Q67: an adjust SEALED BEFORE the pool was recorded names none, and it reads exactly as it
+/// did: the key and the group-wide bucket take it, and neither pool-scoped bucket does.
+#[test]
+fn an_unscoped_sealed_adjust_reads_as_it_always_did() {
+    let (g, cm, k, now, adjust) = q64_two_pools("vk_q64_unscoped", "q64u");
+    adjust(None);
+    assert_eq!(
+        q64_read(&g, &cm, &k, "q64u", now),
+        [
+            (450, 1_800_000),
+            (450, 1_800_000),
+            (250, 1_000_000),
+            (250, 1_000_000),
+        ],
+    );
+}
+
+// ── `admission: estimate` (the design's budget modes) ──
+//
+// Card: `m-cheap` input 1.0 utok, `m-dear` input 2.0 utok, so 100 000 expected input units are
+// 10 minor units on `m-cheap` and 20 on `m-dear`. Fee 10. Budget 25 per day on `frontier`.
+
+fn estimate_budget(admission: Option<crate::config::groups::AdmissionMode>) -> LimitCfg {
+    let mut l = pooled(LimitMetric::Budget, 25, LimitWindow::Day, "frontier");
+    l.admission = admission;
+    l
+}
+
+fn estimate_card(limits: Vec<LimitCfg>) -> CostModel {
+    model_with_card(
+        &[("team", group_cfg(None, true, limits))],
+        10,
+        &[("m-cheap", 1.0, 0.0), ("m-dear", 2.0, 0.0)],
+    )
+}
+
+fn expected_input(n: u64) -> BTreeMap<String, u64> {
+    BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), n)])
+}
+
+/// ONE check at admit, at the HIGHEST price among the allowed destinations, inside the
+/// check-then-charge: the unit the estimate refuses charges NOTHING (no request slot, no fee).
+/// RED: drop the estimate from the budget test and the first admission below passes.
+#[test]
+fn an_estimate_budget_refuses_at_the_dearest_destination_and_charges_nothing() {
+    let g = gov();
+    let cm = estimate_card(vec![estimate_budget(Some(
+        crate::config::groups::AdmissionMode::Estimate,
+    ))]);
+    let k = key("vk_est", Some("team"));
+    let now = 1_700_000_000;
+    let want = expected_input(100_000);
+    // fee 10 + the dearest destination's 20 = 30 > 25: refused on the budget.
+    match g
+        .try_admit_estimated(&cm, &k, "frontier", now, &["m-cheap", "m-dear"], &want)
+        .unwrap_err()
+    {
+        LimitBlocked::Limit {
+            metric: "budget", ..
+        } => {}
+        other => panic!("the estimate refuses on the budget, got {other:?}"),
+    }
+    // Only the cheap destination allowed: fee 10 + 10 = 20 <= 25, admitted.
+    g.try_admit_estimated(&cm, &k, "frontier", now, &["m-cheap"], &want)
+        .expect("the cheap destination's estimate fits");
+    // The refusal charged nothing: one fee (10) is on the bucket, so one more estimate-free
+    // admission (20) fits and the next (30) does not.
+    g.try_admit(&cm, &k, "frontier", now)
+        .expect("the refused unit left no fee behind");
+    assert!(
+        g.try_admit(&cm, &k, "frontier", now).is_err(),
+        "three fees exceed 25"
+    );
+}
+
+/// An `exact` budget (the default, 1.5.5) never looks at the estimate.
+#[test]
+fn an_exact_budget_ignores_the_estimate() {
+    let g = gov();
+    let cm = estimate_card(vec![estimate_budget(None)]);
+    let k = key("vk_exact", Some("team"));
+    g.try_admit_estimated(
+        &cm,
+        &k,
+        "frontier",
+        1_700_000_000,
+        &["m-dear"],
+        &expected_input(10_000_000),
+    )
+    .expect("exact refuses only a budget already exhausted");
+}
+
+/// An estimate miss on a limit that declared `on_exhaust: downgrade` downgrades, exactly
+/// like an exhausted budget at admission.
+#[test]
+fn an_estimate_miss_downgrades_where_the_limit_declares_it() {
+    let g = gov();
+    let mut l = estimate_budget(Some(crate::config::groups::AdmissionMode::Estimate));
+    l.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
+    l.downgrade_to = Some(ScopeRef::pool("value"));
+    let cm = estimate_card(vec![l]);
+    let k = key("vk_est_dg", Some("team"));
+    match g
+        .try_admit_estimated(
+            &cm,
+            &k,
+            "frontier",
+            1_700_000_000,
+            &["m-dear"],
+            &expected_input(100_000),
+        )
+        .unwrap_err()
+    {
+        LimitBlocked::Limit {
+            metric: "budget",
+            downgrade_to: Some(to),
+            ..
+        } => assert_eq!(to, "value"),
+        other => panic!("an estimate miss downgrades, got {other:?}"),
+    }
+}
+
+/// #42 at the estimate: a destination the card cannot price fails closed on an estimate bucket,
+/// and a refusal is never downgraded.
+#[test]
+fn an_unpriceable_estimate_blocks_and_never_downgrades() {
+    let g = gov();
+    let mut l = estimate_budget(Some(crate::config::groups::AdmissionMode::Estimate));
+    l.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
+    l.downgrade_to = Some(ScopeRef::pool("value"));
+    let cm = estimate_card(vec![l]);
+    let k = key("vk_est_unpriced", Some("team"));
+    match g
+        .try_admit_estimated(
+            &cm,
+            &k,
+            "frontier",
+            1_700_000_000,
+            &["m-unknown"],
+            &expected_input(1),
+        )
+        .unwrap_err()
+    {
+        LimitBlocked::Limit {
+            metric: "budget",
+            downgrade_to: None,
+            ..
+        } => {}
+        other => panic!("an unpriceable estimate blocks without a downgrade, got {other:?}"),
+    }
+}
+
+/// The estimate never bills and is never held: after an admitted estimated unit the bucket's
+/// spend is the one fee, nothing more.
+#[test]
+fn the_estimate_is_never_billed_or_held() {
+    let g = gov();
+    let cm = estimate_card(vec![estimate_budget(Some(
+        crate::config::groups::AdmissionMode::Estimate,
+    ))]);
+    let k = key("vk_est_bill", Some("team"));
+    let now = 1_700_000_000;
+    g.try_admit_estimated(
+        &cm,
+        &k,
+        "frontier",
+        now,
+        &["m-cheap"],
+        &expected_input(100_000),
+    )
+    .expect("fits");
+    let spend: Vec<i64> = g
+        .budget_state(&cm, &k, now)
+        .into_iter()
+        .filter(|b| b.budget_group.is_some())
+        .map(|b| b.spend_micros_at_current_rate)
+        .collect();
+    assert_eq!(
+        spend,
+        vec![10 * busbar_kernel_ledger::cost::MICROS_PER_CENT],
+        "the fee alone, never the estimate"
+    );
+}

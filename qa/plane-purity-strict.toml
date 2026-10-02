@@ -1,0 +1,52 @@
+# qa/plane-purity-strict.toml — ceilings for `cargo xtask gate plane-purity-strict`.
+#
+# WHY. `cargo xtask gate plane-purity` only ever looks at PRODUCTION code in the neutral crates and the plane crates.
+# Test code was invisible to it on purpose (a plane's own test fixtures legitimately name its own
+# types), but that also means test code can quietly accumulate the very side channels --check bans
+# in production — most visibly a plane crate's tests reaching into `busbar_core::` internals, which
+# pins the plane to core's private shape just as surely as production code would. the strict gate makes
+# that debt visible and ratchets it down, the same ratchet shape as qa/construction.toml.
+#
+# HOW A CEILING WORKS. Every number below is the count MEASURED ON THE TREE the day this file was
+# written (so the strict gate is GREEN today). It is a ceiling, not a target: it fails RED only
+# when the measured count goes ABOVE it. Lower a number by hand as the debt is paid down — the gate
+# never lowers it for you, and a lowered number that goes stale (measurement now below it) still
+# passes, so tightening is always safe to do eagerly.
+#
+# [categories] — the same six side-channel classes `cargo xtask gate plane-purity` already enforces
+# in PRODUCTION scope
+# (PATH-INCLUDE/SYMBOL/TYPE/KEY/DIALECT/BACKWARDS), now counted across PRODUCTION + TEST scope
+# combined. Production is already 0 for every one of these (that is what makes --check green), so
+# today each ceiling equals the TEST-scope count only.
+[categories]
+PATH-INCLUDE = 0
+SYMBOL = 61
+TYPE = 13
+KEY = 377
+DIALECT = 456
+BACKWARDS = 33
+
+# [test-reach] — the BACKWARDS class broken out per plane crate (bare plane key, matching
+# the plane keys in xtask::planes), test scope only: how many lines under crates/busbar-<key>/src's OWN test
+# code (files under /tests/, *_tests.rs, or a #[cfg(test)] mod block) name `busbar_core::`. This is
+# the same needle `cargo xtask gate construction` reports per crate as `ports-only-tests:<crate>`.
+#
+# CORRECTED 2026-09-24 (item 466). This paragraph said qa/construction.toml carries llm=565, mcp=1,
+# a2a=3, voice=0 and that the two files "agree to within a single line". Neither is true today:
+# `[rules.ports-only-tests.max_per_crate]` reads busbar-llm = 0, busbar-mcp = 0, busbar-a2a = 0,
+# busbar-voice = 0, and the figures below (24/1/3/0) do not match those. Both tables have gone stale
+# for ONE reason: `busbar_core` is a crate 673ecdaaa absorbed into busbar-kernel, so the needle both
+# gates count matches no line in any crate — `grep -rn 'busbar_core::' crates/busbar-{llm,mcp,a2a,voice}/src`
+# returns nothing (the two `busbar_core_admin::install()` test lines are a different crate), while
+# the successor spelling `busbar_kernel::` stands at 1326 / 606 / 481 / 151 lines in the same four
+# `src` trees, production and test together. So every `test-reach` row here and every
+# `ports-only-tests` row there reads 0 and PASSES whatever the planes' tests reach. The repoint is
+# item 376 (ports-only's needle; it moves ceilings off 0, which is an owner-ruled raise) and, for
+# this file, the scanner's own needle in `xtask/src/gates/plane_purity/scanner.rs` (the `Mode::Reverse`
+# arm). Until then these four figures are ceilings over a needle that cannot match, NOT a measured
+# agreement between two gates.
+[test-reach]
+llm = 24
+mcp = 1
+a2a = 3
+voice = 0

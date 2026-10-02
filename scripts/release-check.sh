@@ -5,9 +5,9 @@
 # WHAT THIS TESTS
 #   Everything the unit/integration test suite cannot: that the ACTUAL signed-shape plugin
 #   tarballs a user downloads (built + packed this script's own Phase 0b, in the same shape each
-#   plugin's own standalone-repo release workflow packs it — busbarAI's release.yml no longer
+#   plugin's own standalone-repo release workflow packs it — busbarAI's the removed release.yml no longer
 #   builds or uploads store/auth plugin tarballs itself; see the "Store/auth plugin releases moved
-#   out" comment in .github/workflows/release.yml) load into a REAL busbar binary, that busbar
+#   out" comment in the removed release.yml) load into a REAL busbar binary, that busbar
 #   serves REAL HTTP traffic through each backend exactly the way docs/getting-started.md and
 #   docs/configuration.md tell an operator to configure it, and that keys/usage genuinely
 #   SURVIVE A PROCESS RESTART, driven against store-postgres's own real-Postgres test suite (the
@@ -27,29 +27,29 @@
 #
 # WHAT THIS DOES NOT TEST
 #   - Store-sqlite's hermetic in-process dlopen path — that's a separate, parallel test, and now
-#     lives entirely in store-sqlite's own repo (GetBusbar/store-sqlite, a same-repo 2-crate
+#     lives entirely in store-sqlite's own repo (GetBusbar/busbar-store-sqlite, a same-repo 2-crate
 #     workspace) — see Phase 1 below for how this script reaches it via a sibling checkout.
 #   - The release-SIGNING pipeline (BUSBAR_SIGN_KEY) — out of scope by design. Every tarball
 #     here is packed with `--allow-unsigned`, exactly like CI's fallback path when the signing
-#     secret isn't provisioned (see the TODO(release-keys) seam in release.yml).
-#   - OIDC's real-ABI plugin proof — auth-oidc now lives entirely in its own repo (GetBusbar/auth-oidc,
+#     secret isn't provisioned (see the TODO(release-keys) seam in the removed release.yml).
+#   - OIDC's real-ABI plugin proof — auth-oidc now lives entirely in its own repo (GetBusbar/busbar-auth-oidc,
 #     a same-repo 2-crate workspace bringing 100% of its own logic + adapter). That repo's own test
 #     suite already stands up a real local JWKS server + a real minted JWT and drives the plugin
 #     through the real ABI. This script sibling-checks-out that repo and runs its suite as a gate
 #     (the Phase 2 suite loop below) rather than reinventing a second, lower-quality fake-IdP proof.
 #   - hashicorp-vault's real-ABI plugin proof — busbar-hashicorp-vault / busbar-hashicorp-vault-plugin
-#     no longer live in this workspace (extracted to GetBusbar/hashicorp-vault). The Phase 2 suite
+#     no longer live in this workspace (extracted to GetBusbar/busbar-secret-vault). The Phase 2 suite
 #     loop below runs THAT repo's own test suite (a sibling checkout) against a real Vault dev-mode container,
 #     rather than duplicating the proof in-tree.
 #   - Valkey's real-ABI + real-persistence proof — store-valkey now lives entirely in its own repo
-#     (GetBusbar/store-valkey, a same-repo 2-crate workspace bringing 100% of its own logic +
+#     (GetBusbar/busbar-store-valkey, a same-repo 2-crate workspace bringing 100% of its own logic +
 #     adapter). That repo's own tests/e2e.rs already dlopens the real cdylib against a real
 #     valkey/valkey:8, writes through it, closes + reopens the plugin, and independently verifies via the
 #     plain busbar-store-valkey lib crate — genuine, hermetic, real-Valkey coverage. This script
 #     sibling-checks-out that repo and runs its suite as a gate (the Phase 2 suite loop below) rather than
 #     reinventing a second, lower-quality proof in-tree.
 #   - Postgres's full-busbar-binary + real-HTTP-traffic + process-restart-durability proof —
-#     store-postgres was likewise extracted to its own repo (GetBusbar/store-postgres); Phase 2
+#     store-postgres was likewise extracted to its own repo (GetBusbar/busbar-store-postgres); Phase 2
 #     below runs THAT repo's own real-dlopen-ABI + real-Postgres test suite (against the same real
 #     postgres:16 container this script always spun up) as the gate instead, the same trade-off
 #     already made for OIDC and Valkey above.
@@ -60,12 +60,15 @@
 #   for the busbar binary + every plugin cdylib, run multiple times).
 #
 # BRANCH MODEL (dev → qa → main)
-#   - `dev`: push often; only the cheap per-push CI (ci.yml) runs there. Nothing here.
-#   - `qa`: promoting dev→qa is what spends THIS gate — qa-gate.yml runs release-check.sh on every
+#   - `dev`: push often; only the cheap per-push CI (the removed ci.yml) runs there. Nothing here.
+#   - `qa`: promoting dev→qa is what spends THIS gate — the removed qa-gate.yml runs release-check.sh on every
 #     qa push (the pre-release soak). A green qa is what earns promotion to main.
-#   - `main`: tag-on-main.yml auto-tags crates/busbar/Cargo.toml's version when it lands on main,
-#     which cuts the release (release.yml binaries/downstream cascade + docker.yml). Prep the bump
-#     on dev with prepare-release.yml before promoting.
+#   - `main`: the removed release.yml runs on the push and cuts the release from crates/busbar/Cargo.toml's
+#     version. THE TAG IS THE LAST THING THAT HAPPENS, NOT THE FIRST: it refuses a red commit,
+#     builds, drafts the release, stages the image under a throwaway tag, verifies all of that from
+#     the consumer side, and only then tags, promotes and fans out. A failure before the promote
+#     leaves no tag, no listed release and no container version tag, so a re-run is a clean retry.
+#     Prep the bump on dev with the removed prepare-release.yml before promoting. See RELEASE.md.
 #
 # PREREQUISITES
 #   - A working Rust toolchain (`cargo build --release` must succeed for this workspace).
@@ -74,15 +77,16 @@
 #     loudly up front, because "gate incomplete" must never look like "gate green".
 #   - python3 (stdlib only) — used for a tiny local mock upstream server. No network access
 #     beyond localhost and the Docker daemon is required.
-#   - A sibling checkout `../store-postgres` (GetBusbar/store-postgres) next to this repo — REQUIRED
+#   - A sibling checkout `../busbar-store-postgres` (GetBusbar/busbar-store-postgres) next to this repo — REQUIRED
 #     (not optional): Phase 2 runs that repo's own `cargo test --workspace` as the Postgres gate.
-#   - Optionally, sibling checkouts for every other plugins.yaml entry (`../store-sqlite`,
-#     `../store-mysql`, `../store-valkey`, `../hashicorp-vault`, `../auth-oidc`, `../headroom-hook`,
-#     `../webrequest-hook`) next to this repo. Each of these plugins has been fully extracted — its
+#   - Optionally, sibling checkouts for every other plugins.yaml entry (`../busbar-store-sqlite`,
+#     `../busbar-store-mysql`, `../busbar-store-valkey`, `../busbar-secret-vault`, `../busbar-auth-oidc`,
+#     `../busbar-hook-webrequest`) next to this repo. Each of these plugins has been fully extracted — its
 #     own repo now owns 100% of its logic + release-gate proof (see that repo's own CI). If a
 #     sibling is present, its phase below runs the real proof against it; if absent, that phase is
-#     skipped loudly and does not fail the gate (documented — matches the task's explicit
-#     instruction not to fail the whole run over a missing sibling).
+#     recorded as a COVERAGE GAP: the verdict banner changes, names it, and says it did not run.
+#     Non-fatal by default (a missing sibling is a fact of local life), fatal under
+#     --require-siblings, which the pre-release path sets.
 #
 # USAGE
 #   scripts/release-check.sh                # run every phase
@@ -93,6 +97,18 @@
 #   scripts/release-check.sh --check-coverage # assert every partition's segments EXACTLY tile the
 #                                             # phase set (no hole, no overlap); exit 1 on either
 #   scripts/release-check.sh --segment <id>  # run ONLY that segment's phases (see SEGMENTATION)
+#   scripts/release-check.sh --require-siblings # a phase that DID NOT RUN fails the run (see below)
+#   scripts/release-check.sh --selftest      # prove the verdict accounting, offline, seconds
+#
+# A PHASE THAT DID NOT RUN IS NOT A PHASE THAT PASSED
+#   A phase whose sibling checkout is absent records `sibling-missing`, and the run used to end with
+#   an unconditional "RELEASE GATE PASSED" banner regardless. So a green release-check did not prove
+#   the phase RAN, only that it did not fail, and those are different claims. The verdict is now
+#   COMPUTED: a coverage gap changes the banner text, NAMES every phase that did not run and why,
+#   and is FATAL under --require-siblings (or BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1, which
+#   the removed qa-gate.yml sets, because a release must never be signed off by a run that tested less).
+#   A by-design `not-in-segment` skip is NOT a gap: --check-coverage already proves the segments
+#   tile the phase set exactly.
 #
 # SEGMENTATION
 #   The gate is a set of independently-runnable PHASES. `--list-phases` emits their ids; the ids
@@ -105,7 +121,7 @@
 #     live    core-data-plane + plugins — the aggregate form, where one `plugins` leg carries every
 #             plugin phase.
 #     fanout  core-data-plane + plugin-<repo> for EVERY plugins.yaml entry — the per-plugin fan-out.
-#             This is exactly what scripts/qa-segments.sh emits once its capability probe sees the
+#             This is exactly what the removed scripts/qa-segments.sh emits once its capability probe sees the
 #             `plugin-*` token from --list-segments: it suppresses the aggregate `plugins` stand-in
 #             and expands one leg per registry entry. Every entry gets a leg regardless of its
 #             `gate` (suite/binary/smoke), so no registry entry can produce a matrix leg whose run
@@ -143,12 +159,30 @@ SEGMENT=""
 LIST_PHASES=0
 LIST_SEGMENTS=0
 CHECK_COVERAGE=0
+# REQUIRE_SIBLINGS: turn a coverage GAP into a hard failure.
+#
+# WHY THIS EXISTS. A phase whose sibling checkout is absent records `sibling-missing` and the run
+# still ended with an unconditional "RELEASE GATE PASSED" banner. So a green release-check did not
+# prove the phase RAN, only that it did not fail, and those two are not the same claim. The
+# busbar-admin phase is the sharpest case: busbar-admin is a separate repo holding its own copy of
+# busbar's wire shapes, its `integration.sh` is the ONLY cross-repo behavioural check on that mirror,
+# and the removed qa-gate-run.sh's `clone_sibling` warns and continues when the clone fails. One failed clone
+# and the widest mirror in the fleet went completely unverified under a green banner.
+#
+# The fix is two-part and both parts matter. Unconditionally, the verdict banner now NAMES the gaps
+# and reads differently from a clean pass, so the two can never be confused by a human. And with
+# this flag (or BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1) a gap is fatal, which is what an automated
+# release path wants: nothing should sign off a release on a run that quietly tested less.
+REQUIRE_SIBLINGS="${BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS:-0}"
+SELFTEST=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --skip-docker) SKIP_DOCKER=1 ;;
     --list-phases) LIST_PHASES=1 ;;
     --list-segments) LIST_SEGMENTS=1 ;;
     --check-coverage) CHECK_COVERAGE=1 ;;
+    --require-siblings) REQUIRE_SIBLINGS=1 ;;
+    --selftest) SELFTEST=1 ;;
     --segment) shift; SEGMENT="${1:-}" ;;
     --segment=*) SEGMENT="${1#--segment=}" ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -166,15 +200,73 @@ PHASE_NEEDS_BIN=()
 PHASE_DESC=()
 add_phase() { PHASE_IDS+=("$1"); PHASE_NEEDS_BIN+=("$2"); PHASE_DESC+=("$3"); }
 
+# ── Verdict printers (see 'Fail-fast diagnostics' below for the ERR trap that uses them) ─────────
+SECONDS=0
+PHASE="startup"
+
+# --- TWO KINDS OF RED, AND WHY THE GATE NOW SAYS WHICH ----------------------------------------
+# The 1.5.3 full plugin gate went RED TWICE and found ZERO product defects. Both failures were
+# INFRASTRUCTURE: sibling plugin repos cloned at a stale branch, and fixture configs naming secrets
+# that nothing in the harness set. Every one of those runs printed "DO NOT TAG THIS RELEASE", which
+# is exactly right for a product defect and exactly wrong for an unset environment variable.
+#
+# That is not a cosmetic complaint. A gate that cries wolf twice per release teaches everyone to
+# RERUN it rather than READ it, and a gate people rerun without reading is how a real defect gets
+# waved through. The verdict has to distinguish "busbar is broken" from "this harness is broken",
+# because the two demand completely different actions from completely different people.
+#
+# So a phase that cannot even ASK its question calls `setup_fail`, which exits SETUP_EXIT (78,
+# sysexits.h EX_CONFIG) and prints a HARNESS/ENVIRONMENT verdict. Any other non-zero exit keeps the
+# old, correct, alarming product verdict. Deliberately NOT a classifier over phase output: guessing
+# a category from error text would produce a third failure mode, silent misclassification, which is
+# worse than the two it replaces. A call site knows which kind it is; only call sites decide.
+SETUP_EXIT=78
+
+# The two verdicts, each printed from exactly one place so they cannot drift apart.
+verdict_setup() {
+  echo
+  echo "!!! RELEASE GATE COULD NOT RUN during phase: ${PHASE} (exit ${1}) !!!"
+  echo "    Elapsed: ${SECONDS}s."
+  echo "    CATEGORY: HARNESS / ENVIRONMENT, not a product defect."
+  echo "    This says NOTHING about whether busbar is releasable: the gate never got far enough"
+  echo "    to ask. Fix the harness or the environment named above and re-run. Do NOT read this"
+  echo "    as a reason to tag, and do NOT read it as a reason not to."
+}
+verdict_product() {
+  echo
+  echo "!!! RELEASE GATE FAILED during phase: ${PHASE} (exit ${1}) !!!"
+  echo "    Elapsed: ${SECONDS}s."
+  echo "    CATEGORY: PRODUCT. A check ran and busbar did not do what it must do."
+  echo "    This means: DO NOT TAG THIS RELEASE."
+}
+# Timings so far are still the most useful thing a failed run can hand back.
+verdict_tail() {
+  end_phase "FAILED" 2>/dev/null || true
+  print_timing_summary 2>/dev/null || true
+}
+
+# setup_fail <message...> -- the gate could not run its check, as distinct from the check failing.
+# It prints its own verdict rather than relying on the ERR trap, because `exit` does NOT fire an ERR
+# trap in bash: only a command returning non-zero under `set -e` does. Routing this through the trap
+# would have printed no banner at all, which is how this was written the first time and why it is
+# worth the comment.
+setup_fail() {
+  echo
+  echo "  [SETUP] $*" >&2
+  verdict_setup "$SETUP_EXIT"
+  verdict_tail
+  exit "$SETUP_EXIT"
+}
+
 # The `gate: suite` phases are derived from plugins.yaml (the registry is the single source of truth
 # for "what plugins exist"), so a new suite plugin gets a phase id here with zero edits to this file.
 # Read up front, not lazily: a parse/shape failure must fail loudly rather than yield an empty gate.
 REGISTRY_LIST="$(./scripts/plugin-registry-check.sh --list)"
-[ -n "$REGISTRY_LIST" ] || { echo "plugin-registry-check.sh --list returned an empty registry" >&2; exit 1; }
+[ -n "$REGISTRY_LIST" ] || setup_fail "plugin-registry-check.sh --list returned an empty registry: the gate has no plugins to test, which is a broken registry read, not a busbar defect."
 
 # EVERY registry entry maps to exactly one phase id, keyed off its `gate` column. This is what lets
 # `--segment plugin-<repo>` work for ALL TEN registry plugins rather than only the seven `gate: suite`
-# ones: scripts/qa-segments.sh expands its per-plugin fan-out straight from plugins.yaml, so a
+# ones: the removed scripts/qa-segments.sh expands its per-plugin fan-out straight from plugins.yaml, so a
 # registry entry with no accepted segment here would emit a matrix leg whose run command exits 2.
 #   suite  -> phase-2-suite-<repo>    (sibling repo's own cargo test; needs no busbar binary)
 #   binary -> phase-1-<alias>-binary  (store-sqlite's full-binary/HTTP/restart-durability phase)
@@ -231,6 +323,15 @@ while read -r _pr; do
     *)               add_phase "$_pid" yes "plugin phase for ${_pr}" ;;
   esac
 done <<<"$(all_plugin_repos)"
+# THE TWO SPECIAL (non-suite) PLUGIN PHASES, DERIVED LIKE THE SUITE ONES. Their bodies below are
+# keyed by repo (they build ../busbar-store-sqlite, ../busbar-hook-webrequest), so their ids come
+# from plugin_phase_id on that repo -- the SAME function the registry used above. They used to be
+# written as literals (phase-1-sqlite-binary, ...) while the registry derived them from the plugins.yaml
+# ALIAS, so one alias rename made every segmented run record the phase `not-in-segment` and skip it.
+SQLITE_BINARY_PHASE="$(plugin_phase_id busbar-store-sqlite)" \
+  || setup_fail "plugins.yaml has no busbar-store-sqlite entry, but Phase 1 builds ../busbar-store-sqlite: the registry and this gate disagree."
+WEBREQUEST_SMOKE_PHASE="$(plugin_phase_id busbar-hook-webrequest)" \
+  || setup_fail "plugins.yaml has no busbar-hook-webrequest entry, but Phase 5 smokes ../busbar-hook-webrequest: the registry and this gate disagree."
 add_phase phase-admin-cli          yes "Phase: busbar-admin CLI driven against the fresh busbar"
 add_phase phase-152-feature-gate   yes "Phase: 1.5.2 feature gate (plugins.fetch + token-exchange + admin authz)"
 
@@ -258,7 +359,7 @@ partition_segments() {
   case "$1" in
     live) echo "core-data-plane"; echo "plugins" ;;
     fanout)
-      # EXACTLY what scripts/qa-segments.sh emits when its per-plugin fan-out goes live: the
+      # EXACTLY what the removed scripts/qa-segments.sh emits when its per-plugin fan-out goes live: the
       # aggregate `plugins` stand-in is suppressed and replaced by one plugin-<repo> leg per
       # plugins.yaml entry, alongside the unchanged core-data-plane leg.
       echo "core-data-plane"
@@ -276,7 +377,7 @@ partition_segments() {
 segment_phases() {
   local seg="$1" want
   case "$seg" in
-    # ── partition: live (mirrors qa/segments.toml's two active live-mock segments) ──
+    # ── partition: live (mirrors the removed qa/segments.toml's two active live-mock segments) ──
     core-data-plane)
       echo phase-0a2-signing-key
       echo phase-0c-soak-reject
@@ -284,7 +385,7 @@ segment_phases() {
       echo phase-admin-cli
       echo phase-152-feature-gate
       ;;
-    # The aggregate plugin stand-in: every plugin phase in one leg. qa-segments.sh SUPPRESSES this
+    # The aggregate plugin stand-in: every plugin phase in one leg. the removed qa-segments.sh SUPPRESSES this
     # segment once the per-plugin fan-out is live, so exactly one of {plugins, plugin-*} ever runs.
     plugins)
       list_plugin_phase_ids
@@ -307,9 +408,9 @@ if [ "$LIST_PHASES" = "1" ]; then
 fi
 
 # ── --list-segments ───────────────────────────────────────────────────────────────────────────────
-# CONTRACT (consumed by scripts/qa-segments.sh's capability probe): print, one per line, the segment
+# CONTRACT (consumed by the removed scripts/qa-segments.sh's capability probe): print, one per line, the segment
 # tokens this script accepts, and exit 0. The literal token `plugin-*` is emitted to ADVERTISE that
-# per-plugin segments are supported — qa-segments.sh probes for exactly that line
+# per-plugin segments are supported — the removed qa-segments.sh probes for exactly that line
 # (`--list-segments | grep -qx 'plugin-\*'`) and, until it appears, falls back to the aggregate
 # `plugins` segment. It is a capability marker, NOT a runnable segment id; the concrete
 # `plugin-<repo>` ids printed alongside it are the runnable ones.
@@ -441,16 +542,15 @@ any_selected_needs_service() {
 }
 
 # ── Fail-fast diagnostics ────────────────────────────────────────────────────────────────────────
-SECONDS=0
-PHASE="startup"
+# SECONDS/PHASE and the two verdict printers (setup_fail, verdict_setup/_product) are defined ABOVE
+# the phase registry, because the registry read is the first thing that can call setup_fail. They
+# used to be defined ~300 lines below that call, so an empty registry died as a bare
+# `setup_fail: command not found` (exit 127, PRODUCT bucket) instead of the HARNESS verdict (78).
 on_err() {
   local ec=$?
-  echo
-  echo "!!! RELEASE GATE FAILED during phase: ${PHASE} (exit ${ec}) !!!"
-  echo "    Elapsed: ${SECONDS}s. This means: DO NOT TAG THIS RELEASE."
-  # Timings so far are still the most useful thing a failed run can hand back.
-  end_phase "FAILED" 2>/dev/null || true
-  print_timing_summary 2>/dev/null || true
+  # A propagated 78 (a helper or subshell that itself hit setup_fail) keeps the harness verdict.
+  if [ "$ec" = "$SETUP_EXIT" ]; then verdict_setup "$ec"; else verdict_product "$ec"; fi
+  verdict_tail
   exit "$ec"
 }
 trap on_err ERR
@@ -498,6 +598,313 @@ record_phase_skip() {
   PHASE_RUN_STATUS+=("${2:-skipped}")
 }
 
+# --- A SKIP THAT READS AS A PASS -----------------------------------------------------------------
+#
+# There are two entirely different reasons a phase did not run, and conflating them is what let a
+# green release-check mean nothing:
+#
+#   BY DESIGN     `not-in-segment`. This invocation was asked to run one segment of a partition;
+#                 the other segments' phases are another job's business. --check-coverage already
+#                 proves the segments tile the phase set exactly, so nothing is lost.
+#   A COVERAGE GAP `sibling-missing`, `skip-docker`. The phase WAS in scope for this run and did not
+#                 execute. Its subject is untested. Nothing about the run supports a claim that it
+#                 works, and the previous unconditional "RELEASE GATE PASSED" banner asserted
+#                 exactly that claim.
+#
+# This is derived from the SAME bookkeeping every phase already writes, deliberately, rather than
+# from per-family ad-hoc variables (SUITE_SKIPPED, SQLITE_SKIPPED, and the hand-written
+# busbar-admin note each did their own version of this and each had to be remembered). A phase added
+# later that calls record_phase_skip with a gap status is counted here with no further edit.
+GAP_STATUSES="sibling-missing skip-docker"
+
+is_gap_status() {
+  local s
+  for s in $GAP_STATUSES; do [ "$1" = "$s" ] && return 0; done
+  return 1
+}
+
+# Print "<phase-id> <status>" for every phase that did not run for a coverage-gap reason.
+gap_phases() {
+  local i=0
+  while [ "$i" -lt "${#PHASE_RUN_IDS[@]}" ]; do
+    if is_gap_status "${PHASE_RUN_STATUS[$i]}"; then
+      printf '%s %s\n' "${PHASE_RUN_IDS[$i]}" "${PHASE_RUN_STATUS[$i]}"
+    fi
+    i=$((i + 1))
+  done
+}
+
+# --- THE ABSENCE OF INPUT ------------------------------------------------------------------------
+# gap_phases() can only see statuses that were WRITTEN. A phase in scope for this run that wrote no
+# record at all, or wrote `not-in-segment` while being in the selected segment (a literal id that
+# drifted from the registry-derived one), is invisible to it -- so a run in which ZERO phases
+# executed printed "Every phase in scope for this run EXECUTED" and exited 0. The scope is therefore
+# diffed against the records BY NAME, and zero executed phases is RED on its own (the sibling gate's
+# rule, scripts/release-gate/gate.sh: "ZERO EXECUTED CHECKS IS RED"). Both are fatal in every mode:
+# unlike a missing sibling they are not a fact of local life, they are this harness lying.
+in_scope_phases() {
+  if [ -z "$SELECTED_PHASES" ]; then all_phase_ids; else printf '%s\n' "$SELECTED_PHASES"; fi
+}
+
+# Print "<phase-id> <why>" for every in-scope phase with no record, or recorded not-in-segment.
+unaccounted_phases() {
+  local p i found
+  while read -r p; do
+    [ -n "$p" ] || continue
+    found=""
+    i=0
+    while [ "$i" -lt "${#PHASE_RUN_IDS[@]}" ]; do
+      if [ "${PHASE_RUN_IDS[$i]}" = "$p" ]; then found="${PHASE_RUN_STATUS[$i]}"; fi
+      i=$((i + 1))
+    done
+    if [ -z "$found" ]; then
+      printf '%s %s\n' "$p" "no-record"
+    elif [ "$found" = "not-in-segment" ]; then
+      printf '%s %s\n' "$p" "in-segment-but-recorded-not-in-segment"
+    fi
+  done <<<"$(in_scope_phases)"
+  return 0
+}
+
+# Read a child gate's "<phase-id> <status>" gap rows into this run's PHASE_RUN_* accounting. A row
+# whose status is not one this gate counts as a gap is a harness disagreement, not a silent drop.
+import_child_gaps() {  # $1 = the gap file the child wrote
+  local pid st rest
+  [ -f "$1" ] || return 0
+  while read -r pid st rest; do
+    [ -n "$pid" ] || continue
+    if ! is_gap_status "${st:-}"; then
+      setup_fail "child gate gap row '${pid} ${st:-} ${rest:-}' in $1 carries no status this gate counts (${GAP_STATUSES})."
+    fi
+    record_phase_skip "$pid" "$st"
+  done <"$1"
+  return 0
+}
+
+executed_count() {
+  local i=0 n=0
+  while [ "$i" -lt "${#PHASE_RUN_IDS[@]}" ]; do
+    if [ "${PHASE_RUN_STATUS[$i]}" = "ran" ]; then n=$((n + 1)); fi
+    i=$((i + 1))
+  done
+  echo "$n"
+}
+
+# The verdict. Exits non-zero when gaps exist AND the caller asked for them to be fatal, and ALWAYS
+# when an in-scope phase is unaccounted for or nothing executed at all.
+print_verdict() {
+  local gaps n unacc nu ran
+  unacc="$(unaccounted_phases)"
+  nu="$(printf '%s' "$unacc" | grep -c . || true)"
+  ran="$(executed_count)"
+  if [ "$nu" -ne 0 ] || [ "$ran" -eq 0 ]; then
+    phase "RELEASE GATE INCOMPLETE${SEGMENT:+ (segment: ${SEGMENT})}: ${ran} PHASE(S) EXECUTED, ${nu} IN-SCOPE PHASE(S) UNACCOUNTED FOR"
+    echo
+    if [ "$ran" -eq 0 ]; then
+      echo "ZERO PHASES EXECUTED. A run that executed nothing proves nothing, whatever else it says."
+    fi
+    printf '%s\n' "$unacc" | while read -r p why; do
+      [ -n "$p" ] || continue
+      printf '  UNACCOUNTED  %-34s %s\n' "$p" "$why"
+    done
+    echo
+    echo "This is fatal in every mode: an in-scope phase that left no 'ran' record did not run, and"
+    echo "the harness did not say why. Fix the phase id / registry drift named above and re-run."
+    return 1
+  fi
+
+  gaps="$(gap_phases)"
+  n="$(printf '%s' "$gaps" | grep -c . || true)"
+
+  if [ "$n" -eq 0 ]; then
+    phase "RELEASE GATE PASSED${SEGMENT:+ (segment: ${SEGMENT})}"
+    echo "Every phase in scope for this run EXECUTED. No coverage gaps."
+    return 0
+  fi
+
+  if [ "$REQUIRE_SIBLINGS" = "1" ]; then
+    phase "RELEASE GATE INCOMPLETE${SEGMENT:+ (segment: ${SEGMENT})}: ${n} PHASE(S) DID NOT RUN"
+  else
+    phase "RELEASE GATE PASSED WITH GAPS${SEGMENT:+ (segment: ${SEGMENT})}: ${n} PHASE(S) DID NOT RUN"
+  fi
+  echo
+  echo "NOT A CLEAN PASS. Nothing below failed, but nothing below ran either, so this run says"
+  echo "NOTHING about whether these work. Do not read the banner above as a green gate."
+  echo
+  printf '%s\n' "$gaps" | while read -r p s; do
+    [ -n "$p" ] || continue
+    case "$s" in
+      sibling-missing) printf '  DID NOT RUN  %-34s no sibling checkout on this machine\n' "$p" ;;
+      skip-docker)     printf '  DID NOT RUN  %-34s --skip-docker suppressed its service container\n' "$p" ;;
+      *)               printf '  DID NOT RUN  %-34s %s\n' "$p" "$s" ;;
+    esac
+  done
+  echo
+  echo "To close a sibling-missing gap, clone the sibling repo next to this one and re-run."
+  echo "To close a skip-docker gap, start Docker and re-run without --skip-docker."
+  echo
+
+  if [ "$REQUIRE_SIBLINGS" = "1" ]; then
+    echo "--require-siblings (or BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1) is set, so a gap is fatal."
+    echo "This is the release path: a release must never be signed off by a run that tested less."
+    return 1
+  fi
+  echo "Gaps are non-fatal in this mode. Pass --require-siblings to make them fatal, which the"
+  echo "release path does."
+  return 0
+}
+
+# `.lanes // []`: soak_wait_saturated's curl fallback is `{}`, which has no .lanes; a bare `.lanes[]` is a jq
+# ERROR on that (rc 5, "Cannot iterate over null"), which under -eE killed the whole gate as a
+# PRODUCT failure on one transient /stats miss instead of taking the loop's next iteration.
+# Defined up here, above --selftest, so the selftest drives the very filter the poll uses.
+SOAK_AT_CAPACITY_FILTER='(.lanes // [])[] | select(.model=="slow-model") | .at_capacity'
+
+# --- SELFTEST: prove the verdict distinguishes a clean pass from a gap ---------------------------
+# The whole defect was a gap that READ AS a pass, so the thing that must be proven is precisely that
+# these two produce different output and different exit codes. Cheap, offline, no gate run.
+run_selftest() {
+  local fails=0 out rc
+  echo "release-check.sh --selftest: verdict accounting"
+
+  check() {
+    if [ "$2" = "$3" ]; then echo "  [ok] $1"
+    else echo "  [FAIL] $1"; echo "         want: $2"; echo "         got : $3"; fails=$((fails + 1)); fi
+  }
+
+  # 1. No gaps: a clean pass, exit 0, and the banner does NOT carry a gap qualifier.
+  PHASE_RUN_IDS=(a b); PHASE_RUN_SECS=(1 2); PHASE_RUN_STATUS=(ran ran)
+  SELECTED_PHASES=$'a\nb'
+  REQUIRE_SIBLINGS=0
+  out="$(print_verdict)"; rc=$?
+  check "a clean run exits 0" "0" "$rc"
+  check "a clean run says PASSED with no qualifier" "yes" \
+    "$(case "$out" in (*"RELEASE GATE PASSED WITH GAPS"*) echo no ;; (*"RELEASE GATE PASSED"*) echo yes ;; (*) echo no ;; esac)"
+
+  # 2. not-in-segment is BY DESIGN and must NOT be counted as a gap, or every segmented job would
+  #    report gaps and the signal would be worthless within a day.
+  PHASE_RUN_IDS=(a b); PHASE_RUN_SECS=(1 0); PHASE_RUN_STATUS=(ran not-in-segment)
+  SELECTED_PHASES=a
+  out="$(print_verdict)"
+  check "not-in-segment is not a coverage gap" "yes" \
+    "$(case "$out" in (*"WITH GAPS"*) echo no ;; (*) echo yes ;; esac)"
+
+  # 3. THE DEFECT. A missing sibling must be visibly different from a pass, and must NAME the phase.
+  PHASE_RUN_IDS=(a phase-admin-cli); PHASE_RUN_SECS=(1 0); PHASE_RUN_STATUS=(ran sibling-missing)
+  SELECTED_PHASES=$'a\nphase-admin-cli'
+  out="$(print_verdict)"; rc=$?
+  check "a missing sibling still exits 0 by default" "0" "$rc"
+  check "a missing sibling does NOT read as a clean pass" "yes" \
+    "$(case "$out" in (*"RELEASE GATE PASSED WITH GAPS"*) echo yes ;; (*) echo no ;; esac)"
+  check "the gap banner names the phase that did not run" "yes" \
+    "$(case "$out" in (*"DID NOT RUN"*phase-admin-cli*) echo yes ;; (*) echo no ;; esac)"
+
+  # 4. Under --require-siblings the same state is FATAL.
+  REQUIRE_SIBLINGS=1
+  out="$(print_verdict)" && rc=0 || rc=1
+  check "a missing sibling is fatal under --require-siblings" "1" "$rc"
+  check "the fatal banner says INCOMPLETE, not PASSED" "yes" \
+    "$(case "$out" in (*"RELEASE GATE INCOMPLETE"*) echo yes ;; (*) echo no ;; esac)"
+
+  # 5. skip-docker is a coverage gap too: a suite phase whose real service never booted tested
+  #    nothing about that backend. (One phase ran alongside it; a run where NOTHING ran is case 6.)
+  REQUIRE_SIBLINGS=0
+  PHASE_RUN_IDS=(a phase-2-suite-store-postgres); PHASE_RUN_SECS=(1 0); PHASE_RUN_STATUS=(ran skip-docker)
+  SELECTED_PHASES=$'a\nphase-2-suite-store-postgres'
+  out="$(print_verdict)"
+  check "skip-docker counts as a coverage gap" "yes" \
+    "$(case "$out" in (*"WITH GAPS"*) echo yes ;; (*) echo no ;; esac)"
+
+  # 6. THE ABSENCE OF INPUT (item 481). Every in-scope phase recorded not-in-segment: ZERO executed.
+  #    This printed "RELEASE GATE PASSED ... Every phase in scope for this run EXECUTED" and rc 0.
+  REQUIRE_SIBLINGS=1
+  PHASE_RUN_IDS=(a b); PHASE_RUN_SECS=(0 0); PHASE_RUN_STATUS=(not-in-segment not-in-segment)
+  SELECTED_PHASES=$'a\nb'
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "zero phases executed is fatal" "1" "$rc"
+  check "zero phases executed does NOT read as PASSED" "yes" \
+    "$(case "$out" in (*"RELEASE GATE PASSED"*) echo no ;; (*"ZERO PHASES EXECUTED"*) echo yes ;; (*) echo no ;; esac)"
+  REQUIRE_SIBLINGS=0
+  PHASE_RUN_IDS=(); PHASE_RUN_SECS=(); PHASE_RUN_STATUS=()
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "a run with no phase records at all is fatal, even without --require-siblings" "1" "$rc"
+
+  # 7. An in-scope phase with no record, next to one that ran, is named and fatal.
+  PHASE_RUN_IDS=(a); PHASE_RUN_SECS=(1); PHASE_RUN_STATUS=(ran)
+  SELECTED_PHASES=$'a\nb'
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "an in-scope phase that left no record is fatal" "1" "$rc"
+  check "and it is named" "yes" \
+    "$(case "$out" in (*"UNACCOUNTED"*" b "*) echo yes ;; (*) echo no ;; esac)"
+  SELECTED_PHASES=""
+
+  # 7b. A CHILD GATE'S GAPS REACH THIS VERDICT (item 480). release-check-1.5.2.sh writes each live
+  #     proof it skipped to $BUSBAR_RELEASE_GAP_FILE; without reading it back this run printed a clean
+  #     PASS over a feature gate whose OIDC proofs never ran.
+  local cg_tmp
+  cg_tmp="$(mktemp -d "${TMPDIR:-/tmp}/release-check-childgaps.XXXXXX")"
+  printf 'phase-152-oidc-live sibling-missing\n' >"${cg_tmp}/gaps"
+  PHASE_RUN_IDS=(phase-152-feature-gate); PHASE_RUN_SECS=(1); PHASE_RUN_STATUS=(ran)
+  SELECTED_PHASES=phase-152-feature-gate
+  import_child_gaps "${cg_tmp}/gaps"
+  REQUIRE_SIBLINGS=0
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "a child gate's gap is NOT a clean pass" "yes" \
+    "$(case "$out" in (*"RELEASE GATE PASSED WITH GAPS"*) echo yes ;; (*) echo no ;; esac)"
+  check "and the child's gap is named" "yes" \
+    "$(case "$out" in (*"DID NOT RUN"*phase-152-oidc-live*) echo yes ;; (*) echo no ;; esac)"
+  REQUIRE_SIBLINGS=1
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "a child gate's gap is fatal under --require-siblings" "1" "$rc"
+  REQUIRE_SIBLINGS=0
+  rm -rf "$cg_tmp"
+  SELECTED_PHASES=""
+
+  # 8. NO PLUGIN PHASE ID IS A LITERAL (item 541). Every non-suite plugin phase id is derived from
+  #    plugins.yaml at runtime; a literal copy of one drifts silently on an alias rename. Checked
+  #    against this file's own non-comment text for every id the registry currently derives.
+  local pid lit_hits=""
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    case "$pid" in phase-2-suite-*) continue ;; esac
+    if grep -v '^[[:space:]]*#' "${REPO_ROOT}/scripts/release-check.sh" | grep -qF -- "$pid"; then
+      lit_hits="${lit_hits} ${pid}"
+    fi
+  done <<<"$(list_plugin_phase_ids)"
+  check "no registry-derived plugin phase id is written as a literal" "" "${lit_hits# }"
+
+  # 9. A /stats miss is not a jq error (item 540). The poll's own `{}` fallback must yield an empty
+  #    answer, rc 0, so the loop takes its next iteration instead of firing the ERR trap.
+  local jout jrc
+  jout="$(echo '{}' | jq -r "$SOAK_AT_CAPACITY_FILTER" 2>&1)" && jrc=0 || jrc=$?
+  check "the soak poll filter over its own {} fallback exits 0" "0" "$jrc"
+  check "and yields nothing" "" "$jout"
+  jout="$(echo '{"lanes":[{"model":"slow-model","at_capacity":true}]}' | jq -r "$SOAK_AT_CAPACITY_FILTER")"
+  check "and still reads at_capacity off a real snapshot (control)" "true" "$jout"
+
+  # 10. AN EMPTY REGISTRY IS A HARNESS VERDICT, exit 78 (item 539). Driven for real: this script in
+  #     a scratch tree whose plugin-registry-check.sh prints nothing. setup_fail used to be called
+  #     before it was defined, so this was `command not found`, exit 127, no banner.
+  local st_tmp st_out st_rc
+  st_tmp="$(mktemp -d "${TMPDIR:-/tmp}/release-check-selftest.XXXXXX")"
+  mkdir -p "${st_tmp}/scripts"
+  cp "${REPO_ROOT}/scripts/release-check.sh" "${st_tmp}/scripts/release-check.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"${st_tmp}/scripts/plugin-registry-check.sh"
+  chmod +x "${st_tmp}/scripts/plugin-registry-check.sh"
+  st_out="$(bash "${st_tmp}/scripts/release-check.sh" --list-phases 2>&1)" && st_rc=0 || st_rc=$?
+  rm -rf "$st_tmp"
+  check "an empty registry exits 78 (HARNESS), not 127" "78" "$st_rc"
+  check "and prints the [SETUP] harness verdict" "yes" \
+    "$(case "$st_out" in (*"[SETUP]"*"HARNESS / ENVIRONMENT"*) echo yes ;; (*) echo no ;; esac)"
+
+  echo
+  if [ "$fails" -ne 0 ]; then echo "release-check.sh --selftest FAILED (${fails} case(s))"; return 1; fi
+  echo "release-check.sh --selftest passed"
+}
+
+# --selftest exits here: it proves the verdict accounting and must not run the gate.
+if [ "$SELFTEST" = "1" ]; then run_selftest; exit $?; fi
+
 print_timing_summary() {
   local i=0 total=0
   echo
@@ -505,7 +912,7 @@ print_timing_summary() {
   echo "=== TIMING SUMMARY${SEGMENT:+ (segment: ${SEGMENT})} ==="
   echo "════════════════════════════════════════════════════════════════════════════"
   echo "FIXED SETUP (per invocation, paid once per parallel job):"
-  echo "  phase-0-build (cargo build --release -p busbar -p busbar-plugin-pack): ${SETUP_SECS}s"
+  echo "  phase-0-build (cargo build --release -p busbar -p busbar-plugin-loader --features busbar-plugin-loader/pack): ${SETUP_SECS}s"
   echo
   # Total is summed in THIS shell first: the print loop below feeds a pipeline (subshell), so any
   # accumulation done inside it would be discarded.
@@ -552,11 +959,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Sets $NEW_TMPDIR; it does NOT echo the path. Callers used to capture it in a command
+# substitution, which runs the function in a SUBSHELL — so `TMP_DIRS+=` mutated a copy of the array
+# that died with the subshell, the parent's `TMP_DIRS` stayed empty for the whole run, and
+# `cleanup`'s `rm -rf` loop iterated NOTHING, every time. This gate has therefore never once deleted
+# a working directory it created, and it stages release binaries in them. Same defect, same shape,
+# as the one fixed in scripts/no-plugins-gate.sh; `scripts/release-script-lint.sh` now enforces it.
 new_tmpdir() {
-  local d
-  d="$(mktemp -d "${TMPDIR:-/tmp}/busbar-release-check.XXXXXX")"
-  TMP_DIRS+=("$d")
-  echo "$d"
+  NEW_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/busbar-release-check.XXXXXX")"
+  TMP_DIRS+=("$NEW_TMPDIR")
 }
 
 # ── Wait-for-HTTP helper: real polling, no fixed sleeps. Fails loudly on timeout. ──────────────────
@@ -575,17 +986,17 @@ wait_for_http() {
 # ── Millisecond wall clock (the soak phase asserts per-request latency against the failover budget). ─
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
 
-# ── Platform-specific cdylib naming (host-native build; matches release.yml's per-target matrix
+# ── Platform-specific cdylib naming (host-native build; matches the removed release.yml's per-target matrix
 #    entries for the OS this script actually runs on). ─────────────────────────────────────────────
 case "$(uname -s)" in
   Darwin) LIBEXT="dylib"; LIBPREFIX="lib" ;;
   Linux)  LIBEXT="so";    LIBPREFIX="lib" ;;
-  *) echo "unsupported OS for local release-check: $(uname -s)" >&2; exit 1 ;;
+  *) setup_fail "unsupported OS for local release-check: $(uname -s)" ;;
 esac
 VER="$(grep -m1 '^version' crates/busbar/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')"
 note "Host: $(uname -s) $(uname -m), busbar version ${VER}, libext=${LIBEXT}"
 
-PLUGIN_DIST="$(new_tmpdir)"
+new_tmpdir; PLUGIN_DIST="$NEW_TMPDIR"
 MOCK_TEXT_MARKER_SEQ=0
 
 # ── Tiny local mock upstream (Anthropic-protocol) — a real HTTP server, not a canned function ─────
@@ -601,7 +1012,7 @@ MOCK_TEXT_MARKER_SEQ=0
 start_mock_upstream() {
   local port="$1" marker="$2" delay="${3:-0}"
   local script
-  script="$(new_tmpdir)/mock_upstream.py"
+  new_tmpdir; script="$NEW_TMPDIR/mock_upstream.py"
   cat >"$script" <<PYEOF
 import http.server, json, sys, time
 
@@ -655,9 +1066,9 @@ PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
 if any_selected_needs_binary; then
   phase "Phase 0: build busbar binary + busbar-plugin-pack (FIXED SETUP)"
   _setup_t0=$SECONDS
-  cargo build --release -p busbar -p busbar-plugin-pack
-  [ -x "$BUSBAR_BIN" ] || { echo "busbar binary not found at $BUSBAR_BIN" >&2; exit 1; }
-  [ -x "$PACK_BIN" ] || { echo "busbar-plugin-pack not found at $PACK_BIN" >&2; exit 1; }
+  cargo build --release -p busbar -p busbar-plugin-loader --features busbar-plugin-loader/pack
+  [ -x "$BUSBAR_BIN" ] || setup_fail "busbar binary not found at $BUSBAR_BIN: nothing was built to test."
+  [ -x "$PACK_BIN" ] || setup_fail "busbar-plugin-pack not found at $PACK_BIN: nothing was built to test."
   SETUP_SECS=$((SECONDS - _setup_t0))
   ok "busbar binary: $BUSBAR_BIN"
   ok "busbar-plugin-pack: $PACK_BIN"
@@ -669,9 +1080,9 @@ else
 fi
 
 # ── Nothing left to build here. Every first-party store/auth/secret plugin has been extracted to
-#    its own repo (GetBusbar/store-sqlite, GetBusbar/store-postgres, GetBusbar/store-valkey,
-#    GetBusbar/auth-oidc, GetBusbar/hashicorp-vault; each a same-repo 2-crate workspace, the pattern
-#    auth-oidc's own extraction established) — busbarAI's release.yml itself no longer builds or
+#    its own repo (GetBusbar/busbar-store-sqlite, GetBusbar/busbar-store-postgres, GetBusbar/busbar-store-valkey,
+#    GetBusbar/busbar-auth-oidc, GetBusbar/busbar-secret-vault; each a same-repo 2-crate workspace, the pattern
+#    auth-oidc's own extraction established) — busbarAI's the removed release.yml itself no longer builds or
 #    packs any of them; it only ships the busbar binary + the bundled hook plugins now (see the
 #    "Store/auth plugin releases moved out" comment there). Phase 1 and the registry-driven
 #    Phase 2 suite loop below each gate on their respective repo's own test suite via a sibling
@@ -695,15 +1106,17 @@ if ! phase_selected phase-0a2-signing-key; then
   record_phase_skip phase-0a2-signing-key "not-in-segment"
 else
 begin_phase phase-0a2-signing-key "Phase 0a2: signing-key requirement — keys verifier without signing_key fail-closes, with it validates"
-sk_work="$(new_tmpdir)"
+new_tmpdir; sk_work="$NEW_TMPDIR"
 cat >"${sk_work}/providers.yaml" <<EOF
 mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:9"
 EOF
 # (1) NO signing_key — must fail-closed at --validate with the actionable error.
-# executable-config-lint: allow — DELIBERATELY INVALID: this config omits auth.signing_key precisely
-# so the assertion below can prove busbar fail-closes on it. It must never be "fixed".
+# executable-config-lint: allow until=2027-12-31 — DELIBERATELY INVALID: this config omits auth.signing_key so the assertion below can prove busbar fail-closes on it.
+# It must never be "fixed". The expiry is far out because this is a PERMANENT fixture, not a
+# migration: the date is there so the claim is re-read rather than inherited, which is what an
+# undated waiver becomes.
 # NOTE on the auth shape used by every generated config in this script: 1.5.3 retired the INLINE
 # chain/admin_auth entry, so a provider is DEFINED once under `identity-providers:` and REFERENCED by
 # bare name. The old `admin_auth: [- admin-tokens: { token: … }]` is now a detect_legacy_markers hit
@@ -851,7 +1264,7 @@ soak_wait_saturated() {
   local snap ac
   for _ in $(seq 1 50); do
     snap="$(curl -fsS "http://127.0.0.1:${SOAK_LISTEN_PORT}/stats" 2>/dev/null || echo '{}')"
-    ac="$(echo "$snap" | jq -r '.lanes[] | select(.model=="slow-model") | .at_capacity')"
+    ac="$(echo "$snap" | jq -r "$SOAK_AT_CAPACITY_FILTER")"
     if [ "$ac" = "true" ]; then
       echo "$snap" | jq -c '.lanes[] | select(.model=="slow-model") | {at_capacity,available,inflight,availability,recovery_hint_ms}'
       return 0
@@ -865,7 +1278,7 @@ soak_wait_saturated() {
 
 run_saturation_soak() {
   local budget_ms=5000
-  SOAK_WORK="$(new_tmpdir)"
+  new_tmpdir; SOAK_WORK="$NEW_TMPDIR"
   local marker="soak-$$-${RANDOM}"
   # Declared up front (not inside scenario A) so scenario B is genuinely independent of it: either
   # scenario can be selected on its own by --segment.
@@ -998,7 +1411,7 @@ run_store_backend_e2e() {
   local listen_port="$4" admin_port="$5" mock_port="$6"
 
   local work
-  work="$(new_tmpdir)"
+  new_tmpdir; work="$NEW_TMPDIR"
   local marker="release-check-${backend_label}-$$-${RANDOM}"
 
   echo "  starting mock upstream on 127.0.0.1:${mock_port} (marker=${marker})"
@@ -1051,18 +1464,22 @@ EOF
     "$BUSBAR_BIN" --validate
   ok "--validate clean for ${backend_label}"
 
+  # Sets $NEW_BG_PID rather than echoing it: captured in a command substitution, the `BG_PIDS+=`
+  # below runs in a SUBSHELL and is discarded, so `cleanup` never learns about this process. The
+  # inline `kill`s further down cover the happy path only — every `exit 1` between the boot and the
+  # kill (there are several) would otherwise leave a busbar holding ${listen_port} after the gate
+  # returns.
   boot_busbar() {
     BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" \
       MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=release-check-admin \
       RUST_LOG=warn \
       "$BUSBAR_BIN" >"${work}/busbar.log" 2>&1 &
-    local pid=$!
-    BG_PIDS+=("$pid")
-    echo "$pid"
+    NEW_BG_PID=$!
+    BG_PIDS+=("$NEW_BG_PID")
   }
 
   echo "  booting busbar (${backend_label})..."
-  local pid; pid="$(boot_busbar)"
+  local pid; boot_busbar; pid="$NEW_BG_PID"
   wait_for_http "http://127.0.0.1:${listen_port}/healthz" 30
   ok "busbar up (pid ${pid}), /healthz green"
 
@@ -1104,7 +1521,7 @@ EOF
   echo "  restarting busbar (${backend_label}) against the SAME store to prove durability..."
   kill "$pid"
   wait "$pid" 2>/dev/null || true
-  local pid2; pid2="$(boot_busbar)"
+  local pid2; boot_busbar; pid2="$NEW_BG_PID"
   wait_for_http "http://127.0.0.1:${listen_port}/healthz" 30
   ok "busbar restarted (pid ${pid2}), /healthz green"
 
@@ -1142,16 +1559,17 @@ EOF
 #    proof. Its own release-check-equivalent lives in ITS repo/CI; this script's job is only to
 #    prove busbar's real HTTP + restart-durability story against it when the sibling is available
 #    locally (dockerless, fastest feedback loop of the three backends). ────────────────────────────
-STORE_SQLITE_SRC="${REPO_ROOT}/../store-sqlite"
-if ! phase_selected phase-1-sqlite-binary; then
-  record_phase_skip phase-1-sqlite-binary "not-in-segment"
+STORE_SQLITE_SRC="${REPO_ROOT}/../busbar-store-sqlite"
+if ! phase_selected "${SQLITE_BINARY_PHASE}"; then
+  record_phase_skip "${SQLITE_BINARY_PHASE}" "not-in-segment"
 elif [ -d "$STORE_SQLITE_SRC" ]; then
-  begin_phase phase-1-sqlite-binary "Phase 1: store-sqlite-plugin — sibling checkout: real busbar, real HTTP traffic, real restart durability"
+  begin_phase "${SQLITE_BINARY_PHASE}" "Phase 1: store-sqlite-plugin — sibling checkout: real busbar, real HTTP traffic, real restart durability"
   note "store-sqlite no longer lives in-tree — it brings 100% of what it needs in its own repo, a"
   note "same-repo 2-crate workspace (busbar-store-sqlite + busbar-store-sqlite-plugin). Its own"
   note "store-sqlite-plugin/tests/e2e.rs already covers the hermetic in-process dlopen ABI path."
   note "This phase builds the plugin cdylib from the sibling checkout and drives it through busbar's"
   note "real end-to-end HTTP + restart-durability story, the same as every other store backend here."
+  # package-selector: busbar-store-sqlite-plugin -- scripts/release-check.sh -- the `--manifest-path` above points at the sibling store-sqlite checkout, so the selector is resolved against that workspace and never against this one
   cargo build --release --manifest-path "${STORE_SQLITE_SRC}/Cargo.toml" -p busbar-store-sqlite-plugin
   SQLITE_LIB="${STORE_SQLITE_SRC}/target/release/${LIBPREFIX}busbar_store_sqlite_plugin.${LIBEXT}"
   [ -f "$SQLITE_LIB" ] || { echo "missing built cdylib: $SQLITE_LIB" >&2; exit 1; }
@@ -1164,16 +1582,16 @@ elif [ -d "$STORE_SQLITE_SRC" ]; then
     --out "${PLUGIN_DIST}/busbar-store-sqlite-${VER}-local.tar.gz" \
     --allow-unsigned
   ok "packed busbar-store-sqlite (sibling checkout)"
-  SQLITE_DB="$(new_tmpdir)/governance.db"
+  new_tmpdir; SQLITE_DB="$NEW_TMPDIR/governance.db"
   run_store_backend_e2e "sqlite" "sqlite" "{ db_path: \"${SQLITE_DB}\" }" 18080 18081 18079
   ok "SQLite phase complete: $(date -u +%H:%M:%S) elapsed=${SECONDS}s"
   end_phase ran
 else
-  echo "SKIP: ../store-sqlite not present as a sibling checkout on this machine." >&2
-  echo "Gate incomplete — SQLite coverage could not run. Check out ../store-sqlite for full" >&2
+  echo "SKIP: ../busbar-store-sqlite not present as a sibling checkout on this machine." >&2
+  echo "Gate incomplete — SQLite coverage could not run. Check out ../busbar-store-sqlite for full" >&2
   echo "coverage before tagging, or confirm that repo's own CI is green." >&2
   SQLITE_SKIPPED=1
-  record_phase_skip phase-1-sqlite-binary "sibling-missing"
+  record_phase_skip "${SQLITE_BINARY_PHASE}" "sibling-missing"
 fi
 
 # ── Phase 2: the registry-driven sibling-suite loop ───────────────────────────────────────────────
@@ -1267,7 +1685,7 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
       docker run -d --rm --name "$SUITE_CONTAINER" \
         -e POSTGRES_USER=busbar -e POSTGRES_PASSWORD=busbar -e POSTGRES_DB=busbar_release_check \
         -p 15432:5432 \
-        postgres:16 >/dev/null
+        postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b >/dev/null
       echo "  waiting for postgres to accept connections (pg_isready inside the container)..."
       waited=0
       until docker exec "$SUITE_CONTAINER" pg_isready -U busbar >/dev/null 2>&1; do
@@ -1289,7 +1707,7 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
         -e MYSQL_ROOT_PASSWORD=busbar -e MYSQL_USER=busbar -e MYSQL_PASSWORD=busbar \
         -e MYSQL_DATABASE=busbar_release_check \
         -p 13306:3306 \
-        mysql:8 >/dev/null
+        mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb >/dev/null
       echo "  waiting for mysql to accept connections (mysqladmin ping inside the container)..."
       waited=0
       # MySQL 8's first boot initializes the datadir and restarts once — allow a longer window than
@@ -1309,7 +1727,8 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
     valkey)
       SUITE_CONTAINER="busbar-release-check-valkey-$$"
       DOCKER_CONTAINERS+=("$SUITE_CONTAINER")
-      docker run -d --rm --name "$SUITE_CONTAINER" -p 16379:6379 valkey/valkey:8 >/dev/null
+      docker run -d --rm --name "$SUITE_CONTAINER" -p 16379:6379 \
+        valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6 >/dev/null
       echo "  waiting for valkey to accept connections (valkey-cli ping inside the container)..."
       waited=0
       until [ "$(docker exec "$SUITE_CONTAINER" valkey-cli ping 2>/dev/null)" = "PONG" ]; do
@@ -1328,7 +1747,8 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
       SUITE_CONTAINER="busbar-release-check-vault-$$"
       DOCKER_CONTAINERS+=("$SUITE_CONTAINER")
       docker run -d --rm --name "$SUITE_CONTAINER" --cap-add=IPC_LOCK \
-        -e VAULT_DEV_ROOT_TOKEN_ID=root -p 18200:8200 hashicorp/vault >/dev/null
+        -e VAULT_DEV_ROOT_TOKEN_ID=root -p 18200:8200 \
+        hashicorp/vault@sha256:5be49781ecf78bfe775c5309c6a4d9f4e9e040b6c885c99eb2b12fb69855e1a2 >/dev/null
       echo "  waiting for vault to report healthy (/v1/sys/health)..."
       waited=0
       until curl -fsS "http://127.0.0.1:18200/v1/sys/health" >/dev/null 2>&1; do
@@ -1382,14 +1802,13 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
   fi
 done <<<"$REGISTRY_LIST"
 
-# ── Phase 5: Headroom / Webrequest — local --validate dlopen smoke test ────────────────────────────
-phase "Phase 5: headroom-hook / webrequest-hook — local busbar --validate dlopen smoke test"
-HEADROOM_SRC="${REPO_ROOT}/../headroom-hook"
-WEBREQUEST_SRC="${REPO_ROOT}/../webrequest-hook"
+# ── Phase 5: Webrequest — local --validate dlopen smoke test ────────────────────────────────────────
+phase "Phase 5: webrequest-hook — local busbar --validate dlopen smoke test"
+WEBREQUEST_SRC="${REPO_ROOT}/../busbar-hook-webrequest"
 
 run_validate_smoke() {
   local name="$1" manifest_path="$2" crate_lib_name="$3" kind="$4" needs_flag="${5:-}"
-  local work; work="$(new_tmpdir)"
+  local work; new_tmpdir; work="$NEW_TMPDIR"
   mkdir -p "${work}/plugins"
   echo "  building ${name} cdylib from ${manifest_path}..."
   cargo build --release --manifest-path "$manifest_path"
@@ -1400,7 +1819,7 @@ run_validate_smoke() {
   [ -n "$needs_flag" ] && pack_extra=(--needs-prompt rw)
   "$PACK_BIN" pack \
     --lib "$lib" \
-    --name "busbar-${name}" --alias "${name}" --kind "$kind" \
+    --name "busbar-${kind}-${name}" --alias "${name}" --kind "$kind" \
     --version "$VER" --publisher busbar \
     --description "busbar ${name} hook plugin (local release-check smoke test)" \
     --license Apache-2.0 \
@@ -1433,26 +1852,15 @@ EOF
   ok "${name}: busbar --validate confirms the real dlopen'd plugin loads (${out##*$'\n'})"
 }
 
-if ! phase_selected phase-5-smoke-headroom; then
-  record_phase_skip phase-5-smoke-headroom "not-in-segment"
-elif [ -d "$HEADROOM_SRC" ]; then
-  begin_phase phase-5-smoke-headroom "Phase 5: headroom-hook — busbar --validate dlopen smoke"
-  run_validate_smoke "headroom" "${HEADROOM_SRC}/Cargo.toml" "headroom_hook" hook needs
-  end_phase ran
-else
-  note "SKIP: ../headroom-hook not present as a sibling checkout on this machine."
-  record_phase_skip phase-5-smoke-headroom "sibling-missing"
-fi
-
-if ! phase_selected phase-5-smoke-webrequest; then
-  record_phase_skip phase-5-smoke-webrequest "not-in-segment"
+if ! phase_selected "${WEBREQUEST_SMOKE_PHASE}"; then
+  record_phase_skip "${WEBREQUEST_SMOKE_PHASE}" "not-in-segment"
 elif [ -d "$WEBREQUEST_SRC" ]; then
-  begin_phase phase-5-smoke-webrequest "Phase 5: webrequest-hook — busbar --validate dlopen smoke"
-  run_validate_smoke "webrequest" "${WEBREQUEST_SRC}/Cargo.toml" "busbar_webrequest_hook_plugin" hook
+  begin_phase "${WEBREQUEST_SMOKE_PHASE}" "Phase 5: webrequest-hook — busbar --validate dlopen smoke"
+  run_validate_smoke "webrequest" "${WEBREQUEST_SRC}/Cargo.toml" "busbar_hook_webrequest" hook
   end_phase ran
 else
-  note "SKIP: ../webrequest-hook not present as a sibling checkout on this machine."
-  record_phase_skip phase-5-smoke-webrequest "sibling-missing"
+  note "SKIP: ../busbar-hook-webrequest not present as a sibling checkout on this machine."
+  record_phase_skip "${WEBREQUEST_SMOKE_PHASE}" "sibling-missing"
 fi
 
 # ── busbar-admin (busbarctl) — the REVERSE of the plugin phases ────────────────────────────────
@@ -1487,12 +1895,25 @@ if ! phase_selected phase-152-feature-gate; then
   record_phase_skip phase-152-feature-gate "not-in-segment"
 else
   begin_phase phase-152-feature-gate "1.5.2 feature gate (plugins.fetch + token-exchange matrix + admin authz matrix)"
-  BUSBAR_BIN="$BUSBAR_BIN" PACK_BIN="$PACK_BIN" bash "${REPO_ROOT}/scripts/release-check-1.5.2.sh"
+  # THE CHILD'S GAPS ARE THIS GATE'S GAPS (item 480). release-check-1.5.2.sh writes every live proof
+  # it could not run as "<phase-id> <status>" to $BUSBAR_RELEASE_GAP_FILE; they are read back into
+  # this run's own accounting, so print_verdict NAMES them and applies --require-siblings to them.
+  # The child is told not to be fatal on its own: this verdict is the one that decides, and it can
+  # only name what it was handed -- a bare exit code from the child named nothing.
+  new_tmpdir; CHILD_GAP_FILE="$NEW_TMPDIR/release-check-1.5.2.gaps"; : >"$CHILD_GAP_FILE"
+  BUSBAR_BIN="$BUSBAR_BIN" PACK_BIN="$PACK_BIN" BUSBAR_RELEASE_GAP_FILE="$CHILD_GAP_FILE" \
+    BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=0 bash "${REPO_ROOT}/scripts/release-check-1.5.2.sh"
+  import_child_gaps "$CHILD_GAP_FILE"
   ok "1.5.2 feature gate passed (see its own VERIFIED-AT-INTEGRATION notes above)"
   end_phase ran
 fi
 
-phase "RELEASE GATE PASSED${SEGMENT:+ (segment: ${SEGMENT})}"
+# The verdict is COMPUTED, not asserted. See print_verdict: a phase that did not run for a coverage
+# reason changes the banner, names itself, and is fatal under --require-siblings. `|| VERDICT_RC=$?`
+# rather than a bare call so the timing summary below still prints on the fatal path: a run that
+# ends because coverage was incomplete is exactly a run whose accounting you want to read.
+VERDICT_RC=0
+print_verdict || VERDICT_RC=$?
 echo "Total elapsed: ${SECONDS}s"
 if [ -n "$SEGMENT" ]; then
   echo "This run covered ONLY segment '${SEGMENT}'. It is NOT the full gate on its own —"
@@ -1506,21 +1927,23 @@ for p in ${SUITE_SKIPPED[@]+"${SUITE_SKIPPED[@]}"}; do
   echo "its coverage was SKIPPED, not passed. Run on a machine with the sibling checked out (and"
   echo "Docker up) for full coverage before tagging, or confirm that repo's own CI is green."
 done
-if phase_selected phase-1-sqlite-binary; then
+if phase_selected "${SQLITE_BINARY_PHASE}"; then
   if [ -n "${SQLITE_SKIPPED:-}" ]; then
-    echo "NOTE: ../store-sqlite was not present locally — SQLite coverage was skipped, not passed. Run"
-    echo "on a machine with ../store-sqlite checked out for full coverage before tagging, or confirm"
+    echo "NOTE: ../busbar-store-sqlite was not present locally — SQLite coverage was skipped, not passed. Run"
+    echo "on a machine with ../busbar-store-sqlite checked out for full coverage before tagging, or confirm"
     echo "that repo's own CI is green."
   else
     echo "SQLite phase passed with real assertions (sibling checkout)."
   fi
 fi
-if phase_selected phase-5-smoke-headroom || phase_selected phase-5-smoke-webrequest; then
-  if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
-    echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
-    echo "partially or fully skipped. Run on a machine with ../headroom-hook and ../webrequest-hook"
-    echo "checked out for full coverage before tagging, or confirm docker.yml's own smoke test is green."
+if phase_selected "${WEBREQUEST_SMOKE_PHASE}"; then
+  if [ ! -d "$WEBREQUEST_SRC" ]; then
+    echo "NOTE: the hook-plugin sibling repo was not present locally — that phase was skipped."
+    echo "Run on a machine with ../busbar-hook-webrequest checked out for full coverage before tagging,"
+    echo "or confirm that repo's own CI is green."
   fi
 fi
 
 print_timing_summary
+
+exit "$VERDICT_RC"

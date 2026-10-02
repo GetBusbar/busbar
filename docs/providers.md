@@ -1,10 +1,10 @@
 # Adding a provider
 
-Busbar's thesis is **protocols, not providers**. It implements six wire protocols losslessly; a *provider* is just a catalog entry that says which protocol it speaks and where it lives. Adding one is a config entry you write yourself; no code changes hands. Any provider that speaks one of the six protocols, `anthropic`, `openai`, `gemini`, `bedrock`, `responses`, `cohere`, is a few lines of YAML. No new code, no pull request to Busbar, no waiting on an "integration."
+Busbar's thesis is **protocols, not providers**. It implements six wire protocols natively on both sides; a *provider* is just a catalog entry that says which protocol it speaks and where it lives. Adding one is a config entry you write yourself; no code changes hands. Any provider that speaks one of the six protocols, `anthropic`, `openai`, `gemini`, `bedrock`, `responses`, `cohere`, is a few lines of YAML. No new code, no pull request to Busbar, no waiting on an "integration."
 
 ## What a provider entry is
 
-Providers live in `providers.yaml` as a map of name → definition. The shipped catalog is a verified starting set; you add your own entries exactly the same way. A `config.yaml` provider entry does not *define* a provider — it references an existing `providers.yaml` catalog entry by name (supplying its key) and may override that entry's fields; a name with no catalog entry fails to resolve.
+Providers live in `providers.yaml` as a map of name → definition. The shipped catalog is a verified starting set; you add your own entries exactly the same way. A `config.yaml` provider entry does not *define* a provider. It references an existing `providers.yaml` catalog entry by name (supplying its key) and may override that entry's fields; a name with no catalog entry fails to resolve.
 
 | Field | Required | What it is |
 |---|---|---|
@@ -16,10 +16,10 @@ Providers live in `providers.yaml` as a map of name → definition. The shipped 
 | `auth` | no | The egress auth mechanism, when a backend doesn't use its protocol's native auth. One of: `bearer` (default) · `api-key` (header style) · `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523, mints + auto-refreshes a token from a service-account key; e.g. Google Vertex AI) · `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4, the `api_key` reference resolves to `client_id:client_secret`; e.g. Azure OpenAI via Entra ID). |
 | `token_url` | no | OAuth token endpoint for `auth: oauth-client-credentials`. Required for that auth style. |
 | `scope` | no | OAuth scope for `auth: oauth-client-credentials`. Required for that auth style. |
-| `subject` | no | JWT-bearer `sub` claim (RFC 7523 §3) for `auth: jwt-bearer`. Opt-in only — leave unset for a plain service account (e.g. the default Vertex AI setup below); set it only for Google domain-wide-delegation impersonation or a third-party IdP that requires `sub`. |
+| `subject` | no | JWT-bearer `sub` claim (RFC 7523 §3) for `auth: jwt-bearer`. Opt-in only. Leave unset for a plain service account (e.g. the default Vertex AI setup below); set it only for Google domain-wide-delegation impersonation or a third-party IdP that requires `sub`. |
 | `health` | no | Optional health-probe configuration. |
 
-The API key is **not** in this file. `config.yaml` supplies it as a secret reference (`api_key: { env: VAR }` / `{ file: /path }` / a secret plugin), so secrets never live in config.
+The API key is **not** in this file. `config.yaml` supplies it as a secret reference (`api_key: { env: VAR }` / `{ file: /path }` / a secret plugin, or `none` for an upstream that takes no credential), so secrets never live in config.
 
 ## Add one in three steps
 
@@ -57,14 +57,14 @@ export MY_PROVIDER_KEY=sk-...
 
 The `protocol` is the provider's **native wire format**: what its own SDK speaks. Pick the one that matches:
 
-- **`openai`**: any OpenAI Chat Completions–compatible endpoint (`/v1/chat/completions`). The bulk of the hosted long-tail (Groq, Together, Fireworks, DeepSeek, and most "OpenAI-compatible" APIs) lives here.
+- **`openai`**: any endpoint compatible with OpenAI Chat Completions (`/v1/chat/completions`). The bulk of the hosted long-tail (Groq, Together, Fireworks, DeepSeek, and most "OpenAI-compatible" APIs) lives here.
 - **`anthropic`**: `/v1/messages` (Anthropic and Anthropic-compatible backends).
 - **`gemini`**: Google Generative Language (`x-goog-api-key`, `:generateContent`).
 - **`bedrock`**: AWS Bedrock Converse (SigV4-signed).
 - **`responses`**: OpenAI Responses (`/v1/responses`).
 - **`cohere`**: Cohere v2 (`/v2/chat`).
 
-A client speaking *any* of these protocols can target a provider speaking *any other*, Busbar translates between them losslessly. The provider's protocol only says how Busbar talks to it upstream.
+A client speaking *any* of these protocols can target a provider speaking *any other*, and Busbar translates between them: every modelled field arrives in the target's native shape, and what cannot cross is dropped at the seam rather than mangled. Same-protocol routes are not translated at all, they are forwarded byte-for-byte. What "lossless" does and does not mean, including the constructs that do not cross in 1.6.0, is defined in [Protocols and translation](https://getbusbar.com/docs/protocols/#what-lossless-means-here). The provider's protocol only says how Busbar talks to it upstream.
 
 ## Who speaks what: the model landscape as a lookup
 
@@ -105,7 +105,7 @@ Then use it from `config.yaml` as normal:
 ```yaml
 providers:
   ollama:
-    api_key: { env: OLLAMA_KEY }   # required, but unused: set OLLAMA_KEY=unused
+    api_key: none                  # this upstream takes NO credential — declare it
 
 models:
   llama-local:
@@ -128,8 +128,10 @@ Conventional ports, for the entry's `base_url`:
 | vLLM (`vllm serve`) | 8000 |
 
 Two wrinkles worth stating plainly. `api_key` is required on every provider, including one that wants
-no credential, so point it at an environment variable and set that variable to anything: the value
-goes to a server on your own machine that ignores it. And busbar permits plain `http://` only to a
+no credential — but you declare that rather than fake it: `api_key: none` starts the lane with no
+credential, sends no auth header and skips the health prober. (Pointing it at a variable you never
+set is not the workaround it used to be: a reference that does not resolve now refuses boot.) And
+busbar permits plain `http://` only to a
 LITERAL private or loopback address (`127.0.0.1`, `::1`, `10/8`, `172.16/12`, `192.168/16`,
 `100.64/10`, link-local). It does not resolve names in order to classify them, because a name it
 cannot classify might point anywhere, so it fails closed. There is no opt-out field.
@@ -180,6 +182,60 @@ Running busbar directly on the host avoids both issues.
 HTTP-status failures (429, 5xx, 401, …) are classified by the circuit breaker automatically. But some providers signal **billing** or **rate-limit** conditions with their own JSON error codes: sometimes even inside a `200` body. `error_map` translates those codes into a disposition so the breaker reacts correctly: a `billing` failure becomes a sticky 30-minute hard-down, a `rate_limit` becomes a short transient cooldown.
 
 This is exactly why the shipped catalog is **verified, not scraped**: a wrong mapping makes the breaker mis-classify a failure. When you add a provider, check its error documentation and map the billing/rate-limit codes; leave `error_map` empty if it only uses standard HTTP statuses.
+
+## Lane capabilities
+
+When a request crosses from one protocol to another, busbar writes it in the target protocol's
+spelling. For three controls the correct spelling depends on the upstream **model**, and the request
+cannot tell busbar which one it is talking to. A provider entry declares them. Each one is optional,
+and when a key is omitted busbar sends what it sent before the key existed, so nothing you already run
+changes.
+
+| Key | Values | Default | What it changes |
+|---|---|---|---|
+| `max_output_key` | `max_tokens` \| `max_completion_tokens` | `max_tokens` | The key an **OpenAI-protocol** upstream receives a translated output-token cap under. OpenAI's own API deprecates `max_tokens`, and its o-series and gpt-5 models reject it. Many OpenAI-compatible hosts understand only `max_tokens`, and a host that ignored `max_completion_tokens` would run with no output cap at all. |
+| `anthropic_adaptive_thinking` | `true` \| `false` | `false` | How an **Anthropic-protocol** upstream receives a reasoning ask given as an effort word (OpenAI `reasoning_effort`, Responses `reasoning.effort`). `true`: `thinking: {type: adaptive}` plus `output_config.effort`. `false`: `thinking.budget_tokens`, from the `limits.reasoning_effort_budgets` table. Opus 4.7 and later, Sonnet 5 and Fable accept only adaptive thinking; older Claude models accept only `budget_tokens`. |
+| `native_structured_output` | `true` \| `false` | `false` | How an **Anthropic-protocol** upstream receives a JSON-schema `response_format`. `true`: native `output_config.format`. `false`: a forced tool whose input schema is the requested schema, with the answer mapped back to text. A schema-less JSON mode has no native form, so on a `true` lane it is dropped and recorded as an `egress.control_unrepresentable` audit event. |
+
+A provider that serves models of several generations declares per-model overrides under
+`model_capabilities`. The **first** rule whose `models` glob list matches the lane's wire model
+(`upstream_model`, else the model name) sets every key it names, on top of the provider-level values.
+The only wildcard is `*`, which matches any run of characters.
+
+Two more keys exist only inside a `model_capabilities` rule, because each is a fact about one model
+generation rather than about a provider:
+
+| Key | Values | Default | What it changes |
+|---|---|---|---|
+| `reasoning_none` | `true` \| `false` | `false` | How an **OpenAI-** or **Responses-protocol** upstream receives a reasoning-off ask. `true`: `reasoning_effort: "none"` (`reasoning.effort: "none"` on Responses). `false`: the effort is omitted, since a model that does not know the word rejects it. GPT-5.1 and GPT-5.2 accept `none`. |
+| `thinking_always_on` | `true` \| `false` | `false` | How an **Anthropic-** or **Bedrock-protocol** upstream receives a reasoning-off ask. `true`: `thinking` is omitted. `false`: `thinking: {type: disabled}`. Claude Opus 5.5 and Fable 5 cannot switch thinking off and reject `disabled`. |
+
+```yaml
+anthropic:
+  protocol: anthropic
+  base_url: https://api.anthropic.com
+  error_map: {}
+  model_capabilities:
+    - models: ["claude-opus-4-7*", "claude-opus-5*", "claude-sonnet-5*", "claude-fable-5*"]
+      anthropic_adaptive_thinking: true
+      native_structured_output: true
+
+openai:
+  protocol: openai
+  base_url: https://api.openai.com
+  error_map: {}
+  max_output_key: max_completion_tokens
+```
+
+The shipped catalog already sets these for `openai`, and for the `anthropic` models listed above. It
+also sets `thinking_always_on` for Claude Opus 5.5 and Fable 5 on `anthropic` and `bedrock`, and
+`reasoning_none` for GPT-5.1 and GPT-5.2 on `openai` and `responses`. The
+Azure OpenAI templates set `max_output_key: max_completion_tokens`. Every other catalog host keeps the
+defaults. A deployment in `config.yaml` can set any of the keys itself: a value overrides the
+catalog's, and a `model_capabilities` list replaces the catalog's list.
+
+The capabilities apply only when a request **crosses** protocols. A same-protocol request goes
+upstream as the bytes the client sent.
 
 ## Non-standard endpoints
 

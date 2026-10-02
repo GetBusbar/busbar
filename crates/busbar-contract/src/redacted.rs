@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! [`Redacted`] — the in-memory wrapper for a RESOLVED secret VALUE.
+//!
+//! Every secret busbar resolves at boot and then HOLDS in memory — a `SecretRef` resolved to its
+//! plaintext, an egress bearer/client-credentials/sigv4 secret, the admin token, a provider api_key,
+//! the browser-login `client_secret`, and (1.5.2) a submitted credential password — is wrapped in
+//! `Redacted<T>` so that:
+//!
+//! * **`Debug` / `Display` never reveal it.** Both print the literal `"[REDACTED]"`. A struct that
+//!   embeds a `Redacted` field and derives `Debug` therefore cannot leak the secret into a log line,
+//!   a `tracing` field, a panic message, or an error `{:?}` — the redaction is STRUCTURAL, not a
+//!   convention each call site must remember.
+//! * **It does not serialize its plaintext.** `Redacted` deliberately implements NEITHER `Serialize`
+//!   NOR `Deserialize`. A secret held in engine memory therefore cannot be accidentally written into
+//!   an audit record, a config dump, or any JSON payload. The ONE place a resolved credential must
+//!   legitimately cross a boundary — the `complete_login` FFI call that hands a submitted credential
+//!   to the auth plugin that will verify it — does so through a plain `String` field on the WIRE type
+//!   (`busbar_contract::abi::cold::auth::CompleteLoginRequest.submitted`), an explicit, documented, single
+//!   plaintext boundary, converted from `Redacted` via [`Redacted::expose_secret`]. There is no
+//!   implicit serialization path.
+//! * **It zeroizes its backing memory on drop.** `T: Zeroize`, so when a `Redacted<String>` is
+//!   dropped the heap bytes are overwritten rather than left in freed memory.
+//!
+//! Reaching the underlying value is done ONLY through [`Redacted::expose_secret`] — every call site is
+//! an audit point where the secret escapes redaction on purpose.
+
+use core::fmt;
+
+use zeroize::Zeroize;
+
+/// A resolved secret held in memory. `Debug`/`Display` print `"[REDACTED]"`; the value never
+/// serializes; the backing memory is zeroized on drop. See the module docs.
+pub struct Redacted<T: Zeroize>(T);
+
+impl<T: Zeroize> Redacted<T> {
+    /// Wrap a resolved secret value.
+    pub fn new(secret: T) -> Self {
+        Self(secret)
+    }
+
+    /// Borrow the underlying secret. AUDIT POINT: the value escapes redaction here — every call site
+    /// is a deliberate, reviewable place where the plaintext is used (a hop injection, an outbound
+    /// credential, a constant-time compare, the single credential-transport wire boundary).
+    pub fn expose_secret(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Zeroize> From<T> for Redacted<T> {
+    fn from(secret: T) -> Self {
+        Self(secret)
+    }
+}
+
+/// `Debug` NEVER reveals the secret — this is the core guarantee that makes redaction structural for
+/// any struct that embeds a `Redacted` field and derives `Debug`.
+impl<T: Zeroize> fmt::Debug for Redacted<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+/// `Display` NEVER reveals the secret either (a `{}`-format into a log/message is just as leaky).
+impl<T: Zeroize> fmt::Display for Redacted<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl<T: Zeroize> Drop for Redacted<T> {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl<T: Zeroize + Clone> Clone for Redacted<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+/// Equality on two secrets is CONSTANT-TIME. This type exists to make secret handling safe, and an
+/// ordinary `==` on the plaintext (or a derived `PartialEq` on a struct that embeds a `Redacted`
+/// field — e.g. `ExchangeRequest`, `CompleteLogin`) would compare byte-by-byte with a data-dependent
+/// early exit, leaking through timing how long a common prefix two secrets share. Routing through the
+/// crate's [`constant_time_eq`](crate::constant_time_eq) — the same primitive the auth path uses to
+/// compare credentials — closes that channel for every secret comparison, structurally. The bound is
+/// `AsRef<str>` (satisfied by `String`, the only `T` any secret is wrapped in) so the comparison can
+/// go through that str-based primitive.
+impl<T: Zeroize + AsRef<str>> PartialEq for Redacted<T> {
+    fn eq(&self, other: &Self) -> bool {
+        constant_time_eq(self.0.as_ref(), other.0.as_ref())
+    }
+}
+
+impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
+
+// ── The constant-time primitive `Redacted`'s `PartialEq` is built on ───────────────────────────
+//
+// MOVED HERE VERBATIM from `busbar-api`'s `auth.rs` with `Redacted` itself, because the two are one
+// thing: `Redacted`'s whole reason to exist is that comparing secrets must not leak through timing,
+// and that guarantee IS this function. Leaving it behind would have meant a SECOND copy of a
+// security primitive on the contract side — the exact shape the duplication census ranks above
+// every other duplicate ("a duplicate that encodes a SECURITY or MONEY property outranks any
+// duplicate that is merely bigger"). `busbar-api` re-exports it at its historical path.
+//
+// ITS SIBLING `sha256_hex` FOLLOWED IT (DECISIONS #83, ARCHITECT P68-0 residue (b)). It is
+// `hex::encode(Sha256::digest(..))`, so it brings `sha2 -> cpufeatures -> libc` into the crate EVERY
+// plugin links (#40(a)); the OWNER RULING of 2026-09-22 (the `(dep = libc, via = cpufeatures)` edge
+// exemption in `qa/construction.toml`) settles that edge tree-wide as a CPU-capability query, not an
+// I/O reach, so the digest now sits beside the compare it exists to feed and a plugin hashes both
+// sides without naming `busbar-api`. `busbar-api` re-exports it at its historical path. This
+// function itself still drags nothing: `core`/`std` only.
+
+/// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
+/// of a token matches via timing. `#[inline(never)]` + `black_box` keep the optimizer from turning
+/// the accumulation loop into an early-exit branch (which would reintroduce a timing signal for the
+/// contents). The length check IS an early exit, and is only safe to apply to raw secret material
+/// when the material's length is not itself sensitive — which a raw token generally is NOT expected
+/// to be, but a caller comparing genuinely secret raw bytes directly (rather than through
+/// `sha256_hex`) still leaks whether the two lengths matched. Prefer hashing both sides
+/// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
+/// does not guarantee that for its caller.
+#[inline(never)]
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+
+    // XOR all bytes and OR the results together. If any bit differs, result > 0.
+    let mut result: u8 = 0;
+    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+        result |= x ^ y;
+    }
+
+    std::hint::black_box(result) == 0
+}
+
+/// Lowercase hex SHA-256 of `data` — THE digest facility credentials are compared under (a module
+/// hashes both sides before [`constant_time_eq`]: every digest is 64 hex chars, so
+/// `constant_time_eq`'s length early-exit never fires on a length difference driven by the raw
+/// candidate, and candidate length leaks nothing). This is the pattern every auth module SHOULD
+/// follow when comparing a caller-supplied credential against configured secret material — compare
+/// raw only when the material's length is not itself sensitive.
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(data))
+}
+
+#[cfg(test)]
+#[path = "tests/redacted_tests.rs"]
+mod tests;
+
+// The compile-time SERDE FENCE: pins `Redacted<T>: !Serialize`/`!Deserialize` so a secret value can
+// never reach an audit/wire/disk/log sink by construction (Part 3, Check 3 of the secret-hygiene design).
+#[cfg(test)]
+#[path = "tests/redacted_no_serde.rs"]
+mod redacted_no_serde;

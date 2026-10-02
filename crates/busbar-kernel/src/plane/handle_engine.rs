@@ -1,0 +1,1144 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE NEUTRAL DURABLE-HANDLE ENGINE — the plane-agnostic async-handle / durable-session capability.
+//!
+//! Axis-C (stateful handles / async: "park a handle at a `202` and resume it later") is a capability
+//! EVERY plane can want — the async-task plane, the LLM plane's stateful/batch handles, a live-session
+//! plane. Its mechanics are neutral: a process-wide registry of cross-request handles keyed by an
+//! opaque id, a durable write-through to the generic [`PlaneStore`] seam, a retention sweep with a hard
+//! cap, a boot rehydrate that turns a restart into a pause, a monotonic inbound-push cursor, and a
+//! SCOPED anti-enumeration lookup where a foreign id is indistinguishable from a missing one.
+//!
+//! This engine owns exactly those mechanics and NOTHING about any one plane's record. It is:
+//!
+//! - **Non-generic and substrate-single-compiled.** A plane's concrete row is held OPAQUELY as an
+//!   `Arc<dyn Any + Send + Sync>` beside a neutral [`HandleMeta`] projection, so the engine type never
+//!   names a plane type. That is deliberate: the handle store is destined to ride a per-plane opaque
+//!   state slot (`Box<dyn Any>`) that core reads back, and in a dual-compiled plane test binary a
+//!   GENERIC `Engine<PlaneRow>` monomorphised inside the plane crate would carry a `TypeId` that
+//!   diverges across the two core instances. A single substrate-compiled non-generic type does not.
+//!   The plane downcasts the `Arc<dyn Any>` back to its own row INSIDE the plane crate (same crate,
+//!   same `TypeId`), so byte-identity is preserved with no re-encode round-trip.
+//! - **Driven by small plane callbacks.** The plane supplies its record SHAPE, its terminal STATUSES
+//!   (as the `terminal` flag on [`HandleMeta`]), its event VOCAB, and its provenance DIGEST through
+//!   the closures the lifecycle/sweep/rehydrate entry points take. This is the same boxed-callback
+//!   idiom [`crate::plane_host::scope`] uses to hold reclaim/settle resources without naming a plane
+//!   type. No plane noun appears in this module.
+//!
+//! ## Lock discipline — the per-handle shard (outer map lock + per-handle inner lock)
+//!
+//! The correctness need is per-HANDLE serialization: a [`mutate`](DurableHandleEngine::mutate) advances
+//! an EXISTING per-handle chain — the plane's seal reads `pos.tail_hash` and produces the next link — so
+//! two concurrent mutations of the SAME handle MUST be serialized or they fork the chain against one
+//! `tail_hash`. The engine pays exactly that, and no more, through a two-level lock:
+//!
+//! - The OUTER lock (`handles: Mutex<HashMap<String, Arc<Mutex<HandleSlot>>>>`) guards only the MAP
+//!   STRUCTURE — insert / remove / enumerate. It is taken briefly to look up (or install) a handle's
+//!   `Arc<Mutex<HandleSlot>>` and then RELEASED; it is never held across a store round-trip on the hot
+//!   mutate path.
+//! - The per-handle INNER lock (`Mutex<HandleSlot>`) serializes that ONE handle's chain and IS held
+//!   across its durable I/O (upsert + append). Because it is per-handle, two DIFFERENT handles mutate
+//!   fully concurrently — neither the outer lock nor each other's inner lock stands between them.
+//!
+//! So [`mutate`](DurableHandleEngine::mutate) / [`scoped_mutate`](DurableHandleEngine::scoped_mutate)
+//! take the outer lock, clone out the target's `Arc<Mutex<HandleSlot>>`, DROP the outer lock, then take
+//! the inner lock across the plan + persist. This preserves same-handle chain serialization (the naive
+//! "drop the lock during seal/append" minimization would reopen exactly the concurrent-same-handle fork
+//! the inner lock prevents) while lifting the per-ENGINE bottleneck the earlier single-global-lock shape
+//! imposed on a high-concurrency SECOND consumer (voice-session frames, Responses-stateful streaming).
+//!
+//! - [`submit`](DurableHandleEngine::submit) still does its durable writes (`upsert_record` +
+//!   `append_record`) BEFORE it takes the outer lock — a submit is a FRESH id at the genesis chain
+//!   position, with no existing per-handle chain another writer could fork, so its durable write needs
+//!   no cross-writer serialization. It takes the outer lock only to insert, and to run the retention
+//!   sweep on the submits that CLAIM it (see [`claim_sweep`](DurableHandleEngine::claim_sweep) — the
+//!   sweep is amortised over the submits inside one second, and it is still a submit that triggers it).
+//! - The sweep in [`sweep`](DurableHandleEngine::sweep) does its abandon writes with the outer lock
+//!   RELEASED: it collects the candidate shards under the lock, drops it, applies each abandon mutation
+//!   under that handle's own inner lock (re-reading `meta` first, because a concurrent `mutate` may have
+//!   settled the handle in the gap), and only then re-takes the outer lock for the two eviction rules.
+//!   NO PATH HOLDS THE OUTER LOCK ACROSS A STORE ROUND-TRIP. The boot
+//!   [`rehydrate`](DurableHandleEngine::rehydrate) still runs under the outer lock across `classify`'s
+//!   per-row I/O, which is harmless there (single-threaded boot, no concurrency).
+//! - The ordering is always outer-THEN-inner (no path ever takes the outer lock while holding an inner
+//!   one), so the two levels cannot deadlock.
+
+// PARTLY UNMOUNTED: a bare substrate build that never constructs the engine reads some accessors as
+// unused; the plane crates and the engine's own unit tests exercise the whole surface.
+#![cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+
+use std::any::Any;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use crate::plane::store::PlaneStore;
+use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult};
+
+/// The NEUTRAL projection of a plane row the engine reads to run its mechanics WITHOUT decoding the
+/// plane's opaque body: who the handle belongs to (the anti-enumeration scope key), when it last
+/// changed (the retention age key), whether it has SETTLED (terminal), and the inbound-push cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandleMeta {
+    /// The principal a handle is attributed to — the ONLY key a scoped read matches on. A caller sees
+    /// its own handles and cannot tell a foreign id from a nonexistent one.
+    pub owner: String,
+    /// Unix seconds of the most recent change. The retention sweep's age key.
+    pub updated_at: u64,
+    /// Has the handle reached a FINAL state? The plane classifies this from its own status tokens; the
+    /// engine only reads the boolean (sweep eviction, terminal-only compaction, terminal-only evict).
+    pub terminal: bool,
+    /// The monotonic inbound-push cursor — how many pushed artifacts a resumed stream has already seen.
+    pub cursor: u64,
+}
+
+/// ONE CHAIN'S POSITION: the tail link and the next sequence number. The first event of a chain gets
+/// `next_seq` 1 and an empty `tail_hash`. Neutral (plain strings/ints); the digest that FILLS
+/// `tail_hash` is the plane's, computed in the plane's seal callback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainPosition {
+    /// The preceding event's hash (empty at genesis).
+    pub tail_hash: String,
+    /// The sequence the next sealed event takes (1 at genesis).
+    pub next_seq: u64,
+}
+
+impl ChainPosition {
+    /// The genesis position: empty tail, `next_seq` 1.
+    #[must_use]
+    pub fn genesis() -> Self {
+        ChainPosition {
+            tail_hash: String::new(),
+            next_seq: 1,
+        }
+    }
+
+    /// Continue from a persisted tail: `tail_hash` is the last event's hash and `next_seq` is one past
+    /// its sequence.
+    #[must_use]
+    pub fn from_tail(tail_hash: String, next_seq: u64) -> Self {
+        ChainPosition {
+            tail_hash,
+            next_seq,
+        }
+    }
+}
+
+/// The retention knobs the sweep enforces — a plane supplies its own values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SweepBounds {
+    /// An ACTIVE handle idle longer than this (seconds) is transitioned toward settlement by the
+    /// plane's abandon callback.
+    pub abandon_secs: u64,
+    /// A TERMINAL handle stays in the working set this long (seconds) after settling, then is evicted.
+    pub terminal_ttl_secs: u64,
+    /// The ceiling on the TERMINAL population — NOT on the working set, and the difference is
+    /// load-bearing. Oldest terminal handles are dropped first and an ACTIVE handle is never dropped
+    /// to make room, so when nothing is terminal the cap rule has nothing it may evict and the
+    /// working set goes past this number and stays there. That is the designed answer (dropping a
+    /// live handle is forgetting work that is still running), but it means a burst of concurrent
+    /// active handles is bounded by ADMISSION or by nothing — see
+    /// `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1.
+    pub max_retained: usize,
+}
+
+/// What a plane's seal callback returns: the durable event record to append, and the new chain tail
+/// hash the plane computed. The engine appends the record and advances `next_seq`; the plane owns the
+/// digest that produced `tail_hash`.
+pub struct SealedEvent {
+    /// The event to append durably (already framed by the plane into the opaque envelope).
+    pub record: PlaneRecord,
+    /// The event's own hash, becoming the chain's new tail.
+    pub tail_hash: String,
+}
+
+/// One mutation to apply to a live handle. Every field is OPTIONAL: `None` leaves that facet
+/// unchanged, so a row-only touch (no event), an event-only append (no row change), and a full
+/// transition all express through the same primitive.
+pub struct Mutation {
+    /// The new opaque row snapshot, or `None` to keep the current one.
+    pub row: Option<Arc<dyn Any + Send + Sync>>,
+    /// The new neutral projection, or `None` to keep the current one.
+    pub meta: Option<HandleMeta>,
+    /// A durable row record to UPSERT first, or `None` to skip the row write.
+    pub row_record: Option<PlaneRecord>,
+    /// A sealed event to APPEND and advance the chain by, or `None` to append nothing.
+    pub event: Option<SealedEvent>,
+}
+
+/// The record a fresh submit installs: its id, opaque row, projection, durable row record, and its
+/// OPTIONAL genesis event.
+pub struct SubmitRecord {
+    /// The handle id (the working-set key and the row's primary key).
+    pub id: String,
+    /// The opaque row snapshot.
+    pub row: Arc<dyn Any + Send + Sync>,
+    /// The neutral projection.
+    pub meta: HandleMeta,
+    /// The durable row record to upsert.
+    pub row_record: PlaneRecord,
+    /// The genesis provenance event, or `None` to open a CHAINLESS durable handle. A2A always opens a
+    /// chain here (an `EV_SUBMITTED` genesis); a consumer that wants a durable row WITHOUT a per-event
+    /// hash chain (a Responses-stateful handle keyed by response id) passes `None` — matching
+    /// [`Mutation::event`], so "every handle opens a provenance chain" is a plane CHOICE, not an engine
+    /// assumption. With `None` the handle's position stays at [`ChainPosition::genesis`] (empty tail,
+    /// `next_seq` 1), so a LATER `mutate` that does append an event seals the true genesis event.
+    pub event: Option<SealedEvent>,
+}
+
+/// What a plane's rehydrate classifier decides for one persisted row.
+pub enum RehydrateOutcome {
+    /// This row could not be decoded / read back — counted, never resumed.
+    Unreadable,
+    /// This row is already terminal — counted and left in the store, not loaded.
+    Terminal,
+    /// This row is active and resumable: install it. `event_unreadable` folds in any of its OWN event
+    /// records the plane could not decode (counted the same way, never aborting the whole rehydrate).
+    Active {
+        /// The handle id / working-set key.
+        id: String,
+        /// The opaque row snapshot.
+        row: Arc<dyn Any + Send + Sync>,
+        /// The neutral projection.
+        meta: HandleMeta,
+        /// The chain position resumed from the persisted events.
+        pos: ChainPosition,
+        /// Undecodable EVENT records for this handle — counted, not fatal.
+        event_unreadable: usize,
+    },
+}
+
+/// What a boot rehydrate found. Neutral counts; plane-typed provenance breaks accumulate plane-side in
+/// the classifier callback.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RehydrateCounts {
+    /// Active handles brought back and resumable.
+    pub active: usize,
+    /// Terminal handles seen and deliberately not loaded.
+    pub terminal: usize,
+    /// Rows/events that would not decode — counted, not silently dropped.
+    pub unreadable: usize,
+}
+
+/// Why a scoped read was refused — ONE variant on purpose (a distinguishable not-found is an
+/// enumeration oracle).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandleDenied {
+    /// The handle does not exist, OR it belongs to somebody else.
+    NotYours,
+}
+
+/// The error a plane's mutation planner returns: a domain REJECTION (the plane refused the move) or a
+/// durable STORE failure while building the mutation. The engine keeps them distinct so the plane can
+/// map each back to its own taxonomy.
+pub enum MutateError {
+    /// The plane refused the transition — carried as its already-rendered message.
+    Rejected(String),
+    /// A durable encode/build failed.
+    Store(RecordStoreError),
+}
+
+/// What went wrong servicing an engine operation.
+#[derive(Debug)]
+pub enum HandleEngineError {
+    /// No live handle carries this id.
+    NoSuchHandle(String),
+    /// The plane's mutation planner refused the move.
+    Rejected(String),
+    /// A durable write failed.
+    Store(RecordStoreError),
+}
+
+impl std::fmt::Display for HandleEngineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HandleEngineError::NoSuchHandle(id) => write!(f, "no such handle `{id}`"),
+            HandleEngineError::Rejected(e) => write!(f, "{e}"),
+            HandleEngineError::Store(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// What went wrong servicing a SCOPED mutation ([`DurableHandleEngine::scoped_mutate`]). The AUTH
+/// refusal is collapsed to a single [`NotYours`](Self::NotYours) — a missing handle and a handle owned
+/// by someone else are indistinguishable, exactly as [`HandleDenied`] is for a scoped READ, so an
+/// untrusted write-by-correlation-id (the T3 inbound webhook receiver) cannot become the enumeration
+/// oracle the read path deliberately is not. Only AFTER ownership is proven do the plane's own domain
+/// [`Rejected`](Self::Rejected) and durable [`Store`](Self::Store) failures surface distinctly — those
+/// facts belong to an already-authorized caller.
+#[derive(Debug)]
+pub enum ScopedMutateError {
+    /// The handle does not exist, OR it belongs to somebody else, OR the owner is empty. ONE variant on
+    /// purpose — a distinguishable refusal is an enumeration oracle.
+    NotYours,
+    /// The plane's mutation planner refused the move — carried as its already-rendered message. Only
+    /// reachable once ownership is proven.
+    Rejected(String),
+    /// A durable write failed. Only reachable once ownership is proven.
+    Store(RecordStoreError),
+}
+
+impl std::fmt::Display for ScopedMutateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScopedMutateError::NotYours => write!(f, "not yours"),
+            ScopedMutateError::Rejected(e) => write!(f, "{e}"),
+            ScopedMutateError::Store(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// One live handle in the working set: its opaque row, its neutral projection, its chain position,
+/// and the durable row record LAST PERSISTED for it (the ROLLBACK TARGET).
+struct HandleSlot {
+    row: Arc<dyn Any + Send + Sync>,
+    meta: HandleMeta,
+    pos: ChainPosition,
+    /// THE ROLLBACK TARGET — the durable row record memory still agrees with. A mutation whose event
+    /// append fails re-upserts THIS record, so the durable row goes back to the state the live handle
+    /// still holds rather than surviving one write ahead of a chain that never recorded the move.
+    ///
+    /// [`DurableHandleEngine::submit`] sets it to the genesis row it upserted; each mutation whose
+    /// row AND event both landed advances it to the row it just persisted. It is `None` only for a
+    /// handle brought back by [`DurableHandleEngine::rehydrate`], which does not carry the
+    /// plane-encoded record across the boot seam — such a handle has no in-memory pre-image to
+    /// restore, and because this field only advances on a FULLY successful mutation, that gap
+    /// persists across every consecutive failed attempt until the first one that wholly succeeds.
+    row_record: Option<PlaneRecord>,
+}
+
+/// ONE KEY IN THE EXPIRY INDEX: a handle's age and its id, in the order the sweep evicts by — oldest
+/// `updated_at` first, ties broken by the id.
+type ExpiryKey = (u64, String);
+
+/// The shards rule (0) took from the index and will abandon with the outer lock released.
+type AbandonCandidates = Vec<(ExpiryKey, Arc<Mutex<HandleSlot>>)>;
+
+/// THE TIME-ORDERED EXPIRY INDEX — the sweep's ordering, kept instead of recomputed.
+///
+/// `by_age` is keyed `(updated_at, id)` and valued by the handle's `terminal` flag. That key is
+/// DELIBERATELY the total order the sweep's eviction used to produce by sorting a
+/// `Vec<(u64, String)>`: oldest `updated_at` first, ties broken by the id. Every rule then reads a
+/// PREFIX of it — rule (0) the entries below `now - abandon_secs`, rule (1) the terminal entries
+/// below `now - terminal_ttl_secs`, rule (2) the terminal entries from the front — instead of
+/// scanning the whole working set three times.
+///
+/// The index is a HINT, never the truth: the truth is the slot's own `meta`, and every rule
+/// re-reads it under that handle's inner lock before acting (which it must do anyway — the abandon
+/// writes run with the outer lock released). A key that disagrees with its slot is HEALED where it
+/// is found, and a key whose id has left the working set is dropped there. `terminal` is the count
+/// of terminal-valued keys, which is what lets rule (2) stop walking: a working set with no
+/// terminal handle has nothing the cap rule may evict, and that is the case the cliff was made of.
+#[derive(Default)]
+struct ExpiryIndex {
+    by_age: BTreeMap<ExpiryKey, bool>,
+    terminal: usize,
+}
+
+impl ExpiryIndex {
+    /// Record `id` at its current age/terminality, replacing any entry already under the same key.
+    fn insert(&mut self, id: &str, meta: &HandleMeta) {
+        if self
+            .by_age
+            .insert((meta.updated_at, id.to_string()), meta.terminal)
+            == Some(true)
+        {
+            self.terminal -= 1;
+        }
+        if meta.terminal {
+            self.terminal += 1;
+        }
+    }
+
+    /// Drop one key, keeping the terminal count honest.
+    fn remove(&mut self, key: &ExpiryKey) {
+        if self.by_age.remove(key) == Some(true) {
+            self.terminal -= 1;
+        }
+    }
+}
+
+/// THE DURABLE-HANDLE ENGINE. Non-generic; holds opaque rows behind `Arc<dyn Any>`. No `Debug`: it
+/// holds a `dyn PlaneStore`.
+pub struct DurableHandleEngine {
+    handles: Mutex<HashMap<String, Arc<Mutex<HandleSlot>>>>,
+    /// The sweep's time-ordered view of `handles`, under its OWN lock and always taken LAST — a
+    /// `mutate` reaches it holding only that handle's inner lock, and the sweep reaches it holding
+    /// the outer lock, so it must never be held while any other lock is acquired.
+    expiry: Mutex<ExpiryIndex>,
+    /// The last second a sweep was CLAIMED for. See [`claim_sweep`](Self::claim_sweep): the sweep is
+    /// amortised over the submits inside one second rather than run by every one of them.
+    last_swept: AtomicU64,
+    /// The durable sink for row upserts AND event appends. `None` is the RAM-cache posture (a plane's
+    /// `store: memory`): the persistence methods no-op and nothing survives a restart.
+    sink: Mutex<Option<Arc<dyn PlaneStore>>>,
+}
+
+impl Default for DurableHandleEngine {
+    fn default() -> Self {
+        Self {
+            handles: Mutex::new(HashMap::new()),
+            expiry: Mutex::new(ExpiryIndex::default()),
+            last_swept: AtomicU64::new(0),
+            sink: Mutex::new(None),
+        }
+    }
+}
+
+impl DurableHandleEngine {
+    /// A fresh, empty engine with no durable sink (RAM-cache posture until [`set_sink`](Self::set_sink)).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Poison-recovering OUTER lock over the map structure. The critical sections only mutate a map, so
+    /// the data behind the lock is always consistent after a panic and cascading a poison would wedge the
+    /// whole capability. Held briefly to look up / install a handle's `Arc<Mutex<HandleSlot>>`; the hot
+    /// mutate path drops it before taking the per-handle inner lock.
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, Arc<Mutex<HandleSlot>>>> {
+        self.handles.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Poison-recovering INNER lock over one handle's slot. Same rationale as [`lock`](Self::lock): a
+    /// panic leaves the slot fields consistent, and a poison must not wedge the handle forever.
+    fn lock_slot(slot: &Arc<Mutex<HandleSlot>>) -> MutexGuard<'_, HandleSlot> {
+        slot.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Poison-recovering LEAF lock over the expiry index. Nothing is ever acquired while it is held.
+    fn expiry(&self) -> MutexGuard<'_, ExpiryIndex> {
+        self.expiry.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Install one handle in the working set and in the expiry index together, retiring the index key
+    /// of whatever this id displaced. Returns the displaced shard, if any.
+    fn install(
+        handles: &mut HashMap<String, Arc<Mutex<HandleSlot>>>,
+        expiry: &Mutex<ExpiryIndex>,
+        id: String,
+        slot: HandleSlot,
+    ) {
+        let meta = slot.meta.clone();
+        let displaced = handles.insert(id.clone(), Arc::new(Mutex::new(slot)));
+        let displaced_at = displaced.map(|s| Self::lock_slot(&s).meta.updated_at);
+        let mut expiry = expiry.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(at) = displaced_at {
+            expiry.remove(&(at, id.clone()));
+        }
+        expiry.insert(&id, &meta);
+    }
+
+    /// The durable sink, cloned. `None` is the RAM-cache posture.
+    fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
+        self.sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .cloned()
+    }
+
+    /// Attach the durable sink. Called once at boot; with no sink the engine is a RAM cache.
+    pub fn set_sink(&self, store: Arc<dyn PlaneStore>) {
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
+    }
+
+    /// Drop the sink again, so a test that attached one to a process-wide engine leaves it as it found
+    /// it. Not test-gated: a plane crate's OWN test build depends on this crate as a non-test library,
+    /// so the method must exist there; it is inert in production (a plane only calls it under test).
+    pub fn clear_sink_for_test(&self) {
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Upsert one durable row record (no-op with no sink).
+    fn upsert_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+        if let Some(store) = self.sink() {
+            store.upsert_plane_record(record.view())?;
+        }
+        Ok(())
+    }
+
+    /// Append one durable event record (no-op with no sink).
+    fn append_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+        if let Some(store) = self.sink() {
+            store.append_plane_record(record.view())?;
+        }
+        Ok(())
+    }
+
+    /// Delete one durable row (no-op with no sink). The COMPENSATION half of `submit`: the row is
+    /// deleted only when the write that was supposed to follow it did not land, so no handle the
+    /// caller was ever told about is reachable from here.
+    fn delete_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
+        if let Some(store) = self.sink() {
+            store.delete_plane_record(kind, id)?;
+        }
+        Ok(())
+    }
+
+    /// Apply one [`Mutation`] to an already-locked `slot`: durable row upsert FIRST, then event append,
+    /// then — only after both persist — the in-memory row/meta/position. A durable failure returns
+    /// BEFORE any in-memory field is touched, so the IN-MEMORY SLOT is left untouched (the caller
+    /// retries). The slot is held under its per-handle inner lock across the whole call, serializing
+    /// that one handle's chain against a concurrent same-handle mutation.
+    ///
+    /// That "left untouched" is a claim about MEMORY ONLY, and used to be written as though it covered
+    /// the store as well — it never did. The row upsert has already been made durable by the time the
+    /// append is attempted, so a bare `?` on the append returned an error while leaving the durable row
+    /// ONE WRITE AHEAD of a chain that never recorded the transition.
+    ///
+    /// AN EVENT APPEND THAT FAILS TAKES THE ROW WRITE BACK WITH IT — the mutate-path counterpart of the
+    /// compensation [`submit`](Self::submit) already does. The two writes are not one transaction and
+    /// the caller is told the mutation failed either way; what must not survive is the ROW alone. A
+    /// durable row that says terminal while the live handle still says active is a divergence the next
+    /// boot resolves the wrong way: [`rehydrate`](Self::rehydrate) reads the durable row and would
+    /// resolve the handle to a state no event justifies. So the slot's last-persisted record
+    /// ([`HandleSlot::row_record`]) is re-upserted before the failure returns, restoring the row memory
+    /// still agrees with. Where `submit` DELETES (its row named a handle nobody had been told about),
+    /// this RESTORES: the row belongs to a live handle that keeps answering. If the restore fails too
+    /// the divergence is real, and the returned error names BOTH causes.
+    ///
+    /// The one case with nothing to restore is a handle brought back by [`rehydrate`](Self::rehydrate)
+    /// whose first post-boot mutation is the one that fails: it has no in-memory pre-image
+    /// ([`HandleSlot::row_record`] is `None`) because the plane-encoded record is not carried across the
+    /// boot seam. Because that field only advances on a FULLY successful mutation, the gap does not
+    /// close after one failed attempt — it persists across every consecutive failure until the first
+    /// wholly successful one. That residual is logged rather than left silent, so "recovered" and
+    /// "durable row now ahead of the live handle" are distinguishable before the next boot resumes the
+    /// handle wrong; the append error is still returned either way, so the caller is never told the
+    /// mutation succeeded.
+    ///
+    /// This is the ONE place a live handle's `updated_at` and `terminal` move, so it is where the
+    /// expiry index is re-keyed: a handle left under a stale key is a handle the sweep would judge at
+    /// the wrong age. The index lock is taken here holding only this handle's inner lock, and is
+    /// released before anything else is acquired.
+    fn apply_mutation_to_slot(
+        &self,
+        id: &str,
+        slot: &mut HandleSlot,
+        m: Mutation,
+    ) -> RecordStoreResult<()> {
+        if let Some(rec) = &m.row_record {
+            self.upsert_record(rec)?;
+        }
+        if let Some(ev) = &m.event {
+            if let Err(e) = self.append_record(&ev.record) {
+                // Only a row write needs taking back; an event-only mutation left the row alone.
+                if m.row_record.is_some() {
+                    match &slot.row_record {
+                        Some(prev) => {
+                            if let Err(undo) = self.upsert_record(prev) {
+                                return Err(RecordStoreError(format!(
+                                    "{e}; the row write that preceded it could NOT be rolled back \
+                                     ({undo}), so the durable row for `{id}` is ahead of the live \
+                                     handle"
+                                )));
+                            }
+                        }
+                        // The documented residual: a rehydrated handle has no in-memory pre-image, so
+                        // there is nothing to restore and the durable row stays ahead of the live
+                        // handle until a mutation wholly succeeds. Logged so that case is visible now
+                        // rather than at the next boot, when rehydrate resumes the handle wrong.
+                        None => tracing::warn!(
+                            handle = %id,
+                            cause = %e,
+                            "event append failed after the row write on a handle with no in-memory \
+                             pre-image (rehydrated, not yet mutated): the durable row is ahead of \
+                             the live handle and cannot be rolled back here"
+                        ),
+                    }
+                }
+                return Err(e);
+            }
+        }
+        // Both durable writes settled; advance the rollback target to the row just persisted.
+        if let Some(rec) = m.row_record {
+            slot.row_record = Some(rec);
+        }
+        if let Some(ev) = m.event {
+            slot.pos.tail_hash = ev.tail_hash;
+            slot.pos.next_seq = slot.pos.next_seq.saturating_add(1);
+        }
+        if let Some(row) = m.row {
+            slot.row = row;
+        }
+        if let Some(meta) = m.meta {
+            let was_at = slot.meta.updated_at;
+            slot.meta = meta;
+            let mut expiry = self.expiry();
+            expiry.remove(&(was_at, id.to_string()));
+            expiry.insert(id, &slot.meta);
+        }
+        Ok(())
+    }
+
+    /// CLAIM THE SWEEP FOR `now`, or decline it. Every bound the sweep enforces is in WHOLE SECONDS,
+    /// so a second sweep inside one second cannot reach a verdict the first did not: running one per
+    /// submit is paying, per submit, to be told the same thing again. This hands the sweep to the
+    /// FIRST submit of each second — the exchange is what makes the claim exclusive, so two submits
+    /// racing in the same second produce one sweep, not two — and every other submit that second
+    /// still INSERTS, so the working set is never stale in the direction that matters.
+    ///
+    /// Nothing here sweeps on a TIMER, and nothing needs to: the claim is what makes the TRIGGER
+    /// cheap to add to. A submit claims it, and so does any other caller that reaches
+    /// [`sweep_now`](Self::sweep_now) — which is how a deadline here stops depending on new work
+    /// arriving without a thread being spawned to watch a clock.
+    fn claim_sweep(&self, now: u64) -> bool {
+        let mut last = self.last_swept.load(Ordering::Relaxed);
+        loop {
+            if now <= last {
+                return false;
+            }
+            match self.last_swept.compare_exchange_weak(
+                last,
+                now,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(seen) => last = seen,
+            }
+        }
+    }
+
+    /// **RUN THE RETENTION SWEEP WITHOUT A SUBMIT.** The same sweep, the same bounds and the same
+    /// once-a-second claim — only the trigger is different.
+    ///
+    /// [`submit`](Self::submit) was the ONLY trigger, and that made every deadline this engine
+    /// enforces conditional on new work arriving. On a busy node it is invisible; on a node that has
+    /// stopped taking submissions it means an idle ACTIVE handle is never abandoned, however long it
+    /// idles, because the one thing that would have noticed is the thing that is not happening. That
+    /// is not a slow deadline, it is an absent one, and anything a plane hangs off the terminal
+    /// transition — a capability retired when its handle ends, for instance — silently outlives its
+    /// bound with it.
+    ///
+    /// So a caller that has a REASON to believe time has passed can say so. It costs nothing to be
+    /// wrong: [`claim_sweep`](Self::claim_sweep) still hands the work to the first caller of each
+    /// second and every other one returns having done no scan, so a hot path may call this on every
+    /// request without paying for more than an atomic load. It returns whether this call was the one
+    /// that swept, which is what a test asserts on.
+    pub fn sweep_now<A, R>(&self, now: u64, bounds: SweepBounds, abandon: A, report_fail: R) -> bool
+    where
+        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
+        R: Fn(&str, &RecordStoreError),
+    {
+        if !self.claim_sweep(now) {
+            return false;
+        }
+        self.sweep(now, bounds, &abandon, &report_fail);
+        true
+    }
+
+    /// SUBMIT a new handle: `plan` builds its row + records + genesis event from the genesis position
+    /// (the plane computes the digest); the engine persists row-then-event, runs the retention sweep,
+    /// and inserts. The durable writes happen BEFORE the working-set lock is taken, exactly as the
+    /// handle is announced accepted only after it is durable. Returns the installed opaque row.
+    ///
+    /// A GENESIS APPEND THAT FAILS TAKES THE ROW BACK WITH IT. The two writes are not one
+    /// transaction, and the caller is told the submit failed either way; what must not survive is
+    /// the row alone. A row with no chain is rehydrated ACTIVE at the next boot — a handle nobody
+    /// ever accepted, holding a working-set slot and answering reads, whose provenance chain starts
+    /// at an event that was never written. So the row is deleted before the failure is returned. If
+    /// the delete fails too there is nothing left to try: it is reported through `report_fail`, the
+    /// same channel a sweep's failed abandon uses, and the append's error is still what the caller
+    /// gets, because that is the failure that happened first.
+    pub fn submit<P, A, R>(
+        &self,
+        now: u64,
+        bounds: SweepBounds,
+        plan: P,
+        abandon: A,
+        report_fail: R,
+    ) -> Result<Arc<dyn Any + Send + Sync>, HandleEngineError>
+    where
+        P: FnOnce(&ChainPosition) -> Result<SubmitRecord, RecordStoreError>,
+        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
+        R: Fn(&str, &RecordStoreError),
+    {
+        let genesis = ChainPosition::genesis();
+        let sr = plan(&genesis).map_err(HandleEngineError::Store)?;
+        self.upsert_record(&sr.row_record)
+            .map_err(HandleEngineError::Store)?;
+        // A genesis event opens the chain and advances the position by one; a chainless handle keeps
+        // the genesis position (empty tail, next_seq 1) so a first later event still seals the genuine
+        // genesis link.
+        let pos = match sr.event {
+            Some(ev) => {
+                if let Err(e) = self.append_record(&ev.record) {
+                    if let Err(undo) = self.delete_record(&sr.row_record.kind, &sr.row_record.id) {
+                        report_fail(&sr.id, &undo);
+                    }
+                    return Err(HandleEngineError::Store(e));
+                }
+                ChainPosition {
+                    tail_hash: ev.tail_hash,
+                    next_seq: genesis.next_seq.saturating_add(1),
+                }
+            }
+            None => genesis,
+        };
+        if self.claim_sweep(now) {
+            self.sweep(now, bounds, &abandon, &report_fail);
+        }
+        let mut handles = self.lock();
+        let row = sr.row.clone();
+        Self::install(
+            &mut handles,
+            &self.expiry,
+            sr.id,
+            HandleSlot {
+                row: sr.row,
+                meta: sr.meta,
+                pos,
+                // The genesis row just upserted is this handle's first rollback target.
+                row_record: Some(sr.row_record),
+            },
+        );
+        Ok(row)
+    }
+
+    /// MUTATE a live handle under the working-set lock: `plan` sees the current opaque row and chain
+    /// position and returns the [`Mutation`] to apply (or `None` for a no-op that touches nothing). The
+    /// engine persists then updates memory; a domain rejection and a durable failure are returned
+    /// distinctly. Returns the resulting opaque row.
+    ///
+    /// UNSCOPED — keyed by `id` alone, authorization is the caller's to enforce upstream. This is the
+    /// right primitive for a TRUSTED internal caller that has already scoped (A2A's front door scopes at
+    /// its edge). An UNTRUSTED write-by-correlation-id (the T3 inbound webhook receiver) MUST instead go
+    /// through [`scoped_mutate`](Self::scoped_mutate), which owner-gates the write with the same
+    /// indistinguishable refusal the read path uses.
+    pub fn mutate<F>(
+        &self,
+        id: &str,
+        plan: F,
+    ) -> Result<Arc<dyn Any + Send + Sync>, HandleEngineError>
+    where
+        F: FnOnce(
+            &(dyn Any + Send + Sync),
+            &ChainPosition,
+        ) -> Result<Option<Mutation>, MutateError>,
+    {
+        // Take the outer lock only long enough to clone out the handle's shard, then release it so a
+        // mutation of a DIFFERENT handle never blocks behind this one's store round-trip.
+        let slot_arc = self
+            .lock()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| HandleEngineError::NoSuchHandle(id.to_string()))?;
+        // The per-handle inner lock serializes THIS handle's chain across its durable I/O.
+        let mut slot = Self::lock_slot(&slot_arc);
+        self.plan_and_apply(id, &mut slot, plan)
+            .map_err(|e| match e {
+                MutateError::Rejected(s) => HandleEngineError::Rejected(s),
+                MutateError::Store(e) => HandleEngineError::Store(e),
+            })
+    }
+
+    /// SCOPED MUTATE — the authorization gate on the WRITE/RESUME path, mirroring
+    /// [`scoped_get`](Self::scoped_get) on the read path. The ownership check runs FIRST, under the
+    /// working-set lock and BEFORE `plan` is ever invoked: an empty owner, a missing handle, and a
+    /// handle owned by someone else all collapse to one [`ScopedMutateError::NotYours`], so `plan`'s
+    /// side effects and timing never leak whether the id exists. Only once `owner` matches the slot's
+    /// [`HandleMeta::owner`] does it run the identical persist-then-update path as
+    /// [`mutate`](Self::mutate) (durable row upsert, event append, chain advance), surfacing the plane's
+    /// domain [`Rejected`](ScopedMutateError::Rejected) and durable [`Store`](ScopedMutateError::Store)
+    /// failures to the now-authorized caller. This is the exact primitive the T3 inbound webhook
+    /// receiver's untrusted resume-by-correlation-id needs; the same lock discipline as `mutate` applies
+    /// (see the module note on the lock-across-I/O asymmetry).
+    pub fn scoped_mutate<F>(
+        &self,
+        owner: &str,
+        id: &str,
+        plan: F,
+    ) -> Result<Arc<dyn Any + Send + Sync>, ScopedMutateError>
+    where
+        F: FnOnce(
+            &(dyn Any + Send + Sync),
+            &ChainPosition,
+        ) -> Result<Option<Mutation>, MutateError>,
+    {
+        // Owner gate BEFORE plan: a foreign, missing, or empty-owner target is one refusal, so `plan`'s
+        // side effects and timing never leak whether the id exists.
+        self.with_owned_slot(owner, id, |slot| self.plan_and_apply(id, slot, plan))
+            .ok_or(ScopedMutateError::NotYours)?
+            .map_err(|e| match e {
+                MutateError::Rejected(s) => ScopedMutateError::Rejected(s),
+                MutateError::Store(e) => ScopedMutateError::Store(e),
+            })
+    }
+
+    /// Run `plan` against a held slot and, unless it is a no-op, persist-then-update. Returns the
+    /// resulting opaque row (the current row unchanged on a no-op).
+    fn plan_and_apply<F>(
+        &self,
+        id: &str,
+        slot: &mut HandleSlot,
+        plan: F,
+    ) -> Result<Arc<dyn Any + Send + Sync>, MutateError>
+    where
+        F: FnOnce(
+            &(dyn Any + Send + Sync),
+            &ChainPosition,
+        ) -> Result<Option<Mutation>, MutateError>,
+    {
+        if let Some(m) = plan(slot.row.as_ref(), &slot.pos)? {
+            self.apply_mutation_to_slot(id, slot, m)
+                .map_err(MutateError::Store)?;
+        }
+        Ok(slot.row.clone())
+    }
+
+    /// THE OWNER GATE shared by the scoped read and the scoped write: run `f` on `id`'s slot, held
+    /// under its inner lock, only when `owner` is non-empty and owns it. An empty owner, a missing
+    /// handle and a foreign one all collapse to `None`. The outer lock is taken only to clone out the
+    /// shard, so nothing before the ownership check leaks whether the id exists.
+    fn with_owned_slot<T>(
+        &self,
+        owner: &str,
+        id: &str,
+        f: impl FnOnce(&mut HandleSlot) -> T,
+    ) -> Option<T> {
+        if owner.is_empty() {
+            return None;
+        }
+        let slot_arc = self.lock().get(id).cloned()?;
+        // The per-handle inner lock serializes THIS handle's chain across its durable I/O.
+        let mut slot = Self::lock_slot(&slot_arc);
+        (slot.meta.owner == owner).then(|| f(&mut slot))
+    }
+
+    /// THE RETENTION SWEEP. Three rules, IN ORDER, and the order is part of the outcome: (0)
+    /// transition an ACTIVE handle idle past `abandon_secs` via the plane's `abandon` callback (a
+    /// durable-write failure leaves it active and is reported through `report_fail`); (1) evict
+    /// TERMINAL handles past `terminal_ttl_secs`; (2) if still over `max_retained`, evict oldest
+    /// TERMINAL first — never an active one. Because rule (0) settles a handle, a handle can be
+    /// abandoned by rule (0) and evicted by rule (2) within ONE sweep.
+    ///
+    /// RULE (0)'S DURABLE WRITES DO NOT RUN UNDER THE OUTER LOCK. The candidate slots are collected
+    /// under it (a meta read each) and the lock is RELEASED; the abandon mutations then apply against
+    /// the per-handle inner locks — the same discipline `mutate` follows — so a slow store no longer
+    /// blocks every other submit in the process. Re-entry re-reads each slot's `meta` under its inner
+    /// lock rather than trusting the values read before the gap: a concurrent `mutate` may have
+    /// settled or touched the handle in the meantime, and that is exactly the case where the abandon
+    /// must NOT fire. Rules (1) and (2) then re-take the outer lock.
+    ///
+    /// NOT EVERY SUBMIT RUNS IT — [`claim_sweep`](Self::claim_sweep) hands it to the first submit of
+    /// each second, because every bound here is in whole seconds and a second sweep inside one second
+    /// cannot reach a different verdict.
+    ///
+    /// NO RULE SCANS THE WORKING SET. Each reads a PREFIX of the [`ExpiryIndex`] — whose key
+    /// `(updated_at, id)` is the same total order the eviction used to reconstruct by sorting — and
+    /// stops at the first entry that is not due, so a sweep costs O(handles it acts on) rather than
+    /// three O(n) passes. What a redesign may not change is pinned by
+    /// `the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first`, and the shape is
+    /// written down in `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1.
+    fn sweep<A, R>(&self, now: u64, bounds: SweepBounds, abandon: &A, report_fail: &R)
+    where
+        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
+        R: Fn(&str, &RecordStoreError),
+    {
+        // Rule (0), phase one: the ACTIVE entries aged past `abandon_secs` are a prefix of the index.
+        // The outer lock is held for the shard clones only — no slot is read here, because phase two
+        // has to re-read every one of them anyway.
+        let candidates: AbandonCandidates = {
+            let handles = self.lock();
+            let mut expiry = self.expiry();
+            Self::take_due(&handles, &mut expiry, now, bounds.abandon_secs, false)
+                .into_iter()
+                .filter_map(|key| handles.get(&key.1).map(|s| (key, s.clone())))
+                .collect()
+        };
+        // Rule (0), phase two: the durable writes, with the outer lock NOT held. The re-read is the
+        // whole point of the gap — a handle another writer settled or touched while the lock was down
+        // is no longer idle and must not be abandoned, and neither may an index key be believed over
+        // the slot it points at.
+        for (key, slot_arc) in &candidates {
+            let id = key.1.as_str();
+            let mut slot = Self::lock_slot(slot_arc);
+            if slot.meta.terminal || now.saturating_sub(slot.meta.updated_at) <= bounds.abandon_secs
+            {
+                self.heal(key, &slot.meta);
+                continue;
+            }
+            // THE PLANE'S CALLBACK RUNS INSIDE AN UNWIND BOUNDARY. It is plane code, reached from a
+            // sweep that some OTHER caller's `submit` happened to claim, and that submit is in the
+            // middle of its own lifecycle: its row and its genesis event are already durable and its
+            // handle is not yet installed. A panic escaping here would unwind straight out through
+            // that submit, leaving a row on disk that no live handle answers for — and the next boot
+            // rehydrates it ACTIVE, installing a handle nobody ever accepted. The panicking candidate
+            // is skipped and reported; every other candidate, and the caller whose submit is midway
+            // through, carry on. `AssertUnwindSafe` because nothing the closure can see survives the
+            // boundary: the slot guard is held here rather than inside it, and a `None` verdict and a
+            // panicking one both mean the same thing — this handle was not abandoned.
+            let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                abandon(id, slot.row.as_ref(), &slot.pos, now)
+            }));
+            let Ok(verdict) = verdict else {
+                tracing::error!(
+                    handle = %id,
+                    "the plane's abandon callback panicked during the retention sweep; the handle is left active and the sweep continues"
+                );
+                continue;
+            };
+            let Some(m) = verdict else {
+                continue;
+            };
+            // A failed compensating write leaves the handle ACTIVE (the mutation applies nothing on
+            // a durable failure) and is reported, never swallowed.
+            if let Err(e) = self.apply_mutation_to_slot(id, &mut slot, m) {
+                report_fail(id, &e);
+            }
+        }
+        let handles = &mut *self.lock();
+        // Rule (1): the TERMINAL entries aged past `terminal_ttl_secs`, likewise a prefix.
+        let expired = {
+            let mut expiry = self.expiry();
+            Self::take_due(handles, &mut expiry, now, bounds.terminal_ttl_secs, true)
+        };
+        for key in &expired {
+            self.evict_verified(handles, key, now, Some(bounds.terminal_ttl_secs));
+        }
+        if handles.len() < bounds.max_retained {
+            return;
+        }
+        // Rule (2): the oldest TERMINAL entries, taken from the FRONT of the index — which is what
+        // makes the eviction oldest-first on `updated_at` with the id as the tie-break, without ever
+        // sorting anything. The walk stops as soon as it has enough victims or has passed the whole
+        // terminal population, so a working set with nothing terminal costs nothing here.
+        let wanted = handles.len().saturating_sub(bounds.max_retained) + 1;
+        let victims: Vec<ExpiryKey> = {
+            let expiry = self.expiry();
+            let mut seen_terminal = 0usize;
+            let mut victims = Vec::with_capacity(wanted.min(expiry.terminal));
+            for (key, terminal) in &expiry.by_age {
+                if seen_terminal >= expiry.terminal || victims.len() >= wanted {
+                    break;
+                }
+                if !*terminal {
+                    continue;
+                }
+                seen_terminal += 1;
+                victims.push(key.clone());
+            }
+            victims
+        };
+        for key in &victims {
+            // No age bound: the cap rule evicts by POSITION in the order, not by age, so all it has
+            // to verify is that the handle is still terminal.
+            self.evict_verified(handles, key, now, None);
+        }
+    }
+
+    /// The index keys aged past `secs` whose `terminal` flag matches `terminal`, oldest first,
+    /// dropping any key whose id has left the working set on the way past. `handles` and the index
+    /// are both already held by the caller.
+    fn take_due(
+        handles: &HashMap<String, Arc<Mutex<HandleSlot>>>,
+        expiry: &mut ExpiryIndex,
+        now: u64,
+        secs: u64,
+        terminal: bool,
+    ) -> Vec<ExpiryKey> {
+        // Due means `now - updated_at > secs`, i.e. `updated_at < now - secs`. With `now` inside the
+        // bound nothing is due at all, and the range is empty rather than saturated to zero.
+        let Some(cutoff) = now.checked_sub(secs) else {
+            return Vec::new();
+        };
+        let mut due = Vec::new();
+        let mut orphaned = Vec::new();
+        for (key, flag) in expiry.by_age.range(..(cutoff, String::new())) {
+            if !handles.contains_key(&key.1) {
+                orphaned.push(key.clone());
+            } else if *flag == terminal {
+                due.push(key.clone());
+            }
+        }
+        for key in &orphaned {
+            expiry.remove(key);
+        }
+        due
+    }
+
+    /// Drop the handle `key` names from the working set AND the index, but only if its own slot still
+    /// agrees it is terminal (and, where `secs` is given, aged past it) — the index is a hint, and a
+    /// handle a concurrent `mutate` refreshed in the meantime is not evictable. A disagreeing key is
+    /// healed instead, and the handle waits for the next sweep.
+    fn evict_verified(
+        &self,
+        handles: &mut HashMap<String, Arc<Mutex<HandleSlot>>>,
+        key: &ExpiryKey,
+        now: u64,
+        secs: Option<u64>,
+    ) {
+        let id = key.1.as_str();
+        let Some(slot_arc) = handles.get(id).cloned() else {
+            self.expiry().remove(key);
+            return;
+        };
+        let meta = Self::lock_slot(&slot_arc).meta.clone();
+        let aged = secs.is_none_or(|s| now.saturating_sub(meta.updated_at) > s);
+        if meta.terminal && aged {
+            handles.remove(id);
+            let mut expiry = self.expiry();
+            expiry.remove(key);
+            expiry.remove(&(meta.updated_at, id.to_string()));
+        } else {
+            self.heal(key, &meta);
+        }
+    }
+
+    /// Re-key one handle from its OWN meta, retiring the stale key the sweep just found it under.
+    /// A hint that has drifted is corrected where the drift is discovered, so it is not reconsidered
+    /// by every later sweep.
+    fn heal(&self, stale: &ExpiryKey, meta: &HandleMeta) {
+        let mut expiry = self.expiry();
+        expiry.remove(stale);
+        expiry.insert(&stale.1, meta);
+    }
+
+    /// BOOT REHYDRATE. Reads every persisted row of `kind` from `store`, asks `classify` what to do
+    /// with each (decode / read-back / terminal-check / chain-verify are the plane's, and it emits its
+    /// own diagnostics + accumulates its own provenance breaks there), and installs the active ones.
+    /// A row `classify` cannot read is counted, never aborting the whole rehydrate; only a STORE-level
+    /// list failure aborts (propagated). Runs at BOOT under the global lock across `classify`'s per-row
+    /// I/O; harmless there (single-threaded, no concurrency) but part of the same lock-across-I/O shape
+    /// the module-level "Lock discipline" note documents.
+    pub fn rehydrate<F>(
+        &self,
+        store: &dyn PlaneStore,
+        kind: &str,
+        mut classify: F,
+    ) -> RecordStoreResult<RehydrateCounts>
+    where
+        F: FnMut(&dyn PlaneStore, &[u8]) -> RecordStoreResult<RehydrateOutcome>,
+    {
+        let bodies = store.list_plane_records(kind, &PlaneSelector::All)?;
+        let mut out = RehydrateCounts::default();
+        let mut handles = self.lock();
+        for body in &bodies {
+            match classify(store, body)? {
+                RehydrateOutcome::Unreadable => out.unreadable += 1,
+                RehydrateOutcome::Terminal => out.terminal += 1,
+                RehydrateOutcome::Active {
+                    id,
+                    row,
+                    meta,
+                    pos,
+                    event_unreadable,
+                } => {
+                    out.unreadable += event_unreadable;
+                    Self::install(
+                        &mut handles,
+                        &self.expiry,
+                        id,
+                        // No in-memory rollback target across the boot seam: the plane-encoded
+                        // record is not carried through rehydrate, so the first post-boot mutation
+                        // that wholly succeeds is what sets one.
+                        HandleSlot {
+                            row,
+                            meta,
+                            pos,
+                            row_record: None,
+                        },
+                    );
+                    out.active += 1;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// SCOPED READ — the authorization gate: a caller sees its own handles and cannot tell a foreign id
+    /// from a nonexistent one. An empty owner sees nothing.
+    pub fn scoped_get(
+        &self,
+        owner: &str,
+        id: &str,
+    ) -> Result<Arc<dyn Any + Send + Sync>, HandleDenied> {
+        self.with_owned_slot(owner, id, |slot| slot.row.clone())
+            .ok_or(HandleDenied::NotYours)
+    }
+
+    /// SCOPED LIST — every handle owned by `owner`, sorted by id so the result is deterministic. An
+    /// empty owner lists nothing.
+    pub fn scoped_list(&self, owner: &str) -> Vec<Arc<dyn Any + Send + Sync>> {
+        if owner.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<(String, Arc<dyn Any + Send + Sync>)> = self
+            .lock()
+            .iter()
+            .filter_map(|(id, s)| {
+                let s = Self::lock_slot(s);
+                (s.meta.owner == owner).then(|| (id.clone(), s.row.clone()))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out.into_iter().map(|(_, r)| r).collect()
+    }
+
+    /// UNSCOPED read — for the operator surface and the sweep, never for a caller.
+    pub fn get_unscoped(&self, id: &str) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.lock().get(id).map(|s| Self::lock_slot(s).row.clone())
+    }
+
+    /// The neutral projection of a live handle, or `None`.
+    pub fn meta(&self, id: &str) -> Option<HandleMeta> {
+        self.lock().get(id).map(|s| Self::lock_slot(s).meta.clone())
+    }
+
+    /// How many handles are in the working set.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Whether the working set holds no handles.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+
+    /// Drop a handle from the working set once it is TERMINAL, leaving its durable rows in the store.
+    /// Refuses to evict an ACTIVE handle.
+    pub fn evict_if_terminal(&self, id: &str) -> bool {
+        let mut handles = self.lock();
+        let meta = handles.get(id).map(|s| Self::lock_slot(s).meta.clone());
+        match meta {
+            Some(meta) if meta.terminal => {
+                handles.remove(id);
+                self.expiry().remove(&(meta.updated_at, id.to_string()));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// COMPACT: ask the sink to purge terminal `kind` rows older than `before`, and drop any matching
+    /// terminal working-set entries. Returns how many durable rows went.
+    pub fn compact(&self, before: u64, kind: &str) -> RecordStoreResult<u64> {
+        let removed = match self.sink() {
+            Some(store) => store.purge_plane_records_before(kind, before)?,
+            None => 0,
+        };
+        let mut handles = self.lock();
+        let dropped: Vec<ExpiryKey> = handles
+            .iter()
+            .filter_map(|(id, s)| {
+                let s = Self::lock_slot(s);
+                (s.meta.terminal && s.meta.updated_at < before)
+                    .then(|| (s.meta.updated_at, id.clone()))
+            })
+            .collect();
+        for key in &dropped {
+            handles.remove(&key.1);
+            self.expiry().remove(key);
+        }
+        Ok(removed)
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/handle_engine_tests.rs"]
+mod tests;

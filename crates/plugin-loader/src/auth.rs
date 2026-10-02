@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The AUTH seam of the kind-neutral loader: [`DynAuth`], a [`busbar_api::AuthModule`] backed by a
+//! The AUTH seam of the kind-neutral loader: [`DynAuth`], a [`busbar_contract::auth::AuthModule`] backed by a
 //! dynamically-loaded plugin whose kind was bound to `auth` at load. Its verdict carries only an
-//! identity-only [`busbar_plugin_abi::auth::Identity`] (→ [`busbar_api::Principal`]); a misbehaving
+//! identity-only [`busbar_contract::abi::cold::auth::Identity`] (→ [`busbar_contract::auth::Principal`]); a misbehaving
 //! plugin is FAIL-CLOSED (rejected, never admitted).
 
-use crate::{stage, wire_up_raw, RawPlugin};
-use busbar_api::{
-    AuthModule, AuthOutcome, AuthPlugin, BeginLogin, CompleteLogin, LoginKind, LoginModule,
-    LoginOutcome, Principal,
-};
-use busbar_plugin_abi::{
+use crate::RawPlugin;
+use busbar_contract::abi::cold::{
     auth::{AuthRequest, AuthResponse},
     kind as abi_kind,
+};
+use busbar_contract::auth::{
+    AuthModule, AuthPlugin, AuthVerdict, BeginLogin, CompleteLogin, LoginKind, LoginModule,
+    LoginOutcome, Principal,
 };
 
 /// An `AuthModule` loaded from a dynamic library over the kind-neutral ABI. The module's stable
@@ -23,6 +23,12 @@ pub struct DynAuth {
     raw: RawPlugin,
     name: &'static str,
     cacheable: bool,
+    /// Warn-once-per-module latch for the `authenticate` fail-closed path. On a cache miss a broken
+    /// auth plugin is called on EVERY request and rejects every time, so an unlatched `warn!` spams
+    /// per request. Warn on the TRANSITION into the failing state; hold at `debug!` while it persists.
+    /// A clean verdict (Identify/Pass) clears it, so a later fault re-warns. The FAIL-CLOSED Reject is
+    /// unchanged — this gates only the log level, never the verdict.
+    auth_fault_warned: std::sync::atomic::AtomicBool,
 }
 
 impl AuthModule for DynAuth {
@@ -30,28 +36,59 @@ impl AuthModule for DynAuth {
         self.name
     }
 
-    fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
         let req = AuthRequest::Authenticate {
             credential: candidate.unwrap_or("").to_string(),
         };
         match self.raw.transport_call::<AuthRequest, AuthResponse>(&req) {
-            Ok(AuthResponse::Identity(id)) => AuthOutcome::Identify(Principal::from(id)),
-            Ok(AuthResponse::Reject) => AuthOutcome::Reject,
-            Ok(AuthResponse::Pass) => AuthOutcome::Pass,
+            Ok(AuthResponse::Identity(id)) => {
+                // A clean verdict: clear the fault latch so a future fault re-warns.
+                self.auth_fault_warned
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                AuthVerdict::Identify(Principal::from(id))
+            }
+            Ok(AuthResponse::Reject) => {
+                self.auth_fault_warned
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                AuthVerdict::Reject
+            }
+            Ok(AuthResponse::Pass) => {
+                self.auth_fault_warned
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                AuthVerdict::Pass
+            }
             // A wrong-variant response, or a transport/module error, is FAIL-CLOSED: a misbehaving
             // plugin must never admit a caller. `Reject` (not `Pass`) — a credential may have been
             // presented; with no candidate the middleware's all-Pass path denies anyway, so Reject
-            // never admits on error either way.
+            // never admits on error either way. Warn once per fault window per module (reset on the
+            // next clean verdict); continued failures log `debug!`. The Reject verdict is unchanged.
             Ok(other) => {
-                tracing::warn!(
-                    module = self.name,
-                    "auth plugin returned an unexpected response variant ({other:?}); rejecting"
-                );
-                AuthOutcome::Reject
+                if !self
+                    .auth_fault_warned
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::warn!(
+                        module = self.name,
+                        "auth plugin returned an unexpected response variant ({other:?}); rejecting"
+                    );
+                } else {
+                    tracing::debug!(
+                        module = self.name,
+                        "auth plugin still returning an unexpected response variant ({other:?}); rejecting"
+                    );
+                }
+                AuthVerdict::Reject
             }
             Err(e) => {
-                tracing::warn!(module = self.name, error = %e, "auth plugin call failed; rejecting");
-                AuthOutcome::Reject
+                if !self
+                    .auth_fault_warned
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::warn!(module = self.name, error = %e, "auth plugin call failed; rejecting");
+                } else {
+                    tracing::debug!(module = self.name, error = %e, "auth plugin call still failing; rejecting");
+                }
+                AuthVerdict::Reject
             }
         }
     }
@@ -162,8 +199,18 @@ pub fn load_auth_from_bytes(
     display: &str,
     manifest_kind: &str,
 ) -> Result<Box<dyn AuthModule>, String> {
+    load_auth_image(crate::Image::Bytes(bytes), cfg_json, display, manifest_kind)
+}
+
+/// [`load_auth_from_bytes`] over either door's [`crate::Image`].
+pub fn load_auth_image(
+    image: crate::Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<Box<dyn AuthModule>, String> {
     Ok(Box::new(build_dyn_auth(
-        bytes,
+        image,
         cfg_json,
         display,
         manifest_kind,
@@ -181,8 +228,18 @@ pub fn load_login_from_bytes(
     display: &str,
     manifest_kind: &str,
 ) -> Result<Box<dyn AuthPlugin>, String> {
+    load_login_image(crate::Image::Bytes(bytes), cfg_json, display, manifest_kind)
+}
+
+/// [`load_login_from_bytes`] over either door's [`crate::Image`].
+pub fn load_login_image(
+    image: crate::Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<Box<dyn AuthPlugin>, String> {
     Ok(Box::new(build_dyn_auth(
-        bytes,
+        image,
         cfg_json,
         display,
         manifest_kind,
@@ -193,20 +250,12 @@ pub fn load_login_from_bytes(
 /// the frozen contract (transport, kind==`auth` && kind==manifest), then resolves the module's
 /// `name()` / `cacheable()` ONCE. `manifest_kind` is the trust-verified signed-manifest `kind`.
 fn build_dyn_auth(
-    bytes: &[u8],
+    image: crate::Image<'_>,
     cfg_json: &str,
     display: &str,
     manifest_kind: &str,
 ) -> Result<DynAuth, String> {
-    let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
-    let raw = wire_up_raw(
-        lib,
-        cfg_json,
-        display.to_string(),
-        abi_kind::AUTH,
-        manifest_kind,
-        Some(staged),
-    )?;
+    let raw = crate::load_image(image, cfg_json, display, abi_kind::AUTH, manifest_kind)?;
 
     let name = match raw.transport_call::<AuthRequest, AuthResponse>(&AuthRequest::Name) {
         Ok(AuthResponse::Name(n)) => n,
@@ -240,63 +289,10 @@ fn build_dyn_auth(
         raw,
         name,
         cacheable,
+        auth_fault_warned: std::sync::atomic::AtomicBool::new(false),
     })
 }
 
 #[cfg(test)]
-mod login_tests {
-    use super::*;
-    use busbar_plugin_abi::auth::{HttpRequest, Identity};
-
-    #[test]
-    fn dyn_auth_begin_login_wrong_variant_fail_closed() {
-        // A v1 / verify-only plugin can only answer Pass/Identity to a begin — never AuthorizeUrl.
-        // Every non-AuthorizeUrl shape (and Pass in particular) FAILS CLOSED to Reject.
-        assert_eq!(
-            map_begin_login("m", Ok(AuthResponse::Pass)),
-            LoginOutcome::Reject
-        );
-        assert_eq!(
-            map_begin_login(
-                "m",
-                Ok(AuthResponse::Identity(Identity::from(Principal::from_id(
-                    "x"
-                ))))
-            ),
-            LoginOutcome::Reject
-        );
-        // The happy path still works.
-        assert!(matches!(
-            map_begin_login("m", Ok(AuthResponse::AuthorizeUrl("https://idp".into()))),
-            LoginOutcome::Authorize(_)
-        ));
-    }
-
-    #[test]
-    fn dyn_auth_complete_login_transport_error_rejects() {
-        // A transport/module error on complete_login FAILS CLOSED.
-        assert_eq!(
-            map_complete_login("m", Err("boom".to_string())),
-            LoginOutcome::Reject
-        );
-        // A wrong-variant (AuthorizeUrl on complete) also fails closed.
-        assert_eq!(
-            map_complete_login("m", Ok(AuthResponse::AuthorizeUrl("x".into()))),
-            LoginOutcome::Reject
-        );
-        // Valid verdicts ride through.
-        assert!(matches!(
-            map_complete_login(
-                "m",
-                Ok(AuthResponse::TokenExchange(HttpRequest {
-                    method: "POST".into(),
-                    url: "https://idp/token".into(),
-                    form: vec![],
-                    secret_form_field: None,
-                    headers: vec![],
-                }))
-            ),
-            LoginOutcome::Exchange(_)
-        ));
-    }
-}
+#[path = "tests/login_tests.rs"]
+mod login_tests;

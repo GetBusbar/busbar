@@ -1,0 +1,210 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The governance seam: the trait the integrator binds to the concrete key/group/hook/plugin/etc.
+//! record store (1.5.5's `GovState` and its neighbours in `busbar-core`).
+//!
+//! This crate names three kinds of governance calls:
+//!
+//! - [`Governance::group_exists`] / [`Governance::actual_parent`] — read-only, used by
+//!   [`crate::mint::plan_mint_group`] before a mint.
+//! - [`Governance::provision_group`], [`Governance::mint_key`], [`Governance::rotate_key`] — the
+//!   three mutations behind the semantics this crate ports IN FULL (mint's group plan, rotate's
+//!   scoping, both under the idempotency cache).
+//! - [`Governance::execute_legacy`] / [`Governance::execute_new_verb`] — `// contract:` catch-alls
+//!   for every OTHER legacy operation (config, hooks, plugins, export, identity-providers, audit,
+//!   info, usage, admin-auth, pools, providers, restart, signing-key rotate, overlay — 60 of the 66
+//!   legacy verbs are reached only through these two calls) and every new verb's actual effect
+//!   (once posture admits it). `Verbs::execute` (in `crate::verbs`) already enforces scope, rate
+//!   limit, idempotency (where applicable) and posture BEFORE reaching either catch-all, so what
+//!   lands here is already an admitted call — the catch-all's only job is the verb's own domain
+//!   effect. `request`/`response` are opaque bytes because this crate carries no serializer (see
+//!   the crate doc): the codec's own wire types pass through unchanged.
+
+use crate::refusal::{ReasonCode, Refusal, RefusalStep};
+use crate::verb::KernelVerb;
+use busbar_contract::caps::{AdminVerb, Grant};
+
+/// A governance-layer error, mapped to a [`Refusal`] by [`GovernanceError::into_refusal`] rather
+/// than exposed to the caller directly — the same fail-closed shape 1.5.5's admin handlers use
+/// (`internal_error`/`join_error`): a store failure never echoes its cause past this boundary,
+/// because several governance calls carry secrets.
+#[derive(Debug)]
+pub enum GovernanceError {
+    /// The named resource does not exist.
+    NotFound,
+    /// The request conflicts with existing state.
+    Conflict,
+    /// The request failed validation.
+    Validation,
+    /// The underlying store failed; details are for the integrator's own logs only.
+    Store,
+}
+
+impl GovernanceError {
+    /// Map to the stable [`Refusal`] shape.
+    pub fn into_refusal(self) -> Refusal {
+        let reason = match self {
+            GovernanceError::NotFound => ReasonCode::NotFound,
+            GovernanceError::Conflict => ReasonCode::Conflict,
+            GovernanceError::Validation => ReasonCode::Validation,
+            GovernanceError::Store => ReasonCode::StoreError,
+        };
+        Refusal::new(RefusalStep::Verify, reason)
+    }
+}
+
+/// A freshly minted or rotated key's once-shown material, as far as this crate's own logic needs to
+/// see it (the secret text itself is never a plain `String` here — see
+/// [`crate::verbs::Verbs::create_key`] for how it is wrapped in a [`busbar_contract::caps::SecretOnce`] before
+/// leaving this crate).
+pub struct MintedKey {
+    /// The key's id.
+    pub id: String,
+    /// The plaintext secret/token, shown exactly once.
+    pub secret: String,
+    /// Unix-seconds expiry, when the credential shape carries one.
+    pub expires_at: Option<u64>,
+}
+
+/// The three rotate outcomes 1.5.5 distinguishes: not found (404), refused because the key is
+/// tombstoned (revoked-and-deleted keys never rotate), or a fresh credential.
+pub enum RotateOutcome {
+    /// No key with this id exists.
+    NotFound,
+    /// The key exists but is tombstoned; rotation is refused.
+    Tombstoned,
+    /// Rotation succeeded; the new credential is shown exactly once.
+    Rotated(MintedKey),
+}
+
+/// The governance seam.
+pub trait Governance {
+    /// Does a group with this exact name exist? `// contract:` — the integrator's cost-model group
+    /// registry.
+    fn group_exists(&self, name: &str) -> bool;
+
+    /// An EXISTING group's actual parent (only called when [`Governance::group_exists`] holds for
+    /// `name`). `// contract:`.
+    fn actual_parent(&self, name: &str) -> Option<String>;
+
+    /// Provision a new leaf group under `parent` (already known to exist), inheriting limits from
+    /// the nearest-ancestor `child_default`. `// contract:` — the integrator's
+    /// `build_with_group`-shaped validate-then-swap.
+    fn provision_group(
+        &self,
+        admin: &Grant<AdminVerb>,
+        group: &str,
+        parent: &str,
+    ) -> Result<(), GovernanceError>;
+
+    /// Mint a fresh virtual key, optionally bound to `group` (already planned to exist by the time
+    /// this is called — see [`crate::mint::plan_mint_group`]). `// contract:` — the integrator's
+    /// key-cap check plus the actual credential mint.
+    fn mint_key(
+        &self,
+        admin: &Grant<AdminVerb>,
+        group: Option<&str>,
+    ) -> Result<MintedKey, GovernanceError>;
+
+    /// Rotate an existing key's credential in place (same id, budgets, usage; the previous
+    /// credential stops authenticating immediately). `// contract:` — the integrator's
+    /// check-then-act under its own existence-serializing lock (1.5.5's `EXISTENCE_GATE`).
+    fn rotate_key(
+        &self,
+        admin: &Grant<AdminVerb>,
+        id: &str,
+    ) -> Result<RotateOutcome, GovernanceError>;
+
+    /// `// contract:` every OTHER legacy verb's actual effect (60 of the 66 — everything but
+    /// create/rotate key, whose SEMANTICS this crate ports directly). `Verbs::execute` has already
+    /// checked scope, rate class and (for the two replayable ops) idempotency by the time a call
+    /// reaches here; this call's only job is the verb's own domain effect over already-admitted
+    /// input.
+    fn execute_legacy(
+        &self,
+        verb: KernelVerb,
+        admin: &Grant<AdminVerb>,
+        request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError>;
+
+    /// `// contract:` the actual effect of a new 1.6.0 verb, once
+    /// [`crate::posture::check_new_verb_admission`] has already admitted it (operator gate, then
+    /// dual control). `Verbs::execute` never calls this for a refused verb.
+    ///
+    /// `operator` is the resolved [`crate::posture::OperatorState`] the admission was checked
+    /// against, carried through so a verb whose effect is verified against the sealed operator key
+    /// (D38 `amend_rate_history`) can read the key material without a second policy read. A verb
+    /// whose effect needs no key ignores it; the gate above has already guaranteed it is
+    /// [`crate::posture::OperatorState::Set`] for every irreducible verb.
+    fn execute_new_verb(
+        &self,
+        verb: KernelVerb,
+        admin: &Grant<AdminVerb>,
+        request: &[u8],
+        operator: crate::posture::OperatorState,
+    ) -> Result<Vec<u8>, GovernanceError>;
+
+    /// `// contract:` the answer to one of the five 1.6.0 ledger views
+    /// ([`crate::verb::LEDGER_VERBS`]), once `Verbs::execute` has checked its scope. A view reads
+    /// figures the ledger already holds and mutates nothing, which is why it has a seam of its own
+    /// rather than sharing [`Governance::execute_new_verb`]: that method's callers have passed a
+    /// posture check this one deliberately has not, and folding a read into it would make the two
+    /// indistinguishable to an implementor.
+    ///
+    /// The default answers `NotFound`, which is the truthful answer for an integrator that has not
+    /// bound a ledger: there is no ledger behind the view, so there are no figures to serve, and
+    /// inventing zeros would be a reconciliation that reports as balanced because nothing was ever
+    /// read. It is also what keeps this addition additive — an existing implementor compiles
+    /// unchanged and serves nothing it does not have.
+    ///
+    /// # Errors
+    ///
+    /// The view could not be answered. The default returns [`GovernanceError::NotFound`].
+    fn execute_ledger_read(
+        &self,
+        verb: KernelVerb,
+        admin: &Grant<AdminVerb>,
+        request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        let (_, _, _) = (verb, admin, request);
+        Err(GovernanceError::NotFound)
+    }
+
+    /// `// contract:` the answer to one of the three 1.6.0 audit-chain reads
+    /// ([`crate::verb::AUDIT_VERBS`]), once `Verbs::execute` has checked its scope.
+    ///
+    /// A seam of its own for the same reason [`Governance::execute_ledger_read`] is one, and for one
+    /// more. The same reason first: these three are READS — they mutate nothing, so there is no
+    /// maker-checker step for dual control to interpose and no ceremony a read has to wait for, and
+    /// folding them into [`Governance::execute_new_verb`] would make a posture-gated mutation and an
+    /// ungated read indistinguishable to an implementor. The one more: what they read is not what
+    /// the ledger holds. The ledger seam answers with money; this one answers with the chain — where
+    /// it is, what is in a window of it, and which public keys signed it — and an integrator that
+    /// has bound one has not thereby bound the other.
+    ///
+    /// PULL, NEVER PUSH. The node ANSWERS through this seam. Nothing behind it opens an outbound
+    /// connection, holds a cloud credential or phones anybody: that is what lets an airgapped
+    /// operator `curl` their own evidence, and it is why counter-signing is somebody else's product.
+    ///
+    /// The default answers `NotFound`, which is the truthful answer for an integrator that has bound
+    /// no chain: there is no chain behind the read, so there is no head to report, and answering
+    /// with an empty one would be this seam claiming a node had sealed nothing when in fact nobody
+    /// had asked it. `docs/design/BUSBAR-1.6.0.md:2079` — A GAP AND A FAILURE MUST NEVER BE THE SAME
+    /// OUTPUT — is exactly that distinction: an unbound chain and an empty chain are different
+    /// facts and must not be one answer. It is also what keeps this addition additive: an existing
+    /// implementor compiles unchanged and serves nothing it does not have.
+    ///
+    /// # Errors
+    ///
+    /// The read could not be answered. The default returns [`GovernanceError::NotFound`].
+    fn execute_audit_read(
+        &self,
+        verb: KernelVerb,
+        admin: &Grant<AdminVerb>,
+        request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        let (_, _, _) = (verb, admin, request);
+        Err(GovernanceError::NotFound)
+    }
+}

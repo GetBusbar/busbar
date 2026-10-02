@@ -1,0 +1,270 @@
+# c1-literals: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).
+# THE RULE (ARCHITECT ruling on M0): a plane's dialect or protocol name, a plugin
+# instance name or an auth style spelled by the kernel or the loader IS a C1 leak; the
+# kernel's own neutral carrier vocabulary (a transport-carrier id: http, https, h2,
+# grpc, sse, ws, websocket, tcp, stdio, unix) is NOT, and is not matched. The word list
+# is VOCABULARY in xtask/src/gates/c1_literals.rs.
+# The kernel and the loader name no plugin, style or protocol: each row is a file and
+# the vocabulary word one of its string literals (or a manifest's feature) spells
+# today. Strike a row in the commit that drains it; never add one.
+# Regenerate with `cargo xtask gate c1-literals --write`.
+
+[[finding]]
+rule = "c1-literals:feature"
+file = "crates/busbar-kernel/Cargo.toml"
+item = "a2a (plane-a2a)"
+
+[[finding]]
+rule = "c1-literals:feature"
+file = "crates/busbar-kernel/Cargo.toml"
+item = "jsonrpc (jsonrpc-ingress)"
+
+[[finding]]
+rule = "c1-literals:feature"
+file = "crates/busbar-kernel/Cargo.toml"
+item = "mcp (plane-mcp)"
+
+[[finding]]
+rule = "c1-literals:feature"
+file = "crates/busbar-kernel/Cargo.toml"
+item = "openapi (openapi-schema)"
+
+[[finding]]
+rule = "c1-literals:feature"
+file = "crates/busbar-kernel/Cargo.toml"
+item = "ranking (hooks-ranking)"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel-identity/src/egress_auth/sigv4/mod.rs"
+item = "sigv4"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel-identity/src/egress_auth/tests.rs"
+item = "sigv4"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel-identity/src/ingress_sigv4.rs"
+item = "sigv4"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel-scope/src/lib.rs"
+item = "openapi"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/admin/v1/contract/mod.rs"
+item = "openapi"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/admin/v1/contract/taxonomy.rs"
+item = "openapi"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/admin/v1/contract/taxonomy.rs"
+item = "prometheus"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/admin/versions.rs"
+item = "openapi"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/api.rs"
+item = "openapi"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/audit_ring.rs"
+item = "openapi"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/auth/mod.rs"
+item = "sigv4"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/auth/token.rs"
+item = "github"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/migrate.rs"
+item = "otlp"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/migrate.rs"
+item = "prometheus"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/migrate.rs"
+item = "webhook"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/migrate_export.rs"
+item = "otlp"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/migrate_export.rs"
+item = "prometheus"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/migrate_export.rs"
+item = "webhook"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/mod.rs"
+item = "github"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/mod.rs"
+item = "otlp"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/mod.rs"
+item = "prometheus"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/mod.rs"
+item = "ranking"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/mod.rs"
+item = "webhook"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/named_map.rs"
+item = "openapi"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/providers.rs"
+item = "anthropic"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/sections.rs"
+item = "otlp"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/sections.rs"
+item = "prometheus"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/sections.rs"
+item = "webhook"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config_validate/mod.rs"
+item = "ranking"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/diagnostics/mod.rs"
+item = "admin-tokens"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/diagnostics/mod.rs"
+item = "ldap"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/diagnostics/mod.rs"
+item = "oidc"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/diagnostics/mod.rs"
+item = "prometheus"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/diagnostics/mod.rs"
+item = "sigv4"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/diagnostics/mod.rs"
+item = "streaming"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/governance/state.rs"
+item = "sigv4"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/ingress/protocol.rs"
+item = "jsonrpc"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/metrics/mod.rs"
+item = "prometheus"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/observability.rs"
+item = "webhook"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/plane/registry.rs"
+item = "openapi"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/plane_host/egress.rs"
+item = "streaming"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
+item = "jsonrpc"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
+item = "streaming"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/test_support/export_axis.rs"
+item = "otlp"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/test_support/export_axis.rs"
+item = "webhook"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/plugin-loader/src/plane.rs"
+item = "openapi"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/plugin-loader/src/registry.rs"
+item = "ranking"

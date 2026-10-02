@@ -1,0 +1,1006 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE UPSTREAM LEG, and the THREE-ARM PAIRING that keeps it honest.
+//!
+//! While there was no client direction, `tools/call` refused rather than returning a plausible
+//! result, and a PAIR of tests held the line: an ungranted caller refused BEFORE the upstream, a
+//! granted one refused AFTER everything else passed. The pair existed because "it was refused"
+//! proves nothing about WHICH check refused it — a stub returning a fake result would have made
+//! admission, generation re-validation, the budget charge, the meter, the ask gate and the audit row
+//! all pass for the wrong reason.
+//!
+//! The leg now exists, so the pair becomes a TRIPLE and the property it protects is unchanged:
+//!
+//! | arm | caller | upstream | expected |
+//! |---|---|---|---|
+//! | before | ungranted | reachable | `not_granted`, and the upstream is NEVER contacted |
+//! | after | granted | unreachable | `upstream_failed`, after every check above it passed |
+//! | through | granted | reachable | the upstream's own result, sanitised |
+//!
+//! The third arm is what stops the first two being satisfied by a `tools/call` that refuses
+//! everything, and the first is what stops the third being satisfied by one that dispatches
+//! everything. Each is load-bearing only because the others exist.
+
+use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::mcp::test_engine::*;
+use crate::testkit::TestAppMcpExt;
+use busbar_kernel::{
+    config::{self, groups::LimitMetric},
+    config_validate::validate,
+    cost::CostModel,
+    test_support::engine_kit::CostKit,
+};
+
+const CANONICAL: &str = "https://gateway.example.com/mcp";
+const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
+const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
+
+/// ARM 3 — THE SUCCESSFUL DISPATCH. A granted caller reaches a reachable upstream and is handed the
+/// upstream's own result.
+///
+/// Asserted on the OUTPUT at both ends: the caller gets the result body, and the PEER records that
+/// it was called once, with the UN-namespaced tool name, the mirrored `2026-07-28` headers, and the
+/// exchanged bearer rather than anything of the caller's.
+#[tokio::test]
+async fn a_granted_call_reaches_the_upstream_and_returns_its_result() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": { "path": "/etc/hosts" } }),
+    )
+    .await;
+
+    assert_eq!(
+        status, 200,
+        "a granted call to a reachable upstream: {body}"
+    );
+    assert_eq!(
+        body.pointer("/result/content/0/text").unwrap(),
+        "UPSTREAM RESULT",
+        "the CALLER is handed the upstream's own result: {body}"
+    );
+
+    // THE PEER'S OWN RECORD. One call, not zero and not two.
+    assert_eq!(peer.mcp_hits(), 1, "exactly one round trip per dispatch");
+    let sent = peer.last_mcp();
+    let json = sent.json();
+    assert_eq!(
+        json.pointer("/params/name").unwrap(),
+        "read",
+        "the UPSTREAM is sent the bare tool name; the `{{server}}_{{tool}}` namespacing is busbar's \
+         and the upstream has never heard of it"
+    );
+    assert_eq!(json.get("method").unwrap(), "tools/call");
+    let header = |n: &str| {
+        sent.headers
+            .iter()
+            .find(|(k, _)| k == n)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        header("mcp-protocol-version").as_deref(),
+        Some(crate::mcp::envelope::PROTOCOL_VERSION),
+        "busbar must satisfy the same transport MUSTs it enforces on its own ingress"
+    );
+    assert_eq!(header("mcp-method").as_deref(), Some("tools/call"));
+    assert_eq!(header("mcp-name").as_deref(), Some("read"));
+    assert_eq!(
+        header("authorization").as_deref(),
+        Some(format!("Bearer {ISSUED}").as_str()),
+        "the credential on the wire is the EXCHANGED one, not busbar's ambient subject token"
+    );
+
+    // And the exchange happened, exactly once, before the tool call it was for.
+    assert_eq!(peer.token_hits(), 1, "one exchange per dispatch round");
+}
+
+/// ARM 1 — BEFORE. An ungranted caller is refused at ADMISSION, and the upstream is never contacted.
+///
+/// The second half is the part that cannot be inferred from the status code: a refusal that still
+/// costs a round trip is a refusal an unauthorised party can use to make busbar generate traffic.
+#[tokio::test]
+async fn an_ungranted_call_is_refused_before_the_upstream_is_contacted_at_all() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let none = gov_with_scopes(&[]);
+
+    let (status, body) = call(
+        &app,
+        &none,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+    )
+    .await;
+
+    assert_eq!(status, 404);
+    assert_eq!(
+        body.pointer("/error/data/reason").unwrap(),
+        "not_granted",
+        "refused by the GRANT, before the upstream: {body}"
+    );
+    assert_eq!(
+        (peer.mcp_hits(), peer.token_hits()),
+        (0, 0),
+        "an unauthorised call must cause NO outbound traffic — neither a tool call nor a \
+         token-exchange round trip on busbar's own authorization server"
+    );
+}
+
+/// ARM 2 — AFTER. A granted caller whose upstream cannot be reached is refused by the ROUND TRIP,
+/// with a reason distinct from every governance refusal.
+///
+/// The upstream is a port nothing is listening on, so this is a real connection failure rather than
+/// a simulated one.
+#[tokio::test]
+async fn a_granted_call_to_an_unreachable_upstream_fails_at_the_round_trip() {
+    metrics_init();
+    // Bind and immediately drop, so the port is one nothing answers on rather than one that might
+    // belong to something else on the machine.
+    let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_addr = dead.local_addr().unwrap();
+    drop(dead);
+
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let mut def = exchanging_server(&peer, SUBJECT);
+    def.url = format!("http://{dead_addr}/mcp");
+    def.aud = Some(def.url.clone());
+
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", def)
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+    )
+    .await;
+
+    // 200 AND `isError`, NOT 403. Every governance check PASSED and the call went out; what failed
+    // was the far end. This asserted `403` / `error.data.reason = upstream_failed` until the
+    // `Outcome::UpstreamFailed` split, which is the bug the assertion had frozen: an upstream that
+    // is down was reported to the caller as busbar refusing the request, so the model could neither
+    // see the failure nor retry it, and nothing reading dispositions could tell a policy refusal
+    // from an outage.
+    assert_eq!(
+        status, 200,
+        "an upstream failure is not busbar refusing: {body}"
+    );
+    assert!(
+        body.pointer("/error").is_none(),
+        "a tool that failed is not a protocol error: {body}"
+    );
+    assert_eq!(
+        body.pointer("/result/isError").and_then(|v| v.as_bool()),
+        Some(true),
+        "the failure must reach the MODEL, which reads isError results and not JSON-RPC errors: \
+         {body}"
+    );
+    assert_eq!(
+        body.pointer("/result/resultType").and_then(|v| v.as_str()),
+        Some("complete"),
+        "and it is a complete result: the dispatch finished, it finished badly: {body}"
+    );
+    let text = body
+        .pointer("/result/content/0/text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        text.contains("`fs`"),
+        "the caller needs to know WHICH upstream failed: {text}"
+    );
+    // The exchange DID happen — this caller was authorised, so busbar was willing to spend its own
+    // credential. That is the difference from arm 1, on the token endpoint's own counter.
+    assert_eq!(
+        peer.token_hits(),
+        1,
+        "a granted caller's dispatch mints a credential; an ungranted one does not"
+    );
+}
+
+/// The three arms answer with THREE DIFFERENT reason words. Asserted as a set, because two arms that
+/// happened to share a word would make the pairing above prove nothing.
+#[tokio::test]
+async fn the_three_arms_are_distinguishable_by_their_audit_reason() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let reachable = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+
+    let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_addr = dead.local_addr().unwrap();
+    drop(dead);
+    let mut def = exchanging_server(&peer, SUBJECT);
+    def.url = format!("http://{dead_addr}/mcp");
+    def.aud = Some(def.url.clone());
+    let unreachable = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", def)
+        .build();
+
+    let granted = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+    let none = gov_with_scopes(&[]);
+    let params = serde_json::json!({ "name": "fs_read", "arguments": {} });
+
+    let (ok_status, ok_body) = call(&reachable, &granted, "tools/call", params.clone()).await;
+    let (before_status, before_body) = call(&reachable, &none, "tools/call", params.clone()).await;
+    let (after_status, after_body) = call(&unreachable, &granted, "tools/call", params).await;
+
+    // THREE OUTCOMES, THREE SHAPES, and the third one changed. It used to be `403` — the same
+    // status and the same `error.data.reason` family as the ungranted arm — so "you may not call
+    // this" and "the far end is down" were one signal wearing one word. They are now different
+    // KINDS of answer, which is the strongest form of distinguishable: a refusal is a JSON-RPC
+    // error, an upstream failure is an `isError` result.
+    assert_eq!((ok_status, before_status, after_status), (200, 404, 200));
+    assert!(
+        ok_body.pointer("/error").is_none(),
+        "the success arm must carry no error at all: {ok_body}"
+    );
+    assert_eq!(
+        before_body
+            .pointer("/error/data/reason")
+            .and_then(|v| v.as_str()),
+        Some("not_granted"),
+        "the REFUSAL arm is a busbar-attributed protocol error: {before_body}"
+    );
+    assert!(
+        after_body.pointer("/error").is_none()
+            && after_body
+                .pointer("/result/isError")
+                .and_then(|v| v.as_bool())
+                == Some(true),
+        "the UPSTREAM-FAILURE arm is a tool execution error, not a refusal: {after_body}"
+    );
+    assert_ne!(
+        ok_body.pointer("/result/isError").and_then(|v| v.as_bool()),
+        Some(true),
+        "and the success arm must not also look like a failure, or the pairing above is vacuous: \
+         {ok_body}"
+    );
+}
+
+/// An upstream that returns an `InputRequiredResult` — a bid to spend BUSBAR's authority — is
+/// refused deny-by-default, and its ask is NOT proxied to busbar's caller.
+///
+/// This is the gate exercised through the REAL parser now that one exists: `input_required` is
+/// recognised off the wire rather than constructed by a fake.
+#[tokio::test]
+async fn an_upstreams_ask_is_recognised_off_the_wire_and_refused_deny_by_default() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::AsksForSampling, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+    )
+    .await;
+
+    assert_eq!(status, 403);
+    assert_eq!(
+        body.pointer("/error/data/reason").unwrap(),
+        "ask_ungranted",
+        "an upstream's ask is deny-by-default, and it is its OWN reason word: {body}"
+    );
+    let message = body
+        .pointer("/error/message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("terminates at busbar"),
+        "the caller is told busbar declined, never handed the ask to answer: {message}"
+    );
+}
+
+/// THE CONFUSED-DEPUTY LAUNDERING TEST, asserted on the BYTES THE CALLER RECEIVES.
+///
+/// The test above asserts busbar's refusal is well-formed. It cannot catch laundering, because a
+/// laundered ask never reaches the arm it inspects — it is a `200` with a result, not a `403` with a
+/// reason. This one asserts the only thing that actually matters: **no field of the upstream's ask
+/// appears anywhere in the response body busbar hands its caller.**
+///
+/// The upstream mounts the real attack: a conformant `elicitation/create` demanding the caller's
+/// account password. If busbar relays it, the caller sees a credential prompt arriving from the
+/// party it trusts — busbar — with busbar's authentication and busbar's name on it. That is the
+/// laundering `mcp/mod.rs:83` and `method.rs:649-652` both say busbar refuses to do.
+///
+/// Asserted as a SUBSTRING SCAN over the serialised body rather than field-by-field, for the reason
+/// `Recorded::wire` gives on the outbound side: a field-by-field assertion is a list somebody has to
+/// remember to extend, and the next `InputRequiredResult` field is the one it will not name.
+#[tokio::test]
+async fn a_conformant_upstreams_ask_reaches_the_caller_never() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::HarvestsCredentials, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (_status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+    )
+    .await;
+
+    let wire = serde_json::to_string(&body).expect("the caller's response body serialises");
+    for sentinel in [
+        "input_required",
+        "inputRequests",
+        "requestState",
+        "elicitation/create",
+        "upstream-opaque-state-blob",
+        "account password",
+        "requestedSchema",
+    ] {
+        assert!(
+            !wire.contains(sentinel),
+            "the upstream's ask reached busbar's CALLER: `{sentinel}` is in the response body.\n\
+             A registered tool server just asked busbar's caller for its password, and busbar \
+             delivered the demand under its own name.\n\
+             FULL BODY: {wire}"
+        );
+    }
+}
+
+/// THE SECOND MECHANISM, exercised on the case the FIRST one cannot see.
+///
+/// `input_required_kind` recognises an ask by its discriminator. So an upstream that carries
+/// `inputRequests` on a result labelled `complete` walks straight past it — and that is not a
+/// contrived shape, it is the cheapest way for a hostile upstream to be non-conformant in the
+/// direction that helps it.
+///
+/// This is why the terminal check in `method.rs` reads the FIELDS rather than the discriminator, and
+/// why it refuses rather than scrubbing: scrubbing `resultType` alone would deliver the password
+/// prompt anyway, relabelled, and dropping `inputRequests` alone would hand the caller a truncated
+/// result it had no way to know was truncated.
+#[tokio::test]
+async fn an_ask_smuggled_onto_a_result_labelled_complete_does_not_reach_the_caller_either() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::HalfConformantAsk, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+    )
+    .await;
+
+    // NO RESULT AT ALL. Asserted before the content scan, because it is the stronger statement: a
+    // refusal has no result, so there is nothing for the upstream's ask to be hiding in.
+    assert!(
+        body.get("result").is_none(),
+        "a result carrying an ask must not be delivered in any form: {body}"
+    );
+    // The scan is over the upstream's OWN CONTENT, and deliberately not over the field names.
+    // busbar's refusal names the offending field on purpose — an operator debugging a
+    // half-conformant upstream needs to know which one arrived — and a scan that could not tell
+    // busbar's diagnosis from the upstream's demand would forbid busbar from explaining itself.
+    let wire = serde_json::to_string(&body).expect("serialises");
+    for sentinel in [
+        "elicitation/create",
+        "account password",
+        "requestedSchema",
+        "upstream-opaque-state-blob",
+        "almost done",
+    ] {
+        assert!(
+            !wire.contains(sentinel),
+            "an ask labelled `complete` reached busbar's CALLER: `{sentinel}` is in the response \
+             body. The discriminator-based recogniser cannot catch this shape, which is precisely \
+             what the terminal check exists for.\nFULL BODY: {wire}"
+        );
+    }
+    assert_eq!(status, 403, "and it is a busbar-attributed refusal: {body}");
+    assert_eq!(
+        body.pointer("/error/data/reason").and_then(|v| v.as_str()),
+        Some("ask_not_proxied"),
+        "the terminal check has its OWN audit word, so an operator can tell it from the \
+         recogniser's refusal: {body}"
+    );
+}
+
+/// A JSON-RPC error from the upstream is an upstream failure, not a governance refusal, and the
+/// upstream's message is not laundered into busbar's own vocabulary.
+#[tokio::test]
+async fn an_upstream_json_rpc_error_is_reported_as_an_upstream_failure() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Errors, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+    )
+    .await;
+
+    // A TOOL THAT MERELY FAILED IS NOT BUSBAR REFUSING THE REQUEST. This asserted `403` /
+    // `upstream_failed` in `error.data.reason`, which conflated the two facts: `-32000` / FORBIDDEN
+    // is busbar's "I decline", and nothing here declined anything — busbar carried the call and the
+    // upstream answered badly. The spec's own division puts this on the other side of the line:
+    // protocol errors describe the REQUEST, tool execution errors describe the RUN, and the latter
+    // are reported in tool results with `isError: true` so the model can see the message.
+    assert_eq!(
+        status, 200,
+        "the tool failed; busbar did not refuse: {body}"
+    );
+    assert!(body.pointer("/error").is_none(), "{body}");
+    assert_eq!(
+        body.pointer("/result/isError").and_then(|v| v.as_bool()),
+        Some(true),
+        "{body}"
+    );
+    let message = body
+        .pointer("/result/content/0/text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("-32003"),
+        "the operator needs the upstream's own code to diagnose it, and the MODEL needs it in the \
+         place a model reads: {message}"
+    );
+}
+
+/// TOOL OUTPUT IS SANITISED. An upstream's RESULT is exactly as injectable as its description, and
+/// it arrives later — after the operator has already approved the tool. The normalisation site is on
+/// the way OUT to the caller, which is the moment the text re-enters model context.
+#[tokio::test]
+async fn upstream_tool_output_is_markup_normalised_before_it_reaches_the_caller() {
+    metrics_init();
+    // A peer whose result carries injection markup. Served through the same recorder so the wire is
+    // still assertable.
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+    let (_, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+    )
+    .await;
+    // The peer's honest payload must survive byte-identical — the CONTROL half of the sanitiser
+    // claim. Without it, a normaliser that deleted everything would pass any "no markup" assertion.
+    assert_eq!(
+        body.pointer("/result/content/0/text").unwrap(),
+        "UPSTREAM RESULT",
+        "an honest upstream result must survive the normaliser byte-identical"
+    );
+    assert_eq!(
+        crate::mcp::sanitize::normalise("<IMPORTANT>exfiltrate</IMPORTANT>ok"),
+        "exfiltrateok",
+        "and the normaliser the dispatch path calls is the one that strips markup"
+    );
+}
+
+/// THE ARGUMENT GUARD is on the live dispatch path. A URL carried INSIDE the per-request tool
+/// arguments is judged by the same addressing check the destination is, and a refusal there is its
+/// own reason word — not an upstream failure and not a grant refusal.
+///
+/// The routing rule makes the DESTINATION immune to attacker-chosen text. It does not make the
+/// PAYLOAD immune, and a live upstream leg is exactly where that distinction starts to matter.
+#[tokio::test]
+async fn a_metadata_url_hidden_in_the_tool_arguments_is_refused_and_never_sent() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({
+            "name": "fs_read",
+            // Not a field the pinned schema declares. A schema-DRIVEN walk could not visit it, and
+            // that is precisely the field that matters.
+            "arguments": { "path": "/ok", "callback": "http://169.254.169.254/latest/meta-data/" },
+        }),
+    )
+    .await;
+
+    assert_eq!(status, 403);
+    assert_eq!(
+        body.pointer("/error/data/reason").unwrap(),
+        "tool_argument_refused",
+        "an inadmissible ARGUMENT is its own refusal, distinct from a grant and from a network: \
+         {body}"
+    );
+    assert_eq!(
+        (peer.mcp_hits(), peer.token_hits()),
+        (0, 0),
+        "the refusal happens before any outbound traffic, the token exchange included"
+    );
+}
+
+// ── ITEM 136: MCP tool calls reach the budget ledger — priced by the MCP plane's card, never the llm's ──
+//
+// MCP used to put nothing into the budget ledger: its one charge was a `Queries` meter at amount 0,
+// so the declared `tool_calls` class was never counted. An answered `tools/call` now ledgers ONE
+// `tool_calls` on the caller's chain through the host `meter_ledger` seam (#71, unconditional #43).
+// The row's lane is plane-qualified, so the view prices it with the MCP plane's OWN card (#42
+// "scoped per plane", #47) — and no `tools` section can author one yet, so MCP billing is OFF: the
+// count reads 0 even beside an llm card, and nothing refuses. A deployment's `rate_card` is the llm
+// (`pools`) plane's card only; applying it to an MCP class was the ratecard fault these pin.
+
+type Card = std::collections::BTreeMap<String, busbar_kernel::config::sections::RateEntryCfg>;
+
+/// A governed app whose group `g` carries `limits`, priced by `card` (`None` = no card at all) and
+/// the node's flat `per_request_fee:` (the pools plane's fee). Hands back the app, the registry and the cost model so a test can read the ledger and
+/// drive the llm door directly.
+fn budgeted_app(
+    peer: &Peer,
+    server: &str,
+    card: Option<&Card>,
+    per_request_fee: i64,
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+) -> (
+    std::sync::Arc<dyn EngineApp>,
+    std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
+    std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::CostKit>,
+) {
+    let store = engine().scratch_store();
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        busbar_kernel::governance::signing::DEFAULT_KID,
+    );
+    let gov = engine()
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
+    let groups: std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> = [(
+        "g".to_string(),
+        busbar_kernel::config::GroupCfg {
+            limits,
+            ..Default::default()
+        },
+    )]
+    .into();
+    let cost = engine().cost_parts(card, per_request_fee, &groups);
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server(server, exchanging_server(peer, SUBJECT))
+        .cost(cost.clone())
+        .governance(gov.clone())
+        .build();
+    (app, gov, cost)
+}
+
+fn per_day(
+    metric: busbar_kernel::config::groups::LimitMetric,
+    amount: u64,
+) -> busbar_kernel::config::groups::LimitCfg {
+    busbar_kernel::config::groups::LimitCfg {
+        metric,
+        amount,
+        per: Some(busbar_kernel::config::groups::LimitWindow::Day),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    }
+}
+
+/// The caller: a key in group `g`, granted the one tool.
+fn budgeted_key(id: &str, server: &str) -> busbar_contract::records::VirtualKey {
+    let tool = format!("{server}_read");
+    let mut key = super::upstream_support::key_with_scopes(
+        id,
+        &[("mcp_server", server), ("mcp_tool", tool.as_str())],
+    );
+    key.group = Some("g".to_string());
+    key
+}
+
+async fn read_once(
+    app: &std::sync::Arc<dyn EngineApp>,
+    key: &busbar_contract::records::VirtualKey,
+    server: &str,
+) -> (u16, serde_json::Value) {
+    let g = busbar_contract::records::PlaneRequestCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+    call(
+        app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": format!("{server}_read"), "arguments": { "path": "/p" } }),
+    )
+    .await
+}
+
+fn answered(status: u16, body: &serde_json::Value) -> bool {
+    status == 200 && body.pointer("/result/content/0/text").is_some()
+}
+
+/// THE RULING'S CASE: an llm card PRESENT, no `tools` card, a group `budget:` of 1 cent a day. Every
+/// MCP call is served; each one's `tool_calls` is ledgered on the group bucket; the bucket's usage read
+/// prices it at 0 rather than failing; and llm traffic in the same group still passes the door.
+/// At 6a32b3a67 the llm card was applied to the MCP class: call 2 was refused on budget, the read
+/// failed "cannot be priced", and the llm door blocked the whole group.
+#[tokio::test]
+async fn a_pools_card_does_not_price_mcp_tool_calls_they_are_ledgered_and_nothing_refuses() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "poolscardfs";
+    let pools_card: Card =
+        serde_yaml::from_str("gpt-x: { input_utok: 1 }\n").expect("a pools card parses");
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        Some(&pools_card),
+        0,
+        vec![per_day(LimitMetric::Budget, 1)],
+    );
+    let key = budgeted_key("k-mcp-pools-card", server);
+
+    for n in 1..=5 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "call {n}: the pools card does not price MCP, so nothing refuses: {status} {body}"
+        );
+    }
+    assert_eq!(peer.mcp_hits(), 5);
+
+    let now = super::served_witness::host_now();
+    let read = gov
+        .derived_bucket_usage(&*cost, "group:g@day", "day", true, now)
+        .expect("the group's usage read is NOT refused: the MCP rows price at 0");
+    assert_eq!(read.spend_cents, 0, "MCP billing is off: its counts read 0");
+
+    gov.flush_budgets();
+    let window = busbar_kernel::governance::budget_window("day", now);
+    let ledger = gov
+        .store()
+        .get_usage("group:g@day", window)
+        .expect("the group bucket was flushed");
+    let lane = format!(
+        "{}{}{server}_read",
+        crate::PLANE_KEY,
+        busbar_kernel::governance::PLANE_LANE_SEP
+    );
+    let row = ledger
+        .models
+        .iter()
+        .find(|m| m.model == lane)
+        .unwrap_or_else(|| panic!("the MCP lane is ledgered: {ledger:?}"));
+    assert_eq!(
+        row.usage_units.get("tool_calls"),
+        Some(&5),
+        "every answered call is counted verbatim (#71): {ledger:?}"
+    );
+
+    gov.try_admit(&*cost, &key, "gpt-x", now)
+        .expect("pools traffic in the same group still passes the budget door");
+}
+
+/// THE POSITIVE CONTROL while no MCP card can be expressed: a `requests:` COUNT cap of 3 trips on
+/// call 4, beside an llm card and a group `budget:` that MCP's unpriced counts must NOT trip first. At
+/// 6a32b3a67 call 2 was refused on budget. With no card at all the same traffic is served (reads 0).
+#[tokio::test]
+async fn a_requests_cap_trips_on_mcp_tool_calls_and_the_pools_budget_does_not() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "countfs";
+    let pools_card: Card =
+        serde_yaml::from_str("gpt-x: { input_utok: 1 }\n").expect("a pools card parses");
+    let (app, _gov, _cost) = budgeted_app(
+        &peer,
+        server,
+        Some(&pools_card),
+        0,
+        vec![
+            per_day(LimitMetric::Budget, 1_000),
+            per_day(LimitMetric::Requests, 3),
+        ],
+    );
+    let key = budgeted_key("k-mcp-requests-cap", server);
+    for n in 1..=3 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "call {n} is under the cap: {status} {body}"
+        );
+    }
+    let (status, body) = read_once(&app, &key, server).await;
+    assert!(
+        !answered(status, &body) && body.to_string().contains("requests"),
+        "call 4 trips the requests cap, not the budget: {status} {body}"
+    );
+    assert_eq!(peer.mcp_hits(), 3, "the refused call never left");
+
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "freefs";
+    let (app, _gov, _cost) = budgeted_app(
+        &peer,
+        server,
+        None,
+        0,
+        vec![per_day(LimitMetric::Budget, 1)],
+    );
+    let key = budgeted_key("k-mcp-budget-free", server);
+    for n in 1..=5 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "billing off reads 0 (call {n}): {status} {body}"
+        );
+    }
+}
+
+// ── #47: THE MCP PLANE'S OWN CARD — `tools.rate_card` prices `tool_calls`, and only that plane's ──────
+
+/// The node's card map exactly as boot builds it: config text → core lifts `tools.rate_card` off the
+/// section (the plane never sees it, #43) → `resolve` composes it beside the llm card → the map
+/// `CostModel::resolve_parts` is handed. The plane is registered first, as the composition root
+/// installs it before any config is read, so the section is parsed by the MCP plane's own reader.
+fn composed_card(yaml: &str) -> Option<Card> {
+    resolved(yaml).rate_card
+}
+
+/// The node's resolved config from `yaml`, exactly as boot builds it (see [`composed_card`]).
+fn resolved(yaml: &str) -> config::RootCfg {
+    crate::testkit::install_test_seams();
+    let deploy = config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{yaml}"))
+        .expect("the config parses");
+    config::resolve(&deploy, &Default::default()).expect("the config resolves")
+}
+
+/// ITEM 136's ORIGINAL CONTROL, now expressible: a `tools.rate_card` pricing the tool's `tool_calls`
+/// at one minor unit a call CHARGES it, and a group `budget:` of 3 trips on the fourth MCP call —
+/// beside an llm card, which prices none of it.
+#[tokio::test]
+async fn a_tools_card_prices_tool_calls_and_a_budget_cap_trips_on_mcp() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "pricedfs";
+    let card = composed_card(&format!(
+        "rate_card:\n  gpt-x: {{ input_utok: 1 }}\ntools:\n  rate_card:\n    \
+         {server}_read: {{ units: {{ tool_calls: 10000 }} }}\n"
+    ));
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        card.as_ref(),
+        0,
+        vec![per_day(LimitMetric::Budget, 3)],
+    );
+    let key = budgeted_key("k-mcp-tools-card", server);
+    for n in 1..=3 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "call {n} is under the cap: {status} {body}"
+        );
+    }
+    let now = super::served_witness::host_now();
+    let read = gov
+        .derived_bucket_usage(&*cost, "group:g@day", "day", true, now)
+        .expect("a priced MCP class reads");
+    assert_eq!(
+        read.spend_cents, 3,
+        "3 calls x 10,000 micro-units = 3 minor units"
+    );
+    let (status, body) = read_once(&app, &key, server).await;
+    assert!(
+        !answered(status, &body) && body.to_string().contains("budget"),
+        "call 4 trips the budget the tools card priced: {status} {body}"
+    );
+    assert_eq!(peer.mcp_hits(), 3, "the refused call never left");
+}
+
+/// #42 SCOPED TO THE PLANE: a PRESENT `tools.rate_card` that is silent about the tool the traffic
+/// hit REFUSES — the first call is served and ledgered, then the door cannot price the bucket and
+/// refuses, and the bucket's usage read fails. Never a silent 0.
+#[tokio::test]
+async fn a_present_tools_card_silent_about_a_tool_refuses() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "silentfs";
+    let card = composed_card(
+        "tools:\n  rate_card:\n    some_other_tool: { units: { tool_calls: 10000 } }\n",
+    );
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        card.as_ref(),
+        0,
+        vec![per_day(LimitMetric::Budget, 1_000)],
+    );
+    let key = budgeted_key("k-mcp-tools-silent", server);
+    let (status, body) = read_once(&app, &key, server).await;
+    assert!(answered(status, &body), "call 1 is served: {status} {body}");
+    let (status, body) = read_once(&app, &key, server).await;
+    assert!(
+        !answered(status, &body),
+        "call 2 is REFUSED: the tools card cannot price the tool call 1 ledgered: {status} {body}"
+    );
+    assert_eq!(peer.mcp_hits(), 1);
+    assert!(
+        gov.derived_bucket_usage(
+            &*cost,
+            "group:g@day",
+            "day",
+            true,
+            super::served_witness::host_now()
+        )
+        .is_err(),
+        "the usage read refuses rather than reading 0"
+    );
+}
+
+/// The llm plane's card never prices an MCP row, even an entry spelt exactly like the tool: with no
+/// `tools` card the MCP plane is billing OFF and a 1-minor-unit budget never trips.
+#[tokio::test]
+async fn an_pools_card_entry_named_like_a_tool_never_prices_it() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "namesakefs";
+    let card = composed_card(&format!(
+        "rate_card:\n  {server}_read: {{ units: {{ tool_calls: 1000000 }} }}\n"
+    ));
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        card.as_ref(),
+        0,
+        vec![per_day(LimitMetric::Budget, 1)],
+    );
+    let key = budgeted_key("k-mcp-pools-namesake", server);
+    for n in 1..=4 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(answered(status, &body), "call {n}: {status} {body}");
+    }
+    let read = gov
+        .derived_bucket_usage(
+            &*cost,
+            "group:g@day",
+            "day",
+            true,
+            super::served_witness::host_now(),
+        )
+        .expect("reads");
+    assert_eq!(
+        read.spend_cents, 0,
+        "the pools card never prices the MCP lane"
+    );
+}
+
+// ── #47 PER-PLANE FEES (OWNER RULING Q32): an MCP call is the MCP plane's, never the pools plane's fee ──
+
+/// The node's flat `per_request_fee:` is the POOLS plane's fee (#47 back-compat). An MCP call is
+/// admitted as the MCP plane's (its pool qualified by the plane key), so with no `tools.fees` it bills
+/// a fee of nothing: a group `budget:` of 3 beside a flat fee of 5 serves every call and reads 0.
+/// Before: the first call was refused on budget (0 + 5 > 3) — the pools fee charged on MCP traffic.
+#[tokio::test]
+async fn the_pools_fee_is_never_charged_on_an_mcp_call() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "feefs";
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        None,
+        5,
+        vec![per_day(LimitMetric::Budget, 3)],
+    );
+    let key = budgeted_key("k-mcp-no-pools-fee", server);
+    for n in 1..=3 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "call {n}: the MCP plane has no fees, so it bills none: {status} {body}"
+        );
+    }
+    let now = super::served_witness::host_now();
+    let read = gov
+        .derived_bucket_usage(&*cost, "group:g@day", "day", true, now)
+        .expect("the group reads");
+    assert_eq!(
+        read.spend_cents, 0,
+        "no MCP call carries the pools plane's fee"
+    );
+    assert_eq!(
+        read.requests, 3,
+        "every call still counts toward a requests cap"
+    );
+    // The same bucket's pools request IS charged the pools fee — and 5 > 3 trips the budget.
+    assert!(
+        gov.try_admit(&*cost, &key, "gpt-x", now).is_err(),
+        "a pools request carries the flat fee, which the cap cannot fit"
+    );
+}
+
+// ── FEE UNITS (ARCHITECT ruling, fees): the MCP plane counts `per_request` and nothing else ───────
+
+/// **`tools.fees.per_request` BOOTS AND CHARGES; `tools.fees.per_session` REFUSES.** Each MCP call is
+/// admitted under the plane-qualified pool, one fee unit on the plane's fee lane, so a fee of 2 reads
+/// 2 × 3 = 6 over three calls — beside a pools flat fee of 5 that none of them carries. The plane
+/// opens no session account, so a session fee would charge nothing: boot and `--validate` refuse it,
+/// naming the key and the counted list.
+#[tokio::test]
+async fn tools_fees_per_request_boots_and_charges_and_per_session_refuses() {
+    metrics_init();
+    let verdict = |yaml: &str| validate(&resolved(yaml));
+    assert_eq!(
+        verdict("tools:\n  fees: { per_session: 40 }\n"),
+        Err(vec![
+            "tools.fees.per_session is not counted by this plane (counted: per_request); remove it"
+                .to_string()
+        ])
+    );
+    let fees = "tools:\n  fees: { per_request: 2 }\n";
+    assert_eq!(verdict(fees), Ok(()), "a counted fee boots");
+
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "feeunitfs";
+    let limits = vec![per_day(LimitMetric::Budget, 1_000)];
+    let (app, gov, _) = budgeted_app(&peer, server, None, 5, limits.clone());
+    let key = budgeted_key("k-mcp-fee-units", server);
+    for n in 1..=3 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(answered(status, &body), "call {n}: {status} {body}");
+    }
+    let group = config::GroupCfg {
+        limits,
+        ..Default::default()
+    };
+    let groups = [("g".to_string(), group)].into();
+    let cost =
+        CostModel::resolve_parts(None, 5, &groups).with_plane_fees(&resolved(fees).plane_fees);
+    let priced: std::sync::Arc<dyn CostKit> = std::sync::Arc::new(cost);
+    let now = super::served_witness::host_now();
+    let read = gov
+        .derived_bucket_usage(&*priced, "group:g@day", "day", true, now)
+        .expect("the group reads");
+    assert_eq!(
+        read.spend_cents, 6,
+        "three calls at tools.fees.per_request 2"
+    );
+}

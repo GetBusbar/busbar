@@ -1,0 +1,973 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Tests for `crates/busbar-core/src/plane/auditlog.rs`.
+
+use super::*;
+use crate::audit::{digest, frame_prelude, Framing};
+
+/// THE BYTE-IDENTITY GATE: the plane's pre-framed suffix, appended RAW after the host prelude
+/// framed with `digests_scope = false`, reproduces the legacy [`AuditEntry`] digest byte-for-byte.
+/// A perturbation of the suffix, the prelude framing, or the `digests_scope` flag would fail this.
+fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, out: &str, pr: &str) {
+    // The seam's digest input: frame_prelude(PipeSeparated, prev_hash, None=no scope, seq) ⧺ suffix.
+    let mut input = frame_prelude(Framing::PipeSeparated, prev_hash, None, seq);
+    input.extend_from_slice(&audit_suffix(ts, act, res, out, pr));
+    let via_seam = busbar_contract::redacted::sha256_hex(&input);
+
+    // The legacy digest: the AuditEntry's own `digest_fields` through the ONE canonicaliser, forced
+    // to scheme 1 -- the framing this suffix (a raw pipe join, built by `audit_suffix` above) is
+    // actually in.
+    let entry = AuditEntry {
+        seq,
+        ts,
+        action: act.to_string(),
+        resource: res.to_string(),
+        outcome: out.to_string(),
+        principal: pr.to_string(),
+        prev_hash: prev_hash.to_string(),
+        hash: String::new(),
+        scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
+        recorded_here: true,
+    };
+    let legacy = digest(&entry);
+    assert_eq!(
+        via_seam, legacy,
+        "seam digest (digests_scope=false) must byte-equal the legacy AuditEntry digest"
+    );
+}
+
+#[test]
+fn suffix_plus_scopeless_prelude_equals_legacy_audit_digest() {
+    // Genesis (empty prev_hash) — the leading `|` before `seq` the empty prev_hash produces is
+    // load-bearing; and a linked record.
+    assert_roundtrip(
+        1,
+        "",
+        1_700_000_000,
+        "hook.register",
+        "hook:compress",
+        "applied",
+        "admin",
+    );
+    assert_roundtrip(
+        2,
+        "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa",
+        1_700_000_060,
+        "hook.delete",
+        "hook:compress",
+        "applied",
+        "admin",
+    );
+}
+
+/// THE CONVERSION GATE: a converted site's record, appended through the SEAM, carries the SAME hash
+/// the legacy admin ring computes for the same fields at the same chain position — genesis AND the
+/// inter-record link. Feeds a fixed `ts` on both sides (the seam suffix built directly, the legacy
+/// `AuditEntry` filled directly) so the comparison isolates the digest, not the clock.
+#[test]
+fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
+    let h = AuditTestHarness::over(std::sync::Arc::new(crate::governance::MemoryStore::new()));
+    let (ts, act, res, out, pr) = (
+        1_700_000_123u64,
+        "hook.register",
+        "hook:x",
+        "applied",
+        "admin",
+    );
+
+    // Append through the seam (the converted-site path) and read the link each append sealed.
+    let (seq1, prev1, hash1) = h.emit_full(ADMIN_LOG, audit_suffix(ts, act, res, out, pr));
+    let (seq2, prev2, hash2) = h.emit_full(
+        ADMIN_LOG,
+        audit_suffix(ts + 60, "hook.delete", res, out, pr),
+    );
+
+    // The legacy ring's records for the SAME fields at the SAME chain positions -- scheme 1, the
+    // framing the manually-built `audit_suffix` fed through the seam above is actually in.
+    let mk = |seq, ts, action: &str, prev: String| AuditEntry {
+        seq,
+        ts,
+        action: action.to_string(),
+        resource: res.to_string(),
+        outcome: out.to_string(),
+        principal: pr.to_string(),
+        prev_hash: prev,
+        hash: String::new(),
+        scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
+        recorded_here: true,
+    };
+    assert_eq!((seq1, prev1.as_str()), (1, ""), "genesis position");
+    assert_eq!(hash1, digest(&mk(1, ts, act, String::new())));
+    assert_eq!((seq2, prev2), (2, hash1.clone()), "record 2 links record 1");
+    assert_eq!(hash2, digest(&mk(2, ts + 60, "hook.delete", hash1)));
+}
+
+// ── A COMBINED DURABLE STORE DOUBLE for the boot-restore + migration witnesses ────────────────────
+//
+// MemoryStore uses the trait DEFAULTS for the audit table AND for `plane_records` (accept-and-keep-
+// nothing), so it cannot back a durable round-trip. This double persists BOTH: the legacy audit table
+// (`append_audit`/`list_audit`) and the neutral `plane_records` (`append_plane_record`/
+// `list_plane_records`/`list_plane_record_parents`), delegating everything else to an inner MemoryStore
+// so `GovState::new` is satisfied. `parent` keys `plane_records`, appended in seq order as a real
+// backend would.
+/// kind + optional parent → ordered opaque bodies, the `plane_records` a durable backend keeps.
+type PlaneRows = std::collections::HashMap<(String, Option<String>), Vec<Vec<u8>>>;
+
+struct DualDurableStore {
+    inner: crate::governance::MemoryStore,
+    audit: std::sync::Mutex<std::collections::BTreeMap<u64, busbar_contract::records::AuditRecord>>,
+    plane: std::sync::Mutex<PlaneRows>,
+}
+
+impl DualDurableStore {
+    fn new() -> Self {
+        Self {
+            inner: crate::governance::MemoryStore::new(),
+            audit: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            plane: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+impl busbar_contract::records::RecordStore for DualDurableStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
+        self.inner.get_key(id)
+    }
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
+        self.inner.list_metering(bucket)
+    }
+    // ── the legacy audit table ──
+    fn append_audit(
+        &self,
+        entry: &busbar_contract::records::AuditRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.audit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(entry.seq, entry.clone());
+        Ok(())
+    }
+    fn list_audit(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        Ok(self
+            .audit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect())
+    }
+    fn list_audit_tail(
+        &self,
+        limit: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        let limit = limit as usize;
+        let audit = self.audit.lock().unwrap_or_else(|e| e.into_inner());
+        let len = audit.len();
+        Ok(audit
+            .values()
+            .skip(len.saturating_sub(limit))
+            .cloned()
+            .collect())
+    }
+    // ── the neutral plane_records ──
+    fn append_plane_record(
+        &self,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        let record = &record.to_record();
+        self.plane
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry((record.kind.clone(), record.parent.clone()))
+            .or_default()
+            .push(record.body.clone());
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        let parent = match selector {
+            busbar_contract::records::PlaneSelector::All => None,
+            busbar_contract::records::PlaneSelector::Parent(p) => Some(p.to_string()),
+        };
+        Ok(self
+            .plane
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(kind.to_string(), parent))
+            .cloned()
+            .unwrap_or_default())
+    }
+    fn list_plane_record_parents(
+        &self,
+        kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        let mut parents: Vec<String> = self
+            .plane
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .filter(|(k, _)| k == kind)
+            .filter_map(|(_, p)| p.clone())
+            .collect();
+        parents.sort();
+        parents.dedup();
+        Ok(parents)
+    }
+}
+
+/// WITNESS (a) — ROUND-TRIP: a mutation written through the SEAM into `plane_records`, then a
+/// simulated REBOOT (a fresh log + fresh chain positions over the SAME store) restores FROM
+/// `plane_records`, verifies the chain (zero breaks), and yields records + digests + `GET /audit`
+/// output BYTE-IDENTICAL to the legacy admin ring for the same fields at the same positions.
+#[test]
+fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let (ts, res, out, pr) = (1_700_000_500u64, "hook:rt", "applied", "admin");
+
+    // Process 1: two mutations through the seam. This PERSISTS the neutral bodies to `plane_records`.
+    let h1 = AuditTestHarness::over(store.clone());
+    let (s1, p1, hash1) = h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
+    let (s2, p2, hash2) = h1.emit_full(
+        ADMIN_LOG,
+        audit_suffix(ts + 60, "hook.delete", res, out, pr),
+    );
+    assert_eq!((s1, p1.as_str()), (1, ""), "genesis position");
+    assert_eq!(
+        (s2, p2.clone()),
+        (2, hash1.clone()),
+        "record 2 links record 1"
+    );
+
+    // The store durably holds both neutral bodies under (audit, admin).
+    let bodies = store
+        .list_plane_records(
+            KIND_AUDIT,
+            &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.into()),
+        )
+        .unwrap();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "both seam records persisted to plane_records"
+    );
+
+    // Process 2 (a "restart"): a FRESH log + fresh host positions over the SAME store, restoring from
+    // `plane_records` — the production boot source.
+    let h2 = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let restored = h2
+        .host(|host| h2.log.restore_from_store(host, plane.as_ref()))
+        .expect("plane_records read");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "a restored seam chain reported TAMPERED: {:?}",
+        restored.chain_breaks
+    );
+    assert_eq!(
+        restored.records, 2,
+        "both records restored from plane_records"
+    );
+
+    // The legacy admin ring's records for the SAME fields at the SAME positions — the byte-identity
+    // reference. `digest` is the ONE canonicaliser both paths share. Scheme 1: these fields went
+    // through the seam as a raw `audit_suffix` (legacy) suffix above, so a correct restore must read
+    // them back as scheme 1 too — see the `scheme` check added to `same` below.
+    let mk = |seq, ts, action: &str, prev: String| AuditEntry {
+        seq,
+        ts,
+        action: action.to_string(),
+        resource: res.to_string(),
+        outcome: out.to_string(),
+        principal: pr.to_string(),
+        prev_hash: prev,
+        hash: String::new(),
+        scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
+        recorded_here: false,
+    };
+    let legacy_head = mk(1, ts, "hook.register", String::new());
+    let legacy_tail = mk(2, ts + 60, "hook.delete", hash1.clone());
+    assert_eq!(digest(&legacy_head), hash1, "seam genesis == legacy digest");
+    assert_eq!(digest(&legacy_tail), hash2, "seam link == legacy digest");
+
+    // GET /audit output: the seeded ring, newest-first, BYTE-IDENTICAL to the legacy records.
+    let ring = h2
+        .log
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
+    assert_eq!(
+        ring.len(),
+        2,
+        "the ring is seeded with both restored records"
+    );
+    let same = |a: &AuditEntry, b: &AuditEntry| {
+        (
+            a.seq,
+            &a.ts,
+            &a.action,
+            &a.resource,
+            &a.outcome,
+            &a.principal,
+            &a.prev_hash,
+            &a.hash,
+            a.scheme,
+        ) == (
+            b.seq,
+            &b.ts,
+            &b.action,
+            &b.resource,
+            &b.outcome,
+            &b.principal,
+            &b.prev_hash,
+            &b.hash,
+            b.scheme,
+        )
+    };
+    // Newest-first: the tail leads. Fill the reference hashes so every field is compared.
+    let ref_tail = AuditEntry {
+        hash: hash2.clone(),
+        ..legacy_tail.clone()
+    };
+    let ref_head = AuditEntry {
+        hash: hash1.clone(),
+        ..legacy_head.clone()
+    };
+    assert!(
+        same(&ring[0], &ref_tail),
+        "tail record byte-identical, newest-first"
+    );
+    assert!(same(&ring[1], &ref_head), "head record byte-identical");
+    assert!(
+        ring.iter().all(|e| !e.recorded_here),
+        "restored ring entries are seeded (recorded_here = false)"
+    );
+}
+
+/// WITNESS (b) — OLD-STORE GOLDEN: a store whose audit lives ONLY in the legacy `list_audit` table
+/// (every OLD store) BOOTS, MIGRATES `list_audit` → `plane_records`, RESTORES from `plane_records`,
+/// and verifies BYTE-IDENTICALLY — proving "OLD stores boot-verify EXACTLY". The legacy rows are the
+/// FROZEN pre-cleave bytes (identical to `boot_verify_golden`'s `AD_1`/`AD_2`), so a digest drift in
+/// the migration or restore fails this against a hash a PAST build computed, not one this build did.
+#[test]
+fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
+    // The frozen pre-cleave `serde(AuditRecord)` rows and their frozen tail hash — copied verbatim
+    // from `crate::audit::tests::boot_verify_golden` (that module is private).
+    const AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
+    const AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
+    const AD_HEAD_HASH: &str = "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa";
+    const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
+
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    // Seed the LEGACY table only — plane_records is empty, exactly like an OLD store on first boot.
+    let ad1: busbar_contract::records::AuditRecord = crate::plane::store::decode(AD_1).unwrap();
+    let ad2: busbar_contract::records::AuditRecord = crate::plane::store::decode(AD_2).unwrap();
+    store.append_audit(&ad1).unwrap();
+    store.append_audit(&ad2).unwrap();
+    assert!(
+        store
+            .list_plane_records(
+                KIND_AUDIT,
+                &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.into())
+            )
+            .unwrap()
+            .is_empty(),
+        "an OLD store has NO audit plane_records before migration"
+    );
+
+    // BOOT MIGRATION: list_audit -> plane_records, preserving the chain exactly.
+    let migrated = migrate_legacy_table_to_plane_records(store.as_ref()).unwrap();
+    assert_eq!(migrated, 2, "both legacy rows migrated");
+    // IDEMPOTENT: a store already migrated does nothing.
+    assert_eq!(
+        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
+        0,
+        "a second migration is a no-op"
+    );
+
+    // BOOT RESTORE from plane_records: verifies + seeds the ring, byte-identical to the frozen bytes.
+    let h = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let restored = h
+        .host(|host| h.log.restore_from_store(host, plane.as_ref()))
+        .expect("plane_records read");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "the migrated OLD-store chain reported TAMPERED: {:?}",
+        restored.chain_breaks
+    );
+    assert_eq!(restored.records, 2, "both migrated records restored");
+
+    // The ring `GET /audit` serves is byte-identical to the FROZEN bytes, newest-first.
+    let ring = h
+        .log
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
+    assert_eq!(ring.len(), 2);
+    assert_eq!(
+        (
+            ring[0].seq,
+            ring[0].hash.as_str(),
+            ring[0].prev_hash.as_str()
+        ),
+        (2, AD_TAIL_HASH, AD_HEAD_HASH),
+        "newest-first: the frozen tail leads, linking the frozen head"
+    );
+    assert_eq!(
+        (
+            ring[1].seq,
+            ring[1].hash.as_str(),
+            ring[1].prev_hash.as_str()
+        ),
+        (1, AD_HEAD_HASH, ""),
+        "the frozen genesis follows"
+    );
+    assert_eq!(ring[0].action, "hook.delete");
+    assert_eq!(ring[1].action, "hook.register");
+    assert!(ring.iter().all(|e| !e.recorded_here));
+}
+
+/// A tracing layer that records the `diag = "BUSBAR-NNNN"` field of every ERROR event, so a test can
+/// assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose. The peer
+/// of the calllog/journal restore tests' capture layer.
+#[derive(Clone, Default)]
+struct DiagCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl<S> tracing_subscriber::Layer<S> for DiagCapture
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::ERROR {
+            return;
+        }
+        struct V<'a>(&'a mut Option<String>);
+        impl tracing::field::Visit for V<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "diag" {
+                    *self.0 = Some(format!("{value:?}"));
+                }
+            }
+        }
+        let mut diag = None;
+        event.record(&mut V(&mut diag));
+        if let Some(d) = diag {
+            self.0.lock().unwrap().push(d);
+        }
+    }
+}
+
+/// TAMPER-EVIDENCE SILENT-SKIP CLOSED (mirrors BUSBAR-2045/2046): an UNDECODABLE row in the admin
+/// audit `plane_records` — a corrupt or tampered body no released build wrote — must be reported
+/// LOUDLY at the ring-seeding skip site with a coded diagnostic (`PLANE_AUDIT_ROW_UNREADABLE`,
+/// BUSBAR-2047) at ERROR, not dropped in silence. A silently skipped evidence row on a tamper-evidence
+/// surface is exactly the class of gap this pins. The GOOD row still seeds the read model the
+/// `GET /audit` view serves — one bad sibling does not take the decodable rows down with it.
+#[test]
+fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let (ts, res, out, pr) = (1_700_000_900u64, "hook:tamper", "applied", "admin");
+
+    // Process 1: one GOOD mutation through the seam persists a decodable neutral body to plane_records.
+    let h1 = AuditTestHarness::over(store.clone());
+    let (s1, _p1, _hash1) =
+        h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
+    assert_eq!(s1, 1, "the good record is genesis");
+
+    // A raw UNDECODABLE body appended under the SAME (audit, admin) parent: it decodes as neither the
+    // neutral body the seam writes nor a legacy `AuditRecord` — a corrupt/tampered row.
+    store
+        .append_plane_record(
+            busbar_contract::records::PlaneRecord {
+                kind: KIND_AUDIT.to_string(),
+                id: ADMIN_LOG.to_string(),
+                parent: Some(ADMIN_LOG.to_string()),
+                seq: 2,
+                ts: 0,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
+                body: b"{ not an audit body".to_vec(),
+            }
+            .view(),
+        )
+        .unwrap();
+
+    // Process 2 (a "restart"): a FRESH log over the SAME store restores from plane_records under a
+    // diagnostics-capturing subscriber. The undecodable row must FIRE the coded diagnostic at ERROR.
+    let h2 = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let cap = DiagCapture::default();
+    {
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let _g = tracing::subscriber::set_default(subscriber);
+        // The decodable row seeds the good row and the bad one is REPORTED — the behaviour under
+        // test here. (The undecodable sibling no longer aborts the restore; that no-fork guarantee
+        // is pinned by `restore_does_not_fork_the_chain_when_one_row_is_undecodable`.)
+        let _ = h2.host(|host| h2.log.restore_from_store(host, plane.as_ref()));
+    }
+
+    // The GOOD row still seeded the read model `GET /audit` serves.
+    let ring = h2
+        .log
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
+    assert_eq!(
+        ring.len(),
+        1,
+        "the decodable row still seeds the ring despite an unreadable sibling"
+    );
+    assert_eq!(ring[0].seq, 1);
+    assert_eq!(ring[0].action, "hook.register");
+
+    // The undecodable row was reported LOUDLY, not skipped silently — a coded ERROR diagnostic.
+    let diags = cap.0.lock().unwrap();
+    assert!(
+        diags.iter().any(|d| d.contains("BUSBAR-2047")),
+        "the undecodable admin audit row must emit PLANE_AUDIT_ROW_UNREADABLE (BUSBAR-2047) at ERROR \
+         at its ring-seeding skip site — a silent skip on a tamper-evidence surface is the gap being \
+         closed; captured: {diags:?}"
+    );
+}
+
+/// GOVERNANCE-CHAIN SEQ-1 FORK CLOSED: an undecodable sibling row must NOT abort the whole
+/// admin-audit restore. Previously the ring-seed loop tolerated the bad row but the SEAM chain seed
+/// was still handed the FULL body set — including the undecodable one — so it faulted and `?`-aborted
+/// `restore_from_store`, leaving the host-side chain position UNSEEDED. The next mutation then minted
+/// seq 1 again, FORKING the governance hash-chain (durability loss). The fix filters the seam seed to
+/// the decodable bodies (mirroring the per-call log), so one bad row can neither abort the restore nor
+/// fork the chain. This test pins BOTH: the restore returns Ok, and the chain resumes at seq 2.
+#[test]
+fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let (ts, res, out, pr) = (1_700_001_100u64, "hook:fork", "applied", "admin");
+
+    // Process 1: one GOOD genesis mutation persists a decodable neutral body to plane_records.
+    let h1 = AuditTestHarness::over(store.clone());
+    let (s1, _p1, _h1) = h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
+    assert_eq!(s1, 1, "the good record is genesis");
+
+    // A raw UNDECODABLE body under the SAME (audit, admin) parent — a corrupt/tampered row.
+    store
+        .append_plane_record(
+            busbar_contract::records::PlaneRecord {
+                kind: KIND_AUDIT.to_string(),
+                id: ADMIN_LOG.to_string(),
+                parent: Some(ADMIN_LOG.to_string()),
+                seq: 2,
+                ts: 0,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
+                body: b"{ not an audit body".to_vec(),
+            }
+            .view(),
+        )
+        .unwrap();
+
+    // Process 2 (a "restart"): a FRESH log over the SAME store restores. The undecodable sibling must
+    // NOT abort the restore (before the fix this `?`-aborted and returned Err → the chain forked).
+    let h2 = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let restored = h2
+        .host(|host| h2.log.restore_from_store(host, plane.as_ref()))
+        .expect(
+            "one undecodable row must NOT abort the whole restore and fork the governance chain",
+        );
+    assert_eq!(restored.unreadable, 1, "the bad row is counted, not fatal");
+    assert_eq!(
+        restored.records, 1,
+        "only the decodable row is a restored record"
+    );
+
+    // The host-side chain position was seeded from the GOOD genesis, so the NEXT mutation continues
+    // the chain at seq 2 — NOT a fork back at seq 1. This is the durability guarantee under test.
+    let (s2, _p2, _h2) = h2.emit_full(ADMIN_LOG, audit_suffix(ts + 1, "hook.next", res, out, pr));
+    assert_eq!(
+        s2, 2,
+        "the chain resumes after the good genesis; an undecodable sibling must not fork it to seq 1"
+    );
+}
+
+// ── the legacy pipe-joined suffix is forgeable; `audit_suffix_safe` is not ─────────────────────────
+
+/// THE FORGERY [`audit_suffix`] (legacy) IS VULNERABLE TO: a `|` inside a free-text field shifts
+/// every field after it once split back apart, so a caller who controls `resource` can make a
+/// restored record report a DIFFERENT outcome/principal than what actually happened — while the
+/// digest still matches (same bytes either way), so `verify_chain` sees nothing wrong. This pins the
+/// defect on the LEGACY path so nobody mistakes it for fixed, since fixing it there would change bytes
+/// already sealed on disk.
+#[test]
+fn legacy_pipe_suffix_lets_an_embedded_pipe_forge_the_readback() {
+    let ts = 1_700_000_000u64;
+    // The attacker controls `resource` (e.g. a hook/task name echoed into the audit trail) and packs
+    // it with the rest of the record it wants read back instead.
+    let forged_resource = "innocuous|applied|root";
+    let suffix = audit_suffix(ts, "hook.register", forged_resource, "rejected", "attacker");
+    let (_, action, resource, outcome, principal, scheme) = parse_audit_suffix(&suffix);
+    assert_eq!(
+        scheme,
+        crate::audit_ring::AUDIT_SCHEME_PIPE,
+        "an unmarked, pipe-joined suffix must read back as scheme 1"
+    );
+    assert_eq!(action, "hook.register");
+    // The real outcome/principal ("rejected"/"attacker") were swallowed into `resource` and the
+    // forged tail split out as if they were the real outcome/principal.
+    assert_eq!(resource, "innocuous");
+    assert_eq!(
+        outcome, "applied",
+        "the forged outcome was read back, not the real one"
+    );
+    // `splitn(5, '|')` stops splitting after the 5th field, so the REAL outcome/principal
+    // ("rejected"/"attacker") end up tacked onto the end of the forged principal rather than
+    // vanishing — either way, what comes back as `outcome`/`principal` is not what was recorded.
+    assert_eq!(
+        principal, "root|rejected|attacker",
+        "the forged principal was read back, not the real one, and the real outcome/principal are \
+         buried inside it instead of being their own fields"
+    );
+}
+
+/// THE FIX: the SAME embedded-`|` payload through [`audit_suffix_safe`] round-trips EXACTLY — no
+/// byte any field carries can move a boundary, because boundaries come from the length prefixes, not
+/// from scanning the content.
+#[test]
+fn safe_suffix_round_trips_a_pipe_carrying_payload_without_forgery() {
+    let ts = 1_700_000_000u64;
+    let forged_resource = "innocuous|applied|root";
+    let suffix = audit_suffix_safe(ts, "hook.register", forged_resource, "rejected", "attacker");
+    let (got_ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&suffix);
+    assert_eq!(
+        scheme,
+        crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED,
+        "a marker-prefixed, length-prefixed suffix must read back as scheme 2"
+    );
+    assert_eq!(got_ts, ts);
+    assert_eq!(action, "hook.register");
+    assert_eq!(
+        resource, forged_resource,
+        "the embedded `|` must not move a boundary"
+    );
+    assert_eq!(outcome, "rejected");
+    assert_eq!(principal, "attacker");
+}
+
+/// Every field carrying `|` at once, plus empty fields — the safe suffix must not confuse any of it.
+#[test]
+fn safe_suffix_round_trips_pipes_in_every_field_and_empty_fields() {
+    let suffix = audit_suffix_safe(42, "a|b", "", "o|u|t", "p|r");
+    let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&suffix);
+    assert_eq!(scheme, crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED);
+    assert_eq!(ts, 42);
+    assert_eq!(action, "a|b");
+    assert_eq!(resource, "");
+    assert_eq!(outcome, "o|u|t");
+    assert_eq!(principal, "p|r");
+}
+
+/// BACK-COMPAT: a body a store already holds from before this change (the legacy pipe-joined suffix,
+/// no [`SAFE_SUFFIX_MARKER`] byte) still parses as it always did — reading old records is unaffected.
+#[test]
+fn parse_audit_suffix_still_reads_legacy_bodies() {
+    let suffix = audit_suffix(7, "hook.delete", "hook:compress", "applied", "admin");
+    let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&suffix);
+    assert_eq!(scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
+    assert_eq!(ts, 7);
+    assert_eq!(action, "hook.delete");
+    assert_eq!(resource, "hook:compress");
+    assert_eq!(outcome, "applied");
+    assert_eq!(principal, "admin");
+}
+
+/// A record appended through the SEAM with the SAFE suffix (what [`emit_admin_hostless`]/[`mirror`]
+/// write) restores and reconstructs its EXACT typed fields — including a `|`-carrying value that
+/// would have forged a different record under the legacy suffix — via the same
+/// [`audit_entry_from_body`] bridge a boot restore uses.
+#[test]
+fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(crate::governance::MemoryStore::new());
+    let h = AuditTestHarness::over(store.clone());
+    let ts = 1_700_000_555u64;
+    let forged_resource = "x|applied|nobody";
+    let (seq, _prev, hash) = h.emit_full(
+        ADMIN_LOG,
+        audit_suffix_safe(ts, "hook.register", forged_resource, "rejected", "attacker"),
+    );
+    assert_eq!(seq, 1);
+
+    let rows = store
+        .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))
+        .expect("list the just-appended plane record");
+    assert_eq!(rows.len(), 1);
+    let entry = audit_entry_from_body(ADMIN_LOG, &rows[0]).expect("decode the safe-suffix body");
+    assert_eq!(entry.seq, seq);
+    assert_eq!(entry.hash, hash);
+    assert_eq!(entry.ts, ts);
+    assert_eq!(entry.action, "hook.register");
+    assert_eq!(
+        entry.resource, forged_resource,
+        "the embedded `|` must not have been split as a field boundary"
+    );
+    assert_eq!(entry.outcome, "rejected");
+    assert_eq!(entry.principal, "attacker");
+}
+
+/// LENGTH-FIELD BOUNDS: a SAFE-marked suffix that is truncated — cut short inside a length prefix, or
+/// declaring a length that runs past what remains — must decode to empty trailing fields rather than
+/// panicking. `take_lp`'s "decode what you can, never panic" discipline is exercised here directly
+/// rather than only reasoned about, since this is the one path a corrupt/tampered on-disk row (caught
+/// by `verify_chain` separately) or a truncated write can actually reach at restore time.
+#[test]
+fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
+    // Marker only, nothing after it.
+    let (ts, action, resource, outcome, principal, _scheme) =
+        parse_audit_suffix(&[SAFE_SUFFIX_MARKER]);
+    assert_eq!(
+        (
+            ts,
+            action.as_str(),
+            resource.as_str(),
+            outcome.as_str(),
+            principal.as_str()
+        ),
+        (0, "", "", "", "")
+    );
+
+    // Marker plus a length prefix cut short of its full 8 bytes.
+    let mut short_len = vec![SAFE_SUFFIX_MARKER];
+    short_len.extend_from_slice(&[0, 0, 0]);
+    let (ts, action, ..) = parse_audit_suffix(&short_len);
+    assert_eq!(ts, 0);
+    assert_eq!(action, "");
+
+    // Marker plus a complete length prefix that declares more bytes than actually follow.
+    let mut over_declared = vec![SAFE_SUFFIX_MARKER];
+    over_declared.extend_from_slice(&8u64.to_be_bytes()); // ts field claims 8 bytes...
+    over_declared.extend_from_slice(&1_700_000_000u64.to_be_bytes()); // ...and gets them.
+    over_declared.extend_from_slice(&1_000u64.to_be_bytes()); // action field claims 1000 bytes...
+    over_declared.extend_from_slice(b"short"); // ...but only 5 follow.
+    let (ts, action, resource, outcome, principal, _scheme) = parse_audit_suffix(&over_declared);
+    assert_eq!(ts, 1_700_000_000);
+    assert_eq!(
+        action, "",
+        "an over-declared length must yield an empty field, not a panic"
+    );
+    assert_eq!(resource, "");
+    assert_eq!(outcome, "");
+    assert_eq!(principal, "");
+}
+
+// ── AUDIT-INTEGRITY: THE PENDING RECOVERY QUEUE ─────────────────────────────────────────────────────
+//
+// `PendingAuditQueue` is tested directly, driven over an injected `mint` closure, rather than through
+// `emit`/`emit_admin_hostless` themselves: those two are hardwired to the PRODUCTION `KIND_ID_AUDIT`
+// stream (a process-wide singleton other parallel tests share via `global_audit_host_app`), so forcing
+// a durable-write failure through them would either race those tests or require re-registering the
+// shared stream mid-suite. The queue is the actual recoverability mechanism under test; driving it
+// directly is a tighter, deterministic proof of the same fix.
+
+fn pending(scope: &str, tag: u8) -> PendingAudit {
+    PendingAudit {
+        scope: scope.to_string(),
+        suffix: vec![tag],
+    }
+}
+
+/// RED-before-green shape: before this fix, a durable-write failure inside `emit`/`emit_admin_hostless`
+/// was logged and the record was gone the instant the call returned — nothing existed to retry it.
+/// GREEN: a record that fails to mint while the backend is down stays queued (not dropped), and is
+/// delivered on the FIRST successful drain once the backend recovers.
+#[test]
+fn pending_audit_queue_recovers_a_write_once_the_backend_recovers() {
+    let q = PendingAuditQueue::new(4);
+    q.enqueue(pending("admin", 1));
+
+    // First drain: the backend is STILL down — nothing recovers, and the record must stay queued.
+    let mut recovered: Vec<(String, u64)> = Vec::new();
+    q.drain_with(
+        |_scope, _suffix| Err(()),
+        |p, seq, _prev, _hash| recovered.push((p.scope.clone(), seq)),
+    );
+    assert!(
+        recovered.is_empty(),
+        "nothing recovers while the backend is still down"
+    );
+    assert_eq!(
+        q.len(),
+        1,
+        "the record must stay queued, not be dropped, while the backend is down — this is the fix: \
+         before it, the record vanished the instant `emit` returned"
+    );
+
+    // Second drain: the backend has recovered — the SAME record must now be delivered.
+    q.drain_with(
+        |_scope, _suffix| Ok((7, "prev".to_string(), "hash".to_string())),
+        |p, seq, _prev, _hash| recovered.push((p.scope.clone(), seq)),
+    );
+    assert_eq!(
+        recovered,
+        vec![("admin".to_string(), 7)],
+        "the queued record must be delivered on the first successful drain once the backend recovers"
+    );
+    assert_eq!(q.len(), 0, "a delivered record leaves the queue");
+}
+
+/// Multiple queued records drain OLDEST-FIRST, in the order they failed — a recovery that reordered
+/// evidence would itself be a form of corruption.
+#[test]
+fn pending_audit_queue_drains_in_fifo_order() {
+    let q = PendingAuditQueue::new(8);
+    q.enqueue(pending("admin", 1));
+    q.enqueue(pending("admin", 2));
+    q.enqueue(pending("admin", 3));
+
+    let mut seen: Vec<u8> = Vec::new();
+    let next_seq = std::cell::Cell::new(100u64);
+    q.drain_with(
+        |_scope, _suffix| {
+            let s = next_seq.get();
+            next_seq.set(s + 1);
+            Ok((s, String::new(), String::new()))
+        },
+        |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
+    );
+    assert_eq!(seen, vec![1, 2, 3], "drained oldest-failed-first");
+    assert_eq!(q.len(), 0);
+}
+
+/// A mint that fails partway through a multi-record drain stops WITHOUT losing or reordering the
+/// records that had not yet been tried — they must still be queued, in their original order.
+#[test]
+fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
+    let q = PendingAuditQueue::new(8);
+    q.enqueue(pending("admin", 1));
+    q.enqueue(pending("admin", 2));
+
+    let mut seen: Vec<u8> = Vec::new();
+    // The FIRST row (tag 1) recovers; the SECOND (tag 2) still fails.
+    q.drain_with(
+        |_scope, suffix| {
+            if suffix == [1] {
+                Ok((1, String::new(), String::new()))
+            } else {
+                Err(())
+            }
+        },
+        |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
+    );
+    assert_eq!(seen, vec![1], "the recoverable row was delivered");
+    assert_eq!(
+        q.len(),
+        1,
+        "the still-failing row stays queued rather than being dropped"
+    );
+
+    // A later, fully-healthy drain finishes the job.
+    q.drain_with(
+        |_scope, _suffix| Ok((2, String::new(), String::new())),
+        |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
+    );
+    assert_eq!(
+        seen,
+        vec![1, 2],
+        "the remaining row recovers once the backend is healthy"
+    );
+}
+
+/// THE WATERMARK: once the recovery queue itself is full, the OLDEST entry is evicted to admit the
+/// newest failure, and that eviction is a DETECTED, COUNTED gap — never a silent one. Proven both on
+/// the counter and on the coded diagnostic actually firing at the eviction site.
+#[test]
+fn pending_audit_queue_reports_a_gap_when_it_overflows() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let q = PendingAuditQueue::new(2);
+
+    let cap = DiagCapture::default();
+    {
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let _g = tracing::subscriber::set_default(subscriber);
+        for tag in 0..3u8 {
+            q.enqueue(pending("admin", tag));
+        }
+    }
+
+    assert_eq!(q.len(), 2, "bounded: the queue never exceeds its cap");
+    assert_eq!(
+        q.dropped(),
+        1,
+        "the third failure, over the cap, evicted the oldest — a detected, counted gap"
+    );
+
+    // The SURVIVING two are the newest two: the oldest (tag 0) was evicted to make room.
+    let mut seen: Vec<u8> = Vec::new();
+    q.drain_with(
+        |_s, _suffix| Ok((1, String::new(), String::new())),
+        |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
+    );
+    assert_eq!(
+        seen,
+        vec![1, 2],
+        "tag 0 was evicted by overflow; tags 1 and 2 survived"
+    );
+
+    let diags = cap.0.lock().unwrap();
+    assert!(
+        diags.iter().any(|d| d.contains("BUSBAR-2044")),
+        "the overflow eviction must emit PLANE_AUDITLOG_WRITE_FAILED (BUSBAR-2044) at ERROR — a \
+         silent counter with no guaranteed log sink is exactly the regression being fixed; \
+         captured: {diags:?}"
+    );
+}

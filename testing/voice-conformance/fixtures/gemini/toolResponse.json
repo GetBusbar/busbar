@@ -1,0 +1,11 @@
+{
+  "toolResponse": {
+    "functionResponses": [
+      {
+        "id": "function-call-14582213604383",
+        "name": "get_weather",
+        "response": { "temp_c": 18, "condition": "partly cloudy" }
+      }
+    ]
+  }
+}

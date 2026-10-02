@@ -1,0 +1,6 @@
+{
+  "event_id": "evt_server_0004",
+  "type": "input_audio_buffer.speech_started",
+  "audio_start_ms": 210,
+  "item_id": "item_user_002"
+}

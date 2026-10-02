@@ -136,7 +136,7 @@ fn truncated_lying_header_does_not_force_a_large_reservation() {
 /// initial reservation doesn't corrupt real data for legitimately large members.
 #[test]
 fn real_multi_mb_library_round_trips_byte_for_byte() {
-    use busbar_plugin_sign::{sign, SigningKey};
+    use busbar_plugin_loader::sign::{sign, SigningKey};
 
     let key = SigningKey::from_bytes(&[9u8; 32]);
     // A few MB of non-trivial (non-all-zero) content so a silent truncation or corruption would be
@@ -145,13 +145,13 @@ fn real_multi_mb_library_round_trips_byte_for_byte() {
         .map(|i| (i % 251) as u8)
         .collect();
 
-    let manifest = busbar_plugin_sign::Manifest {
+    let manifest = busbar_plugin_loader::sign::Manifest {
         name: "busbar-store-biglib".into(),
         alias: "biglib".into(),
         kind: "store".into(),
         version: "1.0.0".into(),
         publisher: "busbar".into(),
-        abi_version: busbar_plugin_abi::ABI_VERSION,
+        abi_version: busbar_contract::abi::cold::ABI_VERSION,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -161,6 +161,8 @@ fn real_multi_mb_library_round_trips_byte_for_byte() {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
+        statement: None,
     };
     let manifest = sign(&key, manifest, &lib_bytes);
 

@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config validation failed:\n  - auth.key_ttl 'bogus' is not a valid duration: invalid duration 'bogus': expected <number><s|m|h|d>\n"},"headers":{},"status":1}

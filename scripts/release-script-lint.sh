@@ -28,10 +28,28 @@
 #   2. WATCHDOG rule: release-check-1.5.2.sh must keep its belt-and-suspenders `timeout` re-exec so
 #      that ANY future hang (not just this one) fails fast with exit 124 instead of a multi-hour
 #      `cancelled`.
+#   3. LOST-REGISTRATION rule: a helper that registers something for cleanup by appending to a
+#      global array (`TMP_DIRS+=(...)`, `BG_PIDS+=(...)`, `DOCKER_CIDS+=(...)`) must NOT be invoked
+#      inside a command substitution. `x="$(new_tmpdir)"` runs the helper in a SUBSHELL, so the
+#      append mutates a COPY of the array that dies with the subshell; the parent's array stays
+#      empty and the EXIT trap's cleanup loop iterates NOTHING. This is the same class of defect as
+#      rule 1 (a `$(...)` capture around a helper that has a side effect outside its stdout) and it
+#      had gone unnoticed in three gates at once: no-plugins-gate.sh leaked 8 directories / 213 MB
+#      per run, release-check.sh had never deleted a working directory it created, and
+#      release-check-1.5.2.sh additionally lost every backgrounded server's PID, so a run that hit
+#      an assertion failure left a live python upstream holding its port. The fix shape, used by all
+#      three now: the helper SETS a global (`NEW_TMPDIR` / `NEW_BG_PID`) and the caller reads it on
+#      the next statement, so the append lands in the caller's own shell.
+#   4. EXEC-BIT rule: any `scripts/….sh` a workflow EXECUTES DIRECTLY (a `run:` command that is the
+#      path itself, not `bash …`/`sh …`/`source …`/`. …`) must be tracked mode 100755. A 100644 mode
+#      makes the shell refuse the script with exit 126 the instant CI runs it — the release-stage
+#      regression that failed every busbar-store-sqlite artifact build (release-build.sh), invoked
+#      directly and left non-executable. Sourced libraries (e.g. scripts/ci-runners-lib.sh, dot-sourced by
+#      scripts/ci-runners-up.sh) are correctly exempt: the interpreter, not the file's own bit, runs them.
 #
-# Runs in CI (see .github/workflows/ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX
+# Runs in CI (see the removed ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX
 # awk (macOS/Linux). `--selftest` proves the scanner still catches the real antipattern before its
-# verdict on the tree is trusted (same discipline as structure-lint.sh --selftest).
+# verdict on the tree is trusted (same discipline as cargo xtask gate structure-lint --selftest).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -64,11 +82,196 @@ scan_backgrounded_servers() {
   ' "$@"
 }
 
+# ── THE LOST-REGISTRATION SCANNER (rule 3; one copy, driven by the self-test below) ───────────────
+# Emits `file:lineno: <line>` for every command substitution / backtick capture of a function whose
+# body appends to a global array. Two passes over each file:
+#   pass 1  walk the brace depth, tracking which function (including a NESTED one) each line belongs
+#           to, every `local` name declared in it, and every `NAME+=(` whose NAME is not one of them;
+#   pass 2  flag any line that captures such a function in `$( ... )` or backticks.
+# Deliberately NOT flagged: a helper whose array IS `local` (per-call scratch, no cleanup contract),
+# a plain call `helper arg` (the append lands correctly), and a name that only appears in a comment.
+scan_lost_registrations() {
+  local f
+  for f in "$@"; do
+    awk '
+      function strip(s,   t) { t = s; sub(/[[:space:]]#.*$/, "", t); sub(/^[[:space:]]*#.*$/, "", t); return t }
+      function opens(s,  n) { n = gsub(/\{/, "{", s); return n }
+      function closes(s, n) { n = gsub(/\}/, "}", s); return n }
+
+      # ── pass 1: which functions append to a non-local global array? ──
+      NR == FNR {
+        line = strip($0)
+        if (line ~ /^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{[[:space:]]*$/) {
+          nm = line
+          sub(/^[[:space:]]*(function[[:space:]]+)?/, "", nm)
+          sub(/[[:space:]]*\(\).*$/, "", nm)
+          sp++; stack[sp] = nm; sdepth[sp] = depth
+          depth += opens(line) - closes(line)
+          next
+        }
+        depth += opens(line) - closes(line)
+        while (sp > 0 && depth <= sdepth[sp]) sp--
+        if (sp == 0) next
+        # every `local a b c=1` on this line, wherever it sits (`local x; x=...` is idiomatic here)
+        rest = line
+        while (match(rest, /(^|[;&|[:space:]])local[[:space:]]+[^;#]*/)) {
+          decl = substr(rest, RSTART, RLENGTH)
+          rest = substr(rest, RSTART + RLENGTH)
+          sub(/^[^l]*local[[:space:]]+/, "", decl)
+          n = split(decl, toks, /[[:space:]]+/)
+          for (i = 1; i <= n; i++) { sub(/=.*$/, "", toks[i]); if (toks[i] != "") loc[stack[sp] SUBSEP toks[i]] = 1 }
+        }
+        rest = line
+        while (match(rest, /[A-Za-z_][A-Za-z0-9_]*\+=\(/)) {
+          g = substr(rest, RSTART, RLENGTH - 3)
+          rest = substr(rest, RSTART + RLENGTH)
+          # attribute the append to every enclosing function that has not localised the name
+          for (j = sp; j >= 1; j--) if (!((stack[j] SUBSEP g) in loc)) reg[stack[j]] = reg[stack[j]] " " g
+        }
+        next
+      }
+
+      # ── pass 2: who captures one of them in a subshell? ──
+      {
+        line = strip($0)
+        if (line == "") next
+        for (fn in reg) {
+          if (line ~ ("\\$\\([[:space:]]*" fn "[[:space:])]") || line ~ ("`[[:space:]]*" fn "[[:space:]`]")) {
+            disp = $0; sub(/^[[:space:]]+/, "", disp)
+            printf "%s:%d: %s  [captures %s(), which appends to%s]\n", FILENAME, FNR, disp, fn, reg[fn]
+          }
+        }
+      }
+    ' "$f" "$f"
+  done
+}
+
+# ── THE EXEC-BIT SCANNER (rule 4; one copy, driven by the self-test below) ────────────────────────
+# Emits each unique `scripts/…​.sh` path that a workflow file EXECUTES DIRECTLY (a `run:` command that
+# is the path itself). A path preceded by an interpreter/source token (`bash `, `sh `, `source `, or
+# `. `) is NOT a direct exec — the interpreter supplies the exec bit — and is skipped, so a sourced
+# library (e.g. scripts/ci-runners-lib.sh, dot-sourced by scripts/ci-runners-up.sh) is never
+# reported. The caller maps each emitted path through `git ls-files -s`: a direct-exec script whose
+# TRACKED mode is not 100755 fails the shell with exit 126 the moment CI runs it — exactly the
+# release-stage regression this rule exists to catch before staging rather than during it.
+list_direct_invoked_scripts() {
+  awk '
+    /^[[:space:]]*#/ { next }                                  # whole-line comment: skip
+    {
+      s = $0
+      while (match(s, /(\.\/)?scripts\/[A-Za-z0-9_.\/-]+\.sh/)) {
+        path = substr(s, RSTART, RLENGTH); sub(/^\.\//, "", path)
+        pre  = substr(s, 1, RSTART - 1)
+        # interpreted/sourced iff the token immediately before the path is bash/sh/source/. at a
+        # word boundary (so the `sh` in `bash ` cannot match — it lacks a preceding boundary).
+        if (pre !~ /(^|[[:space:][|&;(])(bash|sh|source|\.)[[:space:]]+([^[:space:]]*\/)?$/) print path
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }
+  ' "$@" | sort -u
+}
+
 # ── SELF-TEST — the scanner cannot be lied to ─────────────────────────────────────────────────────
+# WATCHDOG, AS A PREDICATE THE RULE AND THE SELF-TEST BOTH CALL. It was two bare greps inline in
+# the rule, so a guard that had been COMMENTED OUT still satisfied it — and this file's target, the
+# 1.5.2 gate, documents its own watchdog in prose at length, which satisfied it with no guard at
+# all. Every other scanner here opens with `/^[[:space:]]*#/ { next }`; this one did not.
+# THE PREDICATE FEEDS THE HAYSTACK IN WITHOUT A PIPE, ON PURPOSE. It was
+# `printf '%s\n' "$code" | grep -q …` twice, and under this file's own `set -o pipefail` that is a
+# RACE, not a read: `grep -q` exits the instant it matches, so on any haystack larger than the pipe
+# buffer the `printf` still writing behind it takes SIGPIPE (141), pipefail promotes 141 to the
+# pipeline's status, and the rule reports WATCHDOG MISSING about a file whose guard is right there.
+# It reads as a flake because it turns on how far into the file the FIRST match falls: the 1.5.2
+# gate's guard is at line 69 of a long script, so the local run wins the race and CI loses it. A
+# here-string is a temp file, not a pipe — no second process, no SIGPIPE, no status to promote.
+watchdog_armed() {  # watchdog_armed <file> -> 0 when the guard is present in EXECUTABLE code
+  local code; code="$(sed 's/#.*//' "$1")" || return 1
+  grep -q 'WATCHDOG_ARMED' <<<"$code" || return 1
+  grep -Eq 'exec[[:space:]]+(g)?timeout' <<<"$code"
+}
+
+# The self-test's verdict line: both halves are COUNTS (item 550 -- the failure half used to be the
+# literal 0, printed immediately above "SELF-TEST FAILED").
+selftest_verdict() {  # selftest_verdict <groups-passed> <groups-failed>
+  note "self-test: $1 fixture group(s) passed, $2 failed"
+  if [ "$2" -ne 0 ]; then
+    note "release-script-lint SELF-TEST FAILED — the scanner would let the hang antipattern through"
+    return 1
+  fi
+  note "ok"
+  return 0
+}
+
 run_selftest() {
   hdr "release-script-lint SELF-TEST (the GATE-HANG scanner cannot be lied to)"
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   local fail=0 pass=0
+
+  # ── THE WATCHDOG RULE IS ABOUT CODE, NOT PROSE ─────────────────────────────────────────────────
+  # It was two bare greps over the raw file, so a watchdog that had been commented out still
+  # satisfied it — as would a file that merely DISCUSSES its guard, which the 1.5.2 gate does at
+  # length. Every other scanner here strips whole-line comments first; this one did not.
+  printf '%s\n' 'if [ -z "${WATCHDOG_ARMED:-}" ]; then' \
+                '  WATCHDOG_ARMED=1 exec timeout --kill-after=30 1500 bash "$0" "$@"' \
+                'fi' > "${tmp}/wd-real.sh"
+  printf '%s\n' '# WATCHDOG_ARMED used to re-exec this under `exec timeout` and no longer does.' \
+                'echo hello' > "${tmp}/wd-prose.sh"
+  printf '%s\n' '#if [ -z "${WATCHDOG_ARMED:-}" ]; then' \
+                '#  WATCHDOG_ARMED=1 exec timeout 1500 bash "$0" "$@"' \
+                '#fi' > "${tmp}/wd-commented.sh"
+  if watchdog_armed "${tmp}/wd-real.sh"; then
+    pass=$((pass+1)); note "WATCHDOG: a real armed re-exec is accepted"
+  else
+    fail=$((fail+1)); note "WATCHDOG FAILED: a genuine guard was rejected — the rule no longer passes anything"
+  fi
+  if watchdog_armed "${tmp}/wd-prose.sh"; then
+    fail=$((fail+1)); note "WATCHDOG FAILED: PROSE naming the guard satisfied the rule"
+  else
+    pass=$((pass+1)); note "WATCHDOG: prose naming the guard does not satisfy it"
+  fi
+  if watchdog_armed "${tmp}/wd-commented.sh"; then
+    fail=$((fail+1)); note "WATCHDOG FAILED: a COMMENTED-OUT guard satisfied the rule"
+  else
+    pass=$((pass+1)); note "WATCHDOG: a commented-out guard does not satisfy it"
+  fi
+  # A GUARD THAT IS REALLY THERE IS FOUND HOWEVER LONG THE FILE IS. The three fixtures above are
+  # three lines each, so every one of them fits in a pipe buffer and none of them could ever have
+  # caught the SIGPIPE race the predicate used to carry: the rule was GREEN on its whole self-test
+  # and RED on the tree at the same time. This fixture is the shape that actually failed — the
+  # match on the first line, ~3.5 MB of file behind it — so the reader can only pass by not racing.
+  {
+    printf '%s\n' 'WATCHDOG_ARMED=1 exec timeout --kill-after=30 1500 bash "$0" "$@"'
+    awk 'BEGIN { for (i = 0; i < 200000; i++) print "filler line " i }'
+  } > "${tmp}/wd-long.sh"
+  if watchdog_armed "${tmp}/wd-long.sh"; then
+    pass=$((pass+1)); note "WATCHDOG: a real guard above a long tail is found, not raced away"
+  else
+    fail=$((fail+1)); note "WATCHDOG FAILED: a guard on line 1 of a long file read as MISSING (the SIGPIPE race)"
+  fi
+
+  # ── THE EXEC-BIT RULE MUST REFUSE A SCAN OF NOTHING ────────────────────────────────────────────
+  # Its input came from `< <(list_direct_invoked_scripts ...)`, whose status the process
+  # substitution discards, so a producer that failed left the loop iterating zero times and the rule
+  # printing "ok (0 directly-run workflow script(s) scanned, all tracked 100755)".
+  mkdir -p "${tmp}/wf-empty"
+  # A workflow that runs no script directly: the producer succeeds and legitimately yields nothing,
+  # which is the input shape the rule has to tell apart from "scanned everything, all fine".
+  printf '%s\n' 'jobs:' '  a:' '    steps:' '      - run: cargo build' > "${tmp}/wf-empty/x.yml"
+  local n_empty
+  n_empty="$(list_direct_invoked_scripts "${tmp}/wf-empty"/*.yml | awk 'NF{c++} END{print c+0}')"
+  if [ "$n_empty" -eq 0 ]; then
+    pass=$((pass+1)); note "EXEC-BIT: an empty workflow directory yields zero paths (the vacuous input exists)"
+  else
+    fail=$((fail+1)); note "EXEC-BIT FAILED: an empty workflow directory yielded ${n_empty} path(s)"
+  fi
+  # And the real tree must yield many, or the floor below is a tripwire that only ever fires.
+  local n_real
+  n_real="$(list_direct_invoked_scripts .github/workflows/*.yml | awk 'NF{c++} END{print c+0}')"
+  if [ "$n_real" -ge 1 ]; then
+    pass=$((pass+1)); note "EXEC-BIT: the real workflows yield ${n_real} directly-run script path(s)"
+  else
+    fail=$((fail+1)); note "EXEC-BIT FAILED: the real workflows yielded NO paths — the floor would fire on a healthy tree"
+  fi
 
   # RED fixtures — each is the real hang antipattern; the scanner MUST flag every one.
   cat >"${tmp}/red.sh" <<'RED'
@@ -88,7 +291,7 @@ RED
   if [ "$red_n" -eq 3 ]; then
     pass=$((pass+1)); note "RED: flagged all 3 backgrounded-server-without-stdout-redirect lines"
   else
-    fail=1; note "RED FAILED: expected 3 flags, got ${red_n}:"; printf '%s\n' "$red_hits"
+    fail=$((fail+1)); note "RED FAILED: expected 3 flags, got ${red_n}:"; printf '%s\n' "$red_hits"
   fi
 
   # GREEN fixtures — the fix (stdout redirected) plus benign backgrounds the scanner must NOT flag.
@@ -113,16 +316,143 @@ GREEN
   if [ -z "$green_hits" ]; then
     pass=$((pass+1)); note "GREEN: flagged none of the redirected / benign / commented backgrounds"
   else
-    fail=1; note "GREEN FAILED: expected 0 flags, got:"; printf '%s\n' "$green_hits"
+    fail=$((fail+1)); note "GREEN FAILED: expected 0 flags, got:"; printf '%s\n' "$green_hits"
   fi
 
-  note "self-test: ${pass}/2 fixture groups passed"
-  if [ "$fail" -ne 0 ]; then
-    note "release-script-lint SELF-TEST FAILED — the scanner would let the hang antipattern through"
-    return 1
+  # ── rule 3: LOST-REGISTRATION ────────────────────────────────────────────────────────────────
+  # RED — every one of these captures a cleanup-registering helper in a subshell, which is exactly
+  # the defect that left 8 leaked staging dirs per no-plugins-gate run and an unkillable mock
+  # upstream in the 1.5.2 gate.
+  cat >"${tmp}/red3.sh" <<'RED3'
+TMP_DIRS=()
+BG_PIDS=()
+new_tmpdir() {
+  local d; d="$(mktemp -d)"
+  TMP_DIRS+=("$d"); echo "$d"
+}
+start_mock() {
+  python3 "$s" >/dev/null 2>&1 &
+  local pid=$!; BG_PIDS+=("$pid"); echo "$pid"
+}
+run_phase() {
+  local work; work="$(new_tmpdir)"
+  local out1 out2; out1="$(new_tmpdir)"; out2="$(new_tmpdir)"
+  local mock; mock="$(start_mock 8080)"
+  local legacy; legacy=`start_mock 8081`
+}
+RED3
+  local red3_hits; red3_hits="$(scan_lost_registrations "${tmp}/red3.sh" || true)"
+  local red3_n; red3_n="$(printf '%s' "$red3_hits" | grep -c ':' || true)"
+  # 4 lines carry a capture (the `out1/out2` line carries two, and the scanner reports per LINE)
+  if [ "$red3_n" -eq 4 ]; then
+    pass=$((pass+1)); note "RED3: flagged all 4 lines that capture a cleanup-registering helper"
+  else
+    fail=$((fail+1)); note "RED3 FAILED: expected 4 flags, got ${red3_n}:"; printf '%s\n' "$red3_hits"
   fi
-  note "ok"
-  return 0
+
+  # GREEN — the fix shape, plus the three things the scanner must NEVER flag: a helper whose array is
+  # `local` (per-call scratch, no cleanup contract), a plain non-captured call, and a comment.
+  cat >"${tmp}/green3.sh" <<'GREEN3'
+TMP_DIRS=()
+BG_PIDS=()
+new_tmpdir() {
+  NEW_TMPDIR="$(mktemp -d)"
+  TMP_DIRS+=("$NEW_TMPDIR")
+}
+start_mock() {
+  python3 "$s" >/dev/null 2>&1 &
+  NEW_BG_PID=$!; BG_PIDS+=("$NEW_BG_PID")
+}
+collect_files() {          # a LOCAL array: per-call scratch, nothing to clean up
+  local files=()
+  local f
+  while IFS= read -r f; do files+=("$f"); done < <(find . -name '*.rs')
+  printf '%s\n' "${files[@]}"
+}
+run_phase() {
+  local work; new_tmpdir; work="$NEW_TMPDIR"
+  new_tmpdir; local out="$NEW_TMPDIR"
+  start_mock 8080; local mock="$NEW_BG_PID"
+  local listing; listing="$(collect_files)"
+  # local bad; bad="$(new_tmpdir)"   <-- a comment SHOWING the antipattern, not code
+}
+GREEN3
+  local green3_hits; green3_hits="$(scan_lost_registrations "${tmp}/green3.sh" || true)"
+  if [ -z "$green3_hits" ]; then
+    pass=$((pass+1)); note "GREEN3: flagged none of the fixed / local-array / plain-call / commented forms"
+  else
+    fail=$((fail+1)); note "GREEN3 FAILED: expected 0 flags, got:"; printf '%s\n' "$green3_hits"
+  fi
+
+  # ── rule 4: EXEC-BIT direct-invocation detector ──────────────────────────────────────────────
+  # The detector must pick out ONLY the paths a workflow executes directly, and must never pick a
+  # path that is interpreted (`bash …`), sourced (`source …` / `. …`), or mentioned in a comment.
+  cat >"${tmp}/wf.yml" <<'WF'
+jobs:
+  build:
+    steps:
+      - run: scripts/release-build.sh "$TARGET"        # direct exec -> MUST be listed
+      - run: bash scripts/helper.sh                     # interpreted -> never
+      - run: |
+          ./scripts/gate/run.sh --all                   # direct exec in a block -> MUST be listed
+          source scripts/lib.sh                          # sourced -> never
+          . scripts/env.sh                               # dot-sourced -> never
+      # run: scripts/commented-out.sh                    # a comment -> never
+WF
+  local eb_hits; eb_hits="$(list_direct_invoked_scripts "${tmp}/wf.yml")"
+  local eb_want; eb_want="$(printf 'scripts/gate/run.sh\nscripts/release-build.sh\n')"
+  if [ "$eb_hits" = "$eb_want" ]; then
+    pass=$((pass+1)); note "EXEC-BIT: listed exactly the 2 directly-run scripts (not interpreted / sourced / commented)"
+  else
+    fail=$((fail+1)); note "EXEC-BIT FAILED: expected two paths, got:"; printf '%s\n' "$eb_hits"
+  fi
+
+  # ── A SCAN OF NOTHING IS NOT A CLEAN SCAN, FOR EVERY RULE (item 524) ─────────────────────────────
+  # Rule 4 has refused a vacuous input since it was written; rules 1, 2 and 3 used to print
+  # "nothing to scan" / "not present" and leave `fail` at 0. Driven END TO END: a copy of this lint
+  # run from an otherwise EMPTY root, where every rule's input is absent, must name a VACUOUS SCAN
+  # for each of the three and exit non-zero.
+  mkdir -p "${tmp}/vroot/scripts"
+  cp scripts/release-script-lint.sh "${tmp}/vroot/scripts/"
+  local v_out v_rc=0 v_n
+  v_out="$(bash "${tmp}/vroot/scripts/release-script-lint.sh" 2>&1)" || v_rc=$?
+  v_n="$(printf '%s\n' "$v_out" | grep -c 'VACUOUS SCAN' || true)"
+  if [ "$v_rc" -ne 0 ] && [ "$v_n" -eq 3 ]; then
+    pass=$((pass+1)); note "VACUOUS: rules 1, 2 and 3 each refuse a scan of nothing (rc ${v_rc})"
+  else
+    fail=$((fail+1)); note "VACUOUS FAILED: an empty root gave rc ${v_rc} and ${v_n}/3 VACUOUS SCAN refusals"
+  fi
+
+  # ── THE TALLY IS A COUNT, NOT A LITERAL (item 550) ─────────────────────────────────────────────
+  # The failure half used to be the literal `0`, printed above "SELF-TEST FAILED". The verdict line
+  # is one function, proven here in both directions, and no failing arm may SET the count instead
+  # of adding to it (that is how a second failure reads as one).
+  local t_out t_rc=0
+  t_out="$( (selftest_verdict 7 2) 2>&1 )" || t_rc=$?
+  if [ "$t_rc" -ne 0 ] && printf '%s' "$t_out" | grep -q '7 fixture group(s) passed, 2 failed'; then
+    pass=$((pass+1)); note "TALLY: two failures print '2 failed' and the verdict is non-zero"
+  else
+    fail=$((fail+1)); note "TALLY FAILED: (7 passed, 2 failed) printed '${t_out//$'\n'/ | }' rc ${t_rc}"
+  fi
+  t_rc=0; t_out="$( (selftest_verdict 7 0) 2>&1 )" || t_rc=$?
+  if [ "$t_rc" -eq 0 ] && printf '%s' "$t_out" | grep -q '7 fixture group(s) passed, 0 failed'; then
+    pass=$((pass+1)); note "TALLY: no failures print '0 failed' and the verdict is zero"
+  else
+    fail=$((fail+1)); note "TALLY FAILED: (7 passed, 0 failed) printed '${t_out//$'\n'/ | }' rc ${t_rc}"
+  fi
+  local t_set
+  t_set="$(sed -n '/^run_selftest() {/,/^if \[ "\${1:-}" = "--selftest" \]/p' scripts/release-script-lint.sh | sed 's/#.*//' \
+           | grep -cE '(^|[^_[:alnum:]])fail=[1-9]' || true)"
+  if [ "$t_set" -eq 0 ]; then
+    pass=$((pass+1)); note "TALLY: every failing arm adds to the count (no fail=<literal>)"
+  else
+    fail=$((fail+1)); note "TALLY FAILED: ${t_set} failing arm(s) SET the count with fail=<literal>"
+  fi
+
+  # The denominator was the literal 5 and the numerator a counter, so adding a fixture group printed
+  # "10/5 passed" — a tally that cannot be read is a tally nobody checks. `fail` is what decides;
+  # this line now just says how many groups there were.
+  selftest_verdict "$pass" "$fail"
 }
 
 if [ "${1:-}" = "--selftest" ]; then run_selftest; exit $?; fi
@@ -137,8 +467,13 @@ scripts_to_scan=()
 # script that launches one — scripts/no-plugins-gate.sh starts a mock upstream and self-test stubs
 # exactly the way release-check.sh does, and is covered here rather than being a second blind spot.
 for f in scripts/release-check*.sh scripts/no-plugins-gate.sh; do [ -f "$f" ] && scripts_to_scan+=("$f"); done
+# A SCAN OF NOTHING IS RED (item 524), for the reason rule 4 states below: a count of zero is not a
+# clean scan, it is a scan that did not happen. The glob matching nothing means the gate scripts
+# moved or were renamed, and this rule would otherwise print a pass over files it never read.
 if [ ${#scripts_to_scan[@]} -eq 0 ]; then
-  note "no server-launching gate scripts found — nothing to scan"
+  note "GATE-HANG: VACUOUS SCAN — no scripts/release-check*.sh or scripts/no-plugins-gate.sh found,"
+  note "  so nothing was adjudicated. RED, not a clean scan: point the glob at where the gates live."
+  fail=1
 else
   hits="$(scan_backgrounded_servers "${scripts_to_scan[@]}" || true)"
   if [ -n "$hits" ]; then
@@ -146,23 +481,111 @@ else
       note "GATE-HANG: $h"
     done <<<"$hits"
     note "→ a backgrounded server that inherits a \$(...) stdout pipe wedges the gate until the CI"
-    note "  timeout. Redirect the child's stdout: append \`>/dev/null 2>&1 &\` (keep the helper's own"
-    note "  \`echo \"\$pid\"\`, which still reaches the capture)."
+    note "  timeout. Redirect the child's stdout: append \`>/dev/null 2>&1 &\`. Required even when the"
+    note "  helper is not captured today — see rule 3, whose fix has launchers set \`\$NEW_BG_PID\`"
+    note "  rather than echo a pid, so a future \`\$(...)\` around one must not be able to wedge."
     fail=1
   else
     note "ok (${#scripts_to_scan[@]} script(s) scanned, no unredirected backgrounded server)"
   fi
 fi
 
+# ── Rule 3: LOST-REGISTRATION — a cleanup registrar must not be called inside `$(...)` ────────────
+hdr "LOST-REGISTRATION (a helper that appends to a cleanup array must not be run in a subshell)"
+if [ ${#scripts_to_scan[@]} -eq 0 ]; then
+  note "LOST-REGISTRATION: VACUOUS SCAN — the gate-script set is empty (see GATE-HANG above), so"
+  note "  nothing was adjudicated. RED, not a clean scan."
+  fail=1
+else
+  lr_hits="$(scan_lost_registrations "${scripts_to_scan[@]}" || true)"
+  if [ -n "$lr_hits" ]; then
+    while IFS= read -r h; do
+      note "LOST-REGISTRATION: $h"
+    done <<<"$lr_hits"
+    note "→ HOW TO FIX: a command substitution runs the helper in a SUBSHELL, so its \`ARR+=(...)\`"
+    note "  mutates a copy that dies with the subshell and the EXIT trap cleans up NOTHING. Change"
+    note "  the helper to SET a global instead of echoing, and read it on the caller's next"
+    note "  statement:"
+    note "      new_tmpdir() { NEW_TMPDIR=\"\$(mktemp -d ...)\"; TMP_DIRS+=(\"\$NEW_TMPDIR\"); }"
+    note "      new_tmpdir; work=\"\$NEW_TMPDIR\"        # NOT: work=\"\$(new_tmpdir)\""
+    note "  If the array is genuinely per-call scratch with no cleanup contract, declare it"
+    note "  \`local\` in the helper and this rule stops caring about it."
+    fail=1
+  else
+    note "ok (${#scripts_to_scan[@]} script(s) scanned, every cleanup registrar called in its caller's shell)"
+  fi
+fi
+
+# ── Rule 4: EXEC-BIT — a script a workflow runs directly must be tracked 100755 ───────────────────
+hdr "EXEC-BIT (a script executed directly by a workflow \`run:\` must be tracked executable)"
+eb_fail=0
+eb_scanned=0
+# THE INPUT IS CAPTURED AND FLOORED BEFORE THE LOOP. Fed straight from `< <(list_direct_invoked_
+# scripts .github/workflows/*.yml)`, a producer that failed — an unmatched glob handing awk a
+# literal pattern as a filename, a `git ls-files` that could not run, a workflow directory moved —
+# made the loop iterate zero times with its status discarded by the process substitution. eb_fail
+# stayed 0 and the rule printed "ok (0 directly-run workflow script(s) scanned, all tracked 100755)"
+# on its way to "release-script-lint passed". A count of zero is not a clean scan; it is a scan that
+# did not happen, and this rule exists because a script tracked non-executable fails a workflow at
+# run time with exit 126.
+# A producer that FAILS (the glob matched nothing, so awk was handed a literal pattern) yields the
+# empty set here rather than aborting the whole lint under `set -e` before the rules after this one
+# have run; the floor just below is what turns that empty set into RED.
+eb_paths="$(list_direct_invoked_scripts .github/workflows/*.yml 2>/dev/null)" || eb_paths=""
+eb_paths_n="$(printf '%s\n' "$eb_paths" | awk 'NF{c++} END{print c+0}')"
+# The floor is 1 rather than today's 44: the point is to refuse a VACUOUS scan, not to pin a number
+# that a legitimate workflow deletion turns into a false red.
+if [ "$eb_paths_n" -lt 1 ]; then
+  note "EXEC-BIT: no directly-run workflow script could be resolved from .github/workflows/*.yml."
+  note "  Nothing was adjudicated, so this is RED rather than a clean scan. Fix: check the glob"
+  note "  matches, and that list_direct_invoked_scripts still parses the \`run:\` shape in use."
+  fail=1
+fi
+while IFS= read -r p; do
+  [ -z "$p" ] && continue
+  # A workflow's `run:` path is relative to the step's working-directory, which may be a testing
+  # subtree (e.g. testing/mcp-conformance), not the repo root. Resolve by tracked-path SUFFIX — the
+  # exact path OR any `**/`-prefixed match — so both repo-root release scripts and working-directory
+  # scripts are adjudicated. A path that matches NO tracked file is silently skipped (generated, or a
+  # working-dir we cannot resolve) rather than mis-reported as a non-exec failure.
+  while IFS="$(printf '\t')" read -r mode file; do
+    [ -z "$file" ] && continue
+    eb_scanned=$((eb_scanned+1))
+    if [ "$mode" != "100755" ]; then
+      note "EXEC-BIT: $file is executed directly by a workflow but tracked mode is $mode — the shell"
+      note "  will refuse it with exit 126 at run time. Restore: git update-index --chmod=+x $file"
+      eb_fail=1
+    fi
+  done < <(git ls-files -s -- "$p" "**/$p" 2>/dev/null \
+             | awk '{m=$1; sub(/^[0-9]+ [0-9a-f]+ [0-9]+\t/,""); print m"\t"$0}' | sort -u)
+done <<EOF
+$eb_paths
+EOF
+if [ "$eb_fail" -ne 0 ]; then
+  fail=1
+elif [ "$eb_scanned" -lt 1 ]; then
+  # The paths resolved but NONE of them matched a tracked file. Every one being generated or
+  # unresolvable is possible in principle and indistinguishable from the resolution rule having
+  # stopped working, so it is not a pass either.
+  note "EXEC-BIT: ${eb_paths_n} workflow script path(s) were named and NONE resolved to a tracked"
+  note "  file, so no mode was adjudicated. Fix: check the tracked-path suffix resolution below."
+  fail=1
+else
+  note "ok (${eb_scanned} directly-run workflow script(s) scanned, all tracked 100755)"
+fi
+
 # ── Rule 2: WATCHDOG — the 1.5.2 gate must keep its `timeout` re-exec (defense in depth) ──────────
 hdr "WATCHDOG (release-check-1.5.2.sh keeps its \`timeout\` re-exec so any hang fails fast)"
 wd="scripts/release-check-1.5.2.sh"
 if [ ! -f "$wd" ]; then
-  note "ok (${wd} not present — nothing to check)"
-elif grep -q 'WATCHDOG_ARMED' "$wd" && grep -Eq 'exec[[:space:]]+(g)?timeout' "$wd"; then
+  note "WATCHDOG: VACUOUS SCAN — ${wd} is not present, so no guard was checked. RED, not a pass: if"
+  note "  the 1.5.2 gate was retired or renamed, retarget this rule in the same change."
+  fail=1
+elif watchdog_armed "$wd"; then
   note "ok (armed-sentinel + \`exec timeout\` re-exec present)"
 else
-  note "WATCHDOG MISSING: ${wd} no longer re-execs itself under \`timeout\` with an arm sentinel."
+  note "WATCHDOG MISSING: ${wd} no longer re-execs itself under \`timeout\` with an arm sentinel"
+  note "  in EXECUTABLE code (a commented-out guard, or prose naming it, does not count)."
   note "  Restore the guard so a future hang fails fast (exit 124) instead of a multi-hour cancel."
   fail=1
 fi

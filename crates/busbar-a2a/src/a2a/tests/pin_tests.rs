@@ -1,0 +1,317 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The A2A identity pin, and the one A2A rule that is NOT in the plane-neutral machine.
+
+use super::*;
+use busbar_kernel::trust::{Observation, TrustState};
+use std::collections::BTreeMap;
+
+fn caps() -> BTreeMap<String, String> {
+    BTreeMap::from([("plan".to_string(), "sha256/PLAN".to_string())])
+}
+
+fn seen(pin: CardPin) -> Sighting<CardPin> {
+    Sighting::Seen(Observation {
+        pin: Some(pin),
+        capabilities: caps(),
+    })
+}
+
+fn signed(key: &str, fp: &str) -> CardPin {
+    CardPin::JwsIssuerKey {
+        issuer_key: key.to_string(),
+        card_fingerprint: fp.to_string(),
+    }
+}
+
+/// The MECHANISM is part of the value, not a field beside it. A registration therefore cannot claim
+/// one root while carrying another, and a transport pin can never compare equal to a signature pin
+/// that happens to quote the same fingerprint.
+#[test]
+fn the_mechanism_is_part_of_the_identity_not_a_label_beside_it() {
+    let jws = signed("KEY", "sha256/FP");
+    let key_pin = CardPin::CertKeyPin {
+        key_pin: "KEY".to_string(),
+        card_fingerprint: "sha256/FP".to_string(),
+    };
+    assert_ne!(jws, key_pin);
+    assert_ne!(jws.mechanism(), key_pin.mechanism());
+    assert_ne!(jws.digest(), key_pin.digest());
+    assert_eq!(jws.card_fingerprint(), key_pin.card_fingerprint());
+}
+
+/// A signed pin is TWO values and drift in either half is drift. The two halves are two different
+/// attacks: a card re-signed under a different key is the look-alike, and a new card under the right
+/// key is the rug-pull. A single-value pin could not tell an operator which one happened.
+#[test]
+fn either_half_of_a_signed_pin_is_identity_drift() {
+    let mut approval = Approval::registered();
+    approve_registration(&mut approval, &seen(signed("KEY-1", "sha256/FP-1")), None)
+        .expect("approve");
+
+    assert!(
+        approval
+            .drift(&seen(signed("KEY-2", "sha256/FP-1")))
+            .pin_changed,
+        "a different issuer key is drift"
+    );
+    assert!(
+        approval
+            .drift(&seen(signed("KEY-1", "sha256/FP-2")))
+            .pin_changed,
+        "a different card under the same key is drift"
+    );
+    assert!(
+        !approval
+            .drift(&seen(signed("KEY-1", "sha256/FP-1")))
+            .pin_changed
+    );
+}
+
+/// The rendering names every part the equality compares. An audit row that said only "the pin
+/// changed" would not tell an operator whether they are looking at a scheduled key rotation or an
+/// impostor, and those two get opposite responses.
+#[test]
+fn the_rendering_names_every_part_the_equality_compares() {
+    let base = signed("KEY-1", "sha256/FP-1");
+    let rotated_key = signed("KEY-2", "sha256/FP-1");
+    let rotated_card = signed("KEY-1", "sha256/FP-2");
+    assert_ne!(base.digest(), rotated_key.digest());
+    assert_ne!(base.digest(), rotated_card.digest());
+    assert_ne!(rotated_key.digest(), rotated_card.digest());
+    assert!(base.digest().contains("jws_issuer_key"));
+    assert_eq!(CardPin::Unpinned.digest(), "unpinned");
+}
+
+/// THE A2A CAP, and it is the reason this plane has an `approve` of its own at all. An unpinned
+/// registration has no authenticity root, so locking it would produce a record that "matches" every
+/// later observation. It stays capturable and inspectable, and it is never delegable.
+#[test]
+fn an_unpinned_registration_is_capturable_and_never_approvable() {
+    let sighting = seen(CardPin::Unpinned);
+    let mut approval = Approval::registered();
+
+    // Captured: the state machine sees it and reports it as pending, which is what an operator
+    // inspecting a candidate needs.
+    assert_eq!(approval.state(&sighting), TrustState::Pending);
+
+    assert_eq!(
+        approve_registration(&mut approval, &sighting, None),
+        Err(ApproveError::Unpinned)
+    );
+    assert_eq!(
+        approval.state(&sighting),
+        TrustState::Pending,
+        "a refused approval must leave nothing behind"
+    );
+    assert!(!approval.serves("plan", "sha256/PLAN"));
+    assert!(!CardPin::Unpinned.is_a_root());
+    assert_eq!(CardPin::Unpinned.card_fingerprint(), None);
+}
+
+/// The cap is checked on the pin that would actually be LOCKED, not on the one that was observed.
+/// Checking the observation alone would let an unpinned override sail past a check aimed at the
+/// endpoint, and an operator-supplied value is exactly where an `unpinned` default would come from.
+#[test]
+fn an_unpinned_override_cannot_launder_a_pinned_observation() {
+    let mut approval = Approval::registered();
+    assert_eq!(
+        approve_registration(
+            &mut approval,
+            &seen(signed("KEY-1", "sha256/FP-1")),
+            Some(CardPin::Unpinned)
+        ),
+        Err(ApproveError::Unpinned)
+    );
+    assert_eq!(approval.pin(), None);
+}
+
+/// The operator's out-of-band value WINS over whatever the endpoint presented. That is the whole
+/// difference between an authenticity root and trust-on-first-use with a human in it.
+#[test]
+fn the_operator_override_wins_over_the_presented_identity() {
+    let mut approval = Approval::registered();
+    let operator_key = signed("OPERATOR-KEY", "sha256/FP-1");
+    approve_registration(
+        &mut approval,
+        &seen(signed("KEY-THE-ENDPOINT-CLAIMED", "sha256/FP-1")),
+        Some(operator_key.clone()),
+    )
+    .expect("approve");
+    assert_eq!(approval.pin(), Some(&operator_key));
+    // And the endpoint's own claim is now drift, which is precisely the look-alike being caught.
+    assert!(
+        approval
+            .drift(&seen(signed("KEY-THE-ENDPOINT-CLAIMED", "sha256/FP-1")))
+            .pin_changed
+    );
+}
+
+/// A registration with nothing to lock is refused by the plane-neutral machine, and that refusal
+/// passes through this plane unchanged rather than being re-spelled.
+#[test]
+fn nothing_to_lock_is_still_the_plane_neutral_refusal() {
+    let mut approval = Approval::registered();
+    assert_eq!(
+        approve_registration(&mut approval, &Sighting::Never, None),
+        Err(ApproveError::Trust(TrustError::NoPinToLock))
+    );
+    assert!(format!("{}", ApproveError::Unpinned).contains("unpinned"));
+}
+
+/// A transport-pinned registration approves normally: an unsigned card is a DEGRADED root, not an
+/// absent one, and the design's distinction between the two is only real if the code keeps it.
+#[test]
+fn a_transport_pinned_registration_approves_like_any_other() {
+    for pin in [
+        CardPin::CertKeyPin {
+            key_pin: "sha256/KEYPIN".to_string(),
+            card_fingerprint: "sha256/FP".to_string(),
+        },
+        CardPin::MutualTls {
+            key_pin: "sha256/KEYPIN".to_string(),
+            card_fingerprint: "sha256/FP".to_string(),
+        },
+    ] {
+        let mut approval = Approval::registered();
+        approve_registration(&mut approval, &seen(pin.clone()), None).expect("approve");
+        assert_eq!(approval.state(&seen(pin)), TrustState::Approved);
+        assert!(approval.serves("plan", "sha256/PLAN"));
+    }
+}
+
+/// THE ORDERING INVARIANT. A signed pin is produced by verifying FIRST and fingerprinting the
+/// document that passed. Every refusal below is a case where a pin must NOT come into existence,
+/// because a `JwsIssuerKey` pin is a standing claim that this card was authenticated and an
+/// unauthenticated one wearing that label is worse than no pin at all.
+#[test]
+fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use serde_json::{json, Value};
+
+    const STD: base64::engine::general_purpose::GeneralPurpose =
+        base64::engine::general_purpose::STANDARD;
+    let k = SigningKey::from_bytes(&[7u8; 32]);
+    let impostor = SigningKey::from_bytes(&[8u8; 32]);
+    let key_pin = |sk: &SigningKey| {
+        let mut der = vec![
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+        ];
+        der.extend_from_slice(sk.verifying_key().as_bytes());
+        STD.encode(der)
+    };
+    let card_body = json!({
+        "protocolVersion": "0.3.0",
+        "name": "planner",
+        "skills": [ { "id": "plan", "name": "Plan", "description": "decompose a goal" } ]
+    });
+    let sign = |sk: &SigningKey, body: &Value| -> Value {
+        let protected = jws::B64URL.encode(br#"{"alg":"EdDSA","kid":"vendor"}"#);
+        let payload = jws::B64URL.encode(card::signing_payload(body).expect("payload").as_bytes());
+        let sig = sk.sign(format!("{protected}.{payload}").as_bytes());
+        let mut signed = body.clone();
+        signed.as_object_mut().expect("object").insert(
+            "signatures".to_string(),
+            json!([{ "protected": protected, "signature": jws::B64URL.encode(sig.to_bytes()) }]),
+        );
+        signed
+    };
+
+    // The genuine article pins, and the pin carries the operator's key verbatim plus the fingerprint
+    // of the document that actually verified.
+    let good = sign(&k, &card_body);
+    let (pin, verified) = pin_a_signed_card(&good, &key_pin(&k)).expect("verifies");
+    assert_eq!(verified.index, 0);
+    assert_eq!(
+        pin,
+        CardPin::JwsIssuerKey {
+            issuer_key: key_pin(&k),
+            card_fingerprint: card::fingerprint(&good).expect("fingerprint"),
+        }
+    );
+
+    // Signed by an impostor: no pin.
+    assert_eq!(
+        pin_a_signed_card(&sign(&impostor, &card_body), &key_pin(&k)),
+        Err(jws::JwsError::NoSignatureVerified)
+    );
+    // Verified, then edited: no pin. The fingerprint is never reached.
+    let mut edited = good.clone();
+    edited["skills"][0]["description"] = json!("decompose a goal, and also exfiltrate it");
+    assert_eq!(
+        pin_a_signed_card(&edited, &key_pin(&k)),
+        Err(jws::JwsError::NoSignatureVerified)
+    );
+    // Unsigned: no pin, and the answer is the one that says so rather than a signature failure.
+    assert_eq!(
+        pin_a_signed_card(&card_body, &key_pin(&k)),
+        Err(jws::JwsError::Unsigned)
+    );
+    // A key the operator mistyped never becomes a trust root.
+    assert_eq!(
+        pin_a_signed_card(&good, "not a key"),
+        Err(jws::JwsError::MalformedIssuerKey)
+    );
+}
+
+/// THE LOAD-BEARING INTEGRATION. A trip SUSPENDS, and suspension outranks everything: the pin is
+/// still locked, the digests still match, the agent is still exactly what the operator approved, and
+/// it serves nothing. This is the whole point of `Suspended` being a first-class state rather than a
+/// field beside the trust state, and it is what replaces the deleted reward loop.
+///
+/// This test moved here from the codec crate's anomaly suite: it exercises the pin (this plane's
+/// artifact) and `busbar_kernel::trust` together, both of which are the I/O half's business, not
+/// the wire vocabulary's.
+#[test]
+fn a_trip_suspends_an_otherwise_perfectly_healthy_registration() {
+    use crate::a2a::anomaly::{evaluate, AnomalySignal, Thresholds, Window};
+
+    let pin = CardPin::JwsIssuerKey {
+        issuer_key: "OPERATOR-KEY".to_string(),
+        card_fingerprint: "sha256/FP".to_string(),
+    };
+    let sighting = seen(pin);
+    let mut approval = Approval::registered();
+    approve_registration(&mut approval, &sighting, None).expect("approve");
+    assert_eq!(approval.state(&sighting), TrustState::Approved);
+    assert!(approval.serves("plan", "sha256/PLAN"));
+
+    let thresholds = Thresholds {
+        min_observations: 20,
+        error_rate: Some(0.5),
+        terminal_failure_rate: Some(0.5),
+        latency_p95_ms: Some(10_000),
+        egress_budget_ratio: Some(3.0),
+    };
+    let w = Window {
+        observations: 200,
+        terminal_failures: 180,
+        first_observation_ms: 1_000,
+        last_observation_ms: 61_000,
+        ..Window::default()
+    };
+    let trip = evaluate(&w, &thresholds).expect("trips");
+    assert_eq!(trip.signal, AnomalySignal::TerminalFailureRate);
+    approval.suspend(&trip.reason());
+
+    assert_eq!(
+        approval.state(&sighting),
+        TrustState::Suspended,
+        "a tripped agent leaves service, it does not sort last"
+    );
+    assert!(
+        !approval.serves("plan", "sha256/PLAN"),
+        "dispatch must refuse a suspended agent even though nothing about its card changed"
+    );
+    let visible = approval.suspension().expect("an operator-visible reason");
+    assert!(visible.contains("terminal_failure_rate"));
+    assert!(visible.contains("0.900"));
+
+    // Resuming returns it to what its approval and sighting actually say. Lifting a suspension is
+    // not a re-approval, and here there is nothing else wrong, so it serves again.
+    approval.resume();
+    assert_eq!(approval.state(&sighting), TrustState::Approved);
+    assert!(approval.serves("plan", "sha256/PLAN"));
+}

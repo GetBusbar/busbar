@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config.yaml: invalid YAML: the reserved `pools.hooks:` all-pools attach must be a list of hook names: invalid type: string \"not-a-list\", expected a sequence\n"},"headers":{},"status":1}

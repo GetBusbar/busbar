@@ -1,0 +1,60 @@
+# qa/dep-wall.ledger — THE DEPENDENCY WALL, pinned at the measurement it was armed at (Law 9).
+# Read by `cargo xtask gate dep-wall` (xtask/src/gates/dep_wall.rs):
+# no plugin closure carries a socket or TLS stack of its own; every plugin reaches the network through
+# a need and the connector does the rest (DECISIONS #40(a); THE DESIGN: connections).
+#
+# DRAIN-ONLY, CHECKED BOTH WAYS: a measured `crate<TAB>offender` this file does not pin is RED (a new
+# offender — never pinned in the change that introduced it), and a line the tree no longer measures is
+# RED (strike it in the commit that drained it). It reaches zero when the coexistence window closes,
+# and this file is deleted then.
+#
+# `carrier<TAB>crate` exempts a transport CARRIER, whose whole job is the socket. The connector is a
+# cleanliness crate and never in scope.
+carrier	busbar-transport-stdio
+busbar-a2a	hyper-util
+busbar-a2a	reqwest
+busbar-a2a	rustls
+busbar-a2a	socket2
+busbar-a2a	std::net
+busbar-a2a	tokio (net)
+busbar-a2a	tokio-rustls
+busbar-a2a	tokio::net
+busbar-auth-oidc	hyper-util
+busbar-auth-oidc	reqwest
+busbar-auth-oidc	rustls
+busbar-auth-oidc	socket2
+busbar-auth-oidc	tokio (net)
+busbar-auth-oidc	tokio-rustls
+busbar-auth-oidc-plugin	hyper-util
+busbar-auth-oidc-plugin	reqwest
+busbar-auth-oidc-plugin	rustls
+busbar-auth-oidc-plugin	socket2
+busbar-auth-oidc-plugin	tokio (net)
+busbar-auth-oidc-plugin	tokio-rustls
+busbar-llm	hyper-util
+busbar-llm	reqwest
+busbar-llm	rustls
+busbar-llm	socket2
+busbar-llm	tokio (net)
+busbar-llm	tokio-rustls
+busbar-mcp	hyper-util
+busbar-mcp	reqwest
+busbar-mcp	rustls
+busbar-mcp	socket2
+busbar-mcp	std::net
+busbar-mcp	tokio (net)
+busbar-mcp	tokio-rustls
+busbar-mcp	tokio::net
+busbar-transport-http	hyper-util
+busbar-transport-http	socket2
+busbar-transport-http	tokio (net)
+busbar-transport-http	tokio::net
+busbar-transport-ws	socket2
+busbar-voice	hyper-util
+busbar-voice	reqwest
+busbar-voice	rustls
+busbar-voice	socket2
+busbar-voice	std::net
+busbar-voice	tokio (net)
+busbar-voice	tokio-rustls
+busbar-voice	tokio::net

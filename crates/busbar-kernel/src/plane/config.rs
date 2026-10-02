@@ -1,0 +1,818 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE PARSE-TIME RULES A PLANE SECTION IS READ BY, owned once: how the section MAP is split, and
+//! whether a hook reference stays inside its plane.
+//!
+//! ## Why the whole rule lives here and not on a plane
+//!
+//! It was written twice — two separate plane-local `config.rs` files each carried a
+//! `refuse_cross_plane_reference` and a `validate_section_hooks`, and the two were byte-identical
+//! down to the sentence an operator reads. Two of them included the same HARDCODED section list, a
+//! literal list of every plane section spelling plus the named-definition maps, in two plane-local
+//! files that no compiler links. Nothing made them agree; they agreed because one was copied from
+//! the other.
+//!
+//! That list is the part that rots. It is a fact about the top-level config grammar, and the config
+//! grammar is declared in two tables that already exist: the plane registry keys name the plane sections and
+//! [`NamedMapSection::ALL`] names the 1.5.3 named-definition maps. A plane or a section added to
+//! either table used to leave both copies of the literal behind, and a section missing from the
+//! literal is not a loud failure — it is a dotted reference into some section being accepted as a
+//! bare hook name, resolving to nothing, and an operator believing a hook is attached that is not.
+//!
+//! So the list is DERIVED ([`config_sections`]) and passed in as a PARAMETER rather than written.
+//! The judgement takes the sections it is judging against, which is also what lets a plane busbar
+//! does not have be validated by this code with nothing written for it (see
+//! `plane/tests/config_tests.rs`).
+//!
+//! **What core owns:** the trim, the empty-name refusal, the section-prefix scan, the bare-name
+//! requirement, and every SENTENCE. **What a caller owns:** its own WORDING for WHERE the refusal
+//! happened — `at` is "`agents.planner`" or "`tools.hooks`", and those are different sentences to an
+//! operator diagnosing a boot failure. A caller keeps its refusal vocabulary, not its decision.
+//!
+//! The sentences survive the move through a TOTAL `From<Refusal<'_>> for String`. Totality is the
+//! point: a refusal added to [`HookRefError`] later has to be given a sentence of its own rather
+//! than being folded silently into a nearby arm, which is how two refusals become one wording that
+//! is wrong for one of them.
+//!
+//! ## THIS IS NOT THE OTHER CROSS-PLANE REFUSAL, and the two must not be merged
+//!
+//! [`super::PlaneSections::resolve`] also refuses a cross-plane reference, with
+//! [`super::RefError::CrossPlane`]. It is a SECOND, STRUCTURAL check and not a duplicate of this
+//! one. They answer different questions at different moments:
+//!
+//!   * THIS one runs at PARSE time, on a STRING, before anything is known to exist. It refuses a
+//!     dotted reference like `sectionname.entryname` written where a bare name belongs — a SHAPE
+//!     that names a plane, whether or not any entry by that name exists anywhere.
+//!   * [`super::PlaneSections::resolve`] runs at RESOLVE time, on a name that EXISTS. It refuses a
+//!     bare name that resolves on a sibling plane — a name whose shape is legal and whose
+//!     BINDING crosses the boundary.
+//!
+//! Neither subsumes the other: this one fires on a name nothing defines, and that one fires on a
+//! name with no dot in it. Collapsing them would not deduplicate a check, it would delete one.
+//!
+//! ## THE SECTION SPLIT lives in the contract
+//!
+//! The section-map split a plane reads its own section with ([`busbar_contract::section`]: the
+//! reserved-key refusals, the two typed lifts and their order) is a pure, stateless helper in
+//! `busbar-contract`, so a plane reads its section without naming the kernel. The kernel keeps only
+//! the thin [`split_section_for_plane`] wrapper that turns a plane KEY into the section/noun words.
+//!
+//! ## THE KERNEL JUDGES EVERY PLANE'S SECTION AT BOOT
+//!
+//! A plane sees only its own section, so it cannot judge a reference against the others. The
+//! cross-plane refusal therefore runs in the kernel, over every loaded plane's declared section,
+//! before the section reaches the plane ([`validate_plane_section`]). The same pass judges the keys a
+//! plane declares as kernel-owned trust keys ([`crate::trust::section`]), which the plane's own
+//! validator no longer reads. Each registration is judged in order: its trust keys in declaration
+//! order, then its `hooks:` list. A key whose shape is wrong is left for the plane's own parse to
+//! refuse in its own words.
+
+use busbar_contract::plugin::Kind;
+use serde::Deserialize;
+
+/// A PLANE'S TOP-LEVEL CONFIG SECTION, CAPTURED RAW — the neutral carrier `DeployCfg`/`RootCfg` use
+/// for a plane's section in a build where the plane that would LOWER it is compiled out.
+///
+/// A declared-definition section and its paired endpoint block (when the plane has one) deserialize
+/// into that plane's own config types — types that do not exist when their plane is compiled out
+/// (each gated by its own `plane-<x>` feature). So in that build the field is typed `RawPlaneSection`
+/// instead (behind `#[cfg(not(feature = "plane-<x>"))]`), which captures whatever the operator wrote
+/// without naming a plane type. A section that carries CONTENT in such a build names a plane that is
+/// not present; `resolve` REFUSES it (see the config deletion-gate leg), exactly as the protocol
+/// registry refuses a config naming a deleted dialect.
+///
+/// This type lives OUTSIDE `config/` on purpose: `cargo xtask gate config-schema` fingerprints the
+/// `config/` directory, and the `#[cfg(feature = "plane-<x>")]` twin field (declared LAST) is what
+/// that fingerprint records — so the `tools:`/`mcp:`/`agents:` schema is unchanged by this capture. A
+/// `RawPlaneSection` type declared under `config/` would add a new fingerprinted type and drift the
+/// committed snapshot; declared here it never enters the config surface.
+///
+/// Compiled UNCONDITIONALLY: besides the compiled-out-plane capture, it is the empty-section fallback
+/// the neutral `*Section` newtypes take when a plane hook is absent, so it must exist in every feature
+/// combination (including both planes on, where it is simply never constructed).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RawPlaneSection {
+    /// The captured value, or `None` when the section was absent or explicitly null.
+    raw: Option<serde_yaml::Value>,
+}
+
+impl<'de> serde::Deserialize<'de> for RawPlaneSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        let raw = if value.is_null() { None } else { Some(value) };
+        Ok(RawPlaneSection { raw })
+    }
+}
+
+// A raw-captured section carries no ENUMERABLE secrets: it is unparsed, and a non-empty one is
+// refused at resolve, so it never reaches a running deployment. Implementing the seam with an empty
+// answer lets `config_validate::secret_refs` loop the trait over the section bindings uniformly, the
+// same way it does for the typed plane configs, without naming the compiled-out plane's types.
+impl PlaneCfg for RawPlaneSection {
+    fn secret_refs(&self) -> Vec<(String, &crate::config::SecretRef)> {
+        Vec::new()
+    }
+    // A raw-captured section holds no PARSED registry: it names a compiled-out plane and is refused at
+    // resolve, so every registry query answers empty. These are reached only for the neutral carrier's
+    // uniform loop; the deletion-gate refusal is what actually fires for a present raw section.
+    fn contains_def(&self, _name: &str) -> bool {
+        false
+    }
+    fn def_names(&self) -> Vec<&str> {
+        Vec::new()
+    }
+    fn entry_document(&self, _name: &str) -> Option<serde_json::Value> {
+        None
+    }
+    fn insert_def(&mut self, _name: &str, _def: &serde_json::Value) -> Result<(), String> {
+        // Unreachable in practice: the named-map write path refuses a compiled-out plane's section
+        // BEFORE install (see `NamedMapSection::parse_def`). Fail closed if a caller ever reaches it.
+        Err("this build was compiled without the plane that owns this section".to_string())
+    }
+    fn container_gates(&self) -> ContainerGateInputs {
+        ContainerGateInputs {
+            section_hooks: Vec::new(),
+            containers: Vec::new(),
+        }
+    }
+    fn validate_registry(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn is_present(&self) -> bool {
+        RawPlaneSection::is_present(self)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn PlaneCfg> {
+        Box::new(self.clone())
+    }
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+        std::sync::Arc::new(self.clone())
+    }
+}
+
+// The `mcp:` ENDPOINT carrier when the plane that owns it is compiled out: a present `mcp:` block
+// names a plane this build cannot serve, refused at resolve (the deletion-gate leg) exactly as a
+// present `tools:` section is.
+impl PlaneEndpointCfg for RawPlaneSection {
+    fn is_present(&self) -> bool {
+        RawPlaneSection::is_present(self)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl RawPlaneSection {
+    /// True when the operator actually wrote CONTENT for this section (a non-empty mapping or any
+    /// non-null scalar/sequence). An absent, null, or empty-mapping section is not "present": it
+    /// names no plane and is not refused.
+    pub(crate) fn is_present(&self) -> bool {
+        match &self.raw {
+            None | Some(serde_yaml::Value::Null) => false,
+            Some(serde_yaml::Value::Mapping(m)) => !m.is_empty(),
+            Some(_) => true,
+        }
+    }
+}
+
+/// This plane's EMPTY registry section, via its `default_section` seam hook — the value a neutral
+/// `*Section` newtype takes when its `#[serde(default)]` field is ABSENT. A plane compiled out has no
+/// hook and falls back to an empty raw capture (never present, never refused). Byte-identical to the
+/// pre-seam typed field's `Default`.
+fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
+    match crate::plane::registry::plane_decl_for_config_section(config_section)
+        .and_then(|d| d.default_section)
+    {
+        Some(f) => f(),
+        None => Box::new(RawPlaneSection::default()),
+    }
+}
+
+/// Deserialize this plane's top-level registry section through its `parse_section` seam hook, so the
+/// neutral carrier names no plane registry type. A plane compiled out has no hook and captures the
+/// section RAW (refused at `resolve` if present). The hook's `Err(String)` is surfaced through
+/// `de::Error::custom`, so it rides the SAME `from_str::<DeployCfg>` channel a typed field's parse
+/// error rode — the operator sees the plane's own sentence, byte-identical bar any `at line` suffix.
+fn deserialize_plane_section<'de, D>(
+    config_section: &str,
+    deserializer: D,
+) -> Result<Box<dyn PlaneCfg>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    let decl = crate::plane::registry::plane_decl_for_config_section(config_section);
+    match decl.and_then(|d| d.parse_section.map(|parse| (d, parse))) {
+        Some((d, parse)) => {
+            // The kernel reads the keys it owns before the section reaches the plane: the trust
+            // keys the plane declares and every registration's hook references, on the same error
+            // channel the plane's own refusals ride.
+            validate_plane_section(config_section, &value, d.trust_keys, &config_sections())
+                .map_err(serde::de::Error::custom)?;
+            parse(&value).map_err(serde::de::Error::custom)
+        }
+        None => {
+            let raw = if value.is_null() { None } else { Some(value) };
+            Ok(Box::new(RawPlaneSection { raw }))
+        }
+    }
+}
+
+/// Deserialize this plane's top-level ENDPOINT block (the owning plane's `mcp:` door) through its
+/// `parse_endpoint` seam hook — the twin of [`deserialize_plane_section`] for the one plane section
+/// that is an endpoint rather than a registry. Compiled out ⇒ raw capture, refused at `resolve`.
+fn deserialize_plane_endpoint<'de, D>(
+    config_section: &str,
+    deserializer: D,
+) -> Result<Option<Box<dyn PlaneEndpointCfg>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match crate::plane::registry::plane_decl_for_config_section(config_section)
+        .and_then(|d| d.parse_endpoint)
+    {
+        Some(parse) => parse(&value).map(Some).map_err(serde::de::Error::custom),
+        None => Ok(Some(Box::new(RawPlaneSection { raw: Some(value) }))),
+    }
+}
+
+/// THE `tools:` REGISTRY SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
+/// neutral seam the owning plane's own registry-config type deserializes through, so `DeployCfg`
+/// names no plane-local type. Absent ⇒ the plane's `Default` (an empty registry).
+#[derive(Debug)]
+pub struct ToolsSection(pub Box<dyn PlaneCfg>);
+
+impl ToolsSection {
+    /// The declaring section this carrier holds, read off the frozen named-map list.
+    pub(crate) const SECTION: &'static str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+}
+impl Default for ToolsSection {
+    fn default() -> Self {
+        ToolsSection(default_plane_section(Self::SECTION))
+    }
+}
+impl<'de> serde::Deserialize<'de> for ToolsSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_plane_section(Self::SECTION, deserializer).map(ToolsSection)
+    }
+}
+
+/// THE `agents:` REGISTRY SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
+/// neutral seam the owning plane's own registry-config type deserializes through. Absent ⇒ an empty
+/// registry.
+#[derive(Debug)]
+pub struct AgentsSection(pub Box<dyn PlaneCfg>);
+
+impl AgentsSection {
+    /// The declaring section this carrier holds, read off the frozen named-map list.
+    pub(crate) const SECTION: &'static str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
+}
+impl Default for AgentsSection {
+    fn default() -> Self {
+        AgentsSection(default_plane_section(Self::SECTION))
+    }
+}
+impl<'de> serde::Deserialize<'de> for AgentsSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_plane_section(Self::SECTION, deserializer).map(AgentsSection)
+    }
+}
+
+/// THE DECLARED SECTIONS as they land in `DeployCfg`: every declaring section a REGISTERED plane
+/// OWNS the grammar of (`PlaneDeclaration::owned_config_sections` lists its own `config_section`),
+/// keyed by that section and type-erased behind [`PlaneCfg`] — the one map carrier, so `DeployCfg`
+/// names no plane section and no plane-local type (#47/#49). Each entry is parsed by its plane's own
+/// `parse_section` hook; an absent section has no entry. `busbar-kernel` has no dependency on any
+/// plane crate (#40), which is why the plane's typed section is reached only through this seam.
+#[derive(Debug, Default)]
+pub struct DeclaredSections(pub std::collections::BTreeMap<&'static str, Box<dyn PlaneCfg>>);
+
+impl DeclaredSections {
+    /// True when `decl`'s declaring section lands here: the plane owns its own declaring section's
+    /// grammar and no named carrier (`tools:`/`agents:`) holds it.
+    pub(crate) fn holds(decl: &crate::plane::registry::PlaneDeclaration) -> bool {
+        let named = [ToolsSection::SECTION, AgentsSection::SECTION];
+        decl.owned_config_sections.contains(&decl.config_section)
+            && !named.contains(&decl.config_section)
+    }
+
+    /// Parse one declared section through its plane's `parse_section` hook, as a one-entry carrier.
+    pub(crate) fn parse(
+        section: &'static str,
+        value: serde_yaml::Value,
+    ) -> Result<Self, serde_yaml::Error> {
+        let cfg = deserialize_plane_section(section, value)?;
+        Ok(DeclaredSections([(section, cfg)].into_iter().collect()))
+    }
+}
+
+/// THE ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
+/// neutral seam the owning plane's own endpoint-config type deserializes through. Absent/null ⇒
+/// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.
+#[derive(Debug, Default)]
+pub struct EndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
+
+impl EndpointSection {
+    /// The DECLARING section of the plane that owns the endpoint door. The door's own key is never
+    /// spelled: it is whatever section that plane declares beside this one
+    /// (`PlaneDeclaration::owned_config_sections`), read by the pre-pass off the registry.
+    pub(crate) const OWNER: &'static str = ToolsSection::SECTION;
+}
+
+impl<'de> serde::Deserialize<'de> for EndpointSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Keyed by its owning plane's CONFIG SECTION — no plane key is named here.
+        deserialize_plane_endpoint(Self::OWNER, deserializer).map(EndpointSection)
+    }
+}
+
+/// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
+/// tables that declare the config grammar rather than written as a literal.
+///
+/// [`super::registry::PlaneDeclaration::config_section`] over [`super::registry::plane_decls`] gives the
+/// plane sections (`pools:`, `tools:`, `agents:`, and any registered plane's own section);
+/// [`NamedMapSection::key`] over [`NamedMapSection::ALL`] gives the 1.5.3 named-definition maps
+/// (`identity-providers:`, `export:`, and the two plane sections again, which is why this
+/// de-duplicates). Both tables state that their variant set is the only thing a new section adds —
+/// this function is what makes that true for the hook-reference rule too.
+///
+/// Order is deterministic (plane tables first, in layering order) so a refusal naming a section
+/// names the same one on every run. A nondeterministic diagnostic makes a boot failure
+/// unreproducible.
+pub fn config_sections() -> Vec<&'static str> {
+    config_sections_from(super::registry::plane_decls())
+}
+
+/// THE SECTION FOLD, over a GIVEN plane declaration list rather than the process one — so a test can
+/// pass a plane busbar does not have and watch its section reach this grammar with nothing written
+/// for it in core (see `plane/tests/registry_tests.rs`). [`config_sections`] passes the process
+/// [`super::registry::plane_decls`]; the plane sections come off each decl's
+/// [`super::registry::PlaneDeclaration::config_section`] rather than an enum `match`, which is what lets a
+/// registered plane's section into the hook-reference grammar.
+pub fn config_sections_from(decls: &[&'static super::registry::PlaneDecl]) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for section in decls
+        .iter()
+        .map(|decl| decl.config_section)
+        .chain(busbar_kernel::plane::config::NAMED_MAP_SECTIONS)
+    {
+        if !out.contains(&section) {
+            out.push(section);
+        }
+    }
+    out
+}
+
+/// THE KERNEL'S BOOT JUDGEMENT OF ONE PLANE SECTION, run before the section reaches its plane: every
+/// registration, in section order, through [`validate_plane_entry`]. The reserved section
+/// words are not registrations and are skipped; the section-level `hooks:` list is judged where every
+/// other cross-reference is, at resolve.
+///
+/// `trust_keys` is the plane's declaration of its kernel-owned trust keys; `sections` is every
+/// section the config grammar declares ([`config_sections`]).
+///
+/// # Errors
+///
+/// The first registration's refusal.
+pub fn validate_plane_section(
+    section: &str,
+    value: &serde_yaml::Value,
+    trust_keys: &[busbar_contract::plane::TrustKeyDecl],
+    sections: &[&'static str],
+) -> Result<(), String> {
+    for (name, entry) in crate::trust::section::registrations(value) {
+        validate_plane_entry(section, name, entry, trust_keys, sections)?;
+    }
+    Ok(())
+}
+
+/// THE KERNEL'S JUDGEMENT OF ONE REGISTRATION: its declared trust keys' values
+/// ([`crate::trust::section::judge_entry`], in declaration order), then each name in its `hooks:`
+/// list ([`refuse_cross_plane_reference`]). Boot runs it per registration; the admin write path runs
+/// it on the one definition it is about to persist, so both refuse the same definitions.
+///
+/// # Errors
+///
+/// The sentence an operator reads, worded at `` `<section>.<name>` ``.
+pub fn validate_plane_entry(
+    section: &str,
+    name: &str,
+    entry: &serde_yaml::Value,
+    trust_keys: &[busbar_contract::plane::TrustKeyDecl],
+    sections: &[&'static str],
+) -> Result<(), String> {
+    let at = format!("`{section}.{name}`");
+    crate::trust::section::judge_entry(&at, entry, trust_keys)?;
+    let hooks = entry
+        .as_mapping()
+        .and_then(|m| m.get(Kind::Hook.root()))
+        .and_then(serde_yaml::Value::as_sequence);
+    for hook in hooks.into_iter().flatten() {
+        if let Some(hook) = hook.as_str() {
+            refuse_cross_plane_reference(&at, hook, sections)?;
+        }
+    }
+    Ok(())
+}
+
+/// A whole attach list, judged by the same rule one entry is — the SECTION-level `hooks:` list has
+/// no per-entry parse to hang off, and a looser rule there would be a hole in exactly the place an
+/// operator attaches a hook to everything.
+pub fn validate_section_hooks(
+    at: &str,
+    hooks: &[String],
+    sections: &[&'static str],
+) -> Result<(), String> {
+    for hook in hooks {
+        refuse_cross_plane_reference(at, hook, sections)?;
+    }
+    Ok(())
+}
+
+/// THE SECTION-MAP SPLIT for core's callers: turn a plane KEY into the section/noun WORDS via the
+/// plane registry, then hand off to the neutral [`busbar_contract::section::split_section`].
+///
+/// `plane_key` supplies the WORDS (its decl's `config_section` and `subject_noun`) so no caller
+/// carries a second vocabulary for its own section; `validate` is the plane's VALUE RULES, run on
+/// each entry as it is parsed, so the file and the write path that mutates config at runtime refuse
+/// the same definitions — the ONE GRAMMAR, TWO PATHS rule. A plane with no value rules passes
+/// `|_, _| Ok(())`.
+///
+/// An extracted plane crate skips this wrapper and calls `busbar_contract::section::split_section` with its OWN
+/// `PLANE_DECLARATION.config_section` / `subject_noun` consts — it holds no plane registry to look up.
+///
+/// `plane_key` is normally [`super::fallback_key`]'s answer for the `pools:` section's one caller —
+/// which is the EMPTY STRING on a build with no plane registered at all (an honest "there is no
+/// fallback" answer, not a bug; see that fn's doc). Looked up through [`super::registry::plane_decl_for`]
+/// (never the panicking [`super::plane_decl`]) for exactly that reason: an unregistered/empty key
+/// must REFUSE the parse with a named diagnostic (DECISIONS #42 — an unknown is refused, never
+/// defaulted or silently dropped), not panic the process mid-deserialize. A build that DOES have its
+/// plane registered resolves and behaves byte-identically to before.
+pub fn split_section_for_plane<'de, D, T>(
+    deserializer: D,
+    plane_key: &'static str,
+    validate: impl Fn(&str, &T) -> Result<(), String>,
+) -> Result<busbar_contract::section::Section<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    use serde::de::Error as _;
+    let d = super::registry::plane_decl_for(plane_key).ok_or_else(|| {
+        D::Error::custom(format!(
+            "no plane is registered to own this config section (looked up by key `{plane_key}`) \
+             — this build has no plane plugin compiled in or installed, so it cannot resolve \
+             config that names a plane-owned section; install a plane plugin or remove the \
+             section from the config"
+        ))
+    })?;
+    busbar_contract::section::split_section(
+        deserializer,
+        d.config_section,
+        d.subject_noun,
+        validate,
+    )
+}
+
+#[cfg(test)]
+#[path = "tests/config_tests.rs"]
+mod config_tests;
+
+#[cfg(test)]
+#[path = "tests/boot_validation_tests.rs"]
+mod boot_validation_tests;
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+/// A PLANE'S CONFIG SECTION, ASKED FOR ITS OWN SECRETS — so core enumerates a plane's credential
+/// references without naming that plane's credential-bearing types.
+///
+/// Implemented by the type a plane's top-level config section deserializes into (`tools:` →
+/// `busbar_mcp`'s `ToolsCfg`, `agents:` → `busbar_kernel::a2a::config::AgentsCfg`). The composition
+/// walk in `config_validate::secret_refs` gathers every plane's references by LOOPING this trait over
+/// the configured plane sections, rather than destructuring each plane's own config types itself: the
+/// section that owns a credential is the section that knows it is one.
+///
+/// [`Self::secret_refs`] destructures its plane's config types EXHAUSTIVELY (no `..`), so the
+/// anti-omission force that used to live in `config_validate::secret_refs` — adding a credential
+/// field to a plane fails to compile until someone decides, in the impl, whether it is a secret —
+/// travels with the plane instead of staying behind in core.
+pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
+    /// EVERY secret reference this plane's config section carries, as `(config-path, &SecretRef)`,
+    /// where the path is the operator-facing dotted location `--validate` prints in an error. The
+    /// path is fully qualified from the top-level section down (`tools.<name>.env.<var>`), so a
+    /// caller can concatenate the planes' answers with no per-plane prefixing of its own.
+    fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)>;
+
+    /// Is `name` a REGISTRATION in this section (a `tools:` server / an `agents:` agent)? The
+    /// membership check the config resolver and the admin write path consult without naming the
+    /// plane's registry type.
+    fn contains_def(&self, name: &str) -> bool;
+
+    /// Every registration NAME in this section, in registry order — the enumeration the unified
+    /// pool-name validator folds into its global-uniqueness sets without naming the plane's registry
+    /// type. Borrowed from the section, so a caller collects them into a `&str` set for free.
+    fn def_names(&self) -> Vec<&str>;
+
+    /// This section's CURRENT entry for `name`, projected back to a raw definition document, or
+    /// `None` when there is no such entry — the base half of the overlay's per-entry merge, so the
+    /// generic named-map path round-trips an entry without naming the plane's entry type.
+    fn entry_document(&self, name: &str) -> Option<serde_json::Value>;
+
+    /// Parse a raw definition document into this section's typed entry and insert it under `name`,
+    /// returning the SAME error string boot produces on a malformed entry — so the admin write path
+    /// installs a `tools:`/`agents:` entry without core naming the entry type.
+    fn insert_def(&mut self, name: &str, def: &serde_json::Value) -> Result<(), String>;
+
+    /// This section's HOOK-GATE INPUTS — the reserved section-level attach list and each
+    /// registration's own hook list, in registry order — so `appbuild` resolves the per-registration
+    /// gates without naming the plane's registry type. See [`ContainerGateInputs`].
+    fn container_gates(&self) -> ContainerGateInputs;
+
+    /// The plane's own SECTION-WIDE registry rules, run at resolve — the one kind of rule that
+    /// spans every registration in the section rather than judging one entry alone (a global
+    /// name-uniqueness constraint is the shape of it). A section with no cross-registration rule
+    /// returns `Ok(())`.
+    fn validate_registry(&self) -> Result<(), String>;
+
+    /// Every MODEL → `providers:` REFERENCE this section's own registry makes, as `(config-path,
+    /// provider-name)` — the `models:`-shaped twin of [`Self::container_gates`]'s hook list, so
+    /// `resolve` cross-checks a model-serving section's provider references (existence, then dialect
+    /// via [`Self::known_dialects`]) without naming the plane's own model-entry type. The path is
+    /// the fully-qualified operator-facing key (`decisions.models.<m>.provider`), matching
+    /// `container_gates`'s own convention.
+    ///
+    /// Empty default: a section with no `models:` map of its own (`tools:`/`agents:`/`streams:`
+    /// today) makes no such reference and this is a no-op for it — adding this method breaks no
+    /// existing implementor.
+    fn model_provider_refs(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// The wire dialects this plane's [`Self::model_provider_refs`] entries are restricted to, or
+    /// `None` for a plane that does not restrict (accepts whatever protocol its provider resolves
+    /// to — every existing implementor's answer, unchanged). `Some(&[...])` names the ONLY
+    /// protocol strings this plane's own dialect-interpretation code speaks; a resolved provider
+    /// protocol outside that list FAILS CLOSED at `resolve` (BUSBAR-1.6.0.md #51: "the PLANE then
+    /// interprets the resolved dialect against what it supports: knows it ⇒ use it; doesn't ⇒
+    /// FAIL"). Kernel never spells a dialect string itself (#49) — it only compares against
+    /// whatever the plane returns here.
+    fn known_dialects(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+
+    /// True when the operator actually wrote CONTENT for this section (a non-empty registry). Read by
+    /// the config deletion-gate leg to refuse a present section that names a compiled-out plane — so it
+    /// is called ONLY in a build where at least one plane is off; with both planes compiled in every
+    /// section names a plane this build serves and no leg reads it.
+    #[cfg_attr(all(feature = "dispatch", feature = "relay"), allow(dead_code))]
+    fn is_present(&self) -> bool;
+
+    /// This section as `&dyn Any`, so a plane's own module can downcast it back to its concrete
+    /// config type across the type-erased seam.
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// A boxed clone — the trait-object `Clone` `RootCfg`/`DeployCfg` need since `Box<dyn PlaneCfg>`
+    /// is not `Clone` on its own.
+    fn clone_box(&self) -> Box<dyn PlaneCfg>;
+
+    /// A clone erased into `Arc<dyn Any>` around the CONCRETE section type — the carrier `App`'s
+    /// type-erased config slot holds, so a plane's own module downcasts it back to its concrete type.
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
+}
+
+/// A PLANE SECTION'S HOOK-GATE INPUTS, in the neutral shape `appbuild::resolve_container_gates`
+/// reads — the reserved section-level `hooks:` attach list, and each registration's `(name, hooks)`
+/// in registry order. Neutral so a plane hands its gate inputs across the seam without core naming
+/// the plane's registry type.
+pub struct ContainerGateInputs {
+    /// The reserved `<section>.hooks:` all-section attach list (`ToolsCfg::all_server_hooks` /
+    /// `AgentsCfg::all_agent_hooks`).
+    pub section_hooks: Vec<String>,
+    /// Each registration and its OWN `hooks:` list, in registry (insertion) order — the order the
+    /// gate resolution and every operator-facing listing already read.
+    pub containers: Vec<(String, Vec<String>)>,
+}
+
+/// A PLANE'S TOP-LEVEL ENDPOINT SECTION — the shape a plane's config takes when its top-level block
+/// describes a single endpoint rather than a named-entry registry — captured through the neutral
+/// seam so `DeployCfg` names no plane-owned endpoint type. The twin of [`PlaneCfg`] for that one
+/// section shape.
+pub trait PlaneEndpointCfg: std::any::Any + Send + Sync + std::fmt::Debug {
+    /// True when the operator wrote CONTENT for this endpoint block — read by the config
+    /// deletion-gate leg to refuse a present `mcp:` block that names a compiled-out plane.
+    fn is_present(&self) -> bool;
+    /// This endpoint as `&dyn Any`, so the plane's own module downcasts it back to its concrete
+    /// endpoint config to LOWER it into the validated resource.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// WHY a hook reference was refused. Three arms, and each one is a different thing for an operator
+/// to do about it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HookRefError {
+    /// The name is empty or whitespace. Nothing to look up, and nothing to diagnose.
+    Empty,
+    /// The name is prefixed with a config SECTION, so it reaches onto another plane.
+    CrossPlane {
+        /// The reference exactly as the operator wrote it (trimmed).
+        hook: String,
+        /// The section it reaches onto.
+        section: &'static str,
+        /// What is left after the section prefix — the bare name they probably meant.
+        rest: String,
+    },
+    /// The name is dotted but names no section busbar knows. Still not a bare name.
+    NotBare {
+        /// The reference exactly as the operator wrote it (trimmed).
+        hook: String,
+    },
+}
+
+/// A [`HookRefError`] plus the CALLER'S WORDING for where it happened — the one thing a plane keeps.
+pub(crate) struct Refusal<'a> {
+    /// The caller's own label for the site: "`agents.planner`", "`tools.hooks`".
+    pub(crate) at: &'a str,
+    /// The decision core made.
+    pub(crate) err: HookRefError,
+}
+
+// EVERY SENTENCE AN OPERATOR READS FOR THIS RULE, written once. The match is TOTAL on purpose: a
+// fourth [`HookRefError`] arm will not compile until somebody writes the sentence it is owed,
+// which is the alternative to it quietly inheriting a neighbour's wording.
+impl From<Refusal<'_>> for String {
+    fn from(r: Refusal<'_>) -> String {
+        let at = r.at;
+        match r.err {
+            HookRefError::Empty => format!("{at}: `hooks:` contains an empty name"),
+            HookRefError::CrossPlane {
+                hook,
+                section,
+                rest,
+            } => format!(
+                "{at}: `hooks:` may only name hooks from the top-level `hooks:` map, by bare name. \
+                 `{hook}` reaches onto the `{section}:` plane, and no entry on one plane may \
+                 reference an entry on another. Did you mean the hook `{rest}`?"
+            ),
+            HookRefError::NotBare { hook } => format!(
+                "{at}: `hooks:` may only name hooks from the top-level `hooks:` map, by bare name. \
+                 `{hook}` is not a bare name."
+            ),
+        }
+    }
+}
+
+/// THE DECISION, and the only copy of it: is `hook` a legal bare reference into the one top-level
+/// `hooks:` map, judged against `sections`?
+///
+/// `sections` is a PARAMETER rather than a literal so the set of sections this rule knows about is
+/// the set the config grammar declares — see `busbar_kernel::plane::config::config_sections`.
+/// Production passes that; a test passes a plane busbar does not have and gets the same judgement
+/// with nothing written for it.
+///
+/// No I/O, no globals, no config types: a string and a list of section names in, a verdict out.
+///
+/// `pub` (rather than the pre-move `pub(crate)`) so `busbar_kernel`'s `plane::config` tests can reach
+/// it through the core re-export; its only production caller is [`refuse_cross_plane_reference`].
+pub fn judge_hook_ref(hook: &str, sections: &[&'static str]) -> Result<(), HookRefError> {
+    let hook = hook.trim();
+    if hook.is_empty() {
+        return Err(HookRefError::Empty);
+    }
+    // A dotted name is the tell: bare names into `hooks:` never contain a plane prefix.
+    for section in sections {
+        if let Some(rest) = hook.strip_prefix(&format!("{section}.")) {
+            return Err(HookRefError::CrossPlane {
+                hook: hook.to_string(),
+                section,
+                rest: rest.to_string(),
+            });
+        }
+    }
+    if hook.contains('.') {
+        return Err(HookRefError::NotBare {
+            hook: hook.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// REFUSE, rather than ignore, a reference that reaches onto another plane.
+///
+/// A hook reference is a bare name into the one top-level `hooks:` map. Somebody who writes
+/// `pools.fast` or `agents.planner` there means something, and the something is not available: no
+/// entry on one plane may reference an entry on another. Dropping it silently would leave an
+/// operator believing a control is attached that is not, which is worse than the typo.
+///
+/// `at` is the CALLER'S vocabulary for the site; the verdict and the sentence are core's.
+pub fn refuse_cross_plane_reference(
+    at: &str,
+    hook: &str,
+    sections: &[&'static str],
+) -> Result<(), String> {
+    judge_hook_ref(hook, sections).map_err(|err| Refusal { at, err }.into())
+}
+
+/// THE SECTION-LIST PROVIDER SEAM — the neutral read side of core's registry-coupled
+/// [`config_sections`] singleton (which stays in `busbar_kernel::plane::config`, since it folds the
+/// process plane registry this crate must not name).
+///
+/// A plane crate that refuses a cross-plane hook reference at parse time needs the WHOLE section
+/// list — its own section plus every other plane's — to judge against, but must not reach into core
+/// to fold it. So the composition root binds core's `config_sections` fn here once (before the CLI
+/// flags read `--validate`), and a plane reads the same list back through [`plane_sections`] without
+/// naming the registry. Before any bind, [`plane_sections`] yields the empty list — a section-less
+/// judgement that still refuses malformed (dotted) references, only not the cross-plane ones, which
+/// is why the bind is on the boot path ahead of config validation rather than lazy.
+static PLANE_SECTIONS: std::sync::OnceLock<fn() -> Vec<&'static str>> = std::sync::OnceLock::new();
+
+/// BIND the process section-list provider. Idempotent (first bind wins); the composition root calls
+/// this once at startup with `busbar_kernel::plane::config::config_sections`.
+pub fn install_plane_sections(provider: fn() -> Vec<&'static str>) {
+    let _ = PLANE_SECTIONS.set(provider);
+}
+
+/// THE PROCESS SECTION LIST, read through the bound provider — or the empty list if none is bound
+/// (the pre-bind / no-planes build), which still lets [`refuse_cross_plane_reference`] refuse a
+/// dotted reference, just not attribute it to a plane.
+pub fn plane_sections() -> Vec<&'static str> {
+    PLANE_SECTIONS
+        .get()
+        .map(|provider| provider())
+        .unwrap_or_default()
+}
+
+/// THE FROZEN 1.5.3 NAMED-DEFINITION-MAP SECTION KEYS, in route/mount order (additive-only since
+/// 1.5.3, guarded by the config-stability gate). `identity-providers`/`export` are core-native;
+/// `tools`/`agents` are the MCP/A2A plane sections, listed here too so a fold matches core's
+/// `NamedMapSection::sections()` tail whether or not those planes are registered.
+///
+/// This is the STATIC NOUN SOURCE the deletion-gate and every `.key()` repoint read after the
+/// `NamedMapSection::Tools`/`Agents` variants were folded into `Plane(&str)`: it does NOT go empty
+/// when a plane is compiled out, so a `tools:`/`agents:` block written for an absent plane is still
+/// recognised (and refused) rather than silently accepted. None is a plane KEY, so the
+/// neutral-purity lint's token rules do not fire on them.
+pub const NAMED_MAP_SECTIONS: [&str; 4] =
+    [Kind::Auth.root(), Kind::Export.root(), "tools", "agents"];
+
+/// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
+/// [`install_plane_sections`], so an extracted plane crate reaches the NEUTRAL ABI rather than back
+/// into `busbar_kernel::plane::config::config_sections`. Byte-for-byte the same fold that singleton runs:
+/// every registered plane's own `config_section` (from [`crate::plane::registry::test_registered_planes`],
+/// in registration order) followed by the frozen 1.5.3 named-definition-map sections, deduped in that
+/// order. `tools:`/`agents:` appear in BOTH halves — a plane declares them and they are also 1.5.3
+/// named-map sections — so the trailing pair guarantees they are known even when their owning plane is
+/// not registered in a given test binary, exactly as core's `NamedMapSection::sections()` tail does.
+#[cfg(any(test, feature = "test-support"))]
+pub fn default_plane_sections() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for section in crate::plane::registry::test_registered_planes()
+        .iter()
+        .map(|d| d.config_section)
+        .chain(NAMED_MAP_SECTIONS)
+    {
+        if !out.contains(&section) {
+            out.push(section);
+        }
+    }
+    out
+}
+
+/// THE ADDITIVE-LIST COMBINE RULE, stated once for every plane that has one.
+///
+/// A section-level attach (`pools.hooks:` / `tools.hooks:` / `agents.hooks:`) and an entry's own
+/// `hooks:` are a LIST, and a LIST combines ADDITIVELY: section first, then the entry's own, deduped
+/// by name so a hook named in both fires ONCE, at its first (section) position.
+///
+/// Lives on the neutral seam beside [`ContainerGateInputs`] (whose inputs it folds) rather than once
+/// per plane because it is a rule of the CONFIG GRAMMAR, not of any plane — and because two copies of
+/// it is exactly how the section list and an entry list come to dedupe differently on one plane and
+/// not the other. Core re-exports it at `crate::hooks::attach_list`; the extracted plane crates reach
+/// it here without naming `busbar_kernel::hooks`.
+pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(section.len() + own.len());
+    for h in section.iter().chain(own) {
+        if !out.iter().any(|e| e == h) {
+            out.push(h.clone());
+        }
+    }
+    out
+}

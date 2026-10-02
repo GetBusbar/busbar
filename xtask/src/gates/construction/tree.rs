@@ -1,0 +1,1024 @@
+//! THE CONSTRUCTION GATE'S TREE: every scanned file, its lines and its functions, read once.
+//!
+//! A port of `scripts/construction-gate/rules.py`'s scanning half, which is itself the purity
+//! lint's `strip()` plus test-scope tracking. It is NOT [`crate::scan`]: that scanner drops test
+//! code, and half the rules here need to COUNT it (`ports-only-tests`, `kernel-seal-impls`), so
+//! every line is kept and carries a flag instead.
+//!
+//! Three properties are load-bearing and each is a fault this scanner's Python original had to
+//! learn:
+//!
+//! * **THE WALK IS SORTED ALL THE WAY DOWN.** The directory sequence, not just the names inside a
+//!   directory. Everything downstream reads the file map in order — which offender a row names
+//!   first, which of two tied files a "worst offenders" list picks — so an unsorted walk makes a
+//!   row's text a function of the filesystem rather than of the tree.
+//! * **RAW STRING LITERALS ARE ONE LITERAL.** `br#"…"#` read by a plain `"…"` matcher ends at the
+//!   first inner quote, and the braces after it land in the `#[cfg(test)]` depth counter, closing
+//!   the test module early and re-filing every line after it as production (or the reverse). A
+//!   gate that mis-attributes the code it reads is worse than one that does not read it.
+//! * **BLANKING PRESERVES THE LITERAL'S DELIMITERS AND ITS BODY LENGTH.** The function finder
+//!   computes offsets by summing `len(blank) + 1` per line, so a blanking pass that changed a
+//!   line's length would move every function's reported line number.
+
+use std::collections::BTreeMap;
+
+use crate::ctx::Ctx;
+use crate::rx::Regex;
+
+#[derive(Clone)]
+pub struct Line {
+    /// 1-based.
+    pub no: usize,
+    /// The line with comments stripped and string literals intact.
+    pub code: String,
+    /// The same with literal bodies blanked, so braces inside them do not disturb structure.
+    pub blank: String,
+    pub intest: bool,
+}
+
+impl Line {
+    pub fn code_bytes(&self) -> &[u8] {
+        self.code.as_bytes()
+    }
+}
+
+#[derive(Clone)]
+pub struct Fnc {
+    pub name: String,
+    pub path: String,
+    /// The line of the `fn` keyword.
+    pub start: usize,
+    /// The line of the closing brace.
+    pub end: usize,
+    pub intest: bool,
+    /// The line of the opening brace.
+    pub body_start: usize,
+}
+
+impl Fnc {
+    pub fn lines(&self) -> usize {
+        self.end - self.start + 1
+    }
+}
+
+/// Every Rust string literal form, RAW FIRST. The alternation order is load-bearing: the longer
+/// prefixes must be tried first, and a raw literal closes only on a quote followed by the SAME run
+/// of hashes it opened with — spelled as a backreference, which is why `r#"a "quoted" b"#` stays
+/// one literal.
+const STR_PATTERN: &str = concat!(
+    r#"(?<![A-Za-z0-9_])b?r(?P<hashes>#*)"(?P<rawbody>(?:[^"]|"(?!(?P=hashes)))*)"(?P=hashes)"#,
+    r#"|(?<![A-Za-z0-9_])b?"(?P<body>(?:\\.|[^"\\])*)""#,
+);
+
+const CHAR_PATTERN: &str = r"'(?:\\.|[^'\\])'";
+const CFG_TEST_WORD: &str = r"[^a-z0-9_]test[^a-z0-9_]";
+const MOD_WORD: &str = r"(^|[^A-Za-z0-9_])mod([^A-Za-z0-9_])";
+const FN_PATTERN: &str = r"(?<![A-Za-z0-9_])fn\s+([A-Za-z_][A-Za-z0-9_]*)";
+
+/// The compiled scanners, built once per run rather than once per line.
+pub struct Lexer {
+    strings: Regex,
+    chars: Regex,
+    cfg_test_word: Regex,
+    mod_word: Regex,
+    fns: Regex,
+    rawbody: usize,
+    body: usize,
+}
+
+impl Lexer {
+    pub fn new() -> Result<Lexer, String> {
+        let strings = Regex::new(STR_PATTERN)?;
+        let rawbody = strings
+            .group_index("rawbody")
+            .ok_or("rx: no `rawbody` group")?;
+        let body = strings.group_index("body").ok_or("rx: no `body` group")?;
+        Ok(Lexer {
+            strings,
+            chars: Regex::new(CHAR_PATTERN)?,
+            cfg_test_word: Regex::new(CFG_TEST_WORD)?,
+            mod_word: Regex::new(MOD_WORD)?,
+            fns: Regex::new(FN_PATTERN)?,
+            rawbody,
+            body,
+        })
+    }
+
+    /// Every string literal on a line, as (whole-match span, body span).
+    pub fn string_literals(&self, code: &str) -> Vec<((usize, usize), (usize, usize))> {
+        let bytes = code.as_bytes();
+        self.strings
+            .find_iter(bytes)
+            .iter()
+            .map(|m| {
+                let body = m
+                    .group(self.rawbody)
+                    .or_else(|| m.group(self.body))
+                    .unwrap_or((m.start, m.start));
+                ((m.start, m.end), body)
+            })
+            .collect()
+    }
+
+    /// The line with string and char literal CONTENTS blanked out. The delimiters stay, and the
+    /// body's length is preserved exactly, so offsets computed from the blanked text keep pointing
+    /// at the same columns.
+    fn blank_literals(&self, code: &str) -> String {
+        // A line carrying no delimiter carries no literal. The scanner asks this once per line of a
+        // 660k-line tree and the answer is `no` for most of them, so it is answered by a byte scan
+        // rather than by the backtracking matcher.
+        if !code.contains('"') && !code.contains('\'') {
+            return code.to_string();
+        }
+        let bytes = code.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut at = 0usize;
+        for ((ms, me), (bs, be)) in self.string_literals(code) {
+            out.extend_from_slice(&bytes[at..ms]);
+            out.extend_from_slice(&bytes[ms..bs]);
+            out.extend(std::iter::repeat_n(b' ', be - bs));
+            out.extend_from_slice(&bytes[be..me]);
+            at = me;
+        }
+        out.extend_from_slice(&bytes[at..]);
+        // Char literals are replaced by `' '` wholesale, exactly as the Python does — an escaped
+        // `'\n'` therefore shortens by one, and every offset downstream is computed from this same
+        // text, so the shortening is consistent rather than a drift.
+        let staged = String::from_utf8_lossy(&out).into_owned();
+        if !staged.contains('\'') {
+            return staged;
+        }
+        let sb = staged.as_bytes();
+        let mut final_out = Vec::with_capacity(sb.len());
+        let mut at = 0usize;
+        for m in self.chars.find_iter(sb) {
+            final_out.extend_from_slice(&sb[at..m.start]);
+            final_out.extend_from_slice(b"' '");
+            at = m.end;
+        }
+        final_out.extend_from_slice(&sb[at..]);
+        String::from_utf8_lossy(&final_out).into_owned()
+    }
+}
+
+/// Drop `//`-to-EOL and `/* … */` (which may span lines) while leaving string literals intact, so
+/// a `//` inside a string is not a comment.
+fn strip_comments(line: &str, in_block: &mut bool) -> String {
+    let b = line.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0usize;
+    let mut in_str = false;
+    while i < b.len() {
+        let c = b[i];
+        let two = &b[i..(i + 2).min(b.len())];
+        if *in_block {
+            if two == b"*/" {
+                *in_block = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if in_str {
+            out.push(c);
+            if c == b'\\' {
+                if let Some(n) = b.get(i + 1) {
+                    out.push(*n);
+                }
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if two == b"/*" {
+            *in_block = true;
+            i += 2;
+            continue;
+        }
+        if two == b"//" {
+            break;
+        }
+        if c == b'"' {
+            in_str = true;
+        }
+        out.push(c);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn is_test_path(path: &str, fragments: &[String]) -> bool {
+    fragments.iter().any(|f| path.contains(f.as_str()))
+}
+
+/// One file's lines. `path` is the path as the scan sees it — the same string the Python hands to
+/// `is_test_path`, so a `/tests/` segment anywhere in it classifies the file the same way.
+pub fn scan_text(lx: &Lexer, path: &str, text: &str, test_fragments: &[String]) -> Vec<Line> {
+    let mut in_block = false;
+    let testfile = is_test_path(path, test_fragments);
+    let mut testdepth: i64 = 0;
+    let mut pend = false;
+    let mut lines = Vec::new();
+    for (idx, raw) in text.split('\n').enumerate() {
+        let code = strip_comments(raw, &mut in_block);
+        let blank = lx.blank_literals(&code);
+        let nopen = blank.matches('{').count() as i64;
+        let nclose = blank.matches('}').count() as i64;
+        let is_cfgtest = code.contains("#[cfg(")
+            && lx
+                .cfg_test_word
+                .is_match_str(&format!(" {} ", code.to_lowercase()));
+        let has_mod = code.contains("mod") && lx.mod_word.is_match_str(&code);
+        let mut entered = false;
+        // The two arms are deliberately the same body under two different conditions, and the
+        // ladder's ORDER is what distinguishes them: `#[cfg(test)] mod x {` opens on its own line,
+        // while `#[cfg(test)]` on one line and `mod x {` on the next opens through `pend`. Merging
+        // them into one condition would put `pend && has_mod` ahead of the `pend && … && !is_cfgtest`
+        // arm below, which clears a pending attribute that a non-`mod` line interrupted.
+        if (is_cfgtest && has_mod) || (pend && has_mod) {
+            testdepth = (nopen - nclose).max(0);
+            entered = testdepth > 0;
+            pend = false;
+        } else if pend && !code.trim().is_empty() && !is_cfgtest {
+            pend = false;
+        } else if testdepth > 0 {
+            testdepth = (testdepth + nopen - nclose).max(0);
+        }
+        if is_cfgtest && !has_mod {
+            pend = true;
+        }
+        let intest = testfile || testdepth > 0 || entered;
+        lines.push(Line {
+            no: idx + 1,
+            code,
+            blank,
+            intest,
+        });
+    }
+    lines
+}
+
+/// Locate every function with a body and its extent, by brace matching on the blanked text.
+pub fn find_fns(lx: &Lexer, path: &str, lines: &[Line]) -> Vec<Fnc> {
+    let joined: String = lines
+        .iter()
+        .map(|l| l.blank.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = joined.as_bytes();
+    let mut starts = Vec::with_capacity(lines.len());
+    let mut off = 0usize;
+    for l in lines {
+        starts.push(off);
+        off += l.blank.len() + 1;
+    }
+    let line_of = |pos: usize| -> usize {
+        match starts.binary_search(&pos) {
+            Ok(i) => i,
+            Err(0) => 0,
+            Err(i) => i - 1,
+        }
+    };
+
+    let mut out = Vec::new();
+    for m in lx.fns.find_iter(text) {
+        let Some((ns, ne)) = m.group(1) else { continue };
+        let name = String::from_utf8_lossy(&text[ns..ne]).into_owned();
+        let mut i = m.end;
+        let mut depth: i64 = 0;
+        let mut body: i64 = -1;
+        while i < text.len() {
+            let c = text[i];
+            if c == b'(' {
+                depth += 1;
+            } else if c == b')' {
+                depth -= 1;
+            } else if depth == 0 && c == b';' {
+                break;
+            } else if depth == 0 && c == b'{' {
+                body = i as i64;
+                break;
+            }
+            i += 1;
+        }
+        if body < 0 {
+            continue;
+        }
+        let body = body as usize;
+        let mut depth: i64 = 0;
+        let mut j = body;
+        let mut end: i64 = -1;
+        while j < text.len() {
+            match text[j] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = j as i64;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        if end < 0 {
+            continue;
+        }
+        let sl = line_of(m.start);
+        out.push(Fnc {
+            name,
+            path: path.to_string(),
+            start: lines[sl].no,
+            end: lines[line_of(end as usize)].no,
+            intest: lines[sl].intest,
+            body_start: lines[line_of(body)].no,
+        });
+    }
+    out
+}
+
+/// THE PER-FILE SCAN MEMO, and the reason it exists is the SELF-TEST.
+///
+/// Every planted case re-runs the whole gate, and a plant edits one file. [`Tree::load`] lexes
+/// every `.rs` file under the scan roots — a 660k-line tree through a backtracking string-literal
+/// matcher — so forty plants paid for forty full lexes of a tree that differed from itself by one
+/// file. That is where the xtask test shard's wall clock went.
+///
+/// The key is a hash of everything the answer depends on: the file's absolute path (the
+/// test-classification reads it), its workspace-relative path (the function index records it), the
+/// test path fragments in force, and the file's bytes. `scan_text` and `find_fns` are pure
+/// functions of exactly those, so a hit is a memo and never a stale reading — a plant that changes
+/// a byte changes the key.
+type Scanned = (std::sync::Arc<Vec<Line>>, std::sync::Arc<Vec<Fnc>>);
+
+static SCAN_MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, Scanned>>> =
+    std::sync::OnceLock::new();
+
+fn scan_file(
+    lexer: &Lexer,
+    abs: &str,
+    rel: &str,
+    text: &str,
+    test_fragments: &[String],
+) -> Scanned {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    abs.hash(&mut h);
+    rel.hash(&mut h);
+    test_fragments.hash(&mut h);
+    text.hash(&mut h);
+    let key = h.finish();
+    let memo = SCAN_MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the scan memo mutex is never poisoned")
+        .get(&key)
+    {
+        return found.clone();
+    }
+    let lines = scan_text(lexer, abs, text, test_fragments);
+    let fns = find_fns(lexer, rel, &lines);
+    let entry = (std::sync::Arc::new(lines), std::sync::Arc::new(fns));
+    memo.lock()
+        .expect("the scan memo mutex is never poisoned")
+        .insert(key, entry.clone());
+    entry
+}
+
+/// THE WHOLE-TREE SCAN, HELD ONCE FOR THE WHOLE BATTERY, and the reason it exists is the SELF-TEST.
+///
+/// The per-file [`SCAN_MEMO`] above stops a plant from re-LEXING a file it did not touch. It does
+/// NOT stop [`Tree::load`] from re-READING and re-HASHING every one of them: the memo key is a hash
+/// of the file's bytes, so a full memo hit still costs one `read_to_string` and one hash of the
+/// whole tree PER PLANT. On a 660k-line tree that is thirty-six full reads and thirty-six full
+/// hashes for a battery that changes one file per case — a whole-tree scan per plant in everything
+/// but the lex, and where the xtask shard's wall clock went once the ceiling-rose cases stopped
+/// failing fast and every plant ran the gate to completion.
+///
+/// So the DISK tree — the one every plant shares, because a plant never edits the disk — is walked,
+/// read and scanned exactly once, keyed on what its contents depend on ([`Ctx::root`], the scan
+/// roots and the test-path fragments). A plant then starts from a clone of these maps (the values
+/// are `Arc`s, so the clone is a pointer per file, not a `Line` per line) and re-scans ONLY the
+/// paths its overlay actually touched. The one cold scan is the baseline case's; every case after
+/// it pays for its own plant and nothing else.
+struct BaseScan {
+    files: BTreeMap<String, std::sync::Arc<Vec<Line>>>,
+    fns: BTreeMap<String, std::sync::Arc<Vec<Fnc>>>,
+}
+
+static BASE_SCAN: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, std::sync::Arc<BaseScan>>>> =
+    std::sync::OnceLock::new();
+
+/// The disk tree, scanned once and shared. Overlay-free by construction: it reads through
+/// `std::fs` rather than `cx.read`, because the thing being cached is precisely the tree BEFORE any
+/// plant, and a plant is the only thing an overlay carries.
+fn base_scan(
+    cx: &Ctx,
+    lexer: &Lexer,
+    scan_roots: &[String],
+    test_fragments: &[String],
+) -> Result<std::sync::Arc<BaseScan>, String> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cx.root().to_string_lossy().hash(&mut h);
+    scan_roots.hash(&mut h);
+    test_fragments.hash(&mut h);
+    let key = h.finish();
+
+    let cache = BASE_SCAN.get_or_init(Default::default);
+    if let Some(found) = cache
+        .lock()
+        .expect("the base-scan mutex is never poisoned")
+        .get(&key)
+    {
+        return Ok(found.clone());
+    }
+
+    let mut rels: Vec<String> = Vec::new();
+    for pattern in scan_roots {
+        for dir in glob_dirs(cx, pattern) {
+            collect_rs(cx, &dir, &mut rels);
+        }
+    }
+    rels.sort();
+    rels.dedup();
+
+    // SCAN THE COLD TREE ACROSS THE CORES. This is the one whole-tree lex of the battery — every
+    // plant after it reuses these maps — and it is the single dearest thing the self-test does: on
+    // a 660k-line tree, lexing every file through the backtracking literal matcher is most of the
+    // baseline case's wall clock. The files are independent and [`scan_file`] lexes OUTSIDE the memo
+    // lock, so this is embarrassingly parallel; splitting it over the box turns a minutes-long
+    // serial scan into a seconds-long one and drops it out of the shard's critical path.
+    //
+    // `read_to_string` reads through the filesystem, not the overlay: the base is the tree every
+    // plant shares. A `.rs` file the walk yielded but that will not read is a corrupt tree, and a
+    // corrupt tree is a load error here exactly as it was when this was one serial pass — never a
+    // file the scan quietly drops.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(rels.len().max(1));
+    let scanned: Vec<Result<Vec<(String, Scanned)>, String>> = std::thread::scope(|scope| {
+        let chunk = rels.len().div_ceil(workers.max(1));
+        let handles: Vec<_> = rels
+            .chunks(chunk.max(1))
+            .map(|chunk| {
+                // Workers get an explicit large stack, not std::thread::scope's default
+                // ~2 MiB: scan_file drives rx.rs's hand-rolled lexer, whose own docs note
+                // the general repeat path recurses per iteration and overflows a small
+                // stack on a long literal. The main thread has ~8 MiB; match it here so a
+                // worker fails exactly as the serial pass would, never with a stack abort.
+                std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(scope, move || {
+                        let mut out = Vec::with_capacity(chunk.len());
+                        for rel in chunk {
+                            let abs = cx.abs(rel);
+                            let text =
+                                std::fs::read_to_string(&abs).map_err(|e| format!("{rel}: {e}"))?;
+                            let abs = abs.to_string_lossy().into_owned();
+                            out.push((
+                                rel.clone(),
+                                scan_file(lexer, &abs, rel, &text, test_fragments),
+                            ));
+                        }
+                        Ok(out)
+                    })
+                    .expect("spawn a base-scan worker thread")
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a base-scan worker never panics"))
+            .collect()
+    });
+
+    let mut files = BTreeMap::new();
+    let mut fns = BTreeMap::new();
+    for part in scanned {
+        for (rel, (lines, fns_of)) in part? {
+            fns.insert(rel.clone(), fns_of);
+            files.insert(rel, lines);
+        }
+    }
+
+    let scan = std::sync::Arc::new(BaseScan { files, fns });
+    cache
+        .lock()
+        .expect("the base-scan mutex is never poisoned")
+        .insert(key, scan.clone());
+    Ok(scan)
+}
+
+pub struct Tree {
+    pub root: std::path::PathBuf,
+    /// rel path (`/`-separated) -> lines, in sorted path order.
+    ///
+    /// SHARED WITH THE SCAN MEMO rather than copied out of it: a plant edits one file, and deep
+    /// copying 660k `Line`s (two `String`s each) per case to hand a rule a `Vec` it only ever
+    /// reads was most of what the memo saved.
+    pub files: BTreeMap<String, std::sync::Arc<Vec<Line>>>,
+    pub fns: BTreeMap<String, std::sync::Arc<Vec<Fnc>>>,
+    pub lexer: Lexer,
+}
+
+impl Tree {
+    /// Scan the tree `cx` shows, over `scan_roots` (directory globs relative to the root).
+    pub fn load(
+        cx: &Ctx,
+        scan_roots: &[String],
+        test_fragments: &[String],
+    ) -> Result<Tree, String> {
+        let lexer = Lexer::new()?;
+        let base = base_scan(cx, &lexer, scan_roots, test_fragments)?;
+
+        // NO OVERLAY, NO WORK: the base is exactly what this plant would scan, so it is handed back
+        // as the tree with only its `Arc` maps cloned. This is the read-only run's path too.
+        let Some(ov) = cx.overlay() else {
+            return Ok(Tree {
+                root: cx.root().to_path_buf(),
+                files: base.files.clone(),
+                fns: base.fns.clone(),
+                lexer,
+            });
+        };
+
+        // A plant differs from the disk tree by EXACTLY the paths its overlay carries. Everything
+        // else the base already scanned, so this re-reads and re-scans only those — the whole point
+        // of holding the base once. The maps are cloned first (a pointer per file), then the
+        // overlay's own `.rs` paths are applied over the clone.
+        let mut files = base.files.clone();
+        let mut fns = base.fns.clone();
+        for p in ov.paths() {
+            let rel = p.to_string_lossy().replace('\\', "/");
+            if !rel.ends_with(".rs") {
+                continue;
+            }
+            let in_base = files.contains_key(&rel);
+            // A `.rs` path the overlay adds outside every scan root is a plant the walk would never
+            // have yielded, so it is no more part of the tree here than it was one pass ago.
+            if !in_base && !under_any(&rel, scan_roots) {
+                continue;
+            }
+            // An overlay that makes a file absent removes it from the tree, exactly as the old
+            // walk's `if !cx.exists { continue }` dropped it before scanning.
+            if !cx.exists(&rel) {
+                files.remove(&rel);
+                fns.remove(&rel);
+                continue;
+            }
+            // Content or unreadable. `cx.read` returns the planted bytes for the first and an error
+            // for the second; a corrupt plant is a load error here just as a corrupt disk file is,
+            // never a file the scan silently keeps at its base contents.
+            let text = cx.read(&rel)?;
+            let abs = cx.abs(&rel).to_string_lossy().into_owned();
+            let (lines, fns_of) = scan_file(&lexer, &abs, &rel, &text, test_fragments);
+            fns.insert(rel.clone(), fns_of);
+            files.insert(rel, lines);
+        }
+        Ok(Tree {
+            root: cx.root().to_path_buf(),
+            files,
+            fns,
+            lexer,
+        })
+    }
+
+    pub fn crate_of(&self, rel: &str) -> String {
+        let parts: Vec<&str> = rel.split('/').collect();
+        if parts.len() > 1 && parts[0] == "crates" {
+            parts[1].to_string()
+        } else {
+            parts[0].to_string()
+        }
+    }
+
+    /// The innermost function containing the line, or `None`.
+    pub fn enclosing_fn(&self, rel: &str, lineno: usize) -> Option<&Fnc> {
+        let mut best: Option<&Fnc> = None;
+        for f in self.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
+            if f.start <= lineno
+                && lineno <= f.end
+                && best.is_none_or(|b: &Fnc| f.lines() < b.lines())
+            {
+                best = Some(f);
+            }
+        }
+        best
+    }
+
+    pub fn find_fn_by_name(&self, name: &str) -> Vec<&Fnc> {
+        self.fns
+            .values()
+            .flat_map(|v| v.iter())
+            .filter(|f| f.name == name && !f.intest)
+            .collect()
+    }
+
+    /// `(rel, line)` for every line whose stripped code matches.
+    pub fn grep<'t>(
+        &'t self,
+        rx: &Regex,
+        production_only: bool,
+        files: Option<&[String]>,
+    ) -> Vec<(&'t str, &'t Line)> {
+        let mut out = Vec::new();
+        let names: Vec<String> = match files {
+            Some(f) => f.to_vec(),
+            None => self.files.keys().cloned().collect(),
+        };
+        for rel in names {
+            let Some((key, lines)) = self.files.get_key_value(&rel) else {
+                continue;
+            };
+            for i in grep_file(rx, production_only, lines).iter() {
+                out.push((key.as_str(), &lines[*i]));
+            }
+        }
+        out
+    }
+
+    pub fn crate_files(&self, crate_name: &str) -> Vec<String> {
+        let pre = format!("crates/{crate_name}/");
+        self.files
+            .keys()
+            .filter(|r| r.starts_with(&pre))
+            .cloned()
+            .collect()
+    }
+}
+
+/// THE PER-FILE ANSWER TO ONE `grep`, MEMOISED ON THE FILE'S OWN SCAN (item 89's budget).
+///
+/// A self-test drives this whole gate once per plant, and a plant edits a handful of files out of
+/// thousands; every other file reaches the rules as the SAME `Arc<Vec<Line>>` the scan memo handed
+/// the previous case. So the question "which lines of this file match this pattern" has the same
+/// answer it had last time, and asking it again — through a backtracking engine, over every byte of
+/// a 660k-line tree, for each of the dozens of patterns the rules carry — was most of what a case
+/// cost. The key is the pattern, the production flag and the scan's IDENTITY; the memo holds a
+/// clone of that `Arc`, so the allocation can never be freed and its address handed to a different
+/// file while the entry exists. A planted file is a new scan, a new `Arc`, and a fresh answer.
+fn grep_file(
+    rx: &Regex,
+    production_only: bool,
+    lines: &std::sync::Arc<Vec<Line>>,
+) -> std::sync::Arc<Vec<usize>> {
+    type Memo = std::collections::HashMap<
+        (String, bool, usize),
+        (std::sync::Arc<Vec<Line>>, std::sync::Arc<Vec<usize>>),
+    >;
+    static MEMO: std::sync::Mutex<Option<Memo>> = std::sync::Mutex::new(None);
+    let key = (
+        rx.as_str().to_string(),
+        production_only,
+        std::sync::Arc::as_ptr(lines) as usize,
+    );
+    if let Some((_, hit)) = MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(&key))
+    {
+        return hit.clone();
+    }
+    let found: std::sync::Arc<Vec<usize>> = std::sync::Arc::new(
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| !(production_only && l.intest) && rx.is_match(l.code_bytes()))
+            .map(|(i, _)| i)
+            .collect(),
+    );
+    MEMO.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, (lines.clone(), found.clone()));
+    found
+}
+
+/// THE SAME MEMO FOR A RULE THAT SCANS A FILE ITS OWN WAY rather than through [`Tree::grep`]:
+/// `tag` must spell EVERY input the scan reads besides the lines themselves (its patterns, its
+/// review lists, the path it prints), because the answer is reused for any call with the same tag
+/// over the same scan. See [`grep_file`] for why the scan's identity is a sound key.
+pub fn memo_file_scan(
+    tag: String,
+    lines: &std::sync::Arc<Vec<Line>>,
+    scan: impl FnOnce(&[Line]) -> Vec<String>,
+) -> std::sync::Arc<Vec<String>> {
+    type Memo = std::collections::HashMap<
+        (String, usize),
+        (std::sync::Arc<Vec<Line>>, std::sync::Arc<Vec<String>>),
+    >;
+    static MEMO: std::sync::Mutex<Option<Memo>> = std::sync::Mutex::new(None);
+    let key = (tag, std::sync::Arc::as_ptr(lines) as usize);
+    if let Some((_, hit)) = MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(&key))
+    {
+        return hit.clone();
+    }
+    let found = std::sync::Arc::new(scan(lines));
+    MEMO.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, (lines.clone(), found.clone()));
+    found
+}
+
+/// Is an overlay-planted path one the walk would have yielded had it been on disk? The scan roots
+/// are DIRECTORY globs, so a file under one of them matches the same glob with `/*` appended.
+fn under_any(rel: &str, scan_roots: &[String]) -> bool {
+    scan_roots.iter().any(|g| fnmatch(rel, &format!("{g}/*")))
+}
+
+fn collect_rs(cx: &Ctx, dir: &str, out: &mut Vec<String>) {
+    let abs = cx.abs(dir);
+    let Ok(rd) = std::fs::read_dir(&abs) else {
+        return;
+    };
+    let mut entries: Vec<std::path::PathBuf> =
+        rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        let Ok(rel) = path.strip_prefix(cx.root()) else {
+            continue;
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        if path.is_dir() {
+            collect_rs(cx, &rel, out);
+        } else if rel.ends_with(".rs") {
+            out.push(rel);
+        }
+    }
+}
+
+/// Directories matching a `*`-glob whose `*` does NOT cross a path separator — `glob.glob`'s rule,
+/// which is the one `scan_roots` and `plugin_kinds` are written against.
+pub fn glob_dirs(cx: &Ctx, pattern: &str) -> Vec<String> {
+    let mut current = vec![String::new()];
+    for seg in pattern.split('/') {
+        let mut next = Vec::new();
+        for base in &current {
+            if !seg.contains(['*', '?', '[']) {
+                let cand = if base.is_empty() {
+                    seg.to_string()
+                } else {
+                    format!("{base}/{seg}")
+                };
+                if cx.abs(&cand).exists() {
+                    next.push(cand);
+                }
+                continue;
+            }
+            let dir = if base.is_empty() {
+                cx.root().to_path_buf()
+            } else {
+                cx.abs(base)
+            };
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            let mut names: Vec<String> = rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            for nm in names {
+                if glob_segment(seg, &nm) {
+                    next.push(if base.is_empty() {
+                        nm.clone()
+                    } else {
+                        format!("{base}/{nm}")
+                    });
+                }
+            }
+        }
+        current = next;
+    }
+    current.sort();
+    current.dedup();
+    current
+}
+
+/// `fnmatch.fnmatch`: `*` matches anything INCLUDING a separator, which is what makes
+/// `crates/busbar-unit-*/src/*` reach nested modules.
+pub fn fnmatch(name: &str, pattern: &str) -> bool {
+    glob_match(pattern.as_bytes(), name.as_bytes(), true)
+}
+
+/// One path segment against a `glob.glob` segment: `*` stops at a separator (there is none inside
+/// a segment, so this differs from [`fnmatch`] only in intent).
+fn glob_segment(pattern: &str, name: &str) -> bool {
+    glob_match(pattern.as_bytes(), name.as_bytes(), false)
+}
+
+fn glob_match(pat: &[u8], name: &[u8], star_crosses: bool) -> bool {
+    fn go(p: &[u8], n: &[u8], cross: bool) -> bool {
+        if p.is_empty() {
+            return n.is_empty();
+        }
+        match p[0] {
+            b'*' => {
+                for k in 0..=n.len() {
+                    if !cross && n[..k].contains(&b'/') {
+                        break;
+                    }
+                    if go(&p[1..], &n[k..], cross) {
+                        return true;
+                    }
+                }
+                false
+            }
+            b'?' => !n.is_empty() && go(&p[1..], &n[1..], cross),
+            b'[' => {
+                let Some(close) = p.iter().position(|c| *c == b']') else {
+                    return !n.is_empty() && n[0] == b'[' && go(&p[1..], &n[1..], cross);
+                };
+                if n.is_empty() {
+                    return false;
+                }
+                let mut set = &p[1..close];
+                let neg = set.first() == Some(&b'!');
+                if neg {
+                    set = &set[1..];
+                }
+                let mut hit = false;
+                let mut i = 0;
+                while i < set.len() {
+                    if i + 2 < set.len() && set[i + 1] == b'-' {
+                        if n[0] >= set[i] && n[0] <= set[i + 2] {
+                            hit = true;
+                        }
+                        i += 3;
+                    } else {
+                        if n[0] == set[i] {
+                            hit = true;
+                        }
+                        i += 1;
+                    }
+                }
+                hit != neg && go(&p[close + 1..], &n[1..], cross)
+            }
+            c => !n.is_empty() && n[0] == c && go(&p[1..], &n[1..], cross),
+        }
+    }
+    go(pat, name, star_crosses)
+}
+
+/// Existing directories matching a list of globs, sorted, de-duplicated. A glob matching nothing is
+/// silently empty (the kind has no crate yet), never an error.
+pub fn dirs_for_globs(cx: &Ctx, patterns: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for pat in patterns {
+        for d in glob_dirs(cx, pat) {
+            if cx.abs(&d).is_dir() && !out.contains(&d) {
+                out.push(d);
+            }
+        }
+    }
+    out
+}
+
+pub fn crate_name_of_dir(dir: &str) -> String {
+    dir.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(dir)
+        .to_string()
+}
+
+/// THE SHIPPED DEPENDENCY NAMES OF ONE MANIFEST — every dependency table, in every spelling.
+///
+/// It was "a deliberately small `[dependencies]` reader: the exact-name keys under
+/// `[dependencies]` only, never `[dev-dependencies]` or a target-cfg table", and the shape it
+/// shared with `kind_isolation::deps_of` was the shape they were BOTH blind in: a red-team pass
+/// carried a plane into a transport through `[build-dependencies]`, through
+/// `[target.'cfg(unix)'.dependencies]` and through `package = "…"`, and the two gates that read the
+/// manifests were green in all three. Fixing one copy would have left the other, so there is now
+/// one reader: [`crate::manifest`]. A missing file still reads as no dependencies.
+pub fn read_cargo_deps_text(raw: &str) -> Vec<String> {
+    crate::manifest::shipped_dep_names(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lex() -> Lexer {
+        Lexer::new().expect("the lexer compiles")
+    }
+
+    /// The fault the raw-literal alternation exists for: a `br#"…"#` holding unbalanced braces
+    /// inside a `#[cfg(test)]` module must not close that module early and re-file the production
+    /// code after it as test code.
+    #[test]
+    fn a_raw_byte_string_cannot_unbalance_the_cfg_test_counter() {
+        let src = "\
+pub fn before() {}
+
+#[cfg(test)]
+mod tests {
+    const J: &[u8] = br#\"{\"a\": \"{{\"}\"#;
+    #[test]
+    fn t() {}
+}
+
+pub fn after() {
+    let _ = busbar_core::thing();
+}
+";
+        let lines = scan_text(&lex(), "crates/x/src/lib.rs", src, &["/tests/".to_string()]);
+        let reach = lines
+            .iter()
+            .find(|l| l.code.contains("busbar_core::thing"))
+            .expect("the production reach is present");
+        assert!(
+            !reach.intest,
+            "the raw literal's braces swallowed the production code after the test module"
+        );
+        let inside = lines
+            .iter()
+            .find(|l| l.code.contains("fn t()"))
+            .expect("the test fn is present");
+        assert!(inside.intest, "the test module's own body is test code");
+    }
+
+    /// Comment stripping leaves string literals alone, so a `//` inside one is not a comment.
+    #[test]
+    fn a_slash_slash_inside_a_string_is_not_a_comment() {
+        let lines = scan_text(&lex(), "x.rs", "let u = \"http://x\"; // real\n", &[]);
+        assert_eq!(lines[0].code.trim(), "let u = \"http://x\";");
+    }
+
+    /// Blanking keeps the delimiters and the body's length, because every offset the function
+    /// finder computes is a sum of `len(blank) + 1`.
+    #[test]
+    fn blanking_preserves_length_and_delimiters() {
+        let lx = lex();
+        let code = "let s = \"ab{cd\";";
+        let blanked = lx.blank_literals(code);
+        assert_eq!(blanked.len(), code.len());
+        assert_eq!(blanked, "let s = \"     \";");
+        assert_eq!(blanked.matches('{').count(), 0);
+    }
+
+    #[test]
+    fn functions_are_found_with_their_extent() {
+        let src = "\
+pub fn one(a: u32) -> u32 {
+    a + 1
+}
+
+trait T {
+    fn bodiless(&self);
+}
+";
+        let lx = lex();
+        let lines = scan_text(&lx, "x.rs", src, &[]);
+        let fns = find_fns(&lx, "x.rs", &lines);
+        assert_eq!(
+            fns.len(),
+            1,
+            "a bodiless trait method is not a function here"
+        );
+        assert_eq!(fns[0].name, "one");
+        assert_eq!((fns[0].start, fns[0].body_start, fns[0].end), (1, 1, 3));
+    }
+
+    #[test]
+    fn fnmatch_star_crosses_separators_and_glob_star_does_not() {
+        assert!(fnmatch(
+            "crates/busbar-unit-x/src/a/b.rs",
+            "crates/busbar-unit-*/src/*"
+        ));
+        assert!(!glob_segment("busbar-unit-*", "busbar-llm"));
+        assert!(glob_segment("busbar-unit-*", "busbar-unit-cost"));
+    }
+
+    /// EVERY SHIPPED TABLE, AND ONLY THE SHIPPED ONES. `[dev-dependencies]` stays out — a test edge
+    /// is not a shipped edge, and `kind-isolation:test-deps` is the row that scores it — while
+    /// `[build-dependencies]` and the per-target forms are in, because `cfg(unix)` is true in every
+    /// artifact this tree ships and a red-team pass carried a whole plane through that table.
+    ///
+    /// The `[dependencies.tracing]` long form used to leave the old reader inside `dependencies`,
+    /// so that sub-table's own keys came back as dependency names and `version` was reported as a
+    /// crate. It is a name no allow-list should ever have had to carry, and it is gone.
+    #[test]
+    fn cargo_deps_reads_every_shipped_table_and_no_test_one() {
+        let deps = read_cargo_deps_text(
+            "[package]\nname = \"x\"\n\n[dependencies]\nserde = \"1\"\nbusbar-contract = { path = \"..\" }\n\n[dev-dependencies]\ntokio = \"1\"\n\n[dependencies.tracing]\nversion = \"0.1\"\n\n[build-dependencies]\ncc = \"1\"\n\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n",
+        );
+        assert_eq!(
+            deps,
+            vec!["busbar-contract", "cc", "libc", "serde", "tracing"]
+        );
+    }
+}

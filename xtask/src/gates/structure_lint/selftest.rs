@@ -1,0 +1,1248 @@
+//! THE SCANNER THAT GUARDS THE TREE IS ITSELF GUARDED.
+//!
+//! Every owed row id gets a case that plants its violation and requires the run to NAME the planted
+//! offender. A scanner with a bypass is worse than no scanner: it reports "ok, no bypass" while the
+//! bypass sits in production.
+//!
+//! Two kinds of plant, and which one a rule needs is decided by what its subject IS:
+//!
+//! * A TREE PLANT — an [`Overlay`] — for every rule whose subject is source. The gate reads the
+//!   planted tree through the same `Ctx` it reads the real one through, so nothing is copied,
+//!   restored, or left behind.
+//! * A TABLE PLANT — a [`StructureLintGate::with_tables`] variant — for the rules whose subject is
+//!   a TABLE: a malformed row, an allowed path that moved, a ledger row that outlived its
+//!   duplication. No overlay can plant those, because the table is source rather than tree. The
+//!   case still reaches the gate only through `Gate::run`, so it drives the SHIPPED runner over a
+//!   planted table exactly as the shell's `selftest_case` drove the shipped `scan_rule` over a
+//!   planted fixture.
+
+use crate::ctx::{Change, Ctx, Overlay};
+use crate::gates::structure_lint::{
+    axis, census, choke_points, corpus, fn_scoped, hybrid, inline_tests, oversized, plane_dups,
+    plane_store, roots, StructureLintGate, Tables,
+};
+use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
+use crate::ledger::Verdict;
+
+/// A tree plant: the overlay, and the strings the ROWS THIS CASE COVERS must name.
+fn tree_case<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
+    name: &str,
+    covers: &[&str],
+    ov: Overlay,
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    prove_rows_red(cx, gate, name, covers, ov, naming)
+}
+
+/// A table plant: the same proof, over a table this tree could not otherwise produce.
+///
+/// THE PLANT IS THE GATE, NOT THE TREE, so the overlay is empty and the proof is stated the way
+/// `prove_red_by_configuration` states it: the SHIPPED gate — the one the registry builds, reading
+/// the real tables — must be GREEN on the covered rows, and the twin holding the broken table must
+/// be RED. It used to be `prove_rows_red` with an empty overlay, which ran ONE gate over ONE tree
+/// and could not tell a table rule that fired from a row that was red before the case arrived.
+fn table_case<'a>(
+    cx: &'a Ctx,
+    name: &str,
+    covers: &[&str],
+    tables: Tables,
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    // The gate is built FOR THIS CASE, so the case owns it: the plan is taken on whichever thread
+    // reaches it, long after this function has returned.
+    let name = name.to_string();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
+    crate::gates::CasePlan::new(move || {
+        let shipped = StructureLintGate::new();
+        let planted = StructureLintGate::with_tables(tables);
+        let covers: Vec<&str> = covers.iter().map(String::as_str).collect();
+        let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
+        crate::gates::prove_red_by_configuration(cx, &shipped, &planted, name, &covers, &naming)
+            .take()
+    })
+}
+
+/// A table plant over a DEBT-FREE base table: the same proof as [`table_case`], except the
+/// "shipped" half is the real tables with one row's standing debt taken out, so a row the real
+/// tables already hold red (a declared concern nothing is owed against) is not the reason the
+/// planted half is red.
+fn table_case_over<'a>(
+    cx: &'a Ctx,
+    name: &str,
+    covers: &[&str],
+    base: Tables,
+    planted: Tables,
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    let name = name.to_string();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
+    crate::gates::CasePlan::new(move || {
+        let shipped = StructureLintGate::with_tables(base);
+        let planted = StructureLintGate::with_tables(planted);
+        let covers: Vec<&str> = covers.iter().map(String::as_str).collect();
+        let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
+        crate::gates::prove_red_by_configuration(cx, &shipped, &planted, name, &covers, &naming)
+            .take()
+    })
+}
+
+/// The green arm of a rule, over the rows that rule owns.
+fn green_case<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
+    name: &str,
+    covers: &[&str],
+    ov: Overlay,
+) -> crate::gates::CasePlan<'a> {
+    prove_rows_green(cx, gate, name, covers, ov)
+}
+
+/// The tree with a rule's PRE-EXISTING offenders taken out of view.
+///
+/// A green case says "this SHAPE is not a violation". On a branch whose tree already carries real
+/// debt in the same row, asking the row to be green would be asking about the debt instead — and
+/// the case would be deleted rather than fixed the first time somebody legitimately added an entry
+/// to the grandfathered list. So the plant starts from a tree holding none of that rule's current
+/// offenders, and the only thing left for the row to judge is what the case planted.
+///
+/// The unplanted tree's findings are measured ONCE per battery and handed in, rather than re-run
+/// per case: every call used to be one more whole-tree scan charged to the self-test's budget.
+fn without_existing(existing: &[String]) -> Overlay {
+    let mut ov = Overlay::new();
+    for finding in existing {
+        for path in offender_paths(finding) {
+            ov.remove(path);
+        }
+    }
+    ov
+}
+
+/// The files a finding is about: every `crates/…/*.rs` path it names.
+///
+/// Every file-shaped finding in this gate names its offenders that way — `OVERSIZED: <p> (…`,
+/// `<p>:<n>: INLINE-TEST`, `<tag>: <p>:<n>: <what>`, `PLANE-DUPLICATE (…) — mcp:<p>:<n> a2a:…`,
+/// `<tag>: <id> — expected … found 2 at <p>:<n> <p>:<n>` — so one reader serves them all. EVERY
+/// path, not the first: a duplicate or a census over-count is red because of ALL its sites, and
+/// hiding one of three copies leaves the row exactly as red as it was. A finding that names no file
+/// (a table rule's) answers nothing, and the base it contributes to is simply smaller.
+fn offender_paths(finding: &str) -> Vec<String> {
+    finding
+        .split_whitespace()
+        .filter_map(|tok| {
+            let start = tok.find(&format!("{}/", roots::CRATES))?;
+            let tail = &tok[start..];
+            let end = tail.find(".rs")? + ".rs".len();
+            Some(tail[..end].to_string())
+        })
+        .collect()
+}
+
+/// THE CURE FOR STANDING-RED POISONING (item 89). A red case over a row the real tree ALREADY
+/// carries debt in cannot be a proof — the unplanted run is red too, and `prove_red` rightly scores
+/// that PROOF IMPOSSIBLE. The rule is not weakened and the case is not dropped: the case is moved
+/// onto a sub-population the debt does not touch.
+///
+/// `base` takes that row's CURRENT offenders out of view. [`DebtFree`] applies it underneath
+/// whatever the harness plants, so BOTH halves of the proof — the unplanted baseline and the
+/// planted run — see the tree without the debt, and the green -> red transition is the plant's
+/// alone. The real tree's debt stays RED on `cargo xtask gate structure-lint`; only the proof moved.
+///
+/// An EMPTY base — a row with no standing debt today — is the ordinary tree plant, sharing the
+/// battery's one cached baseline, so the cure costs nothing on a clean row.
+fn debt_free_case<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
+    name: &str,
+    covers: &[&str],
+    base: Overlay,
+    plant: Overlay,
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    if base.is_empty() {
+        return tree_case(cx, gate, name, covers, plant, naming);
+    }
+    let name = name.to_string();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
+    crate::gates::CasePlan::new(move || {
+        let debt_free = DebtFree {
+            inner: StructureLintGate::new(),
+            base,
+        };
+        let covers: Vec<&str> = covers.iter().map(String::as_str).collect();
+        let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
+        prove_rows_red(cx, &debt_free, name, &covers, plant, &naming).take()
+    })
+}
+
+/// The shipped gate, run over the tree with one row's standing debt out of view. See
+/// [`debt_free_case`]. The plant the harness hands in is laid OVER the base, so a plant that
+/// touches a hidden path wins — the base can hide debt, never a plant.
+struct DebtFree {
+    inner: StructureLintGate,
+    base: Overlay,
+}
+
+impl DebtFree {
+    fn over(&self, cx: &Ctx) -> Ctx {
+        let mut merged = Overlay::new();
+        let planted = cx.overlay();
+        for layer in std::iter::once(&self.base).chain(planted) {
+            for (path, change) in layer.changes() {
+                match change {
+                    Change::Content(c) => merged.set(path, c.clone()),
+                    Change::Absent => merged.remove(path),
+                    Change::Unreadable(why) => merged.unreadable(path, why.clone()),
+                }
+            }
+        }
+        cx.with_overlay(merged)
+    }
+}
+
+impl Gate for DebtFree {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    /// ITS OWN BASELINE, keyed by what it hides: the shipped gate's cached baseline is the real
+    /// tree's, debt and all, and serving it here would put the IMPOSSIBLE straight back.
+    fn baseline_key(&self) -> Option<String> {
+        self.inner
+            .baseline_key()
+            .map(|k| format!("{k}\u{3}debt-free\u{3}{}", self.base.fingerprint()))
+    }
+
+    fn owed(&self) -> Vec<String> {
+        self.inner.owed()
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        self.inner.run(&self.over(cx))
+    }
+
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+        Report::new()
+    }
+}
+
+/// The real tables, resolved against this tree, as the base every table plant edits.
+fn base_tables(cx: &Ctx) -> Tables {
+    let mut throwaway = crate::gates::structure_lint::Findings::default();
+    Tables::real(&roots::resolve(cx, &mut throwaway))
+}
+
+pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
+    let mut report = Report::new();
+    let t = base_tables(cx);
+    // The unplanted tree's findings, ONCE: every debt-free base below is read off this.
+    let existing = gate.findings(cx);
+
+    // ── where this lint looks ────────────────────────────────────────────────────────────────────
+    //
+    // Emptying every protocol crate is what a step-4 crate move looks like from the scan's side:
+    // the axis rows keep their prefixes and read zero files through them.
+    let mut ov = Overlay::new();
+    let mut emptied = 0usize;
+    if let Ok(files) = cx.walk(&crate::ctx::WalkSpec::new([roots::CRATES]).ext("rs")) {
+        for s in &files {
+            let rel = s.rel_str();
+            // THE SHIPPED DERIVATION decides what a protocol crate is, not a second copy of it
+            // here: the copy this replaced knew four shapes and not `busbar-plane-*`.
+            if roots::proto_root_of(&rel).is_some() {
+                ov.remove(&s.rel);
+                emptied += 1;
+            }
+        }
+    }
+    if emptied == 0 {
+        report.note_infra_failure(
+            "structure-lint selftest: this tree holds no protocol crate to empty, so the \
+             proto-roots rule is unproven here rather than passing",
+        );
+    } else {
+        report.push(tree_case(
+            cx,
+            gate,
+            "a tree with no protocol crate left is refused, not read as a clean axis",
+            &[roots::ROW_PROTO_ROOTS],
+            ov,
+            &["PROTO-ROOTS-MISSING"],
+        ));
+    }
+
+    // A plane whose grammar left its `mod.rs` is a plane nothing can locate — and every rule that
+    // names it would then scan zero files, which is the passing answer to a ban.
+    match plane_grammar_file(cx, "mcp") {
+        Some((rel, text)) => {
+            let mut ov = Overlay::new();
+            ov.set(
+                &rel,
+                text.replace(crate::planes::PLANE_GRAMMAR, "pub const MOVED_AWAY"),
+            );
+            report.push(tree_case(
+                cx,
+                gate,
+                "a plane whose declaration moved is refused, not silently unscanned",
+                &[roots::ROW_PLANE_ROOTS],
+                ov,
+                &["PLANE-ROOT-MISSING", "mcp"],
+            ));
+        }
+        None => report.note_infra_failure(
+            "structure-lint selftest: no file declares the mcp plane's grammar, so the plane-root \
+             rule has nothing to plant against",
+        ),
+    }
+
+    // A PLANE THE OLD CONSTANT NEVER NAMED (item 224). `PLANES` was `["mcp", "a2a"]`, so a second
+    // home for voice could not be reported: the row "every plane resolves to exactly one home" was
+    // true of the two planes it had been given. A second declaration of voice, in a directory named
+    // for it, is two homes for one plane.
+    let mut ov = Overlay::new();
+    ov.set(
+        "crates/busbar-planted/src/voice/mod.rs",
+        format!(
+            "{} : busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n",
+            crate::planes::PLANE_GRAMMAR
+        ),
+    );
+    report.push(tree_case(
+        cx,
+        gate,
+        "a plane outside the old two-plane constant with two homes is refused",
+        &[roots::ROW_PLANE_ROOTS],
+        ov,
+        &["PLANE-ROOT-AMBIGUOUS", "voice"],
+    ));
+
+    // ── the denominator ──────────────────────────────────────────────────────────────────────────
+    match cx.walk(
+        &crate::ctx::WalkSpec::new([roots::CRATES])
+            .ext("rs")
+            .exclude(["/tests/", "/benches/"]),
+    ) {
+        Ok(files) => {
+            let mut ov = Overlay::new();
+            for s in &files {
+                ov.remove(&s.rel);
+            }
+            report.push(tree_case(
+                cx,
+                gate,
+                "a candidate corpus below its floor is refused, not reported as a clean tree",
+                &[corpus::ROW_CANDIDATE_FLOOR],
+                ov,
+                &["CANDIDATE-FLOOR"],
+            ));
+        }
+        Err(e) => report.note_infra_failure(format!(
+            "structure-lint selftest: the candidate walk is unreadable ({e}), so the floor plant \
+             has nothing to empty"
+        )),
+    }
+
+    // ── invariants 1 and 2 ───────────────────────────────────────────────────────────────────────
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{}/plane.rs", roots::CORE),
+        "// a module that is a file AND a folder\npub fn half_of_it() {}\n",
+    );
+    report.push(tree_case(
+        cx,
+        gate,
+        "a module that is both a file and a folder is a hybrid",
+        &[hybrid::ROW_HYBRID],
+        ov,
+        &["HYBRID", "plane.rs"],
+    ));
+
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{}/planted_monster.rs", roots::CORE),
+        "pub fn f() {}\n".repeat(oversized::MAX_LINES_IMPL + 1),
+    );
+    report.push(debt_free_case(
+        cx,
+        gate,
+        "a file over the cap that is not pre-existing debt is a finding",
+        &[oversized::ROW_OVERSIZED],
+        without_existing(&existing.oversized),
+        ov,
+        &["OVERSIZED", "planted_monster.rs"],
+    ));
+
+    // A GRANDFATHERED FILE STAYS GREEN, which is the half of the rule an exception list can get
+    // wrong in the expensive direction.
+    if let Some(first) = t.grandfathered.first() {
+        let mut ov = without_existing(&existing.oversized);
+        ov.set(
+            first,
+            format!(
+                "// grandfathered, still over the cap\n{}",
+                "pub fn f() {}\n".repeat(oversized::MAX_LINES_IMPL + 1)
+            ),
+        );
+        report.push(green_case(
+            cx,
+            gate,
+            "a grandfathered file over the cap is tracked debt, not a fresh violation",
+            &[oversized::ROW_OVERSIZED],
+            ov,
+        ));
+    }
+
+    // THE LIST IS A RATCHET (item 222): three ways it can stop being one, planted together in ONE
+    // table so one run proves all three — the case must name every one of them, so a rule that
+    // stopped firing cannot hide behind the other two. The real list is green on the row.
+    let mut broken = t.clone();
+    let under_cap = format!("{}/lib.rs", roots::CORE);
+    broken.grandfathered = vec![
+        "crates/the-oversized-file-that-moved/src/lib.rs".to_string(),
+        under_cap.clone(),
+    ];
+    while broken.grandfathered.len() <= oversized::GRANDFATHERED_CEILING {
+        let n = broken.grandfathered.len();
+        broken
+            .grandfathered
+            .push(format!("{}/planted_new_monster_{n}.rs", roots::CORE));
+    }
+    report.push(table_case(
+        cx,
+        "a grandfathered entry naming no file or an under-cap file, or a list past its ceiling, is refused",
+        &[oversized::ROW_GRANDFATHERED],
+        broken,
+        &[
+            "GRANDFATHER-MISSING",
+            "the-oversized-file-that-moved",
+            "GRANDFATHER-RETIRED",
+            &under_cap,
+            "GRANDFATHER-LIST-GREW",
+        ],
+    ));
+
+    // ── invariant 3 ──────────────────────────────────────────────────────────────────────────────
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{}/planted_inline_test.rs", roots::CORE),
+        "pub fn prod() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {}\n}\n",
+    );
+    report.push(debt_free_case(
+        cx,
+        gate,
+        "an inline test body in an implementation file is a finding",
+        &[inline_tests::ROW_INLINE_TEST],
+        without_existing(&existing.inline_tests),
+        ov,
+        &["INLINE-TEST", "planted_inline_test.rs:3"],
+    ));
+
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{}/planted_bare_allow.rs", roots::CORE),
+        "pub fn prod() {}\n\n// structure-lint: allow inline-test\n#[cfg(test)]\nmod tests {\n    \
+         #[test]\n    fn t() {}\n}\n",
+    );
+    report.push(debt_free_case(
+        cx,
+        gate,
+        "an allow marker with no reason is its own violation, not a weaker pass",
+        &[inline_tests::ROW_ALLOW_REASON],
+        without_existing(&existing.allow_reason),
+        ov,
+        &["ALLOW-WITHOUT-REASON", "planted_bare_allow.rs:4"],
+    ));
+
+    // A MARKER THAT NAMES ITS REASON is the arm an allow mechanism has to get right, and the
+    // DECLARATION shape must not trip the rule either.
+    let mut ov = without_existing(&existing.inline_tests);
+    ov.set(
+        format!("{}/planted_reasoned_allow.rs", roots::CORE),
+        "pub fn prod() {}\n\n// structure-lint: allow inline-test: the harness cannot reach a \
+         private const from another file\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {}\n}\n\n\
+         #[cfg(test)]\n#[path = \"tests/prod_tests.rs\"]\nmod declared;\n",
+    );
+    report.push(green_case(
+        cx,
+        gate,
+        "a reasoned allow and a #[path] declaration are both clean",
+        &[
+            inline_tests::ROW_INLINE_TEST,
+            inline_tests::ROW_ALLOW_REASON,
+        ],
+        ov,
+    ));
+
+    // ── invariant 4 ──────────────────────────────────────────────────────────────────────────────
+    //
+    // ONE planted body, two homes. In a kernel crate it is a bypass of the kernel's durable-write
+    // primitive and must red; in a plugin-kind crate it is that plugin's own I/O (#40: a plugin
+    // cannot name the kernel's primitive) and the core-tier durable rules must not judge it.
+    const DURABLE_BYPASS_BODY: &str =
+        "pub fn publish() {\n    std::fs::rename(&tmp, &dst).unwrap();\n    \
+         std::fs::File::open(&dst).unwrap().sync_all().unwrap();\n    \
+         std::fs::create_dir_all(&dir).unwrap();\n}\n";
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{}/planted_bypass.rs", roots::CORE),
+        DURABLE_BYPASS_BODY,
+    );
+    report.push(debt_free_case(
+        cx,
+        gate,
+        "a hand-rolled durable-write bypass is named by file and line",
+        &[choke_points::ROW_BYPASS],
+        without_existing(&existing.choke_bypass),
+        ov,
+        &[
+            "DURABLE-BYPASS",
+            "planted_bypass.rs:2",
+            "planted_bypass.rs:3",
+            "planted_bypass.rs:4",
+        ],
+    ));
+
+    // The plugin-kind home is READ off the kind table the rule itself reads, not spelled here.
+    let plugin_dir = choke_points::plugin_kind_dirs(cx)
+        .ok()
+        .and_then(|d| d.into_iter().next())
+        .unwrap_or_else(|| "crates/store-memory".to_string());
+    let mut ov = without_existing(&existing.choke_bypass);
+    ov.set(
+        format!("{plugin_dir}/src/planted_bypass.rs"),
+        DURABLE_BYPASS_BODY,
+    );
+    report.push(green_case(
+        cx,
+        gate,
+        "a plugin-kind crate's own durable write is its own I/O, not a kernel-tier bypass",
+        &[choke_points::ROW_BYPASS],
+        ov,
+    ));
+
+    // AN ATOMIC SWAP IS NOT AN APPHANDLE SWAP. The mutation rule's `.swap(` matches both; the one
+    // that carries a memory ordering — `Ordering::X`, or the variant imported bare — is a counter,
+    // and a sink draining its counters mutates no config. The handle swap still reds, by line.
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{}/planted_swap.rs", roots::CORE),
+        "pub fn publish(h: &AppHandle) {\n    h.swap(next);\n}\n",
+    );
+    report.push(debt_free_case(
+        cx,
+        gate,
+        "a direct AppHandle swap outside a transaction is named by file and line",
+        &[choke_points::ROW_BYPASS],
+        without_existing(&existing.choke_bypass),
+        ov,
+        &["MUTATION-BYPASS", "planted_swap.rs:2"],
+    ));
+    let mut ov = without_existing(&existing.choke_bypass);
+    ov.set(
+        format!("{}/planted_atomic_swap.rs", roots::CORE),
+        "pub fn drain(c: &AtomicU64, d: &AtomicBool) -> u64 {\n    \
+         d.swap(true, Ordering::SeqCst);\n    c.swap(0, Relaxed)\n}\n",
+    );
+    report.push(green_case(
+        cx,
+        gate,
+        "an atomic swap carrying its memory ordering is a counter, not an AppHandle swap",
+        &[choke_points::ROW_BYPASS],
+        ov,
+    ));
+
+    // A LINE INSIDE A `#[cfg(test)]` REGION IS NOT A BYPASS, and neither is one in a comment. Both
+    // shapes were provably exploitable against the scanner this replaces.
+    let mut ov = without_existing(&existing.choke_bypass);
+    ov.set(
+        format!("{}/planted_not_a_bypass.rs", roots::CORE),
+        "// prose may say std::fs::rename( without being one\n#[cfg(test)]\nmod tests {\n    \
+         fn helper() { std::fs::rename(a, b); }\n}\npub fn prod() {}\n",
+    );
+    report.push(green_case(
+        cx,
+        gate,
+        "prose and test code may name a banned call; production code may not",
+        &[choke_points::ROW_BYPASS],
+        ov,
+    ));
+
+    if let Some(r) = t.choke_points.first() {
+        let file = r.class_test.rsplit_once("::").map(|(f, _)| f.to_string());
+        if let Some(file) = file {
+            if cx.exists(&file) {
+                let mut ov = Overlay::new();
+                ov.remove(&file);
+                report.push(tree_case(
+                    cx,
+                    gate,
+                    "a choke point whose class test was deleted is a choke point nothing proves",
+                    &[choke_points::ROW_CLASS_TEST],
+                    ov,
+                    &["MISSING-CLASS-TEST", &r.id],
+                ));
+            }
+        }
+    }
+
+    report.push(table_case(
+        cx,
+        "a registry row whose allowed path moved is named where the fix is one path",
+        &[choke_points::ROW_ALLOWED_PATH],
+        with_choke_allow_moved(&t),
+        &["ALLOWED-PATH-MISSING"],
+    ));
+    report.push(table_case(
+        cx,
+        "a registry row that carries the separator, or will not compile, is refused",
+        &[choke_points::ROW_ROW_INTEGRITY],
+        with_choke_row_broken(&t),
+        &["MALFORMED-ROW"],
+    ));
+    report.push(table_case(
+        cx,
+        "a ban whose allow-list swallowed every candidate did not run, and did not pass",
+        &[choke_points::ROW_SCAN_SET],
+        with_choke_allow_everything(cx, &t),
+        &["ZERO-SCAN"],
+    ));
+
+    // ── invariants 5 and 8 ───────────────────────────────────────────────────────────────────────
+    for (label, rows, subject_row, purity_row, planted) in [
+        (
+            "request-path",
+            &t.request_path,
+            fn_scoped::ROW_REQUEST_PATH_SUBJECT,
+            fn_scoped::ROW_REQUEST_PATH_PURITY,
+            "        let _ = self.store.get(k);\n",
+        ),
+        (
+            "decision-input",
+            &t.decision_input,
+            fn_scoped::ROW_DECISION_INPUT_SUBJECT,
+            fn_scoped::ROW_DECISION_INPUT_PURITY,
+            "        let _ = tool.description.clone();\n",
+        ),
+    ] {
+        let Some(r) = rows.first() else {
+            report.note_infra_failure(format!(
+                "structure-lint selftest: the {label} table is empty, so its rules are unproven"
+            ));
+            continue;
+        };
+        match plant_into_fn(cx, &r.file, &r.func, planted) {
+            Some(ov) => report.push(tree_case(
+                cx,
+                gate,
+                &format!("a banned call inside the {label} function is named by line"),
+                &[purity_row],
+                ov,
+                &[&r.tag],
+            )),
+            None => report.note_infra_failure(format!(
+                "structure-lint selftest: `fn {}` is not in {}, so the {label} plant has no body \
+                 to plant into",
+                r.func, r.file
+            )),
+        }
+        // THE SUBJECT RULE: a function that was renamed away scans nothing and reports nothing,
+        // which reads exactly like a pass.
+        if let Ok(text) = cx.read(&r.file) {
+            let mut ov = Overlay::new();
+            ov.set(
+                &r.file,
+                text.replace(&format!("fn {}", r.func), "fn renamed_away"),
+            );
+            report.push(tree_case(
+                cx,
+                gate,
+                &format!("a renamed {label} subject is refused, not read as a clean function"),
+                &[subject_row],
+                ov,
+                &["SUBJECT-MISSING", &r.id],
+            ));
+        }
+    }
+
+    // ── invariant 6 ──────────────────────────────────────────────────────────────────────────────
+    let addresses = {
+        let mut throwaway = crate::gates::structure_lint::Findings::default();
+        roots::resolve(cx, &mut throwaway)
+    };
+    //
+    // THREE PLANTS, ONE RUN, EVERY ONE NAMED (items 184, 223, 224). Each is a duplicate the old
+    // two-plane scan could not see:
+    //
+    // * THE PAIR THE OLD SCAN NEVER LOADED — voice and a2a. The scan compared mcp with a2a and
+    //   nothing else, so a copy between these two (the shape of voice's `absolute`, "the A2A
+    //   `serve::absolute` discipline, kept local") was structurally invisible.
+    // * A PLANE NO ROSTER NAMES — it declares itself, so it is compared the day it lands, without
+    //   anybody remembering to add it to a constant.
+    // * A THIRD COPY OF A LEDGERED NAME — the ledger's rows were argued for mcp and a2a; a copy in
+    //   a plane the claim was never signed for is a file nobody read, and matching the row by name
+    //   alone absorbed it.
+    let voice = addresses.plane("voice");
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{voice}/planted_shared_concern.rs"),
+        "pub fn planted_shared_concern() {}\n",
+    );
+    ov.set(
+        format!("{}/planted_shared_concern.rs", addresses.a2a),
+        "pub fn planted_shared_concern() {}\npub fn planted_derived_plane_helper() {}\n",
+    );
+    ov.set(
+        "crates/busbar-planted/src/lib.rs",
+        format!(
+            "{} : busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n\
+             pub fn planted_derived_plane_helper() {{}}\n",
+            crate::planes::PLANE_GRAMMAR
+        ),
+    );
+    let signed = t
+        .plane_ledger
+        .iter()
+        .find(|r| r.planes.iter().all(|p| p != "voice") && !r.name.ends_with(".rs"))
+        .map(|r| r.name.clone());
+    let mut naming: Vec<String> = vec![
+        "PLANE-DUPLICATE (symbol): `planted_shared_concern`".to_string(),
+        format!("voice:{voice}/planted_shared_concern.rs"),
+        "PLANE-DUPLICATE (symbol): `planted_derived_plane_helper`".to_string(),
+        "planted:crates/busbar-planted/src/lib.rs".to_string(),
+    ];
+    if let Some(name) = &signed {
+        ov.set(
+            format!("{voice}/planted_third_copy.rs"),
+            format!("pub fn {name}() {{}}\n"),
+        );
+        naming.push(format!("PLANE-DUPLICATE (symbol): `{name}`"));
+        naming.push("signs for".to_string());
+    } else {
+        report.note_infra_failure(
+            "structure-lint selftest: no ledger row signs for a symbol outside voice, so the \
+             third-copy plant has nothing to copy",
+        );
+    }
+    let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
+    report.push(debt_free_case(
+        cx,
+        gate,
+        "a name declared in two planes nobody signed for — on any pair, in any declared plane — is a duplicate",
+        &[plane_dups::ROW_UNLEDGERED],
+        without_existing(&existing.unledgered),
+        ov,
+        &naming,
+    ));
+
+    // THE STALE-LEDGER ROW is proven over a base with its standing debt out of view: the real
+    // tables declare concerns no DEBT row owes against (item 236), which is this row's own red.
+    let debt_free_tables = without_stale_concerns(&t);
+    let mut stale = with_stale_plane_row(&debt_free_tables);
+    stale.plane_concerns.push(plane_dups::Concern {
+        id: "a-concern-nothing-is-owed-against".to_string(),
+        owner: format!("{}/nowhere", roots::CORE),
+        remedy: "none; nothing is owed".to_string(),
+    });
+    report.push(table_case_over(
+        cx,
+        "a ledger row whose duplication is gone, and a concern nothing is owed against, are both refused",
+        &[plane_dups::ROW_STALE_LEDGER],
+        debt_free_tables,
+        stale,
+        &[
+            "STALE-LEDGER",
+            "a_name_no_plane_declares",
+            "STALE-CONCERN",
+            "a-concern-nothing-is-owed-against",
+        ],
+    ));
+
+    // THE DEBT HALF IS REACHABLE (item 236): a DEBT row naming a concern nobody declared is
+    // refused. `Class::Debt` was constructed nowhere, so this branch could not produce a NO.
+    let mut undeclared = t.clone();
+    undeclared.plane_ledger.push(plane_dups::LedgerRow {
+        name: "a_debt_row_for_an_undeclared_concern".to_string(),
+        class: plane_dups::Class::Debt,
+        concern: "a-concern-nobody-declared".to_string(),
+        note: "owed a unification under a concern that is not in the concern table".to_string(),
+        planes: vec!["mcp".to_string(), "a2a".to_string()],
+    });
+    report.push(table_case(
+        cx,
+        "a DEBT row naming an undeclared concern is refused",
+        &[plane_dups::ROW_LEDGER_INTEGRITY],
+        undeclared,
+        &["MALFORMED-LEDGER", "a-concern-nobody-declared"],
+    ));
+    report.push(table_case(
+        cx,
+        "a ledger row with no signed claim asserts nothing",
+        &[plane_dups::ROW_LEDGER_INTEGRITY],
+        with_malformed_plane_row(&t),
+        &["MALFORMED-LEDGER"],
+    ));
+
+    // ── invariant 7 ──────────────────────────────────────────────────────────────────────────────
+    //
+    // TWO PLANTS, ONE RUN: the core, and THE MONEY PATH (item 183). The ban's scope was seven crate
+    // prefixes, and `busbar-kernel-ledger` — a ledger branching on a transport identity — was not
+    // one of them.
+    let branch = "pub fn pick(transport: Transport) -> u8 {\n    if transport == Transport::Http { 1 } else { 0 }\n}\n";
+    let mut ov = Overlay::new();
+    ov.set(format!("{}/planted_axis_branch.rs", roots::CORE), branch);
+    ov.set(
+        "crates/busbar-kernel-ledger/src/planted_axis_branch.rs",
+        branch,
+    );
+    report.push(debt_free_case(
+        cx,
+        gate,
+        "the agnostic core — the money path included — asking a transport its identity is a finding",
+        &[axis::ROW_PURITY],
+        without_existing(&existing.axis_purity),
+        ov,
+        &[
+            "TRANSPORT-BRANCH",
+            &format!("{}/planted_axis_branch.rs:2", roots::CORE),
+            "crates/busbar-kernel-ledger/src/planted_axis_branch.rs:2",
+        ],
+    ));
+
+    report.push(table_case(
+        cx,
+        "an axis row whose scope moved is refused, not read as a clean core",
+        &[axis::ROW_SCOPE],
+        with_axis_scope_moved(&t),
+        &["SCOPE-MISSING"],
+    ));
+    report.push(table_case(
+        cx,
+        "an axis arm whose home moved is named before the ban widens onto it",
+        &[axis::ROW_ALLOWED_PATH],
+        with_axis_arm_moved(&t),
+        &["ALLOWED-PATH-MISSING"],
+    ));
+    report.push(table_case(
+        cx,
+        "an axis whose allowed arms cover its whole scope scanned nothing",
+        &[axis::ROW_SCAN_SET],
+        with_axis_arm_covering_everything(&t),
+        &["NO-SUBJECT"],
+    ));
+    report.push(table_case(
+        cx,
+        "an incomplete axis row is refused",
+        &[axis::ROW_ROW_INTEGRITY],
+        with_axis_row_broken(&t),
+        &["MALFORMED-ROW"],
+    ));
+    report.push(table_case(
+        cx,
+        "an axis exception that outlived its branch is refused, not left as a permanent amnesty",
+        &[axis::ROW_STALE_LEDGER],
+        with_stale_axis_exception(&t),
+        &["STALE-LEDGER"],
+    ));
+
+    // ── invariant 9 ──────────────────────────────────────────────────────────────────────────────
+    //
+    // THE ROW PLANTED OVER MUST KEEP ITS ONE SPELLING IN VIEW. The debt-free base hides every file a
+    // standing `census:count` finding names, and a file can hold more than one row's subject:
+    // `busbar-plane-mcp/src/codec.rs` carries both the `mcp-protocol-version` header (a standing
+    // over-count) and the `_meta` protocol-version key (the first row). Hiding it took the first
+    // row's only spelling out of view, so the "second" spelling planted here was the ONLY one, the
+    // count read 1, and the case came back green on predev f882c3ce6. So the case plants over the
+    // first literal row whose spelling no hidden file carries; the first row stays the fallback, so
+    // a tree where every row is hidden still fails this case rather than dropping it.
+    let hidden: Vec<String> = existing
+        .census_count
+        .iter()
+        .flat_map(|f| offender_paths(f))
+        .collect();
+    let in_view = |r: &&census::CensusRow| {
+        let spelling = r.pattern.replace(['\\', '"'], "");
+        r.pattern.starts_with('"')
+            && !hidden
+                .iter()
+                .any(|p| cx.read(p).is_ok_and(|text| text.contains(&spelling)))
+    };
+    if let Some(r) = t.census.iter().find(in_view).or(t.census.first()) {
+        let spelling = r.pattern.replace(['\\', '"'], "");
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{}/planted_second_spelling.rs", roots::CORE),
+            format!("pub const SECOND: &str = \"{spelling}\";\n"),
+        );
+        report.push(debt_free_case(
+            cx,
+            gate,
+            "a second spelling of a one-spelling word (wire or refusal) is counted and named",
+            &[census::ROW_COUNT],
+            without_existing(&existing.census_count),
+            ov,
+            &[&r.tag, &r.id],
+        ));
+    }
+    report.push(table_case(
+        cx,
+        "a census subject that occurs nowhere asserted nothing, which is not a pass",
+        &[census::ROW_SUBJECT],
+        with_census_absent_subject(&t),
+        &["SUBJECT-MISSING"],
+    ));
+    report.push(table_case(
+        cx,
+        // COVERS `:scope` AND NOT `:scan-set`. A scope that moved is refused BY THE SCOPE ROW and
+        // stops there — the scan-set rule never gets a scope to count production source under, so
+        // it stays green here and is proven by the plant below that leaves the scope in place and
+        // empties it. Claiming both rows was the F11 shape: the red belonged to one of them, and
+        // the other's coverage was a declaration nobody checked.
+        "a census scope that moved is refused",
+        &[census::ROW_SCOPE],
+        with_census_scope_moved(&t),
+        &["SCOPE-MISSING"],
+    ));
+    report.push(table_case(
+        cx,
+        "a census count of zero is a ban wearing a census's clothes",
+        &[census::ROW_ROW_INTEGRITY],
+        with_census_zero_count(&t),
+        &["MALFORMED-ROW"],
+    ));
+    report.push(table_case(
+        cx,
+        "a census row whose scope holds no production source counted nothing",
+        &[census::ROW_SCAN_SET],
+        with_census_empty_scope(&t),
+        &["NO-SUBJECT"],
+    ));
+
+    // ── invariant (a) ────────────────────────────────────────────────────────────────────────────
+    if let Some((rel, text)) = sink_file(cx, &addresses) {
+        let mut ov = Overlay::new();
+        ov.set(&rel, text.replace("PlaneStore", "Store"));
+        // TWO ROWS, TWO CASES, over the same plant. Listed together, a red from either one passed
+        // the pair — and only `not-narrowed` was ever firing, so `widened` could have been deleted
+        // with the selftest green. Each now reads its own row and nothing else.
+        report.push(tree_case(
+            cx,
+            gate,
+            "a plane sink that stops naming the narrowed store re-arms the forge",
+            &[plane_store::ROW_SINK_NOT_NARROWED],
+            ov,
+            &["PLANE-SINK-NOT-NARROWED"],
+        ));
+
+        let mut ov = Overlay::new();
+        ov.set(&rel, text.replace("PlaneStore", "Store"));
+        report.push(tree_case(
+            cx,
+            gate,
+            "a plane sink widened back to the audit-carrying store is a finding on its own row",
+            &[plane_store::ROW_SINK_WIDENED],
+            ov,
+            &["PLANE-SINK-WIDENED"],
+        ));
+
+        // EVERY sink, not one of them: a rule that still finds a second attach has not been shown
+        // the tree a rename produces.
+        let mut ov = Overlay::new();
+        if let Ok(files) =
+            cx.walk(&crate::ctx::WalkSpec::new([format!("{}/plane", addresses.core)]).ext("rs"))
+        {
+            for s in &files {
+                if s.text.contains("fn set_sink") {
+                    ov.set(&s.rel, s.text.replace("fn set_sink", "fn attach_the_sink"));
+                }
+            }
+        }
+        report.push(tree_case(
+            cx,
+            gate,
+            "a renamed sink attach is refused, not read as a clean seam",
+            &[plane_store::ROW_SINK_SCAN_SET],
+            ov,
+            &["NO-PLANE-SINK"],
+        ));
+    } else {
+        report.note_infra_failure(
+            "structure-lint selftest: no plane sink attach to plant against, so invariant (a)'s \
+             sink half is unproven here rather than passing",
+        );
+    }
+
+    let bootctx = format!("{}/plane/registry.rs", addresses.core);
+    if let Ok(text) = cx.read(&bootctx) {
+        let mut ov = Overlay::new();
+        ov.set(
+            &bootctx,
+            text.replace("pub struct BootCtx", "pub struct BootContext"),
+        );
+        report.push(tree_case(
+            cx,
+            gate,
+            "a boot seam that moved or was renamed is refused",
+            &[plane_store::ROW_BOOTCTX_SUBJECT],
+            ov,
+            &["BOOTCTX-MISSING"],
+        ));
+
+        let mut ov = Overlay::new();
+        ov.set(&bootctx, widen_bootctx(&text));
+        report.push(tree_case(
+            cx,
+            gate,
+            "a boot-surface field that reaches the audit chain is a finding",
+            &[plane_store::ROW_BOOTCTX_WIDENED],
+            ov,
+            &["BOOTCTX-WIDENED"],
+        ));
+
+        // THE POSITIVE HALF, ON ITS OWN ROW. It was listed beside the two cases above and proven by
+        // neither: both of them go red on a row this one is not about, so the rule that requires the
+        // boot surface to NAME the narrowed store could have been deleted with the selftest green.
+        // Taking the trait's name out of the struct is the tree that rule exists to refuse.
+        let mut ov = Overlay::new();
+        ov.set(&bootctx, text.replace("PlaneStore", "Store"));
+        report.push(tree_case(
+            cx,
+            gate,
+            "a boot surface that stops naming the narrowed store is a finding on its own row",
+            &[plane_store::ROW_BOOTCTX_NOT_NARROWED],
+            ov,
+            &["BOOTCTX-NOT-NARROWED"],
+        ));
+    } else {
+        report.note_infra_failure(
+            "structure-lint selftest: the boot seam file is unreadable, so invariant (a)'s boot \
+             half is unproven here rather than passing",
+        );
+    }
+
+    report
+}
+
+/// The `mod.rs` that declares a plane, and its text.
+fn plane_grammar_file(cx: &Ctx, plane: &str) -> Option<(String, String)> {
+    let files = cx
+        .walk(&crate::ctx::WalkSpec::new([roots::CRATES]).ext("rs"))
+        .ok()?;
+    files
+        .into_iter()
+        .find(|s| {
+            let rel = s.rel_str();
+            rel.contains(&format!("/{plane}/")) && s.text.contains(crate::planes::PLANE_GRAMMAR)
+        })
+        .map(|s| (s.rel_str(), s.text))
+}
+
+/// The first plane sink attach, and its file's text.
+fn sink_file(
+    cx: &Ctx,
+    a: &crate::gates::structure_lint::roots::Addresses,
+) -> Option<(String, String)> {
+    let files = cx
+        .walk(&crate::ctx::WalkSpec::new([format!("{}/plane", a.core)]).ext("rs"))
+        .ok()?;
+    files
+        .into_iter()
+        .find(|s| s.text.contains("fn set_sink"))
+        .map(|s| (s.rel_str(), s.text))
+}
+
+/// Add a line to a named function's body, so the plant lands INSIDE the span the rule scopes to
+/// rather than merely in the same file.
+fn plant_into_fn(cx: &Ctx, file: &str, func: &str, line: &str) -> Option<Overlay> {
+    let text = cx.read(file).ok()?;
+    let needle = format!("fn {func}");
+    let at = text.find(&needle)?;
+    let brace = text[at..].find('{')? + at;
+    let mut out = String::with_capacity(text.len() + line.len());
+    out.push_str(&text[..=brace]);
+    out.push('\n');
+    out.push_str(line);
+    out.push_str(&text[brace + 1..]);
+    let mut ov = Overlay::new();
+    ov.set(file, out);
+    Some(ov)
+}
+
+/// Widen the boot surface's first `PlaneStore` field back to the audit-carrying store.
+fn widen_bootctx(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut inside = false;
+    let mut done = false;
+    for line in text.lines() {
+        if line.contains("pub struct BootCtx") {
+            inside = true;
+        }
+        if inside && !done && line.contains("dyn PlaneStore") {
+            out.push(line.replace("dyn PlaneStore", "dyn Store"));
+            done = true;
+            continue;
+        }
+        if inside && line.starts_with('}') {
+            if !done {
+                out.push("    pub chain: std::sync::Arc<dyn Store>,".to_string());
+                done = true;
+            }
+            inside = false;
+        }
+        out.push(line.to_string());
+    }
+    out.join("\n")
+}
+
+// ── the table plants ─────────────────────────────────────────────────────────────────────────────
+
+fn with_choke_allow_moved(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.choke_points.iter_mut().find(|r| !r.rules.is_empty()) {
+        if let Some(rule) = r.rules.first_mut() {
+            rule.allow = vec!["crates/the-owner-that-moved/src/durable.rs".to_string()];
+        }
+    }
+    t
+}
+
+fn with_choke_row_broken(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.choke_points.first_mut() {
+        r.why = "a why with a | in it shifts every field of the row this gate's translator reads"
+            .to_string();
+    }
+    t
+}
+
+fn with_choke_allow_everything(cx: &Ctx, t: &Tables) -> Tables {
+    let mut t = t.clone();
+    let every: Vec<String> = corpus::Corpus::build(cx)
+        .map(|c| c.files.iter().map(|f| f.rel.clone()).collect())
+        .unwrap_or_default();
+    if let Some(r) = t.choke_points.iter_mut().find(|r| !r.rules.is_empty()) {
+        if let Some(rule) = r.rules.first_mut() {
+            rule.allow = every;
+        }
+    }
+    t
+}
+
+fn with_stale_plane_row(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    t.plane_ledger.push(plane_dups::LedgerRow {
+        name: "a_name_no_plane_declares".to_string(),
+        class: plane_dups::Class::Distinct,
+        concern: String::new(),
+        note: "a claim about duplication that is not there any more".to_string(),
+        planes: vec!["mcp".to_string(), "a2a".to_string()],
+    });
+    t
+}
+
+/// The real tables with every declared concern that no DEBT row owes against retired — the
+/// standing red of `plane-dup:stale-ledger` taken out of the base, never out of the gate.
+fn without_stale_concerns(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    let owed: Vec<String> = t
+        .plane_ledger
+        .iter()
+        .filter(|r| r.class == plane_dups::Class::Debt)
+        .map(|r| r.concern.clone())
+        .collect();
+    t.plane_concerns.retain(|c| owed.contains(&c.id));
+    t
+}
+
+fn with_malformed_plane_row(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.plane_ledger.first_mut() {
+        r.note = String::new();
+    }
+    t
+}
+
+fn with_axis_scope_moved(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.axis_branch.first_mut() {
+        r.scope = vec!["crates/the-core-that-moved/src/".to_string()];
+    }
+    t
+}
+
+fn with_axis_arm_moved(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.axis_branch.first_mut() {
+        r.allowed.push("crates/the-arm-that-moved/src/".to_string());
+    }
+    t
+}
+
+fn with_axis_arm_covering_everything(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.axis_branch.first_mut() {
+        r.allowed = r.scope.clone();
+    }
+    t
+}
+
+fn with_axis_row_broken(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.axis_branch.first_mut() {
+        r.rules.clear();
+    }
+    t
+}
+
+fn with_stale_axis_exception(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    let axis_name = t
+        .axis_branch
+        .first()
+        .map(|r| r.axis.clone())
+        .unwrap_or_else(|| "transport".to_string());
+    t.axis_exceptions.push(axis::AxisException {
+        axis: axis_name,
+        file: "crates/busbar-kernel/src/a_file_that_no_longer_branches.rs".to_string(),
+        why: "an exemption whose branch has already gone".to_string(),
+    });
+    t
+}
+
+fn with_census_absent_subject(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.census.first_mut() {
+        r.pattern = "a_symbol_this_tree_never_declared".to_string();
+    }
+    t
+}
+
+fn with_census_scope_moved(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.census.first_mut() {
+        r.scope = vec!["crates/the-subject-that-moved/src/".to_string()];
+    }
+    t
+}
+
+fn with_census_zero_count(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.census.first_mut() {
+        r.want = 0;
+    }
+    t
+}
+
+/// A scope that EXISTS and holds no production source. Distinct from the scope rule above, which
+/// is about a path that is not there at all — the two failures have two different remedies, and a
+/// row that could only produce one of them is a rule that can be deleted with everything green.
+fn with_census_empty_scope(t: &Tables) -> Tables {
+    let mut t = t.clone();
+    if let Some(r) = t.census.first_mut() {
+        r.scope = vec!["Cargo.toml".to_string()];
+    }
+    t
+}

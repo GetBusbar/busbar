@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config validation failed:\n  - groups.broke.limits has `downgrade_to: nopool`, but no such pool exists; exhausted traffic needs a real pool to land on\n"},"headers":{},"status":1}

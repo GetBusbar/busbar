@@ -1,0 +1,5 @@
+# The fixture's own tiny workspace, so `cargo metadata --offline` resolves it without touching the
+# real workspace's Cargo.lock.
+[workspace]
+members = ["crates/busbar-plane-demo"]
+resolver = "2"

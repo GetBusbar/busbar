@@ -1,0 +1,270 @@
+# door-only: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).
+# The binary closure reaches a plugin only through its door, and installs no static
+# fn-pointer seam but the two ruled core (oauth_as/seam.rs, admin/seam.rs). Each row
+# is one the tree carries today. Strike a row in the commit that drains it; never
+# add one. Regenerate with `cargo xtask gate door-only --write`.
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-a2a/src/a2a/card.rs"
+item = "busbar_plane_a2a"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-a2a/src/a2a/mod.rs"
+item = "busbar_plane_a2a"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-a2a/src/a2a/pushback.rs"
+item = "busbar_plane_a2a"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-a2a/src/a2a/receive.rs"
+item = "busbar_plane_a2a"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-a2a/src/a2a/rest.rs"
+item = "busbar_plane_a2a"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-a2a/src/a2a/rpcerror.rs"
+item = "busbar_plane_a2a"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-a2a/src/a2a/serve.rs"
+item = "busbar_plane_a2a"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-a2a/src/lib.rs"
+item = "busbar_plane_a2a"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/attempt/respond.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/exhaustion/mod.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/hooks.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/lazy_body.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/pipeline.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/usage.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/wire.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/lib.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/native_ingress.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/testkit/shell.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/unit/arrival.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/unit/meter.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/codec/handler.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/codec/invoke.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/codec/mod.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/codec/subscribe.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/lib.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/mcp/envelope.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/mcp/method.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/mcp/mod.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/mcp/sampling.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-mcp/src/mcp/subscribe.rs"
+item = "busbar_plane_mcp"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-voice/src/bin/voice-conform.rs"
+item = "busbar_plane_streaming"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-voice/src/lib.rs"
+item = "busbar_plane_streaming"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-voice/src/runtime/metering.rs"
+item = "busbar_plane_streaming"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-voice/src/runtime/mod.rs"
+item = "busbar_plane_streaming"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-voice/src/runtime/session.rs"
+item = "busbar_plane_streaming"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-voice/src/runtime/voice_plane_unit_oracle.rs"
+item = "busbar_plane_streaming"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-voice/src/topology/mod.rs"
+item = "busbar_plane_streaming"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar/src/root/plane_decisions.rs"
+item = "busbar_plane_decisions"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-core-admin/src/v1/service.rs"
+item = "USAGE_RATE_HISTORY"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel-audit/src/amend.rs"
+item = "SINK"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/admin_verbs.rs"
+item = "PLANE_ADMIN_ENVELOPE"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/egress/seam.rs"
+item = "HOSTLESS"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/plane/config.rs"
+item = "PLANE_SECTIONS"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/plane_host/egress_trust.rs"
+item = "EGRESS_TRUST"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/rate_apply.rs"
+item = "APPLY"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/rate_apply.rs"
+item = "EPOCH"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/test_support/mod.rs"
+item = "SECTION_PLANE_TEST_RUNTIME_FACTORY"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-llm/src/unit/node.rs"
+item = "NATIVE_SEATS"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-voice/src/mount.rs"
+item = "COMPOSED_GOVERNED_CALLS"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/plugin-loader/src/host.rs"
+item = "CARRIER"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/plugin-loader/src/observe.rs"
+item = "HOST_SERIES"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/plugin-loader/src/observe.rs"
+item = "OBSERVER"

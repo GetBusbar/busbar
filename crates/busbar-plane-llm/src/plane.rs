@@ -1,0 +1,1125 @@
+//! The plane, implemented.
+//!
+//! Every method below is an adapter. It works out which dialect it is looking at, hands the bytes to
+//! the codec that already knows that dialect, and turns what comes back into the shapes the loop
+//! asks for. The interesting reading is in the codec crate; the interesting decisions are in the
+//! units. What is here is the wiring, and it is meant to stay boring enough to check by eye.
+
+use busbar_contract::bounded::{
+    BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span, MAX_RESPONSE_PTRS,
+};
+use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
+use busbar_contract::grammar::{ArrivalLocation, Location};
+use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId, SchemeAlt, SchemeKey};
+use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
+use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Response, UnitDraft};
+use busbar_contract::unit::{
+    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
+    Unit, UnitEnd, UsageLocator, UsageLocators,
+};
+use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, TransportEnvelope};
+
+use crate::codec::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
+use crate::codec::proto_codec::{with_reader, with_writer};
+
+use crate::dialect::{self, Dialect};
+use crate::meta;
+use crate::{LlmPlane, Upstream};
+
+// ── the error vocabulary the dialect envelopes are shaped around ────────────────────────────────
+//
+// The BYTES of a refusal are the dialect writer's; only the kind token and the status are chosen
+// here, and they are chosen exactly as the existing forward path chooses them. Restating the tokens
+// is the one duplication in this crate and it is deliberate: reaching for them through the crate
+// that holds them would pull an HTTP stack into a plane.
+
+/// The token an authentication refusal wears.
+const KIND_AUTHENTICATION: &str = "authentication_error";
+/// The token a permission refusal wears.
+const KIND_PERMISSION: &str = "permission_error";
+/// The token a rate refusal wears.
+const KIND_RATE_LIMIT: &str = "rate_limit_error";
+/// The token a malformed-or-unacceptable request wears.
+const KIND_INVALID_REQUEST: &str = "invalid_request_error";
+/// The token a node-side capacity refusal wears.
+const KIND_OVERLOADED: &str = "overloaded_error";
+/// The token an oversized request wears.
+const KIND_REQUEST_TOO_LARGE: &str = "request_too_large";
+/// The token a node-side fault wears.
+const KIND_API_ERROR: &str = "api_error";
+
+/// The transport fact the request target is published under.
+///
+/// A plane cannot see a connection, so the request target reaches it as a transport fact. The key
+/// is the kernel's, not this plane's guess at one: a transport that writes none leaves this plane
+/// unable to name a dialect, and the decode step says so rather than inventing a target.
+const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
+
+/// How long the upstream took, in milliseconds, if the transport published the figure.
+///
+/// One dialect stamps this into the answer's metrics. The plane does not measure it and does not
+/// invent it: an unpublished or unparsable fact yields `None`, and the writer then stamps nothing.
+fn elapsed_ms(ctx: &Ctx<'_>) -> Option<u64> {
+    ctx.transport()
+        .fact(meta::TRANSPORT_FACT_ELAPSED_MS)
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
+/// The bytes the codec builds a minted envelope identifier from.
+///
+/// A plane holds no random source, so the entropy for the one identifier a refusal envelope carries
+/// comes from the kernel through the context. The context's per-call value today is its clock
+/// reading — both halves of it, the wall reading and the monotonic one — and that is what is handed
+/// over here. When the context grows a value source of its own, this is the one place that changes:
+/// nothing else in the plane names entropy.
+fn minted_id_entropy(ctx: &Ctx<'_>) -> [u8; 24] {
+    let clock = ctx.clock();
+    let mut bytes = [0u8; 24];
+    bytes[..8].copy_from_slice(&clock.unix_secs.to_be_bytes());
+    bytes[8..].copy_from_slice(&clock.monotonic_nanos.to_be_bytes());
+    bytes
+}
+
+/// The default response ceiling used when a dialect requires one and the client sent none.
+///
+/// The design fixes the fallback and the order it is reached in: the lane's own default, then the
+/// configured default, then this. It is injected only when the request carries NO ceiling — a
+/// client-supplied value is never rewritten and never clamped here.
+const DEFAULT_MAX_RESPONSE: u32 = 4096;
+
+/// The configuration key the operator's own default response ceiling is read from.
+const CONFIG_MAX_RESPONSE: &str = "default_max_tokens";
+
+// ── working out which dialect is in play ────────────────────────────────────────────────────────
+
+/// Which dialect the arriving bytes are, from the request target and the headers the transport
+/// published as facts.
+///
+/// This is the ladder, walked in rung order. It is the same ladder the kernel walks over the
+/// declared claims; walking it here as well is what lets the decode step name the dialect it is
+/// about to read without a second, differently-ordered answer existing anywhere.
+fn ingress_dialect<'u>(ctx: &Ctx<'u>) -> Option<&'static Dialect> {
+    let transport = ctx.transport();
+    let path = transport.fact(FACT_PATH)?;
+    let header = |name: &str| transport.fact(name);
+    let name = crate::claims::dialect_for(path, &header)?;
+    dialect::dialect(name)
+}
+
+/// The dialect the decode step named, read back off the unit's sealed draft facts.
+///
+/// The ladder is walked ONCE, at `decode_ingress`, which writes the rung it landed on into the
+/// draft. Every later step that holds a unit reads the name back and resolves it against the closed
+/// dialect table rather than walking fourteen rungs over the transport facts a second time — the
+/// walk is ordered, and an ordered walk repeated is an ordered walk that can disagree with itself.
+fn unit_dialect(u: &Unit<'_>) -> Option<&'static Dialect> {
+    match u.draft_facts().get(meta::FACT_DIALECT) {
+        Some(FactValue::Str(name)) => dialect::dialect(name),
+        _ => None,
+    }
+}
+
+/// Which dialect a verified destination speaks, and what to rewrite the model to.
+fn upstream_for(plane: &LlmPlane, dest: &VerifiedDestination) -> Option<&'static Upstream> {
+    let lane = dest.lane()?;
+    plane.upstreams().iter().find(|u| u.lane == lane)
+}
+
+/// Parse a body the way the codec parses one.
+///
+/// The same reader the forward path uses, so a body this plane accepts is a body the codec accepts,
+/// and a body it refuses is refused for the codec's reason rather than for a second opinion's.
+fn parse(bytes: &[u8]) -> Result<serde_json::Value, Decode> {
+    sonic_rs::from_slice(bytes).map_err(|_| Decode::Malformed)
+}
+
+/// Serialize a document the way the codec serializes one.
+fn serialize(value: &serde_json::Value) -> Result<Vec<u8>, Encode> {
+    sonic_rs::to_vec(value).map_err(|_| Encode::Unrepresentable)
+}
+
+/// Copy bytes into the per-unit arena.
+fn put<'u>(ctx: &Ctx<'u>, bytes: &[u8]) -> Result<ScratchBytes<'u>, Encode> {
+    ctx.arena()
+        .alloc_bytes(bytes)
+        .map_err(|_| Encode::ScratchExhausted)
+}
+
+/// Copy a string into the per-unit arena.
+fn put_str<'u>(ctx: &Ctx<'u>, s: &str) -> Option<&'u str> {
+    ctx.arena().alloc_str(s).ok()
+}
+
+/// How the dialect's own stop reason reads as a finish class.
+///
+/// A cut-short answer and a completed one settle differently, so the mapping is written out rather
+/// than defaulted: an upstream that reported an error, and an upstream that ran out of room, are
+/// both endings the ledger prices differently from a natural stop.
+fn finish_of(stop: Option<IrStopReason>) -> FinishClass {
+    match stop {
+        Some(IrStopReason::Error) => FinishClass::Error,
+        Some(IrStopReason::MaxTokens) | Some(IrStopReason::PauseTurn) => FinishClass::Partial,
+        Some(_) => FinishClass::Complete,
+        // No reason reported at all is not evidence of completion.
+        None => FinishClass::Partial,
+    }
+}
+
+/// The status and kind token one refusal reason wears on the wire.
+///
+/// The reason code itself never reaches a client: what reaches a client is this dialect's own
+/// rendering of the pair below, written by the dialect's own error writer.
+fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {
+    match reason {
+        RefusalReason::CredentialRejected
+        | RefusalReason::SessionUnbound
+        | RefusalReason::SchemeNotDeclared => (401, KIND_AUTHENTICATION),
+        RefusalReason::Revoked | RefusalReason::ScopeMissing | RefusalReason::Vetoed => {
+            (403, KIND_PERMISSION)
+        }
+        RefusalReason::BodyTooLarge
+        | RefusalReason::CursorBudget
+        | RefusalReason::CredentialBudget => (413, KIND_REQUEST_TOO_LARGE),
+        RefusalReason::InFlightCap
+        | RefusalReason::SessionBudget
+        | RefusalReason::OpenSlotBusy
+        | RefusalReason::OverBudget
+        | RefusalReason::GroupFrozen
+        | RefusalReason::OverdraftCeiling => (429, KIND_RATE_LIMIT),
+        RefusalReason::NoDestination | RefusalReason::Unpriced => (400, KIND_INVALID_REQUEST),
+        RefusalReason::DurabilityUnavailable
+        | RefusalReason::StaleSlice
+        | RefusalReason::TierMismatch => (503, KIND_OVERLOADED),
+        // The reasons the kernel could always raise and this dialect had no rendering for. Each
+        // joins the family it belongs to rather than acquiring a status of its own: a client learns
+        // the shape of the refusal, never which of the node's ceilings it met.
+        RefusalReason::ChallengeExhausted => (401, KIND_AUTHENTICATION),
+        RefusalReason::PoolNotPermitted => (403, KIND_PERMISSION),
+        RefusalReason::RateLimited | RefusalReason::InFlight => (429, KIND_RATE_LIMIT),
+        RefusalReason::DecodeFailed
+        | RefusalReason::NoRate
+        | RefusalReason::Replayed
+        | RefusalReason::Superseded => (400, KIND_INVALID_REQUEST),
+        RefusalReason::SpillBudget
+        | RefusalReason::ScratchExhausted
+        | RefusalReason::DestinationBudgetExhausted
+        | RefusalReason::BreakerOpen
+        | RefusalReason::DestinationUnreachable
+        | RefusalReason::Stalled
+        | RefusalReason::Drain
+        | RefusalReason::ClientGone
+        | RefusalReason::DeadlineExceeded => (503, KIND_OVERLOADED),
+        // Node-side faults: the node got something wrong, and says so without saying what.
+        RefusalReason::MeterDisputed
+        | RefusalReason::HandoffMismatch
+        | RefusalReason::PlanePanic
+        | RefusalReason::TaskLost
+        | RefusalReason::SecretPlaceholder => (500, KIND_API_ERROR),
+    }
+}
+
+/// The message a refusal carries.
+///
+/// Deliberately a small closed set of neutral sentences: a refusal message is read by a client, and
+/// a client must not learn from it which internal ceiling it hit.
+fn refusal_message(reason: RefusalReason) -> &'static str {
+    match refusal_shape(reason).0 {
+        401 => "Authentication failed.",
+        403 => "Not permitted.",
+        413 => "Request too large.",
+        429 => "Rate limited.",
+        500 => "The request could not be completed.",
+        503 => "Temporarily unavailable.",
+        _ => "Request rejected.",
+    }
+}
+
+/// Which operation class a request target names.
+///
+/// The dialects' own resolvers read the body as well as the target for two of the six; this reads
+/// the target only, which is enough for every class the previous release billed and is what the
+/// ladder's own rungs already distinguish. A target that names none of the non-chat surfaces is a
+/// conversation, which is what every one of the six dialects' primary surface is.
+fn op_class_for(path: &str) -> OpClassId {
+    if path.ends_with("/v1/embeddings")
+        || path.ends_with("/v2/embed")
+        || path.contains(":embedContent")
+        || path.contains(":batchEmbedContents")
+    {
+        OpClassId::new("embeddings")
+    } else if path.ends_with("/v1/moderations") {
+        OpClassId::new("moderation")
+    } else if path.ends_with("/v2/rerank") {
+        OpClassId::new("rerank")
+    } else if path.contains("/v1/images/") || path.contains(":predict") {
+        OpClassId::new("image")
+    } else if path.contains("/v1/audio/transcriptions") || path.contains("/v1/audio/translations") {
+        OpClassId::new("transcription")
+    } else if path.contains("/v1/audio/speech") {
+        OpClassId::new("speech")
+    } else {
+        OpClassId::new("chat")
+    }
+}
+
+/// Whether a frame is one event of a streamed answer rather than a whole body.
+fn is_event_frame(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(8)];
+    head.starts_with(b"event:") || head.starts_with(b"data:")
+}
+
+/// Split one streamed event into its name and its payload.
+///
+/// The framing is the transport's, so this reads only what the transport left: the two named lines,
+/// in either order, with the payload taken verbatim.
+fn split_event(bytes: &[u8]) -> (&str, &[u8]) {
+    let text = core::str::from_utf8(bytes).unwrap_or_default();
+    let mut name = "";
+    let mut data: &[u8] = b"";
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("event:") {
+            name = rest.trim();
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data = rest.trim_start().as_bytes();
+        }
+    }
+    (name, data)
+}
+
+/// Whether the answer this response was read from arrived as a streamed event.
+///
+/// The fact `decode_response` stamped, read back rather than re-derived: the step that saw the
+/// frame is the step entitled to say what shape it was.
+fn is_streamed(r: &Response<'_>) -> bool {
+    matches!(
+        r.facts.get(meta::FACT_FRAME_KIND),
+        Some(FactValue::Str("event"))
+    )
+}
+
+/// The payload of a streamed frame: its event name and its JSON document.
+///
+/// `None` where the frame carries no document at all — the dialect's end-of-stream marker ends the
+/// answer, it does not describe one. The `data:` line is the transport's framing, so a reader
+/// handed the frame verbatim is handed something no JSON parser accepts; `encode_response` has
+/// always split the two before reading.
+fn event_payload(bytes: &[u8]) -> Option<(&str, serde_json::Value)> {
+    let (name, data) = split_event(bytes);
+    if data == b"[DONE]" || data.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = sonic_rs::from_slice(data).ok()?;
+    Some((name, value))
+}
+
+/// What an answer said it consumed, whichever framing carried the answer.
+///
+/// A whole-body answer states its usage in the response document. A streamed one states it in an
+/// event — the dialect's opening frame, its closing frame, or the trailing usage-only chunk the
+/// streaming convention adds — and each dialect's own reader is what knows which. This step used
+/// to hand the raw event frame, `data:` line and all, to the whole-body reader; the parse failed,
+/// and a failed parse here returns no lines rather than an error. Every streamed request metered
+/// zero tokens and settled free.
+///
+/// The stream state is a fresh one because a usage frame states its own figures: this step reads
+/// one frame and returns what that frame reported, and it holds nothing across frames the way the
+/// decode step, which owns the kernel's state, does.
+fn reported_usage(dialect: &str, r: &Response<'_>) -> Option<crate::codec::ir::IrUsage> {
+    let bytes = r.ir.body();
+    if !is_streamed(r) {
+        let value: serde_json::Value = sonic_rs::from_slice(bytes).ok()?;
+        return with_reader(dialect, |rd| rd.read_response(&value))?
+            .ok()
+            .map(|r| r.usage);
+    }
+    let (name, value) = event_payload(bytes)?;
+    let mut state = StreamDecodeState::default();
+    with_reader(dialect, |rd| {
+        rd.read_response_events(name, &value, &mut state)
+    })?
+    .into_iter()
+    .find_map(|event| match event {
+        IrStreamEvent::MessageStart { usage, .. } => usage,
+        IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+        _ => None,
+    })
+}
+
+/// The per-connection codec state a streamed answer needs.
+///
+/// One value, held by the kernel, handed in and taken back. Nothing about a stream lives in the
+/// plane itself, which is what makes the plane a value rather than an object.
+#[derive(Debug, Default)]
+pub struct LlmSessionState {
+    /// Where the reader had got to in the dialect's own event grammar.
+    pub decode: StreamDecodeState,
+}
+
+/// Read one streamed frame against the reader's stream state, and leave the state where it was
+/// found.
+///
+/// The state is BORROWED from the kernel's half for the length of the read, never copied out of it:
+/// every latch `StreamDecodeState` carries is a fact about the frames already seen, and a reader
+/// handed a copy sets those latches on a value that is then dropped. The next frame would arrive at
+/// a state that had forgotten which content block was open, which role had been sent and which usage
+/// had already been reported, and the events read off it would be the events of a stream starting
+/// over.
+///
+/// A transport with no session hands no state, and a dialect whose events are independent of one
+/// another reads correctly from a fresh state. A dialect whose events are not independent needs the
+/// session transport, and the registry is what requires it. Both cases run the same closure, so what
+/// is read does not depend on where the state came from — only on what the state remembers.
+fn with_decode_state<R>(
+    st: Option<&mut PlaneSessionState>,
+    read: impl FnOnce(&mut StreamDecodeState) -> R,
+) -> R {
+    match st.and_then(PlaneSessionState::get_mut::<LlmSessionState>) {
+        Some(session) => read(&mut session.decode),
+        None => read(&mut StreamDecodeState::default()),
+    }
+}
+
+/// The span view of a REQUEST body, built from the pointers this dialect declares.
+///
+/// The conversation itself and every place the dialect accepts the client's response ceiling,
+/// resolved once by the contract's own span grammar and copied into the unit's arena. The plane
+/// used to hand the loop an empty table because nothing on the arena could allocate one, so the
+/// kernel re-walked bytes this step had already walked.
+fn request_view<'u>(d: &Dialect, body: &'u [u8], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let mut ptrs = [d.input_pointer; 1 + MAX_RESPONSE_PTRS];
+    let mut len = 1;
+    for ptr in d.max_response_pointers.iter().take(MAX_RESPONSE_PTRS) {
+        ptrs[len] = ptr;
+        len += 1;
+    }
+    view(body, &ptrs[..len], ctx)
+}
+
+/// The span view of a RESPONSE body, built from the quantity pointers this dialect declares.
+///
+/// The two quantities every dialect reports and the two only some do. A frame that is not a
+/// document of this shape — an event frame, the end-of-stream marker — resolves none of them, and
+/// an unresolved pointer is absent from the table rather than present and empty.
+fn response_view<'u>(d: &Dialect, body: &'u [u8], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let mut ptrs = [d.tokens_in_pointer; 4];
+    let mut len = 1;
+    for ptr in [
+        Some(d.tokens_out_pointer),
+        d.cache_read_pointer,
+        d.cache_write_pointer,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        ptrs[len] = ptr;
+        len += 1;
+    }
+    view(body, &ptrs[..len], ctx)
+}
+
+/// One scan of one closed grammar, into the unit's own arena.
+fn view<'u>(body: &'u [u8], pointers: &[&'u str], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
+    let spans = busbar_contract::spans::resolve(body, pointers, ctx.arena())
+        .map_err(|_| Decode::Oversize)?;
+    Ok(Ir::new(body, spans))
+}
+
+impl Plane for LlmPlane {
+    fn decode_ingress<'u>(
+        &self,
+        frames: &mut FrameCursor<'u>,
+        _st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<Ingress<'u>, Decode> {
+        let Some(frame) = frames.next_frame() else {
+            return Ok(Ingress::NeedMore);
+        };
+        let d = ingress_dialect(ctx).ok_or(Decode::UnsupportedOperation)?;
+        let path = ctx.transport().fact(FACT_PATH).unwrap_or_default();
+        let bytes = frame.bytes.as_slice();
+
+        // The codec's own reader is what says whether these bytes are this dialect's shape. A
+        // second opinion here would be a second dialect.
+        let value = parse(bytes)?;
+        let request = with_reader(d.name, |r| r.read_request(&value))
+            .ok_or(Decode::UnsupportedOperation)?
+            .map_err(|_| Decode::Malformed)?;
+
+        let body = ctx
+            .arena()
+            .alloc_bytes(bytes)
+            .map_err(|_| Decode::Oversize)?;
+
+        let mut facts = Facts::new();
+        let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(d.name));
+        let _ = facts.set(
+            meta::FACT_OPERATION,
+            FactValue::Str(op_class_for(path).as_str()),
+        );
+        if let Some(model) = value.get("model").and_then(serde_json::Value::as_str) {
+            if let Some(model) = put_str(ctx, model) {
+                let _ = facts.set(meta::FACT_MODEL, FactValue::Str(model));
+            }
+        }
+        let _ = facts.set(
+            meta::FACT_STREAM,
+            FactValue::Bool(
+                value
+                    .get("stream")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            ),
+        );
+        // The response ceiling the client asked for, as evidence. It is a fact, never a decision:
+        // what it is clamped to is the admission step's business.
+        if let Some(max) = request.max_tokens {
+            let _ = facts.set(meta::FACT_MAX_RESPONSE, FactValue::Int(i64::from(max)));
+        }
+
+        Ok(Ingress::OneShot(Box::new(UnitDraft {
+            op: op_class_for(path),
+            body_ir: request_view(d, body.as_slice(), ctx)?,
+            correlates: None,
+            correlation_out: None,
+            facts,
+        })))
+    }
+
+    fn encode_egress<'u>(
+        &self,
+        u: &Unit<'u>,
+        dest: &VerifiedDestination,
+        _st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<EgressBody<'u>, Encode> {
+        let upstream = upstream_for(self, dest).ok_or(Encode::Unrepresentable)?;
+        let egress = dialect::dialect(upstream.dialect).ok_or(Encode::Unrepresentable)?;
+        let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
+
+        let bytes = u.body().body();
+        // Both quantities the hop needs from the REQUEST document were read once, at decode, and
+        // sealed into the draft: whether the client asked for a stream, and which model it named.
+        // Reading them back is what lets the relay below decide without a document.
+        let draft = u.draft_facts();
+        let stream = matches!(draft.get(meta::FACT_STREAM), Some(FactValue::Bool(true)));
+        let named_model = match draft.get(meta::FACT_MODEL) {
+            Some(FactValue::Str(model)) => Some(model),
+            _ => None,
+        };
+
+        let out = if ingress.name == egress.name && named_model == Some(upstream.model) {
+            // Same dialect, and the model the client named is already the model this lane wants. So
+            // there is nothing to rewrite, and the bytes the client sent are the bytes the upstream
+            // gets — the same conclusion the parse-and-compare below reaches, reached without the
+            // parse. Re-serializing an unchanged document would move whitespace and member order
+            // for no reason, and a request that is signed over its bytes would stop verifying.
+            //
+            // The relay is a BORROW, not a copy: decode already put these bytes in this unit's
+            // arena (it copies them off the connection slab before reading them), so they live
+            // exactly as long as the hop that carries them.
+            ScratchBytes::new(bytes)
+        } else if ingress.name == egress.name {
+            // Same dialect, but the model may have to change. Only this arm needs the document.
+            let mut value: serde_json::Value =
+                sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
+            let rewritten = with_writer(egress.name, |w| {
+                w.rewrite_model_if_needed(&mut value, upstream.model)
+            })
+            .ok_or(Encode::Unrepresentable)?;
+            if rewritten {
+                put(ctx, &serialize(&value)?)?
+            } else {
+                ScratchBytes::new(bytes)
+            }
+        } else {
+            let value: serde_json::Value =
+                sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
+            let mut request = with_reader(ingress.name, |r| r.read_request(&value))
+                .ok_or(Encode::Unrepresentable)?
+                .map_err(|_| Encode::Unrepresentable)?;
+            // Two normalizations the crossing needs that neither the reader nor the writer does
+            // for itself. Both are rules of the crossing, not of either dialect, which is why they
+            // sit here rather than in a codec.
+            //
+            // A dialect that refuses a request with no response ceiling gets one — only when the
+            // request carries none. A value the client sent is never rewritten and never clamped.
+            if request.max_tokens.is_none() && dialect::requires_max_response(egress.name) {
+                request.max_tokens = Some(configured_max_response(ctx));
+            }
+            // Everything the source dialect modelled and the intermediate representation does not
+            // is dropped. Carrying it over would put one vendor's member names into another
+            // vendor's request, where at best they are ignored and at worst they are rejected —
+            // and a control that survives the crossing by accident is a control nobody chose.
+            request.extra.clear();
+            // Two calls, ONE writer: what the second rewrites is what the first wrote, so the pair
+            // is a single question asked of a single instance — which is what the closure form
+            // gives, without either call reaching the heap for the writer that answers it.
+            // Written for THIS upstream: its model and its declared capabilities (the output-cap
+            // spelling, the reasoning form, the structured-output form), which the dialect writer
+            // cannot see from the request (OAI-01, ANT-07/09/10 lane-capability ruling).
+            let written = with_writer(egress.name, |w| {
+                let mut written =
+                    w.write_request_for_lane(&request, upstream.model, &upstream.caps);
+                w.rewrite_model_if_needed(&mut written, upstream.model);
+                written
+            })
+            .ok_or(Encode::Unrepresentable)?;
+            put(ctx, &serialize(&written)?)?
+        };
+
+        let mut envelope = TransportEnvelope::default();
+        // The request target is a stateless question — this model, streamed or not — and asking it
+        // through a resolved `Protocol` was a `Box` of a writer this call never otherwise touches.
+        // On the passthrough arm above that box was the WHOLE of what the hop allocated beyond its
+        // envelope, and the allocation gate counted it.
+        let path = with_writer(egress.name, |w| {
+            w.upstream_path_for_stream(upstream.model, stream)
+        })
+        .ok_or(Encode::Unrepresentable)?;
+        let _ = envelope.fields.push(EnvelopeField {
+            name: "method",
+            value: put(ctx, b"POST")?,
+        });
+        let _ = envelope.fields.push(EnvelopeField {
+            name: "path",
+            value: put(ctx, path.as_bytes())?,
+        });
+        let _ = envelope.fields.push(EnvelopeField {
+            name: "content-type",
+            value: put(ctx, b"application/json")?,
+        });
+
+        Ok(EgressBody {
+            envelope,
+            body: out,
+            auth: SchemeKey::new(egress.egress_scheme),
+        })
+    }
+
+    fn encode_ingress_frame<'u>(
+        &self,
+        _u: &Unit<'u>,
+        _f: &Frame,
+        _dest: &VerifiedDestination,
+        _st: Option<&mut PlaneSessionState>,
+        _ctx: &Ctx<'u>,
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
+        // None of the six dialects carries a client frame that belongs to an already-open request:
+        // a request is one body, and everything after it flows the other way. Consuming the frame
+        // and sending nothing is the honest answer, not an error.
+        Ok(None)
+    }
+
+    fn decode_response<'u>(
+        &self,
+        frames: &mut FrameCursor<'u>,
+        dest: &VerifiedDestination,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<Progress<'u>, Decode> {
+        let Some(frame) = frames.next_frame() else {
+            return Ok(Progress::NeedMore);
+        };
+        let upstream = upstream_for(self, dest).ok_or(Decode::UnsupportedOperation)?;
+        let egress = dialect::dialect(upstream.dialect).ok_or(Decode::UnsupportedOperation)?;
+        let bytes = frame.bytes.as_slice();
+        let body = ctx
+            .arena()
+            .alloc_bytes(bytes)
+            .map_err(|_| Decode::Oversize)?;
+
+        let mut facts = Facts::new();
+        let _ = facts.set(meta::FACT_SOURCE_DIALECT, FactValue::Str(egress.name));
+
+        if is_event_frame(bytes) {
+            let (name, data) = split_event(bytes);
+            // The dialect's own end-of-stream marker is not a document; it ends the answer.
+            if data == b"[DONE]" {
+                let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("event"));
+                return Ok(Progress::Terminal {
+                    for_: None,
+                    r: Box::new(Response {
+                        ir: response_view(egress, body.as_slice(), ctx)?,
+                        finish: FinishClass::Complete,
+                        facts,
+                    }),
+                });
+            }
+            let value = parse(data)?;
+            // The reader holds nothing across frames — the state it reads against is the kernel's,
+            // borrowed for the length of the call — so this is a stateless question and the writer
+            // a resolved `Protocol` would box alongside it is never touched.
+            let events = with_decode_state(st, |state| {
+                with_reader(egress.name, |r| r.read_response_events(name, &value, state))
+            })
+            .ok_or(Decode::UnsupportedOperation)?;
+            let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("event"));
+            let terminal = events
+                .iter()
+                .any(|e| matches!(e, IrStreamEvent::MessageStop));
+            let finish = events
+                .iter()
+                .find_map(|e| match e {
+                    IrStreamEvent::MessageDelta { stop_reason, .. } => {
+                        Some(finish_of(*stop_reason))
+                    }
+                    IrStreamEvent::Error(_) => Some(FinishClass::Error),
+                    _ => None,
+                })
+                .unwrap_or(FinishClass::Partial);
+            let r = Response {
+                ir: response_view(egress, body.as_slice(), ctx)?,
+                finish,
+                facts,
+            };
+            return Ok(if terminal {
+                Progress::Terminal {
+                    for_: None,
+                    r: Box::new(r),
+                }
+            } else {
+                Progress::Frame {
+                    for_: None,
+                    r: Box::new(r),
+                }
+            });
+        }
+
+        let value = parse(bytes)?;
+        let response = with_reader(egress.name, |r| r.read_response(&value))
+            .ok_or(Decode::UnsupportedOperation)?
+            .map_err(|_| Decode::Malformed)?;
+        let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("body"));
+        response_facts(ctx, &response, &mut facts);
+        Ok(Progress::Terminal {
+            for_: None,
+            r: Box::new(Response {
+                ir: response_view(egress, body.as_slice(), ctx)?,
+                finish: finish_of(response.stop_reason),
+                facts,
+            }),
+        })
+    }
+
+    fn encode_response<'u>(
+        &self,
+        r: &Response<'u>,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
+        let source = match r.facts.get(meta::FACT_SOURCE_DIALECT) {
+            Some(FactValue::Str(name)) => name,
+            _ => ingress.name,
+        };
+        let bytes = r.ir.body();
+
+        let is_event = matches!(
+            r.facts.get(meta::FACT_FRAME_KIND),
+            Some(FactValue::Str("event"))
+        );
+        if is_event {
+            let (name, data) = split_event(bytes);
+            if data == b"[DONE]" {
+                return put(ctx, bytes);
+            }
+            // The one resolution in this plane that is NOT a stateless question, so the one that
+            // stays a `Protocol`: the ingress WRITER below is asked once per event of this frame,
+            // and every open block it tracks is a fact about the events it has already written. One
+            // instance has to see all of them, so it is held across the loop rather than rebuilt.
+            let ingress_protocol = crate::codec::proto_codec::protocol_for(ingress.name)
+                .ok_or(Encode::Unrepresentable)?;
+            let value: serde_json::Value =
+                sonic_rs::from_slice(data).map_err(|_| Encode::Unrepresentable)?;
+            let events = with_decode_state(st, |state| {
+                with_reader(source, |r| r.read_response_events(name, &value, state))
+            })
+            .ok_or(Encode::Unrepresentable)?;
+            let mut out = Vec::new();
+            for event in events {
+                for (kind, payload) in ingress_protocol.writer().write_response_events(&event) {
+                    out.extend_from_slice(b"event: ");
+                    out.extend_from_slice(kind.as_bytes());
+                    out.extend_from_slice(b"\ndata: ");
+                    out.extend_from_slice(&serialize(&payload)?);
+                    out.extend_from_slice(b"\n\n");
+                }
+            }
+            return put(ctx, &out);
+        }
+
+        if source == ingress.name {
+            // Same dialect: the upstream's own bytes are already what the client reads.
+            //
+            // ASKED BEFORE THE DOCUMENT IS BUILT, and the order is the whole of it. This arm needs
+            // nothing out of the answer — it says so in one line — so a parse taken above it is a
+            // full `serde_json::Value` of the upstream's answer built and dropped on the next
+            // statement. An answer is the larger of the two documents on every request this plane
+            // serves, so it was the more expensive of the two copies the relay used to make; the
+            // request direction stopped making its one when the relay became a borrow, and this is
+            // the same move on the side that carries more bytes. An allocation gate holds it.
+            return put(ctx, bytes);
+        }
+        let value: serde_json::Value =
+            sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
+        let mut response = with_reader(source, |r| r.read_response(&value))
+            .ok_or(Encode::Unrepresentable)?
+            .map_err(|_| Encode::Unrepresentable)?;
+        // THE ANSWER-NORMALIZATION PASS. The reference forward path runs exactly this between
+        // reading an answer and writing it, and the four members this plane used to get wrong were
+        // all it: the upstream's own identity is cleared (so the client-facing writer mints one in
+        // the client's native shape rather than passing a foreign dialect's id through), the
+        // creation time is filled in, and the tool-call ids are rewritten so an identity minted by
+        // one vendor is recognisable when it comes back through another.
+        //
+        // The creation time is an INPUT, taken from the context's clock. That is the whole reason
+        // this call can live in a plane: the pass reads no clock of its own, so a plane running it
+        // stays pure over its inputs, and two calls with the same context produce the same answer.
+        crate::codec::chat_handle::chat_prepare_for_ingress(
+            &mut response,
+            ingress.name,
+            ctx.clock().unix_secs,
+        );
+        // Two calls, one writer, for the same reason the crossing's request side has two: what the
+        // second stamps is what the first wrote.
+        let written = with_writer(ingress.name, |w| {
+            let mut written = w.write_response(&response);
+            w.inject_response_metrics(&mut written, elapsed_ms(ctx));
+            written
+        })
+        .ok_or(Encode::Unrepresentable)?;
+        put(ctx, &serialize(&written)?)
+    }
+
+    fn encode_refusal<'u>(
+        &self,
+        refusal: &Refusal,
+        _draft: Option<&UnitDraft<'u>>,
+        _st: Option<&PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
+        let (status, kind) = refusal_shape(refusal.reason);
+        // One dialect puts a minted identifier at the top of its error envelope, because a native
+        // envelope carries one. A plane reads no random source, so the entropy for it is an input:
+        // the codec builds the identifier from bytes handed to it, which keeps the envelope's native
+        // shape while leaving this method a pure function of what it was given. Two refusals built
+        // from the same context are therefore the same bytes.
+        let envelope = crate::codec::write_error_envelope(
+            ingress.name,
+            status,
+            kind,
+            refusal_message(refusal.reason),
+            &minted_id_entropy(ctx),
+        )
+        .ok_or(Encode::Unrepresentable)?;
+        put(ctx, &serialize(&envelope)?)
+    }
+
+    fn encode_end<'u>(
+        &self,
+        u: &Unit<'u>,
+        end: &UnitEnd,
+        _st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
+        // A completed request has already had its whole answer written; there is no separate
+        // ending to send. A failure mid-answer is the one case with an ending to write, and the
+        // dialect's own error frame is what a client of that dialect knows how to read.
+        let UnitEnd::Failed { .. } = end else {
+            return Ok(None);
+        };
+        let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
+        let envelope = with_writer(ingress.name, |w| {
+            w.write_error(500, KIND_API_ERROR, "The request could not be completed.")
+        })
+        .ok_or(Encode::Unrepresentable)?;
+        Ok(Some(put(ctx, &serialize(&envelope)?)?))
+    }
+
+    fn authenticate<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
+        CredentialLocator {
+            narrowing: unit_dialect(u).map(|d| SchemeAlt::new(d.scheme_alt)),
+            // Every one of the six dialects presents its credential on the request itself. None of
+            // them authenticates once and rides a session.
+            from_session: false,
+        }
+    }
+
+    fn verify<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
+        match self.first_upstream() {
+            Some(u) => DestinationFacts::Upstream {
+                transport: crate::claims::TRANSPORT,
+                address: busbar_contract::UpstreamAddress::socket(u.host),
+                lane: u.lane,
+            },
+            // Nothing is configured, so there is nowhere to go. Naming a kernel verb that does not
+            // exist is refused at the verify step, which is the right ending: the alternative would
+            // be inventing a host.
+            None => DestinationFacts::KernelVerb {
+                verb: "unconfigured",
+            },
+        }
+    }
+
+    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
+        let mut facts = ScopeFacts::default();
+        let _ = facts.resources.push(ResourceLocator {
+            kind: "operation",
+            name: u.op().as_str(),
+        });
+        facts
+    }
+
+    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
+        let Some(d) = unit_dialect(u) else {
+            return AdmitFacts::default();
+        };
+        let body = u.body().body();
+        // Which bytes are the priced input: the conversation the client sent, not the controls
+        // around it. A dialect whose container the scanner does not reach prices the whole body,
+        // which is the conservative reading.
+        // Read off the table the decode step resolved, never scanned a second time here: the
+        // whole point of the unit carrying its spans is that the answer is already in it.
+        let input_span = u
+            .body()
+            .pointers()
+            .find(|(ptr, _)| *ptr == d.input_pointer)
+            .map(|(_, span)| span)
+            .unwrap_or(Span {
+                start: 0,
+                end: body.len(),
+            });
+        AdmitFacts {
+            // The dialect's own table says where the model IS: a body pointer for the four that
+            // carry it in the body, a path segment for the two that carry it in the request target.
+            lane_locator: Some(d.model_location),
+            // Every place this dialect accepts the ceiling, in the dialect table's own order. The
+            // kernel takes the first that resolves, so a dialect with two spellings reads whichever
+            // the client actually sent.
+            max_response_ptrs: {
+                let mut ptrs = BoundedVec::new();
+                for ptr in d.max_response_pointers {
+                    let _ = ptrs.push(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
+                        ptr,
+                    )));
+                }
+                ptrs
+            },
+            input_span: Some(input_span),
+        }
+    }
+
+    fn route<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> RoutePlan {
+        let mut plan = RoutePlan::default();
+        let _ = plan.legs.push(Leg {
+            destination: self.verify(u, ctx),
+        });
+        plan
+    }
+
+    fn meter<'u>(&self, _u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
+        let mut locators = UsageLocators::default();
+        let Some(source) = (match r.facts.get(meta::FACT_SOURCE_DIALECT) {
+            Some(FactValue::Str(name)) => dialect::dialect(name),
+            _ => None,
+        }) else {
+            return locators;
+        };
+        let Some(usage) = reported_usage(source.name, r) else {
+            return locators;
+        };
+        // The quantities come back already normalized: a dialect that reports its cached count
+        // INSIDE its input total has had it subtracted by its own reader, and a dialect whose cache
+        // counts are already separate is left alone. So the four lines below partition the input
+        // once, whichever dialect answered — and the plane does no arithmetic to make that true.
+        let usage = &usage;
+        // THE CLASS IS THE DECLARED SYMBOL, NEVER A RE-SPELLING OF IT — see `meta::CLASS_TOKENS_IN`
+        // for why. The four calls below now name the four consts `meta` declares in
+        // `METER_CLASSES`, so the class a count is EMITTED under and the class the plane DECLARED
+        // are one value the compiler checks rather than two strings that agree today.
+        let mut line = |class: MeterClassId, ptr: Option<&'static str>, quantity: Option<u64>| {
+            if let Some(quantity) = quantity {
+                let _ = locators.lines.push(UsageLocator {
+                    class,
+                    location: ptr
+                        .map(|p| Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(p))),
+                    quantity: Some(quantity),
+                    lane: None,
+                });
+            }
+        };
+        line(
+            meta::CLASS_TOKENS_IN,
+            Some(source.tokens_in_pointer),
+            Some(usage.input_tokens),
+        );
+        line(
+            meta::CLASS_TOKENS_OUT,
+            Some(source.tokens_out_pointer),
+            Some(usage.output_tokens),
+        );
+        line(
+            meta::CLASS_CACHE_READ,
+            source.cache_read_pointer,
+            usage.cache_read_input_tokens,
+        );
+        line(
+            meta::CLASS_CACHE_WRITE,
+            source.cache_write_pointer,
+            usage.cache_creation_input_tokens,
+        );
+        locators
+    }
+
+    fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
+        AuditFacts {
+            // The class the draft declared is the class that priced the unit, so it is the class
+            // the audit step reports. Reporting a different one here would be a dispute, and a
+            // dispute over a class this plane never re-derives would be a fabricated one.
+            op_class: u.op(),
+            // One mapping, written once in the contract and read by every plane, because the
+            // audit record is the same record whichever door the request came in by.
+            finish: busbar_contract::unit::finish_class_of(out, FinishClass::Complete),
+        }
+    }
+
+    fn plane_facts<'u>(
+        &self,
+        verb: AdminVerbId,
+        _subject: Option<&'u str>,
+        ctx: &Ctx<'u>,
+    ) -> Result<PlaneFacts<'u>, Decode> {
+        let mut facts = Facts::new();
+        if verb == meta::VERB_DIALECTS {
+            for d in dialect::DIALECTS {
+                let _ = facts.set(d.name, FactValue::Str(d.name));
+            }
+            return Ok(PlaneFacts { facts });
+        }
+        if verb == meta::VERB_LADDER {
+            for entry in crate::claims::LADDER {
+                if let Some(key) = put_str(ctx, &format!("rung.{}", entry.rung)) {
+                    let _ = facts.set(key, FactValue::Str(entry.dialect));
+                }
+            }
+            return Ok(PlaneFacts { facts });
+        }
+        Err(Decode::UnsupportedOperation)
+    }
+
+    fn content_facts<'u>(
+        &self,
+        _u: &Unit<'u>,
+        r: &Response<'u>,
+        ctx: &Ctx<'u>,
+    ) -> ContentFacts<'u> {
+        let mut facts = Facts::new();
+        let source = match r.facts.get(meta::FACT_SOURCE_DIALECT) {
+            Some(FactValue::Str(name)) => name,
+            _ => return ContentFacts { facts },
+        };
+        if is_streamed(r) {
+            // A streamed frame states what the frame states \u2014 the stream's identity and model on
+            // the opening event, how it stopped on the closing one \u2014 and nothing about the frames
+            // either side of it. A tool-call count in particular is a property of a whole answer,
+            // and a count taken from one frame would be a number no frame reported.
+            let Some((name, value)) = event_payload(r.ir.body()) else {
+                return ContentFacts { facts };
+            };
+            let mut state = StreamDecodeState::default();
+            let events = with_reader(source, |rd| {
+                rd.read_response_events(name, &value, &mut state)
+            })
+            .unwrap_or_default();
+            for event in events {
+                stream_event_facts(ctx, &event, &mut facts);
+            }
+            return ContentFacts { facts };
+        }
+        let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(r.ir.body()) else {
+            return ContentFacts { facts };
+        };
+        let Some(Ok(response)) = with_reader(source, |rd| rd.read_response(&value)) else {
+            return ContentFacts { facts };
+        };
+        response_facts(ctx, &response, &mut facts);
+        ContentFacts { facts }
+    }
+}
+
+/// The operator's configured default response ceiling, or the design's own fallback.
+fn configured_max_response(ctx: &Ctx<'_>) -> u32 {
+    ctx.config()
+        .get_int(CONFIG_MAX_RESPONSE)
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(DEFAULT_MAX_RESPONSE)
+}
+
+/// What an answer was, for the record and the export path.
+///
+/// What is here is what the export sinks already receive: which model answered, how it stopped, how
+/// many tool calls it asked for, and the upstream's own identifier for it. Not the content.
+fn response_facts<'u>(ctx: &Ctx<'u>, response: &IrResponse, facts: &mut Facts<'u>) {
+    if let Some(model) = response.model.as_deref().and_then(|m| put_str(ctx, m)) {
+        let _ = facts.set(meta::FACT_RESPONSE_MODEL, FactValue::Str(model));
+    }
+    if let Some(id) = response.id.as_deref().and_then(|i| put_str(ctx, i)) {
+        let _ = facts.set(meta::FACT_RESPONSE_ID, FactValue::Str(id));
+    }
+    if let Some(stop) = response.stop_reason {
+        let _ = facts.set(meta::FACT_FINISH_REASON, FactValue::Str(stop_name(stop)));
+    }
+    let tool_calls = response
+        .content
+        .iter()
+        .filter(|b| matches!(b, crate::codec::ir::IrBlock::ToolUse { .. }))
+        .count();
+    let _ = facts.set(
+        meta::FACT_TOOL_CALLS,
+        FactValue::Int(i64::try_from(tool_calls).unwrap_or(i64::MAX)),
+    );
+}
+
+/// What one streamed event says about the answer it is part of, for the same record.
+///
+/// The whole-answer twin of this is [`response_facts`]. What differs is what a single frame is
+/// entitled to claim: the opening event names the stream's model and identity, the closing one names
+/// how it stopped, and neither names a count over frames it never saw.
+fn stream_event_facts<'u>(ctx: &Ctx<'u>, event: &IrStreamEvent, facts: &mut Facts<'u>) {
+    match event {
+        IrStreamEvent::MessageStart { id, model, .. } => {
+            if let Some(model) = model.as_deref().and_then(|m| put_str(ctx, m)) {
+                let _ = facts.set(meta::FACT_RESPONSE_MODEL, FactValue::Str(model));
+            }
+            if let Some(id) = id.as_deref().and_then(|i| put_str(ctx, i)) {
+                let _ = facts.set(meta::FACT_RESPONSE_ID, FactValue::Str(id));
+            }
+        }
+        IrStreamEvent::MessageDelta {
+            stop_reason: Some(stop),
+            ..
+        } => {
+            let _ = facts.set(meta::FACT_FINISH_REASON, FactValue::Str(stop_name(*stop)));
+        }
+        _ => {}
+    }
+}
+
+/// The name a stop reason is recorded under.
+///
+/// A closed set of this plane's own words, never the upstream's token: an upstream token echoed
+/// into a record is a foreign value in a field the record's readers believe is closed.
+fn stop_name(stop: IrStopReason) -> &'static str {
+    match stop {
+        IrStopReason::EndTurn => "end_turn",
+        IrStopReason::StopSequence => "stop_sequence",
+        IrStopReason::MaxTokens => "max_tokens",
+        IrStopReason::ToolUse => "tool_use",
+        IrStopReason::Safety => "safety",
+        IrStopReason::Refusal => "refusal",
+        IrStopReason::PauseTurn => "pause_turn",
+        IrStopReason::Error => "error",
+        IrStopReason::Other => "other",
+    }
+}

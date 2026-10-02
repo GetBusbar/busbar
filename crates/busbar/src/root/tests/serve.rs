@@ -1,0 +1,268 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+use std::collections::HashMap;
+
+use busbar_contract::abi::host::service as svc;
+use busbar_contract::abi::mechanism::call::Outcome;
+
+use super::*;
+
+/// A kernel stand-in whose `dest.judge` answers READY, so an installed service is told apart from
+/// the late refusal.
+struct Judges;
+
+impl HostServices for Judges {
+    fn now(&self) -> Reading {
+        Reading {
+            wall_ns: 7,
+            mono_ns: 7,
+        }
+    }
+    fn dest_judge(&self, _: &str, _: u32, _: bool, _: Option<Later>) -> Ran {
+        Ran::Now(Stored::ready(1))
+    }
+    fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(2))
+    }
+    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
+        Ran::Now(Stored::ready(3))
+    }
+    fn records_claim(&self, _: &Caller, _: &str, _: &[u8], _: u64, _: Later) -> Ran {
+        Ran::Now(Stored::ready(4))
+    }
+    fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
+        Stored::ready(5)
+    }
+    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(Stored::ready(6))
+    }
+    fn trust_due(&self, _: &Caller) -> Stored {
+        Stored::ready(7)
+    }
+    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
+        Stored::ready(8)
+    }
+    fn random_fill(&self, _: u64) -> Stored {
+        Stored::ready(9)
+    }
+}
+
+fn judged(s: &LateServices) -> Stored {
+    match s.dest_judge("https://example.test/", 0, false, None) {
+        Ran::Now(stored) => stored,
+        Ran::Later => panic!("the late services never pend"),
+    }
+}
+
+#[test]
+fn a_service_called_before_the_install_answers_refused_and_never_panics() {
+    let late = LateServices::new();
+    assert_eq!(judged(&late), Stored::refused(NOT_INSTALLED));
+    let a = late.now();
+    let b = late.now();
+    assert!(a.wall_ns > 1_600_000_000_000_000_000, "the system clock");
+    assert!(b.mono_ns >= a.mono_ns);
+}
+
+#[test]
+fn the_installed_services_answer_and_a_second_install_is_refused() {
+    let late = LateServices::new();
+    late.install(Arc::new(Judges)).expect("the first install");
+    assert_eq!(
+        judged(&late),
+        Stored::ready(1),
+        "the installed services answer"
+    );
+    assert_eq!(late.now().wall_ns, 7);
+    assert_eq!(
+        late.install(Arc::new(Judges)),
+        Err(AlreadyInstalled),
+        "a second install is refused"
+    );
+    assert!(late.is_installed());
+}
+
+/// Every caller-scoped service's answer, in the order [`Judges`] numbers them.
+fn every_service(s: &LateServices) -> Vec<Stored> {
+    let caller = Caller {
+        instance: Arc::from("the-instance"),
+        plugin: Arc::from("the-plugin"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    let now = |ran| match ran {
+        Ran::Now(stored) => stored,
+        Ran::Later => panic!("the late services never pend"),
+    };
+    let list = RecordsList {
+        kind: "k".to_string(),
+        prefix: Vec::new(),
+        after: None,
+        limit: 0,
+    };
+    vec![
+        now(s.records_get(&caller, "k", b"key", Box::new(|_| {}))),
+        now(s.records_list(&caller, list, Box::new(|_| {}))),
+        now(s.records_claim(&caller, "k", b"key", 1, Box::new(|_| {}))),
+        s.sign(&caller, b"data"),
+        now(s.trust_sight(&caller, "peer", "hash", Box::new(|_| {}))),
+        s.trust_due(&caller),
+        s.entitlement_check(&caller, None, "model:m"),
+        s.random_fill(16),
+    ]
+}
+
+/// The late services are the installed services for every service the host table serves, not
+/// `clock.now` and `dest.judge` alone; before the install each answers REFUSED.
+#[test]
+fn every_service_is_the_installed_services_answer() {
+    let late = LateServices::new();
+    let before = every_service(&late);
+    assert!(before.iter().all(|s| *s == Stored::refused(NOT_INSTALLED)));
+    late.install(Arc::new(Judges)).expect("the install");
+    let after = every_service(&late);
+    assert!(after.iter().all(|s| s.outcome == Outcome::Ready));
+    let values: Vec<u64> = after.iter().map(|s| s.value).collect();
+    assert_eq!(values, (2..=9).collect::<Vec<u64>>());
+}
+
+fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
+    let blocked: Vec<String> = blocked.iter().map(|h| (*h).to_string()).collect();
+    KernelServices::new(
+        HashMap::from([(
+            DEFAULT_EGRESS_CLASS,
+            default_egress_rules(&blocked, &[], allow_all),
+        )]),
+        Arc::new(SystemResolver),
+    )
+}
+
+fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
+    match s.dest_judge(dest, class, false, None) {
+        Ran::Now(stored) => stored,
+        Ran::Later => panic!("an unresolved judgement answers at once"),
+    }
+}
+
+/// The default egress class is the deployment's `security` section: the metadata denylist with the
+/// operator's additions and override; a class the kernel did not map is refused.
+#[test]
+fn the_default_egress_class_is_the_deployments_security_stance() {
+    let late = LateServices::new();
+    late.install(Arc::new(kernel(&["metadata.corp.example"], false)))
+        .expect("the install");
+    let judged = |dest| verdict(late.as_ref(), dest, DEFAULT_EGRESS_CLASS).value;
+    assert_eq!(
+        judged("https://169.254.169.254/latest/meta-data/"),
+        svc::DEST_METADATA
+    );
+    assert_eq!(
+        judged("https://metadata.corp.example/"),
+        svc::DEST_METADATA,
+        "the operator's own addition to the denylist"
+    );
+    assert_eq!(judged("https://10.0.0.7/"), svc::DEST_INTERNAL);
+    assert_eq!(judged("http://93.184.216.34/"), svc::DEST_ALLOWED);
+    assert_eq!(
+        verdict(late.as_ref(), "https://93.184.216.34/", 9).outcome,
+        busbar_contract::abi::mechanism::call::Outcome::Refused,
+        "an unmapped class is refused"
+    );
+    // `allow_all_metadata` is 1.5.5's nuclear override: the metadata guard is fully disabled, the
+    // operator's additions and the metadata address alike; with it off the address stays refused.
+    let open = kernel(&["metadata.corp.example"], true);
+    let admitted = |dest| verdict(&open, dest, DEFAULT_EGRESS_CLASS).value;
+    assert_eq!(
+        admitted("https://metadata.corp.example/"),
+        svc::DEST_ALLOWED
+    );
+    assert_eq!(
+        admitted("https://169.254.169.254/latest/meta-data/"),
+        svc::DEST_ALLOWED,
+        "allow_all_metadata admits the metadata address, as 1.5.5 did"
+    );
+    let shut = kernel(&[], false);
+    assert_eq!(
+        verdict(
+            &shut,
+            "https://169.254.169.254/latest/meta-data/",
+            DEFAULT_EGRESS_CLASS
+        )
+        .value,
+        svc::DEST_METADATA,
+        "without the override the metadata address is refused"
+    );
+}
+
+// ── the caller side over today's ingress (TRANSITIONAL) ──────────────────────────────────────────
+
+/// The head becomes the response's status and fields; the writes become its body, in order.
+#[tokio::test]
+async fn the_ingress_caller_answers_with_the_units_head_and_bytes() {
+    let (caller, reply) = IngressCaller::new();
+    let unit = async {
+        caller.head(201, vec![(b"x-plane".to_vec(), b"one".to_vec())]);
+        assert!(caller.write(b"hello ").await);
+        assert!(caller.write(b"world").await);
+        drop(caller);
+    };
+    let handler = async {
+        let response = reply.response().await.expect("a head");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers()["x-plane"], "one");
+        axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body")
+    };
+    let ((), body) = tokio::join!(unit, handler);
+    assert_eq!(&body[..], b"hello world");
+}
+
+/// A write resolves only once the body has taken the piece before it: one piece in flight.
+#[tokio::test]
+async fn an_ingress_write_waits_for_the_body_to_take_the_piece_before_it() {
+    use http_body_util::BodyExt;
+    let (caller, reply) = IngressCaller::new();
+    caller.head(200, Vec::new());
+    let mut body = reply.response().await.expect("a head").into_body();
+    assert!(caller.write(b"a").await, "the first piece fits the window");
+    let second = caller.write(b"b");
+    tokio::pin!(second);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut second)
+            .await
+            .is_err(),
+        "the second write waits while the first piece is untaken"
+    );
+    let first = body.frame().await.expect("a frame").expect("data");
+    assert_eq!(first.into_data().expect("bytes").as_ref(), b"a");
+    assert!(second.await, "taken: the second write resolves");
+}
+
+/// A caller that went away: every write answers `false` (the driver's ClientGone), and a head
+/// after it, or a unit that ends without one, panics nowhere.
+#[tokio::test]
+async fn an_ingress_caller_whose_handler_went_away_answers_false() {
+    let (caller, reply) = IngressCaller::new();
+    drop(reply);
+    caller.head(200, Vec::new());
+    assert!(!caller.write(b"x").await);
+    let (caller, reply) = IngressCaller::new();
+    drop(caller);
+    assert!(reply.response().await.is_none(), "no head, no response");
+}
+
+/// A status the wire cannot carry is answered as the driver answers a plane fault; a field the
+/// wire cannot carry is not sent.
+#[tokio::test]
+async fn an_ingress_head_the_wire_cannot_carry_is_a_plane_fault() {
+    let (caller, reply) = IngressCaller::new();
+    caller.head(0, vec![(b"bad name".to_vec(), b"v".to_vec())]);
+    drop(caller);
+    let response = reply.response().await.expect("a head");
+    assert_eq!(
+        u32::from(response.status().as_u16()),
+        refusal_status(ReasonCode::PlanePanic)
+    );
+    assert!(response.headers().is_empty());
+}

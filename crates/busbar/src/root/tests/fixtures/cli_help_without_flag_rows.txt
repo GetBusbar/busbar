@@ -1,0 +1,62 @@
+busbar <VERSION> — native-protocol LLM gateway
+
+USAGE:
+    busbar [-c <path>] [--providers <path>]
+                        run the gateway (configured via environment + YAML; the two optional flags
+                        point busbar at its config.yaml / providers.yaml — see CONFIG INPUTS below)
+    busbar --help       print this help
+    busbar --version    print the version (and the build-provenance stamp)
+    busbar --build-info print the build-provenance stamp alone (profile / opt-level / lto /
+                        debug-assertions / pgo / target / target-cpu) — how this binary was built,
+                        for correlating a perf number to a build and for CI's build-parity gate
+    busbar --validate   parse + validate config.yaml/providers.yaml AND every plugin manifest
+                        (structure, signature/trust, conflicts, abi, version floors) and exit
+                        (0 = valid, 1 = errors); no server, no network, no state, no dlopen —
+                        safe in CI and before a reload; a clean --validate means boot succeeds
+    busbar --list-plugins
+                        manifest-only inventory of the plugins dir (name/alias/kind/version,
+                        signature verdict, load status + exact reason); never loads plugin code
+    busbar --migrate-config <old-config.yaml>
+                        mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
+                        YAML to stdout (with TODO/WARNING comments where a human must decide)
+                        and a change summary to stderr; ZERO side effects, nothing is written
+    busbar --generate-signing-key
+                        mint a fresh ed25519 signing key (64 hex chars) to stdout with a paste-
+                        ready auth.signing_key snippet on stderr; ZERO side effects, nothing is
+                        written — you place it in config.yaml (or wire it as a shared secret)
+    busbar --print-metadata-blocklist
+                        print the effective cloud-metadata SSRF denylist and exit
+
+CONFIG INPUTS:
+    -c, --config <path> path to config.yaml. Precedence: this flag > BUSBAR_CONFIG env >
+                        /etc/busbar/config.yaml (default). Accepts `-c <path>`, `--config <path>`,
+                        and `--config=<path>`.
+    --providers <path>  path to providers.yaml. Precedence: this flag > `providers_file:` in
+                        config.yaml > providers.yaml next to the resolved config.yaml (default).
+                        Accepts `--providers <path>` and `--providers=<path>`.
+
+ENVIRONMENT:
+    BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml; overridden by
+                        -c/--config)
+    BUSBAR_PROVIDERS    path to providers.yaml  (DEPRECATED — set `providers_file:` in config.yaml;
+                        default: providers.yaml next to the resolved config.yaml)
+    RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
+
+Flags:
+    --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
+
+ENDPOINTS (once running, listen address from config.yaml `listen`):
+    POST /<model>/v1/messages              Anthropic-format ingress (single model)
+    POST /<pool>/v1/messages               route to a configured pool
+    POST /<provider>/<model>/v1/messages   ad-hoc direct route
+    POST /v1/chat/completions              OpenAI-format ingress
+    POST /v2/chat                          Cohere-format ingress
+    POST /v1/responses                     Responses-API ingress
+    POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1)
+    POST /v1beta/models/<model>:<action>   Gemini-format ingress
+    POST /model/<modelId>/converse         Bedrock Converse ingress
+    POST /model/<modelId>/converse-stream  Bedrock Converse streaming ingress
+    GET  /v1/models  /v1beta/models        list models (answers in the caller's dialect)
+    GET  /stats  /healthz  /metrics
+
+Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar

@@ -1,0 +1,1193 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The ws transport battery: the upgrade path, byte-exact round trip, half-close (the WS closing
+//! handshake), cancel mid-frame, backpressure, K writers and honest frame meta.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::{ScratchBytes, StreamId, Transport};
+
+use crate::WsTransport;
+
+/// The target the client role names in its upgrade request. The battery drives both roles over an
+/// in-memory duplex, so it is the battery that says what the request line reads — the transport
+/// does not invent one.
+const WS_TARGET: &str = "ws://localhost/";
+
+/// Build a connected pair of live WS connections over an in-memory duplex — one performs the
+/// server handshake role, the other the client role, exactly as `accept`/`dial` would over a real
+/// socket. This is the exact seam a real `tcp`/`http` transport would hand this crate a
+/// connection through once composed (see the crate's own report).
+async fn pair(
+    t: &WsTransport,
+    cap: usize,
+) -> (
+    busbar_contract::transport::wire::Conn,
+    busbar_contract::transport::wire::Conn,
+) {
+    let (end_a, end_b) = tokio::io::duplex(cap);
+    let server = t.handshake_over(end_a, true, WS_TARGET, "peer-a");
+    let client = t.handshake_over(end_b, false, WS_TARGET, "peer-b");
+    let (server, client) = tokio::join!(server, client);
+    (server.unwrap(), client.unwrap())
+}
+
+#[tokio::test]
+async fn upgrade_then_round_trip_byte_exact() {
+    let t = WsTransport::new();
+    // The handshake succeeding at all IS the upgrade path (`Unit0Trigger::Upgrade`): a peer that
+    // is not speaking the WS opening handshake never produces a connection.
+    let (a, b) = pair(&t, 64 * 1024).await;
+
+    let payload = b"the quick brown fox \xE2\x9C\x93".to_vec();
+    let n = t
+        .write(&a, StreamId(0), ScratchBytes::new(&payload))
+        .await
+        .unwrap();
+    assert_eq!(n, payload.len());
+
+    let mut frames = t.frames(b);
+    let (stream, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(stream, StreamId(0));
+    assert_eq!(frame.direction, Direction::Inbound);
+    assert_eq!(frame.bytes.as_slice(), payload.as_slice(), "byte-exact");
+    assert_eq!(frame.meta.bytes, payload.len() as u64, "honest frame meta");
+    assert_eq!(frame.meta.transport_units, None);
+    assert_eq!(frame.meta.status, None, "no status leg after the upgrade");
+}
+
+/// With no layer under it this transport has no socket to reach for, and inventing one is exactly
+/// what the composition exists to stop.
+#[tokio::test]
+async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
+    let t = WsTransport::new();
+    let keys = test_key_handle();
+    assert_eq!(
+        t.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
+            .await
+            .unwrap_err(),
+        TransportError::HandoffMismatch
+    );
+    assert_eq!(
+        t.dial(&verified_upstream("ws://127.0.0.1:1/"), &keys)
+            .await
+            .unwrap_err(),
+        TransportError::HandoffMismatch
+    );
+}
+
+/// A peer that speaks something other than WebSocket on a WebSocket connection is not a connection
+/// that was reset: nothing happened to the transport, the bytes were wrong. Reporting every read
+/// failure as `Reset` tells the layer above a network story about a protocol event, and the two get
+/// different answers — a reset is worth redialling, malformed framing never is.
+#[tokio::test]
+async fn a_frame_with_a_reserved_opcode_is_a_framing_error_and_not_a_reset() {
+    let t = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (accepted, dialled) = tokio::join!(
+        t.handshake_over(end_a, true, WS_TARGET, "peer-a"),
+        tokio_tungstenite::client_async("ws://localhost/", end_b)
+    );
+    let conn = accepted.unwrap();
+    let (mut client, _resp) = dialled.unwrap();
+
+    // Opcode 0x3 is reserved by RFC 6455 and no endpoint may send it. Written under the client's
+    // own socket so tungstenite cannot refuse to produce it: FIN + reserved opcode, masked, empty.
+    tokio::io::AsyncWriteExt::write_all(client.get_mut(), &[0x83, 0x80, 0, 0, 0, 0])
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::flush(client.get_mut())
+        .await
+        .unwrap();
+
+    let mut frames = t.frames(conn);
+    let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a protocol violation must be reported rather than waited on")
+        .expect("a violation is an error, not a clean end of session");
+    assert_eq!(
+        outcome.unwrap_err(),
+        TransportError::Framing,
+        "bytes that are not WebSocket are a framing error, not a reset connection"
+    );
+}
+
+/// RFC 6455 §7.1.7 "Fail the WebSocket Connection": detecting a protocol violation locally (no
+/// Close frame from the peer at all, unlike `frames_answers_a_peer_initiated_close_within_budget`
+/// above) still obliges this endpoint to fail the connection and SHOULD send a Close frame naming
+/// why. Tungstenite queues nothing on its own for a violation IT reads (unlike a peer's own Close,
+/// which it does queue a reply for) — the arm this test exercises builds one from the crate's own
+/// existing reason→code table. RED ON THE PARENT: before this fix the pump matched
+/// `Some(Err(e)) => break Some(Err(read_error(&e)))` and never touched the writer, so the raw
+/// client's `next()` below never resolves within the budget and this test times out; a second,
+/// smaller parent bug (fixed in the same commit) had the pump's own late-close check discard the
+/// violation's `Err` and report a silent `None` instead, which this test would have caught too.
+#[tokio::test]
+async fn frames_answers_a_locally_detected_violation_with_a_close_within_budget() {
+    let t = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (accepted, dialled) = tokio::join!(
+        t.handshake_over(end_a, true, WS_TARGET, "peer-a"),
+        tokio_tungstenite::client_async("ws://localhost/", end_b)
+    );
+    let conn = accepted.unwrap();
+    let (mut client, _resp) = dialled.unwrap();
+
+    // Same injected violation as the test above: FIN + reserved opcode 0x3, masked, empty.
+    tokio::io::AsyncWriteExt::write_all(client.get_mut(), &[0x83, 0x80, 0, 0, 0, 0])
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::flush(client.get_mut())
+        .await
+        .unwrap();
+
+    // busbar's server role must answer this from inside `frames()`, unprompted.
+    let mut frames = t.frames(conn);
+    let pump = tokio::spawn(async move { while frames.next().await.is_some() {} });
+
+    let msg = tokio::time::timeout(crate::transport::CLOSE_BUDGET * 4, client.next())
+        .await
+        .expect("busbar must fail the connection within its own budget, not hang")
+        .expect("the stream must not end before the Close arrives")
+        .expect("a valid WS frame");
+    match msg {
+        tokio_tungstenite::tungstenite::Message::Close(Some(frame)) => {
+            assert_eq!(
+                u16::from(frame.code),
+                1002,
+                "a reserved opcode is a Protocol Error (1002), not some other code"
+            );
+        }
+        other => panic!("expected busbar to fail the connection with a Close frame, got {other:?}"),
+    }
+
+    pump.await.unwrap();
+}
+
+/// A WebSocket carries ONE message stream, with one reader, and admits exactly one consumer. A
+/// second `frames()` on a clone of the same `Conn`, while the first is live, cannot get frames —
+/// the first holds the one reader. Before this was caught, the second stream found the reader
+/// absent and terminated as `None`: a clean end of session, indistinguishable from the peer
+/// closing, for a session that was in fact still running. It must be a loud contract violation
+/// rather than a silent fake-close.
+#[tokio::test]
+async fn a_second_concurrent_frames_consumer_is_a_loud_panic_not_a_silent_close() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+
+    // The first consumer, parked IN the socket read: polled once and kept alive, so it holds the
+    // one reader. Kept pinned rather than let a timeout drop it — dropping the read future would
+    // hand the reader back and there would be nothing for the second consumer to collide with.
+    //
+    // A single synchronous `poll!` rather than a real-time race (`timeout(50ms, ...)`): nothing is
+    // ever written to `a`, so the first consumer can only be `Pending` after one poll — asserting
+    // that directly is both stronger (an exact claim, not "didn't finish within some window") and
+    // immune to CI scheduling variance, where a real sleep can be flaky, not slow.
+    let mut first = t.frames(b.clone());
+    let first_next = first.next();
+    tokio::pin!(first_next);
+    let parked = futures::poll!(first_next.as_mut());
+    assert!(
+        parked.is_pending(),
+        "the first consumer must be parked in the read, holding the reader"
+    );
+
+    // The second consumer, on a clone, concurrently. It must not fall silent.
+    let second = {
+        let (t, b) = (t.clone(), b.clone());
+        tokio::spawn(async move {
+            let mut s = t.frames(b);
+            s.next().await
+        })
+    };
+    let joined = tokio::time::timeout(Duration::from_secs(5), second)
+        .await
+        .expect("the second consumer must resolve rather than hang");
+    let panicked = joined.expect_err("a second concurrent consumer must not be a clean close");
+    assert!(
+        panicked.is_panic(),
+        "the collision must be a loud panic, not a silent fake end-of-stream: {panicked:?}"
+    );
+
+    // The first consumer is still holding the reader through all of the above; touch its parts here
+    // so the borrow checker keeps them — and the parked read, and both ends — alive until now, which
+    // is what made the collision genuinely concurrent rather than sequential.
+    let _ = (&first_next, &a, &b);
+}
+
+/// A secure handshake happened underneath this connection, and the upgrade does not unhappen it.
+/// The port the bytes arrived on, the name offered, the protocol negotiated and the certificate
+/// presented exist in exactly one place — the record the lower layer reported before it gave the
+/// stream up — and `ws` declares Sni, Alpn and Port selector forms, so a record that answered zero
+/// and `None` to all four left every location resolving on them unresolvable against a connection
+/// that genuinely had them.
+#[tokio::test]
+async fn the_facts_the_layer_below_established_survive_the_upgrade() {
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let below = StubLower::holding(end_a);
+    let ws = WsTransport::new();
+    let keys = test_key_handle();
+
+    let (adopted, dialled) = tokio::join!(
+        ws.adopt(&below, below.conn(), &keys),
+        tokio_tungstenite::client_async("ws://localhost/", end_b)
+    );
+    let adopted = adopted.unwrap();
+    dialled.unwrap();
+
+    let record = ws.arrival(&adopted);
+    assert_eq!(record.port, 8443, "the port the bytes arrived on");
+    assert_eq!(record.sni.as_deref(), Some("edge.invalid"));
+    assert_eq!(record.alpn.as_deref(), Some("http/1.1"));
+    assert_eq!(
+        record.peer_cert.map(|c| c.fingerprint),
+        Some("sha256:stub".to_string()),
+        "the certificate the peer presented"
+    );
+    assert_eq!(record.transport_chain, vec!["tcp", "http", "ws"]);
+}
+
+/// An `http` layer, over a connection core secured, that has one connection to give up and reports
+/// the facts a real one would.
+struct StubLower {
+    io: std::sync::Mutex<Option<tokio::io::DuplexStream>>,
+}
+
+impl StubLower {
+    fn holding(io: tokio::io::DuplexStream) -> Self {
+        Self {
+            io: std::sync::Mutex::new(Some(io)),
+        }
+    }
+
+    fn conn(&self) -> busbar_contract::transport::wire::Conn {
+        struct Handle;
+        impl busbar_contract::transport::wire::ConnHandle for Handle {
+            fn id(&self) -> u64 {
+                1
+            }
+            fn peer(&self) -> String {
+                "203.0.113.7:54321".to_string()
+            }
+        }
+        busbar_contract::transport::wire::Conn::new(Arc::new(Handle))
+    }
+}
+
+impl busbar_contract::Plugin for StubLower {
+    fn key(&self) -> &'static str {
+        "http"
+    }
+    fn kind(&self) -> busbar_contract::Kind {
+        busbar_contract::Kind::Transport
+    }
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
+    }
+}
+
+impl Transport for StubLower {
+    fn arrival(
+        &self,
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> busbar_contract::transport::wire::ArrivalRecord {
+        busbar_contract::transport::wire::ArrivalRecord {
+            source: conn.peer(),
+            port: 8443,
+            alpn: Some("http/1.1".to_string()),
+            sni: Some("edge.invalid".to_string()),
+            peer_cert: Some(busbar_contract::transport::wire::CertFacts {
+                subject: "CN=peer".to_string(),
+                issuer: "CN=issuer".to_string(),
+                fingerprint: "sha256:stub".to_string(),
+            }),
+            transport_chain: vec!["tcp", "http"],
+        }
+    }
+
+    fn listen<'a>(
+        &'a self,
+        _cfg: &'a dyn busbar_contract::TransportConfigView,
+        _keys: &'a busbar_contract::TransportKeyHandle,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Listener> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn accept<'a>(
+        &'a self,
+        _l: &'a busbar_contract::transport::wire::Listener,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn dial<'a>(
+        &'a self,
+        _dest: &'a busbar_contract::VerifiedDestination,
+        _keys: &'a busbar_contract::TransportKeyHandle,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn frames(
+        &self,
+        _conn: busbar_contract::transport::wire::Conn,
+    ) -> std::pin::Pin<
+        Box<
+            dyn futures::Stream<
+                    Item = Result<
+                        (StreamId, busbar_contract::wire::Frame),
+                        busbar_contract::transport::wire::TransportError,
+                    >,
+                > + Send,
+        >,
+    > {
+        Box::pin(futures::stream::empty())
+    }
+
+    fn write<'a>(
+        &'a self,
+        _conn: &'a busbar_contract::transport::wire::Conn,
+        _stream: StreamId,
+        _bytes: ScratchBytes<'a>,
+    ) -> busbar_contract::Fut<'a, usize> {
+        Box::pin(async { Err(TransportError::Closed) })
+    }
+
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
+    }
+
+    fn adopt<'a>(
+        &'a self,
+        _from: &'a dyn Transport,
+        _conn: busbar_contract::transport::wire::Conn,
+        _keys: &'a busbar_contract::TransportKeyHandle,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn detach(
+        &self,
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> Option<busbar_contract::transport::wire::RawStream> {
+        let io = self.io.lock().unwrap().take()?;
+        Some(busbar_contract::transport::wire::RawStream::new(
+            "http",
+            conn.peer(),
+            Box::new(tokio_util::compat::TokioAsyncReadCompatExt::compat(io)),
+        ))
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        Some("tcp")
+    }
+
+    fn close(
+        &self,
+        _conn: busbar_contract::transport::wire::Conn,
+        _reason: busbar_contract::transport::wire::CloseReason,
+    ) {
+    }
+
+    fn unit0_refusal<'a>(
+        &'a self,
+        _conn: busbar_contract::transport::wire::Conn,
+        _stream: Option<StreamId>,
+        _refusal: &'a busbar_contract::unit::Refusal,
+        _bytes: ScratchBytes<'a>,
+    ) -> busbar_contract::Fut<'a, ()> {
+        Box::pin(async { Err(TransportError::Closed) })
+    }
+}
+
+/// A bind address, for the layer below, and the operator's message cap where one is declared.
+struct HttpCfg(String, Option<i64>);
+impl busbar_contract::ConfigView for HttpCfg {
+    fn get_str(&self, _k: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, k: &str) -> Option<i64> {
+        self.1
+            .filter(|_| k == crate::transport::MESSAGE_MAX_BYTES_KEY)
+    }
+    fn get_bool(&self, _k: &str) -> Option<bool> {
+        None
+    }
+}
+impl busbar_contract::TransportConfigView for HttpCfg {
+    fn bind(&self) -> Option<&str> {
+        Some(&self.0)
+    }
+}
+
+/// The upgrade is the session's Unit 0, and until it completes the connection is an accepted socket
+/// answering to nobody. A peer that opens one and then says nothing would hold that socket, and the
+/// task upgrading it, for the lifetime of the process — the cheapest slot-exhaustion there is. The
+/// handshake carries its own budget, and a peer that misses it gets a deadline error rather than a
+/// permanent lease.
+#[tokio::test(start_paused = true)]
+async fn an_upgrade_the_peer_never_answers_expires_on_the_handshake_budget() {
+    let t = WsTransport::new();
+    // The far half is held open and never written to: the accept side can only wait.
+    let (end_a, _end_b) = tokio::io::duplex(64 * 1024);
+    let started = tokio::time::Instant::now();
+    let err = t
+        .handshake_over(end_a, true, WS_TARGET, "silent-peer")
+        .await
+        .expect_err("an unanswered upgrade must not wait forever");
+    assert_eq!(err, TransportError::Timeout);
+    assert!(
+        started.elapsed() >= crate::transport::HANDSHAKE_BUDGET,
+        "the budget is what ended it"
+    );
+}
+
+#[tokio::test]
+async fn half_close_is_the_ws_closing_handshake() {
+    let t = WsTransport::new();
+    let (a, b) = pair(&t, 64 * 1024).await;
+    t.write(&a, StreamId(0), ScratchBytes::new(b"last words"))
+        .await
+        .unwrap();
+    // `close` sends the WS Close control frame — the initiator's half of the closing handshake.
+    t.close(a, CloseReason::Normal);
+
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"last words");
+    // The Close frame ends the stream cleanly (`None`), never as a `Reset` error.
+    assert!(frames.next().await.is_none());
+}
+
+/// RFC 6455 §5.5.1/§7.1.5: an endpoint that receives a Close frame and has not already sent one
+/// MUST answer with one before the connection ends, echoing the peer's own code. `frames()` used to
+/// match `Message::Close(_) => break None` and never touch the writer at all, so a peer that closed
+/// first got no reply and every closing handshake this transport's SERVER role ever answered timed
+/// out. RED ON THE PARENT: this drives a raw `tokio_tungstenite` client (the same harness
+/// `close_maps_the_reason_to_its_rfc6455_code` below uses) that sends the Close itself, and asserts
+/// the literal bytes busbar puts back on the wire — before the fix `raw_client.next()` below never
+/// resolves inside the budget and this test times out; after it, it observes a Close frame carrying
+/// the SAME code the client sent.
+#[tokio::test]
+async fn frames_answers_a_peer_initiated_close_within_budget() {
+    let t = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    // Both roles' opening handshakes run concurrently, exactly like `pair()`: each is waiting on
+    // bytes only the other side's handshake produces.
+    let server_fut = t.handshake_over(end_a, true, WS_TARGET, "peer");
+    let client_fut = tokio_tungstenite::client_async(WS_TARGET, end_b);
+    let (server_conn, client_res) = tokio::join!(server_fut, client_fut);
+    let server_conn = server_conn.unwrap();
+    let (mut raw_client, _resp) = client_res.unwrap();
+
+    // busbar's server role must answer this from inside `frames()`, unprompted — nothing above the
+    // pump ever sees this connection or calls `close` on it.
+    let mut frames = t.frames(server_conn);
+    let pump = tokio::spawn(async move { while frames.next().await.is_some() {} });
+
+    // A private-use close code (3000), not 1000: proves the reply ECHOES the peer, rather than a
+    // hardcoded constant that would coincidentally match the RFC's own default.
+    let sent_code: u16 = 3000;
+    futures::SinkExt::send(
+        &mut raw_client,
+        tokio_tungstenite::tungstenite::Message::Close(Some(
+            tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: sent_code.into(),
+                reason: "".into(),
+            },
+        )),
+    )
+    .await
+    .unwrap();
+
+    let msg = tokio::time::timeout(crate::transport::CLOSE_BUDGET * 4, raw_client.next())
+        .await
+        .expect("busbar must answer the Close within its own budget, not hang")
+        .expect("the stream must not end before the Close reply arrives")
+        .expect("a valid WS frame");
+    match msg {
+        tokio_tungstenite::tungstenite::Message::Close(Some(frame)) => {
+            assert_eq!(
+                u16::from(frame.code),
+                sent_code,
+                "the reply must echo the peer's own code, not a hardcoded one"
+            );
+        }
+        other => panic!("expected busbar to answer with a Close frame, got {other:?}"),
+    }
+
+    pump.await.unwrap();
+}
+
+/// `close` must carry the [`CloseReason`] it was given onto the wire as the matching RFC 6455 close
+/// code, not a bare `Message::Close(None)`. A peer that gets 1009 (message too big) can act on it —
+/// back off, split the payload, log the specific cause; a peer that gets no code at all cannot tell
+/// an orderly shutdown from a policy revocation from a capacity limit.
+///
+/// This drives busbar's server role against a RAW `tokio_tungstenite` client rather than through
+/// `t.frames()`, because `frames()` discards a Close frame's code entirely (`Message::Close(_) =>
+/// break None`) — the exact bug this test exists to catch would be invisible through that seam. The
+/// raw peer sees the literal frame this transport put on the wire.
+#[tokio::test]
+async fn close_maps_the_reason_to_its_rfc6455_code() {
+    async fn observed_close_code(t: &WsTransport, reason: CloseReason) -> u16 {
+        let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+        // Both roles' opening handshakes run concurrently, exactly like `pair()`: each is waiting
+        // on bytes only the other side's handshake produces, so awaiting either sequentially first
+        // deadlocks before a single byte moves.
+        let server_fut = t.handshake_over(end_a, true, WS_TARGET, "peer");
+        let client_fut = tokio_tungstenite::client_async(WS_TARGET, end_b);
+        let (server_conn, client_res) = tokio::join!(server_fut, client_fut);
+        let server_conn = server_conn.unwrap();
+        let (mut raw_client, _resp) = client_res.unwrap();
+
+        t.close(server_conn, reason);
+
+        let msg = tokio::time::timeout(Duration::from_secs(5), raw_client.next())
+            .await
+            .expect("the close frame must arrive rather than hang")
+            .expect("the stream must not end before the close frame")
+            .expect("a valid WS frame");
+        match msg {
+            tokio_tungstenite::tungstenite::Message::Close(Some(frame)) => u16::from(frame.code),
+            other => panic!("expected a Close frame carrying a code, got {other:?}"),
+        }
+    }
+
+    let t = WsTransport::new();
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Normal).await,
+        1000,
+        "an orderly close is Normal Closure"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::CapacityExhausted).await,
+        1009,
+        "a money reason maps onto Message Too Big, the closest RFC 6455 resource-limit code"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Revoked).await,
+        1008,
+        "a withdrawn authority is a Policy Violation"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Drain).await,
+        1012,
+        "a draining node is restarting, telling the peer to reconnect elsewhere"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::PeerClosed).await,
+        1001,
+        "completing a peer-initiated close is this endpoint going away too"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Poisoned).await,
+        1011,
+        "a codec poisoned by a panic is this endpoint's own internal error"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Timeout).await,
+        1013,
+        "a deadline expiry tells the peer to try again later"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::TransportFailed).await,
+        1002,
+        "the transport itself failing is a protocol error"
+    );
+}
+
+#[tokio::test]
+async fn cancel_mid_frame_fences_the_connection() {
+    let t = WsTransport::new();
+    let (a, _b) = pair(&t, 8).await;
+    let big = vec![b'x'; 1_000_000];
+    let write_fut = t.write(&a, StreamId(0), ScratchBytes::new(&big));
+    let raced = tokio::time::timeout(Duration::from_millis(1), write_fut).await;
+    assert!(raced.is_err(), "the write did not have time to complete");
+
+    let err = t
+        .write(&a, StreamId(0), ScratchBytes::new(b"x"))
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::Framing);
+
+    // The read arm of the same cell. A `frames()` future dropped while suspended in the socket
+    // read must leave the connection readable: the reader belongs to the connection, not to the
+    // future that was polling it, so the next pump sees the frame that arrived rather than a
+    // silent end-of-stream indistinguishable from the peer closing.
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+    {
+        let mut frames = t.frames(b.clone());
+        let first = frames.next();
+        tokio::pin!(first);
+        let raced = tokio::time::timeout(Duration::from_millis(1), first.as_mut()).await;
+        assert!(
+            raced.is_err(),
+            "the read must still be suspended when dropped"
+        );
+    }
+    t.write(&a, StreamId(0), ScratchBytes::new(b"after the cancel"))
+        .await
+        .unwrap();
+    let mut frames = t.frames(b);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a cancelled read must not lose the reader")
+        .expect("the stream must not end")
+        .expect("and must not be a fenced error");
+    assert_eq!(frame.bytes.as_slice(), b"after the cancel");
+}
+
+/// A write that never reached the writer at all did not tear a frame. The fence exists for a send
+/// that started and stopped half-way; a future dropped while still queued on the writer lock wrote
+/// nothing, so fencing it condemns a healthy connection for the lifetime of the process on nothing
+/// worse than contention. The guard must therefore be armed AFTER the lock is held, not before.
+#[tokio::test]
+async fn a_write_dropped_while_queued_on_the_writer_does_not_fence_the_connection() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+
+    // One holder of the writer, so the next write can only queue on the lock and never send.
+    let state = t.state_of(a.id()).expect("the connection is live");
+    let held = state.writer.lock().await;
+    {
+        let queued = t.write(&a, StreamId(0), ScratchBytes::new(b"never sent"));
+        tokio::pin!(queued);
+        let raced = tokio::time::timeout(Duration::from_millis(20), queued.as_mut()).await;
+        assert!(raced.is_err(), "the write must still be queued on the lock");
+    }
+    drop(held);
+
+    // Nothing was written, so nothing was torn: the connection carries the next frame.
+    t.write(&a, StreamId(0), ScratchBytes::new(b"after the queue"))
+        .await
+        .expect("a write that never reached the socket must not fence the connection");
+    let mut frames = t.frames(b);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the frame must arrive")
+        .expect("the stream must not end")
+        .expect("and must not be a fenced error");
+    assert_eq!(frame.bytes.as_slice(), b"after the queue");
+}
+
+/// Closing a connection ends it for the frame pump too. The pump holds its own handle on the
+/// connection state, so removing that state from the registry does not reach a pump already
+/// suspended in a read: without a fence the peer's next message is delivered to a session the
+/// kernel has already been told is over, and the layer above has nowhere to put it.
+#[tokio::test]
+async fn a_frame_arriving_after_the_close_ends_the_pump_rather_than_being_delivered() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+
+    let pump = {
+        let (t, b) = (t.clone(), b.clone());
+        tokio::spawn(async move {
+            let mut frames = t.frames(b);
+            frames.next().await
+        })
+    };
+    // The pump is suspended in the read before the close, which is the case a fence set only at
+    // the top of the loop never sees.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    t.close(b, CloseReason::Normal);
+
+    // The peer writes anyway — a message already in flight when the close was decided.
+    t.write(&a, StreamId(0), ScratchBytes::new(b"after the close"))
+        .await
+        .unwrap();
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), pump)
+        .await
+        .expect("the pump must end rather than hang")
+        .unwrap();
+    assert!(
+        ended.is_none(),
+        "a frame that arrived after the close must end the pump, not be delivered: {ended:?}"
+    );
+}
+
+#[tokio::test]
+async fn backpressure_is_bidirectional() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 8).await;
+    let payload = vec![b'y'; 65536];
+    let t2 = t.clone();
+    let payload2 = payload.clone();
+    let writer = tokio::spawn(async move {
+        t2.write(&a, StreamId(0), ScratchBytes::new(&payload2))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !writer.is_finished(),
+        "an oversized write must block on a full duplex"
+    );
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.len(), payload.len());
+    writer.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn k_writers_serialise_without_interleaving() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+    const K: usize = 32;
+    let mut handles = Vec::new();
+    for i in 0..K {
+        let t = t.clone();
+        let a = a.clone();
+        handles.push(tokio::spawn(async move {
+            let line = format!("writer-{i:02}");
+            t.write(&a, StreamId(0), ScratchBytes::new(line.as_bytes()))
+                .await
+                .unwrap();
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    let mut frames = t.frames(b);
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..K {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        let line = String::from_utf8(frame.bytes.as_slice().to_vec()).unwrap();
+        assert!(line.starts_with("writer-"));
+        seen.insert(line);
+    }
+    assert_eq!(seen.len(), K);
+}
+
+/// A handoff from a layer `ws` does not compose over is refused before anything is read, and the
+/// source keeps its stream: an upgrade neither leg declared is not one the session may continue on.
+#[tokio::test]
+async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
+    let t = WsTransport::new();
+    let (a, _b) = pair(&t, 4096).await;
+    let keys = test_key_handle();
+    // `ws` does not compose over `ws`; offering it its own connection names no declared handoff.
+    let err = t.adopt(&t, a, &keys).await.unwrap_err();
+    assert_eq!(err, TransportError::HandoffMismatch);
+}
+
+/// One refusal, for the cells that need any refusal at all and nothing about which.
+fn test_refusal() -> busbar_contract::unit::Refusal<'static> {
+    busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    }
+}
+
+/// A refusal is the last thing this transport says on a connection: the peer is told, and then the
+/// connection is finalised. Both halves are the claim — a refusal that wrote its bytes and left the
+/// connection live is one the kernel would go on being handed frames for.
+#[tokio::test]
+async fn unit0_refusal_writes_then_closes() {
+    let t = WsTransport::new();
+    let (a, b) = pair(&t, 4096).await;
+    let id = a.id();
+    // A pump already live on the refused end, holding its own clone of the connection state.
+    let mut refused_side = t.frames(a.clone());
+    let refusal = test_refusal();
+
+    t.unit0_refusal(a, None, &refusal, ScratchBytes::new(b"refused"))
+        .await
+        .unwrap();
+
+    // The peer is told, byte-exact.
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"refused");
+
+    // And the connection is over: the pump ends and the registry no longer knows it.
+    assert!(
+        refused_side.next().await.is_none(),
+        "a refused connection's frame stream must end"
+    );
+    assert!(
+        t.state_of(id).is_none(),
+        "a refusal finalises the connection, the way a close does"
+    );
+}
+
+/// A refusal that never reached the peer is not a refusal. It is the only answer the far side will
+/// ever get about bytes that reached no plane, so the caller must be told when it did not go out —
+/// an `Ok(())` for a send that failed, or for a connection that was already fenced and skipped the
+/// send entirely, reports a refusal delivered over a socket nothing was written to.
+#[tokio::test]
+async fn a_refusal_that_could_not_be_written_is_reported_rather_than_claimed() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 4096).await;
+
+    // Take the far end away: its socket half is dropped, so a send on this end cannot land.
+    let peer = t.state_of(b.id()).expect("the peer connection is live");
+    t.close(b, CloseReason::Normal);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while Arc::strong_count(&peer) > 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the close task must finish and give up its handle");
+    drop(peer);
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    let err = t
+        .unit0_refusal(a.clone(), None, &refusal, ScratchBytes::new(b"refused"))
+        .await
+        .expect_err("a refusal that could not be written must not report success");
+    assert_eq!(err, TransportError::Reset);
+    // And the connection is finalised either way: a refusal ends it.
+    assert!(t.state_of(a.id()).is_none(), "the refusal closed it");
+
+    // A connection this transport no longer holds cannot carry a refusal at all, and says so.
+    let err = t
+        .unit0_refusal(a, None, &refusal, ScratchBytes::new(b"refused"))
+        .await
+        .expect_err("a refusal over a connection that is gone must not report success");
+    assert_eq!(err, TransportError::Closed);
+}
+
+/// The refusal's own answer is a write, and a write interrupted mid-frame tears a WebSocket frame
+/// the same way [`crate::WsTransport::write`]'s does. Before this path carried a `PoisonGuard`, a
+/// refusal whose send was cancelled mid-frame left the torn frame on the wire and the connection
+/// UNfenced — so a later write on the same socket would splice its bytes onto the tail of a
+/// half-written one. The fence is what makes a cancelled refusal end the connection instead of
+/// leaving it looking healthy.
+#[tokio::test]
+async fn a_refusal_cancelled_mid_send_fences_the_connection() {
+    let t = WsTransport::new();
+    // A duplex too small to swallow the payload, so the send parks mid-frame rather than completing.
+    let (a, _b) = pair(&t, 8).await;
+    // The one handle on the state besides the registry's, so the fence is readable after the drop.
+    let state = t.state_of(a.id()).expect("the connection is live");
+    let refusal = test_refusal();
+    let big = vec![b'x'; 1_000_000];
+    {
+        let refuse = t.unit0_refusal(a.clone(), None, &refusal, ScratchBytes::new(&big));
+        tokio::pin!(refuse);
+        let raced = tokio::time::timeout(Duration::from_millis(20), refuse.as_mut()).await;
+        assert!(
+            raced.is_err(),
+            "the refusal's send must still be parked mid-frame when it is dropped"
+        );
+    }
+    // The future was dropped mid-send, before its own `close` could run, so the state is still in
+    // the registry — and it is fenced, which is the whole point: a torn refusal poisons the
+    // connection rather than leaving it apparently live.
+    assert!(
+        state.is_poisoned(),
+        "a refusal cancelled mid-send must fence the connection, not leave a torn frame unfenced"
+    );
+    // And the fence is observable through the public write path, the way every other torn write is.
+    let err = t
+        .write(
+            &a,
+            StreamId(0),
+            ScratchBytes::new(b"after the torn refusal"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        TransportError::Framing,
+        "a write onto a fenced connection is refused rather than spliced onto a torn frame"
+    );
+}
+
+#[allow(clippy::assertions_on_constants)]
+#[tokio::test]
+async fn transport_meta_matches_the_architecture_row() {
+    use busbar_contract::transport::wire::Unit0Trigger;
+    use busbar_contract::TransportMeta;
+    assert_eq!(<crate::WsFramer as TransportMeta>::KEY, "ws");
+    assert!(<crate::WsFramer as TransportMeta>::SESSION);
+    assert!(<crate::WsFramer as TransportMeta>::SESSION_BOUND);
+    assert_eq!(
+        <crate::WsFramer as TransportMeta>::UNIT0_TRIGGER,
+        Some(Unit0Trigger::Upgrade)
+    );
+    // The layers this one is actually built over: an inbound upgrade on `http`, an outbound dial
+    // on `tcp`. No transport layer encrypts (TLS is core's connection security), so none is named
+    // for a `wss://` dial.
+    assert_eq!(
+        <crate::WsFramer as TransportMeta>::COMPOSES_OVER,
+        &["http", "tcp"]
+    );
+    assert!(<crate::WsFramer as TransportMeta>::UPGRADES_TO.is_empty());
+    assert_eq!(<crate::WsFramer as TransportMeta>::STATUS_CLASS, None);
+}
+
+fn test_key_handle() -> busbar_contract::TransportKeyHandle {
+    use busbar_contract::plugin::TestKernelSeal as Seal;
+    busbar_contract::TransportKeyHandle::issue(&Seal, 0, "test")
+}
+
+fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination {
+    use busbar_contract::plugin::TestKernelSeal as Seal;
+    busbar_contract::VerifiedDestination::seal(
+        &Seal,
+        busbar_contract::DestinationFacts::Upstream {
+            transport: "ws",
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(host),
+            lane: busbar_contract::LaneId::new("test-lane"),
+        },
+        "ws",
+        None,
+    )
+}
+
+/// `split_ws_url` on the bracketed-IPv6 shapes. A literal address with an explicit port is the one
+/// case the bracket rule exists to serve, and it must come back as the address without its brackets
+/// and the port the URL spelled — not as an authority that gets a default port stapled onto it.
+#[test]
+fn a_bracketed_ipv6_authority_parses_with_and_without_a_port() {
+    assert_eq!(
+        crate::transport::split_ws_url("wss://[::1]:8080/p").unwrap(),
+        (true, "::1".to_string(), 8080, "/p".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("ws://[::1]/p").unwrap(),
+        (false, "::1".to_string(), 80, "/p".to_string())
+    );
+    // The shapes the existing rule already got right stay right.
+    assert_eq!(
+        crate::transport::split_ws_url("ws://host:9000/p").unwrap(),
+        (false, "host".to_string(), 9000, "/p".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("wss://host/p").unwrap(),
+        (true, "host".to_string(), 443, "/p".to_string())
+    );
+}
+
+/// The authority ends at `?`, `#` or `\` as well as `/`, where the handshake's own parser ends it.
+/// RED on the `/`-only split, which read `ws://host?x=1` as the host `host?x=1`.
+#[test]
+fn a_ws_authority_ends_at_a_query_a_fragment_or_a_backslash() {
+    assert_eq!(
+        crate::transport::split_ws_url("ws://host?x=1").unwrap(),
+        (false, "host".to_string(), 80, "/?x=1".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("wss://127.0.0.1\\x/").unwrap(),
+        (true, "127.0.0.1".to_string(), 443, "/x/".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("wss://host:9443#f").unwrap(),
+        (true, "host".to_string(), 9443, "/#f".to_string())
+    );
+    assert!(crate::transport::split_ws_url("wss://u@host/").is_err());
+}
+
+/// A courtesy Close frame must not be able to outlive the process. `close` hands the send to a
+/// detached task and keeps no handle to cancel it, so a peer whose receive window is full would
+/// pin the writer lock — and the socket — forever. The budget is what makes the task terminate.
+#[tokio::test]
+async fn close_gives_up_on_a_peer_that_never_reads() {
+    let t = Arc::new(WsTransport::new());
+    // A duplex with no room left: the peer end is never read, so a Close frame cannot be sent.
+    let (a, _b) = pair(&t, 8).await;
+    let stuffing = vec![b'z'; 1_000_000];
+    let t2 = t.clone();
+    let a2 = a.clone();
+    let stuffer = tokio::spawn(async move {
+        t2.write(&a2, StreamId(0), ScratchBytes::new(&stuffing))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!stuffer.is_finished(), "the duplex must be full");
+    stuffer.abort();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // The only handle on the connection state, besides the one `close` hands its detached task.
+    let state = t.state_of(a.id()).expect("the connection is live");
+    t.close(a, CloseReason::Normal);
+
+    let gave_up = tokio::time::timeout(crate::transport::CLOSE_BUDGET * 8, async {
+        while Arc::strong_count(&state) > 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        gave_up.is_ok(),
+        "the detached close task must give up within its budget and drop the socket"
+    );
+}
+
+/// The Pong this transport owes a Ping is sent from inside the frame pump, which means nothing
+/// above it holds a handle that could cancel it. A peer that pings and then stops reading therefore
+/// parks the pump in that send: no further frame is ever yielded, the layer above is never told the
+/// session is over, and the connection state the pump carries — and the socket under it — outlive
+/// the session. The budget must end the wait, and the end must be reported rather than swallowed.
+#[tokio::test(start_paused = true)]
+async fn a_peer_that_pings_and_then_stops_reading_does_not_park_the_pump_forever() {
+    let t = Arc::new(WsTransport::new());
+    // A duplex with no room left in the a → b direction: nothing drains b's end, so the Pong `a`
+    // owes cannot leave.
+    let (a, b) = pair(&t, 8).await;
+    let stuffing = vec![b'z'; 1_000_000];
+    let t2 = t.clone();
+    let a2 = a.clone();
+    // Left running rather than aborted: a write abandoned mid-send fences the connection, and a
+    // fenced connection ends the pump before it ever reads the Ping. This one stays parked on the
+    // full socket, which is exactly the peer this cell is about.
+    let stuffer = tokio::spawn(async move {
+        t2.write(&a2, StreamId(0), ScratchBytes::new(&stuffing))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!stuffer.is_finished(), "the duplex must be full");
+
+    // A raw Ping, which the public write path cannot express: this is the peer's obligation on `a`,
+    // not plane data.
+    {
+        let peer = t.state_of(b.id()).expect("the peer connection is live");
+        let mut w = peer.writer.lock().await;
+        futures::SinkExt::send(
+            &mut *w,
+            tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into()),
+        )
+        .await
+        .expect("the b → a direction is empty, so the ping goes out");
+    }
+
+    let mut frames = t.frames(a);
+    let ended = tokio::time::timeout(
+        crate::transport::PONG_BUDGET * 4,
+        futures::StreamExt::next(&mut frames),
+    )
+    .await
+    .expect("the pump must give up on the budget rather than park in the Pong forever");
+    assert_eq!(
+        ended,
+        Some(Err(TransportError::Backpressure)),
+        "a peer that cannot take a Pong within the budget is one that stopped reading, and the \
+         pump says so rather than falling silent"
+    );
+}
+
+/// Registering the same target again must not allocate a second `'static` address. The allocation
+/// a registration makes is deliberate and lives for the process; what would not be deliberate is
+/// one per registration, which a reload loop turns into unbounded growth. Identical strings must
+/// come back as the identical allocation.
+#[test]
+fn a_redial_reuses_the_interned_address_rather_than_leaking_a_new_one() {
+    let first = crate::transport::intern("example.invalid:8443");
+    let again = crate::transport::intern("example.invalid:8443");
+    assert!(
+        std::ptr::eq(first, again),
+        "a repeat dial must reuse the address the first one interned, not leak a second"
+    );
+    let other = crate::transport::intern("elsewhere.invalid:8443");
+    assert!(!std::ptr::eq(first, other));
+    assert_eq!(other, "elsewhere.invalid:8443");
+}
+
+/// CG-06: a config-derived key is leaked exactly once, at the registration that reads it — never
+/// per dial. N dials to a target nobody registered, whose `host:port` is derived (an implicit port),
+/// are refused and leave nothing behind; before this, the first of them leaked the address.
+#[tokio::test]
+async fn n_dials_to_an_unregistered_derived_address_leak_nothing() {
+    let (io, _peer) = tokio::io::duplex(64);
+    let t = WsTransport::over(Arc::new(StubLower::holding(io)));
+    let keys = test_key_handle();
+    for _ in 0..8 {
+        assert_eq!(
+            t.dial(&verified_upstream("ws://cg06-unregistered.invalid/"), &keys)
+                .await
+                .unwrap_err(),
+            TransportError::AddressRefused,
+            "a derived target nobody registered is refused, not interned on the spot"
+        );
+    }
+    assert!(
+        !crate::transport::is_interned("cg06-unregistered.invalid:80"),
+        "dial leaked a 'static address: the rule allows that only at registration"
+    );
+}
+
+/// CG-06: N dials to one registered target leak once — at registration — and a second registration
+/// of the same target (a reload's fresh instance) allocates nothing new. Every dial reaches the layer
+/// below with the one interned authority.
+#[tokio::test]
+async fn n_dials_to_one_registered_address_leak_once_at_registration() {
+    const URL: &str = "ws://cg06-registered.invalid/p";
+    const AUTHORITY: &str = "cg06-registered.invalid:80";
+    assert!(!crate::transport::is_interned(AUTHORITY));
+    let (io, _peer) = tokio::io::duplex(64);
+    let t = WsTransport::over(Arc::new(StubLower::holding(io)));
+    t.register_target(URL).unwrap();
+    assert!(
+        crate::transport::is_interned(AUTHORITY),
+        "registration interns"
+    );
+    let first = t.dial_authority(URL).expect("registered");
+    assert_eq!(first, AUTHORITY);
+
+    let keys = test_key_handle();
+    for _ in 0..8 {
+        // StubLower refuses every dial: reaching it at all is the proof the authority was found.
+        assert_eq!(
+            t.dial(&verified_upstream(URL), &keys).await.unwrap_err(),
+            TransportError::HandoffMismatch
+        );
+        assert!(std::ptr::eq(t.dial_authority(URL).unwrap(), first));
+    }
+
+    let reloaded = WsTransport::new();
+    reloaded.register_target(URL).unwrap();
+    assert!(
+        std::ptr::eq(reloaded.dial_authority(URL).unwrap(), first),
+        "a second registration of the same target reuses the first allocation"
+    );
+}
+
+/// A URL that spells its own `host:port` needs no registration and no allocation: the authority is
+/// a slice of the `'static` URL the sealed destination already carries.
+#[tokio::test]
+async fn a_spelled_authority_is_a_slice_of_the_url_and_interns_nothing() {
+    const URL: &str = "ws://cg06-spelled.invalid:9000/p";
+    let (io, _peer) = tokio::io::duplex(64);
+    let t = WsTransport::over(Arc::new(StubLower::holding(io)));
+    let keys = test_key_handle();
+    for _ in 0..8 {
+        assert_eq!(
+            t.dial(&verified_upstream(URL), &keys).await.unwrap_err(),
+            TransportError::HandoffMismatch
+        );
+    }
+    let authority = t.dial_authority(URL).unwrap();
+    assert_eq!(authority, "cg06-spelled.invalid:9000");
+    assert!(std::ptr::eq(authority, &URL[5..URL.len() - 2]));
+    assert!(!crate::transport::is_interned("cg06-spelled.invalid:9000"));
+    // A bracketed host is derived, not spelled: it wants registration like an implicit port does.
+    assert_eq!(t.dial_authority("ws://[::1]:9000/p"), None);
+}

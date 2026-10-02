@@ -1,0 +1,4 @@
+# RENDERED by `cargo xtask fleet render` from GetBusbar/busbar's plugins.yaml and .github/fleet/
+# templates. CI runs clippy with -D warnings (busbar's plugin-ci.yml) on the @@toolchain@@ toolchain;
+# the MSRV clippy judges against is each crate's own `rust-version`, so none is restated here.
+too-many-arguments-threshold = 7

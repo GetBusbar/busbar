@@ -1,5 +1,5 @@
 # cargo-deny policy for busbar. Run locally with `cargo deny check`, and in CI
-# via .github/workflows/security.yml. This file mechanically enforces the
+# via the removed security.yml. This file mechanically enforces the
 # supply-chain discipline that Cargo.toml already applies by hand (single TLS/HTTP
 # stack, no unmaintained/unsafe deps, license hygiene) so a future PR cannot
 # silently regress it.
@@ -71,3 +71,13 @@ deny = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# The default plugins busbar pulls from their own repos at a PINNED rev (owner ruling, 1.6.0: one
+# repo per plugin). Each is a reviewed entry, one URL per plugin repo.
+allow-git = [
+    "https://github.com/GetBusbar/busbar-export-file",
+    "https://github.com/GetBusbar/busbar-export-otlp",
+    "https://github.com/GetBusbar/busbar-export-prometheus",
+    "https://github.com/GetBusbar/busbar-export-webhook",
+    "https://github.com/GetBusbar/busbar-auth-oidc",
+    "https://github.com/GetBusbar/busbar-auth-admin-tokens",
+]

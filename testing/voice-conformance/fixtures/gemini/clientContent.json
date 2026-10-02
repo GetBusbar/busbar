@@ -1,0 +1,13 @@
+{
+  "clientContent": {
+    "turns": [
+      {
+        "role": "user",
+        "parts": [
+          { "text": "What's the weather in Paris?" }
+        ]
+      }
+    ],
+    "turnComplete": true
+  }
+}

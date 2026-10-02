@@ -1,0 +1,120 @@
+//! What this plane declares about itself.
+//!
+//! Everything here is a constant, because everything here is read once at registration and sealed
+//! into policy. A plane that could vary its own declarations at run time would make the claims a
+//! boot proved non-overlapping stop being the claims in force.
+
+use busbar_contract::ids::{
+    AdminVerbId, ClassDirection, MeterClassDecl, MeterClassId, OpClassId, RecordSchemaId,
+};
+use busbar_contract::plane::PlaneMeta;
+
+use crate::{claims, facts, ops, records, A2aPlane};
+
+/// The family the byte-shaped class rolls up into.
+///
+/// A rate card may price the class and may change its divisor; it may never move it to another
+/// family, because a cap written over the family would then be counting something else.
+const BYTE_FAMILY: &str = "byte";
+
+/// The class this plane meters.
+///
+/// ONE class, named for what it counts. The design's plane table gives this protocol exactly one
+/// class and calls it bytes, and that is what is declared: a unit of this plane is one exchange with
+/// an agent, and what an exchange costs is what it moved.
+///
+/// WHAT ONE UNIT OF IT IS — THE OWNER'S BILLED-BYTE RULING (the design's A2A accrual section,
+/// answered in the questions log): *a billed A2A byte = payload bytes relayed BOTH ways per hop
+/// (request + response), priced by `agents.rate_card`; no card → 0.*
+/// The quantity a hop reports is the request body bytes it put on the wire PLUS the response body
+/// bytes the agent answered (every chunk, on a stream); headers are not payload.
+///
+/// The direction says the ANSWER because that is when the quantity is known: a hop's count settles
+/// once the agent has answered, never from an estimate made before the socket. A single byte class
+/// cannot separate what a caller sent from what an agent returned, so a deployment cannot price the
+/// two differently — the owner's ruling makes that the product: one class, both ways.
+const METER_CLASSES: &[MeterClassDecl] = &[MeterClassDecl {
+    key: MeterClassId::new("bytes"),
+    family: BYTE_FAMILY,
+    direction: ClassDirection::Response,
+    // A byte is a byte: the class's own quantity is the quantity, so nothing is divided.
+    default_divisor: 1,
+}];
+
+/// The class key the metering step reports under.
+pub const CLASS_BYTES: MeterClassId = MeterClassId::new("bytes");
+
+/// The read-only verb that lists the agents this node fronts.
+pub const VERB_AGENTS: AdminVerbId = AdminVerbId::new("agents");
+
+/// The read-only verb that answers for the ONE agent the subject names.
+pub const VERB_AGENT: AdminVerbId = AdminVerbId::new("agent");
+
+/// The verbs this plane answers.
+///
+/// Two, and which two is the point. The codec answers a projection over every agent and a projection
+/// over the ONE agent a request names; the introspection verb now carries a subject, so both are
+/// expressible and both are declared. The per-name one used to be declared nowhere, because a verb
+/// identifier and a context said WHICH plane but never WHICH agent, and a key per agent is not
+/// available to a plane whose verb key set is closed at registration.
+///
+/// The codec's two OTHER admin operations — the one that re-contacts an agent and re-pins it, and
+/// the one that records an operator's approval — CHANGE something, so they are not verbs of this
+/// plane either: a mutating plane admin operation is the kernel's own record-write verb, reached
+/// with the plane's record schemas, and the plane contributes the shape rather than the action.
+const INTROSPECTION_VERBS: &[AdminVerbId] = &[VERB_AGENTS, VERB_AGENT];
+
+/// The schema of this plane's own configuration block.
+///
+/// This is the shape the codec already parses, one level deep: a map from agent name to that
+/// agent's definition, plus the two reserved members that apply to every agent. Nothing here is a
+/// credential — the credential members name a REFERENCE that the secret plugin resolves, and this
+/// plane never sees what is behind one — and nothing here is a price.
+const CONFIG_SCHEMA: &str = r#"{
+  "type": "object",
+  "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "url": { "type": "string" },
+      "pin": { "type": "object" },
+      "client_identity": { "type": "object" },
+      "reverify_ttl": { "type": "string" },
+      "recovery_backoff": { "type": "string" },
+      "protocol_version": { "type": "string" },
+      "allow_private": { "type": "boolean" },
+      "upstream_credentials": { "type": "object" },
+      "upstream_credential": { "type": "object" },
+      "egress_scopes": { "type": "array", "items": { "type": "string" } },
+      "hooks": { "type": "array", "items": { "type": "string" } }
+    },
+    "required": ["url", "pin"]
+  },
+  "properties": {
+    "hooks": { "type": "array", "items": { "type": "string" } },
+    "upstream_credentials": { "type": "object" }
+  }
+}"#;
+
+impl PlaneMeta for A2aPlane {
+    const KEY: &'static str = "a2a";
+    const CLAIMS: &'static [busbar_contract::grammar::Claim] = claims::CLAIMS;
+    const OP_CLASSES: &'static [OpClassId] = ops::OP_CLASSES;
+    const METER_CLASSES: &'static [MeterClassDecl] = METER_CLASSES;
+    const SESSION_FACTS: &'static [&'static str] = facts::SESSION_FACTS;
+    const CONTENT_FACTS: &'static [&'static str] = facts::CONTENT_FACTS;
+    const RECORD_SCHEMAS: &'static [RecordSchemaId] = records::RECORD_SCHEMAS;
+    const INTROSPECTION_VERBS: &'static [AdminVerbId] = INTROSPECTION_VERBS;
+    // This protocol has no frame that supersedes an open one. Asking for a task to stop is its own
+    // request, with its own identifier and its own answer, so it is a UNIT rather than an interrupt;
+    // declaring an interrupt fact here would make the kernel look for a fact that never arrives.
+    const INTERRUPT_FACT: Option<&'static str> = None;
+    // Nothing paces this plane's write path. The event stream is written as fast as the answer
+    // arrives, which is what the existing codec does and what this crate must not change.
+    const EGRESS_PACING_FACT: Option<&'static str> = None;
+    const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
+}
+
+#[cfg(test)]
+#[path = "tests/meta.rs"]
+mod tests;

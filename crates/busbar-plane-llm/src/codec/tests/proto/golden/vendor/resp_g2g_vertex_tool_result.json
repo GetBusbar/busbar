@@ -1,0 +1,37 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "The current temperature in Paris, France is 18 degrees Celsius and it is partly cloudy."
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "avgLogprobs": -0.033569580630252234
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 137,
+    "candidatesTokenCount": 19,
+    "totalTokenCount": 156,
+    "trafficType": "ON_DEMAND",
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 137
+      }
+    ],
+    "candidatesTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 19
+      }
+    ]
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "createTime": "2026-09-07T16:53:09.828926Z",
+  "responseId": "9eueav7LMuXsi-8PrP-WsAI"
+}

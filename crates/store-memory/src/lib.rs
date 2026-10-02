@@ -2,14 +2,28 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The DEFAULT `db` backend: an in-memory (RAM) store. Zero setup, no dependencies beyond the
-//! `busbar-api` contract — governance works out of the box. EPHEMERAL: every counter, key, and
+//! `busbar-contract` records contract — governance works out of the box. EPHEMERAL: every counter, key, and
 //! credential is lost on restart; configure a durable backend (e.g. `store-sqlite`/`store-postgres`)
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
+//!
+//! BOTH DOORS, ONE CONSTRUCTOR (#2): [`open`] is what a build that links this crate registers
+//! ([`linked::STORE`]) and what the dropped-in `cdylib` answers `busbar_open` with (feature
+//! `dropped-in`, the [`exports`] module). Unsafe code is denied crate-wide; the one exception is the
+//! door module the contract's export macro generates, whose C-ABI symbols cannot be written without it.
 
-use busbar_api::{
-    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, Store, StoreError, StoreResult,
-    UsageDelta, UsageLedger, VirtualKey,
+#![deny(unsafe_code)]
+
+use busbar_contract::records::{
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
+    PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, UsageDelta, UsageLedger,
+    VirtualKey,
 };
+// The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
+// contract's own spelling. `StoreError` is imported under a second name because the two protocols
+// each carry one and this crate answers both.
+use busbar_contract::ids::RecordSchemaId;
+use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
@@ -17,14 +31,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Retention ceiling for `usage`/`metering` rows, keyed by their epoch-second period-start field
 /// (`window_start` / `bucket`). Mirrors `busbar::governance`'s own 31-day `max_window` sweep of its
-/// in-memory rate-map cells (`crates/busbar/src/governance/mod.rs`): this store's ledgers are a
+/// in-memory rate-map cells (`crates/busbar-core/src/governance/mod.rs`): this store's ledgers are a
 /// durability shadow of that engine state, so retaining them exactly as long as the engine keeps
 /// its own cells is the right correspondence, not an arbitrary shorter/longer number.
 const MAX_RETENTION_SECS: u64 = 31 * 86_400;
 
 /// Amortized sweep cadence: one `retain()` pass per this many writes. Mirrors
-/// `DEFAULT_RATE_SWEEP_INTERVAL` (`crates/busbar/src/config/mod.rs`).
+/// `DEFAULT_RATE_SWEEP_INTERVAL` (`crates/busbar-core/src/config/mod.rs`).
 const SWEEP_INTERVAL: u64 = 256;
+
+/// One kernel-held durable record: the opaque body a plane wrote, plus the epoch-second it was last
+/// written at. The write time is carried here because it is the ONLY age the sweep can read — see
+/// [`MemoryStore::records`] for why a record has no timestamp column of its own.
+struct RecordRow {
+    written_at: u64,
+    value: RecordBytes,
+}
+
+/// The `records` map: `(schema, key) -> RecordRow`, in KEY ORDER because `record_scan` promises a
+/// prefix walk answers in it.
+type RecordMap = std::collections::BTreeMap<(String, Vec<u8>), RecordRow>;
 
 fn now() -> u64 {
     SystemTime::now()
@@ -33,24 +59,76 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// In-memory `Store`: keys by id, row-looked-up credentials by id (indexed by `(kind, public_id)`
-/// for lookup and by `key_id` for the per-key listing/cascade), token ledgers keyed by (bucket_id,
-/// window_start), metering rows keyed by (key_id, bucket, model, provider).
+/// In-memory `Store`: keys by id, row-looked-up credentials by id (`(kind, public_id)` lookup and
+/// the per-key listing/cascade are SCANS over that one map, not secondary indexes — the RAM backend
+/// holds a fixture-sized table and a second map to keep in step with every sweep, tombstone cascade
+/// and rotation is more failure surface than the scan costs), token ledgers keyed by (bucket_id,
+/// window_start), metering rows keyed by (key_id, bucket, model, provider, priced_from_ms).
+/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms).
+type MeteringKey = (String, u64, String, String, u64);
+
 #[derive(Default)]
 pub struct MemoryStore {
     keys: RwLock<HashMap<String, VirtualKey>>,
     creds: RwLock<HashMap<String, CredentialSecret>>,
     usage: RwLock<HashMap<(String, u64), UsageLedger>>,
-    metering: RwLock<HashMap<(String, u64, String, String), MeteringRow>>,
+    metering: RwLock<HashMap<MeteringKey, MeteringRow>>,
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
     /// audit-only and not needed for the enforcement read).
     denylist: RwLock<std::collections::HashSet<String>>,
-    /// Amortized-sweep write counters for `usage`/`metering`/tombstoned `keys`/revoked `creds` (see
-    /// `MAX_RETENTION_SECS`). Separate per map since the maps see independent write rates.
+    /// The SPENT-TOKEN ledger behind `redeem_plane_token`: `(kind, token) -> expires_at`. Presence
+    /// means "already redeemed", so the test-and-set is an occupied-entry check under one guard.
+    /// Bounded by dropping lapsed rows on every redemption (a token past its own `expires_at` can
+    /// never be presented again, so keeping it proves nothing).
+    plane_tokens: RwLock<HashMap<(String, String), u64>>,
+    /// Plane records keyed by `(kind, identity, seq)`. The identity is the record's `parent` for the
+    /// APPENDED child kinds (a chain is `(parent, seq)`) and its `id` for the upserted ones, which
+    /// take `seq` 0 — one map serves both because the child kinds never point-read by id.
+    plane_records: RwLock<HashMap<(String, String, u64), PlaneRecord>>,
+    /// KERNEL-HELD DURABLE RECORDS, under the contract's own three verbs, keyed by
+    /// `(schema, key)`.
+    ///
+    /// A SECOND map beside `plane_records` and deliberately not a re-keying of it. The eight
+    /// kind-tagged verbs above are the PUBLISHED store protocol the previous release's callers still
+    /// drive, byte for byte; these three are what `busbar_contract::abi::sdk::store::StoreSlots` declares for a
+    /// record leg, and they key on an opaque byte string rather than on the `(kind, id, seq)`
+    /// columns. Folding them onto one map would make every record leg a change to the published
+    /// path's key shape, which is precisely the thing that has to stay identical.
+    ///
+    /// A `BTreeMap` because `record_scan` walks a PREFIX and answers in key order: a hash map would
+    /// have to sort on every scan, and "the order a scan answers in" is a promise a caller reads a
+    /// chain by.
+    ///
+    /// BOUNDED, like every other map here, and the bound has to be carried in the VALUE. The
+    /// sibling maps age off a timestamp that is already part of the row — `window_start`, `bucket`,
+    /// `deleted_at`, `revoked_at`, a token's own `expires_at`. A record has none: its key is opaque
+    /// bytes and its value is an opaque body this backend never decodes, so there is no column to
+    /// read an age from. The row therefore carries its own WRITE TIME alongside the body, and
+    /// `record_put` sweeps against the same `MAX_RETENTION_SECS` ceiling on the same
+    /// `SWEEP_INTERVAL` ticker. Write time is the right axis: `record_put` REPLACES, so a row a
+    /// plane is still updating is refreshed by every update, and only a row nothing has touched for
+    /// 31 days ages out.
+    ///
+    /// This is a BOUND, not a delete verb. `busbar_contract::abi::sdk::store::StoreSlots` declares
+    /// `record_put`/`record_get`/`record_scan` and nothing that removes a row (`purge_before` is
+    /// stream-keyed and this crate does not implement it), so a backend cannot invent one here — the
+    /// verb would exist on this store and on no other, and a caller written against it would break
+    /// on the next backend. Adding one is the contract owner's call; keeping the map unbounded until
+    /// then was not an option, because `MemoryStore` is the DEFAULT `db` backend of a long-lived
+    /// proxy process.
+    records: RwLock<RecordMap>,
+    /// The durable admin AUDIT log, by `seq`. EPHEMERAL like every other map here — this backend is
+    /// RAM — but append-only and fork-detecting within the process's life, which is what the
+    /// engine's write-through actually asks of a store. Ordered reads come from the `BTreeMap`.
+    audit: RwLock<std::collections::BTreeMap<u64, AuditRecord>>,
+    /// Amortized-sweep write counters for `usage`/`metering`/tombstoned `keys`/revoked
+    /// `creds`/`records` (see `MAX_RETENTION_SECS`). Separate per map since the maps see independent
+    /// write rates.
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
     keys_sweep_ticker: AtomicU64,
     creds_sweep_ticker: AtomicU64,
+    records_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
     /// mutation to `keys`/`creds`/the denylist.
     revision: AtomicU64,
@@ -61,11 +139,127 @@ pub struct MemoryStore {
     /// the test's `now()` and the sweep's `now()` would otherwise shift the ceiling and evict the
     /// "one second inside" row. Prod behavior is untouched: the field is only ever set from tests.
     clock: AtomicU64,
+    /// The store v3 slots' own state: the `op_id` dedupe log, the caps, the drawn totals, the
+    /// slices, the ledger streams and the session directory ([`v3`]).
+    v3: v3::State,
 }
 
 impl MemoryStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Write one of a plane's kernel-held durable records.
+    ///
+    /// The verb is `busbar_contract::abi::sdk::store::StoreSlots::record_put`'s, and the three
+    /// below are its siblings. They are INHERENT rather than a trait implementation for one reason,
+    /// and it is a rule rather than a preference: the manifest allow-list refuses a store-kind crate
+    /// that names `busbar-kernel`, so the kernel's own record sink is not a trait this crate may
+    /// implement; and the contract's `StoreSlots` is the whole store table, of which this
+    /// backend answers the published half through [`Store`] above. What is here is the record half,
+    /// at the contract's own spelling, so the adapter that binds a loaded store to the kernel's sink
+    /// has one shape to forward to rather than two.
+    ///
+    /// The value arrives as a [`RecordBytes`], which is where the record ceiling is enforced: a body
+    /// over it cannot be constructed, so this method cannot be handed one.
+    ///
+    /// # Errors
+    ///
+    /// Never, for a RAM backend: there is nothing under it to be unavailable. The result is the
+    /// contract's shape so a durable backend can answer in the same place.
+    pub fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), ContractStoreError> {
+        self.record_put_at(schema.as_str(), key, value);
+        Ok(())
+    }
+
+    /// [`Self::record_put`] under a schema named at run time (the store v3 table's `record_put`).
+    pub(crate) fn record_put_at(&self, schema: &str, key: &[u8], value: &RecordBytes) {
+        let written_at = self.now();
+        let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
+        records.insert(
+            (schema.to_string(), key.to_vec()),
+            RecordRow {
+                written_at,
+                value: value.clone(),
+            },
+        );
+
+        // Amortized bounded eviction, mirroring `add_usage`/`add_metering`/`put_key`/
+        // `put_credential` above — same ceiling, same cadence, same `>` boundary. This is the map's
+        // ONLY shrink path: the contract declares no delete verb (see the field's doc), so without
+        // it nothing internal or external could ever prune a row.
+        let sweep_needed = self
+            .records_sweep_ticker
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(SWEEP_INTERVAL);
+        if sweep_needed {
+            let n = self.now();
+            records.retain(|_, row| row.written_at.saturating_add(MAX_RETENTION_SECS) > n);
+        }
+    }
+
+    /// Read one of a plane's kernel-held durable records.
+    ///
+    /// # Errors
+    ///
+    /// Never, for a RAM backend. An absent record is `Ok(None)` and not an error: a plane asking
+    /// for a row it has not written yet is an ordinary answer, not a fault.
+    pub fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, ContractStoreError> {
+        Ok(self.record_get_at(schema.as_str(), key))
+    }
+
+    /// [`Self::record_get`] under a schema named at run time.
+    pub(crate) fn record_get_at(&self, schema: &str, key: &[u8]) -> Option<RecordBytes> {
+        self.records
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(schema.to_string(), key.to_vec()))
+            .map(|row| row.value.clone())
+    }
+
+    /// Walk a plane's records under a prefix, in key order, at most `limit` of them.
+    ///
+    /// `limit` 0 means NOTHING, not everything. A caller that wants the whole prefix names a number;
+    /// reading zero as unbounded would make a miscomputed bound the one case that returns the entire
+    /// schema.
+    ///
+    /// # Errors
+    ///
+    /// Never, for a RAM backend.
+    pub fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, ContractStoreError> {
+        Ok(self.record_scan_at(schema.as_str(), prefix, limit))
+    }
+
+    /// [`Self::record_scan`] under a schema named at run time.
+    pub(crate) fn record_scan_at(
+        &self,
+        schema: &str,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Vec<(Vec<u8>, RecordBytes)> {
+        self.records
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
+            .take(limit as usize)
+            .map(|((_, k), row)| (k.clone(), row.value.clone()))
+            .collect()
     }
     fn keys(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, VirtualKey>> {
         self.keys.write().unwrap_or_else(|e| e.into_inner())
@@ -76,10 +270,26 @@ impl MemoryStore {
     fn usage(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64), UsageLedger>> {
         self.usage.write().unwrap_or_else(|e| e.into_inner())
     }
-    fn metering(
-        &self,
-    ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64, String, String), MeteringRow>> {
+    fn metering(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<MeteringKey, MeteringRow>> {
         self.metering.write().unwrap_or_else(|e| e.into_inner())
+    }
+    // The SHARED (read) side of the same four locks, for the methods that only ever read. A pure
+    // read taking the exclusive side serializes every concurrent reader behind it, and the reads
+    // here are the expensive ones — `list_keys`/`list_credentials`/`list_metering` clone whole
+    // tables — so a governance `get_key` on the admit path would wait out an admin listing pass.
+    // Poison-recovering for the same reason the write accessors are: the governance surface must
+    // never panic on a request.
+    fn keys_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, VirtualKey>> {
+        self.keys.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn creds_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, CredentialSecret>> {
+        self.creds.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn usage_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64), UsageLedger>> {
+        self.usage.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn metering_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<MeteringKey, MeteringRow>> {
+        self.metering.read().unwrap_or_else(|e| e.into_inner())
     }
     fn next_revision(&self) -> u64 {
         self.revision.fetch_add(1, Ordering::Relaxed) + 1
@@ -91,6 +301,63 @@ impl MemoryStore {
             0 => now(),
             pinned => pinned,
         }
+    }
+    fn plane_records(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, String, u64), PlaneRecord>> {
+        self.plane_records
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+    fn plane_records_read(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, String, u64), PlaneRecord>> {
+        self.plane_records.read().unwrap_or_else(|e| e.into_inner())
+    }
+    /// A plane record's identity in the one map: its `parent` when it is an APPENDED child (a chain
+    /// position is `(parent, seq)`), else its own `id` at `seq` 0.
+    fn plane_key(record: PlaneRecordRef<'_>) -> (String, String, u64) {
+        let identity = record.parent.unwrap_or(record.id).to_string();
+        (record.kind.to_string(), identity, record.seq)
+    }
+    /// The two credential-table preconditions, factored out of `put_credential` so the ATOMIC
+    /// `put_key_with_credential` can run the identical rules under its own single critical section
+    /// rather than a second, drifting copy of them. Takes the map (not the guard) so either caller's
+    /// guard serves.
+    fn credential_preconditions(
+        creds: &HashMap<String, CredentialSecret>,
+        secret: &CredentialSecret,
+    ) -> StoreResult<()> {
+        // Reject an explicit slot pointed at a LIVE credential of the same (key_id, kind) — see the
+        // trait doc: silently clobbering a working credential mid-overlap-window is almost always an
+        // operator mistake, not an intended rotation.
+        let occupied = creds.values().any(|c| {
+            c.meta.id != secret.meta.id
+                && c.meta.key_id == secret.meta.key_id
+                && c.meta.kind == secret.meta.kind
+                && c.meta.slot == secret.meta.slot
+                && c.meta.revoked_at.is_none()
+        });
+        if occupied {
+            return Err(StoreError(format!(
+                "put_credential: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
+                secret.meta.slot, secret.meta.key_id, secret.meta.kind
+            )));
+        }
+        // UNIQUE(kind, public_id): a public_id must never resolve to two different credentials,
+        // even across keys (an AccessKeyId is a global lookup handle).
+        let public_id_taken = creds.values().any(|c| {
+            c.meta.id != secret.meta.id
+                && c.meta.kind == secret.meta.kind
+                && c.meta.public_id == secret.meta.public_id
+        });
+        if public_id_taken {
+            return Err(StoreError(format!(
+                "put_credential: public_id '{}' is already in use for kind '{}'",
+                secret.meta.public_id, secret.meta.kind
+            )));
+        }
+        Ok(())
     }
     /// Test-only: pin `self.now()` to `t` so the sweep's retention ceiling is deterministic.
     #[cfg(test)]
@@ -144,14 +411,14 @@ impl Store for MemoryStore {
     }
 
     fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
-        Ok(self.keys().get(id).cloned())
+        Ok(self.keys_read().get(id).cloned())
     }
 
     fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
         // Deliberately UNFILTERED — see the trait doc. Tombstones are included so both the admin
         // listing caller (which filters live-only itself) and the default `list_keys_since` (which
         // needs tombstones visible) are served by this one method.
-        let mut v: Vec<VirtualKey> = self.keys().values().cloned().collect();
+        let mut v: Vec<VirtualKey> = self.keys_read().values().cloned().collect();
         v.sort_by_key(|k| k.created_at); // mirror SqliteStore's ORDER BY created_at
         Ok(v)
     }
@@ -206,7 +473,7 @@ impl Store for MemoryStore {
 
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
-            .keys()
+            .keys_read()
             .values()
             .filter(|k| k.revision > since)
             .cloned()
@@ -215,7 +482,7 @@ impl Store for MemoryStore {
 
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
         Ok(self
-            .usage()
+            .usage_read()
             .get(&(bucket_id.to_string(), window_start))
             .cloned()
             .unwrap_or_default())
@@ -261,11 +528,17 @@ impl Store for MemoryStore {
     fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
         let mut m = self.metering();
         let e = m
+            // `priced_from_ms` is part of the key, not just the row: it is the `effective_from`
+            // of the rate-card entry in force when these counts were accrued, so a card edit inside
+            // a UTC day opens a SECOND row for that day and each half keeps the card it was earned
+            // under (DECISION #79). Folding it into one row would leave a sum earned under two
+            // cards with only one card to be read against.
             .entry((
                 d.key_id.clone(),
                 d.bucket,
                 d.model.clone(),
                 d.provider.clone(),
+                d.priced_from_ms,
             ))
             .or_insert_with(|| MeteringRow {
                 key_id: d.key_id.clone(),
@@ -279,6 +552,8 @@ impl Store for MemoryStore {
                 billable_requests: 0,
                 key_group_at_use: d.key_group_at_use.clone(),
                 pricing_version: d.pricing_version.clone(),
+                priced_from_ms: d.priced_from_ms,
+                usage_units: std::collections::BTreeMap::new(),
             });
         e.tokens_input = e.tokens_input.saturating_add(d.tokens_input);
         e.tokens_output = e.tokens_output.saturating_add(d.tokens_output);
@@ -286,6 +561,11 @@ impl Store for MemoryStore {
         e.tokens_cache_write = e.tokens_cache_write.saturating_add(d.tokens_cache_write);
         e.requests = e.requests.saturating_add(d.requests);
         e.billable_requests = e.billable_requests.saturating_add(d.billable_requests);
+        // Every ledgered class the token columns do not hold, additive like them.
+        for (class, n) in &d.usage_units {
+            let cur = e.usage_units.entry(class.clone()).or_insert(0);
+            *cur = cur.saturating_add(*n);
+        }
 
         // Amortized bounded eviction of stale buckets, mirroring `add_usage` above.
         let sweep_needed = self
@@ -295,51 +575,43 @@ impl Store for MemoryStore {
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
             let n = self.now();
-            m.retain(|(_, bucket, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
+            m.retain(|(_, bucket, _, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
         }
         Ok(())
     }
 
     fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
         Ok(self
-            .metering()
+            .metering_read()
             .iter()
-            .filter(|((_, b, _, _), _)| *b == bucket)
+            .filter(|((_, b, _, _, _), _)| *b == bucket)
             .map(|(_, row)| row.clone())
             .collect())
     }
 
     fn put_credential(&self, secret: &CredentialSecret) -> StoreResult<()> {
+        // The owning key is read under the SAME critical section as the credential write, in
+        // `delete_key`'s fixed lock order (keys → creds) so the two can never deadlock against each
+        // other. Checking the key first and writing after would let a `delete_key` commit in the
+        // gap: its cascade removes the credentials that exist AT THAT MOMENT, so material written
+        // just behind it survives the tombstone and keeps resolving — the same read-then-write hole
+        // `put_key`'s own tombstone precondition closes, one door over.
+        let keys = self.keys_read();
         let mut creds = self.creds();
-        // Reject an explicit slot pointed at a LIVE credential of the same (key_id, kind) — see the
-        // trait doc: silently clobbering a working credential mid-overlap-window is almost always an
-        // operator mistake, not an intended rotation.
-        let occupied = creds.values().any(|c| {
-            c.meta.id != secret.meta.id
-                && c.meta.key_id == secret.meta.key_id
-                && c.meta.kind == secret.meta.kind
-                && c.meta.slot == secret.meta.slot
-                && c.meta.revoked_at.is_none()
-        });
-        if occupied {
+        let Some(owner) = keys.get(&secret.meta.key_id) else {
             return Err(StoreError(format!(
-                "put_credential: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
-                secret.meta.slot, secret.meta.key_id, secret.meta.kind
+                "put_credential: key '{}' does not exist; a credential must hang off a real key",
+                secret.meta.key_id
+            )));
+        };
+        if owner.deleted_at.is_some() {
+            return Err(StoreError(format!(
+                "put_credential: key '{}' is tombstoned; its credentials were revoked with it and \
+                 are never reissued",
+                secret.meta.key_id
             )));
         }
-        // UNIQUE(kind, public_id): a public_id must never resolve to two different credentials,
-        // even across keys (an AccessKeyId is a global lookup handle).
-        let public_id_taken = creds.values().any(|c| {
-            c.meta.id != secret.meta.id
-                && c.meta.kind == secret.meta.kind
-                && c.meta.public_id == secret.meta.public_id
-        });
-        if public_id_taken {
-            return Err(StoreError(format!(
-                "put_credential: public_id '{}' is already in use for kind '{}'",
-                secret.meta.public_id, secret.meta.kind
-            )));
-        }
+        Self::credential_preconditions(&creds, secret)?;
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
         creds.insert(secret.meta.id.clone(), secret);
@@ -369,9 +641,55 @@ impl Store for MemoryStore {
         Ok(())
     }
 
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> StoreResult<()> {
+        // The trait calls this mint ATOMIC, and the DEFAULT it inherits is `put_key` followed by
+        // `put_credential` — two independent critical sections. When the credential leg fails (a
+        // reused `public_id` is the ordinary way it does), the key leg has already committed, so the
+        // caller is told the mint failed while a bearer key with no credential is left live in the
+        // table: a row nobody will ever clean up, and a `put_key` the operator never asked for. Both
+        // rows go in under ONE acquisition of the same two guards `delete_key` takes, in the same
+        // fixed order, with every precondition tested before anything is written.
+        let mut keys = self.keys();
+        let mut creds = self.creds();
+        if key.deleted_at.is_none() {
+            if let Some(existing) = keys.get(&key.id) {
+                if existing.deleted_at.is_some() {
+                    return Err(StoreError(format!(
+                        "put_key_with_credential: '{}' is tombstoned and its id is never reissued",
+                        key.id
+                    )));
+                }
+            }
+        }
+        // The credential must name the key being minted alongside it — a mint that quietly hung its
+        // secret material off some OTHER key is not the operation the caller asked for, and the
+        // tombstone/existence check `put_credential` makes cannot apply to a key that does not exist
+        // until this call commits.
+        if secret.meta.key_id != key.id {
+            return Err(StoreError(format!(
+                "put_key_with_credential: the credential names key '{}', not the key '{}' being \
+                 minted with it",
+                secret.meta.key_id, key.id
+            )));
+        }
+        Self::credential_preconditions(&creds, secret)?;
+
+        let mut key = key.clone();
+        key.revision = self.next_revision();
+        keys.insert(key.id.clone(), key);
+        let mut secret = secret.clone();
+        secret.meta.revision = self.next_revision();
+        creds.insert(secret.meta.id.clone(), secret);
+        Ok(())
+    }
+
     fn list_credentials(&self, key_id: &str) -> StoreResult<Vec<CredentialMeta>> {
         Ok(self
-            .creds()
+            .creds_read()
             .values()
             .filter(|c| c.meta.key_id == key_id)
             .map(|c| c.meta.clone())
@@ -384,7 +702,7 @@ impl Store for MemoryStore {
         public_id: &str,
     ) -> StoreResult<Option<CredentialSecret>> {
         Ok(self
-            .creds()
+            .creds_read()
             .values()
             .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
             .cloned())
@@ -410,7 +728,7 @@ impl Store for MemoryStore {
 
     fn list_credentials_since(&self, since: u64) -> StoreResult<Vec<CredentialSecret>> {
         Ok(self
-            .creds()
+            .creds_read()
             .values()
             .filter(|c| c.meta.revision > since)
             .cloned()
@@ -434,630 +752,238 @@ impl Store for MemoryStore {
             .cloned()
             .collect())
     }
+
+    fn append_audit(&self, entry: &AuditRecord) -> StoreResult<()> {
+        // Append-only, never rewriting: a second record on an occupied `seq` is EITHER the
+        // write-through retrying (byte-identical → Ok, the common case) or a forked/tampered chain
+        // (different → error). Collapsing those two is the one thing an audit store must not do.
+        let mut audit = self.audit.write().unwrap_or_else(|e| e.into_inner());
+        match audit.get(&entry.seq) {
+            Some(stored) if stored == entry => Ok(()),
+            Some(_) => Err(StoreError(format!(
+                "append_audit: seq {} already holds a DIFFERENT record — the audit chain has forked",
+                entry.seq
+            ))),
+            None => {
+                audit.insert(entry.seq, entry.clone());
+                Ok(())
+            }
+        }
+    }
+
+    fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+        Ok(self
+            .audit
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
+        self.plane_records()
+            .insert(Self::plane_key(record), record.to_record());
+        Ok(())
+    }
+
+    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+        Ok(self
+            .plane_records_read()
+            .get(&(kind.to_string(), id.to_string(), 0))
+            .map(|r| r.body.clone()))
+    }
+
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
+        // Keyed by `(parent, seq)`. APPEND-ONLY, never a blind overwrite — mirrors `append_audit`'s
+        // own fork detection above so the two append-only paths can never disagree about what a
+        // fork is: a second record at an already-occupied position is EITHER the write-through
+        // retrying after a timeout (byte-identical → Ok, the common case) or a SECOND WRITER forking
+        // the chain (different → refused, never silently applied). A blind upsert here would let two
+        // busbar processes pointed at one durable store silently overwrite each other's
+        // `task_event`/`call`/`audit` rows — exactly the defect `append_audit`'s own check exists to
+        // catch, restored on this newer seam.
+        let mut records = self.plane_records();
+        let key = Self::plane_key(record);
+        match records.get(&key) {
+            Some(existing) if existing.view() == record => Ok(()),
+            Some(_) => Err(StoreError(format!(
+                "append_plane_record: kind '{}' parent '{}' seq {} already holds a DIFFERENT \
+                 record — the chain has forked",
+                record.kind,
+                record.parent.unwrap_or(record.id),
+                record.seq
+            ))),
+            None => {
+                records.insert(key, record.to_record());
+                Ok(())
+            }
+        }
+    }
+
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &PlaneSelector<'_>,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        let records = self.plane_records_read();
+        let mut rows: Vec<(u64, Vec<u8>)> = records
+            .iter()
+            .filter(|((k, _, _), r)| {
+                k == kind
+                    && match selector {
+                        PlaneSelector::All => true,
+                        PlaneSelector::Parent(p) => r.parent.as_deref() == Some(&**p),
+                    }
+            })
+            .map(|(_, r)| (r.seq, r.body.clone()))
+            .collect();
+        // Oldest-first by `seq` — the order the engine's chain verifier reads a parent's events in.
+        rows.sort_by_key(|(seq, _)| *seq);
+        Ok(rows.into_iter().map(|(_, body)| body).collect())
+    }
+
+    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
+        let records = self.plane_records_read();
+        let mut parents: Vec<String> = records
+            .iter()
+            .filter(|((k, _, _), _)| k == kind)
+            .filter_map(|(_, r)| r.parent.clone())
+            .collect();
+        parents.sort();
+        parents.dedup();
+        Ok(parents)
+    }
+
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
+        // WHICH rows go is the kind's contract: `task` drops only TERMINAL rows (an interrupted task
+        // waiting on a human is exactly the row that sits still longest, and dropping it loses the
+        // work), every other kind drops any row older than `before`.
+        let mut records = self.plane_records();
+        let before_len = records.len();
+        records.retain(|(k, _, _), r| {
+            if k != kind || r.ts >= before {
+                return true;
+            }
+            k == "task" && r.disposition != PlaneDisposition::Terminal
+        });
+        Ok((before_len - records.len()) as u64)
+    }
+
+    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+        // Absent is a no-op, per the trait. Every `seq` under the identity goes, so deleting a
+        // parent's record cannot leave part of a chain behind.
+        self.plane_records()
+            .retain(|(k, i, _), _| !(k == kind && i == id));
+        Ok(())
+    }
+
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool> {
+        // TEST-AND-SET under ONE guard. The trait's default is `Ok(true)` — "this store keeps no
+        // ledger" — which on the DEFAULT backend makes every single-use approval token replayable:
+        // a confirm-once tool re-executes for anyone who replays the nonce, and the store reports
+        // each replay as the first redemption. Governance's out-of-the-box posture cannot be that.
+        let mut spent = self.plane_tokens.write().unwrap_or_else(|e| e.into_inner());
+        // Lapsed rows go in the same call: a token past its own expiry can never be presented
+        // again, so retaining it only grows the map.
+        spent.retain(|_, exp| *exp > now);
+        let first = spent
+            .insert((kind.to_string(), token.to_string()), expires_at)
+            .is_none();
+        Ok(first)
+    }
+
+    fn plane_token_live(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool> {
+        // MULTI-use and SPENDS NOTHING — the opposite of `redeem_plane_token`'s single-use
+        // test-and-set. This is a plain READ of the `(kind, token)` upsert record (an upsert kind
+        // lives at `seq` 0, exactly where `get_plane_record` point-reads it), live only while that
+        // record is present, its disposition is still `Active` (non-terminal), and `now` has not
+        // reached `expires_at`. Nothing is inserted, removed or mutated, so asking twice answers the
+        // same twice — the whole point of the verb.
+        //
+        // The trait default is `Ok(false)` precisely so a backend that keeps no records refuses these
+        // callbacks fail-closed. This backend DOES keep them, in the same `plane_records` map the
+        // upsert leg wrote to, so it answers from there — and it stays fail-closed for the same three
+        // reasons: an unknown `(kind, token)`, a terminal disposition, and a lapsed deadline each
+        // yield `Ok(false)`.
+        Ok(self
+            .plane_records_read()
+            .get(&(kind.to_string(), token.to_string(), 0))
+            .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
+    }
 }
+
+/// Open this store. It reads no configuration, so every body opens the same fresh RAM store — the
+/// ONE constructor both doors reach: the linked row ([`linked::STORE`]) calls it in process, and the
+/// dropped-in `cdylib` calls it from `busbar_open` ([`exports`]).
+pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
+    Ok(Box::new(MemoryStore::new()))
+}
+
+/// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
+/// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`). `door` is what a build that
+/// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
+/// ([`door_export`]): compiled in or dropped in, the kernel reaches the same table. The memory store
+/// never pends, so its `max_inflight` is set well above any worker count; it only bounds a flood.
+pub use v3::door;
+
+/// THE DROPPED-IN DOOR (feature `dropped-in`): [`door`] exported as the image's ONE symbol through
+/// the contract's `export_door!`. The one module in this crate where unsafe code is allowed: the
+/// exported symbol is `#[unsafe(no_mangle)]`.
+#[cfg(feature = "dropped-in")]
+#[allow(unsafe_code)]
+pub mod door_export {
+    busbar_contract::export_door!(crate::v3::door);
+}
+
+// M6: the legacy cold export below goes with the cold ABI (TODO M6 COLD-DELETE). It is kept only as
+// the in-tree subject of the legacy store adapter's tests; production never loads it.
+/// THE LEGACY COLD DOOR (feature `cold-dropped-in`): [`open`] exported through the contract's cold
+/// store export macro. The frozen symbols the loader looks up are the contract's. Unsafe code is
+/// allowed here because the C-ABI boundary functions the macro generates are
+/// `unsafe extern "C-unwind"` by the cold ABI's own definition.
+#[cfg(feature = "cold-dropped-in")]
+#[allow(unsafe_code)]
+pub mod exports {
+    busbar_contract::abi::sdk::export_store_plugin!(super::open);
+}
+
+/// The legacy cold door's boundary as a LINKED entry (the loader's legacy both-ways proof).
+#[cfg(feature = "cold-dropped-in")]
+pub use exports::BUSBAR_COLD_ENTRY;
+
+/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
+/// cold-kind axis — the same row a dropped-in store takes, opened in process. `STORE` is
+/// `(name, ephemeral, default, open)`: the name `governance.store` selects it by, its statement that
+/// what it holds is lost on restart, its claim to be the governance store a deployment that
+/// configures none runs on, and the open handed the row's configuration (this backend reads none).
+/// The composition root resolves the default from the linked rows' claims; two claims refuse boot.
+pub mod linked {
+    /// An in-process store row's open.
+    pub type Open = fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>;
+
+    /// `(name, ephemeral, default, open)`.
+    pub const STORE: (&str, bool, bool, Open) = ("memory", true, true, super::open);
+}
+
+mod v3;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use busbar_api::SecretForm;
+#[path = "tests/lib_tests.rs"]
+mod tests;
 
-    fn key(id: &str) -> VirtualKey {
-        VirtualKey {
-            id: id.to_string(),
-            generation_hash: format!("h_{id}"),
-            name: "t".to_string(),
-            allowed_scopes: None,
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: std::collections::BTreeMap::new(),
-            expires_at: None,
-            deleted_at: None,
-            revision: 0,
-        }
-    }
-
-    fn credential(id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
-        CredentialSecret {
-            meta: CredentialMeta {
-                id: id.to_string(),
-                key_id: key_id.to_string(),
-                kind: "sigv4".to_string(),
-                slot: 0,
-                public_id: public_id.to_string(),
-                secret_form: SecretForm::Recoverable,
-                created_at: 0,
-                updated_at: 0,
-                expires_at: None,
-                revoked_at: None,
-                revoke_reason: None,
-                revision: 0,
-            },
-            secret: "v1:plain:sek".to_string(),
-        }
-    }
-
-    fn ledger(requests: u64, model: &str, input: u64, output: u64) -> UsageLedger {
-        UsageLedger {
-            requests,
-            billable_requests: requests,
-            models: vec![busbar_api::ModelTokens {
-                model: model.to_string(),
-                tokens: busbar_api::TierTokens {
-                    input,
-                    output,
-                    cache_read: 0,
-                    cache_write: 0,
-                },
-            }],
-        }
-    }
-
-    #[test]
-    fn key_crud_and_ledger_roundtrip() {
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        assert_eq!(s.get_key("a").unwrap().unwrap().id, "a");
-        assert_eq!(s.list_keys().unwrap().len(), 1);
-        // absolute put_usage then read back
-        s.put_usage("a", 0, &ledger(3, "m", 100, 40)).unwrap();
-        let u = s.get_usage("a", 0).unwrap();
-        assert_eq!(u.requests, 3);
-        assert_eq!(u.tokens_for("m").unwrap().input, 100);
-        // absolute overwrite (not additive)
-        s.put_usage("a", 0, &ledger(1, "m", 20, 0)).unwrap();
-        assert_eq!(
-            s.get_usage("a", 0).unwrap().tokens_for("m").unwrap().input,
-            20
-        );
-        // unknown window is default-empty
-        assert_eq!(s.get_usage("a", 999).unwrap(), UsageLedger::default());
-    }
-
-    /// Additive per-model delta accumulate: two adds sum, a second model materializes its own row,
-    /// and negative deltas floor at 0 (parity contract with sqlite/postgres/valkey).
-    #[test]
-    fn add_usage_accumulates_per_model() {
-        let s = MemoryStore::new();
-        let d = UsageDelta {
-            requests: 1,
-            billable_requests: 1,
-            models: vec![busbar_api::ModelTokensDelta {
-                model: "gpt-5".to_string(),
-                tokens: busbar_api::TierTokensDelta {
-                    input: 10,
-                    output: 5,
-                    cache_read: 1,
-                    cache_write: 0,
-                },
-            }],
-        };
-        s.add_usage("bucket", 100, &d).unwrap();
-        s.add_usage("bucket", 100, &d).unwrap();
-        let u = s.get_usage("bucket", 100).unwrap();
-        assert_eq!(u.requests, 2);
-        let t = u.tokens_for("gpt-5").unwrap();
-        assert_eq!((t.input, t.output, t.cache_read), (20, 10, 2));
-        // Refund floors at zero.
-        s.add_usage(
-            "bucket",
-            100,
-            &UsageDelta {
-                requests: -5,
-                billable_requests: -5,
-                models: vec![],
-            },
-        )
-        .unwrap();
-        assert_eq!(s.get_usage("bucket", 100).unwrap().requests, 0);
-    }
-
-    #[test]
-    fn delete_key_tombstones_and_cascades_usage_and_creds() {
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        s.put_usage("a", 0, &ledger(1, "m", 5, 0)).unwrap();
-        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
-        s.delete_key("a").unwrap();
-        // TOMBSTONE, not removed: the row survives, disabled, with deleted_at set.
-        let tombstone = s.get_key("a").unwrap().unwrap();
-        assert!(!tombstone.enabled);
-        assert!(tombstone.deleted_at.is_some());
-        assert_eq!(s.get_usage("a", 0).unwrap(), UsageLedger::default());
-        assert!(s.list_credentials("a").unwrap().is_empty());
-        // Idempotent: a second delete of an already-tombstoned key is a no-op, not an error.
-        s.delete_key("a").unwrap();
-    }
-
-    #[test]
-    fn put_credential_rejects_a_slot_already_holding_a_live_credential() {
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
-        // Same (key_id, kind, slot), different id/public_id: must fail, not silently clobber.
-        let clobber = credential("c2", "a", "AKIA2");
-        assert!(s.put_credential(&clobber).is_err());
-        // Revoking the occupant frees the slot for a fresh mint.
-        s.revoke_credential("c1", "rotated").unwrap();
-        assert!(s.put_credential(&clobber).is_ok());
-    }
-
-    #[test]
-    fn put_credential_rejects_a_public_id_reused_under_a_different_key() {
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        s.put_key(&key("b")).unwrap();
-        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
-        // Different key, different id, SAME (kind, public_id) — the global AccessKeyId->credential
-        // lookup handle must resolve to exactly one credential.
-        let mut dupe = credential("c2", "b", "AKIA1");
-        dupe.meta.slot = 1; // different slot too, so only the public_id clash can reject it
-        assert!(s.put_credential(&dupe).is_err());
-        // A genuinely distinct public_id under the other key is fine.
-        let mut ok = credential("c3", "b", "AKIA2");
-        ok.meta.slot = 1;
-        assert!(s.put_credential(&ok).is_ok());
-    }
-
-    #[test]
-    fn put_credential_public_id_check_excludes_its_own_row_on_reput() {
-        // The uniqueness scan excludes the row with the SAME id (`c.meta.id != secret.meta.id`) —
-        // otherwise a credential could never even be inserted once the id already existed. This
-        // only matters once an id can legitimately be re-put; simulate it by inserting once, then
-        // putting the identical secret again under the identical id/public_id/kind and confirming
-        // it's accepted, not rejected as "colliding with itself".
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        let c = credential("c1", "a", "AKIA1");
-        s.put_credential(&c).unwrap();
-        assert!(
-            s.put_credential(&c).is_ok(),
-            "a row must not collide with itself"
-        );
-    }
-
-    #[test]
-    fn list_credentials_filters_by_key_id_and_since_boundary_is_exclusive() {
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        s.put_key(&key("b")).unwrap();
-        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
-        let mut c2 = credential("c2", "b", "AKIA2");
-        c2.meta.slot = 1;
-        s.put_credential(&c2).unwrap();
-
-        let for_a = s.list_credentials("a").unwrap();
-        assert_eq!(for_a.len(), 1, "must not also return key b's credential");
-        assert_eq!(for_a[0].id, "c1");
-
-        // revision boundary: `revision > since` is exclusive of `since` itself. c2 was put after
-        // c1, so it holds the higher revision — use IT as the boundary reference, or c1 (the lower
-        // revision) would still be `> since` and the assertion below would be vacuous. The store's
-        // revision counter is global (shared with `put_key`), so c1's revision is NOT necessarily
-        // `newest_rev - 1` — read it directly rather than assuming adjacency.
-        let oldest_rev = s.list_credentials("a").unwrap()[0].revision;
-        let newest_rev = s.list_credentials("b").unwrap()[0].revision;
-        assert!(newest_rev > oldest_rev);
-        assert_eq!(
-            s.list_credentials_since(newest_rev).unwrap().len(),
-            0,
-            "since == the newest row's own revision must exclude it"
-        );
-        assert_eq!(
-            s.list_credentials_since(oldest_rev - 1).unwrap().len(),
-            2,
-            "since one below the lowest revision must include everything"
-        );
-    }
-
-    #[test]
-    fn list_keys_since_boundary_is_exclusive() {
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        s.put_key(&key("b")).unwrap();
-        let rev_a = s.get_key("a").unwrap().unwrap().revision;
-        let rev_b = s.get_key("b").unwrap().unwrap().revision;
-        assert!(rev_b > rev_a);
-        assert_eq!(
-            s.list_keys_since(rev_b).unwrap().len(),
-            0,
-            "since == the newest row's own revision must exclude it"
-        );
-        assert_eq!(
-            s.list_keys_since(rev_a).unwrap().len(),
-            1,
-            "must include only b"
-        );
-        assert_eq!(s.list_keys_since(rev_a - 1).unwrap().len(), 2);
-    }
-
-    #[test]
-    fn next_revision_is_strictly_monotonic_starting_above_zero() {
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        s.put_key(&key("b")).unwrap();
-        let rev_a = s.get_key("a").unwrap().unwrap().revision;
-        let rev_b = s.get_key("b").unwrap().unwrap().revision;
-        assert!(
-            rev_a > 0,
-            "the counter must not hand out 0 as a real revision"
-        );
-        assert_eq!(rev_b, rev_a + 1, "each call must advance by exactly 1");
-    }
-
-    #[test]
-    fn lookup_credential_secret_resolves_by_kind_and_public_id() {
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
-        let found = s
-            .lookup_credential_secret("sigv4", "AKIA1")
-            .unwrap()
-            .unwrap();
-        assert_eq!(found.meta.key_id, "a");
-        assert_eq!(found.secret, "v1:plain:sek");
-        assert!(s
-            .lookup_credential_secret("sigv4", "unknown")
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
-    fn scrub_key_requires_tombstone_first() {
-        let s = MemoryStore::new();
-        s.put_key(&key("a")).unwrap();
-        // A live key must not be scrubbable — that would be silent, un-auditable data loss on an
-        // active principal.
-        assert!(s.scrub_key("a").is_err());
-        s.delete_key("a").unwrap();
-        s.scrub_key("a").unwrap();
-        let scrubbed = s.get_key("a").unwrap().unwrap();
-        assert!(scrubbed.name.is_empty());
-        assert!(scrubbed.labels.is_empty());
-    }
-
-    #[test]
-    fn metering_accumulates_per_bucket() {
-        let s = MemoryStore::new();
-        let d = MeteringDelta {
-            key_id: "a".to_string(),
-            bucket: 7,
-            model: "m".to_string(),
-            provider: "p".to_string(),
-            tokens_input: 10,
-            tokens_output: 5,
-            tokens_cache_read: 0,
-            tokens_cache_write: 0,
-            requests: 1,
-            billable_requests: 1,
-            key_group_at_use: String::new(),
-            pricing_version: String::new(),
-        };
-        s.add_metering(&d).unwrap();
-        s.add_metering(&d).unwrap();
-        let rows = s.list_metering(7).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].tokens_input, 20);
-        assert_eq!(rows[0].requests, 2);
-        assert!(s.list_metering(999).unwrap().is_empty());
-    }
-
-    /// Regression: `usage` must not grow unbounded forever. A window older than the 31-day
-    /// retention ceiling gets swept once `add_usage` has been called `SWEEP_INTERVAL` times
-    /// (the amortized sweep cadence), even though nothing ever explicitly deletes it.
-    #[test]
-    fn add_usage_sweeps_stale_windows() {
-        let s = MemoryStore::new();
-        let old_window = now().saturating_sub(40 * 86_400); // 40 days old > 31-day retention
-        let d = UsageDelta {
-            requests: 1,
-            billable_requests: 1,
-            models: vec![],
-        };
-        for _ in 0..SWEEP_INTERVAL {
-            s.add_usage("old-bucket", old_window, &d).unwrap();
-        }
-        // The sweep fired on the SWEEP_INTERVAL-th write and evicted the stale row (including the
-        // one just written in that same call, since it's aged by its window_start, not by
-        // recency-of-write).
-        assert_eq!(
-            s.get_usage("old-bucket", old_window).unwrap(),
-            UsageLedger::default()
-        );
-
-        // A fresh window written afterward is unaffected.
-        let fresh_window = now();
-        s.add_usage("fresh-bucket", fresh_window, &d).unwrap();
-        assert_eq!(
-            s.get_usage("fresh-bucket", fresh_window).unwrap().requests,
-            1
-        );
-    }
-
-    /// Regression: the sweep must not over-prune. A window well within the 31-day retention
-    /// ceiling survives a sweep triggered by writes to an unrelated, genuinely stale window.
-    #[test]
-    fn add_usage_sweep_preserves_fresh_windows() {
-        let s = MemoryStore::new();
-        let young_window = now().saturating_sub(5 * 86_400); // 5 days old, well within retention
-        let old_window = now().saturating_sub(40 * 86_400); // 40 days old, past retention
-        let d = UsageDelta {
-            requests: 1,
-            billable_requests: 1,
-            models: vec![],
-        };
-        s.add_usage("young-bucket", young_window, &d).unwrap();
-        for _ in 0..(SWEEP_INTERVAL - 1) {
-            s.add_usage("old-bucket", old_window, &d).unwrap();
-        }
-        // That's SWEEP_INTERVAL total add_usage calls, so the sweep just fired.
-        assert_eq!(
-            s.get_usage("young-bucket", young_window).unwrap().requests,
-            1
-        );
-        assert_eq!(
-            s.get_usage("old-bucket", old_window).unwrap(),
-            UsageLedger::default()
-        );
-    }
-
-    /// The sweep boundary itself: a window exactly `MAX_RETENTION_SECS` old sits AT the ceiling
-    /// (`window_start + MAX_RETENTION_SECS == now`) and must be evicted (`>`, not `>=`, is the
-    /// retain condition — a row must be STRICTLY inside the window to survive), while one second
-    /// fresher survives.
-    #[test]
-    fn add_usage_sweep_boundary_is_exact() {
-        let s = MemoryStore::new();
-        let n = now();
-        // Pin the sweep's clock to the SAME `n` the test derives its buckets from, so the retention
-        // ceiling is exact and a wall-clock tick between here and the sweep can't shift it. Without
-        // this, `one_inside` intermittently falls at/below an advanced ceiling and is wrongly evicted.
-        s.pin_clock(n);
-        let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
-        let one_inside = at_ceiling + 1;
-        let d = UsageDelta {
-            requests: 1,
-            billable_requests: 1,
-            models: vec![],
-        };
-        s.add_usage("at-ceiling", at_ceiling, &d).unwrap();
-        s.add_usage("one-inside", one_inside, &d).unwrap();
-        for _ in 0..(SWEEP_INTERVAL - 2) {
-            s.add_usage("filler", one_inside, &d).unwrap();
-        }
-        assert_eq!(
-            s.get_usage("at-ceiling", at_ceiling).unwrap(),
-            UsageLedger::default(),
-            "a window exactly at the retention ceiling must be evicted"
-        );
-        assert_eq!(
-            s.get_usage("one-inside", one_inside).unwrap().requests,
-            1,
-            "a window one second inside the ceiling must survive"
-        );
-    }
-
-    /// Regression: `metering` must not grow unbounded forever either — same amortized sweep, keyed
-    /// by the (day) `bucket` field this time.
-    #[test]
-    fn add_metering_sweeps_stale_buckets() {
-        let s = MemoryStore::new();
-        let old_bucket = now().saturating_sub(40 * 86_400);
-        let d = MeteringDelta {
-            key_id: "k".to_string(),
-            bucket: old_bucket,
-            model: "m".to_string(),
-            provider: "p".to_string(),
-            tokens_input: 1,
-            tokens_output: 0,
-            tokens_cache_read: 0,
-            tokens_cache_write: 0,
-            requests: 1,
-            billable_requests: 1,
-            key_group_at_use: String::new(),
-            pricing_version: String::new(),
-        };
-        for _ in 0..SWEEP_INTERVAL {
-            s.add_metering(&d).unwrap();
-        }
-        assert!(s.list_metering(old_bucket).unwrap().is_empty());
-
-        let fresh_bucket = now();
-        let fresh = MeteringDelta {
-            bucket: fresh_bucket,
-            ..d.clone()
-        };
-        s.add_metering(&fresh).unwrap();
-        assert_eq!(s.list_metering(fresh_bucket).unwrap().len(), 1);
-    }
-
-    /// Regression: metering sweep must not over-prune fresh buckets either.
-    #[test]
-    fn add_metering_sweep_preserves_fresh_buckets() {
-        let s = MemoryStore::new();
-        let young_bucket = now().saturating_sub(5 * 86_400);
-        let old_bucket = now().saturating_sub(40 * 86_400);
-        let young = MeteringDelta {
-            key_id: "k".to_string(),
-            bucket: young_bucket,
-            model: "m".to_string(),
-            provider: "p".to_string(),
-            tokens_input: 1,
-            tokens_output: 0,
-            tokens_cache_read: 0,
-            tokens_cache_write: 0,
-            requests: 1,
-            billable_requests: 1,
-            key_group_at_use: String::new(),
-            pricing_version: String::new(),
-        };
-        let old = MeteringDelta {
-            bucket: old_bucket,
-            ..young.clone()
-        };
-        s.add_metering(&young).unwrap();
-        for _ in 0..(SWEEP_INTERVAL - 1) {
-            s.add_metering(&old).unwrap();
-        }
-        assert_eq!(s.list_metering(young_bucket).unwrap().len(), 1);
-        assert!(s.list_metering(old_bucket).unwrap().is_empty());
-    }
-
-    /// Same exact-boundary case as `add_usage_sweep_boundary_is_exact`, for metering's bucket
-    /// retention: a bucket exactly `MAX_RETENTION_SECS` old must be evicted, one second fresher
-    /// must survive.
-    #[test]
-    fn add_metering_sweep_boundary_is_exact() {
-        let s = MemoryStore::new();
-        let n = now();
-        // Pin the sweep's clock to the SAME `n` the test derives its buckets from (see the usage
-        // boundary test above) so the retention ceiling is exact and race-free.
-        s.pin_clock(n);
-        let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
-        let one_inside = at_ceiling + 1;
-        let base = MeteringDelta {
-            key_id: "k".to_string(),
-            bucket: at_ceiling,
-            model: "m".to_string(),
-            provider: "p".to_string(),
-            tokens_input: 1,
-            tokens_output: 0,
-            tokens_cache_read: 0,
-            tokens_cache_write: 0,
-            requests: 1,
-            billable_requests: 1,
-            key_group_at_use: String::new(),
-            pricing_version: String::new(),
-        };
-        let inside = MeteringDelta {
-            bucket: one_inside,
-            ..base.clone()
-        };
-        s.add_metering(&base).unwrap();
-        for _ in 0..(SWEEP_INTERVAL - 1) {
-            s.add_metering(&inside).unwrap();
-        }
-        assert!(
-            s.list_metering(at_ceiling).unwrap().is_empty(),
-            "a bucket exactly at the retention ceiling must be evicted"
-        );
-        assert_eq!(
-            s.list_metering(one_inside).unwrap().len(),
-            1,
-            "a bucket one second inside the ceiling must survive"
-        );
-    }
-
-    /// `delete_key` tombstones rows (kept forever, by design, for billing/audit attribution), and
-    /// that growth needs its own bound — unlike `usage` and
-    /// `metering`, the `keys` map had no retention sweep, so a repeated self-serve refresh loop by
-    /// one principal grew it without bound. `put_key` (the hot write path for issue/refresh) now
-    /// runs the SAME amortized sweep, pruning only tombstoned rows past the 31-day ceiling; a live
-    /// row is NEVER a candidate regardless of age, and a recently-tombstoned row survives.
-    #[test]
-    fn put_key_sweeps_stale_tombstones() {
-        let s = MemoryStore::new();
-        let n = now();
-        let old_deleted_at = n.saturating_sub(40 * 86_400); // 40 days old > 31-day retention
-
-        // Tombstone one key far in the past (pin the clock at delete time so its `deleted_at` lands
-        // well past the retention ceiling).
-        s.put_key(&key("old-tombstone")).unwrap();
-        s.pin_clock(old_deleted_at);
-        s.delete_key("old-tombstone").unwrap();
-        assert_eq!(
-            s.get_key("old-tombstone").unwrap().unwrap().deleted_at,
-            Some(old_deleted_at)
-        );
-
-        // A live key (never tombstoned) and a recently-tombstoned key.
-        s.put_key(&key("live")).unwrap();
-        s.put_key(&key("recent-tombstone")).unwrap();
-        s.pin_clock(n); // back to "now" — governs both the recent tombstone and the sweep's ceiling
-        s.delete_key("recent-tombstone").unwrap();
-
-        // Fire the amortized sweep with a batch of unrelated writes (mirrors add_usage/add_metering
-        // sweep tests: SWEEP_INTERVAL put_key calls guarantee the sweep fires at least once).
-        for i in 0..SWEEP_INTERVAL {
-            s.put_key(&key(&format!("filler-{i}"))).unwrap();
-        }
-
-        assert!(
-            s.get_key("old-tombstone").unwrap().is_none(),
-            "a tombstone past the 31-day retention ceiling must be pruned"
-        );
-        assert!(
-            s.get_key("live").unwrap().is_some(),
-            "a live (never-deleted) key must never be pruned, regardless of age"
-        );
-        assert!(
-            s.get_key("recent-tombstone").unwrap().is_some(),
-            "a tombstone within the retention window must survive"
-        );
-    }
-
-    /// Unlike `usage`/`metering`/tombstoned `keys`, the `creds` map had NO
-    /// retention sweep at all — its only shrink path was `delete_key`'s cascade, which never fires for
-    /// a credential rotated on a LIVE key. A long-lived key's occupied-slot -> revoke -> re-put
-    /// rotation cycle (mint into the free slot, revoke the old one) therefore grew `creds` without
-    /// bound. `put_credential` now runs the same amortized sweep, pruning only REVOKED rows past the
-    /// 31-day ceiling; a live (never-revoked) credential is NEVER a candidate regardless of age, and a
-    /// recently-revoked one survives.
-    #[test]
-    fn put_credential_sweeps_stale_revoked_creds() {
-        let s = MemoryStore::new();
-        let n = now();
-        let old_revoked_at = n.saturating_sub(40 * 86_400); // 40 days old > 31-day retention
-
-        s.put_key(&key("k-old")).unwrap();
-        s.put_credential(&credential("old-revoked", "k-old", "AKIA_OLD"))
-            .unwrap();
-        // Revoke it far in the past (pin the clock at revoke time so `revoked_at` lands well past
-        // the retention ceiling) — `revoke_credential` stamps `revoked_at` from the real wall clock,
-        // not the pinned one, so pin first, revoke, then verify the stamped value directly.
-        s.pin_clock(old_revoked_at);
-        s.revoke_credential("old-revoked", "rotated").unwrap();
-
-        // A live (never-revoked) credential and a recently-revoked one.
-        s.put_key(&key("k-live")).unwrap();
-        s.put_credential(&credential("live", "k-live", "AKIA_LIVE"))
-            .unwrap();
-        s.put_key(&key("k-recent")).unwrap();
-        s.put_credential(&credential("recent-revoked", "k-recent", "AKIA_RECENT"))
-            .unwrap();
-        s.pin_clock(n); // back to "now" — governs both the recent revoke and the sweep's ceiling
-        s.revoke_credential("recent-revoked", "rotated").unwrap();
-
-        // Fire the amortized sweep with a batch of unrelated put_credential calls (mirrors
-        // put_key_sweeps_stale_tombstones): SWEEP_INTERVAL calls guarantee the sweep fires.
-        for i in 0..SWEEP_INTERVAL {
-            let kid = format!("k-filler-{i}");
-            s.put_key(&key(&kid)).unwrap();
-            s.put_credential(&credential(
-                &format!("filler-{i}"),
-                &kid,
-                &format!("AKIA_F{i}"),
-            ))
-            .unwrap();
-        }
-
-        assert!(
-            s.lookup_credential_secret("sigv4", "AKIA_OLD")
-                .unwrap()
-                .is_none(),
-            "a credential revoked past the 31-day retention ceiling must be pruned"
-        );
-        assert!(
-            s.lookup_credential_secret("sigv4", "AKIA_LIVE")
-                .unwrap()
-                .is_some(),
-            "a live (never-revoked) credential must never be pruned, regardless of age"
-        );
-        assert!(
-            s.lookup_credential_secret("sigv4", "AKIA_RECENT")
-                .unwrap()
-                .is_some(),
-            "a credential revoked within the retention window must survive"
-        );
-    }
-}
+#[cfg(test)]
+#[path = "tests/v3_tests.rs"]
+mod v3_tests;

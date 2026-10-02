@@ -1,0 +1,1466 @@
+use super::*;
+use crate::codec::dialect::ir_parse_error;
+use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
+
+impl ProtocolReader for CohereReader {
+    /// The top-level `finish_reason` — the field `read_response` reads its stop reason from.
+    fn stop_reason_key(&self) -> Option<&'static [u8]> {
+        Some(b"\"finish_reason\"")
+    }
+
+    /// The same `read_cohere_stop_reason` `read_response` maps it through. An empty token is no
+    /// reason, exactly as `read_response` reads it.
+    fn stop_reason_of_token(&self, token: &str) -> Option<crate::codec::ir::IrStopReason> {
+        (!token.is_empty()).then(|| read_cohere_stop_reason(token))
+    }
+
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
+        let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
+        // The provider-metered `billed_units` bucket and the cache hit are read exactly as
+        // `read_response` reads them (one table, `USAGE`): Cohere reports usage TWICE — a raw `tokens`
+        // bucket and the separately-metered `billed_units` bucket the operator is invoiced on — and
+        // `to_token_usage` lets the metered counts WIN for the reserved input/output tiers. Carrying
+        // only `tokens` here meant a head-truncated body reported the RAW counts while the identical
+        // untruncated body reported the metered ones. An unreadable count yields NO recovered usage,
+        // never a zero one (#42).
+        Some(read_cohere_usage(Some(&v)).ok()?.to_token_usage())
+    }
+
+    fn extract_error(
+        &self,
+        status: StatusCode,
+        body: &[u8],
+    ) -> busbar_contract::upstream::RawUpstreamError {
+        // Parse the body exactly once and derive both fields from the single binding — the Gemini
+        // and Bedrock readers do the same, preserving the "parse once" invariant. Parsing twice
+        // paid a pointless 2x CPU cost on every error response.
+        let json = crate::codec::json::parse::<serde_json::Value>(body).ok();
+        let provider_code = json
+            .as_ref()
+            .and_then(|j| j.get(keys::MESSAGE))
+            .and_then(|m| m.as_str())
+            .map(String::from);
+        let structured_type = json
+            .as_ref()
+            .and_then(|j| j.get("error_type"))
+            .and_then(|e| e.as_str())
+            .map(String::from);
+
+        // Cohere v2 signals an oversized request via the error MESSAGE only — it has no distinct
+        // structured code/type for context-length (its `error_type` is the generic
+        // `invalid_request_error`, and the `message` is free text like "too many tokens" /
+        // "...exceeds the maximum ... tokens"). Without normalization, `provider_code` would carry
+        // that raw message string, which the breaker cannot recognize, so an oversized-request
+        // failure would be classified by HTTP 400 as a plain ClientError and NEVER fail over. The
+        // `#[cfg(test)] classify()` helper above synthesized the canonical `context_length_exceeded`
+        // code, but that helper does not run in production — only `extract_error` does. Mirror
+        // `AnthropicReader::extract_error`: scan the body for Cohere's context-length phrasing and,
+        // when it matches, OVERRIDE `provider_code` with the canonical `context_length_exceeded`
+        // code. The breaker (breaker.rs `normalize_raw_error`) recognizes that code →
+        // `StatusClass::ContextLength` → fail over without penalty (the lane is healthy). Unlike the
+        // Anthropic reader's `or_else` (its `provider_code` is `None` when context-length triggers),
+        // Cohere always populates `provider_code` from `message`, so the canonical code must REPLACE
+        // it rather than only fill an empty slot.
+        // Gate the body-scan override on a request-SIZE status. A 401/403/429 whose free-text body
+        // happens to mention token counts must NOT be reclassified as the no-penalty ContextLength
+        // class — that would let an auth/rate-limit failure escape the breaker (no cooldown, no
+        // failover penalty). Cohere signals an oversized request with HTTP 400 (and, for some
+        // gateways, 413); only on those statuses does the phrasing carry context-length meaning.
+        let provider_code = if (status == StatusCode::BAD_REQUEST
+            || status == StatusCode::PAYLOAD_TOO_LARGE)
+            && Self::body_signals_context_length(body)
+        {
+            Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+        } else {
+            provider_code
+        };
+
+        busbar_contract::upstream::RawUpstreamError {
+            http_status: status.as_u16(),
+            provider_code,
+            structured_type,
+            retry_after_secs: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
+        let text = String::from_utf8_lossy(body);
+        let lower = text.to_lowercase();
+
+        // Mirror the production `extract_error` gate: rate-limit / auth / server statuses are
+        // classified by status FIRST, so a free-text body that mentions token counts on a 429/401/403
+        // can never be reclassified as the no-penalty ContextLength class. The context-length phrasing
+        // is honored ONLY on a request-size status (400 / 413).
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            return CanonicalSignal {
+                class: StatusClass::RateLimit,
+                provider_signal: Some("429".to_string()),
+                retry_after: None,
+            };
+        }
+
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            return CanonicalSignal {
+                class: StatusClass::Auth,
+                provider_signal: Some("auth".to_string()),
+                retry_after: None,
+            };
+        }
+
+        if status.is_server_error() {
+            return CanonicalSignal {
+                class: StatusClass::ServerError,
+                provider_signal: Some("5xx".to_string()),
+                retry_after: None,
+            };
+        }
+
+        if (status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE)
+            && (lower.contains("too many tokens")
+                || (lower.contains(keys::MAXIMUM) && lower.contains(keys::TOKENS)))
+        {
+            return CanonicalSignal {
+                class: StatusClass::ContextLength,
+                provider_signal: Some(
+                    busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
+                ),
+                retry_after: None,
+            };
+        }
+
+        if status.is_client_error() {
+            return CanonicalSignal {
+                class: StatusClass::ClientError,
+                provider_signal: Some(format!("{}", status.as_u16())),
+                retry_after: None,
+            };
+        }
+
+        CanonicalSignal {
+            class: StatusClass::ClientError,
+            provider_signal: None,
+            retry_after: None,
+        }
+    }
+
+    fn read_request(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<crate::codec::ir::IrRequest, IrError> {
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
+
+        let mut extra = serde_json::Map::new();
+        let mut system_blocks: Vec<crate::codec::ir::IrBlock> = Vec::new();
+        // Count of `system`-role entries folded out of `messages` below — restores the 1.5.5
+        // `message_count` semantics (the raw wire array length) onto `IrFacts::shape()`.
+        let mut system_turns_folded: usize = 0;
+        // Where each folded entry stood, for the hook view (`IrRequest::system_folds`).
+        let mut system_folds: Vec<crate::codec::ir::IrSystemFold> = Vec::new();
+
+        let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
+        if let Some(messages_val) = obj.get(keys::MESSAGES) {
+            let msgs_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
+
+            for msg_val in msgs_arr {
+                let role_str = msg_val
+                    .get(keys::ROLE)
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
+                let role = match role_str {
+                    keys::SYSTEM => crate::codec::ir::IrRole::System,
+                    keys::USER => crate::codec::ir::IrRole::User,
+                    keys::ASSISTANT => crate::codec::ir::IrRole::Assistant,
+                    keys::TOOL => crate::codec::ir::IrRole::Tool,
+                    _ => return Err(ir_parse_error()),
+                };
+
+                // EDGE-VALIDATE the per-message `content` TYPE (all roles). Cohere `content` is
+                // legally a string, an array of content parts, or absent/`null` (an assistant turn
+                // carrying only `tool_calls`). A present number/bool/object is a genuine TYPE
+                // violation the lenient projections below would silently coerce (to empty, or to a
+                // JSON-stringified blob) — reject it with the same 400 the top-level `messages` array
+                // uses. Absent/null/empty stay lenient (forward-compat).
+                if let Some(cv) = msg_val.get(keys::CONTENT) {
+                    if !cv.is_null() && !cv.is_string() && !cv.is_array() {
+                        return Err(ir_parse_error());
+                    }
+                }
+
+                // System content is canonicalized into IrRequest.system (matching the other
+                // protocols), not carried as a System-role message — so it survives translation
+                // to a protocol whose writer reads req.system.
+                if role == crate::codec::ir::IrRole::System {
+                    system_turns_folded += 1;
+                    let blocks_before = system_blocks.len();
+                    if let Some(content_val) = msg_val.get(keys::CONTENT) {
+                        if let Some(s) = content_val.as_str() {
+                            system_blocks.push(crate::codec::ir::IrBlock::Text {
+                                text: s.to_string(),
+                                cache_control: None,
+                                citations: Vec::new(),
+                                refusal: false,
+                            });
+                        } else if let Some(arr) = content_val.as_array() {
+                            for block_val in arr {
+                                if let Some(bo) = block_val.as_object() {
+                                    if bo.get(keys::TYPE).and_then(|t| t.as_str())
+                                        == Some(keys::TEXT)
+                                    {
+                                        if let Some(text) =
+                                            bo.get(keys::TEXT).and_then(|t| t.as_str())
+                                        {
+                                            system_blocks.push(crate::codec::ir::IrBlock::Text {
+                                                text: text.to_string(),
+                                                cache_control: None,
+                                                citations: Vec::new(),
+                                                refusal: false,
+                                            });
+                                        }
+                                    } else {
+                                        // Cohere's system message is text-only natively, so a
+                                        // non-text block in the system array has no representation and
+                                        // is dropped. Keep the drop, but surface it: a silent loss of
+                                        // a system instruction block is otherwise invisible.
+                                        tracing::warn!(
+                                            block_type = bo
+                                                .get(keys::TYPE)
+                                                .and_then(|t| t.as_str())
+                                                .unwrap_or("<missing>"),
+                                            "dropping non-text block in cohere system array (cohere \
+                                             system is text-only)"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    crate::codec::ir::IrSystemFold::record(
+                        &mut system_folds,
+                        messages.len(),
+                        crate::codec::ir::IrSystemRole::System,
+                        blocks_before,
+                        system_blocks.len(),
+                    );
+                    continue;
+                }
+
+                let mut msg_content = Vec::new();
+                // The generic top-level content loop must NOT run for the Tool role: native Cohere
+                // v2 tool content is NOT a free-text message field — it is consumed below by the
+                // dedicated Tool branch into the ToolResult's inner content. Running this loop for
+                // a Tool message ALSO decoded the same `content` into stray top-level Text blocks,
+                // so one tool message produced both a top-level Text block AND a ToolResult holding
+                // the identical text. On egress CohereWriter's Tool branch then folds that leftover
+                // text into the first ToolResult, duplicating it. Skip the generic parse here — the
+                // Tool branch owns a tool message's content exclusively (mirrors the System early
+                // `continue` above, which keeps System content out of this loop too).
+                if role != crate::codec::ir::IrRole::Tool {
+                    if let Some(content_val) = msg_val.get(keys::CONTENT) {
+                        if content_val.is_string() {
+                            msg_content.push(crate::codec::ir::IrBlock::Text {
+                                text: content_val.as_str().unwrap_or("").to_string(),
+                                cache_control: None,
+                                citations: Vec::new(),
+                                refusal: false,
+                            });
+                        } else if let Some(arr) = content_val.as_array() {
+                            for block_val in arr {
+                                if let Some(block_obj) = block_val.as_object() {
+                                    match block_obj.get(keys::TYPE).and_then(|t| t.as_str()) {
+                                        Some(keys::TEXT) => {
+                                            if let Some(text) =
+                                                block_obj.get(keys::TEXT).and_then(|t| t.as_str())
+                                            {
+                                                msg_content.push(crate::codec::ir::IrBlock::Text {
+                                                    text: text.to_string(),
+                                                    cache_control: None,
+                                                    citations: Vec::new(),
+                                                    refusal: false,
+                                                });
+                                            }
+                                        }
+                                        // Cohere v2 multimodal input: an image content part is
+                                        // `{"type":"image_url","image_url":{"url":"<data-uri|https>"}}`
+                                        // — the SAME shape OpenAI v1 chat uses (Cohere adopted the
+                                        // OpenAI-compatible part for its vision models). Decode it into
+                                        // `IrBlock::Image` via the shared `parse_image_url` seam, which
+                                        // splits a `data:<mime>;base64,<payload>` URI into
+                                        // (media_type, data) and otherwise preserves the raw URL under
+                                        // the "image_url" sentinel — the SAME (media_type, data) IR
+                                        // contract the Anthropic/OpenAI readers populate, so a Cohere
+                                        // image round-trips and translates losslessly. ASSUMPTION (see
+                                        // report): the wire shape is OpenAI-style `image_url`; no
+                                        // Cohere v2 image fixture exists in-repo to confirm it.
+                                        Some(keys::IMAGE_URL) => {
+                                            if let Some(url) = block_obj
+                                                .get(keys::IMAGE_URL)
+                                                .and_then(|iu| iu.get(keys::URL))
+                                                .and_then(|u| u.as_str())
+                                            {
+                                                msg_content.push(crate::codec::ir::IrBlock::Image {
+                                                    source:
+                                                        super::super::ir_encode::parse_image_url(
+                                                            url,
+                                                        ),
+                                                    cache_control: None,
+                                                    // IR-08: the requested fidelity.
+                                                    detail: read_cohere_image_detail(
+                                                        block_obj.get(keys::IMAGE_URL),
+                                                    ),
+                                                });
+                                            }
+                                        }
+                                        // A `{"type":"document","document":{id?, data}}` part:
+                                        // a document the user attached. It used to be dropped
+                                        // silently (COH-04); it now reads into the IR's document
+                                        // Media — see `read_cohere_document`.
+                                        Some(keys::DOCUMENT) => {
+                                            if let Some(doc) = block_obj.get(keys::DOCUMENT) {
+                                                msg_content.push(read_cohere_document(doc));
+                                            }
+                                        }
+                                        // An assistant turn replaying a reasoning model's
+                                        // `{"type":"thinking"}` part: the IR's Thinking block, in
+                                        // place (COH-04).
+                                        Some(keys::THINKING)
+                                            if role == crate::codec::ir::IrRole::Assistant =>
+                                        {
+                                            if let Some(text) = block_obj
+                                                .get(keys::THINKING)
+                                                .and_then(|t| t.as_str())
+                                                .filter(|s| !s.is_empty())
+                                            {
+                                                msg_content.push(
+                                                    crate::codec::ir::IrBlock::Thinking {
+                                                        text: text.to_string(),
+                                                        signature: None,
+                                                        redacted: false,
+                                                        cache_control: None,
+                                                        kind: None,
+                                                        signature_origin: None,
+                                                    },
+                                                );
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // A REQUEST assistant message may replay the model's pre-tool-call plan in
+                // `tool_plan` (the request-history counterpart of the response `message.tool_plan`).
+                // Read it into a LEADING Thinking block — exactly as `read_response` does — so the
+                // internal plan is not silently dropped from the conversation history and is not
+                // mistaken for visible content. The writer reshapes it back into the native
+                // `tool_plan` slot on a Cohere egress.
+                if role == crate::codec::ir::IrRole::Assistant {
+                    if let Some(plan) = msg_val.get(TOOL_PLAN).and_then(|p| p.as_str()) {
+                        if !plan.is_empty() {
+                            msg_content.insert(
+                                0,
+                                crate::codec::ir::IrBlock::Thinking {
+                                    text: plan.to_string(),
+                                    signature: None,
+                                    redacted: false,
+                                    cache_control: None,
+                                    kind: None,
+                                    signature_origin: None,
+                                },
+                            );
+                        }
+                    }
+                }
+
+                // A REQUEST message may carry grounding `citations` (the request-history counterpart
+                // of the response `message.citations`) — replayed when a prior grounded assistant turn
+                // is sent back. Attach them to the FIRST text block (Cohere offsets are character
+                // offsets into the assembled content text, which every writer's join starts from), so
+                // they are neither dropped nor multiplied across blocks. Uses the same
+                // `read_cohere_citations` seam as the response path.
+                if role != crate::codec::ir::IrRole::Tool {
+                    if let Some(cits_val) = msg_val.get(keys::CITATIONS) {
+                        let cits = super::read_cohere_citations(cits_val);
+                        if !cits.is_empty() {
+                            if let Some(crate::codec::ir::IrBlock::Text { citations, .. }) =
+                                msg_content
+                                    .iter_mut()
+                                    .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+                            {
+                                *citations = cits;
+                            } else {
+                                // COH-17 request side: a grounded turn with no
+                                // text part carries its citations on an EMPTY text block, as the
+                                // response reader does; a writer whose dialect rejects empty text
+                                // (Anthropic, Bedrock, Gemini) omits that carrier block.
+                                msg_content.push(crate::codec::ir::IrBlock::Text {
+                                    text: String::new(),
+                                    cache_control: None,
+                                    citations: cits,
+                                    refusal: false,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                if role == crate::codec::ir::IrRole::Assistant {
+                    if let Some(tool_calls) = msg_val.get(keys::TOOL_CALLS) {
+                        if let Some(tc_arr) = tool_calls.as_array() {
+                            for tc_val in tc_arr {
+                                if let Some(func_obj) = tc_val.get(keys::FUNCTION) {
+                                    // A present tool call MUST carry a non-empty string `id`: it is
+                                    // the correlation key an egress dialect emits to pair the eventual
+                                    // tool result. An absent/blank/wrong-typed id yields an empty IR id
+                                    // that silently breaks that pairing — reject rather than invent.
+                                    let id = tc_val
+                                        .get(keys::ID)
+                                        .and_then(|v| v.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .ok_or_else(ir_parse_error)?
+                                        .to_string();
+                                    let name = func_obj
+                                        .get(keys::NAME)
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let arguments = func_obj
+                                        .get(keys::ARGUMENTS)
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("{}");
+                                    let input = crate::codec::json::parse_str(arguments).unwrap_or(
+                                        serde_json::Value::String(arguments.to_string()),
+                                    );
+                                    msg_content.push(crate::codec::ir::IrBlock::ToolUse {
+                                        id,
+                                        name,
+                                        input,
+                                        cache_control: None,
+                                        thought_signature: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if role == crate::codec::ir::IrRole::Tool {
+                    let tool_call_id = msg_val
+                        .get(keys::TOOL_CALL_ID)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let content_text = if let Some(content_val) = msg_val.get(keys::CONTENT) {
+                        if let Some(arr) = content_val.as_array() {
+                            // Cohere v2 tool content is an array. Bare strings are accepted, but
+                            // the native (SDK-emitted) shape is an array of typed objects, e.g.
+                            // `[{"type":"text","text":"..."}]` or
+                            // `[{"type":"document","document":{...}}]`. Mirror the user/assistant
+                            // text-block decoding above: pull `text` from `type:"text"` blocks and
+                            // JSON-serialize any other typed object block (document, etc.) so its
+                            // content is preserved rather than silently dropped.
+                            arr.iter()
+                                .filter_map(|b| {
+                                    if let Some(s) = b.as_str() {
+                                        Some(s.to_string())
+                                    } else if let Some(bo) = b.as_object() {
+                                        if bo.get(keys::TYPE).and_then(|t| t.as_str())
+                                            == Some(keys::TEXT)
+                                        {
+                                            bo.get(keys::TEXT)
+                                                .and_then(|t| t.as_str())
+                                                .map(String::from)
+                                        } else if bo.contains_key(keys::DOCUMENT) {
+                                            // A `document` part is captured STRUCTURALLY below (see
+                                            // `doc_blocks`); serializing it into this text join is
+                                            // what turned the document into a literal JSON string in
+                                            // the message body, so the model saw escaped JSON syntax
+                                            // (`{\"document\":{\"data\":…}}`) instead of the
+                                            // document. Contribute nothing to the text here.
+                                            None
+                                        } else {
+                                            // Preserve any OTHER non-text typed block verbatim
+                                            // rather than dropping it.
+                                            crate::codec::json::to_string(b).ok()
+                                        }
+                                    } else {
+                                        // Non-string, non-object array element: serialize it so no
+                                        // content is lost.
+                                        crate::codec::json::to_string(b).ok()
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                // Concatenate with NO separator: the OpenAI/Anthropic writers
+                                // concatenate text blocks with `""`, so a space here would corrupt
+                                // content split across blocks on a Cohere->OpenAI->Cohere round-trip
+                                // (re-reading the now-joined string back as a single block, with a
+                                // phantom space inserted at each former block boundary).
+                                .join("")
+                        } else if let Some(s) = content_val.as_str() {
+                            s.to_string()
+                        } else {
+                            crate::codec::json::to_string(content_val).unwrap_or_default()
+                        }
+                    } else {
+                        String::new()
+                    };
+                    let mut result_content: Vec<crate::codec::ir::IrBlock> = Vec::new();
+                    if !content_text.is_empty() {
+                        result_content.push(crate::codec::ir::IrBlock::Text {
+                            text: content_text,
+                            cache_control: None,
+                            citations: Vec::new(),
+                            refusal: false,
+                        });
+                    }
+                    // The `document` parts, captured STRUCTURALLY (never folded into the text join
+                    // above, which turned a document into a literal JSON STRING the model read as
+                    // escaped syntax). A tool-result document is the tool's output: its `data` is
+                    // JSON, so it reads into the IR's `Json` block (a string `data` into a `Text`
+                    // block) — the tool-output carrier EVERY writer projects (Anthropic / OpenAI /
+                    // Responses / Gemini / Bedrock / Cohere tool-result JSON). It used to ride the
+                    // opaque cohere `Vendor` escape, which every foreign writer drops, so an
+                    // Anthropic backend saw an empty tool result (the ANT-17 follow-up). The
+                    // document `id` is a Cohere citation handle with no foreign analog; only a
+                    // document with no readable `data` keeps the `Vendor` escape.
+                    if let Some(arr) = msg_val.get(keys::CONTENT).and_then(|c| c.as_array()) {
+                        for b in arr {
+                            let Some(doc) = b.get(keys::DOCUMENT) else {
+                                continue;
+                            };
+                            result_content.push(read_cohere_tool_result_document(doc));
+                        }
+                    }
+                    // A tool result with NO parts at all still needs one (empty) text block: the
+                    // downstream writers project a tool result's content, and an empty vec would
+                    // emit a result with no content where the old code emitted an empty string.
+                    if result_content.is_empty() {
+                        result_content.push(crate::codec::ir::IrBlock::Text {
+                            text: String::new(),
+                            cache_control: None,
+                            citations: Vec::new(),
+                            refusal: false,
+                        });
+                    }
+                    msg_content.push(crate::codec::ir::IrBlock::ToolResult {
+                        tool_use_id: tool_call_id,
+                        content: result_content,
+                        is_error: false,
+                        cache_control: None,
+                    });
+                }
+
+                messages.push(crate::codec::ir::IrMessage {
+                    role,
+                    content: msg_content,
+                });
+            }
+        } else {
+            return Err(ir_parse_error());
+        }
+
+        let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
+        if let Some(tools_arr) = obj.get(keys::TOOLS).and_then(|v| v.as_array()) {
+            for tool_val in tools_arr {
+                if let Some(func_obj) = tool_val.get(keys::FUNCTION) {
+                    let name = func_obj
+                        .get(keys::NAME)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let description = func_obj
+                        .get(keys::DESCRIPTION)
+                        .and_then(|v| v.as_str().map(String::from));
+                    let input_schema = func_obj
+                        .get(keys::PARAMETERS)
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    tools.push(crate::codec::ir::IrTool {
+                        name,
+                        description,
+                        input_schema,
+                        cache_control: None,
+                        hosted: None,
+                        strict: None,
+                    });
+                }
+            }
+        }
+
+        // Narrow with `u32::try_from` (NOT a bare `as u32`): a `max_tokens` above `u32::MAX`
+        // silently wraps under `as` to a small nonsense cap that is then forwarded to Cohere,
+        // diverging from a direct Cohere call. `try_from` drops an out-of-range value to `None`
+        // instead, matching the hardened Gemini reader (gemini.rs). The `v > 0` filter still
+        // rejects zero/negative caps first.
+        let max_tokens = obj
+            .get(keys::MAX_TOKENS)
+            .and_then(|v| v.as_i64())
+            .filter(|&v| v > 0)
+            .and_then(|v| u32::try_from(v).ok());
+        // temperature / `p` (top_p) / `k` (top_k) / stop_sequences and the penalties and seed are
+        // rows of the mapping file, read below.
+        // Cohere v2 `tool_choice` is a top-level enum string (REQUIRED/NONE). Promote it to the IR
+        // union so a forced directive survives the cross-protocol seam.
+        let tool_choice = read_cohere_tool_choice(obj.get(keys::TOOL_CHOICE));
+        let stream = obj
+            .get(keys::STREAM)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Cohere v2 chat models `response_format` (json_object / json_schema structured output) at the
+        // top level. Carry the raw object verbatim into the IR so it round-trips and translates.
+        let response_format = obj
+            .get(keys::RESPONSE_FORMAT)
+            .and_then(read_cohere_response_format);
+
+        // Cohere v2 chat's REQUEST `logprobs` is a top-level BOOLEAN ask (return per-token log
+        // probabilities?), the SAME shape/meaning as OpenAI's `logprobs` and Gemini's
+        // `responseLogprobs` — a cross-protocol-meaningful control. Promote it to the first-class
+        // `IrRequest.logprobs` so the ask survives the seam instead of dying in `extra` (and add
+        // `logprobs` to the modeled-key set so it is not ALSO echoed via `extra`, which would
+        // double-emit on a same-protocol passthrough). The RESPONSE-side logprobs data is a separate,
+        // provider-specific concern (see `read_response`).
+        let logprobs = obj.get(keys::LOGPROBS).and_then(|v| v.as_bool());
+
+        // Built once per process and reused across every request rather than rebuilt on each
+        // read_request call (the per-request allocation/hashing was wasted work on the ingress hot
+        // path — same fix the Gemini/Bedrock readers want). The set is immutable, so a OnceLock is
+        // safe to share across threads.
+        crate::codec::carry::keep_unmodelled(super::map::REQUEST, obj, &mut extra);
+
+        // The reasoning ASK: Cohere v2 `thinking: {type:"enabled", token_budget:N}` is a numeric
+        // thinking-token budget, the IR's `Budget` (the Anthropic `budget_tokens` / Gemini
+        // `thinkingBudget` spelling of the same thing). `{type:"enabled"}` with no budget leaves the
+        // amount to the model — the IR's `Dynamic`. It used to ride `extra` and die at the seam, so a
+        // Cohere caller's reasoning ask never reached a foreign reasoning model (COH-05).
+        // `{type:"disabled"}` is the IR's `Off` (IR-09). Any other form (an unreadable budget) stays
+        // in `extra` untouched, as the Anthropic reader does.
+        // `strict_tools` is Cohere's strict-schema switch for EVERY tool of the request: the IR
+        // carries the same guarantee per tool (`IrTool.strict`, OpenAI `tools[].function.strict`),
+        // so it is set on each tool (COH-11). It used to ride `extra` and die at the seam, turning
+        // the caller's schema guarantee off on a foreign backend. Promoted only when there are
+        // tools to carry it; a bare flag stays in `extra`.
+        if !tools.is_empty() {
+            if let Some(strict) = obj.get(STRICT_TOOLS).and_then(|v| v.as_bool()) {
+                for tool in &mut tools {
+                    tool.strict = Some(strict);
+                }
+                extra.remove(STRICT_TOOLS);
+            }
+        }
+
+        // Cohere's top-level `documents` (RAG grounding) read into the IR's document `Media`
+        // (IR-13), ahead of the content of the FIRST user turn: grounding is conversation-level
+        // context, and the first turn is where every foreign dialect's document slot sits (and where
+        // it stays put, turn after turn, for a prompt cache). It used to ride `extra`, which the
+        // translation seam clears, so a foreign model answered with no grounding at all. The Cohere
+        // writer lifts text documents back into `documents` (COH-18). A `documents` that is not an
+        // array stays in `extra` untouched.
+        if let Some(docs) = obj.get(keys::DOCUMENTS).and_then(|d| d.as_array()) {
+            let blocks: Vec<crate::codec::ir::IrBlock> =
+                docs.iter().map(read_cohere_document).collect();
+            match messages
+                .iter_mut()
+                .find(|m| m.role == crate::codec::ir::IrRole::User)
+            {
+                Some(first_user) => {
+                    first_user.content.splice(0..0, blocks);
+                }
+                None if !blocks.is_empty() => messages.insert(
+                    0,
+                    crate::codec::ir::IrMessage {
+                        role: crate::codec::ir::IrRole::User,
+                        content: blocks,
+                    },
+                ),
+                None => {}
+            }
+            extra.remove(keys::DOCUMENTS);
+        }
+
+        let reasoning = read_cohere_reasoning(obj.get(keys::THINKING));
+        if reasoning.is_some() {
+            // Promoted: the writer re-emits it from the typed field, so it must not also ride extra.
+            extra.remove(keys::THINKING);
+        }
+
+        let mut ir = crate::codec::ir::IrRequest {
+            reasoning,
+            // Cohere v2 request `logprobs` (bool) promoted so the ask carries cross-protocol.
+            logprobs,
+            system: system_blocks,
+            system_turns_folded,
+            system_folds,
+            messages,
+            tools,
+            max_tokens,
+            tool_choice,
+            stream,
+            response_format,
+            extra,
+            ..Default::default()
+        };
+        crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
+        Ok(ir)
+    }
+
+    fn read_response_events(
+        &self,
+        _event_type: &str,
+        data: &serde_json::Value,
+        state: &mut crate::codec::ir::StreamDecodeState,
+    ) -> Vec<IrStreamEvent> {
+        let mut out: Vec<IrStreamEvent> = Vec::new();
+        if data.as_str() == Some(crate::codec::dialect::SSE_DONE_SENTINEL) || !data.is_object() {
+            return out;
+        }
+
+        let event_type_val = data.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or("");
+        match event_type_val {
+            ET_MESSAGE_START => {
+                if !state.started {
+                    state.started = true;
+                    // Cohere v2 streams carry the response `id` on the top-level message-start
+                    // frame. Capture it for same-protocol stream passthrough; synthesize a
+                    // shape-valid id when the upstream omitted it. Cohere has no stream `created`.
+                    let id = data
+                        .get(keys::ID)
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .or_else(|| Some(synthesize_cohere_id()));
+                    out.push(IrStreamEvent::MessageStart {
+                        role: crate::codec::ir::IrRole::Assistant,
+                        usage: None,
+                        id,
+                        created: None,
+                        // Populate the model when the frame carries one (forward-compat / compatible
+                        // backends) rather than hardcoding None so a cross-protocol ingress can surface
+                        // it; native Cohere omits it here, in which case this stays None.
+                        model: data
+                            .get(keys::MODEL)
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(String::from),
+                    });
+                }
+            }
+            // Guard on `!text_block_closed`: once the text block has been closed (content-end or a
+            // leading tool-plan's tool-call-start), a later text frame must NOT reopen it. A failed
+            // guard falls through to the `other` no-op arm and is dropped, keeping the egress balanced
+            // (no second content_block_start / delta into a stopped index).
+            // A `thinking` content block (a Cohere reasoning model streams its reasoning this way,
+            // ahead of the answer) is its OWN block with its own IR index — see
+            // `THINKING_FRAME_BASE`. It never touches the text slot, so its `content-end` cannot
+            // latch the answer's text block closed before the answer has even started (COH-01).
+            ET_CONTENT_START
+                if data
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(keys::CONTENT))
+                    .and_then(|c| c.get(keys::TYPE))
+                    .and_then(|t| t.as_str())
+                    == Some(keys::THINKING) =>
+            {
+                if cohere_open_thinking_index(state).is_none() {
+                    cohere_close_text_slot(state, &mut out);
+                    if let Some(index) = cohere_open_thinking_block(state, &mut out) {
+                        if let Some(text) = data
+                            .get(keys::DELTA)
+                            .and_then(|d| d.get(keys::MESSAGE))
+                            .and_then(|m| m.get(keys::CONTENT))
+                            .and_then(cohere_thinking_part)
+                            .filter(|s| !s.is_empty())
+                        {
+                            out.push(IrStreamEvent::BlockDelta {
+                                index,
+                                delta: crate::codec::ir::IrDelta::ThinkingDelta(text.to_string()),
+                            });
+                        }
+                    }
+                }
+            }
+            // A `thinking` content-delta (real Cohere carries `{ "thinking": "<chunk>" }` with no
+            // `type`) streams into the open thinking block — opening one if the upstream skipped the
+            // `content-start` — never into the text block (COH-02).
+            ET_CONTENT_DELTA
+                if data
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(keys::CONTENT))
+                    .and_then(cohere_thinking_part)
+                    .is_some() =>
+            {
+                let text = data
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(keys::CONTENT))
+                    .and_then(cohere_thinking_part)
+                    .unwrap_or("");
+                let index = match cohere_open_thinking_index(state) {
+                    Some(index) => Some(index),
+                    None => {
+                        cohere_close_text_slot(state, &mut out);
+                        cohere_open_thinking_block(state, &mut out)
+                    }
+                };
+                if let Some(index) = index.filter(|_| !text.is_empty()) {
+                    out.push(IrStreamEvent::BlockDelta {
+                        index,
+                        delta: crate::codec::ir::IrDelta::ThinkingDelta(text.to_string()),
+                    });
+                }
+            }
+            ET_CONTENT_START if !state.text_block_closed => {
+                // A text block opening while a thinking block is still open (the upstream skipped
+                // its `content-end`) closes the thinking block first, so the egress stays balanced.
+                cohere_close_thinking_block(state, &mut out);
+                // The text content block claims a DYNAMIC IR index by order of first appearance
+                // (`cohere_text_ir_index`), NOT a hardcoded 0: a `tool-call-start` that arrived
+                // before any content frame already took 0, and forcing text to 0 here produced two
+                // BlockStart frames at the same IR index (the tool/text collision).
+                // `cohere_text_ir_index` also records the persistent TEXT_BLOCK_SEEN_SENTINEL so a
+                // tool opened AFTER the text block stays off the text index even after content-end
+                // clears the live flag. The raw upstream wire `index` is still
+                // never forwarded into the IR stream.
+                if !state.text_block_open {
+                    state.text_block_open = true;
+                    let ti = cohere_text_ir_index(state);
+                    out.push(IrStreamEvent::BlockStart {
+                        index: ti,
+                        block: crate::codec::ir::IrBlockMeta::Text,
+                        refusal: false,
+                    });
+                }
+            }
+            ET_CONTENT_DELTA if !state.text_block_closed => {
+                cohere_close_thinking_block(state, &mut out);
+                // The text content block claims a DYNAMIC IR index by order of first appearance
+                // (`cohere_text_ir_index`) — see content-start — NOT a hardcoded 0, so a tool that
+                // opened ahead of the first content frame (and took 0) does not collide with the
+                // text block. The raw upstream wire `index` is never forwarded;
+                // every text BlockStart/Delta below uses the assigned `text_idx`. `cohere_text_ir_index`
+                // also records the persistent sentinel so a later tool stays off the text index.
+                let text_idx = cohere_text_ir_index(state);
+                if !state.text_block_open {
+                    state.text_block_open = true;
+                    out.push(IrStreamEvent::BlockStart {
+                        index: text_idx,
+                        block: crate::codec::ir::IrBlockMeta::Text,
+                        refusal: false,
+                    });
+                }
+
+                if let Some(delta_obj) = data.get(keys::DELTA) {
+                    if let Some(content_obj) = delta_obj
+                        .get(keys::MESSAGE)
+                        .and_then(|m| m.get(keys::CONTENT))
+                    {
+                        if let Some(text) = content_obj.as_str() {
+                            if !text.is_empty() {
+                                out.push(IrStreamEvent::BlockDelta {
+                                    index: text_idx,
+                                    delta: crate::codec::ir::IrDelta::TextDelta(text.to_string()),
+                                });
+                            }
+                        } else if let Some(block_obj) = content_obj.as_object() {
+                            // Cohere v2 content-delta object shape. REAL Cohere streams
+                            // `{ "text": "<chunk>" }` with NO `type` field (only content-start
+                            // carries `type`); this file's writer emits `{ "type": "text",
+                            // "text": … }`. Accept BOTH: requiring `type == "text"` (the old
+                            // check) silently dropped every streamed chunk from a real Cohere
+                            // backend — a lossy reader that only round-tripped its own writer.
+                            // Reject only an object that declares a DIFFERENT type.
+                            let ty = block_obj.get(keys::TYPE).and_then(|t| t.as_str());
+                            if ty.is_none() || ty == Some(keys::TEXT) {
+                                if let Some(text) =
+                                    block_obj.get(keys::TEXT).and_then(|t| t.as_str())
+                                {
+                                    if !text.is_empty() {
+                                        out.push(IrStreamEvent::BlockDelta {
+                                            index: text_idx,
+                                            delta: crate::codec::ir::IrDelta::TextDelta(
+                                                text.to_string(),
+                                            ),
+                                        });
+                                    }
+                                }
+                            }
+                        } else if let Some(content_arr) = content_obj.as_array() {
+                            for block_val in content_arr {
+                                if let Some(block_obj) = block_val.as_object() {
+                                    if block_obj.get(keys::TYPE).and_then(|t| t.as_str())
+                                        == Some(keys::TEXT)
+                                    {
+                                        if let Some(text) =
+                                            block_obj.get(keys::TEXT).and_then(|t| t.as_str())
+                                        {
+                                            out.push(IrStreamEvent::BlockDelta {
+                                                index: text_idx,
+                                                delta: crate::codec::ir::IrDelta::TextDelta(
+                                                    text.to_string(),
+                                                ),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // The chunk's log probabilities ride the content-delta frame itself
+                // (`logprobs: {text, token_ids, logprobs}`), mapped exactly as the buffered
+                // `logprobs[]` items are, onto the text block they describe. They used to be
+                // dropped (COH-14).
+                if let Some(lp) = data.get(keys::LOGPROBS).and_then(read_cohere_logprob) {
+                    out.push(IrStreamEvent::BlockDelta {
+                        index: text_idx,
+                        delta: crate::codec::ir::IrDelta::LogprobsDelta(vec![lp]),
+                    });
+                }
+            }
+            // Cohere v2 streams the assistant's pre-tool-call reasoning as `tool-plan-delta`
+            // frames (one token each at `delta.message.tool_plan`) that PRECEDE the
+            // `tool-call-start` frames — the streamed counterpart of the non-stream reader's
+            // `message.tool_plan` fold. Reading it here is what keeps a STREAMING Cohere→X hop
+            // symmetric with the non-stream hop: without it the streaming path drops the reasoning
+            // the buffered path preserves.
+            // The plan opens a THINKING block, matching what the non-stream reader does with
+            // `message.tool_plan` — a stream and a non-stream of the SAME turn must not disagree
+            // about whether the model's internal plan is user-visible content. It claims the index
+            // via the same `cohere_text_ir_index` seam a `content-delta` would (index 0 by first
+            // appearance, tool calls offsetting to 1+), because Cohere v2 puts `tool_plan` and
+            // `content` in MUTUALLY EXCLUSIVE turns — a tool-calling turn streams a plan then tool
+            // calls, a text turn streams content — so the one pre-tool slot serves both. (The prior
+            // code relied on exactly the same exclusivity, merging plan and content into ONE text
+            // block; the only thing that changes here is which kind of block the plan opens.)
+            ET_TOOL_PLAN_DELTA if !state.text_block_closed => {
+                cohere_close_thinking_block(state, &mut out);
+                let plan_idx = cohere_text_ir_index(state);
+                if !state.text_block_open {
+                    state.text_block_open = true;
+                    state.thinking_block_open = true;
+                    out.push(IrStreamEvent::BlockStart {
+                        index: plan_idx,
+                        block: crate::codec::ir::IrBlockMeta::Thinking { kind: None },
+                        refusal: false,
+                    });
+                }
+                if let Some(text) = data
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(TOOL_PLAN))
+                    .and_then(|p| p.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    out.push(IrStreamEvent::BlockDelta {
+                        index: plan_idx,
+                        delta: crate::codec::ir::IrDelta::ThinkingDelta(text.to_string()),
+                    });
+                }
+            }
+            ET_CONTENT_END => {
+                // content-end closes the text content block at the IR index it actually CLAIMED on
+                // first appearance (`state.text_index`), NOT a hardcoded 0 — a tool may have taken 0
+                // ahead of it (the tool/text collision), so closing 0 here would leave
+                // the real text block open and stop a phantom one. The raw wire `index` is never
+                // forwarded. Only emit the stop if a text block is actually open, so a stray
+                // content-end never produces an unbalanced BlockStop. `state.text_index` is NOT
+                // cleared (mirroring how the tool entries stay recorded in `open_tools` for the
+                // stream's lifetime): keeping the claimed index immutable means a tool opened after
+                // content-end still derives its base off the persistent TEXT_BLOCK_SEEN_SENTINEL, so it
+                // cannot collide with the text index. `text_block_closed` latches here so a stray text
+                // frame after the close is dropped rather than reopening the (now stopped) index.
+                //
+                // A `content-end` that closes a THINKING content block closes only that block: the
+                // answer's text block is still to come, so the text latch must not fire (COH-01).
+                if cohere_open_thinking_index(state).is_some() {
+                    cohere_close_thinking_block(state, &mut out);
+                } else {
+                    cohere_close_text_slot(state, &mut out);
+                }
+            }
+            ET_MESSAGE_END => {
+                // A stream that ends with the leading tool-plan / content text block still OPEN (no
+                // content-end and no tool-call-start closed it first — a truncated or adversarial
+                // upstream) would leave a dangling `content_block_start` with no matching stop on an
+                // Anthropic egress (an unbalanced stream / proxy-signature tell). Force-close it here,
+                // before the terminal frames, at the index it CLAIMED — so the egress stream is always
+                // balanced regardless of upstream truncation. A thinking content block left open is
+                // force-closed the same way.
+                cohere_close_thinking_block(state, &mut out);
+                cohere_close_text_slot(state, &mut out);
+                let raw_finish_reason = data
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::FINISH_REASON))
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
+                let stop_reason = if raw_finish_reason.is_empty() {
+                    None
+                } else {
+                    Some(read_cohere_stop_reason(raw_finish_reason))
+                };
+
+                // The generic infra `ERROR` (and `TIMEOUT`, COH-16) is a mid-stream upstream FAILURE, but the only thing it
+                // produced was `IrStopReason::Error` on the terminal MessageDelta — and no
+                // cross-protocol writer has a native error token for that reason, so every one of
+                // them renders it as a SUCCESS terminator (`stop` / `end_turn`). With no
+                // `IrStreamEvent::Error` alongside it, `terminal_error()` stays None, the breaker
+                // records no fault, and the failed stream is billed as a completed one. Push the
+                // Error event as well, mirroring the gemini/bedrock inline-error arms, so the
+                // failure reaches the breaker and the downstream client sees a real error frame.
+                // The MessageDelta/MessageStop below still ride along, so the stream stays properly
+                // terminated and its usage is still folded.
+                //
+                // Scoped to the GENERIC `ERROR` only. `ERROR_TOXIC` maps to `IrStopReason::Safety`:
+                // a content-moderation refusal is a successful, correctly-served response, and
+                // faulting a lane for one would trip the breaker on ordinary safety behaviour.
+                if stop_reason == Some(crate::codec::ir::IrStopReason::Error) {
+                    out.push(IrStreamEvent::Error(busbar_contract::protocol::IrError {
+                        // The upstream gives no code or message on this frame — only the
+                        // `ERROR` token — so classify it as a TRANSIENT server fault: the lane
+                        // recovers via cooldown rather than being permanently penalized.
+                        class: busbar_contract::upstream::StatusClass::ServerError,
+                        provider_signal: Some(raw_finish_reason.to_string()),
+                        retry_after: None,
+                    }));
+                }
+
+                // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42) —
+                // the stream ends in an error instead of ledgering zero tokens.
+                let usage = data
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::USAGE))
+                    .map(|u| read_cohere_usage(Some(u)))
+                    .transpose();
+                let usage = match usage {
+                    Ok(usage) => usage.unwrap_or(crate::codec::ir::IrUsage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        detail: crate::codec::ir::IrUsageDetail::default(),
+                    }),
+                    Err(refusal) => {
+                        out.push(IrStreamEvent::Error(refusal));
+                        return out;
+                    }
+                };
+
+                out.push(IrStreamEvent::MessageDelta {
+                    stop_reason,
+                    // Cohere has no stop_sequence analog in its stream.
+                    stop_sequence: None,
+                    usage,
+                    stop_detail: None,
+                });
+                out.push(IrStreamEvent::MessageStop);
+            }
+            // Cohere v2 streams a tool call as a tool-call-start / tool-call-delta(s) /
+            // tool-call-end sequence carrying the call under `delta.message.tool_calls`. Map them
+            // onto the IR block lifecycle (BlockStart{ToolUse} / BlockDelta{InputJsonDelta} /
+            // BlockStop) exactly as the OpenAI and Gemini readers do, so streaming tool use is not
+            // silently discarded. Tool blocks occupy IR indices after any open text block.
+            //
+            // IR-index assignment must be STABLE for a tool's whole lifetime. Cohere v2 closes each
+            // tool (tool-call-end) BEFORE opening the next (tool-call-start). A scheme that derived
+            // the IR index from the LIVE rank of `frame_idx` was unstable two ways: derived from a
+            // set that shrank on end it collapsed later tools onto the first tool's index, and even
+            // from a never-shrunk set a NON-MONOTONIC upstream `frame_idx` (a later tool with a
+            // smaller wire index) retroactively shifted an earlier tool's rank between its start and
+            // its end. Instead the IR index is ASSIGNED ONCE at tool-call-start by
+            // insertion order (`cohere_assign_tool_ir_index`), recorded in `state.tool_ir_index`
+            // keyed by frame index (membership also tracked in `state.open_tools`), and looked up
+            // VERBATIM on delta/end (`cohere_lookup_tool_ir_index`) via an O(log n) `BTreeMap`
+            // lookup rather than a linear scan. Neither map is ever shrunk, so the assignment
+            // survives the stream and start/delta/end for a tool all resolve to the same IR index
+            // regardless of wire-index ordering.
+            ET_TOOL_CALL_START => {
+                // Close a still-open text block before opening the tool. Real Cohere v2 emits a
+                // `content-end` for a content text block BEFORE the first `tool-call-start`, so on the
+                // normal text-then-tool turn `text_block_open` is already false here and this is a
+                // no-op. But the `tool-plan-delta` path (above) opens a LEADING text block that Cohere
+                // NEVER closes with `content-end` — it goes straight from the plan tokens to
+                // `tool-call-start`, and `message-end` does not close a dangling text block. Left open,
+                // that block emits a `content_block_start` with NO matching `content_block_stop` on an
+                // Anthropic egress (an unbalanced stream / proxy-signature tell). Close it here — at the
+                // index it CLAIMED on first appearance (`state.text_index`, never a hardcoded 0, so a
+                // tool that took 0 ahead of the text is not mis-closed) — and clear the live flag.
+                // `state.text_index` stays recorded (mirroring `content-end`), so the persistent
+                // TEXT_BLOCK_SEEN_SENTINEL still offsets this and later tools past the text index; the
+                // tool BlockStart below therefore lands at the SAME index it did before. A reasoning
+                // model's thinking block left open ahead of its tool calls is closed the same way.
+                cohere_close_thinking_block(state, &mut out);
+                cohere_close_text_slot(state, &mut out);
+                let frame_idx = clamp_frame_index(data);
+                let tc = data
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(keys::TOOL_CALLS));
+                let id = tc
+                    .and_then(|t| t.get(keys::ID))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = tc
+                    .and_then(|t| t.get(keys::FUNCTION))
+                    .and_then(|f| f.get(keys::NAME))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                // Assign (and record) the tool's immutable IR index. Returns None for a DUPLICATE
+                // start (block already open — re-emitting BlockStart would push a spurious second
+                // opening frame) or a genuinely new frame past the cap (not tracked — its
+                // delta/end would be dropped, so emitting a BlockStart now would orphan it). Only
+                // emit when the frame is freshly tracked.
+                if let Some(ir_idx) = cohere_assign_tool_ir_index(state, frame_idx) {
+                    out.push(IrStreamEvent::BlockStart {
+                        index: ir_idx,
+                        block: crate::codec::ir::IrBlockMeta::ToolUse { id, name },
+                        refusal: false,
+                    });
+                    // Cohere may include initial argument text on the start frame.
+                    if let Some(args) = tc
+                        .and_then(|t| t.get(keys::FUNCTION))
+                        .and_then(|f| f.get(keys::ARGUMENTS))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        out.push(IrStreamEvent::BlockDelta {
+                            index: ir_idx,
+                            delta: crate::codec::ir::IrDelta::InputJsonDelta(args.to_string()),
+                        });
+                    }
+                }
+            }
+            ET_TOOL_CALL_DELTA => {
+                let frame_idx = clamp_frame_index(data);
+                // Only forward deltas for a frame we actually tracked (and therefore opened a
+                // BlockStart for); resolve its immutable, ASSIGNED IR index. A frame past
+                // MAX_TRACKED_TOOL_FRAMES was never recorded and `cohere_lookup_tool_ir_index`
+                // returns None, so its delta is dropped rather than corrupting another block's
+                // arguments. Mirrors the tool-call-end guard.
+                if let Some(ir_idx) = cohere_lookup_tool_ir_index(state, frame_idx) {
+                    if let Some(args) = data
+                        .get(keys::DELTA)
+                        .and_then(|d| d.get(keys::MESSAGE))
+                        .and_then(|m| m.get(keys::TOOL_CALLS))
+                        .and_then(|t| t.get(keys::FUNCTION))
+                        .and_then(|f| f.get(keys::ARGUMENTS))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        out.push(IrStreamEvent::BlockDelta {
+                            index: ir_idx,
+                            delta: crate::codec::ir::IrDelta::InputJsonDelta(args.to_string()),
+                        });
+                    }
+                }
+            }
+            ET_TOOL_CALL_END => {
+                let frame_idx = clamp_frame_index(data);
+                // Only close a tool we actually opened; resolve its immutable, ASSIGNED IR index. We
+                // do NOT remove the frame's entry from `open_tools`/`tool_ir_index` — the recorded
+                // entry is what keeps each tool's IR index stable for the stream's lifetime, and
+                // removing it would let a later tool reuse a freed insertion slot.
+                if let Some(ir_idx) = cohere_lookup_tool_ir_index(state, frame_idx) {
+                    out.push(IrStreamEvent::BlockStop { index: ir_idx });
+                }
+            }
+            // Cohere v2's streamed grounding citation (docs.cohere.com/v2/docs/streaming): ONE
+            // Citation object at `delta.message.citations`, emitted while the answer's text block is
+            // open. It maps to `IrDelta::CitationsDelta` on the TEXT block's claimed IR index — the
+            // same block the non-stream reader attaches `message.citations` to (the first text
+            // block), through the same `read_cohere_citations` seam, so a streamed and a buffered
+            // read of the SAME turn carry the same citations. This arm used to be missing: the frame
+            // fell into the catch-all below and every streamed Cohere citation vanished while the
+            // buffered read of the same answer kept it. An array body (the shape this crate's writer
+            // emitted before it was made spec-conformant) is accepted too. A citation that arrives
+            // with no text block open (none yet, a thinking/tool-plan block, or after content-end)
+            // is dropped: a delta into an unopened or stopped index would unbalance every egress.
+            ET_CITATION_START => {
+                if state.text_block_open && !state.thinking_block_open {
+                    if let Some(raw) = data
+                        .get(keys::DELTA)
+                        .and_then(|d| d.get(keys::MESSAGE))
+                        .and_then(|m| m.get(keys::CITATIONS))
+                    {
+                        let cits = if raw.is_array() {
+                            super::read_cohere_citations(raw)
+                        } else {
+                            super::read_cohere_citations(&serde_json::Value::Array(vec![
+                                raw.clone()
+                            ]))
+                        };
+                        if !cits.is_empty() {
+                            out.push(IrStreamEvent::BlockDelta {
+                                index: state.text_index.unwrap_or(0),
+                                delta: crate::codec::ir::IrDelta::CitationsDelta(cits),
+                            });
+                        }
+                    }
+                }
+            }
+            // The bare structural close paired with each `citation-start`; it carries no content.
+            // Egress writers that need it (Cohere's own) re-emit it from the citation delta.
+            ET_CITATION_END => {}
+            // Genuinely unknown event types are intentionally ignored: the Cohere v2 stream may add
+            // frames (e.g. debug) that carry no IR-representable content. This is a named,
+            // documented no-op arm — the explicit `ET_*` arms above still catch every tool-call
+            // frame, so this only ever sees content-free frames.
+            //
+            // An EMPTY type is folded in here on purpose: the discriminant comes from
+            // upstream-controlled `data["type"]`, so a missing/blank field is HOSTILE INPUT the
+            // reader must survive, not a broken internal invariant. A prior `debug_assert!(!other
+            // .is_empty(), ...)` here aborted the worker in debug/test builds on exactly such a
+            // frame — violating the reader's never-panic-on-the-request-path contract — while
+            // release builds already no-op'd it. It is now uniformly ignored in every build.
+            _ => {}
+        }
+        out
+    }
+
+    fn clone_box(&self) -> Box<dyn ProtocolReader> {
+        Box::new(self.clone())
+    }
+
+    fn read_response(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<crate::codec::ir::IrResponse, IrError> {
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
+        let message_val = obj.get(keys::MESSAGE).ok_or_else(ir_parse_error)?;
+
+        let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
+        // Cohere v2 carries the assistant's INTERNAL plan that precedes its tool calls in
+        // `message.tool_plan` (a string, distinct from `content[]`).
+        //
+        // It lands in the IR's REASONING carrier, not in a Text block. Reading it as a leading Text
+        // was CONTENT INJECTION, not loss: on every cross-protocol hop the model's internal plan was
+        // emitted to the end user as the answer's first paragraph — text the model never intended to
+        // show — and no downstream writer could tell it apart from a genuine leading assistant
+        // message to put it back. `Thinking` is what a pre-answer plan IS, and it fixes both halves:
+        // the plan stops being visible content, and the Cohere writer can now reshape it back into
+        // the native `tool_plan` slot on a Cohere egress because the IR finally distinguishes it.
+        // Writers with no reasoning slot drop it, which is the correct outcome for text the model
+        // did not intend the user to see.
+        if let Some(plan) = message_val.get(TOOL_PLAN).and_then(|p| p.as_str()) {
+            if !plan.is_empty() {
+                content.push(crate::codec::ir::IrBlock::Thinking {
+                    text: plan.to_string(),
+                    signature: None,
+                    redacted: false,
+                    cache_control: None,
+                    kind: None,
+                    signature_origin: None,
+                });
+            }
+        }
+        // Grounding citations. Cohere's offsets are CHARACTER offsets into the ASSEMBLED content
+        // text, so they belong on the FIRST text block (which is where every writer's join starts
+        // from — see the base-offset accumulation in `openai_chat::url_annotations`). Attaching them
+        // to each block instead would multiply them.
+        let response_citations = message_val
+            .get(keys::CITATIONS)
+            .map(super::read_cohere_citations)
+            .unwrap_or_default();
+        let mut citations_pending = response_citations;
+        if let Some(content_arr) = message_val.get(keys::CONTENT).and_then(|c| c.as_array()) {
+            for block_val in content_arr {
+                if let Some(block_obj) = block_val.as_object() {
+                    match block_obj.get(keys::TYPE).and_then(|t| t.as_str()) {
+                        Some(keys::TEXT) => {
+                            if let Some(text) = block_obj.get(keys::TEXT).and_then(|t| t.as_str()) {
+                                content.push(crate::codec::ir::IrBlock::Text {
+                                    text: text.to_string(),
+                                    cache_control: None,
+                                    citations: std::mem::take(&mut citations_pending),
+                                    refusal: false,
+                                });
+                            }
+                        }
+                        // A reasoning model's `{"type":"thinking","thinking":"…"}` content part is
+                        // the model's reasoning: the IR's Thinking block, never visible text. It
+                        // used to fall through and vanish (COH-03).
+                        Some(keys::THINKING) => {
+                            if let Some(text) = block_obj
+                                .get(keys::THINKING)
+                                .and_then(|t| t.as_str())
+                                .filter(|s| !s.is_empty())
+                            {
+                                content.push(crate::codec::ir::IrBlock::Thinking {
+                                    text: text.to_string(),
+                                    signature: None,
+                                    redacted: false,
+                                    cache_control: None,
+                                    kind: None,
+                                    signature_origin: None,
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Citations with no text block to ride — a grounded turn whose `content` carried no text
+        // part — used to be lost with the pending list (COH-17). They ride an EMPTY text block
+        // after the content (ahead of the tool calls), so the grounding still reaches the client.
+        if !citations_pending.is_empty() {
+            content.push(crate::codec::ir::IrBlock::Text {
+                text: String::new(),
+                cache_control: None,
+                citations: std::mem::take(&mut citations_pending),
+                refusal: false,
+            });
+        }
+
+        if let Some(tool_calls_arr) = message_val.get(keys::TOOL_CALLS).and_then(|t| t.as_array()) {
+            for tc_val in tool_calls_arr {
+                if let Some(func_obj) = tc_val.get(keys::FUNCTION) {
+                    let id = tc_val
+                        .get(keys::ID)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = func_obj
+                        .get(keys::NAME)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let arguments = func_obj
+                        .get(keys::ARGUMENTS)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("{}");
+                    let input = crate::codec::json::parse_str(arguments)
+                        .unwrap_or(serde_json::Value::String(arguments.to_string()));
+                    content.push(crate::codec::ir::IrBlock::ToolUse {
+                        id,
+                        name,
+                        input,
+                        cache_control: None,
+                        thought_signature: None,
+                    });
+                }
+            }
+        }
+
+        let raw_finish_reason = obj
+            .get(keys::FINISH_REASON)
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+        let stop_reason = if raw_finish_reason.is_empty() {
+            None
+        } else {
+            Some(read_cohere_stop_reason(raw_finish_reason))
+        };
+
+        // Treat an absent `usage` object leniently — fall back to zero counts rather than hard-
+        // erroring. A missing `usage` is an upstream response-format quirk (a mock/staging/proxy
+        // Cohere-compatible backend that omits it), NOT a client mistake, so returning a
+        // `ClientError` here mislabels the cause and breaks retry logic; the Bedrock and Gemini
+        // readers tolerate the same condition with a zero-usage fallback. `usage_val` is an
+        // `Option`, so each token lookup below already defaults to 0.
+        let usage_val = obj.get(keys::USAGE);
+        // `cached_tokens` is Cohere's prompt-cache hit count, reported on `ApiMeta` beside `tokens`
+        // and `billed_units` — PROMPT tokens (counted inside `tokens.input_tokens`) the model did
+        // not have to process. They belong in `cache_read_input_tokens`, the field every sibling
+        // dialect's cache-read count lands in, and the IR keeps `input_tokens` UNCACHED and the
+        // cache fields ADDITIVE, so the two reconstruct exactly the reported `input_tokens`.
+        // `billed_units.search_units` is a separately metered unit that is not a token count at
+        // all, so its loss would be invisible in a token total that reconciles perfectly. See
+        // `USAGE`. Absent is zero, a present-but-UNREADABLE count REFUSES (#42).
+        let usage = read_cohere_usage(usage_val)?;
+
+        // Cohere v2 response `logprobs[]`: one item per decoded text chunk, mapped to the neutral
+        // per-span entries a foreign client reads (`read_cohere_logprob`). They used to be dropped
+        // with a warn on every cross-protocol hop (COH-13).
+        let logprobs: Vec<crate::codec::ir::IrTokenLogprob> = obj
+            .get(keys::LOGPROBS)
+            .and_then(|l| l.as_array())
+            .map(|items| items.iter().filter_map(read_cohere_logprob).collect())
+            .unwrap_or_default();
+
+        let model = obj
+            .get(keys::MODEL)
+            .and_then(|m| m.as_str())
+            .map(String::from);
+
+        // Capture the upstream response identity so same-protocol (Cohere → Cohere) passthrough
+        // preserves it exactly. Cohere v2 chat responses carry an opaque UUID-like `id`; if the
+        // upstream omitted it, synthesize a shape-valid one rather than carrying `None` (so a
+        // native SDK reading `.id` always sees a string). Cohere v2 has no `created`,
+        // `system_fingerprint`, or `stop_sequence` field — those stay `None`.
+        let id = obj
+            .get(keys::ID)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .or_else(|| Some(synthesize_cohere_id()));
+
+        Ok(crate::codec::ir::IrResponse {
+            logprobs,
+            role: crate::codec::ir::IrRole::Assistant,
+            content,
+            stop_reason,
+            usage,
+            model,
+            id,
+            created: None,
+            system_fingerprint: None,
+            stop_sequence: None,
+
+            request_echo: None,
+            stop_detail: None,
+        })
+    }
+}
+
+// ── USAGE COUNTS (#42) ───────────────────────────────────────────────────────────────────────────
+
+/// COHERE'S USAGE COUNTS, AS DATA. The raw `tokens` bucket gives the totals; `cached_tokens` is
+/// the cache hit, a slice INSIDE `tokens.input_tokens` (so it is subtracted there and carried as
+/// the cache read); `billed_units` is the provider-metered bucket — its token counts, its
+/// `search_units` and its `classifications` — carried as attribution beside the totals.
+const USAGE: &[UsageCount] = &[
+    (
+        CountSlot::Input,
+        CountRead::Zero(&[keys::TOKENS, keys::INPUT_TOKENS]),
+    ),
+    (CountSlot::Input, CountRead::Less(&[keys::CACHED_TOKENS])),
+    (
+        CountSlot::Output,
+        CountRead::Zero(&[keys::TOKENS, keys::OUTPUT_TOKENS]),
+    ),
+    (CountSlot::CacheRead, CountRead::Opt(&[keys::CACHED_TOKENS])),
+    (
+        CountSlot::SearchUnits,
+        CountRead::Opt(&[keys::BILLED_UNITS, keys::SEARCH_UNITS]),
+    ),
+    (
+        CountSlot::ProviderInput,
+        CountRead::Opt(&[keys::BILLED_UNITS, keys::INPUT_TOKENS]),
+    ),
+    (
+        CountSlot::ProviderOutput,
+        CountRead::Opt(&[keys::BILLED_UNITS, keys::OUTPUT_TOKENS]),
+    ),
+    (
+        CountSlot::Classifications,
+        CountRead::Opt(&[keys::BILLED_UNITS, CLASSIFICATIONS]),
+    ),
+];
+
+/// A Cohere `usage` / `meta` object (`None` when absent) → the IR usage, through [`USAGE`].
+fn read_cohere_usage(
+    usage: Option<&serde_json::Value>,
+) -> Result<crate::codec::ir::IrUsage, IrError> {
+    crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)
+}
+
+#[cfg(test)]
+#[path = "tests/unreadable_count_refusal_tests.rs"]
+mod unreadable_count_refusal_tests;

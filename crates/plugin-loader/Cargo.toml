@@ -7,42 +7,259 @@ rust-version = "1.97"
 description = "The busbar plugin subsystem: signed-tarball discovery, in-memory unpack + verification, the three-phase (structural/trust/conflict) load validation, the name/alias registry, and the memfd/private-temp dynamic loader over the plugin C ABI. All FFI unsafe is isolated here so the engine crate keeps its forbid(unsafe_code) invariant."
 license = "Apache-2.0"
 
+# AUTHOR-SIDE PACKAGING (roster def 14): the `busbar-plugin-pack` CLI. It drives this crate's own
+# signing engine (`sign`) and tarball writer (`tarball`), so it lives beside them. It moved here from
+# `busbar-plugin-sdk` (batch 68/69 D1): an optional feature on the SDK is still an edge in the closure
+# of every plugin that names the SDK (`kind-isolation:closure` scores the union of feature
+# configurations), and this crate carries `busbar-kernel-ledger` and `busbar-kernel-wal`. Here it
+# reaches no plugin's closure: no plugin-kind crate may name this crate.
+#
+# OPTIONAL ON PURPOSE. This crate is in the `busbar` binary's graph, and `jsonschema` is tooling that
+# must never reach the engine. Behind `required-features`, a default build of the loader (and of
+# `busbar`) compiles none of it. Build the tool with
+#   cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+[features]
+pack = ["dep:jsonschema"]
+
+[[bin]]
+name = "busbar-plugin-pack"
+path = "src/pack.rs"
+required-features = ["pack"]
+
+# The dispatcher's test plugin (`dispatch_tests`): one source, compiled into the test build as a
+# module (the LINKED door) and built here as a `cdylib` (the DROPPED door). An example, not a crate:
+# `cargo test` builds it and it never ships; it lives under `tests/` because it is a test double.
+[[example]]
+name = "dispatch_test_plugin"
+path = "tests/fixtures/dispatch_test_plugin.rs"
+crate-type = ["cdylib"]
+
+# The plane door's test plugin (`plane_conformance_tests`): a minimal plane built with the SDK's
+# `plugin_door!`, one source LINKED (a test-build module) and DROPPED (this `cdylib`).
+[[example]]
+name = "plane_door_plugin"
+path = "tests/fixtures/plane_door_plugin.rs"
+crate-type = ["cdylib"]
+
+# The plugin-logging witness (`dispatch::log_file`'s both-ways proof): one source,
+# `tests/fixtures/log_witness_plugin.rs`, compiled into the test build as a module (the LINKED door)
+# and built here as a `cdylib` (the DROPPED door). An example, not a crate: `cargo test` builds it and
+# it never ships.
+[[example]]
+name = "log_witness_door"
+path = "tests/fixtures/log_witness_door.rs"
+crate-type = ["cdylib"]
+
+# The build's store DROPPED IN on the store v3 table: `busbar-store-memory`'s `door` behind one
+# `export_door!` line (`store_v3` conformance, `store_axis`, `store_money_acceptance`). An example,
+# not a crate: `cargo test` builds it and it never ships (the shipped artifact is the store crate's
+# own `cdylib`, built with its `dropped-in` feature).
+[[example]]
+name = "store_v3_door"
+path = "tests/fixtures/store_v3_door.rs"
+crate-type = ["cdylib"]
+
+# The open-reason witness (`open_reason_tests`): a store whose `open` fails with its settings as
+# the reason, one source (`tests/fixtures/open_reason_plugins.rs`) compiled into the test build as a
+# module (the LINKED door) and built here as a `cdylib` (the DROPPED door). An example, not a
+# crate: `cargo test` builds it and it never ships.
+[[example]]
+name = "open_reason_store_door"
+path = "tests/fixtures/open_reason_store_door.rs"
+crate-type = ["cdylib"]
+
+# THE MEMORY-ABI BOTH-WAYS FIXTURES (TODO ABI-b4; `door_both_ways`): each source compiled into the
+# test build as a module (the LINKED door) and built here as a `cdylib` (the DROPPED door). The
+# conforming secret and hook doors, and per kind a door that breaks its contract (the RED arms of
+# `{store,secret,hook}_door_conformance_tests`). Examples, not crates: `cargo test` builds them and
+# they never ship.
+[[example]]
+name = "secret_door"
+path = "tests/fixtures/secret_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "secret_broken_door"
+path = "tests/fixtures/secret_broken_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "hook_door"
+path = "tests/fixtures/hook_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "hook_broken_door"
+path = "tests/fixtures/hook_broken_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "store_broken_door"
+path = "tests/fixtures/store_broken_door.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
-busbar-api = { path = "../api" }
-busbar-plugin-abi = { path = "../plugin-abi" }
-busbar-plugin-sign = { path = "../plugin-sign" }
-libloading = "0.9"
-# The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running
+# The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
+# None of the three crates may name a store, so the adapter that implements all three lives on this
+# side of the seam — where the loaded plugin and its declared payload schema already are. All three
+# depend only on `busbar-caps`/`busbar-contract`, so there is no cycle back into this crate.
+busbar-contract = { path = "../busbar-contract" }
+# NOTE (1.6.0 W4.a chunk 0): the `busbar-kernel` edge was DROPPED. The only kernel items this crate
+# named — `slice::{Epoch,SliceError,SliceGrant,SliceId,SliceRequest,SliceStore,bucket_all}` +
+# `Millis` — moved DOWN to `busbar-contract` (the ONE ABI crate, DECISIONS #38: `SliceStore` is
+# implemented HERE and consumed by the kernel loop, so it is an ABI type). Removing this edge is what
+# breaks the core→plugin-loader→kernel cycle that the busbar-core→busbar-kernel absorption would
+# otherwise create.
+# The migration's read off the previous release's rows. The ledger unit states WHAT an opening
+# figure is; the row shapes it is read from are on this side of the seam, where the loaded plugin
+# already is — the same division the ledger's dual write makes in the other direction. The ledger
+# unit depends only on `busbar-caps`, so there is no cycle back into this crate.
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+busbar-kernel-wal = { path = "../busbar-kernel-wal" }
+# The former `busbar-plugin-sign` crate's own dependencies, moved in with its body
+# (DECISIONS #33). Verify + sign only, no key generation and therefore no RNG: the
+# engine-facing half stays RNG-free and `keygen` keeps its OS RNG on the tooling side.
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+libloading = { workspace = true }
+# The kind:hook seam: `DlopenPolicy` implements the async `busbar_contract::hooks::RoutingPolicy` trait, running
 # the blocking `busbar_call` on `spawn_blocking` (a hook gate can be CPU-heavy). `async-trait` matches
 # the engine's; `tokio` is `rt`/`time`/`sync` only (spawn_blocking, timeout, the hook-call semaphore)
 # — no runtime is started in this crate.
-async-trait = "0.1"
-tokio = { version = "1", features = ["rt", "time", "sync"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
+# The transport adapter (`transport_adapter`): a HOT-lane transport presented as the host's async
+# `busbar_contract::Transport`, whose frame pump is a `futures::Stream` and whose detached stream is
+# `futures::io` — the traits the contract already names (#83: the adapter is loading machinery).
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 # Structured logging for the auth seam's fail-closed rejections (a misbehaving auth plugin is logged,
 # never admitted). Already the workspace's logging facade; adds no new external crate to the tree.
-tracing = "0.1"
+tracing = { workspace = true }
 # Tarball packaging/unpacking for the one-file-per-plugin `.tar.gz` format. flate2 with its
 # pure-Rust backend (miniz_oxide) so static musl release builds need no C zlib.
-tar = "0.4"
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { workspace = true }
+flate2 = { workspace = true }
 # Random staging-directory suffix (a pid alone is predictable to a pre-planter).
-getrandom = "0.3"
+getrandom = { workspace = true }
+# ── the `pack` feature's own dependencies; see the note above [features]. OPTIONAL, never default.
+# (`hex` and `getrandom` above are this crate's own unconditional deps; `keygen` draws its ed25519
+# seed from the OS RNG through the same `getrandom`.)
+# Pack-time gate for --settings-schema-file: reject a syntactically-invalid JSON Schema 2020-12
+# document at PACK time, not at UI-render time on some operator's machine. Tooling-only, and behind
+# the feature, so it never reaches a plugin or the engine.
+jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
 # runtime + the `#[tokio::test]` macro (the crate's own dep is `rt`/`time` only — no macros).
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
+# The `kind: plane` drop-in conformance fixture. UNLIKE the cdylib-only cold fixtures, this one is a
+# `["cdylib", "rlib"]` crate, so the conformance test LINKS its `rlib` to get the COMPILED-IN
+# `PLANE_DECL` reference and separately `dlopen`s its `cdylib` (located on disk) — the two decls the
+# both-ways test compares. `cargo test -p busbar-plugin-loader` builds the member cdylib.
+busbar-plugin-example-plane = { path = "../plane-example" }
+# The `kind: export` BOTH-WAYS proofs are the REAL sinks (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real
+# plugins are the proofs"), each from its own repo at the SAME pinned rev the composition root
+# links: the request-log FILE sink (the `export` row — host-written destinations, rotation counters),
+# the request-log WEBHOOK sink (`export-webhook` — host-carried POSTs, raised diagnostics, its
+# in-flight admission), the prometheus sink (`export-scrape` — the recorder snapshot's render) and the
+# OTLP trace sink (`export-otlp` — the `collector` egress policy it declares). Each is a
+# `["cdylib", "rlib"]` crate: its `rlib` gives the test the COMPILED-IN sink (`open`,
+# `dispatch_compiled_in`, `BUSBAR_COLD_ENTRY`) and its `cdylib` (built under `deps/`, hashed) is the
+# dropped-in door. DECISIONS #11 says compiled-in ≡ dropped-in; `export_conformance_tests` is what makes
+# that checkable for the thing #11 was silently false about — what a plugin OBSERVES. Their
+# busbar-contract resolves to this tree through the workspace `[patch]` table.
+busbar-export-file-plugin = { workspace = true }
+busbar-export-webhook-plugin = { workspace = true }
+busbar-export-prometheus-plugin = { workspace = true }
+busbar-export-otlp-plugin = { workspace = true }
+# The `kind: store` BOTH-WAYS proof is a REAL store (owner FIXTURES ruling: "store: store-memory +
+# store-*"; R-FIX1: every real plugin gets its dropped-in door): the build's default RAM store. Its
+# `rlib` gives the test the COMPILED-IN store (its `pub fn open`, its `linked::STORE` row and its
+# `BUSBAR_COLD_ENTRY`), its `cdylib` is `dlopen`ed. `store_conformance_tests` requires the two to answer
+# every store operation byte-identically; `store_scope_kind_conformance_tests` requires them to
+# round-trip a plane scope grant identically — a dropped-in store's copy of the scope-kind registry is
+# never populated by the engine's boot registration. `cold-dropped-in`: the cdylib's legacy cold door
+# (deleted at M6). The store v3 door DROPPED IN is the `store_v3_door` example below, not the crate's own
+# `dropped-in` feature: that exports `busbar_plugin_door` from the rlib too, which this test build's
+# own linked fixtures already define.
+busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"] }
+# NO `kind: secret` fixture: the in-tree secret fixture is deleted (owner, 1.6.0-QUESTIONS.md
+# "FIXTURES": "real plugins are the examples"). The secret kind is proven by the REAL plugin repo
+# (GetBusbar/busbar-secret-vault) — `plugin_proof_tests` dlopens its built cdylib from
+# `BUSBAR_PLUGIN_PROOF_DIR`, run by the removed ci.yml's `plugin-proofs` job.
+# The `kind: auth` BOTH-WAYS witness — #2's auth witness, step (4) (OWNER-LOCKED) — is a REAL plugin, not
+# a fixture (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real plugins are the examples"; R-FIX2): the
+# token-verifying OIDC module from its own repo (GetBusbar/busbar-auth-oidc) at a pinned rev. Its `rlib` gives
+# the test the COMPILED-IN module (its `pub fn open`, driven through the `dispatch_compiled_in` twin
+# `export_login_plugin!` emits) and its `BUSBAR_COLD_ENTRY` (the linked door); its `cdylib` (built
+# under `deps/`, hashed) is the dropped-in door. `auth_conformance_tests` requires the two to be one
+# plugin. Its busbar-contract resolves to this tree through the workspace `[patch]` table.
+busbar-auth-oidc-plugin = { workspace = true }
+# The `kind: auth` VERIFY-VERDICT both-ways proof (the `auth-verify` row below), over a second REAL
+# auth plugin: the shipped operator admin-auth module (ARCHITECT 2026-09-27: it is a REAL auth
+# plugin — door + both-ways conformance, the AUTH kind proof). The row above proves the
+# login-capable surface, but its token can only be REFUSED (the issuer's keys are unreachable
+# offline); this one runs the token cases to every verdict — the accepted token IDENTIFIES, a wrong
+# one is REJECTED, another scheme's token and no credential PASS — on both doors. `dropped-in`: the
+# door is compiled only under it (a build that links the module must not carry a second door
+# registration), and this proof needs both halves of it.
+# From its own repo at the rev busbar-kernel pins: the repo's plugin crate, which turns the module's
+# `dropped-in` door on and re-exports it whole; its cdylib is built under `deps/`, hashed.
+busbar-auth-admin-tokens-plugin = { workspace = true }
+# The libraries the plugin-logging witness logs through from inside a call (`log_witness_plugin`).
+h2 = { workspace = true }
+log = { workspace = true }
+tungstenite = { workspace = true }
+# The `kind: hook` BOTH-WAYS fixture, on the same terms (`hook_conformance_tests`).
+busbar-hook-test-plugin = { path = "../hook-test-plugin" }
+# The `kind: transport` BOTH-WAYS fixture (#3, OWNER-LOCKED: a transport is swappable, compiled in
+# OR dropped in): a real shipped transport door. `transport_door_tests` signs a dropped-in door image
+# (found by kind among the example cdylibs a workspace test build emits) into a `plugins/` directory
+# and opens it through the one door.
+# Reached by KIND through `[package.metadata.busbar.both-ways]` below.
+# NOT `dropped-in`: that feature exports the door's one symbol from the linked rlib, a second
+# `busbar_plugin_door` beside the dispatcher's own test plugin in this crate's lib test binary. The
+# dropped-in door is a built example cdylib, dlopened.
+busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+# The transport adapter's witness (`transport_adapter_tests`) dials through the trait, which takes a
+# sealed destination: the contract's blessed test seal (#65), as the wire crates' own batteries use.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
-libc = "0.2"
+libc = { workspace = true }
 
-# NOTE: the end-to-end tests load real plugin cdylibs (busbar-secret-example-plugin and
-# busbar-store-sqlite-plugin — the latter built from a sibling ../store-sqlite checkout, since
-# store-sqlite is fully extracted and no longer lives in this workspace), but a cdylib crate cannot
-# be a Rust dependency (no rlib to link). The tests instead locate the artifact on disk and skip if
-# it isn't built — under `cargo test --workspace` every in-tree member cdylib is present; the
-# sibling-built one is present only under dev-gate.yml (see store_fixture_plugin_path()'s doc
-# comment in src/lib.rs).
+# NOTE: the end-to-end tests load real plugin cdylibs (e.g. busbar-store-sqlite-plugin, built from a
+# sibling ../store-sqlite checkout, since store-sqlite is fully extracted and no longer lives in this
+# workspace), but a cdylib crate cannot be a Rust dependency (no rlib to link). The tests instead
+# locate the artifact on disk — under `cargo test --workspace` every in-tree member cdylib is
+# present, and the kind:store fixture falls back to the store both-ways proof's own cdylib (above)
+# when the sqlite sibling is not built; under CI a missing fixture is a hard failure, never a skip.
+# The sibling-built one is required only under the removed qa-gate.yml's `loader` leg (see
+# store_fixture_plugin_path()'s doc comment in src/tests/lib_tests.rs). The DURABLE store across a
+# dlopen restart is the real one (GetBusbar/busbar-store-sqlite), dlopened by `plugin_proof_tests` from
+# `BUSBAR_PLUGIN_PROOF_DIR` (the removed ci.yml `plugin-proofs`), with no edge from this crate.
+
+# THE BOTH-WAYS FIXTURES: <cold kind> = "<fixture crate>". `build.rs` turns these rows into the table
+# `src/tests/both_ways.rs` includes, so each conformance test reaches its kind's fixture by KIND and no
+# test source names a plugin instance. A fixture here is also a dev-dependency above: the linked door
+# needs its `rlib`, the dropped-in door its `cdylib`.
+[package.metadata.busbar.both-ways]
+store = "busbar-store-memory"
+export = "busbar-export-file-plugin"
+export-webhook = "busbar-export-webhook-plugin"
+export-scrape = "busbar-export-prometheus-plugin"
+export-otlp = "busbar-export-otlp-plugin"
+auth = "busbar-auth-oidc-plugin"
+# A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the
+# test reaches the row by that whole key (`both_doors_of`), never by the plugin's name.
+auth-verify = "busbar-auth-admin-tokens-plugin"
+hook = "busbar-hook-test-plugin"
+# A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
+# emits only its crate alias and its cdylib name for this row. It is also the one wire crate this
+# crate may take a (dev) edge on — kind-isolation's transport-registration rule reads this row.
+transport = "busbar-transport-tcp"

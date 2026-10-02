@@ -29,7 +29,7 @@ OUT="$HERE/mutants-report/${LABEL}"
 # Scope: a glob/path list passed to `cargo mutants --file`. Whole-workspace is not viable (a smaller
 # crate alone clocked 2,318 mutants x ~60s, 38h serial) — always scope to the files the change
 # actually touched. Space-separated globs, e.g.:
-#   MUTANT_FILES="crates/busbar/src/admin/v1/service.rs crates/busbar/src/governance/*.rs" ./scripts/run-mutants-ec2.sh
+#   MUTANT_FILES="crates/busbar-core/src/admin/v1/service.rs crates/busbar-core/src/governance/*.rs" ./scripts/run-mutants-ec2.sh
 FILES="${MUTANT_FILES:-}"
 SKIP_TESTS="${MUTANT_SKIP_TESTS:-declared_error_set_is_exactly_what_the_handlers_emit}"
 
@@ -102,12 +102,12 @@ ssh $SSHOPT "ubuntu@$IP" "git clone -q https://github.com/GetBusbar/busbar.git b
 # openapi_doc/operation_id/capitalize "MISSED" mutants were entirely this artifact, not real gaps).
 #
 # `--all-features` (tried first) is WRONG here and burned 6 EC2 boxes on an instant baseline-build
-# failure: `txn-fence-red` gates admin/v1/json/tests/txn_fence.rs, a NEGATIVE compile-fence test
-# that is REQUIRED to fail to type-check (its own Cargo.toml comment: "a successful build under
-# this feature is the test failing") — enabling it via --all-features makes cargo build itself fail
-# before a single mutant runs. `loom-model` is also special-purpose (scripts/loom.sh's own
-# exhaustive-interleaving harness). openapi-schema is the one feature actually worth mutating
-# under; name it explicitly instead of reaching for --all-features again.
+# failure: at the time the NEGATIVE compile fence (admin/v1/json/tests/txn_fence.rs, a module
+# REQUIRED to fail to type-check) sat behind a cargo feature, so --all-features made cargo build
+# itself fail before a single mutant ran. The fence is a rustc cfg now (`scripts/txn-fence.sh`),
+# so --all-features builds again, but `loom-model` is still special-purpose (scripts/loom.sh's own
+# exhaustive-interleaving harness) and openapi-schema is the one feature actually worth mutating
+# under; name it explicitly rather than reaching for --all-features.
 FILE_ARGS=""
 for f in $FILES; do FILE_ARGS="$FILE_ARGS --file $f"; done
 log "running mutants (-j $JOBS) over: $FILES - this is the long part"
@@ -136,12 +136,26 @@ while :; do
   # loop exists to prevent, just moved one step earlier. ssh's own exit code distinguishes the two:
   # 255 is ssh's OWN connection-failure signal (never returned by a remote command, which can use
   # any code 0-254); capture it separately and treat ONLY a real ssh failure as "unknown", not "0".
+  #
+  # AND SPECIAL-CASING 255 IS ONLY HALF OF IT. That argument is about a probe whose answer is not
+  # trustworthy, and ssh's connection failure is not the only way to get one. `pgrep` missing from
+  # PATH, a shell that dies before it runs, an OOM kill — each returns a non-255 status with EMPTY
+  # stdout, and `${ssh_out:-0}` turned every one of them into "zero cargo-mutants processes", which
+  # is the completion signal. The loop broke, the cleanup trap terminated the box mid-run, and if
+  # mutants.out already held a partial outcomes.json the pull below SUCCEEDED and printed "report in
+  # $OUT" over a truncated run: the same silent-data-loss the 255 fix was written to prevent.
+  # The trustworthy signal is the OUTPUT SHAPE, not the exit status: `pgrep -c` exits 1 on a zero
+  # count while still printing "0", so a status test alone would reject the very answer this loop
+  # is waiting for and poll forever. A confirmed count is stdout that is entirely digits; a probe
+  # that could not run says nothing at all. ssh's own 255 stays an explicit unknown because ssh
+  # can fail after the remote command has already printed.
   ssh_out="$(ssh $SSHOPT "ubuntu@$IP" 'pgrep -c cargo-mutants' 2>/dev/null)"
   ssh_status=$?
-  if [[ "$ssh_status" -eq 255 ]]; then
-    running_now="?"
+  ssh_out="${ssh_out%%[[:space:]]}"
+  if [[ "$ssh_status" -ne 255 && "$ssh_out" =~ ^[0-9]+$ ]]; then
+    running_now="$ssh_out"
   else
-    running_now="${ssh_out:-0}"
+    running_now="?"
   fi
   tail_now="$(ssh $SSHOPT "ubuntu@$IP" 'tail -1 ~/mutants.log 2>/dev/null' 2>/dev/null || true)"
   log "mutants running=$running_now | $tail_now"

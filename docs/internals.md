@@ -14,8 +14,10 @@ Cross-references: [ADRs](adr/) · [development.md](development.md) ·
 ## 1. The IR fidelity contract (ADR-0005)
 
 The IR (`crates/busbar/src/ir/mod.rs`) is a **superset** of what the six protocols can represent,
-not an intersection. Its job is to make a cross-protocol hop lossless for
-everything it models, and to make a same-protocol hop lossless for *everything*.
+not an intersection. Its job is to carry every field it models across a
+cross-protocol hop in the target's native shape. A same-protocol hop is not its
+job at all: those routes never enter the IR on the request side and never enter
+it on the non-stream response side (see the same-protocol bullet below).
 
 - **`temperature: Option<f64>`, deliberately not f32.** JSON numbers are f64; an
   f32 round-trip turns a caller's `0.7` into `0.699999988…`. The `f64` choice (and
@@ -28,19 +30,40 @@ everything it models, and to make a same-protocol hop lossless for *everything*.
     and citation arrays.
   - `Thinking { signature }`, extended-thinking text and its signature.
   - `ToolUse { id, name, input }`, `ToolResult { tool_use_id, content, is_error }`,
-    `Image { media_type, data }`.
+    `Image { source: IrImageSource }` (the media type and bytes live in
+    `IrImageSource::Base64 { media_type, data }`).
+  - There is **no** Document, Audio or Video block. An attachment that is not an
+    image has nowhere to go in the IR and does not survive a cross-protocol hop;
+    OpenAI's `input_audio` and `file` parts currently degrade to an empty text
+    block with no warn (`proto/openai_chat/mod.rs`). This is a known gap, not a
+    design decision.
   - `IrResponse.model`, the upstream-reported serving model, so a pooled
     cross-protocol response still names the member that served it.
 - **The `extra` map.** `IrRequest.extra` is a passthrough `Map` for fields adjacent
   to the modeled subset (e.g. provider-specific sampling knobs with no first-class
-  IR field). A reader can stash unmodeled request fields here; whether a given
-  writer re-emits them depends on that writer.
-- **Lossy by necessity.** Anything neither modeled in the IR enums nor carried in
-  `extra` does not survive a *cross-protocol* hop. **Same-protocol routes use the IR
-  path but remain byte-exact.** `StreamTranslate::new_same_proto` re-emits the
-  original frame bytes verbatim instead of re-serializing from IR, so a
-  same-protocol request/response stays fully lossless while sharing the unified
-  translate path.
+  IR field). A reader can stash unmodeled request fields here, and they reach the
+  upstream on a route that never crosses protocols. **`extra` does NOT survive a
+  cross-protocol hop, for any writer, ever:** `ir/variant.rs` calls
+  `ir.extra.clear()` unconditionally at the seam, before any writer runs. Exactly
+  two keys name themselves in a `warn!` on the way out (Gemini `cachedContent`,
+  Cohere `documents`); the rest go silently. `IrResponse` has no `extra` at all,
+  so there is no carrier on the response side either.
+- **Lossy by necessity.** Anything not modeled in the IR enums does not survive a
+  *cross-protocol* hop.
+- **Same-protocol routes do not use the IR path, and that is stronger than it
+  sounds.** A same-protocol request short-circuits in `proxy/wire.rs`, which
+  returns the client's original bytes (a refcount bump, no reader, no writer); a
+  same-protocol non-stream response is not translated because
+  `translate_response_cross_protocol` is gated on `cross_protocol` in
+  `proxy/engine/walk.rs`; and a same-protocol stream re-emits the original frame
+  bytes verbatim via `StreamTranslate::new_same_proto`, decoding each frame only
+  as a usage side-channel. So a same-protocol route cannot lose anything: it is
+  not "lossless through the IR", it never meets the IR. The one exception is
+  deliberate: an OpenAI client that did not opt into
+  `stream_options.include_usage` has the trailing usage chunk stripped.
+  A shim key, a model rewrite (pool-alias routing) or Claude-on-Vertex
+  re-serializes the parsed body, which can reorder keys but still calls no reader
+  or writer and loses no field.
 
 Streaming uses a parallel set of IR types: `IrStreamEvent`
 (MessageStart/BlockStart/BlockDelta/BlockStop/MessageDelta/MessageStop/Error),

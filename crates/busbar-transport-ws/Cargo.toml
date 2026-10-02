@@ -1,0 +1,62 @@
+[package]
+name = "busbar-transport-ws"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The WebSocket transport: duplex message frames over an HTTP upgrade."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_transport_ws"
+path = "src/lib.rs"
+# rlib: the linked door (a build that links this crate holds its `WsFramer` as the contract's
+# `Framer`) and the tests. cdylib: the dropped-in door — the same framer lowered by the contract's
+# `export_framer!` to the HOT decl, exported as `busbar_transport_decl` for the loader to `dlopen`
+# (#3: a transport is swappable, compiled in OR dropped in, over the HOT lane).
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# THE DROPPED-IN DOOR (`exports`): this crate's framer, lowered and registered as its image's one door
+# through the contract's shared door. OFF in a build that links this crate (the linked door is
+# `WsFramer` itself); the dropped-in artifact is built on its own:
+# `cargo build -p busbar-transport-ws --release --features dropped-in`.
+dropped-in = []
+
+[dependencies]
+tokio-util = { workspace = true }
+busbar-contract = { path = "../busbar-contract" }
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "sync", "time"] }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+# The door's settings blob is JSON (`door::read_settings`).
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# THE DOOR'S CONFORMANCE (`tests/door.rs`): the dropped-in image (`examples/ws_door.rs`)
+# loaded beside the linked one.
+libloading = { workspace = true }
+# The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
+# fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
+# forge their own. Dev-only and feature-gated, so it is absent from every release build.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+# `ws` composing OVER `http`/`tcp` (`WsTransport::over`, adoption through a contract trait) is real
+# and shipped, but a dev-dependency's own SHIPPED closure is linked into this crate's `cargo test`
+# binary whole (`kind-isolation:closure`'s `closure-test-reach` finding), so naming either sibling
+# transport here — even under `[dev-dependencies]` — reopens the exact closure #40(a) closes for the
+# artifact. The cells that proved the composition with a real `http`/`tcp` instance moved to
+# `crates/busbar/tests/ws_composed_battery.rs`, the composition root, which already carries both as
+# ordinary dependencies (see that file's header). This crate's own battery keeps every cell that
+# does not construct another transport.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "test-util"] }
+# THE BOTH-WAYS WITNESS (tests/conformance.rs, its only user): the linked framer, the framer over its
+# own decl and the dropped-in cdylib run one script over the real admission, scan and open
+# (#2 rule (1), #3). This crate names itself with its dropped-in door on, so `cargo test` builds the
+# cdylib that test opens. Dev-only: absent from every release build.
+busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-transport-ws = { path = ".", features = ["dropped-in"] }
+
+# THE DROPPED-IN IMAGE ON THE ONE DOOR: built by `cargo test`.
+[[example]]
+name = "ws_door"
+crate-type = ["cdylib"]

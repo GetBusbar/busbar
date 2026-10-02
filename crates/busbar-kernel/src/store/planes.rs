@@ -1,0 +1,400 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE HANDLE SECONDARY PLANE CONSUMERS SHARE ON THE ONE BREAKER — the degenerate single-member cell
+//! of the breaker-all-planes audit's closing design, and nothing more.
+//!
+//! ## What this is and, as loudly, what it is not
+//!
+//! A secondary plane consumer gets TRIP + FAST-FAIL against the same breaker FSM the primary plane
+//! has always used: [`LaneRuntime::try_admit_breaker`] over a [`HealthState`] cell, closed →
+//! open on the core thresholds, recovered by the same single-flight half-open probe. There is NO
+//! second state machine here — every method below is a thin resolution of a plane-qualified key
+//! onto the one cell store, and the FSM transitions all run in `store::in_memory`.
+//!
+//! This is deliberately NOT failover and NOT pools: nothing here SELECTS among candidates. The
+//! selection loop is [`crate::failover::walk`], which the reroute-parity unit mounts on every plane
+//! consumer's dispatch path; it reaches these same cells through [`PlaneBreakers::runtime`] and this
+//! module stays what it was — a plane consumer's handle on the one cell store, plus the recording
+//! half of the disposition pipeline.
+//!
+//! ## The key, per the audit
+//!
+//! Cells are `(pool, lane)`-keyed strings-plus-index. The pool string is PLANE-QUALIFIED at this
+//! boundary — each secondary plane consumer's pool names carry their own prefix — which is the
+//! audit's own rule for the keyspace: the primary plane keeps bare pool names, so a qualified pool
+//! name can never collide with the primary plane's, and distinct prefixes cannot collide with each
+//! other. The NAME is a registered target's id for the degenerate single-member cell, or a
+//! qualified pool name for a pooled one — and config validation refuses a pool whose name collides
+//! with a registration id on its own plane, so the two spellings cannot alias one cell. The LANE is
+//! the member's position in the pool's ordered `members:` list (the audit's allocation rule); a
+//! degenerate cell's one member is position 0.
+//!
+//! ## Why a private single-lane [`HealthState`] rather than the primary plane's store
+//!
+//! The cell FSM is `(pool, lane)`-scoped, but the store's LANE-GLOBAL gates (dead, budget,
+//! permits) and its all-cells writes (`record_hard_down_all_cells`, `recover_lane`) index
+//! `lanes[lane]` — the primary plane's lanes. Recording a secondary-plane target's 401 into the
+//! primary plane's store at lane 0 would trip whatever occupies index 0, and a deployment with no
+//! primary-plane lanes at all would panic on the index. So the plane cells live in their own
+//! one-lane `HealthState`: same type, same FSM code, same thresholds, zero copies of any transition
+//! — and the primary plane's store is byte-untouched, which is the audit's "existing breaker suite
+//! passes unedited" guard. The `HardDown` write goes through the per-cell
+//! [`HealthState::record_hard_down_for`], never the all-cells primitive, because on a shared lane
+//! index "all cells" would be every OTHER registered target too.
+
+// This is the handle secondary plane consumers share on the breaker: every item exists for an
+// out-of-tree plane consumer's registered-target dispatch. With every such consumer compiled out
+// nothing holds it, so its items read dead — scoped to exactly that config.
+#![allow(dead_code)]
+
+use busbar_kernel::store::BreakerCfg;
+
+use super::in_memory::{HealthState, LaneData};
+use super::{LaneRuntime, Unavailable};
+use crate::diagnostics::{diag_warn, PLANE_BREAKER_HARD_DOWN, PLANE_BREAKER_TRIPPED};
+use std::sync::Arc;
+
+/// One process-lifetime handle: every registered target's availability cell, shared by whichever
+/// secondary plane consumers are mounted.
+///
+/// Held on [`crate::state::App`] and carried across a config apply the way the primary plane's
+/// store is — learned reliability must survive a snapshot swap, or every apply un-trips every dead
+/// upstream.
+pub struct PlaneBreakers {
+    /// [`MAX_POOL_MEMBERS`] identical lanes — one per possible member position — never dead, never
+    /// budgeted, permits never consulted (`try_admit_breaker` is the queue-shaped admission:
+    /// breaker only, no permit acquisition). All per-target state lives in the per-pool cells keyed
+    /// by the plane-qualified strings; the lane table exists only because the cell store's
+    /// lane-global gates index it, and every entry is the same inert placeholder.
+    health: HealthState,
+    /// The core defaults (ADR-0002): error-rate trip over a 30s window, 15s→120s cooldown backoff.
+    /// Deliberately NOT operator-tunable per plane consumer's own config section — that absence
+    /// stays until someone asks, as `docs/circuit-breaker.md` already discloses.
+    cfg: BreakerCfg,
+    /// FALSE for the [`Self::new_inert`] handle a planeless config gets: the lane table is EMPTY
+    /// (none of the [`MAX_POOL_MEMBERS`] placeholder cells — their preallocated outcome windows
+    /// and per-worker counter stripes — exist), and every recording/admission method is a
+    /// structural no-op/refusal instead of an index into a table that is not there. "What is not
+    /// configured must not be loaded": with no plane consumer sections or plane pools configured
+    /// there is no plane dispatch, so nothing can reach these methods — the guards are defense in depth (fail
+    /// closed, never panic), not a live branch any configured deployment pays.
+    provisioned: bool,
+}
+
+/// The CEILING on a plane consumer's pool member list, enforced at config validation
+/// (`config::check_failover_pool`) so an admission can never index past the plane store's fixed
+/// lane table. A constant rather than a config-derived size because [`PlaneBreakers`] is
+/// PROCESS-LIFETIME (learned reliability survives every apply) while pool sizes are per-generation
+/// config — a table sized to one generation's pools would need rebuilding, and rebuilding is
+/// exactly the state loss the process-lifetime rule exists to prevent. Eight is generous for the
+/// canonical case (one deployment, registered a handful of times); raising it is a one-line change
+/// plus the validation message.
+pub const MAX_POOL_MEMBERS: usize = 8;
+
+impl PlaneBreakers {
+    /// The INERT handle for a config with NO plane content (no plane consumer sections, no
+    /// plane pools, no mounted plane): an EMPTY lane table — the 8 placeholder
+    /// cells' preallocated state (a 1024-slot outcome window each, per-worker padded counter
+    /// stripes, a semaphore) is ~130 KiB of idle RSS that a planeless deployment never touches.
+    /// `build_app_from_config` upgrades to [`Self::new`] on the first apply whose config carries
+    /// plane content (boot-time work; nothing learned is lost — an inert handle never recorded
+    /// anything), and a provisioned prior is ALWAYS reused (learned reliability survives every
+    /// apply, including one that removes the last plane section).
+    pub(crate) fn new_inert() -> Self {
+        Self {
+            health: HealthState::new(Vec::new()),
+            cfg: BreakerCfg {
+                // Same posture as `new` below — the cfg is inert anyway (no cell ever admits).
+                bench_below_trip_threshold: false,
+                ..BreakerCfg::default()
+            },
+            provisioned: false,
+        }
+    }
+
+    /// TRUE for a handle built by [`Self::new`] (the full placeholder lane table exists), FALSE
+    /// for the inert planeless handle — the apply-time upgrade gate in `build_app_from_config`.
+    pub(crate) fn is_provisioned(&self) -> bool {
+        self.provisioned
+    }
+
+    pub(crate) fn new() -> Self {
+        Self {
+            provisioned: true,
+            health: HealthState::new(
+                (0..MAX_POOL_MEMBERS)
+                    .map(|_| LaneData {
+                        model: "plane-target".to_string(),
+                        provider: "plane".to_string(),
+                        max: 1,
+                        sem: Arc::new(tokio::sync::Semaphore::new(1)),
+                        limited: false,
+                        budget: -1,
+                        cooldown_until: 0,
+                        streak: 0,
+                        dead: false,
+                        dead_reason: String::new(),
+                        ok: 0,
+                        err: 0,
+                        client_fault: 0,
+                        upstream_model: None,
+                        attempt_timeout_ms: None,
+                        reasoning: false,
+                        prompt_caching: false,
+                    })
+                    .collect(),
+            ),
+            cfg: BreakerCfg {
+                // THE ONE FIELD THIS PLANE DOES NOT TAKE FROM THE PRIMARY PLANE'S DEFAULTS, and the
+                // reason survives the arrival of reroute: a plane target is DEGENERATE unless an
+                // operator put it in a pool, and the unpooled single
+                // registration is the canonical case. ADR-0002's sub-threshold cooldown is the
+                // "prefer a sibling" half of a rule whose other half is "fail over to the next
+                // candidate"; with no sibling declared there is nothing to prefer, and benching
+                // the only member is not a preference, it is a 15-120s outage for every caller of
+                // that server, minted by ONE transient blip and rendered as `-32030
+                // upstream_unavailable` ... "open after repeated failures".
+                //
+                // This is a per-BREAKER setting, not a per-cell one, so it is set for the
+                // conservative case and a pooled cell inherits it: a pooled member is deprioritised
+                // by a TRIP, which `failover::walk` already routes around, rather than by a
+                // sub-threshold bench. So these cells refuse on a TRIP and nothing less:
+                // error-rate >= 0.5 over >= 5 outcomes in 30s, exactly the contract ADR-0002 and
+                // `docs/circuit-breaker.md` publish for this plane. An upstream's own `Retry-After`
+                // is still honoured.
+                bench_below_trip_threshold: false,
+                ..BreakerCfg::default()
+            },
+        }
+    }
+
+    // R5-store: `PlaneBreakers::{tool_key, agent_key}` DELETED. Both were one-line delegations to
+    // `busbar_kernel::store::{tool_key, agent_key}` — the prefix spellings had already moved down
+    // to the neutral substrate — and both had ZERO production callers in the whole workspace (they
+    // carried `#[allow(dead_code)]` for exactly that reason). The keyspace rule is unchanged and
+    // single-sourced where it now lives; every caller left names the substrate directly.
+
+    /// ADMIT ONE DISPATCH against the target's cell — [`LaneRuntime::try_admit_breaker`], the same
+    /// admission the primary plane's queue dispatch makes. `lane` is the member's position in its
+    /// pool (0 for a degenerate cell). `Ok(Some(epoch))` carries the single-flight probe owner token
+    /// (this admit WON a probe); `Ok(None)` is a Closed-and-ready no-op admit that won NO probe (so
+    /// there is nothing to release). On a probe win the dispatch MUST end in exactly one of
+    /// `record_success` / `record_signal` / [`Self::release`] or a won recovery probe is leaked and
+    /// the cell wedges HalfOpen. Production call sites use [`Self::admit`], whose RAII token cannot be
+    /// leaked by a dropped future — and which releases nothing on the `None` path.
+    // One plane consumer admits directly through this RAII pair, while another reaches the same
+    // cell via `failover::walk` + [`Self::adopt`]. So with the first plane consumer's feature off
+    // (and the second's on) neither this nor [`Self::admit`] has a caller.
+    #[allow(dead_code)]
+    pub(crate) fn try_admit(&self, key: &str, lane: usize) -> Result<Option<u64>, Unavailable> {
+        // Inert (planeless config): structurally unreachable — no plane is mounted, so nothing
+        // dispatches — but fail CLOSED rather than index the empty lane table if a future caller
+        // ever gets here.
+        if !self.provisioned {
+            return Err(Unavailable::Shedding);
+        }
+        self.health
+            .try_admit_breaker(key, lane, HealthState::now_secs())
+    }
+
+    /// [`Self::try_admit`] as an RAII token. The owner-checked release runs on DROP, which is the
+    /// only shape that survives every way a dispatch can end without recording — a refusal between
+    /// admission and the wire, a caller that disconnected (axum drops the handler future), a task
+    /// runner aborted by `tasks/cancel`. An explicit release call misses the dropped-future cases,
+    /// and a missed release wedges the cell HalfOpen forever.
+    #[allow(dead_code)]
+    pub(crate) fn admit(
+        self: &Arc<Self>,
+        key: &str,
+        lane: usize,
+    ) -> Result<Admission, Unavailable> {
+        let epoch = self.try_admit(key, lane)?;
+        Ok(Admission {
+            breakers: Arc::clone(self),
+            key: key.to_string(),
+            lane,
+            epoch,
+        })
+    }
+
+    /// OWNER-CHECKED release of the probe token [`Self::try_admit`] returned, for a dispatch that
+    /// settles. Takes the token as `Option<u64>` and is a NO-OP on `None` (a Closed-ready admit that
+    /// won no probe owns nothing to release, so it must never revert a probe a peer won). Safe to call
+    /// unconditionally after the outcome even on `Some`: a recorded success/failure has already
+    /// consumed the HalfOpen state, so it is a no-op there too and only reverts a probe the dispatch
+    /// genuinely abandoned (refused before any leg went out).
+    pub(crate) fn release(&self, key: &str, lane: usize, probe_epoch: Option<u64>) {
+        if !self.provisioned {
+            return; // inert: nothing was ever admitted (see `try_admit`).
+        }
+        if let Some(epoch) = probe_epoch {
+            self.health.release_probe_owned_in(key, lane, epoch);
+        }
+    }
+
+    /// The wire answered and busbar could serve it. Closes a half-open probe, dilutes the
+    /// error-rate window — the success half of the one disposition pipeline.
+    pub fn record_success(&self, key: &str, lane: usize) {
+        if !self.provisioned {
+            return; // inert: nothing was ever dispatched (see `try_admit`).
+        }
+        self.health.record_success_in(key, lane);
+    }
+
+    /// RECORD ONE NORMALIZED FAILURE through the ONE classifier ([`crate::breaker::classify`],
+    /// Stage 2) onto the target's cell. The plane's own Stage-1 normalizer produced `sig`; this is
+    /// the same disposition split `failover::record_outcome` makes, minus the all-cells hard-down
+    /// (see the module header: on a shared degenerate lane, "all cells" would be every other
+    /// target). Returns the disposition so a caller can log it without re-deciding.
+    pub fn record_signal(
+        &self,
+        key: &str,
+        lane: usize,
+        sig: &crate::breaker::CanonicalSignal,
+    ) -> crate::breaker::Disposition {
+        let disposition = crate::breaker::classify(sig);
+        if !self.provisioned {
+            return disposition; // inert: nothing was ever dispatched (see `try_admit`).
+        }
+        match disposition {
+            crate::breaker::Disposition::ClientFault => self.health.record_client_fault(lane),
+            crate::breaker::Disposition::TransientUpstream => {
+                let tripped = if sig.class == crate::breaker::StatusClass::RateLimit {
+                    self.health.record_rate_limit_in(
+                        key,
+                        lane,
+                        HealthState::now_secs(),
+                        &self.cfg,
+                        sig.retry_after,
+                    )
+                } else {
+                    self.health.record_transient_in(
+                        key,
+                        lane,
+                        sig.provider_signal.as_deref().unwrap_or("upstream"),
+                        &self.cfg,
+                        sig.retry_after,
+                    )
+                };
+                // THE OPERATOR'S TRIP SIGNAL, naming the TARGET. The store's own warn names the
+                // lane, and every plane target shares the one degenerate lane — so without this
+                // line a trip says "plane-target" and the operator learns which server is down
+                // from a user. Emitted once per logical Closed→Open trip, never per failure.
+                if tripped {
+                    diag_warn!(
+                        PLANE_BREAKER_TRIPPED,
+                        target_key = key,
+                        "plane breaker tripped: the upstream target is failing and further \
+                         dispatches will fast-fail until the half-open probe recovers it"
+                    );
+                }
+            }
+            crate::breaker::Disposition::HardDown => {
+                self.health.record_hard_down_for(
+                    key,
+                    lane,
+                    sig.provider_signal.as_deref().unwrap_or("hard_down"),
+                );
+                diag_warn!(
+                    PLANE_BREAKER_HARD_DOWN,
+                    target_key = key,
+                    "plane breaker tripped hard-down: the upstream target answered a definitive \
+                     failure (auth/billing); dispatches fast-fail for the sticky cooldown"
+                );
+            }
+            // The target is healthy and the request was wrong for it — record nothing, exactly as
+            // the primary plane's walk records nothing.
+            crate::breaker::Disposition::ContextLength => {}
+        }
+        disposition
+    }
+
+    /// The EXACT remaining cooldown for a tripped target, floored at 1 — the `Retry-After` value,
+    /// populated from the cell's own `until` rather than guessed (the shape budget already uses
+    /// with `429` + `Retry-After`). The floor covers `ProbeInFlight`, whose honest answer is "next
+    /// tick" and whose remaining cooldown reads 0.
+    pub fn retry_after_secs(&self, key: &str, lane: usize) -> u64 {
+        if !self.provisioned {
+            return 1; // inert: the floor `ProbeInFlight` also answers (see `try_admit`).
+        }
+        self.health
+            .cooldown_remaining_in(key, lane, HealthState::now_secs())
+            .max(1)
+    }
+
+    /// READ-ONLY: every target cell materialized so far with its own FSM state and remaining
+    /// cooldown — the operator surface (`/metrics`) reads these without naming any plane. Pure
+    /// projection; empty for the inert handle.
+    pub(crate) fn cell_readings(
+        &self,
+        now: u64,
+    ) -> Vec<(Box<str>, usize, super::BreakerState, u64)> {
+        if !self.provisioned {
+            return Vec::new();
+        }
+        self.health.named_cell_readings(now)
+    }
+
+    /// The raw FSM state of one target's cell, for tests and operator surfaces. Pure projection —
+    /// no probe CAS.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn state(&self, key: &str) -> super::BreakerState {
+        self.state_at(key, 0)
+    }
+
+    /// [`Self::state`] for a pooled member's cell.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn state_at(&self, key: &str, lane: usize) -> super::BreakerState {
+        self.health.breaker_state_snapshot_in(key, lane)
+    }
+
+    /// FORCE one target's cell back to Closed with no pending cooldown — a TEST-ONLY bypass of the
+    /// outer breaker, for batteries whose subject is an INNER arm this cell would otherwise shadow
+    /// (a plugin's child-process transport backoff/quarantine, reachable through dispatch only
+    /// while the core cell admits). Production has no caller and must never grow one: an operator
+    /// un-trip is a remedy decision that belongs to its own surface.
+    ///
+    /// `unix` in the gate, not just `test`: its one caller lives in an out-of-tree plugin crate's
+    /// dispatch tests, which are `#![cfg(unix)]` (the fixture spawns a real child process to
+    /// crash-loop), so on a Windows test build this method has no caller at all and `-D warnings`
+    /// makes that dead code.
+    #[cfg(all(any(test, feature = "test-support"), unix))]
+    pub fn reset(&self, key: &str) {
+        self.health.force_cell(key, 0, 0, 0, 0);
+    }
+
+    /// FORCE one target's cell Open until `until` — the test-only inverse of [`Self::reset`], for
+    /// batteries whose subject is what a dispatch does when a member is ALREADY tripped (a pinned
+    /// plane-consumer task refusal) without having to burn real failures to get there.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn force_open(&self, key: &str, lane: usize, until: u64) {
+        self.health.force_open_in(key, lane, until);
+    }
+}
+
+/// One admitted dispatch's hold on the single-flight recovery probe. See [`PlaneBreakers::admit`]:
+/// the release is on `Drop` because that is the only release a dropped future still performs.
+/// Releasing after a recorded outcome is a no-op (the record already consumed the HalfOpen state),
+/// so holders simply let it fall out of scope when the dispatch settles.
+pub(crate) struct Admission {
+    breakers: Arc<PlaneBreakers>,
+    key: String,
+    lane: usize,
+    /// `Some(epoch)` when this admission WON a single-flight probe; `None` for a Closed-ready no-op
+    /// admit that won none. Drop releases OWNER-CHECKED only on `Some` — a `None` admit owns no probe,
+    /// so it must never revert one a peer legitimately won on the same cell.
+    epoch: Option<u64>,
+}
+
+impl Drop for Admission {
+    fn drop(&mut self) {
+        // `release` is a no-op on `None` (a Closed-ready admit won no probe), so pass the token
+        // straight through — the owner-checked release only ever reverts a probe this admission won.
+        self.breakers.release(&self.key, self.lane, self.epoch);
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/planes_tests.rs"]
+mod planes_tests;

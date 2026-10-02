@@ -16,6 +16,9 @@
 //! Each test gets an isolated temp workspace (its own config/providers/plugins), so no test shares
 //! or mutates process-global state.
 
+mod common;
+
+use common::plugins;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -61,10 +64,42 @@ models:
     .unwrap();
 }
 
+/// A config that configures the plane owning `tools:` and NOTHING else — no provider, no model — so
+/// it validates on any build that links that plane, whatever other planes (and their provider wire
+/// codecs) the build carries. The empty `providers:`/`models:` pair is written only when the plane
+/// that owns `models:` is linked (`linked_axis_body_ingress`): a plane the build does not link
+/// requires nothing (Law 7).
+#[cfg(linked_axis_stdio_serve)]
+fn write_tools_only_configs(dir: &Path, extra: &str) {
+    std::fs::write(dir.join("providers.yaml"), "").unwrap();
+    let catalog = if cfg!(linked_axis_body_ingress) {
+        "providers: {}\nmodels: {}\n"
+    } else {
+        ""
+    };
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("listen: \"127.0.0.1:0\"\n{catalog}{extra}"),
+    )
+    .unwrap();
+}
+
+/// The variable `validate_notes_unset_interpolated_env_vars_by_name` relies on being ABSENT. Named
+/// here because [`run_busbar`] is what has to guarantee that, per child.
+const UNSET_INTERPOLATION_VAR: &str = "BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR";
+
 /// Run the real busbar binary with the fixture's config env; returns (exit_code, stdout, stderr).
 fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .args(args)
+        // The unset-interpolation test needs its var genuinely absent in the CHILD regardless of the
+        // ambient environment. Cleared per-child rather than with `std::env::remove_var` in the
+        // parent: libtest runs this binary's ~20 tests on concurrent threads and every one of them
+        // sits inside `Command::output()`, which reads `environ`. Mutating the process environment
+        // while a sibling spawns is the documented-unsound setenv/getenv race, and its symptom is
+        // not a clean failure -- it is a child that silently never received MOCK_KEY or
+        // BUSBAR_CONFIG. Per-child it is ordered, and harmless: no other test sets this var.
+        .env_remove(UNSET_INTERPOLATION_VAR)
         // `--validate` RESOLVES built-in secret refs, so the fixture's referenced var must be set.
         .env("MOCK_KEY", "test-key-value")
         .env(
@@ -84,28 +119,9 @@ fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
 
 /// An UNSIGNED (structurally valid) plugin tarball written into the fixture's plugins dir.
 fn write_tarball(dir: &Path, file: &str, name: &str, alias: &str, lib: &[u8]) {
-    let m = busbar_plugin_sign::Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "store".into(),
-        version: "1.5.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: busbar_plugin_sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
-    std::fs::write(dir.join("plugins").join(file), bytes).unwrap();
+    let mut m = plugins::manifest("store", name, "acme");
+    m.alias = alias.into();
+    std::fs::write(dir.join("plugins").join(file), plugins::seal(m, lib)).unwrap();
 }
 
 /// The plugins block pointing at this fixture's dir. Single-quoted: a double-quoted YAML scalar
@@ -123,6 +139,7 @@ fn plugins_block(dir: &Path, enabled: bool, allow_unsigned: bool) -> String {
 
 /// Baseline: a valid config with no plugins block validates clean (exit 0) and reports plugins
 /// disabled.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_ok_on_valid_config_without_plugins() {
     let dir = fixture_dir("ok");
@@ -144,19 +161,19 @@ fn validate_ok_on_valid_config_without_plugins() {
 /// uncovered branch: `if !unset_env_vars.is_empty()` at main.rs's note-printing site had zero
 /// coverage of either branch (the baseline test above never referenced `${VAR}` syntax at all, so
 /// it exercised neither "note present" nor a confirmed "note absent").
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_notes_unset_interpolated_env_vars_by_name() {
     let dir = fixture_dir("unsetenv");
-    // Defensive: ensure the var is genuinely unset regardless of the ambient environment (this test
-    // never sets it, only relies on its absence).
-    std::env::remove_var("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR");
+    // The var is guaranteed absent in the child by `run_busbar`'s `.env_remove` -- see the comment
+    // there for why this must not be a `std::env::remove_var` in this shared-process parent.
     // `${VAR}` interpolation runs on the RAW config text before YAML parsing (see
     // config::interpolate_env_with), so a reference inside a COMMENT is still recorded as
     // referenced/unset while being guaranteed structurally harmless -- no risk of the substituted
     // (empty) value landing in a real field and failing config validation for an unrelated reason.
     write_configs(
         &dir,
-        "# smoke-tests unset-env-var interpolation: ${BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR}\n",
+        &format!("# smoke-tests unset-env-var interpolation: ${{{UNSET_INTERPOLATION_VAR}}}\n"),
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
@@ -165,7 +182,7 @@ fn validate_notes_unset_interpolated_env_vars_by_name() {
     );
     assert!(
         stdout.contains("1 env var(s) referenced but unset here")
-            && stdout.contains("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR"),
+            && stdout.contains(UNSET_INTERPOLATION_VAR),
         "expected the unset-var note naming the variable, got: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -187,17 +204,18 @@ fn validate_fails_on_unknown_config_key() {
 
 /// FAIL-CLOSED (hard requirement 1+2): `store.module: valkey` with plugins disabled exits 1
 /// naming `plugins.enabled` — the exact same refusal boot performs.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_fails_when_store_plugin_referenced_but_plugins_disabled() {
     let dir = fixture_dir("disabled");
-    write_configs(&dir, "store:\n  module: valkey\n");
+    write_configs(&dir, "store:\n  module: acme-kv\n");
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1);
     assert!(
         stderr.contains("plugins.enabled"),
         "names the flag: {stderr}"
     );
-    assert!(stderr.contains("valkey"), "names the store: {stderr}");
+    assert!(stderr.contains("acme-kv"), "names the store: {stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -208,11 +226,12 @@ fn validate_fails_when_store_plugin_referenced_but_plugins_disabled() {
 /// pass. Before the fix, `config_validate::validate` hard-rejected every non-`keys` chain module
 /// unconditionally, which (as an unwanted side effect neither layer's own tests caught, since each
 /// tested its own layer in isolation) meant a genuinely INSTALLED `kind: auth` plugin could never
-/// pass either -- see `crates/busbar/src/config_validate/tests/tests.rs`'s
+/// pass either -- see `crates/busbar-core/src/config_validate/tests/tests.rs`'s
 /// `test_validate_chain_unknown_module_rejected_keys_accepted` for that half of the regression
 /// proof. This test proves the other half: with plugins enabled but nothing actually installed
 /// under that name, `--validate` must STILL refuse, and the error must come from the registry-aware
 /// layer (naming the plugins dir / what's loadable), not silently pass.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_fails_on_unresolvable_auth_chain_plugin() {
     let dir = fixture_dir("authplugin");
@@ -240,6 +259,7 @@ fn validate_fails_on_unresolvable_auth_chain_plugin() {
 
 /// FAIL-CLOSED: ANY invalid tarball in an enabled plugins dir fails --validate naming the file,
 /// even when no plugin is referenced by the config.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_fails_on_invalid_tarball_in_enabled_dir() {
     let dir = fixture_dir("invalid");
@@ -253,30 +273,14 @@ fn validate_fails_on_invalid_tarball_in_enabled_dir() {
 }
 
 /// FAIL-CLOSED: a sha256-mismatched (tampered) manifest fails --validate with the integrity reason.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_fails_on_sha_mismatch() {
     let dir = fixture_dir("sha");
-    let m = busbar_plugin_sign::Manifest {
-        name: "acme-store-x".into(),
-        alias: "x".into(),
-        kind: "store".into(),
-        version: "1.5.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: busbar_plugin_sign::sha256_hex(b"OTHER bytes"),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
+    let mut m = plugins::manifest("store", "acme-store-x", "acme");
+    m.alias = "x".into();
+    m.sha256 = plugins::sha256(b"OTHER bytes");
+    let bytes = plugins::package(&m, b"real bytes");
     std::fs::write(dir.join("plugins/x.tar.gz"), bytes).unwrap();
     write_configs(&dir, &plugins_block(&dir, true, false));
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
@@ -291,20 +295,21 @@ fn validate_fails_on_sha_mismatch() {
 /// FAIL-CLOSED: referencing an UNSIGNED plugin store under the strict default posture exits 1
 /// naming the opt-in flag; with allow_unsigned it validates clean and the summary reports the
 /// validated plugin — proving --validate exercises the trust gate exactly as boot does.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_trust_gate_matches_boot() {
     let dir = fixture_dir("trust");
     write_tarball(
         &dir,
-        "sqlite.tar.gz",
-        "busbar-store-sqlite",
-        "sqlite",
+        "docstore.tar.gz",
+        "busbar-store-docstore",
+        "docstore",
         b"lib",
     );
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, false)
         ),
     );
@@ -319,7 +324,7 @@ fn validate_trust_gate_matches_boot() {
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, true)
         ),
     );
@@ -330,22 +335,17 @@ fn validate_trust_gate_matches_boot() {
 }
 
 /// FAIL-CLOSED (conflict): two plugins claiming the same alias fail --validate naming BOTH.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_fails_on_alias_conflict_naming_both() {
     let dir = fixture_dir("conflict");
-    write_tarball(
-        &dir,
-        "a.tar.gz",
-        "busbar-store-valkey-plugin",
-        "valkey",
-        b"a",
-    );
-    write_tarball(&dir, "b.tar.gz", "acme-store-valkey", "valkey", b"b");
+    write_tarball(&dir, "a.tar.gz", "busbar-store-kv-plugin", "kv", b"a");
+    write_tarball(&dir, "b.tar.gz", "acme-store-kv", "kv", b"b");
     write_configs(&dir, &plugins_block(&dir, true, true));
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1);
     assert!(
-        stderr.contains("busbar-store-valkey-plugin") && stderr.contains("acme-store-valkey"),
+        stderr.contains("busbar-store-kv-plugin") && stderr.contains("acme-store-kv"),
         "names both: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -356,24 +356,30 @@ fn validate_fails_on_alias_conflict_naming_both() {
 #[test]
 fn list_plugins_reports_statuses_without_loading() {
     let dir = fixture_dir("list");
-    write_tarball(&dir, "good.tar.gz", "busbar-store-sqlite", "sqlite", b"g");
+    write_tarball(
+        &dir,
+        "good.tar.gz",
+        "busbar-store-docstore",
+        "docstore",
+        b"g",
+    );
     write_tarball(&dir, "third.tar.gz", "acme-store-dynamo", "dynamo", b"t");
     std::fs::write(dir.join("plugins/junk.tar.gz"), b"garbage").unwrap();
-    // allow_unsigned so the sqlite one is loadable; the store selects it.
+    // allow_unsigned so the docstore one is loadable; the store selects it.
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, true)
         ),
     );
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "list-plugins is informational: {stdout}");
     assert!(
-        stdout.contains("LOADS (store.module: sqlite)"),
+        stdout.contains("LOADS (store.module: docstore)"),
         "the selected store row: {stdout}"
     );
-    assert!(stdout.contains("busbar-store-sqlite"), "{stdout}");
+    assert!(stdout.contains("busbar-store-docstore"), "{stdout}");
     assert!(stdout.contains("acme-store-dynamo"), "{stdout}");
     assert!(stdout.contains("ready"), "{stdout}");
     assert!(stdout.contains("INVALID"), "the junk row: {stdout}");
@@ -396,32 +402,32 @@ fn list_plugins_selected_row_requires_every_conjunct() {
     write_tarball(
         &dir,
         "byname.tar.gz",
-        "sqlite",
+        "docstore",
         "totally-different-alias",
         b"n",
     );
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, true)
         ),
     );
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("LOADS (store.module: sqlite)"),
+        stdout.contains("LOADS (store.module: docstore)"),
         "a NAME match alone (alias differs) must still select: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 
     // (2) matching name, but UNTRUSTED (not allow_unsigned) so status != "ready".
     let dir = fixture_dir("list-untrusted-match");
-    write_tarball(&dir, "untrusted.tar.gz", "sqlite", "sqlite", b"u");
+    write_tarball(&dir, "untrusted.tar.gz", "docstore", "docstore", b"u");
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, false)
         ),
     );
@@ -435,11 +441,11 @@ fn list_plugins_selected_row_requires_every_conjunct() {
 
     // (3) matching name AND ready, but plugins.enabled: false.
     let dir = fixture_dir("list-disabled-match");
-    write_tarball(&dir, "disabled.tar.gz", "sqlite", "sqlite", b"d");
+    write_tarball(&dir, "disabled.tar.gz", "docstore", "docstore", b"d");
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, false, true)
         ),
     );
@@ -518,15 +524,16 @@ fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
 /// while `plugins.enabled` stays at its default `false`) each guard on `!plugins_cfg.enabled` — a
 /// deleted `!` would silently invert the gate (rejecting the NORMAL enabled case instead of the
 /// actual misconfiguration). None of the three had any test coverage at all.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
     // store.module referencing a non-memory backend with plugins.enabled left at its default false.
     let dir = fixture_dir("gate-store");
-    write_configs(&dir, "store:\n  module: sqlite\n");
+    write_configs(&dir, "store:\n  module: docstore\n");
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1, "{stderr}");
     assert!(
-        stderr.contains("store.module: 'sqlite' requires the plugin subsystem")
+        stderr.contains("store.module: 'docstore' requires the plugin subsystem")
             && stderr.contains("plugins.enabled is false"),
         "got {stderr}"
     );
@@ -566,30 +573,13 @@ fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
 /// reject a resolved plugin of the WRONG kind, not silently accept it — `store.module` pointing (by
 /// name/alias collision) at a `kind: hook` plugin is a real misconfiguration class, not a manifest
 /// integrity failure, so it needs its own named error rather than falling through as if it loaded.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_fails_when_store_module_resolves_to_a_non_store_plugin_kind() {
     let dir = fixture_dir("wrongkind");
-    let m = busbar_plugin_sign::Manifest {
-        name: "acme-hook-x".into(),
-        alias: "x".into(),
-        kind: "hook".into(),
-        version: "1.5.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("hook")
-            .iter()
-            .max()
-            .expect("hook abi"),
-        sha256: busbar_plugin_sign::sha256_hex(b"real bytes"),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
+    let mut m = plugins::manifest("hook", "acme-hook-x", "acme");
+    m.alias = "x".into();
+    let bytes = plugins::seal(m, b"real bytes");
     std::fs::write(dir.join("plugins/x.tar.gz"), bytes).unwrap();
     // store.module: "x" resolves by ALIAS to the hook plugin above, not any store plugin.
     write_configs(
@@ -636,6 +626,7 @@ fn validate_fails_when_keys_chain_lacks_signing_key() {
 
 /// A `keys` chain WITH an `auth.signing_key` secret reference validates clean — and `--validate`
 /// never generates or persists a key (the secret is resolved at BOOT, not here).
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_ok_when_keys_chain_has_signing_key_and_writes_no_file() {
     let dir = fixture_dir("sk-ok");
@@ -659,6 +650,7 @@ fn validate_ok_when_keys_chain_has_signing_key_and_writes_no_file() {
 /// `busbar --generate-signing-key` mints a fresh 64-hex ed25519 secret to STDOUT (guidance to
 /// stderr), writes NOTHING, and the key — once written to a file and referenced from
 /// `auth.signing_key` — makes a `keys`-chain config validate clean.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn generate_signing_key_emits_a_usable_referenced_key() {
     let dir = fixture_dir("sk-gen");
@@ -693,9 +685,28 @@ fn generate_signing_key_emits_a_usable_referenced_key() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Run busbar with an ADDITIONAL `BUSBAR_CONFIG_OVERLAY` pointing at a fixture overlay file — the
-/// 1.5.0 full-config-coverage persistence path a real deployment uses.
+/// Run busbar against a fixture whose config.yaml points `config.overlay.file` at the given overlay —
+/// the full-config-coverage persistence path a real deployment uses. (The deprecated
+/// `BUSBAR_CONFIG_OVERLAY` env var is still honored, but the overlay is named here the same way
+/// production names it: `config.overlay.file` in config.yaml. This helper REWRITES config.yaml to
+/// append that pointer, so callers can keep writing a plain config via `write_configs(&dir, "")`
+/// first.)
+#[cfg(linked_axis_body_ingress)]
 fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {
+    // Append the overlay pointer to the fixture's config.yaml. Single-quoted YAML scalar so a Windows
+    // backslash path is never treated as an escape (mirrors `plugins_block`).
+    let config_path = dir.join("config.yaml");
+    let mut config = std::fs::read_to_string(&config_path).expect("read fixture config.yaml");
+    // Idempotent: some tests run this helper twice against the same fixture dir (e.g. once plain, once
+    // `--safe-mode`); appending the block twice would duplicate the top-level `config:` key.
+    if !config.contains("\nconfig:\n") {
+        config.push_str(&format!(
+            "\nconfig:\n  overlay:\n    file: '{}'\n",
+            overlay.display()
+        ));
+        std::fs::write(&config_path, config)
+            .expect("rewrite fixture config.yaml with overlay pointer");
+    }
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .args(args)
         // `--validate` RESOLVES built-in secret refs, so the fixture's referenced var must be set.
@@ -706,7 +717,6 @@ fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, S
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("BUSBAR_CONFIG_OVERLAY", overlay)
         .output()
         .expect("run busbar");
     (
@@ -721,6 +731,7 @@ fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, S
 /// validation (here: a DESCENDING `reasoning_effort_budgets`) must fail `--validate` exactly as a
 /// hand-written config.yaml would — the durable-validation invariant. And `--safe-mode` quarantines
 /// the whole overlay (root included), so the same bad overlay validates clean under safe mode.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_applies_and_rejects_a_bad_root_overlay() {
     let dir = fixture_dir("rootovl");
@@ -751,6 +762,7 @@ fn validate_applies_and_rejects_a_bad_root_overlay() {
 
 /// A VALID root overlay (a live-swappable per_request_fee + a well-formed limits override) validates
 /// CLEAN — the effective config resolves + passes semantic validation with the overrides merged in.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_ok_on_valid_root_overlay() {
     let dir = fixture_dir("rootovlok");
@@ -764,5 +776,906 @@ fn validate_ok_on_valid_root_overlay() {
     let (code, stdout, stderr) = run_busbar_with_overlay(&dir, &overlay, &["--validate"]);
     assert_eq!(code, 0, "a valid root overlay validates clean: {stderr}");
     assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The `BUSBAR_CONFIG_OVERLAY` env var was deprecated in 1.5.3 but is still HONORED (with a
+/// deprecation warning) when `config.overlay` is unset — an operator's existing pin keeps working
+/// across the upgrade. Point it at a BAD overlay (one that fails `--validate` when applied) and set
+/// NO `config.overlay.file`; validate must apply it and exit 1, proving the env var still selects the
+/// overlay.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_honors_deprecated_busbar_config_overlay_env_var() {
+    let dir = fixture_dir("ovlenvdep");
+    write_configs(&dir, "");
+    let bad_overlay = dir.join("bad-overlay.json");
+    std::fs::write(
+        &bad_overlay,
+        r#"{"version":1,"root":{"limits":{"reasoning_effort_budgets":{"minimal":16384,"low":8192,"medium":4096,"high":1024}}}}"#,
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .args(["--validate"])
+        .env("MOCK_KEY", "test-key-value")
+        .env(
+            "BUSBAR_SIGNING_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        // The deprecated env var — still selects the overlay when `config.overlay` is unset.
+        .env("BUSBAR_CONFIG_OVERLAY", &bad_overlay)
+        .output()
+        .expect("run busbar");
+    let code = out.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        code, 1,
+        "the deprecated BUSBAR_CONFIG_OVERLAY env var must still be honored, so the bad overlay IS \
+         applied and validate fails: {stderr}"
+    );
+    assert!(
+        stderr.contains("reasoning_effort_budgets") && stderr.contains("ascending"),
+        "the env-selected overlay's root section was validated: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// B1, THE END-TO-END PROOF: a config whose OAuth confidential-client secret references an env var
+/// that is NOT SET must exit 1 from `--validate`.
+///
+/// `identity-providers.<name>.browser_login.client_secret` is a `SecretRef` like any other, and the
+/// core itself presents it during the code-to-token exchange. It was absent from
+/// `config_validate::secret_refs`, which was a hand-written list of paths, so `--validate` walked
+/// straight past it and printed `ok: config valid` with exit 0 for a deployment whose every hosted
+/// login would fail at runtime. The list now fails CLOSED: it is derived from exhaustive
+/// destructures the compiler enforces, backed by a source scan that fails when a new secret-bearing
+/// TYPE appears.
+///
+/// The env var is removed explicitly rather than merely left unset, so an unrelated variable in the
+/// developer's or the runner's environment can never turn this test green by accident.
+///
+/// Gated on `auth-admin-tokens` because the FIXTURE cannot exist without it: the identity provider
+/// this test configures is `module: admin-tokens`, which that feature compiles out entirely. Built
+/// without it, `--validate` fails EARLIER — "an admin-tokens token is configured but this binary
+/// was built WITHOUT the `auth-admin-tokens` feature" — so the run never reaches the secret check
+/// and the assertion below fails against an error about something else. The B1 behaviour under test
+/// is feature-independent; only this fixture is not. `docs_examples.rs` gates its whole file on the
+/// same feature for the same reason.
+#[cfg(feature = "auth-admin-tokens")]
+#[test]
+fn validate_fails_on_unresolvable_browser_login_client_secret() {
+    const UNSET_VAR: &str = "BUSBAR_TEST_B1_OIDC_CLIENT_SECRET_NEVER_SET";
+    let dir = fixture_dir("b1-browser-login-secret");
+    write_configs(
+        &dir,
+        &format!(
+            "public_url: \"https://busbar.example.com\"\n\
+             identity-providers:\n\
+             \x20 admin-tokens:\n\
+             \x20   module: admin-tokens\n\
+             \x20   token: {{ env: BUSBAR_ADMIN_TOKEN }}\n\
+             \x20   browser_login:\n\
+             \x20     client_id: busbar-web\n\
+             \x20     client_secret: {{ env: {UNSET_VAR} }}\n\
+             auth:\n\
+             \x20 admin_auth: [admin-tokens]\n"
+        ),
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .arg("--validate")
+        .env_remove(UNSET_VAR)
+        .env("MOCK_KEY", "test-key-value")
+        .env("BUSBAR_ADMIN_TOKEN", "test-admin-token")
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .output()
+        .expect("run busbar");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        code, 1,
+        "an unset browser_login client_secret must FAIL --validate, not be silently skipped: \
+         stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("ok: config valid"),
+        "--validate must not report the config valid: {stdout}"
+    );
+    assert!(
+        stderr.contains("browser_login.client_secret") && stderr.contains(UNSET_VAR),
+        "the error must NAME the config path and the unset variable so it is actionable: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--validate` REFUSES A PUBLISHED-NAME COLLISION, driven through the REAL binary.
+///
+/// `tools_allow.<tool>.publish_as:` is an optional override of the `{server}_{tool}` wire name, and
+/// the invariant it moves off construction — one published name resolving to exactly one
+/// `(server, tool)` — is now kept by validation. A validation that boot runs and `--validate` does
+/// not is worse than no validation: an operator would dry-run green in CI and watch the same file
+/// refuse to boot. Both reach `config::resolve`, and driving the binary is what proves it rather
+/// than asserting it.
+///
+/// THE COLLISION UNDER TEST IS THE SUBTLE ONE — an override against a namespaced default nobody
+/// typed (`publish_as: foo_bar` versus server `foo`'s tool `bar`). A check that compared overrides
+/// only to each other would exit 0 here and look correct doing it.
+///
+/// GATED ON the linked `stdio-serve` axis (`linked_axis_stdio_serve`, emitted by build.rs from
+/// `[package.metadata.busbar.linked-axes]`): the collision check lives in the plane that owns
+/// `tools:`, the linked row carrying that axis, and is compiled out with it — a binary without that
+/// plane has no `tools:` to collide in, so `--validate` exiting 0 there is the correct answer, not the
+/// missed refusal this test exists to pin. The config configures that plane and nothing else (no
+/// provider, no model), so the test runs on every build that links it, whatever else is linked.
+#[cfg(linked_axis_stdio_serve)]
+#[test]
+fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
+    let dir = fixture_dir("publish-as-collision");
+    write_tools_only_configs(
+        &dir,
+        r#"tools:
+  foo:
+    url: "https://foo.internal/rpc"
+    pin: { mechanism: unpinned }
+    tools_allow: { bar: {} }
+  other:
+    url: "https://other.internal/rpc"
+    pin: { mechanism: unpinned }
+    tools_allow:
+      anything:
+        publish_as: foo_bar
+"#,
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    let all = format!("{stdout}{stderr}");
+    assert_eq!(code, 1, "a colliding config must not validate clean: {all}");
+    assert!(all.contains("published as `foo_bar`"), "{all}");
+    // BOTH claimants named — one is a line the operator typed, the other is a name the DEFAULT
+    // produced, and an error that named only the typed one would send them looking for a second
+    // `publish_as:` that does not exist.
+    assert!(all.contains("tools.foo.tools_allow.bar"), "{all}");
+    assert!(
+        all.contains("tools.other.tools_allow.anything.publish_as"),
+        "{all}"
+    );
+
+    // GREEN, one name changed and nothing else: the refusal is about the collision, not about
+    // `publish_as:` existing. Without this half the test above is satisfied by a build that refuses
+    // every override.
+    write_tools_only_configs(
+        &dir,
+        r#"tools:
+  foo:
+    url: "https://foo.internal/rpc"
+    pin: { mechanism: unpinned }
+    tools_allow: { bar: {} }
+  other:
+    url: "https://other.internal/rpc"
+    pin: { mechanism: unpinned }
+    tools_allow:
+      anything:
+        publish_as: greet
+"#,
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "distinct published names must validate clean: {stdout}{stderr}"
+    );
+}
+
+/// THE OPERATOR-VISIBLE PROTOCOL ORDER, PINNED ON THE SHIPPED BINARY.
+///
+/// This sequence is load-bearing twice: it is the `must be one of:` tail an operator reads on a bad
+/// `protocol:`, and `telemetry` banks one metric family per entry and finds it again BY POSITION,
+/// so a reordering silently re-points every dashboard series behind the moved entry. Nothing inside
+/// `busbar-core` can pin it — core's test build resolves the dialects from its own built-in table,
+/// while the SHIPPED order is `merged_boot_decls(busbar_llm::DECLS ++ mcp, remaining built-ins)`,
+/// which only exists once the composition root has run. So it is pinned here, black-box, on the
+/// real binary, by reading the refusal an operator would read.
+///
+/// This is the assertion the LLM consolidation had to satisfy. Folding six per-dialect crates into
+/// one plugin moves every one of them from core's built-in table into the installed set, and the
+/// installed set is folded AHEAD of the built-ins — so a naive fold reorders the list. It was
+/// measured doing exactly that during this work (cohere went from slot 6 to slot 2). The order is
+/// preserved by taking the dialects out in the built-in table's own order and appending each to
+/// `busbar_llm::DECLS`, which keeps the installed set a PREFIX of the operator-visible list at
+/// every step; this test is what makes that a checked property rather than a careful intention.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn the_operator_visible_protocol_order_is_exactly_the_shipped_one() {
+    let d = fixture_dir("protocol-order");
+    write_configs(&d, "");
+    // Point the provider at a protocol that cannot exist, so the refusal lists the real ones.
+    std::fs::write(
+        d.join("providers.yaml"),
+        r#"mock:
+  protocol: definitely-not-a-protocol
+  base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY
+"#,
+    )
+    .unwrap();
+    let (code, out, err) = run_busbar(&d, &["--validate"]);
+    let all = format!("{out}{err}");
+    assert_ne!(code, 0, "an unknown protocol must fail validation: {all}");
+    assert!(
+        all.contains("must be one of: anthropic, openai, gemini, bedrock, responses, cohere"),
+        "the operator-visible protocol order changed. It is a metric-family index as well as a \
+         config-error string, so this is not cosmetic — see this test's doc. Got: {all}"
+    );
+}
+
+/// Run the real binary with the standard secret env + a CHOSEN `BUSBAR_CONFIG` (or none), plus
+/// arbitrary extra args and env pairs — the flexible harness the 1.6.0 flag-precedence tests need
+/// (they vary the config/providers inputs beyond what `run_busbar` fixes). Returns (code, stdout,
+/// stderr).
+#[cfg(linked_axis_body_ingress)]
+fn run_cli(
+    config_env: Option<&Path>,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> (i32, String, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    c.args(args).env("MOCK_KEY", "test-key-value").env(
+        "BUSBAR_SIGNING_KEY",
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    );
+    match config_env {
+        Some(p) => {
+            c.env("BUSBAR_CONFIG", p);
+        }
+        None => {
+            c.env_remove("BUSBAR_CONFIG");
+        }
+    }
+    for (k, v) in extra_env {
+        c.env(k, v);
+    }
+    let out = c.output().expect("run busbar");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// 1.6.0 FLAG-FIRST (config): `-c`/`--config <path>` OVERRIDES `BUSBAR_CONFIG` and the compiled-in
+/// default. `BUSBAR_CONFIG` points at a BOGUS (nonexistent) path; the flag names the real config, and
+/// `--validate` must succeed AND report the flag's path — proving the flag won over the env layer.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn config_flag_overrides_env_and_default() {
+    let dir = fixture_dir("cfgflag");
+    // Real config (+ providers.yaml next to it, the default catalog location) in its own subdir.
+    let real = dir.join("real");
+    std::fs::create_dir_all(real.join("plugins")).unwrap();
+    write_configs(&real, "");
+    let real_config = real.join("config.yaml");
+    let bogus = dir.join("bogus").join("config.yaml"); // never created
+
+    let (code, stdout, stderr) = run_cli(
+        Some(&bogus),
+        &["--validate", "-c", real_config.to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(
+        code, 0,
+        "-c/--config must override a (bogus) BUSBAR_CONFIG and the default: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    assert!(
+        stdout.contains(real_config.to_str().unwrap()),
+        "the validate output must name the FLAG's config path, proving it won over BUSBAR_CONFIG: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.6.0 FLAG-FIRST (providers): `--providers <path>` OVERRIDES `providers_file:` in config.yaml and
+/// the default catalog. The config declares a NONEXISTENT `providers_file:` and has NO providers.yaml
+/// beside it, so without the flag `--validate` fails; with `--providers <real>` it succeeds and reports
+/// the flag's catalog — proving the flag won over `providers_file:`.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn providers_flag_overrides_providers_file_and_default() {
+    let dir = fixture_dir("provflag");
+    // config in its own dir, declaring a providers_file that does not exist, and NO providers.yaml
+    // beside it (so neither providers_file nor the default catalog resolves).
+    let cfgdir = dir.join("cfg");
+    std::fs::create_dir_all(&cfgdir).unwrap();
+    let config = cfgdir.join("config.yaml");
+    std::fs::write(
+        &config,
+        "listen: \"127.0.0.1:0\"\n\
+         providers:\n\
+         \x20 mock:\n\
+         \x20   api_key: { env: MOCK_KEY }\n\
+         models:\n\
+         \x20 test-model:\n\
+         \x20   provider: mock\n\
+         providers_file: does-not-exist.yaml\n",
+    )
+    .unwrap();
+    // The REAL catalog lives elsewhere, reachable ONLY via --providers.
+    let real_catalog = dir.join("real-providers.yaml");
+    std::fs::write(
+        &real_catalog,
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+    )
+    .unwrap();
+
+    // Baseline: without --providers, the nonexistent providers_file fails validation.
+    let (code, _stdout, stderr) = run_cli(Some(&config), &["--validate"], &[]);
+    assert_eq!(
+        code, 1,
+        "a providers_file pointing at a missing catalog must fail --validate: {stderr}"
+    );
+
+    // --providers overrides providers_file → validate OK, naming the flag's catalog.
+    let (code, stdout, stderr) = run_cli(
+        Some(&config),
+        &["--validate", "--providers", real_catalog.to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(
+        code, 0,
+        "--providers must override providers_file: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    assert!(
+        stdout.contains(real_catalog.to_str().unwrap()),
+        "the validate output must name the FLAG's catalog, proving it won over providers_file: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The `BUSBAR_PROVIDERS` env var was deprecated in 1.5.3 but is still HONORED, with a deprecation
+/// warning on stderr. With it set to a BOGUS (nonexistent) path — even though a valid providers.yaml
+/// sits at the DEFAULT location next to config.yaml — `--validate` must FAIL with the
+/// cannot-read-providers error naming the bogus path, and the warning must precede that error. This
+/// pins both halves: the var is warned about AND it still selects the catalog.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn busbar_providers_env_is_deprecated_but_honored() {
+    let dir = fixture_dir("provenvdep");
+    write_configs(&dir, ""); // config.yaml + providers.yaml (the default catalog) both in `dir`
+    let config = dir.join("config.yaml");
+    let bogus = dir.join("bogus-providers.yaml"); // never created
+
+    let (code, stdout, stderr) = run_cli(
+        Some(&config),
+        &["--validate"],
+        &[("BUSBAR_PROVIDERS", bogus.to_str().unwrap())],
+    );
+    assert_eq!(
+        code, 1,
+        "BUSBAR_PROVIDERS is still honored; the bogus env value must fail the load: \
+         stdout={stdout} stderr={stderr}"
+    );
+    let warn =
+        "[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead \
+                (it is honored for now).";
+    assert!(
+        stderr.contains(warn),
+        "the deprecation warning must be printed verbatim: {stderr}"
+    );
+    let err = format!("cannot read providers file '{}': ", bogus.to_str().unwrap());
+    assert!(
+        stderr.contains(&err)
+            && stderr.contains("(set `providers_file:` in config.yaml, or BUSBAR_PROVIDERS)"),
+        "the load error must name the env-selected path and the remediation: {stderr}"
+    );
+    assert!(
+        stderr.find(warn).unwrap() < stderr.find(&err).unwrap(),
+        "the deprecation warning must precede the load error: {stderr}"
+    );
+
+    // And with a REAL path it is used: point it at the default catalog explicitly and validate
+    // passes, still with the warning.
+    let real = dir.join("providers.yaml");
+    let (code, stdout, stderr) = run_cli(
+        Some(&config),
+        &["--validate"],
+        &[("BUSBAR_PROVIDERS", real.to_str().unwrap())],
+    );
+    assert_eq!(code, 0, "a real BUSBAR_PROVIDERS path validates: {stderr}");
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    assert!(
+        stderr.contains(warn),
+        "the deprecation warning fires whenever the var is set: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A config whose SOLE provider's `api_key` is `api_key_yaml` verbatim (`{ env: X }`, `none`, …).
+/// The shared `write_configs` hard-codes `{ env: MOCK_KEY }`; the credential tests below need to
+/// vary exactly that field.
+fn write_configs_with_api_key(dir: &Path, api_key_yaml: &str, extra: &str) {
+    std::fs::write(
+        dir.join("providers.yaml"),
+        r#"mock:
+  protocol: anthropic
+  base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            r#"listen: "127.0.0.1:0"
+providers:
+  mock:
+    api_key: {api_key_yaml}
+models:
+  test-model:
+    provider: mock
+{extra}"#
+        ),
+    )
+    .unwrap();
+}
+
+/// FAIL-CLOSED: a provider `api_key` naming an UNSET variable fails `--validate` (exit 1), naming
+/// the config path and the reference. `run_busbar` sets `MOCK_KEY` to a known value, so this also
+/// proves the refusal carries no credential material — a diagnostic must never print a resolved
+/// secret, and the whole point of this change is that the credential path is fail-closed WITHOUT
+/// becoming a place secrets leak.
+// PROVIDER-SHAPED, THEREFORE CODEC-SHAPED. The fixture declares a `mock` provider on protocol
+// `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
+// "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
+// reaches the credential field this test is about. The 18 sibling provider tests in this file are
+// already `proto-llm`-gated for exactly that reason; these two were not, so
+// `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
+// is asking about. The question here genuinely needs a provider lane, so it is gated rather than
+// re-fixtured.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
+    let dir = fixture_dir("apikey-unresolvable");
+    let unset = format!("BUSBAR_CLI_UNSET_PROVIDER_KEY_{}", std::process::id());
+    write_configs_with_api_key(&dir, &format!("{{ env: {unset} }}"), "");
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "an unresolvable api_key fails validate: {stdout}");
+    assert!(
+        stderr.contains("providers.mock.api_key"),
+        "the refusal names the field: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("env:{unset}")),
+        "the refusal names the reference: {stderr}"
+    );
+    assert!(
+        !stderr.contains("test-key-value"),
+        "a resolved credential value must never appear in a refusal"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `api_key: none` — the explicit keyless declaration for a local ollama / vLLM — validates CLEAN
+/// with no variable set for it anywhere. This is the migration path off the removed
+/// degrade-to-an-empty-credential behaviour, so it has to work at the outermost surface.
+// PROVIDER-SHAPED, THEREFORE CODEC-SHAPED. The fixture declares a `mock` provider on protocol
+// `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
+// "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
+// reaches the credential field this test is about. The 18 sibling provider tests in this file are
+// already `proto-llm`-gated for exactly that reason; these two were not, so
+// `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
+// is asking about. The question here genuinely needs a provider lane, so it is gated rather than
+// re-fixtured.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_accepts_api_key_none_for_a_keyless_upstream() {
+    let dir = fixture_dir("apikey-none");
+    write_configs_with_api_key(&dir, "none", "");
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "`api_key: none` is valid: {stderr}");
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `none` is accepted ONLY where an absent credential is meaningful. On `auth.signing_key` — which
+/// has no credential-free mode — it is a refusal, not a silently disabled signer. That is the same
+/// class of quiet failure the provider degrade used to cause, so the new form must not reintroduce
+/// it one field over.
+#[test]
+fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
+    let dir = fixture_dir("none-on-signing-key");
+    write_configs_with_api_key(
+        &dir,
+        "{ env: MOCK_KEY }",
+        "auth:\n  signing_key: none\n  chain: [keys]\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "`none` on a signing key is refused: {stdout}");
+    assert!(
+        stderr.contains("auth.signing_key") && stderr.contains("NO credential"),
+        "the refusal names the field and why `none` is wrong there: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── DECISIONS PLANE CONFIG CROSS-REFERENCES (P2-243 / P2-decvalidate) ───────────────────────────
+//
+// Three refusals that did not exist before this change (verified RED at HEAD): a
+// `decisions.models.<m>.provider` naming a provider `providers:` does not define booted; a
+// `decisions.hooks` entry naming an undefined hook booted; and a model whose provider resolves to
+// a dialect this plane does not speak (non-`jev`) booted instead of failing closed
+// (BUSBAR-1.6.0.md #51, OWNER-LOCKED: "the decisions plane (only jev) handed `anthropic` fails").
+// All three now refuse at `config::resolve` — the ONE function both `--validate` (`root/cli.rs`)
+// and real boot (`main.rs`) call — so these `--validate` runs stand in for both call sites without
+// this file needing a boot-and-kill harness; `validate_ok_on_valid_config_without_plugins` above
+// already establishes that `--validate` mirrors boot for every other refusal in this file.
+//
+// `providers.yaml`'s `protocol:` selects the WIRE dialect (`anthropic`/`openai`/…/`jev`); a `mock`
+// provider on `protocol: jev` is what a genuine decisions deployment configures — the decision
+// plane's own `PlaneCfg::known_dialects` (`root/plane_decisions.rs`) is unioned into the provider
+// wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
+// is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
+
+/// A config whose sole provider speaks `protocol` and whose `decisions:` block is `decisions_yaml`
+/// verbatim. Mirrors `write_configs_with_api_key`'s shape (own `providers.yaml` + `config.yaml`,
+/// not the shared `write_configs` helper) because these tests vary the provider's `protocol:`,
+/// which `write_configs` hard-codes to `anthropic`.
+#[cfg(feature = "plane-decisions")]
+fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
+    std::fs::write(
+        dir.join("providers.yaml"),
+        format!(
+            r#"mock:
+  protocol: {protocol}
+  base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            r#"listen: "127.0.0.1:0"
+providers:
+  mock:
+    api_key: {{ env: MOCK_KEY }}
+models: {{}}
+{decisions_yaml}"#
+        ),
+    )
+    .unwrap();
+}
+
+/// THE DECISIONS PLANE'S DIALECT, discovered black-box rather than spelled: a `decisions:` model whose
+/// provider speaks an unknown protocol is refused naming the dialect(s) the plane speaks ("this plane
+/// speaks only: <d>."), so the binary itself says which protocol the linked decisions plane reads.
+/// Exactly one is required; a refusal that stops naming it fails here, loudly.
+#[cfg(feature = "plane-decisions")]
+fn decision_dialect() -> String {
+    let dir = fixture_dir("decisions-dialect-probe");
+    write_decisions_configs(
+        &dir,
+        "bogus",
+        "decisions:\n  models:\n    verdicts:\n      provider: mock\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        code, 1,
+        "a foreign dialect on the decision plane is refused: {stderr}"
+    );
+    let spoken = stderr
+        .split("this plane speaks only: ")
+        .nth(1)
+        .and_then(|rest| rest.split('.').next())
+        .unwrap_or_else(|| panic!("the refusal names the dialects the plane speaks: {stderr}"));
+    let dialects: Vec<&str> = spoken.split(',').map(str::trim).collect();
+    assert_eq!(
+        dialects.len(),
+        1,
+        "the decision plane speaks one dialect: {stderr}"
+    );
+    dialects[0].to_string()
+}
+
+/// CONTROL: a `decisions:` block naming a real `jev`-protocol provider validates clean. Proves the
+/// three refusals below are each triggered by their OWN defect, not by the mere presence of a
+/// `decisions:` section or by `protocol: jev` itself.
+#[cfg(feature = "plane-decisions")]
+#[test]
+fn validate_ok_on_a_good_decisions_config() {
+    let dir = fixture_dir("decisions-ok");
+    write_decisions_configs(
+        &dir,
+        &decision_dialect(),
+        "decisions:\n  models:\n    verdicts:\n      provider: mock\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "a good decisions config validates: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DEFECT 1: `decisions.models.<m>.provider` names a provider absent from `providers:`.
+#[cfg(feature = "plane-decisions")]
+#[test]
+fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
+    let dir = fixture_dir("decisions-badprovider");
+    write_decisions_configs(
+        &dir,
+        &decision_dialect(),
+        "decisions:\n  models:\n    verdicts:\n      provider: ghost\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "an undefined provider reference fails validate: {stderr}"
+    );
+    assert!(
+        stderr.contains("decisions.models.verdicts.provider"),
+        "the refusal names the key path: {stderr}"
+    );
+    assert!(
+        stderr.contains("ghost"),
+        "the refusal names the bad value: {stderr}"
+    );
+    assert!(
+        stderr.contains("mock"),
+        "the refusal names the valid choices: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DEFECT 2: `decisions.hooks` names a hook absent from the top-level `hooks:` registry.
+#[cfg(feature = "plane-decisions")]
+#[test]
+fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
+    let dir = fixture_dir("decisions-badhook");
+    write_decisions_configs(
+        &dir,
+        &decision_dialect(),
+        "decisions:\n  models:\n    verdicts:\n      provider: mock\n  hooks: [ghost-hook]\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "an undefined hook reference fails validate: {stderr}"
+    );
+    assert!(
+        stderr.contains("decisions.hooks"),
+        "the refusal names the key path: {stderr}"
+    );
+    assert!(
+        stderr.contains("ghost-hook"),
+        "the refusal names the bad value: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DEFECT 3 (#51, OWNER-LOCKED): a model whose provider resolves to a dialect the decisions plane
+/// does not speak must FAIL CLOSED — the exact row #51 cites: "the decisions plane (only jev)
+/// handed `anthropic` fails". `write_decisions_configs`'s default catalog protocol IS `anthropic`
+/// (the shipped default, `providers.rs::DEFAULT_PROTOCOL`), so this is also the config an operator
+/// gets by simply OMITTING `protocol:` on a provider meant for the decisions plane.
+#[cfg(feature = "plane-decisions")]
+#[test]
+fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() {
+    let dir = fixture_dir("decisions-baddialect");
+    write_decisions_configs(
+        &dir,
+        "anthropic",
+        "decisions:\n  models:\n    verdicts:\n      provider: mock\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "a dialect the decision plane does not speak fails closed: {stderr}"
+    );
+    assert!(
+        stderr.contains("decisions.models.verdicts.provider"),
+        "the refusal names the key path: {stderr}"
+    );
+    assert!(
+        stderr.contains("anthropic"),
+        "the refusal names the resolved dialect: {stderr}"
+    );
+    let dialect = decision_dialect();
+    assert!(
+        stderr.contains(&dialect),
+        "the refusal names the dialect the plane speaks (`{dialect}`): {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── LAW 7: AN UNCONFIGURED PLANE CONTRIBUTES NO PROVIDER DIALECT (oracle cell BOOT-020) ───────────
+//
+// The provider protocol check is unioned with the dialects of the planes a config CONFIGURES, not
+// of every plane linked into the build. A 1.5.5 config writes no `decisions:` section, so its
+// unknown-protocol refusal lists exactly the six wire protocols 1.5.5 lists, and `protocol: jev`
+// is as unknown to it as it was to 1.5.5.
+
+/// The published 1.5.5 refusal for `protocol: bogus`, byte for byte (golden cell
+/// `boot.refusal|BOOT-020|validate`). The list is the linked provider wire codecs', so these cells
+/// also need the linked `body-ingress` axis: a build with no provider codec refuses every provider
+/// lane first (BUSBAR-3015), and that is the correct answer there, not a missed 1.5.5 line.
+#[cfg(all(feature = "plane-decisions", linked_axis_body_ingress))]
+const PROTOCOLS_1_5_5: &str =
+    "must be one of: anthropic, openai, gemini, bedrock, responses, cohere\n";
+
+#[cfg(all(feature = "plane-decisions", linked_axis_body_ingress))]
+#[test]
+fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
+    let dir = fixture_dir("bogus-protocol-no-decisions");
+    write_decisions_configs(&dir, "bogus", "");
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "an unknown protocol fails validate: {stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "provider 'mock' has unknown protocol 'bogus': {PROTOCOLS_1_5_5}"
+        )),
+        "with no decisions: section the list is 1.5.5's, with no plane dialect appended: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `protocol: jev` with no `decisions:` section refuses as 1.5.5 refuses it: no configured plane
+/// speaks it. (The CONTROL `validate_ok_on_a_good_decisions_config` above is the same provider WITH
+/// the section, which validates clean.)
+#[cfg(all(feature = "plane-decisions", linked_axis_body_ingress))]
+#[test]
+fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configured() {
+    let dir = fixture_dir("decision-protocol-no-decisions");
+    let dialect = decision_dialect();
+    write_decisions_configs(&dir, &dialect, "");
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "the decision protocol with no decision plane configured fails validate: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "provider 'mock' has unknown protocol '{dialect}': {PROTOCOLS_1_5_5}"
+        )),
+        "the refusal is 1.5.5's unknown-protocol line: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A CONFIG FAILING SEVERAL LIMITS AT ONCE READS AS IT ALWAYS DID (1.5.5): the request-log webhook
+/// sink's in-flight bound is refused AMONG the operational limits — after the timeouts, before the
+/// Retry-After ceiling — and its delivery deadline after them, though both are the sink's own
+/// checks now. The whole refusal is pinned line for line; RED: the sink's lines answered in one
+/// place (all after the limits) reorder the second and third lines.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
+    // Whether this binary links the webhook sink is the binary's own answer — a module on no export
+    // axis is refused as an unknown exporter — never a feature name. A build without it has no
+    // refusal of the sink's to order.
+    let probe = fixture_dir("webhook-order-probe");
+    write_configs(
+        &probe,
+        "export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\" } }\n",
+    );
+    let (_, _, probed) = run_busbar(&probe, &["--validate"]);
+    if probed.contains("unknown exporter 'request-log-webhook'") {
+        return;
+    }
+    let dir = fixture_dir("webhook-order");
+    write_configs(
+        &dir,
+        "limits:\n  upstream_request_timeout_secs: 0\n  max_honored_retry_after_secs: 0\n\
+         export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\", \
+         max_inflight_deliveries: 0, delivery_timeout_secs: 0 } }\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_ne!(code, 0, "{stderr}");
+    let refusal: Vec<&str> = stderr
+        .lines()
+        .skip_while(|l| !l.contains("config validation failed:"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  - "))
+        .collect();
+    assert_eq!(
+        refusal,
+        [
+            "  - limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call instantly)",
+            "  - export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-permit semaphore admits nothing, silently dropping every webhook delivery)",
+            "  - limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every honored Retry-After to 0)",
+            "  - the `module: request-log-webhook` export instance targeting 'https://siem.example/in' (#0) sets settings.delivery_timeout_secs: 0, which would abort every delivery — it must be >= 1",
+        ],
+        "{stderr}"
+    );
+}
+
+/// A store tarball whose signed manifest states a 1.6.0 Statement (`kind_abi` as given) over
+/// `lib`: bytes that are NOT a library, so any `dlopen` of them fails.
+fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &[u8]) {
+    use busbar_contract::abi::mechanism::door::Statement;
+    use busbar_contract::abi::mechanism::rendering::render;
+    use busbar_contract::abi::mechanism::KindCode;
+    let st = Statement {
+        size: std::mem::size_of::<Statement>() as u32,
+        kind: KindCode::Store as u32,
+        kind_abi,
+        ..busbar_contract::abi::sdk::door::statement("busbar-store-stated", "1.6.0", 4)
+    };
+    // SAFETY: the SDK Statement names only `'static` strings and no list.
+    let rendering = unsafe { render(&st) }.unwrap();
+    let mut m = plugins::manifest("store", name, "acme");
+    m.alias = alias.into();
+    m.statement = Some(hex::encode(&rendering));
+    std::fs::write(
+        dir.join("plugins").join(format!("{name}.tar.gz")),
+        plugins::seal(m, lib),
+    )
+    .unwrap();
+}
+
+/// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` names a dropped-in plugin's stated facts and whether the
+/// configuration selects it, read off its signed manifest — WITHOUT opening it: the library bytes
+/// are not a library, so a `dlopen` would refuse the run.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_names_a_dropped_plugins_stated_facts_without_opening_it() {
+    use busbar_contract::abi::mechanism::KindCode;
+    let dir = fixture_dir("stated");
+    let abi = KindCode::Store.abi_version();
+    write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
+    write_configs(
+        &dir,
+        &format!(
+            "{}store:\n  module: stated\n",
+            plugins_block(&dir, true, true)
+        ),
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains(&format!(
+            "    plugin: busbar-store-stated (store, ABI {abi}) — selected as store"
+        )),
+        "got {stdout}"
+    );
+    // Not named by the configuration: listed, not selected.
+    write_configs(&dir, &plugins_block(&dir, true, true));
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("busbar-store-stated (store, ABI")
+            && stdout.contains("not used by this config"),
+        "got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RED (BUSBAR-1.6.0.md §11.8): a SELECTED dropped-in plugin whose Statement states another kind ABI
+/// version than this host's is refused by `--validate`, naming the rebuild — still without opening
+/// it.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_refuses_a_selected_plugin_built_for_another_host() {
+    use busbar_contract::abi::mechanism::KindCode;
+    let dir = fixture_dir("stated-abi");
+    let abi = KindCode::Store.abi_version() + 1;
+    write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
+    write_configs(
+        &dir,
+        &format!(
+            "{}store:\n  module: stated\n",
+            plugins_block(&dir, true, true)
+        ),
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("busbar-store-stated")
+            && stderr.contains("rebuild the plugin against the 1.6.0 SDK"),
+        "got {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

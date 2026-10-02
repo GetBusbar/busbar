@@ -1,0 +1,21 @@
+per_request_fee = 0
+limits.default_max_tokens = 4096
+limits.reasoning_effort_budgets = minimal=1024 low=4096 medium=8192 high=16384
+rate_card:
+  <absent>
+models:
+  gpt-4o: default_max_tokens=- max_requests=-1 max_concurrent=-
+groups:
+  org: enabled=true parent=-
+    limit: metric=requests amount=100000 per=day scope=- on_exhaust=- downgrade_to=-
+    limit: metric=budget amount=5000000 per=month scope=- on_exhaust=- downgrade_to=-
+    child_default.limit: metric=tokens amount=1000000 per=day scope=- on_exhaust=- downgrade_to=-
+  team-alpha: enabled=true parent=org
+    limit: metric=tokens_input amount=2000000 per=hour scope=- on_exhaust=- downgrade_to=-
+    limit: metric=tokens_output amount=500000 per=hour scope=- on_exhaust=- downgrade_to=-
+    limit: metric=tokens_cache_read amount=4000000 per=day scope=- on_exhaust=- downgrade_to=-
+    limit: metric=tokens_cache_write amount=250000 per=day scope=- on_exhaust=- downgrade_to=-
+    limit: metric=concurrent amount=16 per=- scope=- on_exhaust=- downgrade_to=-
+    limit: metric=budget amount=100000 per=month scope=pool:cheap on_exhaust=downgrade downgrade_to=pool:budget-pool
+  team-frozen: enabled=false parent=org
+    limit: metric=tokens amount=10000 per=minute scope=- on_exhaust=- downgrade_to=-

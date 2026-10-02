@@ -1,0 +1,638 @@
+//! `cargo xtask denylist --selftest` — proves the denylist logic itself, against synthetic pure
+//! crates checked into `xtask/fixtures/`, independent of whatever today's real crate graph looks
+//! like. Three fixtures:
+//!
+//! * `xtask-fixture-clean` — a pure crate with no banned dependency and no banned own-src path.
+//!   Must be GREEN.
+//! * `xtask-fixture-dirty-dep` — a pure crate that depends directly on `libc` (one of section
+//!   1.2's named banned crates). Must be RED, naming `libc`.
+//! * `xtask-fixture-dirty-dep-hyphenated` — a pure crate that depends directly on two banned
+//!   crates whose PUBLISHED names are hyphenated (`async-std`, `hyper-util`), where
+//!   `cargo metadata`'s resolve-graph edge name is the underscored extern-crate identifier
+//!   (`async_std`, `hyper_util`) and the banned set holds the hyphenated form. Must be RED on
+//!   both, naming them hyphenated — every other fixture here uses `libc`, whose two name forms
+//!   coincide, so nothing else can catch a walk that compares the two forms directly.
+//! * `xtask-fixture-dirty-src` — a pure crate with no unusual dependency at all, whose own
+//!   `src/lib.rs` calls `std::fs::read` in production code (and, to prove the test-code
+//!   exclusion, `std::env::var` inside a `#[cfg(test)] mod`). Must be RED on `std::fs` only —
+//!   proving the own-src scan catches an unannounced std path AND that test code is excluded
+//!   exactly as section 1.2's I/O-kind carve-out implies.
+//! * `xtask-fixture-via-only` — a pure crate whose ONLY path to `libc` runs through a local `mid`
+//!   crate (`xtask-fixture-via-mid`). RED on `libc` with no allow-list entry; GREEN with a
+//!   `dep = "libc", via = "xtask-fixture-via-mid"` waiver, proving `via` fully covers a crate
+//!   when no path bypasses it.
+//! * `xtask-fixture-via-bypass` — the same shape PLUS a second, direct dependency on `libc`. The
+//!   SAME `via = "xtask-fixture-via-mid"` waiver must leave it RED, proving a bypassing path
+//!   defeats the narrowing rather than being silently forgiven alongside the covered one.
+//! * `xtask-fixture-optional-dep-inactive` — a pure crate whose local `mid` dependency declares an
+//!   OPTIONAL `libc` dependency that no feature anywhere in the fixture's workspace turns on.
+//!   `cargo metadata`'s resolve graph lists the `mid -> libc` edge regardless (an optional
+//!   dependency shows up as soon as some version of it is lock-resolvable, not only when its
+//!   enabling feature is active) — this fixture proves the walk does NOT report `libc` for an edge
+//!   nothing actually compiles, matching the real phantom edge found in `busbar-plane-llm`'s
+//!   closure (`sonic_rs -> faststr -> rkyv -> uuid_1 -> getrandom -> libc`, where `rkyv` is an
+//!   optional `faststr` dependency active nowhere in the real workspace).
+//! * `xtask-fixture-optional-dep-active` — the SAME shape, but the root crate turns the `mid`
+//!   dependency's feature ON. Must be RED on `libc`, proving the phantom-edge filter does not ALSO
+//!   swallow a genuinely-activated optional dependency.
+//!
+//! The `via-only`/`via-bypass` pair is driven a SECOND time against an EDGE EXEMPTION
+//! (`[[rules.source-denylist.edge_exemptions]]` in `qa/construction.toml`) rather than a per-crate
+//! waiver — the broader exception shape, keyed on `(dep, via)` for the whole tree — because the
+//! thing that has to be true of it is that it is NO BROADER than the `via` it names. Same two
+//! fixtures, same two answers: covered when every route goes through `via`, still RED when one
+//! route does not. An exemption that answered green on `via-bypass` would have disarmed the `libc`
+//! ban everywhere at once, silently.
+//!
+//! Each fixture is its own tiny standalone Cargo workspace (`[workspace]` with no members other
+//! than itself, or itself plus a local `mid` path-dependency) so `cargo metadata --manifest-path`
+//! resolves it without touching the real workspace's Cargo.lock.
+
+use std::path::PathBuf;
+
+use crate::denylist::{self, PureCrate};
+
+fn fixtures_dir() -> PathBuf {
+    workspace_root().join("xtask").join("fixtures")
+}
+
+/// The RUNTIME root ([`crate::ctx::workspace_root`]); this command reads the tree it runs in.
+fn workspace_root() -> PathBuf {
+    crate::ctx::workspace_root().unwrap_or_else(|e| panic!("xtask selftest: {e}"))
+}
+
+fn check(
+    label: &str,
+    fixture_name: &str,
+    manifest_name: &str,
+    expect_offenders: &[&str],
+    fails: &mut Vec<String>,
+) {
+    let root = workspace_root();
+    let banned = denylist::load_banned_lists(&root);
+    let fragments = denylist::load_test_fragments_pub(&root);
+    let dir = fixtures_dir().join(fixture_name);
+    let manifest = dir.join("Cargo.toml");
+    if !manifest.exists() {
+        fails.push(format!(
+            "{label}: fixture manifest missing at {}",
+            manifest.display()
+        ));
+        return;
+    }
+    let pc = PureCrate {
+        name: manifest_name.to_string(),
+        dir: dir.clone(),
+        kind: "plane".to_string(),
+        report_name: manifest_name.to_string(),
+    };
+    let hits = denylist::run_on(&manifest, vec![pc], &banned, &fragments);
+
+    if expect_offenders.is_empty() {
+        if hits.is_empty() {
+            println!("  GREEN  {label}: 0 hits, as expected");
+        } else {
+            let names: Vec<_> = hits.iter().map(|h| h.offender.clone()).collect();
+            fails.push(format!(
+                "{label}: expected 0 hits, got {}: {}",
+                hits.len(),
+                names.join(", ")
+            ));
+        }
+        return;
+    }
+
+    let mut missing = Vec::new();
+    for want in expect_offenders {
+        if !hits.iter().any(|h| h.offender.contains(want)) {
+            missing.push(*want);
+        }
+    }
+    if missing.is_empty() {
+        let names: Vec<_> = hits.iter().map(|h| h.offender.clone()).collect();
+        println!(
+            "  RED    {label}: hit(s) [{}] include every expected offender {:?}",
+            names.join(", "),
+            expect_offenders
+        );
+    } else {
+        fails.push(format!(
+            "{label}: expected offender(s) {:?} among the hits, missing {:?} (got: {})",
+            expect_offenders,
+            missing,
+            hits.iter()
+                .map(|h| h.offender.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+}
+
+pub fn run() -> bool {
+    println!("xtask denylist --selftest");
+    let mut fails = Vec::new();
+
+    check(
+        "clean pure crate",
+        "clean-pure",
+        "xtask-fixture-clean",
+        &[],
+        &mut fails,
+    );
+    check(
+        "pure crate with a banned direct dependency",
+        "dirty-dep",
+        "xtask-fixture-dirty-dep",
+        &["libc"],
+        &mut fails,
+    );
+    check(
+        "pure crate with banned hyphenated-name direct dependencies",
+        "dirty-dep-hyphenated",
+        "xtask-fixture-dirty-dep-hyphenated",
+        &["async-std", "hyper-util"],
+        &mut fails,
+    );
+    check(
+        "pure crate with a banned own-src path",
+        "dirty-src",
+        "xtask-fixture-dirty-src",
+        &["std::fs"],
+        &mut fails,
+    );
+    check_test_code_excluded(&mut fails);
+    check_via_only(&mut fails);
+    check_via_bypass(&mut fails);
+    check(
+        "pure crate with an inactive optional dependency",
+        "optional-dep-inactive",
+        "xtask-fixture-optional-dep-inactive",
+        &[],
+        &mut fails,
+    );
+    check(
+        "pure crate with an activated optional dependency",
+        "optional-dep-active",
+        "xtask-fixture-optional-dep-active",
+        &["libc"],
+        &mut fails,
+    );
+    check_via_multi(&mut fails);
+    check_edge_exemption_is_narrow(&mut fails);
+    check_vacuous_config_is_red(&mut fails);
+    check_stale_waiver_is_red(&mut fails);
+    check_stale_edge_exemption_is_red(&mut fails);
+
+    if fails.is_empty() {
+        println!("\nxtask denylist --selftest: ALL GREEN");
+        true
+    } else {
+        println!("\nxtask denylist --selftest FAILED:");
+        for f in &fails {
+            println!("  - {f}");
+        }
+        false
+    }
+}
+
+/// The `dirty-src` fixture also has `std::env::var` inside a `#[cfg(test)] mod`; this must NOT be
+/// reported (mirroring the FAST-tier lint's test-code exclusion), so the fixture's hit list must
+/// name `std::fs` and nothing about `std::env`.
+fn check_test_code_excluded(fails: &mut Vec<String>) {
+    let root = workspace_root();
+    let banned = denylist::load_banned_lists(&root);
+    let fragments = denylist::load_test_fragments_pub(&root);
+    let dir = fixtures_dir().join("dirty-src");
+    let manifest = dir.join("Cargo.toml");
+    let pc = PureCrate {
+        name: "xtask-fixture-dirty-src".to_string(),
+        dir: dir.clone(),
+        kind: "plane".to_string(),
+        report_name: "xtask-fixture-dirty-src".to_string(),
+    };
+    let hits = denylist::run_on(&manifest, vec![pc], &banned, &fragments);
+    if hits.iter().any(|h| h.offender.contains("std::env")) {
+        fails.push(
+            "test-code exclusion: dirty-src's #[cfg(test)] mod's std::env::var was reported \
+             (should be excluded as test code)"
+                .to_string(),
+        );
+    } else {
+        println!("  GREEN  test-code exclusion: #[cfg(test)] mod's std::env::var was NOT reported");
+    }
+}
+
+/// `xtask-fixture-via-only` reaches `libc` ONLY through `xtask-fixture-via-mid`: RED with no
+/// allow-list entry, fully GREEN with a `via`-narrowed `dep = "libc"` waiver naming that crate.
+fn check_via_only(fails: &mut Vec<String>) {
+    let root = workspace_root();
+    let banned = denylist::load_banned_lists(&root);
+    let fragments = denylist::load_test_fragments_pub(&root);
+    let dir = fixtures_dir().join("via-only");
+    let manifest = dir.join("Cargo.toml");
+    if !manifest.exists() {
+        fails.push(format!(
+            "via-only: fixture manifest missing at {}",
+            manifest.display()
+        ));
+        return;
+    }
+    let pc = || PureCrate {
+        name: "xtask-fixture-via-only".to_string(),
+        dir: dir.clone(),
+        kind: "plane".to_string(),
+        report_name: "xtask-fixture-via-only".to_string(),
+    };
+
+    let red_hits = denylist::run_on(&manifest, vec![pc()], &banned, &fragments);
+    if !red_hits.iter().any(|h| h.offender == "libc") {
+        fails.push(format!(
+            "via-only: expected a `libc` hit with no allow-list entry, got: {}",
+            red_hits
+                .iter()
+                .map(|h| h.offender.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        return;
+    }
+    println!("  RED    via-only: `libc` hit with no allow-list entry, as expected");
+
+    let allow = vec![(
+        "xtask-fixture-via-only",
+        "libc",
+        Some("xtask-fixture-via-mid"),
+    )];
+    let green_hits = denylist::run_on_with_allow(&manifest, vec![pc()], &banned, &fragments, allow);
+    if green_hits.iter().any(|h| h.offender == "libc") {
+        fails.push(format!(
+            "via-only: expected 0 `libc` hits with the via-narrowed waiver applied, got: {}",
+            green_hits
+                .iter()
+                .map(|h| h.offender.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    } else {
+        println!("  GREEN  via-only: `libc` fully waived by `via = \"xtask-fixture-via-mid\"`");
+    }
+}
+
+/// `xtask-fixture-via-bypass` reaches `libc` through `xtask-fixture-via-mid` AND directly. The
+/// same `via`-narrowed waiver used for `via-only` must leave this fixture RED on `libc`.
+fn check_via_bypass(fails: &mut Vec<String>) {
+    let root = workspace_root();
+    let banned = denylist::load_banned_lists(&root);
+    let fragments = denylist::load_test_fragments_pub(&root);
+    let dir = fixtures_dir().join("via-bypass");
+    let manifest = dir.join("Cargo.toml");
+    if !manifest.exists() {
+        fails.push(format!(
+            "via-bypass: fixture manifest missing at {}",
+            manifest.display()
+        ));
+        return;
+    }
+    let pc = PureCrate {
+        name: "xtask-fixture-via-bypass".to_string(),
+        dir: dir.clone(),
+        kind: "plane".to_string(),
+        report_name: "xtask-fixture-via-bypass".to_string(),
+    };
+
+    let allow = vec![(
+        "xtask-fixture-via-bypass",
+        "libc",
+        Some("xtask-fixture-via-mid"),
+    )];
+    let hits = denylist::run_on_with_allow(&manifest, vec![pc], &banned, &fragments, allow);
+    if hits.iter().any(|h| h.offender == "libc") {
+        println!(
+            "  RED    via-bypass: `libc` stays red under the via-narrowed waiver (a direct path \
+             bypasses `via`), as expected"
+        );
+    } else {
+        fails.push(
+            "via-bypass: expected `libc` to stay red under the via-narrowed waiver (a direct \
+             dependency bypasses `via`), but it was fully waived"
+                .to_string(),
+        );
+    }
+}
+
+/// `xtask-fixture-via-multi` reaches `libc` through TWO SEPARATE crates
+/// (`xtask-fixture-via-multi-a` and `-b`). A comma-separated `via` naming BOTH must go fully
+/// GREEN; naming only one must stay RED (the other path bypasses it) — proving the multi-`via`
+/// list requires every real path to be covered by SOME named crate, not just the first one tried.
+fn check_via_multi(fails: &mut Vec<String>) {
+    let root = workspace_root();
+    let banned = denylist::load_banned_lists(&root);
+    let fragments = denylist::load_test_fragments_pub(&root);
+    let dir = fixtures_dir().join("via-multi");
+    let manifest = dir.join("Cargo.toml");
+    if !manifest.exists() {
+        fails.push(format!(
+            "via-multi: fixture manifest missing at {}",
+            manifest.display()
+        ));
+        return;
+    }
+    let pc = || PureCrate {
+        name: "xtask-fixture-via-multi".to_string(),
+        dir: dir.clone(),
+        kind: "plane".to_string(),
+        report_name: "xtask-fixture-via-multi".to_string(),
+    };
+
+    let partial_allow = vec![(
+        "xtask-fixture-via-multi",
+        "libc",
+        Some("xtask-fixture-via-multi-a"),
+    )];
+    let partial_hits =
+        denylist::run_on_with_allow(&manifest, vec![pc()], &banned, &fragments, partial_allow);
+    if partial_hits.iter().any(|h| h.offender == "libc") {
+        println!(
+            "  RED    via-multi: `libc` stays red naming only ONE of the two via crates, as \
+             expected"
+        );
+    } else {
+        fails.push(
+            "via-multi: expected `libc` to stay red naming only one via crate (the other path \
+             bypasses it), but it was fully waived"
+                .to_string(),
+        );
+    }
+
+    let full_allow = vec![(
+        "xtask-fixture-via-multi",
+        "libc",
+        Some("xtask-fixture-via-multi-a, xtask-fixture-via-multi-b"),
+    )];
+    let full_hits =
+        denylist::run_on_with_allow(&manifest, vec![pc()], &banned, &fragments, full_allow);
+    if full_hits.iter().any(|h| h.offender == "libc") {
+        fails.push(format!(
+            "via-multi: expected 0 `libc` hits naming BOTH via crates, got: {}",
+            full_hits
+                .iter()
+                .map(|h| h.offender.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    } else {
+        println!(
+            "  GREEN  via-multi: `libc` fully waived by `via = \"xtask-fixture-via-multi-a, \
+             xtask-fixture-via-multi-b\"`"
+        );
+    }
+}
+
+/// A GATE WHOSE OWN INPUT VANISHED MUST NOT ANSWER GREEN.
+///
+/// Both fixtures here are trees where the denylist has nothing to work from: one has the
+/// `[rules.source-denylist]` table renamed out of `qa/construction.toml` (so the kind list is
+/// empty), the other has no `crates/` directory at all (so the listing errors). Either way the tool
+/// scans zero crates — and "0 crates scanned, 0 hits" printed as OK is a proof of nothing, dressed
+/// as a proof of purity. The renamed-table fixture carries a genuinely `libc`-dependent plane crate
+/// underneath, so the vacuous pass is hiding a real violation, not an empty tree.
+fn check_vacuous_config_is_red(fails: &mut Vec<String>) {
+    for (label, fixture) in [
+        (
+            "vacuous config: [rules.source-denylist] renamed away",
+            "renamed-rule-table",
+        ),
+        ("vacuous config: no crates/ directory", "no-crates-dir"),
+    ] {
+        let root = fixtures_dir().join(fixture);
+        let Ok(cx) = crate::ctx::Ctx::at(&root, &root) else {
+            fails.push(format!(
+                "{label}: the fixture tree at {} would not open — the case proves nothing",
+                root.display()
+            ));
+            continue;
+        };
+        let report = denylist::run(&cx);
+        if denylist::print_report(&report) {
+            fails.push(format!(
+                "{label}: the run answered GREEN over {} crate(s) scanned and {} hit(s) — a \
+                 denylist that lost its own input must report RED, not a vacuous pass",
+                report.crates_scanned,
+                report.hits.len()
+            ));
+        } else {
+            println!("  RED    {label}: reported as a failure rather than a vacuous pass");
+        }
+    }
+}
+
+/// THE ALLOW-LIST IS A FLOOR CHECKED BOTH WAYS. A hit no waiver covers was already red; a waiver
+/// that covers no hit was silently accepted, so an exception could outlive the offender it was an
+/// exception to and sit in `qa/denylist-allow.toml` forever, reading as a live, reviewed fact about
+/// the tree. This is the posture `scripts/no-deferral.waivers` already documents for itself.
+///
+/// Driven over [`denylist::stale_waivers`] against a synthetic hit list rather than the committed
+/// allow-list, so the case asserts the RULE and does not move when a real waiver is added or
+/// retired. Both arms: a waiver whose pair IS in the hit list is doing its job and is not reported;
+/// a waiver whose pair is absent is, with a message that names the crate and the offender.
+fn check_stale_waiver_is_red(fails: &mut Vec<String>) {
+    let hits = vec![denylist::Hit {
+        crate_name: "xtask-fixture-dirty-dep".to_string(),
+        offender: "libc".to_string(),
+        via: "xtask-fixture-dirty-dep -> libc".to_string(),
+    }];
+
+    let live = [denylist::AllowEntry::for_selftest(
+        "xtask-fixture-dirty-dep",
+        "libc",
+    )];
+    let stale = denylist::stale_waivers(&live, &hits);
+    if stale.is_empty() {
+        println!("  GREEN  stale-waiver check: a waiver that covers a real hit is NOT reported");
+    } else {
+        fails.push(format!(
+            "stale-waiver check: a waiver covering a hit that IS in the report was called stale \
+             ({stale:?}) — the check would red every working waiver"
+        ));
+    }
+
+    // The same waiver, for an offender no longer in the tree.
+    let outlived = [denylist::AllowEntry::for_selftest(
+        "xtask-fixture-dirty-dep",
+        "async-std",
+    )];
+    let stale = denylist::stale_waivers(&outlived, &hits);
+    if stale.len() == 1
+        && stale[0].contains("async-std")
+        && stale[0].contains("xtask-fixture-dirty-dep")
+    {
+        println!(
+            "  RED    stale-waiver check: a waiver matching no hit is reported, naming the crate \
+             and the offender"
+        );
+    } else {
+        fails.push(format!(
+            "stale-waiver check: a waiver for an offender that is not in the tree produced \
+             {stale:?} — expected exactly one row naming xtask-fixture-dirty-dep and async-std"
+        ));
+    }
+
+    // And the run is RED on a stale waiver with nothing else wrong: "0 hits" printed underneath a
+    // stale waiver is exactly the reading that lets an exception outlive what it excused.
+    let report = denylist::Report {
+        hits: Vec::new(),
+        crates_scanned: 3,
+        defects: Vec::new(),
+        stale_waivers: vec!["a waiver that matched nothing".to_string()],
+    };
+    if denylist::print_report(&report) {
+        fails.push(
+            "stale-waiver check: a clean scan carrying a stale waiver answered GREEN".to_string(),
+        );
+    } else {
+        println!(
+            "  RED    stale-waiver check: 0 hits plus a stale waiver is a RED run, not an OK one"
+        );
+    }
+}
+
+/// THE EXEMPTION MUST BE NO BROADER THAN THE EDGE IT NAMES, and that is the control that matters.
+///
+/// An [`denylist::EdgeExemption`] is keyed on `(dep, via)` for the WHOLE tree, so one entry that
+/// was too broad would not redden one crate — it would disarm the `libc` ban in every pure kind at
+/// once, and the report would look exactly like a clean tree. Both directions are proven here over
+/// the same two fixtures the per-crate `via` narrowing uses, and with NO allow-list entry at all,
+/// so nothing but the exemption can be doing the work:
+///
+///   * `via-only` reaches `libc` ONLY through `xtask-fixture-via-mid` — the exemption covers it.
+///   * `via-bypass` has that route AND a direct dependency on `libc` — the SAME exemption must
+///     leave it RED. A bypassing route is not forgiven alongside the covered one.
+fn check_edge_exemption_is_narrow(fails: &mut Vec<String>) {
+    let root = workspace_root();
+    let banned = denylist::load_banned_lists(&root);
+    let fragments = denylist::load_test_fragments_pub(&root);
+    let exempt = || vec![("libc", "xtask-fixture-via-mid")];
+
+    for (fixture, crate_name, expect_red) in [
+        ("via-only", "xtask-fixture-via-only", false),
+        ("via-bypass", "xtask-fixture-via-bypass", true),
+    ] {
+        let dir = fixtures_dir().join(fixture);
+        let manifest = dir.join("Cargo.toml");
+        if !manifest.exists() {
+            fails.push(format!(
+                "edge-exemption/{fixture}: fixture manifest missing at {}",
+                manifest.display()
+            ));
+            continue;
+        }
+        let pc = PureCrate {
+            name: crate_name.to_string(),
+            dir: dir.clone(),
+            kind: "plane".to_string(),
+            report_name: crate_name.to_string(),
+        };
+        let hits = denylist::run_on_with_edges(
+            &manifest,
+            vec![pc],
+            &banned,
+            &fragments,
+            Vec::new(),
+            exempt(),
+        );
+        let red = hits.iter().any(|h| h.offender == "libc");
+        match (expect_red, red) {
+            (false, false) => println!(
+                "  GREEN  edge-exemption/{fixture}: `libc` covered by the (dep = libc, via = \
+                 xtask-fixture-via-mid) EDGE exemption alone, with no allow-list entry"
+            ),
+            (true, true) => println!(
+                "  RED    edge-exemption/{fixture}: `libc` stays red under the SAME edge exemption \
+                 (a direct path bypasses `via`) — the exemption is narrow, as expected"
+            ),
+            (false, true) => fails.push(format!(
+                "edge-exemption/{fixture}: expected 0 `libc` hits under the edge exemption, got: {}",
+                hits.iter()
+                    .map(|h| h.offender.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            (true, false) => fails.push(
+                "edge-exemption/via-bypass: the edge exemption forgave a route that does NOT go \
+                 through `via` — an exemption that broad disarms the libc ban for every pure kind \
+                 at once"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+/// AN EXEMPTION CAN ITSELF BE WRONG, AND THE FLOOR IS CHECKED BOTH WAYS FOR IT TOO.
+///
+/// The allow-list's middle rule — an entry that matches no hit is RED — exists because an exception
+/// nobody has to defend is read by the next reviewer as a live, reviewed fact about the tree. An
+/// edge exemption is the STRONGER claim of the two: it speaks for every pure kind at once and
+/// suppresses findings in crates nobody had to name. So it gets the same floor, not a weaker one,
+/// and this proves both arms of it.
+///
+/// Driven over [`denylist::stale_edge_exemptions`] against a synthetic hit list rather than the
+/// committed `qa/construction.toml`, for the same reason [`check_stale_waiver_is_red`] is: the case
+/// asserts the RULE, and must not move on the day a real exemption is added or retired.
+fn check_stale_edge_exemption_is_red(fails: &mut Vec<String>) {
+    let hits = vec![denylist::Hit {
+        crate_name: "xtask-fixture-dirty-dep".to_string(),
+        offender: "libc".to_string(),
+        via: "xtask-fixture-dirty-dep -> sha2 -> cpufeatures -> libc".to_string(),
+    }];
+
+    // An exemption whose edge IS in the report is doing its job and must not be reported.
+    let live = [denylist::EdgeExemption::for_selftest("libc", "cpufeatures")];
+    let stale = denylist::stale_edge_exemptions(&live, &hits);
+    if stale.is_empty() {
+        println!(
+            "  GREEN  stale-exemption check: an exemption whose edge IS in the hit list is NOT \
+             reported"
+        );
+    } else {
+        fails.push(format!(
+            "stale-exemption check: an exemption covering an edge that IS in the report was called \
+             stale ({stale:?}) — the check would red every working exemption"
+        ));
+    }
+
+    // SAME OFFENDER, WRONG EDGE. `getrandom -> libc` is not how this hit reaches `libc`, so an
+    // exemption naming it rules on nothing here. Matching on the offender alone would let an
+    // exemption for an edge nobody takes ride along on some OTHER edge's hit, which is the exact
+    // shape of exception this floor exists to refuse.
+    let wrong_edge = [denylist::EdgeExemption::for_selftest("libc", "getrandom")];
+    let stale = denylist::stale_edge_exemptions(&wrong_edge, &hits);
+    if stale.len() == 1 && stale[0].contains("getrandom") && stale[0].contains("libc") {
+        println!(
+            "  RED    stale-exemption check: an exemption for an edge no hit takes is reported, \
+             naming the dep and the via"
+        );
+    } else {
+        fails.push(format!(
+            "stale-exemption check: an exemption for `libc` via an edge nothing takes produced \
+             {stale:?} — expected exactly one row naming libc and getrandom"
+        ));
+    }
+
+    // And an exemption for an offender that is not in the tree at all.
+    let gone = [denylist::EdgeExemption::for_selftest(
+        "async-std",
+        "cpufeatures",
+    )];
+    let stale = denylist::stale_edge_exemptions(&gone, &hits);
+    if stale.len() == 1 && stale[0].contains("async-std") {
+        println!(
+            "  RED    stale-exemption check: an exemption for an offender that is not in the tree \
+             is reported"
+        );
+    } else {
+        fails.push(format!(
+            "stale-exemption check: an exemption for an absent offender produced {stale:?} — \
+             expected exactly one row naming async-std"
+        ));
+    }
+}

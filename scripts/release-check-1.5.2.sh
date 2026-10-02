@@ -30,27 +30,31 @@
 # WHAT RUNS vs. WHAT IS MARKED VERIFIED-AT-INTEGRATION
 #   Phase A runs FULLY and hermetically here (only needs the busbar binary + python3 + an in-tree
 #   cdylib). Phase B and Phase C's OIDC-backed postures need a packed auth-oidc `kind:auth` plugin
-#   (sibling checkout ../auth-oidc) and a minted JWT; this script BUILDS the real JWKS + JWT fixtures
+#   (sibling checkout ../busbar-auth-oidc) and a minted JWT; this script BUILDS the real JWKS + JWT fixtures
 #   and runs `busbar --validate` on every config (a real, fail-closed check), then drives the full
 #   boot + HTTP assertions when the sibling plugin is present. Any assertion that cannot be proven
 #   standalone in this worktree is labelled `# VERIFIED-AT-INTEGRATION` with the exact thing the
 #   integrator must confirm. Nothing here fakes a pass: a phase that cannot run its real proof says
 #   so LOUDLY and (for the optional OIDC bits) loud-skips rather than reporting green.
 #
-# KNOWN INTEGRATION BLOCKER (Phase B/C, flagged — the integrator MUST confirm)
-#   The auth-oidc plugin sets `principal.id = "oidc:<sub>"` (auth-oidc/src/lib.rs:272), but the
-#   token-exchange self-subject sanitizer `sanitize_self_sub` (auth/self_keys.rs) REJECTS any id
-#   containing ':' (→ ExchangeError::BadSubject → 403). So with the CURRENT auth-oidc plugin, a real
-#   `POST /auth/token` carrying an OIDC JWT returns 403 BadSubject, NOT the intended 200 + user:<sub>
-#   key. The busbar crate's own self_keys_tests use a clean, prefix-free principal id ("sam"). Phase
-#   B's happy-path 200 is authored against the INTENDED contract and gated VERIFIED-AT-INTEGRATION on
-#   this exact question — the integrator must confirm whether the engine strips the module prefix
-#   before the exchange subject check (or whether the plugin/sanitizer is reconciled) before Phase B's
-#   200 can pass with the real plugin.
+# THE LIVE OIDC PROOFS RUN WHENEVER ../busbar-auth-oidc IS PRESENT (item 480). Phase B's POST /auth/token
+#   round-trip and Phase C's admin authorization matrix were once behind an opt-in env var nothing in
+#   the repository set, so they never ran and nothing counted them as skipped. The "oidc:<sub>" vs
+#   `sanitize_self_sub` blocker that justified the opt-in is gone: the sanitizer
+#   (crates/busbar-kernel/src/auth/self_keys.rs) refuses only empty, '/', control chars and a leading
+#   vk_/user:/group: prefix, and Phase B already expects the `user:oidc:<sub>` leaf. With the sibling
+#   absent, each live proof is a recorded COVERAGE GAP (see below), never a silent pass.
 #
 # USAGE
 #   scripts/release-check-1.5.2.sh                 # run every 1.5.2 phase
 #   scripts/release-check-1.5.2.sh --phase A       # run just Phase A (also B / C)
+#   scripts/release-check-1.5.2.sh --selftest      # prove the gap accounting, offline, no build
+#
+# COVERAGE GAPS (item 480). A live proof that could not run (its sibling checkout is absent) is a
+# GAP, not a pass. `record_gap` names it; the final verdict prints "PASSED WITH GAPS" and lists
+# every one; each is appended as "<phase-id> <status>" to $BUSBAR_RELEASE_GAP_FILE when the parent
+# gate sets it; and under BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 (the parent's own env switch,
+# which the removed qa-gate-run.sh exports) a gap is FATAL -- the same policy release-check.sh applies.
 #
 # FAILURE POLICY — identical to release-check.sh: fail-fast, name the failing phase, tear everything
 # down on ANY exit. A failure here means: DO NOT TAG THIS RELEASE.
@@ -72,9 +76,11 @@ if [ -z "${BUSBAR_1_5_2_WATCHDOG_ARMED:-}" ] && command -v timeout >/dev/null 2>
 fi
 
 ONLY_PHASE=""
+SELFTEST=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --phase) ONLY_PHASE="${2:-}"; shift 2 ;;
+    --selftest) SELFTEST=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -102,6 +108,93 @@ ok()   { echo "  [ok] $*"; }
 note() { echo "  [note] $*"; }
 integ() { echo "  [VERIFIED-AT-INTEGRATION] $*"; }
 
+# ── Plugin pre-flight acceptance, read from a boot log (item 538) ─────────────────────────────────
+# preflight.rs logs one line per loadable plugin: "plugin validated" (trusted) or "plugin validated
+# as UNVERIFIED" (an explicit plugins.trust opt-in such as allow_unsigned), each carrying
+# `plugin=<name>`; a trust-policy skip logs "plugin present but NOT loaded (trust policy)". The
+# fetch line ("plugins.fetch: downloaded + verified") is NOT evidence: it is written before
+# pre-flight runs. Returns non-zero, naming why, unless <name> was validated and not skipped.
+assert_plugin_validated() {  # $1 boot log, $2 plugin manifest name
+  local log="$1" name="$2"
+  if ! grep -F 'plugin validated' "$log" | grep -qF "$name"; then
+    echo "  pre-flight: no 'plugin validated' line for ${name} in ${log}" >&2
+    return 1
+  fi
+  if grep -F 'NOT loaded (trust policy)' "$log" | grep -qF "$name"; then
+    echo "  pre-flight: ${name} was SKIPPED by trust policy (present but NOT loaded)" >&2
+    return 1
+  fi
+  return 0
+}
+
+# ── Coverage-gap accounting (item 480) — see COVERAGE GAPS in the header ─────────────────────────
+GAPS=()
+record_gap() {  # $1 phase-id, $2 status (sibling-missing | skip-docker — release-check.sh's GAP_STATUSES)
+  GAPS+=("$1 $2")
+  note "COVERAGE GAP: $1 ($2) — this proof did NOT run; it is not a pass."
+  if [ -n "${BUSBAR_RELEASE_GAP_FILE:-}" ]; then printf '%s %s\n' "$1" "$2" >>"$BUSBAR_RELEASE_GAP_FILE"; fi
+}
+final_verdict() {
+  if [ "${#GAPS[@]}" -eq 0 ]; then
+    phase "1.5.2 FEATURE GATE PASSED — every live proof in scope EXECUTED"
+    return 0
+  fi
+  if [ "${BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS:-0}" = "1" ]; then
+    phase "1.5.2 FEATURE GATE INCOMPLETE: ${#GAPS[@]} LIVE PROOF(S) DID NOT RUN"
+  else
+    phase "1.5.2 FEATURE GATE PASSED WITH GAPS: ${#GAPS[@]} LIVE PROOF(S) DID NOT RUN"
+  fi
+  local g; for g in "${GAPS[@]}"; do echo "  gap: ${g}"; done
+  if [ "${BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS:-0}" = "1" ]; then
+    echo "  BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 — a gap is fatal. DO NOT TAG THIS RELEASE."
+    return 1
+  fi
+  return 0
+}
+
+gap_selftest() {
+  local bad=0 me="${REPO_ROOT}/scripts/release-check-1.5.2.sh" optin n gf rc
+  st() { if [ "$1" = "0" ]; then echo "  PASS  $2"; else echo "  FAIL  $2"; bad=$((bad + 1)); fi; }
+  # 1. No live proof hides behind an opt-in env var nothing sets (the item-480 shape). The name is
+  #    assembled so this line does not match itself.
+  optin="BUSBAR_1_5_2_RUN_""OIDC_BOOT"
+  n="$(grep -c "$optin" "$me" || true)"
+  st "$([ "$n" -eq 0 ] && echo 0 || echo 1)" "no live proof is gated on the never-set opt-in (${n} hit(s))"
+  # 2. Both live-proof skip sites (Phase B POST round-trip, Phase C admin matrix) record a gap.
+  n="$(grep -cE '^[[:space:]]+record_gap phase-152-[bc]-' "$me" || true)"
+  st "$([ "$n" -ge 2 ] && echo 0 || echo 1)" "the Phase B and Phase C live-proof skips each call record_gap (${n} site(s))"
+  # 3. No gaps -> PASSED, rc 0.
+  rc=0; ( GAPS=(); final_verdict ) >/dev/null || rc=$?
+  st "$rc" "no gaps -> verdict rc 0"
+  # 4. A gap, parent NOT requiring siblings -> WITH GAPS banner, rc 0, gap file carries the row.
+  new_tmpdir; gf="$NEW_TMPDIR/gaps"
+  rc=0; out="$( GAPS=(); BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=0 BUSBAR_RELEASE_GAP_FILE="$gf"; \
+                record_gap phase-152-selftest sibling-missing; final_verdict )" || rc=$?
+  st "$([ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'PASSED WITH GAPS' && echo 0 || echo 1)" \
+     "a gap without require-siblings -> 'PASSED WITH GAPS', rc 0 (rc=${rc})"
+  st "$(grep -qx 'phase-152-selftest sibling-missing' "$gf" 2>/dev/null && echo 0 || echo 1)" \
+     "the gap is written to \$BUSBAR_RELEASE_GAP_FILE for the parent's accounting"
+  # 5. A gap under require-siblings -> fatal.
+  rc=0; ( GAPS=(); BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1; unset BUSBAR_RELEASE_GAP_FILE; \
+          record_gap phase-152-selftest sibling-missing; final_verdict ) >/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a gap under BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 -> non-zero (rc=${rc})"
+  # 6. assert_plugin_validated (item 538): the fetch line alone is NOT a load proof.
+  new_tmpdir; gf="$NEW_TMPDIR/boot.log"
+  printf 'INFO plugins.fetch: downloaded + verified filename=busbar-hook-test.tar.gz\n' >"$gf"
+  rc=0; assert_plugin_validated "$gf" busbar-hook-test 2>/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a log with only 'downloaded + verified' is NOT a validated plugin (rc=${rc})"
+  printf 'WARN plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in) plugin=busbar-hook-test alias=hooktest\n' >>"$gf"
+  rc=0; assert_plugin_validated "$gf" busbar-hook-test 2>/dev/null || rc=$?
+  st "$rc" "a 'plugin validated' line naming the plugin is accepted"
+  rc=0; assert_plugin_validated "$gf" some-other-plugin 2>/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a validated line for a DIFFERENT plugin does not count (rc=${rc})"
+  printf 'WARN plugin present but NOT loaded (trust policy) plugin=busbar-hook-test\n' >>"$gf"
+  rc=0; assert_plugin_validated "$gf" busbar-hook-test 2>/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a trust-policy skip of the plugin fails the check (rc=${rc})"
+  if [ "$bad" -ne 0 ]; then echo "release-check-1.5.2 selftest: RED (${bad} failed)"; return 1; fi
+  echo "release-check-1.5.2 selftest: GREEN"
+}
+
 # ── Cleanup registry (mirrors release-check.sh) ───────────────────────────────────────────────────
 BG_PIDS=()
 TMP_DIRS=()
@@ -118,11 +211,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Sets $NEW_TMPDIR; it does NOT echo the path. Capturing this in a command substitution ran it in a
+# SUBSHELL, so `TMP_DIRS+=` mutated a copy that died with the subshell and `cleanup` iterated an
+# EMPTY array — 27 working directories per full run, none of them ever deleted. Callers read
+# $NEW_TMPDIR immediately after the call.
 new_tmpdir() {
-  local d
-  d="$(mktemp -d "${TMPDIR:-/tmp}/busbar-1.5.2-gate.XXXXXX")"
-  TMP_DIRS+=("$d")
-  echo "$d"
+  NEW_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/busbar-1.5.2-gate.XXXXXX")"
+  TMP_DIRS+=("$NEW_TMPDIR")
 }
 
 wait_for_http() {
@@ -156,7 +251,7 @@ assert_yaml() {
     note "  per-phase \`busbar --validate\` (still rejects malformed YAML). Install PyYAML for fast-fail."
     return 0
   fi
-  local err; err="$(new_tmpdir)/yamlerr"
+  local err; new_tmpdir; err="$NEW_TMPDIR/yamlerr"
   # Concise diagnostic (not a Python traceback): print just the YAML scanner/parser message + mark.
   if ! python3 -c 'import sys,yaml
 try:
@@ -194,8 +289,8 @@ sha256_of() {
 #    tag (never :latest). Both are stood up with docker-run from LOCAL images + LOCAL fixtures — no
 #    external network is contacted by the flow itself (only a one-time image pull if the tag is not
 #    already cached; a fully-offline runner with the images pre-pulled never touches the network). ──
-WIREMOCK_IMAGE="wiremock/wiremock:3.9.2"   # github OAuth token/user/orgs endpoints, stubbed from JSON
-OPENLDAP_IMAGE="osixia/openldap:1.5.0"     # real OpenLDAP, seeded with scripts/fixtures/auth-ldap/seed.ldif
+WIREMOCK_IMAGE="wiremock/wiremock:3.9.2@sha256:d13997cd7b52583528a766019cfe7d4e91c4d224a67bdaa6f60efbb532f32176"   # github OAuth token/user/orgs endpoints, stubbed from JSON
+OPENLDAP_IMAGE="osixia/openldap:1.5.0@sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28"     # real OpenLDAP, seeded with scripts/fixtures/auth-ldap/seed.ldif
 
 # docker present AND the daemon reachable? A LOCAL run without docker LOUD-SKIPS the live arms (never a
 # silent pass); a CI/self-hosted runner WITH docker RUNS them. `BUSBAR_1_5_2_SKIP_DOCKER=1` force-skips.
@@ -251,7 +346,7 @@ note "Host: $(uname -s) $(uname -m), busbar version ${VER}, libext=${LIBEXT}"
 #    cache-by-pin phase can PROVE the second boot did not re-download (the served-request counter). ─
 start_plugin_registry() {
   local root="$1" port="$2" hits="$3"
-  local script; script="$(new_tmpdir)/registry.py"
+  local script; new_tmpdir; script="$NEW_TMPDIR/registry.py"
   cat >"$script" <<PYEOF
 import http.server, os, sys
 ROOT = ${root@Q}
@@ -274,13 +369,14 @@ PYEOF
   # actually talks to (otherwise the cache-by-pin "zero hits" assertion could pass VACUOUSLY).
   local sentinel="registry-sentinel-$$-${RANDOM}"
   echo ok >"${root}/${sentinel}"
-  # Redirect the SERVER's stdout/stderr to /dev/null: this function is captured via `$(...)` (see
-  # run_phase_a's `reg_pid="$(start_plugin_registry ...)"`), and a backgrounded serve_forever that
-  # inherits the command-substitution's stdout pipe holds it open forever → `$(...)` blocks on EOF
-  # for the full CI timeout. The function's own `echo "$pid"` below still reaches `$(...)`.
+  # Redirect the SERVER's stdout/stderr to /dev/null: a backgrounded serve_forever that inherits its
+  # caller's stdout pipe holds it open forever, which wedges any command substitution that ever wraps
+  # this launcher — the 2h31m CI hang scripts/release-script-lint.sh exists to prevent. That lint
+  # requires the redirect unconditionally, so it stays even though the launcher now sets
+  # $NEW_BG_PID instead of echoing (capturing it would have discarded the BG_PIDS append).
   python3 "$script" >/dev/null 2>&1 &
-  local pid=$!
-  BG_PIDS+=("$pid")
+  NEW_BG_PID=$!
+  BG_PIDS+=("$NEW_BG_PID")
   local waited=0
   until [ "$(curl -fsS "http://127.0.0.1:${port}/${sentinel}" 2>/dev/null)" = "ok" ]; do
     waited=$((waited + 1))
@@ -292,13 +388,12 @@ PYEOF
   done
   rm -f "${root}/${sentinel}"
   : >"$hits"   # discard the sentinel GET so the hits log starts clean for the caller's assertions
-  echo "$pid"
 }
 
 # ── Tiny mock Anthropic upstream (verbatim from release-check.sh's start_mock_upstream) ───────────
 start_mock_upstream() {
   local port="$1" marker="$2"
-  local script; script="$(new_tmpdir)/mock_upstream.py"
+  local script; new_tmpdir; script="$NEW_TMPDIR/mock_upstream.py"
   cat >"$script" <<PYEOF
 import http.server, json
 MARKER = ${marker@Q}
@@ -320,13 +415,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 http.server.ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()
 PYEOF
-  # stdout/stderr → /dev/null: this function is captured via `$(...)` (mock_pid="$(start_mock_upstream ...)");
-  # a backgrounded serve_forever inheriting that pipe would block `$(...)` on EOF forever. `echo "$pid"` still returns.
+  # stdout/stderr → /dev/null: a backgrounded serve_forever inheriting its caller's stdout pipe holds
+  # it open forever and wedges any command substitution around this launcher — required
+  # unconditionally by scripts/release-script-lint.sh's GATE-HANG rule.
   python3 "$script" >/dev/null 2>&1 &
-  local pid=$!
-  BG_PIDS+=("$pid")
-  echo "$pid"
+  NEW_BG_PID=$!
+  BG_PIDS+=("$NEW_BG_PID")
 }
+
+if [ "$SELFTEST" = "1" ]; then
+  trap - ERR
+  gap_selftest; exit $?
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
 phase "Phase 0: build (or reuse) busbar binary + busbar-plugin-pack"
@@ -335,7 +435,7 @@ phase "Phase 0: build (or reuse) busbar binary + busbar-plugin-pack"
 if [ -n "${BUSBAR_BIN:-}" ] && [ -x "${BUSBAR_BIN:-}" ] && [ -n "${PACK_BIN:-}" ] && [ -x "${PACK_BIN:-}" ]; then
   ok "reusing pre-built binaries handed down by the parent gate"
 else
-  cargo build --release -p busbar -p busbar-plugin-pack
+  cargo build --release -p busbar -p busbar-plugin-loader --features busbar-plugin-loader/pack
   BUSBAR_BIN="${REPO_ROOT}/target/release/busbar"
   PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
 fi
@@ -370,8 +470,8 @@ run_phase_a() {
   phase "Phase A: plugins.fetch — download → verify → stage → load (hermetic, real binary, local http)"
 
   local A_PORT=19151 A_LISTEN=19150
-  local srv_root; srv_root="$(new_tmpdir)"          # served tarballs live here
-  local hits; hits="$(new_tmpdir)/registry-hits.log"
+  local srv_root; new_tmpdir; srv_root="$NEW_TMPDIR"          # served tarballs live here
+  local hits; new_tmpdir; hits="$NEW_TMPDIR/registry-hits.log"
 
   # Pack the plugin ONCE, serve it, compute its REAL sha256 pin.
   local tarball="${srv_root}/busbar-hook-test.tar.gz"
@@ -381,7 +481,7 @@ run_phase_a() {
   ok "packed + pinned: $(basename "$tarball") sha256=${PIN}"
 
   echo "  starting local plugin registry (request-logging http server) on 127.0.0.1:${A_PORT}..."
-  local reg_pid; reg_pid="$(start_plugin_registry "$srv_root" "$A_PORT" "$hits")"
+  local reg_pid; start_plugin_registry "$srv_root" "$A_PORT" "$hits"; reg_pid="$NEW_BG_PID"
   ok "registry up (pid ${reg_pid}), serving ${srv_root}"
 
   local URL="http://127.0.0.1:${A_PORT}/busbar-hook-test.tar.gz"
@@ -411,7 +511,7 @@ models:
 EOF
     assert_yaml "$out" "Phase A plugins.fetch config"
   }
-  local PROVIDERS; PROVIDERS="$(new_tmpdir)/providers.yaml"
+  local PROVIDERS; new_tmpdir; PROVIDERS="$NEW_TMPDIR/providers.yaml"
   cat >"$PROVIDERS" <<EOF
 mock:
   protocol: anthropic
@@ -419,22 +519,22 @@ mock:
 EOF
   assert_yaml "$PROVIDERS" "Phase A providers"
 
-  boot_fetch() {  # $1 config, $2 pluginsdir (for log path). echoes pid.
+  boot_fetch() {  # $1 config, $2 log path. Sets $NEW_BG_PID (see new_tmpdir for why not an echo).
     local cfg="$1" log="$2"
     BUSBAR_CONFIG="$cfg" BUSBAR_PROVIDERS="$PROVIDERS" MOCK_KEY=unused RUST_LOG=info \
       "$BUSBAR_BIN" >"$log" 2>&1 &
-    local pid=$!; BG_PIDS+=("$pid"); echo "$pid"
+    NEW_BG_PID=$!; BG_PIDS+=("$NEW_BG_PID")
   }
 
   # ---- A.1 HAPPY PATH: fetched → verified → staged → loaded ----
   echo
   echo "  A.1 happy path: correct pin, empty dir → download + verify + load"
-  local d1; d1="$(new_tmpdir)/plugins"
-  local c1; c1="$(new_tmpdir)/config.yaml"
+  local d1; new_tmpdir; d1="$NEW_TMPDIR/plugins"
+  local c1; new_tmpdir; c1="$NEW_TMPDIR/config.yaml"
   write_fetch_config "$d1" "    - url: \"${URL}\"
       sha256: \"${PIN}\"" "$c1"
-  local log1; log1="$(new_tmpdir)/busbar.log"
-  local p1; p1="$(boot_fetch "$c1" "$log1")"
+  local log1; new_tmpdir; log1="$NEW_TMPDIR/busbar.log"
+  local p1; boot_fetch "$c1" "$log1"; p1="$NEW_BG_PID"
   wait_for_http "http://127.0.0.1:${A_LISTEN}/healthz" 30
   ok "busbar booted (pid ${p1})"
   grep -q "plugins.fetch: downloaded + verified" "$log1" \
@@ -442,18 +542,18 @@ EOF
   ok "log shows: fetched + verified"
   [ -f "${d1}/busbar-hook-test.tar.gz" ] || { echo "  A.1: staged tarball missing in dir" >&2; exit 1; }
   ok "tarball staged into plugins.dir"
-  # Prove it actually LOADED (validated) — a fetched-but-rejected artifact would not.
-  grep -Eiq "validated|loaded|hooktest|busbar-hook-test" "$log1" \
-    || note "A.1: could not positively confirm LOAD from log at RUST_LOG=info (fetch+verify confirmed above)"
-  ok "A.1 happy path proven: fetch → verify → stage (load confirmed via boot success + staged artifact)"
+  # Prove plugin PRE-FLIGHT accepted the fetched artifact — a fetched-but-rejected one would not.
+  # (Item 538: the old grep matched `loaded` inside `downloaded`, and only noted on a miss.)
+  assert_plugin_validated "$log1" "busbar-hook-test" || { cat "$log1" >&2; exit 1; }
+  ok "A.1 happy path proven: fetch → verify → stage → pre-flight validated busbar-hook-test"
   kill "$p1" 2>/dev/null || true; wait "$p1" 2>/dev/null || true
 
   # ---- A.2 CACHE-BY-PIN: second boot with the artifact already staged + matching pin → NO download ----
   echo
   echo "  A.2 cache-by-pin: artifact already present + matching pin → second boot must NOT re-download"
   : >"$hits"   # reset the registry hit log; the artifact is already in ${d1} from A.1
-  local c2="$c1" log2; log2="$(new_tmpdir)/busbar.log"
-  local p2; p2="$(boot_fetch "$c2" "$log2")"
+  local c2="$c1" log2; new_tmpdir; log2="$NEW_TMPDIR/busbar.log"
+  local p2; boot_fetch "$c2" "$log2"; p2="$NEW_BG_PID"
   wait_for_http "http://127.0.0.1:${A_LISTEN}/healthz" 30
   grep -q "plugins.fetch: cached (pin match, no download)" "$log2" \
     || { echo "  A.2: boot log missing 'cached (pin match, no download)'" >&2; cat "$log2" >&2; exit 1; }
@@ -468,13 +568,13 @@ EOF
   # ---- A.3 WRONG PIN: fetch REJECTED, file never written, boot FATAL ----
   echo
   echo "  A.3 wrong pin: a bogus sha256 → fetch REJECTED, artifact never written, boot FATAL"
-  local d3; d3="$(new_tmpdir)/plugins"
-  local c3; c3="$(new_tmpdir)/config.yaml"
+  local d3; new_tmpdir; d3="$NEW_TMPDIR/plugins"
+  local c3; new_tmpdir; c3="$NEW_TMPDIR/config.yaml"
   local WRONG="0000000000000000000000000000000000000000000000000000000000000000"
   write_fetch_config "$d3" "    - url: \"${URL}\"
       sha256: \"${WRONG}\"" "$c3"
-  local log3; log3="$(new_tmpdir)/busbar.log"
-  local p3; p3="$(boot_fetch "$c3" "$log3")"
+  local log3; new_tmpdir; log3="$NEW_TMPDIR/busbar.log"
+  local p3; boot_fetch "$c3" "$log3"; p3="$NEW_BG_PID"
   local st3; st3="$(wait_up_or_dead "http://127.0.0.1:${A_LISTEN}/healthz" "$p3" 30)"
   [ "$st3" = "down" ] || { echo "  A.3: busbar should have DIED on a wrong-pin boot (got: ${st3})" >&2; cat "$log3" >&2; exit 1; }
   grep -Eiq "mismatch|plugins.fetch failed" "$log3" \
@@ -488,12 +588,12 @@ EOF
   echo
   echo "  A.4 boot-miss: unreachable url + no cached copy → boot FATAL"
   local dead_port=19199   # nothing is listening here
-  local d4; d4="$(new_tmpdir)/plugins"
-  local c4; c4="$(new_tmpdir)/config.yaml"
+  local d4; new_tmpdir; d4="$NEW_TMPDIR/plugins"
+  local c4; new_tmpdir; c4="$NEW_TMPDIR/config.yaml"
   write_fetch_config "$d4" "    - url: \"http://127.0.0.1:${dead_port}/busbar-hook-test.tar.gz\"
       sha256: \"${PIN}\"" "$c4"
-  local log4; log4="$(new_tmpdir)/busbar.log"
-  local p4; p4="$(boot_fetch "$c4" "$log4")"
+  local log4; new_tmpdir; log4="$NEW_TMPDIR/busbar.log"
+  local p4; boot_fetch "$c4" "$log4"; p4="$NEW_BG_PID"
   local st4; st4="$(wait_up_or_dead "http://127.0.0.1:${A_LISTEN}/healthz" "$p4" 30)"
   [ "$st4" = "down" ] || { echo "  A.4: busbar should have DIED on an unreachable-fetch boot (got: ${st4})" >&2; cat "$log4" >&2; exit 1; }
   grep -Eiq "download failed|plugins.fetch failed|GET .*: " "$log4" \
@@ -504,11 +604,11 @@ EOF
   # ---- A.5 ENV SOURCE: {env: VAR} where VAR holds the url ----
   echo
   echo "  A.5 env source: fetch { env: BUSBAR_GATE_FETCH_URL } where the VAR holds the url"
-  local d5; d5="$(new_tmpdir)/plugins"
-  local c5; c5="$(new_tmpdir)/config.yaml"
+  local d5; new_tmpdir; d5="$NEW_TMPDIR/plugins"
+  local c5; new_tmpdir; c5="$NEW_TMPDIR/config.yaml"
   # The env-var value carries url@sha256 (the split-on-last-'@' form fetch_spec_from parses).
   write_fetch_config "$d5" "    - env: BUSBAR_GATE_FETCH_URL" "$c5"
-  local log5; log5="$(new_tmpdir)/busbar.log"
+  local log5; new_tmpdir; log5="$NEW_TMPDIR/busbar.log"
   BUSBAR_CONFIG="$c5" BUSBAR_PROVIDERS="$PROVIDERS" MOCK_KEY=unused RUST_LOG=info \
     BUSBAR_GATE_FETCH_URL="${URL}@${PIN}" \
     "$BUSBAR_BIN" >"$log5" 2>&1 &
@@ -532,7 +632,7 @@ b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }        # stdin (binar
 
 OIDC_WORK=""
 oidc_setup_keys() {
-  OIDC_WORK="$(new_tmpdir)"
+  new_tmpdir; OIDC_WORK="$NEW_TMPDIR"
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${OIDC_WORK}/rsa.pem" 2>/dev/null
   # JWKS n = base64url(modulus bytes); e = AQAB (65537, the openssl default public exponent).
   local mod_hex n
@@ -583,16 +683,17 @@ srv = http.server.ThreadingHTTPServer(("127.0.0.1", ${port}), H)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 srv.serve_forever()
 PYEOF
-  # stdout/stderr → /dev/null: this function is captured via `$(...)` (jwks_pid="$(oidc_start_https_jwks ...)");
-  # a backgrounded serve_forever inheriting that pipe would block `$(...)` on EOF forever. `echo "$pid"` still returns.
+  # stdout/stderr → /dev/null: a backgrounded serve_forever that inherits its caller's stdout keeps
+  # that pipe open for its whole life, which is the 2h31m CI hang this gate is named for in
+  # scripts/release-script-lint.sh. Kept unconditionally even though this launcher is no longer
+  # captured, exactly as that lint rule requires.
   python3 "$script" >/dev/null 2>&1 &
-  local pid=$!; BG_PIDS+=("$pid")
-  echo "$pid"
+  NEW_BG_PID=$!; BG_PIDS+=("$NEW_BG_PID")
 }
 
 # Build + pack the sibling auth-oidc plugin into $1/plugins as alias `oidc`. Echoes 0 on success,
 # 1 if the sibling checkout is absent (caller loud-skips the OIDC-backed assertions).
-OIDC_SRC="${REPO_ROOT}/../auth-oidc"
+OIDC_SRC="${REPO_ROOT}/../busbar-auth-oidc"
 oidc_pack_plugin() {
   local dir="$1"
   [ -d "$OIDC_SRC" ] || return 1
@@ -684,6 +785,7 @@ auth_plugin_flows() {
     oidc)   echo "post get" ;;   # both directions
     github) echo "get" ;;        # opaque token → GET redirect only (no held-token POST path)
     ldap)   echo "form" ;;       # credential-form bind flow
+    admin-tokens) echo "none" ;; # the operator ADMIN credential: gates /api/v1/admin only, no /auth/token
     *)      echo "" ;;
   esac
 }
@@ -718,7 +820,7 @@ run_phase_b() {
       oidc)
         # OIDC supports BOTH directions.
         # (b) POST /auth/token (held id_token) — RUNS fully here (fixture self-test + --validate now;
-        #     boot + POST behind BUSBAR_1_5_2_RUN_OIDC_BOOT, see the KNOWN INTEGRATION BLOCKER).
+        #     boot + POST whenever ../busbar-auth-oidc is present; a recorded coverage gap when it is not).
         run_tokenx_oidc_post "$P_DIR"
         # (a) GET /auth/token browser redirect flow — VERIFIED-AT-INTEGRATION: the GET handler is
         #     mounted by Step 6 (see auth/exchange.rs "Step 6 mounts the GET browser flow"); Steps 1-5
@@ -740,6 +842,11 @@ run_phase_b() {
         # (never a silent pass) when docker or the sibling checkout is absent.
         run_tokenx_ldap_form "$P_DIR"
         ;;
+      admin-tokens)
+        # Declared `none`: an admin_auth: module, never an /auth/token issuer. Its verdicts are proven
+        # both ways by busbar-plugin-loader's auth_verify_conformance_tests and its repo's conformance.
+        note "'${P_ALIAS}' declares no /auth/token direction (admin_auth: only) — nothing to exchange."
+        ;;
       *)
         integ "flows [${flows}] declared for '${P_ALIAS}' but no runner wired — treat as VERIFIED-AT-INTEGRATION."
         ;;
@@ -756,9 +863,9 @@ run_tokenx_oidc_post() {
 
   # 2) Build the config exactly as an operator would for headless token exchange.
   local B_LISTEN=19160 B_ADMIN=19161 B_MOCK=19162 B_JWKS=19163
-  local work; work="$(new_tmpdir)"
+  local work; new_tmpdir; work="$NEW_TMPDIR"
   local ISS="https://idp.gate.local/" AUD="gate-audience" SUB="alice"
-  local jwks_pid; jwks_pid="$(oidc_start_https_jwks "$B_JWKS")"
+  local jwks_pid; oidc_start_https_jwks "$B_JWKS"; jwks_pid="$NEW_BG_PID"
   local JWKS_URL="https://127.0.0.1:${B_JWKS}/jwks.json"
   # 12-space indent: the `ca_cert_pem: |` key below sits at 10 spaces, so block-scalar CONTENT must be
   # indented MORE than the key (>=12) on every line, or YAML parses the PEM lines as new mapping keys.
@@ -831,7 +938,7 @@ EOF
     ok "packed sibling auth-oidc plugin as alias 'oidc' into ${pdir}"
     HAVE_OIDC=1
   else
-    note "SKIP: ../auth-oidc sibling checkout absent — cannot pack the oidc plugin."
+    note "SKIP: ../busbar-auth-oidc sibling checkout absent — cannot pack the oidc plugin."
     note "Phase B's config-validate + boot are OIDC-dependent; loud-skipping them (NOT a green pass)."
     HAVE_OIDC=0
   fi
@@ -852,9 +959,9 @@ EOF
   now="$(date +%s)"; exp="$((now + 3600))"
   jwt="$(oidc_mint_jwt "$ISS" "$AUD" "$SUB" '["eng"]' "$exp")"
 
-  if [ "$HAVE_OIDC" = "1" ] && [ "${BUSBAR_1_5_2_RUN_OIDC_BOOT:-0}" = "1" ]; then
+  if [ "$HAVE_OIDC" = "1" ]; then
     echo "  booting busbar + driving POST /auth/token with the minted JWT..."
-    local mock_pid; mock_pid="$(start_mock_upstream "$B_MOCK" "gate-B-marker")"
+    local mock_pid; start_mock_upstream "$B_MOCK" "gate-B-marker"; mock_pid="$NEW_BG_PID"
     BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" \
       MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=gate-admin RUST_LOG=warn \
       "$BUSBAR_BIN" >"${work}/busbar.log" 2>&1 &
@@ -868,9 +975,6 @@ EOF
     exp1="$(echo "$resp1"    | jq -r '.exp     // empty')"
     if [ -z "$api_key1" ]; then
       echo "  Phase B: POST /auth/token returned no api_key: ${resp1}" >&2
-      echo "  ^ EXPECTED IN THIS BRANCH: the auth-oidc plugin sets principal.id='oidc:<sub>', and" >&2
-      echo "    sanitize_self_sub rejects the ':' → 403 BadSubject. See the KNOWN INTEGRATION BLOCKER" >&2
-      echo "    header. The integrator must reconcile the prefix vs the sanitizer for the 200 path." >&2
       exit 1
     fi
     # The self group is ALWAYS `user:` + the WHOLE module-namespaced principal id; the oidc plugin's is
@@ -901,13 +1005,11 @@ EOF
     kill "$bpid" 2>/dev/null || true; wait "$bpid" 2>/dev/null || true
     kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
   else
-    integ "Phase B boot + POST /auth/token round-trip. RAN: JWKS/JWT fixture self-test + (when the"
-    integ "  auth-oidc sibling is present) config --validate. NOT RUN standalone: the live boot + POST."
-    integ "  To run it here: set BUSBAR_1_5_2_RUN_OIDC_BOOT=1 with ../auth-oidc checked out."
-    integ "  The integrator MUST confirm, against the crates built on the sibling branch:"
-    integ "   1) POST /auth/token with the minted JWT returns 200 + { api_key, key_id, group:'user:${SUB}', exp }."
-    integ "      *** BLOCKER: the auth-oidc plugin sets principal.id='oidc:<sub>' but sanitize_self_sub"
-    integ "      rejects ':' → today this returns 403 BadSubject. Reconcile before the 200 path passes. ***"
+    record_gap phase-152-b-oidc-token-exchange-live sibling-missing
+    integ "Phase B boot + POST /auth/token round-trip. RAN: JWKS/JWT fixture self-test only."
+    integ "  NOT RUN: ../busbar-auth-oidc is absent, so the live boot + POST could not run (a COVERAGE GAP)."
+    integ "  With ../busbar-auth-oidc checked out it runs and asserts:"
+    integ "   1) POST /auth/token with the minted JWT returns 200 + { api_key, key_id, group:'user:oidc:${SUB}', exp }."
     integ "   2) exp-now ≈ auth.key_ttl (7d = 604800s)."
     integ "   3) a second POST returns the SAME key_id (one-key idempotency)."
     integ "   4) the issued key drives a real chat-completion → 200."
@@ -949,7 +1051,7 @@ run_tokenx_github_get() {
     return 0
   fi
 
-  local work pdir; work="$(new_tmpdir)"; pdir="${work}/plugins"
+  local work pdir; new_tmpdir; work="$NEW_TMPDIR"; pdir="${work}/plugins"
   pack_login_plugin "$plugin_dir" busbar-auth-github-plugin github busbar_auth_github_plugin "$pdir" \
     || { echo "  github: pack failed" >&2; exit 1; }
   ok "packed sibling auth-github plugin as alias 'github'"
@@ -965,7 +1067,7 @@ run_tokenx_github_get() {
     || { echo "  WireMock did not become ready" >&2; docker logs "$cid" >&2 || true; exit 1; }
   ok "WireMock up; github stubs loaded"
 
-  local mock_pid; mock_pid="$(start_mock_upstream "$MOCK" "gate-github-marker")"
+  local mock_pid; start_mock_upstream "$MOCK" "gate-github-marker"; mock_pid="$NEW_BG_PID"
   "$BUSBAR_BIN" --generate-signing-key >"${work}/signing.key" 2>/dev/null
 
   cat >"${work}/config.yaml" <<EOF
@@ -1099,7 +1201,7 @@ run_tokenx_ldap_form() {
     return 0
   fi
 
-  local work pdir; work="$(new_tmpdir)"; pdir="${work}/plugins"
+  local work pdir; new_tmpdir; work="$NEW_TMPDIR"; pdir="${work}/plugins"
   pack_login_plugin "$plugin_dir" busbar-auth-ldap-plugin ldap busbar_auth_ldap_plugin "$pdir" \
     || { echo "  ldap: pack failed" >&2; exit 1; }
   ok "packed sibling auth-ldap plugin as alias 'ldap'"
@@ -1128,7 +1230,7 @@ run_tokenx_ldap_form() {
   done
   ok "OpenLDAP up + seeded (uid=alice resolvable; member of cn=admins)"
 
-  local mock_pid; mock_pid="$(start_mock_upstream "$MOCK" "gate-ldap-marker")"
+  local mock_pid; start_mock_upstream "$MOCK" "gate-ldap-marker"; mock_pid="$NEW_BG_PID"
   "$BUSBAR_BIN" --generate-signing-key >"${work}/signing.key" 2>/dev/null
 
   cat >"${work}/config.yaml" <<EOF
@@ -1262,7 +1364,7 @@ run_phase_c() {
   # ---- Posture (c): admin_auth: [] → OPEN admin. Fully RUNS here (no OIDC needed). ----
   echo
   echo "  Posture (c): admin_auth: [] → an UNAUTHENTICATED caller can mutate; the open-relay banner is loud"
-  local wc; wc="$(new_tmpdir)"
+  local wc; new_tmpdir; wc="$NEW_TMPDIR"
   "$BUSBAR_BIN" --generate-signing-key >"${wc}/signing.key" 2>/dev/null
   cat >"${wc}/config.yaml" <<EOF
 listen: "127.0.0.1:${C_LISTEN}"
@@ -1327,7 +1429,7 @@ EOF
   oidc_setup_keys
   local C2_LISTEN=19180 C2_ADMIN=19181 C2_JWKS=19183
   local ISS="https://idp.gate.local/" AUD="gate-admin-audience"
-  local jwks_pid; jwks_pid="$(oidc_start_https_jwks "$C2_JWKS")"
+  local jwks_pid; oidc_start_https_jwks "$C2_JWKS"; jwks_pid="$NEW_BG_PID"
   local JWKS_URL="https://127.0.0.1:${C2_JWKS}/jwks.json"
   # 12-space indent: the `ca_cert_pem: |` key below sits at 10 spaces; block-scalar CONTENT must be
   # indented STRICTLY MORE than the key (>=12), else YAML reads the PEM lines as new mapping keys.
@@ -1377,17 +1479,17 @@ EOF
     # (the config is not complete until then) — see the assert_yaml calls on ${wa}/${wb} below.
   }
 
-  local pdir_a; pdir_a="$(new_tmpdir)/plugins"
+  local pdir_a; new_tmpdir; pdir_a="$NEW_TMPDIR/plugins"
   if oidc_pack_plugin "$pdir_a"; then
     HAVE_OIDC_C=1
     ok "packed sibling auth-oidc plugin as alias 'oidc' for the admin-plane postures"
   else
     HAVE_OIDC_C=0
-    note "SKIP: ../auth-oidc sibling absent — admin-plane OIDC postures (a)/(b) loud-skipped (NOT a pass)."
+    note "SKIP: ../busbar-auth-oidc sibling absent — admin-plane OIDC postures (a)/(b) loud-skipped (NOT a pass)."
   fi
 
   if [ "$HAVE_OIDC_C" = "1" ]; then
-    local wa; wa="$(new_tmpdir)"; write_admin_oidc_config "full" "$wa"
+    local wa; new_tmpdir; wa="$NEW_TMPDIR"; write_admin_oidc_config "full" "$wa"
     # write_admin_oidc_config emits no plugins block, so append one pointing at the packed oidc plugin.
     cat >>"${wa}/config.yaml" <<EOF
 plugins:
@@ -1403,7 +1505,7 @@ EOF
       "$BUSBAR_BIN" --validate
     ok "admin-plane OIDC config (full) validates: admin_auth[oidc] + role_bindings.oidc.admins.admin_scope"
 
-    local wb; wb="$(new_tmpdir)"; write_admin_oidc_config "read-only" "$wb"
+    local wb; new_tmpdir; wb="$NEW_TMPDIR"; write_admin_oidc_config "read-only" "$wb"
     cat >>"${wb}/config.yaml" <<EOF
 plugins:
   enabled: true
@@ -1425,13 +1527,17 @@ EOF
   now="$(date +%s)"; exp="$((now + 3600))"
   jwt_admin="$(oidc_mint_jwt "$ISS" "$AUD" "admin-user" '["admins"]' "$exp")"
 
-  if [ "$HAVE_OIDC_C" = "1" ] && [ "${BUSBAR_1_5_2_RUN_OIDC_BOOT:-0}" = "1" ]; then
+  if [ "$HAVE_OIDC_C" = "1" ]; then
+    # Sets $MATRIX_MUT_CODE rather than echoing it: captured in a command substitution, the
+    # `BG_PIDS+=` below lands in a SUBSHELL and is lost, so the `exit 1` assertion paths (which skip
+    # the inline kill at the end) leave a busbar holding ${C2_LISTEN} with nothing tracking it.
     drive_matrix() {  # $1 workdir (full|read-only config), $2 expect_mutation (200|403)
       local w="$1" expect="$2"
       BUSBAR_CONFIG="${w}/config.yaml" BUSBAR_PROVIDERS="${w}/providers.yaml" \
         MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=gate-admin RUST_LOG=warn \
         "$BUSBAR_BIN" >"${w}/busbar.log" 2>&1 &
-      local pid=$!; BG_PIDS+=("$pid")
+      NEW_BG_PID=$!; BG_PIDS+=("$NEW_BG_PID")
+      local pid="$NEW_BG_PID"
       wait_for_http "http://127.0.0.1:${C2_LISTEN}/healthz" 30
       # READ must always succeed for a bound admin identity.
       local read_code
@@ -1447,20 +1553,20 @@ EOF
         200) { [ "$mut_code" = "200" ] || [ "$mut_code" = "201" ]; } || { echo "  matrix(full): mutation ${mut_code}, expected 200/201" >&2; exit 1; } ;;
         403) [ "$mut_code" = "403" ] || { echo "  matrix(read-only): mutation ${mut_code}, expected 403" >&2; exit 1; } ;;
       esac
-      echo "$mut_code"
+      MATRIX_MUT_CODE="$mut_code"
       kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
     }
     local full_code ro_code
-    full_code="$(drive_matrix "$wa" 200)"
+    drive_matrix "$wa" 200; full_code="$MATRIX_MUT_CODE"
     ok "posture (a) FULL: GET /keys 200 AND POST /keys ${full_code} (mutation ALLOWED)"
-    ro_code="$(drive_matrix "$wb" 403)"
+    drive_matrix "$wb" 403; ro_code="$MATRIX_MUT_CODE"
     ok "posture (b) READ-ONLY: GET /keys 200 BUT POST /keys ${ro_code} (mutation FORBIDDEN on the SAME endpoint)"
     ok "matrix proven: full CAN do what read-only CANNOT, on the identical endpoint"
   else
-    integ "Phase C postures (a)/(b) live boot + enforcement matrix. RAN: config --validate for both"
-    integ "  full and read-only (when ../auth-oidc present). NOT RUN standalone: the live admin JWT drive."
-    integ "  To run it here: BUSBAR_1_5_2_RUN_OIDC_BOOT=1 with ../auth-oidc checked out."
-    integ "  The integrator MUST confirm, against the crates built on the sibling branch:"
+    record_gap phase-152-c-admin-authz-matrix-live sibling-missing
+    integ "Phase C postures (a)/(b) live boot + enforcement matrix."
+    integ "  NOT RUN: ../busbar-auth-oidc is absent, so the live admin JWT drive could not run (a COVERAGE GAP)."
+    integ "  With ../busbar-auth-oidc checked out it runs and asserts:"
     integ "   (a) admin_scope: full   → GET /api/v1/admin/keys = 200 AND POST /api/v1/admin/keys = 200/201."
     integ "   (b) admin_scope: read-only → GET = 200 (read allowed) but EVERY mutation on the SAME endpoints"
     integ "       (POST/PUT/DELETE keys, PUT /config/settings, hooks) = 403 forbidden — the required_scope"
@@ -1481,5 +1587,7 @@ case "$ONLY_PHASE" in
   *) echo "unknown phase: $ONLY_PHASE (want A|B|C)" >&2; exit 2 ;;
 esac
 
-phase "1.5.2 FEATURE GATE PASSED (with any VERIFIED-AT-INTEGRATION items noted above)"
+VERDICT_RC=0
+final_verdict || VERDICT_RC=$?
 echo "Total elapsed: ${SECONDS}s"
+exit "$VERDICT_RC"
