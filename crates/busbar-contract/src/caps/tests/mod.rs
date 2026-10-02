@@ -13,7 +13,7 @@ use crate::caps::*;
 
 /// The lint rule data. It is a proof, not surface: no plugin, unit or kernel path names it, so it
 /// lives beside the crate rather than inside it and is pulled in here for the test that keeps it
-/// from going empty or stale.
+/// from going empty or stale. The records themselves are `fixtures/lint_rules.txt`.
 mod lint {
     include!("../fixtures/lint_rules.rs");
 }
@@ -222,15 +222,18 @@ fn the_canary_also_catches_a_settlement_with_no_hold_behind_it() {
 #[test]
 fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
     let symbols: Vec<_> = lint::all().map(|r| r.symbol).collect();
-    for expected in [
-        "mem::forget",
-        "ManuallyDrop",
-        "Box::leak",
-        "AssertUnwindSafe",
-        "KernelSeal::acquire_for_kernel",
-        "Grant::<Recover>::mint(",
-        "take(&Grant::<Exit>::mint(",
-    ] {
+    // The required symbols are data beside the rules (`fixtures/lint_rules.txt`, ruling Q-GG2): a
+    // constructor spelled in this file is read by the construction gate as a forged mint. Their
+    // count is pinned here, so emptying the list cannot pass this test vacuously.
+    let expected = lint::expected();
+    assert_eq!(
+        expected.len(),
+        7,
+        "the escapes the scan must keep: {expected:?}"
+    );
+    assert_eq!(lint::hold_escapes().len(), 6, "the hold-escape list");
+    assert_eq!(lint::seal_sites().len(), 3, "the seal-site list");
+    for expected in expected {
         assert!(
             symbols.contains(&expected),
             "the source scan must still look for {expected}"
