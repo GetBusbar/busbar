@@ -549,7 +549,9 @@ impl RootHistory {
     /// never a card of the named cells alone: a correction of one rate keeps every other lane, class,
     /// plane card and the fee it did not name exactly as they were priced (#79 "a correction reprices
     /// exactly its window"). A window no single card prices, or a cell with no present card to land
-    /// on, is [`AmendRefused::NoSoleCard`] and appends nothing.
+    /// on, is [`AmendRefused::NoSoleCard`] and appends nothing; a boundary that would cut inside a
+    /// stored metering row — or make the units after the window price at it — is
+    /// [`AmendRefused::CutsRow`] (#32) and appends nothing.
     ///
     /// Unlike [`RootHistory::apply`] this never invents a from-zero opening entry: an amendment
     /// corrects a history that already has one, so an empty holder is a REFUSAL
@@ -573,6 +575,17 @@ impl RootHistory {
     ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AmendRefused<E>> {
         let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
         let current = self.history.load_full().ok_or(AmendRefused::NoHistory)?;
+        // #32: A CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS REFUSED. `appended_at` is the
+        // first instant of the second the correction arrived in, so a unit stored later in that
+        // second is counted as stored.
+        if let Some(cut) = current.current().correction_cut(
+            correction.effective_from,
+            correction.effective_until,
+            correction.appended_at.saturating_add(1_000),
+            busbar_kernel::governance::SECS_PER_DAY.saturating_mul(1_000),
+        ) {
+            return Err(AmendRefused::CutsRow(cut));
+        }
         let draft = correction
             .draft_over(current.current())
             .ok_or(AmendRefused::NoSoleCard)?;
@@ -1074,6 +1087,9 @@ pub enum AmendRefused<E> {
     NoHistory,
     /// No single card prices the whole window, or a named cell has no present card to land on.
     NoSoleCard,
+    /// The boundary that would cut inside a metering row (#32,
+    /// [`busbar_kernel_ledger::cost::HistoryView::correction_cut`]).
+    CutsRow(u64),
     /// The seal (the durable record written ahead of the append) refused.
     Seal(E),
 }

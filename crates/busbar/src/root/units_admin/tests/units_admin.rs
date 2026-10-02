@@ -3653,8 +3653,8 @@ fn replayed_amendments(durability: &crate::root::durability::Durability) -> Vec<
 #[cfg(test)]
 fn a_correction_body() -> Vec<u8> {
     signed_correction(serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": a_test_operator_fingerprint(),
@@ -3685,8 +3685,8 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     assert_eq!(answer.status, 200);
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
     assert_eq!(doc["history_seq"], 1);
-    assert_eq!(doc["effective_from"], 4_000);
-    assert_eq!(doc["effective_until"], 9_000);
+    assert_eq!(doc["effective_from"], 0);
+    assert_eq!(doc["effective_until"], 86_400_000);
     assert_eq!(doc["amended_at"], 6_000);
     assert_eq!(doc["operator_fingerprint"], a_test_operator_fingerprint());
     assert!(
@@ -3758,8 +3758,8 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
     ] {
         let history = a_seeded_history();
         let body = signed_correction(serde_json::json!({
-            "effective_from": 4_000,
-            "effective_until": 9_000,
+            "effective_from": 0,
+            "effective_until": 86_400_000,
             "currency": named,
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
@@ -3793,8 +3793,8 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
 #[test]
 fn the_canonical_amend_payload_names_no_currency() {
     let body = serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
     });
@@ -3832,8 +3832,8 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
     for fee in [-1_i64, -5, i64::MIN] {
         let history = a_seeded_history();
         let body = signed_correction(serde_json::json!({
-            "effective_from": 4_000,
-            "effective_until": 9_000,
+            "effective_from": 0,
+            "effective_until": 86_400_000,
             "per_request_fee": fee,
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
@@ -3853,8 +3853,8 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
     for fee in [5_i64, 0] {
         let history = a_seeded_history();
         let body = signed_correction(serde_json::json!({
-            "effective_from": 4_000,
-            "effective_until": 9_000,
+            "effective_from": 0,
+            "effective_until": 86_400_000,
             "per_request_fee": fee,
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
@@ -3949,7 +3949,7 @@ fn priced_at(
 fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
     let history = a_full_card_history();
     let inside = 5_000;
-    let outside = 2_000;
+    let outside = 100_000_000;
     // The configured figures, read outside the window, before and after.
     let configured = |history: &crate::root::kernel::RootHistory, lane: &str, class: &str| {
         priced_at(history, lane, class, 1_000, 1, outside).expect("the configured card prices it")
@@ -3993,8 +3993,8 @@ fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
 fn a_fee_or_plane_correction_moves_only_what_it_names() {
     let history = a_full_card_history();
     let body = signed_correction(serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "per_request_fee": 7,
         "rates": [ { "lane": "mcp\u{1f}search", "class": "input", "micro_per_unit": 9.0 } ],
         "reason": "vendor corrected the March price sheet",
@@ -4020,8 +4020,8 @@ fn a_fee_or_plane_correction_moves_only_what_it_names() {
 }
 
 /// **A CORRECTION NO SINGLE CARD PRICES IS REFUSED, AND APPENDS NOTHING** (D-1). A config apply at
-/// 6,000 resolves part of `[4,000, 9,000)`; correcting the card in force at 4,000 for the whole
-/// window would silently revert that apply for `[6,000, 9,000)`. A cell on a plane whose billing is
+/// 6,000 resolves part of `[0, 86,400,000)`; correcting the card in force at 0 for the whole
+/// window would silently revert that apply for the rest of it. A cell on a plane whose billing is
 /// off has no card to land on: correcting it would switch the plane's billing on and refuse every
 /// class the correction is silent about.
 #[test]
@@ -4042,8 +4042,8 @@ fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
 
     let history = a_full_card_history();
     let body = signed_correction(serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "rates": [ { "lane": "a2a\u{1f}agent", "class": "bytes", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": a_test_operator_fingerprint(),
@@ -4054,6 +4054,110 @@ fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
         "{refused:?}"
     );
     assert_eq!(history.len(), 1, "a refused correction appends nothing");
+}
+
+/// One UTC day and one hour, in milliseconds: a metering row is one day per price era (#32).
+#[cfg(test)]
+const DAY_MS: u64 = 86_400_000;
+#[cfg(test)]
+const HOUR_MS: u64 = 3_600_000;
+
+/// A signed correction of `gpt`/`input` over `[from, until)`.
+#[cfg(test)]
+fn a_window_correction(from: u64, until: Option<u64>) -> Vec<u8> {
+    signed_correction(serde_json::json!({
+        "effective_from": from,
+        "effective_until": until,
+        "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": a_test_operator_fingerprint(),
+    }))
+}
+
+/// Run one correction over `history` arriving at `arrival_ms`, answering the effect's result and how
+/// many amendment records its journal took.
+#[cfg(test)]
+fn amend_at(
+    history: &crate::root::kernel::RootHistory,
+    body: &[u8],
+    arrival_ms: u64,
+) -> (Result<Vec<u8>, busbar_core_admin::GovernanceError>, usize) {
+    let book = a_memory_book();
+    let result = amend_rate_history_effect(
+        history,
+        Some(&a_journal_over(&book)),
+        body,
+        arrival_ms / 1_000,
+        a_sealed_operator(),
+        &an_attribution(),
+    );
+    let records = replayed_amendments(&book.lock().unwrap()).len();
+    (result, records)
+}
+
+/// **A RETROACTIVE RATE CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS REFUSED** (#32,
+/// MONEY-AUDIT D-2).
+///
+/// A metering row is one UTC day per price era, priced at its own first instant. Before this
+/// refusal a correction `[day 1 12:00, 18:00)` answered 200 and repriced nothing (the day-1 row
+/// resolves at 00:00, outside the window); `[day 1 00:00, 06:00)` repriced the WHOLE day; and a
+/// window over a midnight (`[day 2 12:00, day 3 06:00)`, signed on day 2) priced every unit after
+/// 06:00 on day 3 at the correction, because they accrue into the day-3 row of the card the window
+/// interrupts, which resolves at day 3 00:00 — inside the window. Each is refused now, and nothing
+/// is recorded or appended.
+#[test]
+fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
+    let arrival = 2 * DAY_MS + 10 * HOUR_MS;
+    for (from, until) in [
+        (DAY_MS + 12 * HOUR_MS, Some(DAY_MS + 18 * HOUR_MS)),
+        (DAY_MS, Some(DAY_MS + 6 * HOUR_MS)),
+        (DAY_MS + 12 * HOUR_MS, None),
+        (2 * DAY_MS + 12 * HOUR_MS, Some(3 * DAY_MS + 6 * HOUR_MS)),
+    ] {
+        let history = a_seeded_history();
+        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        assert!(
+            matches!(result, Err(busbar_core_admin::GovernanceError::Validation)),
+            "[{from}, {until:?}) cuts inside a row and must be refused: {result:?}"
+        );
+        assert_eq!(history.len(), 1, "[{from}, {until:?}): nothing appended");
+        assert_eq!(records, 0, "[{from}, {until:?}): nothing recorded");
+    }
+}
+
+/// THE CONTROLS FOR #32: a correction whose boundaries every row already splits at applies — whole
+/// UTC days, an open end, a future window inside one day, and the instant a config apply started a
+/// new price era (every unit from it on accrued under that era).
+#[test]
+fn a_correction_on_row_boundaries_applies() {
+    let arrival = 2 * DAY_MS + 10 * HOUR_MS;
+    for (from, until) in [
+        (DAY_MS, Some(2 * DAY_MS)),
+        (DAY_MS, None),
+        (0, Some(3 * DAY_MS)),
+        (2 * DAY_MS + 12 * HOUR_MS, Some(2 * DAY_MS + 18 * HOUR_MS)),
+    ] {
+        let history = a_seeded_history();
+        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        assert!(
+            result.is_ok(),
+            "[{from}, {until:?}) cuts no row: {result:?}"
+        );
+        assert_eq!((history.len(), records), (2, 1), "[{from}, {until:?})");
+    }
+
+    let era = DAY_MS + 12 * HOUR_MS;
+    let history = a_seeded_history();
+    history.apply(a_card_at(4.0, 0), era);
+    let (result, _) = amend_at(
+        &history,
+        &a_window_correction(era, Some(2 * DAY_MS)),
+        arrival,
+    );
+    assert!(
+        result.is_ok(),
+        "a correction from the instant a config apply opened an era cuts no row: {result:?}"
+    );
 }
 
 /// A scratch data directory, removed on drop.
@@ -4098,8 +4202,8 @@ impl Drop for AmendScratch {
 #[cfg(test)]
 fn a_priced_correction(fee: i64, micro: serde_json::Value) -> Vec<u8> {
     signed_correction(serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "per_request_fee": fee,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": micro } ],
         "reason": "vendor corrected the March price sheet",
@@ -4137,8 +4241,8 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
     let records = replayed_amendments(&restarted.lock().unwrap());
     assert_eq!(records.len(), 1, "the amendment survived the restart");
     let record = &records[0];
-    assert_eq!(record.effective_from, 4_000);
-    assert_eq!(record.effective_until, Some(9_000));
+    assert_eq!(record.effective_from, 0);
+    assert_eq!(record.effective_until, Some(86_400_000));
     assert_eq!(record.amended_at_ms, 6_000);
     assert_eq!(record.sealed_fee, 5);
     assert_eq!(
@@ -4470,8 +4574,8 @@ fn amend_rate_history_admits_a_correction_signed_by_the_sealed_operator_key() {
 fn amend_rate_history_refuses_a_correction_from_an_unknown_operator_fingerprint() {
     let history = a_seeded_history();
     let body = signed_correction(serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": "a-fingerprint-that-names-no-sealed-key",
@@ -4782,8 +4886,8 @@ fn a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports() {
     view.history
         .amend(
             &crate::root::kernel::Correction {
-                effective_from: A_LINE_MS - 1_000,
-                effective_until: Some(A_LINE_MS + 1_000),
+                effective_from: A_LINE_MS,
+                effective_until: Some(A_LINE_MS + 86_400_000),
                 appended_at: A_LINE_MS + 60_000,
                 author: busbar_kernel_ledger::cost::Author::Amend {
                     operator_fingerprint: "op-1".to_string(),
