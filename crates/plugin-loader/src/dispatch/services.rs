@@ -380,6 +380,22 @@ fn slot(
     in_size: usize,
     body: impl FnOnce(Served, Weak<dyn WakeRoute>, ServiceHead) -> Answered,
 ) -> RawOutcome {
+    framed(input, out, service, in_size, |head| match served(ctx) {
+        Some((served, route)) => body(served, route, head),
+        None => Answered::bare(Outcome::Refused, "no host services are bound"),
+    })
+}
+
+/// [`slot`]'s frame, for a service the kernel does not serve (the connection table answers it):
+/// the `in` and `out` are there, the head is this service's and covers its `in`, a may-pend
+/// service has a ticket, then `body`. A panic answers FAULT; the whole `out` is written.
+fn framed(
+    input: *const c_void,
+    out: *mut ServiceOut,
+    service: u32,
+    in_size: usize,
+    body: impl FnOnce(ServiceHead) -> Answered,
+) -> RawOutcome {
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answered::fault();
@@ -392,10 +408,7 @@ fn slot(
         if may_pend(service) && head.handle.ticket.is_none() {
             return Answered::bare(Outcome::Refused, UNTICKETED);
         }
-        match served(ctx) {
-            Some((served, route)) => body(served, route, head),
-            None => Answered::bare(Outcome::Refused, "no host services are bound"),
-        }
+        body(head)
     }))
     .unwrap_or_else(|_| Answered::fault());
     if !out.is_null() {
@@ -829,8 +842,32 @@ unimplemented_slot! {
     verify_store = VERIFY_STORE, VerifyStoreIn;
     content_scan = CONTENT_SCAN, ContentScanIn;
     hook_call = HOOK_CALL, HookCallIn;
-    // Admission verdicts are the connector's (CONNECTOR-19 fills it, fail-closed).
-    need_admit = NEED_ADMIT, NeedAdmitIn;
+}
+
+/// THE HOST'S VERDICT on the calling instance's declared need: what the host's one connection
+/// table answered when the need was declared at bind (`DeclaredConns::declared`). READY when it was
+/// admitted; REFUSED, in the table's words, when it was refused or never declared. Never pends. The
+/// verdict binds fail-closed whether or not the plugin asks: every establish on a refused need is
+/// refused by the table.
+extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    framed(
+        input,
+        out,
+        op::NEED_ADMIT,
+        size_of::<svc::NeedAdmitIn>(),
+        |_| {
+            // SAFETY: the head covered a `NeedAdmitIn`.
+            let i = unsafe { input.cast::<svc::NeedAdmitIn>().read_unaligned() };
+            let need = busbar_contract::conn::NeedId(i.need);
+            let verdict = super::conn_services::armed(ctx)
+                .and_then(|(instance, table)| table.declared(*instance, need))
+                .unwrap_or(Err(busbar_contract::conn::ConnError::UndeclaredNeed));
+            match verdict {
+                Ok(()) => Answered::bare(Outcome::Ready, ""),
+                Err(e) => Answered::bare(Outcome::Refused, e.text()),
+            }
+        },
+    )
 }
 
 #[cfg(test)]

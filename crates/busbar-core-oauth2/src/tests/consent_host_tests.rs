@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-oauth2/src/routes.rs` — the host the consent screen names.
+//! Tests for `crates/busbar-core-oauth2/src/routes.rs` — the host the consent screen names.
 
 use super::host_of;
 

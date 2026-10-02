@@ -788,13 +788,13 @@ fn rows(resource: &str) -> Vec<String> {
 }
 
 /// A DECLARED ADMIN ROUTE REACHES `serve`, AND NOTHING ELSE DOES, both ways. The plane is handed
-/// the request's own head fields without a credential (Q3), answers with its own status, fields
-/// and body, and reports the audit row the kernel writes under the route's audit word (Q4):
+/// the request's own head fields without a credential, answers with its own status, fields
+/// and body, and reports the audit row the kernel writes under the route's audit word:
 /// 1.5.5's two `400`s, one unaudited (a malformed body), one audited `rejected` (a disagreement).
-/// An undeclared path, a public route (Q6) and an unpublished instance are the router's `404`; a
+/// An undeclared path, a public route and an unpublished instance are the router's `404`; a
 /// declared path under another verb is the admin `405`; an index past the snapshot never crosses;
-/// a short answer is re-called once, and a second short answer or an unknown audit code is `502`
-/// (Q5). A route that overlaps another instance's, or a kernel route, is refused at publish (Q2).
+/// a short answer is re-called once, and a second short answer or an unknown audit code is `502`.
+/// A route that overlaps another instance's, or a kernel route, is refused at publish.
 #[test]
 fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     use busbar_kernel::plane_driver::serve::{publish, serve, withdraw, Unserved};

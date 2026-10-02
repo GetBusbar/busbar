@@ -280,13 +280,11 @@ pub(super) async fn forward_once(
         }
     };
     egress_headers.insert(CONTENT_TYPE, ct_value);
-    // Native-SDK User-Agent on a translated hop only (mirrors the main forward path).
-    if ingress_protocol != egress_name {
-        egress_headers.insert(
-            USER_AGENT,
-            axum::http::HeaderValue::from_static(crate::engine::egress_user_agent(egress_name)),
-        );
-    }
+    // Native-SDK User-Agent for the egress protocol (mirrors the main forward path).
+    egress_headers.insert(
+        USER_AGENT,
+        axum::http::HeaderValue::from_static(crate::engine::egress_user_agent(egress_name)),
+    );
     // Native-SDK Accept for the egress protocol — a declaration constant, chosen by the operation.
     egress_headers.insert(
         ACCEPT,

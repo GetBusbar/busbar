@@ -134,7 +134,7 @@ impl Answer {
 }
 
 /// The instance a context names, and its connection table.
-fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn DeclaredConns>)> {
+pub(crate) fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn DeclaredConns>)> {
     if ctx.ptr.is_null() {
         return None;
     }
