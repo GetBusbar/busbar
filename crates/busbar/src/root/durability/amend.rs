@@ -17,11 +17,10 @@
 //! are part of its public surface.
 
 use super::*;
-#[cfg(test)]
+#[cfg(all(test, feature = "root-admin"))]
 use busbar_kernel_audit::amend::tamper_node_for_test;
 use busbar_kernel_audit::amend::{
-    self as amend, verify_node, Access, Adjust, AmendBody, AmendClass, AmendSink, Amendment,
-    ClassCounts, Reader,
+    self as amend, Access, Adjust, AmendBody, AmendClass, AmendSink, Amendment, ClassCounts, Reader,
 };
 use busbar_kernel_audit::record::OpClassId;
 use std::sync::{Arc, Mutex, Weak};
@@ -32,8 +31,9 @@ use std::sync::{Arc, Mutex, Weak};
 /// # Errors
 ///
 /// The held run does not verify; the break, rendered.
+#[cfg(feature = "root-admin")]
 pub(crate) fn verify_held() -> Result<(), String> {
-    verify_node().map_err(|broken| broken.to_string())
+    amend::verify_node().map_err(|broken| broken.to_string())
 }
 
 /// The first field of every amendment record: names the shape, so no other record on the chain is

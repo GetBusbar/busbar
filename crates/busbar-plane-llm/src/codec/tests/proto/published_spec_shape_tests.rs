@@ -40,6 +40,7 @@ fn resp(
         stop_sequence: None,
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     }
 }
 
