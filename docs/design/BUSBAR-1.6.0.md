@@ -4973,6 +4973,11 @@ Other rulings:
   before the tag (no version bump), with its validator (READY only: bytes behind a length, at most
   `MAX_TEXT`, a known class; any other outcome names none), the SDK setter
   `Out<ArriveOut>::route(class, entry)` and a RED test each.
+- 2026-10-02 ARCHITECT Q-SW8 (the egress walk's ports): its own non-`$` change between the served
+  door and the money steps carries the production clock, the members' concurrency permits and the
+  walk's counters. The write-ahead dispatch record (`Journal`) writes onto the money book's journal
+  (the node's `journal_dispatch`: a recovery reads it to tell a unit that sent something from one
+  that never did), so it is `$` and is composed with the money steps.
 
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
