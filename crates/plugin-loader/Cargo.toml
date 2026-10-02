@@ -98,6 +98,16 @@ name = "store_broken_door"
 path = "tests/fixtures/store_broken_door.rs"
 crate-type = ["cdylib"]
 
+# THE NEUTRAL FRAME DOOR: a transport door that frames the host's socket (an identity framer under a
+# neutral claim, `frame`), for every test that needs a socket-framing door beside its binary: this
+# crate's `transport_door_tests`, the connector's `universal_needs` and the root's registry fold.
+# It names no transport, so no transport leaving this repo takes these tests' fixture with it. An
+# example, not a crate: `cargo test` builds it and it never ships.
+[[example]]
+name = "neutral_frame_door"
+path = "tests/fixtures/neutral_frame_door.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
