@@ -1712,7 +1712,7 @@ impl GovState {
     ///
     /// SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await). The flat fee
     /// is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
-    /// in `finish`; a non-2xx outcome refunds via [`GovState::refund_request`]. This allocates a
+    /// in `finish`; a non-2xx outcome refunds the grant's [`FeeCharge`] via [`GovState::refund_charge`]. This allocates a
     /// handful of chain-sized scratch `Vec`s per call (`chain_for`'s two Vecs, the collected bucket
     /// slice, the shard-index/order/guard Vecs sized to the chain depth) — there are no fixed
     /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
@@ -2012,6 +2012,7 @@ impl GovState {
         // Another plane's request is one fee unit on ITS fee lane (#47), not the flat fee base.
         let one = || BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
         let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));
+        grant.charge.lane = plane_fee.as_ref().map(|(lane, _)| lane.clone());
         // PASS 2 - CHARGE every bucket (+1 request, dirty) under the SAME held guards: atomic
         // all-or-nothing with the checks above. STRADDLE-SAFE cell resolution (mirrors
         // `accrue_bucket`): roll ONLY a genuinely stale cell (this window strictly newer); a cell
@@ -2039,43 +2040,62 @@ impl GovState {
             }
             cell.dirty = true;
             cell.last_touch = now;
+            // The cell this fee reached, by its window: what the refund returns it from.
+            let reached = (bucket.bucket_id.to_string(), cell.window_start);
+            grant.charge.cells.push(reached);
         }
         Ok(grant)
     }
 
-    /// Refund the request charged at admission across EVERY bucket of the key's chain, for a
-    /// request that produced no usable upstream result (non-2xx). Keeps the flat-fee policy "bill
-    /// 2xx only" intact (the fee derives from the request count, so -1 request = -1 fee on the key
-    /// bucket). `now` MUST be the same `charged_at` epoch the admission charge used so the refund
-    /// lands on the SAME cell per bucket the charge landed on — including the straddle, where a
-    /// concurrent admission rolled the cell forward between this request's arrival and its charge
-    /// and the charge landed in place on the rolled cell. Only a bucket whose cell is genuinely
-    /// OLDER than this request's window is a no-op: that is a window already left behind rather
-    /// than one this request reached.
-    /// Floored at 0 - a refund can never drive a counter negative.
+    /// Refund the fee an admission charged, for a request that produced no usable upstream result
+    /// (non-2xx). Keeps the flat-fee policy "bill 2xx only" intact (the fee derives from the
+    /// billable count, so -1 billable = -1 fee). The refund reads only the admission's own
+    /// [`FeeCharge`]: EXACTLY the buckets it charged, each in the cell its fee reached — the
+    /// request's own window, or the newer one a concurrent admission had already rolled the cell to
+    /// (the straddle, ADV-1.6.0-4 / M-1) — never a cell resolved again from a clock. When that cell
+    /// has since rolled on, the fee is taken back from the window it was charged in (parked under
+    /// that window for the flusher, [`BudgetCell::park`]), never from the newer window's spend.
+    /// The admission's `requests` count is never touched. Floored at 0.
     ///
-    /// PER-PLANE FEES (#47): a `pool` qualified
-    /// `"<plane>\u{1f}<pool>"` is that plane's request, exactly as [`GovState::try_admit`] reads it:
-    /// the pool predicate reads the unqualified part, and what comes back is ONE [`PER_REQUEST`]
-    /// fee unit from that plane's own fee lane — never the flat fee base, which that request never
-    /// charged ([`GovState::refund_fee_unit`]).
-    pub fn refund_request(
-        &self,
-        cost: &crate::cost::CostModel,
-        key: &VirtualKey,
-        pool: &str,
-        now: u64,
-    ) {
-        self.refund_fee_unit(cost, key, pool, now, PER_REQUEST);
+    /// PER-PLANE FEES (#47): a plane's request charged one [`PER_REQUEST`] fee unit on that
+    /// plane's fee lane, and that is what comes back — never the flat fee base, which that request
+    /// never charged.
+    pub fn refund_charge(&self, charge: &FeeCharge) {
+        let lane = charge.lane.as_deref().map(|l| (l, PER_REQUEST));
+        for (bucket_id, window) in &charge.cells {
+            let mut map = self.budget.write(bucket_id);
+            let Some(cell) = map.get_mut(bucket_id) else {
+                continue; // swept: nothing in memory holds the charge any more
+            };
+            if cell.window_start == *window {
+                refund_in_place(cell, lane);
+            } else if cell.window_start > *window {
+                // The charge's window has rolled away; its counts were parked under it.
+                let taken_back = match lane {
+                    None => UsageDelta {
+                        billable_requests: -1,
+                        ..UsageDelta::default()
+                    },
+                    Some((lane, unit)) => UsageDelta {
+                        models: vec![busbar_contract::records::ModelTokensDelta {
+                            model: lane.to_string(),
+                            usage_units: BTreeMap::from([(unit.to_string(), -1)]),
+                        }],
+                        ..UsageDelta::default()
+                    },
+                };
+                cell.park(*window, taken_back);
+                cell.dirty = true;
+            }
+        }
     }
 
-    /// THE FEE REFUND PRIMITIVE (the design's money section: the budget refund is a separate act,
-    /// and a refund returns the bucket actually charged): give back one `fee_unit` charged at admission
-    /// across exactly the buckets that admission charged, in the cell its pinned `now` reached.
-    /// An unqualified `pool` (the pools plane) refunds the flat fee base, 1.5.5's arm, unchanged; a
-    /// plane-qualified one refunds one `fee_unit` count ([`PER_REQUEST`] or, for a session-account
-    /// owner, `PER_SESSION`) from that plane's fee lane, newest era first, as the flat base's
-    /// [`FeeEras::refund`] does. The admission's `requests` count is never touched. Floored at 0.
+    /// GIVE BACK ONE FEE UNIT COUNTED THROUGH ACCRUAL rather than charged by an admission (a session
+    /// account's open count: an admission's fee comes back through [`GovState::refund_charge`]):
+    /// across the buckets of the key's chain `pool` reaches, in the cell its pinned `now` reached.
+    /// An unqualified `pool` refunds the flat fee base; a plane-qualified one refunds one `fee_unit`
+    /// count (`PER_SESSION`) from that plane's fee lane, newest era first, as the flat base's
+    /// [`FeeEras::refund`] does. The `requests` count is never touched. Floored at 0.
     pub fn refund_fee_unit(
         &self,
         cost: &crate::cost::CostModel,
@@ -2116,36 +2136,7 @@ impl GovState {
             // rolled cell forever, and the derived spend the budget cap reads one fee too high for
             // the rest of that window.
             if cell.window_start >= window {
-                // Refund ONLY the billable (fee-base) counter - the flat fee bills 2xx only. The
-                // admission `requests` counter is NEVER refunded, so a failed request still
-                // consumed its requests-limit slot (a caller cannot escape the requests cap by
-                // hammering failures).
-                match lane {
-                    None => {
-                        cell.billable_requests = cell.billable_requests.saturating_sub(1);
-                        cell.fee_eras.refund();
-                    }
-                    // A plane's fee unit: one count off its fee lane, from the newest era still
-                    // holding one (the charge accrued it there at admission).
-                    Some((lane, unit)) => {
-                        let held = cell
-                            .models
-                            .iter_mut()
-                            .filter(|m| {
-                                &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0)
-                            })
-                            .max_by_key(|m| m.era);
-                        if let Some(m) = held {
-                            if let Some(n) = m.cur.get_mut(unit) {
-                                *n -= 1;
-                                if *n == 0 {
-                                    m.cur.remove(unit);
-                                }
-                            }
-                        }
-                    }
-                }
-                cell.dirty = true;
+                refund_in_place(cell, lane);
             }
         }
     }
@@ -2413,6 +2404,38 @@ impl GovState {
 /// Non-`group:` ids are never in the set (a key bucket is uncapped by construction).
 fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool {
     cost.bucket_enforces_a_cap(bucket_id)
+}
+
+/// Give back one fee in `cell` itself, the cell the charge landed on: one billable request off the
+/// flat fee base, or one `unit` count off a plane's fee `lane`. Refund ONLY the billable (fee-base)
+/// counter - the flat fee bills 2xx only. The admission `requests` counter is NEVER refunded, so a
+/// failed request still consumed its requests-limit slot (a caller cannot escape the requests cap
+/// by hammering failures). Floored at 0.
+fn refund_in_place(cell: &mut BudgetCell, lane: Option<(&str, &str)>) {
+    match lane {
+        None => {
+            cell.billable_requests = cell.billable_requests.saturating_sub(1);
+            cell.fee_eras.refund();
+        }
+        // A plane's fee unit: one count off its fee lane, from the newest era still holding one
+        // (the charge accrued it there at admission).
+        Some((lane, unit)) => {
+            let held = cell
+                .models
+                .iter_mut()
+                .filter(|m| &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0))
+                .max_by_key(|m| m.era);
+            if let Some(m) = held {
+                if let Some(n) = m.cur.get_mut(unit) {
+                    *n -= 1;
+                    if *n == 0 {
+                        m.cur.remove(unit);
+                    }
+                }
+            }
+        }
+    }
+    cell.dirty = true;
 }
 
 /// `delta` with every count's sign flipped: what takes an already-written delta back out.

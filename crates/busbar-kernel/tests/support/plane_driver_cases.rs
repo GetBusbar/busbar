@@ -769,6 +769,7 @@ async fn a_served_unit_writes_exactly_one_metering_row() {
             arrived: at,
             mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
             fee: FeeRefund::CallerStatus,
+            charge: Default::default(),
         },
     );
     let book = Book {

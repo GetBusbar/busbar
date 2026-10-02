@@ -68,6 +68,7 @@ fn test_finish_emits_request_metrics() {
         Instant::now(),
         busbar_kernel::store::now(),
         resp,
+        &busbar_kernel::governance::FeeCharge::default(),
     );
     // finish must pass the response through unchanged.
     assert_eq!(out.status(), StatusCode::OK);
@@ -226,7 +227,7 @@ fn test_ungrouped_key_is_authed_but_unlimited_admission_never_blocks() {
 /// outcome (so the net effect remains "bill 2xx only"). A 2xx `finish` keeps the charge; each
 /// non-2xx `finish` (503 / 5xx / 4xx) refunds exactly one flat fee. `finish_rejected` (governance
 /// rejection, never charged) refunds nothing.
-// No-runtime `#[test]`: `refund_request` now decrements the AUTHORITATIVE in-memory cell (no store
+// No-runtime `#[test]`: `refund_charge` now decrements the AUTHORITATIVE in-memory cell (no store
 // offload), so it is observable synchronously. The admission charge is seeded via the REAL
 // admission charge (`try_charge_request_within_budget`) so the charge, the refund, and the
 // `usage_for` read all target the SAME authoritative cell. `at` is the fixed budget window
@@ -246,9 +247,11 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
     let charge = || {
         govstate
             .try_admit(&app.cost, &key, "", at)
-            .expect("an uncapped chain admits");
+            .expect("an uncapped chain admits")
+            .charge()
+            .clone()
     };
-    charge();
+    let charged = charge();
     assert_eq!(
         key_spend(&app, &key.id),
         30,
@@ -257,7 +260,16 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
 
     // A 2xx finish keeps the charge (no refund).
     let resp = (StatusCode::OK, "ok").into_response();
-    let _ = finish(&app, &gov, "openai", "p", Instant::now(), at, resp);
+    let _ = finish(
+        &app,
+        &gov,
+        "openai",
+        "p",
+        Instant::now(),
+        at,
+        resp,
+        &charged,
+    );
     assert_eq!(
         key_spend(&app, &key.id),
         30,
@@ -270,14 +282,23 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
         StatusCode::INTERNAL_SERVER_ERROR,
         StatusCode::BAD_REQUEST,
     ] {
-        charge();
+        let charged = charge();
         assert_eq!(
             key_spend(&app, &key.id),
             60,
             "re-charged to 60 before {status}"
         );
         let resp = (status, "x").into_response();
-        let _ = finish(&app, &gov, "openai", "p", Instant::now(), at, resp);
+        let _ = finish(
+            &app,
+            &gov,
+            "openai",
+            "p",
+            Instant::now(),
+            at,
+            resp,
+            &charged,
+        );
         assert_eq!(
             key_spend(&app, &key.id),
             30,
@@ -297,7 +318,7 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
 
 /// Regression for the pre-routing spurious-refund bug: a request that fails BEFORE the
 /// admission charge (here a malformed JSON body) must route through `finish_rejected`, NOT
-/// `finish`. With the bug it went through `finish` (refund-on-non-2xx), and `refund_request`'s
+/// `finish`. With the bug it went through `finish` (refund-on-non-2xx), and `refund_charge`'s
 /// blind `UPDATE` decremented the spend/requests of a PRIOR, legitimately-charged request in the
 /// same window — eroding the hard budget cap (repeatable → unbounded overspend). This drives the
 /// REAL ingress path end-to-end (not just the `finish_rejected` unit).
@@ -316,7 +337,7 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
 
     // A prior, legitimately-charged request: seed one flat fee (30c) of spend in the (in-memory,
     // authoritative) window via the real admission charge. `key_spend`/`usage_for` and any (buggy)
-    // `refund_request` all target this same cell.
+    // `refund_charge` all target this same cell.
     govstate
         .try_admit(&app.cost, &key, "", 1_700_000_000)
         .expect("an uncapped chain admits");
@@ -368,6 +389,7 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
         Instant::now(),
         busbar_kernel::store::now(),
         resp,
+        &busbar_kernel::governance::FeeCharge::default(),
     );
     assert!(
         busbar_kernel::metrics::render().contains("outcome=\"exhausted\""),
@@ -423,8 +445,12 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
 
     // Admission charge into the charged_at day window via the real admission charge (it lands the
     // flat fee into `budget_window("daily", charged_at)` = day_window).
-    gov.try_admit(cost.as_ref(), &key, "", charged_at)
-        .expect("an uncapped chain admits");
+    let charged = (app.governance.as_ref())
+        .expect("a governed app")
+        .try_admit(&app.cost, &key, "", charged_at)
+        .expect("an uncapped chain admits")
+        .charge()
+        .clone();
     assert_eq!(
         gov.usage_for(cost.as_ref(), &key.id, charged_at)
             .unwrap()
@@ -444,6 +470,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         Instant::now(),
         charged_at,
         resp,
+        &charged,
     );
     assert_eq!(
         gov.usage_for(cost.as_ref(), &key.id, charged_at)
@@ -3394,9 +3421,9 @@ async fn test_governance_guard_passes_when_allowed() {
 }
 
 /// A request ADMITTED WITHOUT a charge (store-error fail-open) that then
-/// gets a non-2xx must NOT refund — `refund_request` is a blind decrement that would erode a
-/// DIFFERENT, legitimately-charged request's spend/count in the same window. `finish_admitted`
-/// gates the refund on the `charged` flag from `governance_guard`.
+/// gets a non-2xx must NOT refund — there is no charge of its own to return, and a refund would
+/// erode a DIFFERENT, legitimately-charged request's spend/count in the same window.
+/// `finish_admitted` refunds only the `charged` admission's own `FeeCharge`.
 #[tokio::test]
 async fn finish_admitted_does_not_refund_an_uncharged_admit() {
     crate::testkit::install_test_seams();
@@ -3408,14 +3435,18 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
     let at = 1_700_000_000;
     // A PRIOR legitimate request charges the flat fee (price=30) into this window.
     let g = app.governance.as_ref().unwrap();
-    assert!(g.try_admit(&app.cost, &key, "", at).is_ok());
+    let charged = g
+        .try_admit(&app.cost, &key, "", at)
+        .expect("the prior request admits")
+        .charge()
+        .clone();
     let charged_spend = key_spend(&app, &key.id);
     assert_eq!(charged_spend, 30, "prior request charged the flat fee");
 
-    // A SECOND request admitted WITHOUT charge (charged=false) then fails (non-2xx). The refund
-    // path must never even be entered (`refund_on_non_2xx` is false), so the first request's
-    // spend is DETERMINISTICALLY untouched — no blind decrement. The positive charged=true
-    // refund is the SAME synchronous in-memory decrement `refund_request` performs for `finish`
+    // A SECOND request admitted WITHOUT charge (charged = None) then fails (non-2xx). The refund
+    // path must never even be entered (`refund_on_non_2xx` is `None`), so the first request's
+    // spend is DETERMINISTICALLY untouched — no blind decrement. The positive charged
+    // refund is the SAME synchronous in-memory decrement `refund_charge` performs for `finish`
     // (no store offload — see `test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx`), so it is
     // asserted below, on the very next line after the call, with no await in between.
     let non2xx = (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response();
@@ -3427,7 +3458,7 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
         Instant::now(),
         at,
         non2xx,
-        false,
+        None,
     );
     assert_eq!(out.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
@@ -3436,7 +3467,7 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
         "an uncharged admit must not refund — the prior request's spend is untouched"
     );
 
-    // The positive control: the SAME non-2xx end on the CHARGED admit (charged=true) refunds that
+    // The positive control: the SAME non-2xx end on the CHARGED admit (its own charge) refunds that
     // admit's one flat fee, and the refund is visible synchronously — 30 -> 0 with no yield. Were
     // the refund offloaded/async, this read would still see 30.
     let non2xx = (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response();
@@ -3448,7 +3479,7 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
         Instant::now(),
         at,
         non2xx,
-        true,
+        Some(&charged),
     );
     assert_eq!(out.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(

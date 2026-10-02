@@ -1247,8 +1247,11 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
         started: std::time::Instant,
         charged_at: u64,
         resp: axum::response::Response,
-        charged: bool,
+        charged: Option<&busbar_kernel::plane_host::AdmitHandle>,
     ) -> axum::response::Response {
+        // The handle is the grant `admission_check`/`admission_door` wrapped: its charge is what a
+        // non-2xx end refunds.
+        let grant = charged.and_then(|h| h.0.downcast_ref::<crate::governance::AdmitGrant>());
         crate::ingress::finish_admitted(
             &self.app,
             gov,
@@ -1257,7 +1260,7 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
             started,
             charged_at,
             resp,
-            charged,
+            grant.map(crate::governance::AdmitGrant::charge),
         )
     }
 
@@ -3182,8 +3185,9 @@ pub trait AdmissionHost: Send + Sync {
 
     /// POST-ADMISSION finish through the host: emit the per-request metric family + request-log
     /// webhook and, on a NON-2xx outcome, REFUND the flat per-request fee IFF it actually landed at
-    /// admission (`charged`). Identical to `busbar_kernel::ingress::finish_admitted` over the bound
-    /// snapshot + `gov` scope.
+    /// admission (`charged`: the admission's own handle, `None` when nothing was charged) — from
+    /// exactly the cells that admission's charge reached. Identical to
+    /// `busbar_kernel::ingress::finish_admitted` over the bound snapshot + `gov` scope.
     #[allow(clippy::too_many_arguments)]
     fn finish_admitted(
         &self,
@@ -3193,7 +3197,7 @@ pub trait AdmissionHost: Send + Sync {
         started: std::time::Instant,
         charged_at: u64,
         resp: axum::response::Response,
-        charged: bool,
+        charged: Option<&AdmitHandle>,
     ) -> axum::response::Response;
 
     /// NOT-CHARGED (pre-charge turn-away) finish through the host: emit metrics + the webhook with NO

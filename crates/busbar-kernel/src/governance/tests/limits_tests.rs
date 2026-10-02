@@ -423,7 +423,7 @@ fn per_request_fee_counts_into_group_budget() {
     let k = key("vk_fee", Some("g"));
     let now = 1_700_000_000;
     g.try_admit(&cm, &k, "", now).expect("fee 10 <= 25");
-    g.try_admit(&cm, &k, "", now).expect("fee 20 <= 25");
+    let second = g.try_admit(&cm, &k, "", now).expect("fee 20 <= 25");
     assert_blocked(
         g.try_admit(&cm, &k, "", now).unwrap_err(),
         "g",
@@ -432,7 +432,7 @@ fn per_request_fee_counts_into_group_budget() {
         true,
     );
     // A refund (non-2xx) returns the fee, re-opening the cap (the fee bills 2xx only).
-    g.refund_request(&cm, &k, "", now);
+    g.refund_charge(second.charge());
     g.try_admit(&cm, &k, "", now)
         .expect("refund re-opened the cap");
 }
@@ -462,10 +462,10 @@ fn refund_returns_the_fee_but_never_the_requests_limit_slot() {
     let k = key("vk_split", Some("g"));
     let now = 1_700_000_000;
     // Two admissions, both REFUNDED (simulating two non-2xx outcomes).
-    g.try_admit(&cm, &k, "", now).expect("1st admits");
-    g.refund_request(&cm, &k, "", now);
-    g.try_admit(&cm, &k, "", now).expect("2nd admits");
-    g.refund_request(&cm, &k, "", now);
+    let first = g.try_admit(&cm, &k, "", now).expect("1st admits");
+    g.refund_charge(first.charge());
+    let second = g.try_admit(&cm, &k, "", now).expect("2nd admits");
+    g.refund_charge(second.charge());
     // The requests LIMIT saw 2 admissions and was NOT refunded: the 3rd is rejected on the
     // requests cap even though both prior requests "failed".
     assert_blocked(
@@ -528,8 +528,7 @@ fn a_refund_after_a_window_roll_reaches_the_cell_the_charge_reached() {
     // older one, is then charged in place on that rolled cell. Two fees of 10 against a cap of 25
     // leaves no room for a third.
     g.try_admit(&cm, &k, "", after).expect("the roller admits");
-    g.try_admit(&cm, &k, "", before)
-        .expect("the straddler admits");
+    let straddler = (g.try_admit(&cm, &k, "", before)).expect("the straddler admits");
     assert_blocked(
         g.try_admit(&cm, &k, "", after).unwrap_err(),
         "g",
@@ -538,9 +537,9 @@ fn a_refund_after_a_window_roll_reaches_the_cell_the_charge_reached() {
         true,
     );
 
-    // The straddler failed upstream, so its fee is not owed. Refunded at the same pinned epoch the
-    // charge used, it has to come off the rolled cell.
-    g.refund_request(&cm, &k, "", before);
+    // The straddler failed upstream, so its fee is not owed. Refunded from the cell its charge
+    // reached, it has to come off the rolled cell.
+    g.refund_charge(straddler.charge());
     let u = g
         .derived_bucket_usage(&cm, "group:g@minute", "minute", true, after)
         .expect("the rolled cell reads");
@@ -1044,9 +1043,9 @@ fn pool_scoped_accrual_and_refund_mirror_the_charge() {
         &[],
     );
     g2.try_admit(&cm2, &k, "frontier", now).expect("1st");
-    g2.try_admit(&cm2, &k, "frontier", now).expect("2nd");
+    let second = g2.try_admit(&cm2, &k, "frontier", now).expect("2nd");
     assert!(g2.try_admit(&cm2, &k, "frontier", now).is_err(), "at cap");
-    g2.refund_request(&cm2, &k, "frontier", now);
+    g2.refund_charge(second.charge());
     g2.try_admit(&cm2, &k, "frontier", now)
         .expect("the refunded fee re-opened frontier's bucket");
 }
@@ -1841,5 +1840,39 @@ fn a_window_roll_during_an_in_flight_flush_writes_the_old_window_once() {
     g.flush_budgets();
 
     assert_eq!(minute_row(store.as_ref(), bucket, w), (1, 1, 300, 30));
+    assert_eq!(minute_row(store.as_ref(), bucket, w1), (1, 1, 0, 0));
+}
+
+/// MONEY-AUDIT F-3: a refund after a window roll returns the fee from the window it was charged in.
+///
+/// A was admitted in minute W and charged on W's cell; B, in W+1, rolled the cell; then A failed.
+/// The refund used to resolve the cell again from A's arrival epoch, accept the rolled W+1 cell as
+/// "this window or newer", and take A's fee off it — B's fee, in a window A never reached. The
+/// refund now reads A's own charge: W's cell, rolled away, so the fee comes back from W's row. The
+/// straddle (ADV-1.6.0-4, M-1: a charge that landed in place on the rolled cell) is
+/// `a_refund_after_a_window_roll_reaches_the_cell_the_charge_reached`, unchanged.
+#[test]
+fn a_refund_after_a_roll_returns_the_fee_from_the_window_it_was_charged_in() {
+    let store = Arc::new(MemoryStore::new());
+    let g = GovState::new(store.clone(), None).expect("memory store constructs");
+    let cm = minute_fee_model();
+    let k = key("vk_refund_charged", Some("g"));
+    let w = 1_700_000_040;
+    let w1 = w + 60;
+    let bucket = "group:g@minute";
+
+    let a = (g.try_admit(&cm, &k, "", w)).expect("A admits in W, on W's cell");
+    g.try_admit(&cm, &k, "", w1)
+        .expect("B admits in W+1 and rolls the cell");
+    g.refund_charge(a.charge()); // A failed upstream
+
+    let live = (g.derived_bucket_usage(&cm, bucket, "minute", true, w1)).expect("W+1 reads");
+    assert_eq!(live.spend_cents, 10, "B's fee stays on W+1");
+    g.flush_budgets();
+    assert_eq!(
+        minute_row(store.as_ref(), bucket, w),
+        (1, 0, 0, 0),
+        "W keeps A's request slot; A's fee came back from W"
+    );
     assert_eq!(minute_row(store.as_ref(), bucket, w1), (1, 1, 0, 0));
 }

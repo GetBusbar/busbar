@@ -326,7 +326,7 @@ async fn test_concurrent_govstate_admission_respects_cap() {
 }
 
 /// The charge -> refund -> re-admit money cycle through `GovState`. Charge a key's GROUP to
-/// its cap so the next request is rejected; `refund_request` reverses one charge; a new request is
+/// its cap so the next request is rejected; `refund_charge` reverses one charge; a new request is
 /// admitted again. Proves a refunded fee genuinely frees budget on the live admission path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_charge_refund_readmit_cycle() {
@@ -347,10 +347,8 @@ async fn test_charge_refund_readmit_cycle() {
         .unwrap();
     let at = 1_700_000_000u64;
     // Charge to the cap.
-    assert!(
-        gov.try_admit(&cost, &key, "", at).is_ok(),
-        "1st (1c) admitted, spends the whole 1c group cap"
-    );
+    let first = (gov.try_admit(&cost, &key, "", at))
+        .expect("1st (1c) admitted, spends the whole 1c group cap");
     // At cap - next request rejected, NAMING the group's budget bucket.
     match gov.try_admit(&cost, &key, "", at).unwrap_err() {
         LimitBlocked::Limit {
@@ -361,7 +359,7 @@ async fn test_charge_refund_readmit_cycle() {
         other => panic!("expected the group budget to block, got {other:?}"),
     }
     // Refund reverses the in-memory charge synchronously (the fee derives from the request count).
-    gov.refund_request(&cost, &key, "", at);
+    gov.refund_charge(first.charge());
     assert_eq!(
         gov.usage_for(&cost, &key.id, at)
             .unwrap()
@@ -1014,13 +1012,13 @@ fn test_additive_flush_carries_refund_deltas() {
 
     // Charge 2 requests, flush (durable requests=2, billable=2), then refund one and flush again.
     assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
-    assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
+    let second = gov.try_admit(&cost, &k, "", 1_700_000_000).expect("admits");
     gov.flush_budgets();
     let u = store.get_usage("k_refund", 0).unwrap();
     assert_eq!(u.requests, 2);
     assert_eq!(u.billable_requests, 2);
 
-    gov.refund_request(&cost, &k, "", 1_700_000_000);
+    gov.refund_charge(second.charge());
     gov.flush_budgets();
     let u = store.get_usage("k_refund", 0).unwrap();
     assert_eq!(
@@ -5651,12 +5649,14 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
     let (store, gov, k) = team_gov();
     let cost = plane_fee_cost(1_000);
     let tp = plane_pool("tp", "srv_read");
+    let mut charged = Vec::new();
     for _ in 0..2 {
-        assert!(gov.try_admit(&cost, &k, "", AT).is_ok(), "a pools request");
-        assert!(gov.try_admit(&cost, &k, &tp, AT).is_ok(), "a `tp` request");
+        let pools = gov.try_admit(&cost, &k, "", AT).expect("a pools request");
+        let tp = gov.try_admit(&cost, &k, &tp, AT).expect("a `tp` request");
+        charged.push((pools, tp));
     }
     assert_eq!(spend(&gov, &cost), 16, "2 × 5 + 2 × 3");
-    gov.refund_request(&cost, &k, &tp, AT);
+    gov.refund_charge(charged[0].1.charge());
     assert_eq!(
         spend(&gov, &cost),
         13,
@@ -5681,7 +5681,7 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
         "a refund never gives back a request slot"
     );
     // The pools plane's refund is 1.5.5's arm, unchanged.
-    gov.refund_request(&cost, &k, "", AT);
+    gov.refund_charge(charged[0].0.charge());
     assert_eq!(spend(&gov, &cost), 8);
 }
 

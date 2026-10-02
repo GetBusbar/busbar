@@ -408,7 +408,19 @@ pub enum LimitBlocked {
     MissingGroup(String),
 }
 
-/// The in-flight HOLD an admission acquires on every `concurrent`-capped group in the key's chain.
+/// WHAT ONE ADMISSION'S FEE CHARGE REACHED, carried from the charge to its refund (the design's
+/// money section: a refund returns the bucket actually charged). Per bucket, the window of the cell
+/// the fee landed on — the request's own window, or the newer one a concurrent admission had
+/// already rolled the cell to — and the fee lane it landed on (`None`: the flat fee base). Read
+/// back only by [`GovState::refund_charge`]; a refund never re-derives any of it from a clock.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FeeCharge {
+    lane: Option<String>,
+    cells: Vec<(String, u64)>,
+}
+
+/// The in-flight HOLD an admission acquires on every `concurrent`-capped group in the key's chain,
+/// and the [`FeeCharge`] its fee reached.
 /// RAII: dropping the grant releases the gauges, so the in-flight count can never leak - the grant
 /// rides inside the request's `UsageSink` (dropped when the response stream completes / the request
 /// context unwinds on any error path). The Vec is EMPTY (no allocation) for the common chain with
@@ -416,9 +428,15 @@ pub enum LimitBlocked {
 #[derive(Default)]
 pub struct AdmitGrant {
     gauges: Vec<Arc<std::sync::atomic::AtomicI64>>,
+    charge: FeeCharge,
 }
 
 impl AdmitGrant {
+    /// What this admission's fee charge reached: the one input its refund reads.
+    pub fn charge(&self) -> &FeeCharge {
+        &self.charge
+    }
+
     /// TEST-ONLY: how many gauges this grant holds.
     #[cfg(test)]
     pub fn held(&self) -> usize {
