@@ -317,6 +317,8 @@ const fn admin_route(i: usize) -> AdminRoute {
         target: abi_str(ADMIN_VERBS[i].1),
         flags: 0,
         _reserved: 0,
+        // Never audited (empty), as these routes were before predev's AdminRoute grew the word.
+        audit_verb: abi_str(""),
     }
 }
 
