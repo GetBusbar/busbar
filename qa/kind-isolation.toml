@@ -719,16 +719,6 @@ count = "1"
 
 
 [[cell]]
-crate = "busbar-transport-http"
-kind = "plane"
-count = "53"
-
-[[cell]]
-crate = "busbar-transport-http"
-kind = "transport"
-count = "102"
-
-[[cell]]
 crate = "busbar-transport-stdio"
 kind = "plane"
 count = "1"
@@ -980,16 +970,6 @@ cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the
 why     = "busbar names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-transport-http"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-transport-http: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar"
