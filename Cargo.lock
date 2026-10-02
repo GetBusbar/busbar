@@ -959,6 +959,7 @@ name = "busbar-plane-decisions"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-loader",
  "serde",
  "serde_json",
 ]

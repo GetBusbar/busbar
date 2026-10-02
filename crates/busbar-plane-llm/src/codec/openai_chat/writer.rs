@@ -463,7 +463,7 @@ impl ProtocolWriter for OpenAiWriter {
                 .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
             out.insert(
                 REASONING_EFFORT.to_string(),
-                serde_json::json!(ask.to_effort(table).as_openai_reasoning_effort()),
+                serde_json::json!(ask.to_effort(table).as_three_word_str()),
             );
         }
         // The logprobs ask in OpenAI's native spelling (a Gemini `responseLogprobs`/`logprobs`
@@ -741,7 +741,7 @@ impl ProtocolWriter for OpenAiWriter {
                     // and a zero base — a citation whose span cannot be resolved is then emitted
                     // WITHOUT one rather than with a fabricated one.
                     let annotations =
-                        super::super::openai_annotations::chat_url_annotations("", 0, cits);
+                        super::super::url_citation_wire::chat_url_annotations("", 0, cits);
                     if annotations.is_empty() {
                         return None;
                     }
@@ -761,7 +761,7 @@ impl ProtocolWriter for OpenAiWriter {
                             (CHOICES): [{
                                 (keys::INDEX): 0,
                                 (keys::DELTA): {},
-                                (keys::LOGPROBS): write_openai_logprobs(lps),
+                                (keys::LOGPROBS): crate::codec::logprob_wire::write_token_logprobs(lps),
                                 (keys::FINISH_REASON): null
                             }]
                         });
@@ -1134,7 +1134,7 @@ impl ProtocolWriter for OpenAiWriter {
                 text, citations, ..
             } = block
             {
-                annotations.extend(super::super::openai_annotations::chat_url_annotations(
+                annotations.extend(super::super::url_citation_wire::chat_url_annotations(
                     text, base, citations,
                 ));
                 // CHARACTERS, not bytes: the IR citation contract (`IrCitation::start_index`/
@@ -1177,7 +1177,7 @@ impl ProtocolWriter for OpenAiWriter {
             if resp.logprobs.is_empty() {
                 serde_json::Value::Null
             } else {
-                write_openai_logprobs(&resp.logprobs)
+                crate::codec::logprob_wire::write_token_logprobs(&resp.logprobs)
             },
         );
         choice_obj.insert(keys::FINISH_REASON.to_string(), finish_reason);
