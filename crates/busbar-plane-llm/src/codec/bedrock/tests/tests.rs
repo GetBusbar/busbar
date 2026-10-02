@@ -6746,7 +6746,8 @@ fn the_served_tier_is_read_and_written() {
     });
     let resp = BedrockReader.read_response(&answer).expect("reads");
     assert_eq!(resp.usage.detail.service_tier.as_deref(), Some("priority"));
-    let written = BedrockWriter.write_response(&resp);
+    let writer = BedrockWriter;
+    let written = writer.write_response(&resp);
     assert_eq!(written["serviceTier"]["type"], "priority");
 
     let mut state = crate::codec::ir::StreamDecodeState::default();
