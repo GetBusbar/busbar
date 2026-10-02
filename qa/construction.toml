@@ -528,13 +528,40 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
-# ── THE KIND-ISOLATION CELL busbar-plane-mcp x transport, RAISED BY FOLD-MCP A3 AND A6 (F12 relocations)
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY FOLD-MCP P-GEN (the SDK's per-generation payload and per-instance Keyed state)
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 29392
+to      = 29489
+because = "ARCHITECT ruling P-GEN 2026-09-30 (Generations<T, P> carries the plugin's payload; Keyed<K, V> per-instance state for a forbid(unsafe_code) plugin), approved delta +97 (FOLD-MCP A, 690fe9227 27283 -> 27380, GRANT3); the same patch is on lane-fold-a2a. Measured on PR #159 as +97 over the base (29803 -> 29900 before DEL-HOTCOLD-A lowered the base to 29392)."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 29392
+to      = 29489
+because = "The pair of gate.surface_ceilings.contract_caps above: ARCHITECT ruling P-GEN 2026-09-30, approved delta +97 (FOLD-MCP A)."
+
+# ── THE KIND-ISOLATION CELLS busbar-plane-mcp x transport / plane / legacy, RAISED BY FOLD-MCP MCP-1 (the door arriving)
+#    (the A3/A6 declaration 60 -> 90 EXPIRED AND STRUCK: its commit reached the base.)
 
 [gate.ceiling_raises."cell[crate=busbar-plane-mcp,kind=transport].count"]
 file    = "qa/kind-isolation.toml"
-from    = 60
-to      = 90
-because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan approved 2026-09-29): fold A3 moved the MCP diagnostics catalog from busbar-mcp into busbar-plane-mcp, and the catalog's stdio diagnostic (MCP_STDIO_READ_ERROR, its slug and customer-visible text) names the transport vocabulary. The pair nets down in that commit: busbar-plane-mcp x transport 60 -> 66 (+6), busbar-mcp x plane 3822 -> 3761 (-61), busbar-mcp x transport 583 -> 577 (-6), busbar-mcp x contract 306 -> 305 (-1) (net -62). Measured by cargo xtask gate kind-isolation (the METER-FIX meter): 60 before, 66 after. Fold A6 moved the MCP client verb enum and peer classifier (client/verb.rs, client/peer.rs and their tests) from busbar-mcp into busbar-plane-mcp; their prose and tests name the transport vocabulary. The pair nets down in that commit: busbar-plane-mcp x transport 66 -> 90 (+24), busbar-plane-mcp x plane 10 -> 13 (+3), busbar-mcp x transport 574 -> 550 (-24), busbar-mcp x plane 3711 -> 3671 (-40) (net -37). Measured: 66 before, 90 after."
+from    = 90
+to      = 128
+because = "MCP-1 (the mcp plane's door, FOLD-MCP; PR #159) is a KIND ARRIVING in busbar-plane-mcp (agent-rules Q77-PENDING: a kind arriving records a baseline commit, cited): the door states its plane ABI (door.rs, plane_door.rs) and its carriers (the claims and routes it answers), and the tools: grammar moved from busbar-mcp into the plane (MCP-1 M1a) brings its words, so busbar-mcp x plane 3705 -> 3634 and x transport 583 -> 494 fall in the same change. Measured by the promote turnstile of PR #159 at 23f4dd2ea."
+
+[gate.ceiling_raises."cell[crate=busbar-plane-mcp,kind=plane].count"]
+file    = "qa/kind-isolation.toml"
+from    = 13
+to      = 83
+because = "MCP-1 (the mcp plane's door, FOLD-MCP; PR #159) is a KIND ARRIVING in busbar-plane-mcp (agent-rules Q77-PENDING: a kind arriving records a baseline commit, cited): the door states its plane ABI (door.rs, plane_door.rs) and its carriers (the claims and routes it answers), and the tools: grammar moved from busbar-mcp into the plane (MCP-1 M1a) brings its words, so busbar-mcp x plane 3705 -> 3634 and x transport 583 -> 494 fall in the same change. Measured by the promote turnstile of PR #159 at 23f4dd2ea."
+
+[gate.ceiling_raises."cell[crate=busbar-plane-mcp,kind=legacy].count"]
+file    = "qa/kind-isolation.toml"
+from    = 10
+to      = 12
+because = "MCP-1 (the mcp plane's door, FOLD-MCP; PR #159) is a KIND ARRIVING in busbar-plane-mcp (agent-rules Q77-PENDING: a kind arriving records a baseline commit, cited): the door states its plane ABI (door.rs, plane_door.rs) and its carriers (the claims and routes it answers), and the tools: grammar moved from busbar-mcp into the plane (MCP-1 M1a) brings its words, so busbar-mcp x plane 3705 -> 3634 and x transport 583 -> 494 fall in the same change. Measured by the promote turnstile of PR #159 at 23f4dd2ea. The +2 includes the standing ratchet row busbar-plane-mcp x legacy 11, struck in the same change."
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 24237 -> 25636 (WIRE-STORE C1 + CONNECTOR-19) — EXPIRED AND STRUCK: its commit
 # reached the base; struck by the K1 re-arm below.
@@ -888,7 +915,8 @@ because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A deletes the dead hot/cold ABI; lower only).
-contract_caps = 29392
+contract_caps = 29489
+# RE-ARMED 29392 -> 29489 with its pair (FOLD-MCP P-GEN: Generations payload + Keyed, +97), declared above.
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1663,7 +1691,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A; lower only).
-caps_contract_ceiling = 29392
+caps_contract_ceiling = 29489
+# RE-ARMED 29392 -> 29489 with its pair (FOLD-MCP P-GEN: Generations payload + Keyed, +97), declared above.
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
