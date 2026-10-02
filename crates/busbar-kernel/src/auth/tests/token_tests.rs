@@ -1711,3 +1711,73 @@ async fn the_secret_placeholder_is_dropped_for_a_public_client_and_filled_for_a_
     );
     mock.abort();
 }
+
+/// RED: a login plugin answering SecurityCheckFailed (the LOGIN_SECURITY_CHECK_FAILED verdict) on
+/// the redirect callback renders 1.5.5's verification page (400 "Sign-in couldn't be verified",
+/// no-store), byte for byte the page a `state` mismatch renders, and clears the login cookie.
+#[tokio::test]
+async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
+    struct FailsCheck;
+    impl AuthModule for FailsCheck {
+        fn name(&self) -> &'static str {
+            "fails-check"
+        }
+        fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
+            AuthVerdict::Pass
+        }
+    }
+    impl LoginModule for FailsCheck {
+        fn complete_login(&self, _r: &CompleteLogin) -> LoginOutcome {
+            LoginOutcome::SecurityCheckFailed
+        }
+    }
+    let app = crate::test_support::TestApp::new()
+        .public_url("https://busbar.example.com")
+        .login_method("fails", Box::new(FailsCheck), Some("S".into()), None, true)
+        .build();
+    let cookie = LoginCookie {
+        method: "fails".into(),
+        code_verifier: "v".into(),
+        state: "st".into(),
+        nonce: "n".into(),
+        refresh: false,
+    };
+    let failed = callback(
+        &app,
+        &cred_handle(&app),
+        Some(cookie.encode()),
+        "code".into(),
+        Some("st".into()),
+    )
+    .await;
+    let mismatch = callback(
+        &app,
+        &cred_handle(&app),
+        Some(cookie.encode()),
+        "code".into(),
+        Some("WRONG".into()),
+    )
+    .await;
+    assert_eq!(failed.status().as_u16(), 400);
+    assert_eq!(failed.status(), mismatch.status());
+    for h in [header::CACHE_CONTROL, header::SET_COOKIE] {
+        assert_eq!(
+            failed.headers().get(&h),
+            mismatch.headers().get(&h),
+            "{h} matches the state mismatch's"
+        );
+    }
+    assert!(failed
+        .headers()
+        .get(header::SET_COOKIE)
+        .is_some_and(|v| v.to_str().is_ok_and(|v| v.contains("Max-Age=0"))));
+    let (a, b) = (body_of(failed), body_of(mismatch));
+    assert!(
+        a.contains("Sign-in couldn&#39;t be verified")
+            || a.contains("Sign-in couldn't be verified")
+    );
+    assert_eq!(
+        a, b,
+        "one page for a state mismatch and a failed security check"
+    );
+}

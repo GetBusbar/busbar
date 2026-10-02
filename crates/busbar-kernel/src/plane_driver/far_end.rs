@@ -52,7 +52,7 @@ use crate::proxy::egress_unit::{
     walk::exclude_smaller_windows,
     Member, OnExhausted, Pool, RequestCtx, Shed, WeightedFloor,
 };
-use busbar_contract::abi::auth::{STYLE_NEEDS_BODY_HASH, STYLE_NEEDS_HEADERS};
+use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::transport::{
     STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
@@ -90,16 +90,19 @@ pub struct MemberRoute {
     pub provider: String,
 }
 
-/// A member's auth binding: the auth instance, the handle its `open_outbound` answered, and the
-/// style's `STYLE_*` flags (what `fields` reads).
+/// A member's auth binding: the auth instance, the handle its `open_outbound` answered, the
+/// style's `STYLE_*` flags and the auth points it needs (what `fields` reads).
 #[derive(Clone)]
 pub struct AuthBinding {
     /// The auth instance serving the member's style.
     pub auth: Arc<dyn OutboundAuth>,
     /// The handle.
     pub handle: u64,
-    /// `abi::auth::STYLE_NEEDS_BODY_HASH` | `abi::auth::STYLE_NEEDS_HEADERS`.
+    /// `abi::auth::STYLE_NEEDS_HEADERS`.
     pub style_flags: u32,
+    /// The style's `StyleDecl::points`: a style that signs the body states `HeadBody` and is
+    /// called there with the whole body; any other is called at `Head`.
+    pub points: AuthPoints,
     /// The member is configured `upstream_credentials: passthrough`: its one auth call carries
     /// the caller's own verified credential (THE DESIGN, section 6.6, style `caller-credential`). No other
     /// binding is ever handed it.
@@ -683,18 +686,21 @@ impl EgressFarEnd<'_> {
             Some((p, q)) => (p, Some(q.as_bytes().to_vec())),
             None => (path_query, None),
         };
+        // The one call is made at the style's request point: `HeadBody` lends the whole body (the
+        // style hashes it itself), `Head` lends none.
+        let point = if binding.points.has(AuthPoint::HeadBody) {
+            AuthPoint::HeadBody
+        } else {
+            AuthPoint::Head
+        };
         let facts = FieldsRequest {
+            point,
+            body: (point == AuthPoint::HeadBody).then(|| request.body.clone()),
             method: request.verb.clone(),
             authority: authority.to_string(),
             path: path.as_bytes().to_vec(),
             query,
             timestamp: self.egress.clock.now_secs(),
-            body_hash: (binding.style_flags & STYLE_NEEDS_BODY_HASH != 0).then(|| {
-                let d = ring::digest::digest(&ring::digest::SHA256, &request.body);
-                let mut h = [0u8; 32];
-                h.copy_from_slice(d.as_ref());
-                h
-            }),
             headers: if binding.style_flags & STYLE_NEEDS_HEADERS != 0 {
                 request.fields.clone()
             } else {
@@ -705,6 +711,7 @@ impl EgressFarEnd<'_> {
             } else {
                 None
             },
+            ..FieldsRequest::default()
         };
         let answer = match binding.auth.fields_now(binding.handle, &facts) {
             Some(answer) => answer,

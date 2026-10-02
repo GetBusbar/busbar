@@ -79,7 +79,8 @@ use busbar_contract::abi::auth::{
     IdentityOut as AuthIdentityOut, LoginField as AuthLoginField, NamedValue as AuthNamedValue,
     OpenOutboundIn as AuthOpenOutboundIn, OpenOutboundOut as AuthOpenOutboundOut,
     OutboundReadyIn as AuthOutboundReadyIn, OutboundReadyOut as AuthOutboundReadyOut,
-    RequestFacts as AuthRequestFacts, StyleDecl as AuthStyleDecl, VerifyIn as AuthVerifyIn,
+    RequestFacts as AuthRequestFacts, StripName as AuthStripName, StyleDecl as AuthStyleDecl,
+    VerifyIn as AuthVerifyIn,
 };
 // THE PLANE AND TRANSPORT KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
 use busbar_contract::abi::host::conn::connector as hconn;
@@ -1271,26 +1272,25 @@ fn compute_layout() -> String {
             fields
         ]
     );
-    record!(s, AuthStyleDecl, [name, flags, _reserved]);
+    record!(s, AuthStyleDecl, [name, flags, points]);
     record!(
         s,
         AuthTail,
-        [head, caps, facts, login_kind, _reserved, styles, styles_len]
+        [
+            head,
+            caps,
+            facts,
+            login_kind,
+            inbound_points,
+            styles,
+            styles_len
+        ]
     );
     record!(s, AuthNamedValue, [name, value]);
     record!(
         s,
         AuthRequestFacts,
-        [
-            method,
-            authority,
-            canonical_path,
-            query,
-            timestamp,
-            body_hash,
-            body_hash_present,
-            _reserved
-        ]
+        [method, authority, canonical_path, query, timestamp]
     );
     record!(
         s,
@@ -1301,19 +1301,46 @@ fn compute_layout() -> String {
         s,
         AuthIdentityOut,
         [
-            subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
-            groups_len, _reserved
+            subject,
+            key_id,
+            key_name,
+            user,
+            provider,
+            name,
+            claims,
+            claims_fmt,
+            flags,
+            ttl_secs,
+            groups_len,
+            _reserved,
+            replay_key,
+            replay_ttl_secs,
+            credential
+        ]
+    );
+    record!(s, AuthStripName, [name, place, _reserved]);
+    record!(
+        s,
+        AuthVerifyIn,
+        [
+            head, credential, lines, lines_len, request, out_buf, point, _reserved, conn, unit,
+            peer, body, strip, strip_cap, _reserved2
         ]
     );
     record!(
         s,
-        AuthVerifyIn,
-        [head, credential, carrier, carrier_len, request, out_buf]
-    );
-    record!(
-        s,
         AuthIdentifyOut,
-        [head, verdict, needed_groups, needed_bytes, identity]
+        [
+            head,
+            verdict,
+            needed_groups,
+            needed_bytes,
+            identity,
+            decision,
+            strip_len,
+            needed_strip,
+            _reserved
+        ]
     );
     record!(
         s,
@@ -1345,7 +1372,8 @@ fn compute_layout() -> String {
             code_verifier,
             submitted,
             submitted_len,
-            out_buf
+            out_buf,
+            nonce
         ]
     );
     record!(s, AuthOpenOutboundIn, [head, style, credential, settings]);
@@ -1360,16 +1388,19 @@ fn compute_layout() -> String {
             head,
             handle,
             mode,
-            _reserved,
+            point,
             request,
             caller_credential,
             field_buf,
             field_buf_cap,
             fields,
             fields_cap,
-            _reserved2,
+            _reserved,
             headers,
-            headers_len
+            headers_len,
+            conn,
+            unit,
+            body
         ]
     );
     record!(

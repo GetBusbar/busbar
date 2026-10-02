@@ -416,22 +416,16 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 /// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` and `export`
 /// are pending because their instances live OUTSIDE this repo: the owner deleted the in-tree
 /// fixtures ("FIXTURES", docs/design/1.6.0-QUESTIONS.md) and each kind is proven by its real plugin
-/// repos. `auth` is pending on the same terms: its last in-tree crate, the built-in admin-tokens
-/// module, moved to its own repo and is pulled at a pinned rev.
+/// repos. `auth` is no longer pending (AUTH-SPLIT): busbar-auth-header, busbar-auth-sigv4,
+/// busbar-auth-oauth and busbar-auth-webhook-signature are in-tree, staged auth-kind plugin crates
+/// (ARCHITECT ruling 2026-09-28, placement (B); each extracts to its own repo at KERNEL<>PLUGINS
+/// step 40), so the dead-kind rule watches them like every other kind.
 const PENDING_KINDS: &[(&str, &str)] = &[
     (
         "secret",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
          secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/busbar-secret-vault \
          through crates/plugin-loader/src/tests/plugin_proof_tests.rs",
-    ),
-    (
-        "auth",
-        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         auth fixture is deleted (\"FIXTURES\") and the built-in admin-tokens module moved to \
-         GetBusbar/busbar-auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
-         rev; the kind is proven both ways by crates/plugin-loader/src/tests/auth_conformance_tests.rs \
-         and auth_verify_conformance_tests.rs over the pinned real plugins",
     ),
     (
         "export",
@@ -604,11 +598,13 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // 2026-09-25 "K5d residue"). `plane`, `store` and `transport` were granted as the first crate
     // of each landed; `export` (the built-in sinks, #3 / item 141) and `hooks` (the ranking hooks
     // K5d moved onto the root's linked tables) were left out, so the root doing its job was scored
-    // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` and `secret` are absent because
-    // the root links no crate of either kind; a grant with no edge under it is a sentence about a
-    // tree that does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
+    // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` is granted for the root's rows on
+    // the auth axis (ARCHITECT INTEGRATION U17, 2026-09-30). `secret` is absent because the root
+    // links no crate of that kind; a grant with no edge under it is a sentence about a tree that
+    // does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
     // root's shipped edges and refuses a plugin kind the root links without a grant here. The
     // grant is the ROOT's: a non-root crate reaching a plugin crate is still refused (selftest).
+    ("root", "auth"),
     ("root", "cleanliness"),
     ("root", "contract"),
     ("root", "export"),
@@ -3938,8 +3934,8 @@ struct SourceIndex {
     skeleton: BTreeMap<String, BTreeSet<String>>,
     /// dir -> how many times each trait is implemented in its shipped source.
     impls: BTreeMap<String, BTreeMap<String, usize>>,
-    /// dir -> how many memory-ABI transport door tails (`TransportTail { .. }` statements, the
-    /// table `export_door!` exports) its shipped source states. See [`entry_count`].
+    /// dir -> how many memory-ABI door tails (`TransportTail { .. }` statements, `AuthTail`
+    /// consts: the table the door exports) its shipped source states. See [`entry_count`].
     doors: BTreeMap<String, usize>,
     /// dir -> whether it has a `src/lib.rs` at all.
     has_lib: BTreeSet<String>,
@@ -4186,7 +4182,7 @@ struct SourceFacts {
     mods: Option<Vec<String>>,
     /// Every trait-impl head in it, when shipped; empty otherwise.
     heads: Vec<String>,
-    /// How many transport door tails it states, when shipped; 0 otherwise. See [`door_tails`].
+    /// How many door tails it states, when shipped; 0 otherwise. See [`door_tails`].
     door_tails: usize,
 }
 
@@ -4347,23 +4343,32 @@ fn pinned_exemplars(
     out
 }
 
-/// THE TRANSPORT DOOR TAILS a file states: every production line that builds a `TransportTail`
-/// (`const TAIL: TransportTail = TransportTail { .. }`), the Statement tail a memory-ABI door
-/// carries and `export_door!` exports as the image's one table. The contract's own
-/// `struct TransportTail` declaration is not a tail.
+/// THE DOOR TAILS a file states: the Statement tail a memory-ABI door carries and exports as the
+/// image's one table. A transport tail is every production line that builds a `TransportTail`
+/// (`const TAIL: TransportTail = TransportTail { .. }`); an auth tail is every production `const`
+/// of type `AuthTail` (`const TAIL: &AuthTail = &AuthTail { .. }`, or one built by the SDK's
+/// `verify_tail`). The contract's own `struct` declarations and its `const fn` builders are not
+/// tails.
 fn door_tails(text: &str) -> usize {
     scan::production_lines(text)
         .into_iter()
         .filter(|(_, code)| {
             let t = code.trim();
-            t.contains("TransportTail {") && !t.contains("struct TransportTail")
+            let transport = t.contains("TransportTail {") && !t.contains("struct TransportTail");
+            let auth =
+                t.contains("const ") && (t.contains(": &AuthTail =") || t.contains(": AuthTail ="));
+            transport || auth
         })
         .count()
 }
 
-/// HOW MANY ENTRIES `dir` STATES FOR `kind` (ARCHITECT ruling 2026-09-30, option A). A kind's
-/// entry is its trait implemented in shipped source; for `transport` it is ALSO the memory-ABI
-/// door, because in the final design the door IS the entry (compiled in and dropped in are one
+/// The kinds whose memory-ABI door IS an entry (ARCHITECT rulings 2026-09-30 option A for
+/// `transport`, 2026-10-02 #145 for `auth`): no trait carries them; the door tail does.
+const DOOR_ENTRY_KINDS: &[&str] = &["transport", "auth"];
+
+/// HOW MANY ENTRIES `dir` STATES FOR `kind` (ARCHITECT ruling 2026-09-30, option A; extended to
+/// `auth` 2026-10-02). A kind's entry is its trait implemented in shipped source; for the
+/// [`DOOR_ENTRY_KINDS`] it is ALSO the memory-ABI door, because in the final design the door IS the entry (compiled in and dropped in are one
 /// table). So a transport crate's entries are its `impl Transport` blocks PLUS its door tails
 /// ([`door_tails`]). The exemplar `busbar-transport-tcp` is a door (one tail, no `impl`) and
 /// vouches for the kind again through it; a crate carrying a legacy `impl Transport` beside its
@@ -4378,7 +4383,7 @@ fn entry_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> us
         .and_then(|m| m.get(want_trait))
         .copied()
         .unwrap_or(0);
-    let doors = if kind == "transport" {
+    let doors = if DOOR_ENTRY_KINDS.contains(&kind) {
         idx.doors.get(dir).copied().unwrap_or(0)
     } else {
         0
@@ -4388,7 +4393,7 @@ fn entry_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> us
 
 /// How [`entry_count`] reads `kind`'s entries, for a finding's text.
 fn entry_note(kind: &str) -> &'static str {
-    if kind == "transport" {
+    if DOOR_ENTRY_KINDS.contains(&kind) {
         " (its `impl` blocks plus its door tails)"
     } else {
         ""
@@ -4686,18 +4691,17 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
             // <KindTrait> = &P;`), so a crate of the kind that implements the trait ZERO times has
             // nothing for its battery to be about — and a file that compiles anyway is a file that
             // asserts about something else. Read off the same trait-impl index `:shape` counts with.
-            let implementors = idx
-                .impls
-                .get(&c.dir)
-                .and_then(|m| m.get(&want_trait))
-                .copied()
-                .unwrap_or(0);
+            // A door kind's door is its implementor ([`entry_count`]): a door crate's battery has
+            // the door as its subject.
+            let implementors = entry_count(idx, &c.dir, kind, &want_trait);
             if implementors == 0 {
                 offenders.push(format!(
-                    "no-implementor\t{}\t{} is kind `{kind}` and implements `{want_trait}` nowhere \
-                     in shipped source, so its battery has no subject — a conformance file that \
-                     passes over no implementor is not evidence about this crate",
-                    c.dir, c.name
+                    "no-implementor\t{}\t{} is kind `{kind}` and implements `{want_trait}`{} \
+                     nowhere in shipped source, so its battery has no subject — a conformance file \
+                     that passes over no implementor is not evidence about this crate",
+                    c.dir,
+                    c.name,
+                    entry_note(kind)
                 ));
             }
             if idx.conformance_dead.contains(&c.dir) {
@@ -10610,6 +10614,24 @@ mod plant_tests {
         );
         assert_eq!(
             door_tails("// const T: TransportTail = TransportTail { };\n"),
+            0
+        );
+        assert_eq!(
+            door_tails("const TAIL: &AuthTail = &AuthTail {\n    caps: C,\n};\n"),
+            1
+        );
+        assert_eq!(
+            door_tails("const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD_BODY);\n"),
+            1
+        );
+        assert_eq!(
+            door_tails("pub struct AuthTail {\n    pub caps: u32,\n}\n"),
+            0
+        );
+        assert_eq!(
+            door_tails(
+                "pub const fn verify_tail(f: u32, p: AuthPoints) -> AuthTail {\n    AuthTail {\n"
+            ),
             0
         );
     }

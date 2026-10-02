@@ -10,9 +10,9 @@ use std::ptr::NonNull;
 
 use busbar_contract::abi::auth::{
     slot, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut,
-    IdentifyOut, IdentityBuf, IdentityOut, OpenOutboundIn, OpenOutboundOut, RequestFacts, VerifyIn,
-    BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_SENSITIVE, LOGIN_IDENTITY, MODE_OWN, SPAN_ABSENT,
-    VERDICT_IDENTITY, VERDICT_PASS,
+    IdentifyOut, IdentityBuf, IdentityOut, OpenOutboundIn, OpenOutboundOut, RequestFacts,
+    StripName, VerifyIn, BEGIN_AUTHORIZE, BEGIN_FORM, DECISION_CONTINUE, FIELD_SENSITIVE,
+    LOGIN_IDENTITY, MODE_OWN, POINT_HEAD, SPAN_ABSENT, STRIP_FIELD, VERDICT_IDENTITY, VERDICT_PASS,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{Fault, Rule};
@@ -70,9 +70,6 @@ fn facts() -> RequestFacts {
         canonical_path: NO_STR,
         query: NO_STR,
         timestamp: 0,
-        body_hash: [0; 32],
-        body_hash_present: 0,
-        _reserved: 0,
     }
 }
 
@@ -87,13 +84,34 @@ fn identity_buf(bytes: &mut [u8; BUF_CAP], groups: *mut Span, groups_cap: u32) -
 }
 
 fn verify_in(out_buf: IdentityBuf) -> VerifyIn {
+    verify_in_with(out_buf, std::ptr::null_mut(), 0)
+}
+
+fn verify_in_with(out_buf: IdentityBuf, strip: *mut StripName, strip_cap: u32) -> VerifyIn {
     VerifyIn {
         head: in_head(),
         credential: NO_BLOB,
-        carrier: std::ptr::null(),
-        carrier_len: 0,
+        lines: std::ptr::null(),
+        lines_len: 0,
         request: facts(),
         out_buf,
+        point: POINT_HEAD,
+        _reserved: 0,
+        conn: 0,
+        unit: 0,
+        peer: NO_BLOB,
+        body: NO_BLOB,
+        strip,
+        strip_cap,
+        _reserved2: 0,
+    }
+}
+
+/// A READY `verify` answer: `identified` with the decision every READY verify carries.
+fn verified(verdict: u32, groups_len: u32) -> IdentifyOut {
+    IdentifyOut {
+        decision: DECISION_CONTINUE,
+        ..identified(verdict, groups_len)
     }
 }
 
@@ -107,6 +125,7 @@ fn complete_login_in(out_buf: IdentityBuf) -> CompleteLoginIn {
         submitted: std::ptr::null(),
         submitted_len: 0,
         out_buf,
+        nonce: NO_STR,
     }
 }
 
@@ -130,7 +149,14 @@ fn identified(verdict: u32, groups_len: u32) -> IdentifyOut {
             ttl_secs: 0,
             groups_len,
             _reserved: 0,
+            replay_key: ABSENT,
+            replay_ttl_secs: 0,
+            credential: ABSENT,
         },
+        decision: 0,
+        strip_len: 0,
+        needed_strip: 0,
+        _reserved: 0,
     }
 }
 
@@ -139,16 +165,19 @@ fn fields_in(bytes: &mut [u8; BUF_CAP], fields: *mut FieldSpan, fields_cap: u32)
         head: in_head(),
         handle: 1,
         mode: MODE_OWN,
-        _reserved: 0,
+        point: POINT_HEAD,
         request: facts(),
         caller_credential: NO_BLOB,
         field_buf: bytes.as_mut_ptr(),
         field_buf_cap: BUF_CAP,
         fields,
         fields_cap,
-        _reserved2: 0,
+        _reserved: 0,
         headers: std::ptr::null(),
         headers_len: 0,
+        conn: 0,
+        unit: 0,
+        body: NO_BLOB,
     }
 }
 
@@ -228,7 +257,7 @@ fn verify_green_identity_with_groups() {
             slot::VERIFY,
             Outcome::Ready,
             &input,
-            &identified(VERDICT_IDENTITY, 1)
+            &verified(VERDICT_IDENTITY, 1)
         ),
         Ok(())
     );
@@ -237,7 +266,7 @@ fn verify_green_identity_with_groups() {
             slot::VERIFY,
             Outcome::Ready,
             &input,
-            &identified(VERDICT_PASS, 0)
+            &verified(VERDICT_PASS, 0)
         ),
         Ok(())
     );
@@ -248,7 +277,7 @@ fn verify_red_a_span_past_the_buffer() {
     let mut bytes = [0u8; BUF_CAP];
     let mut groups = [ABSENT; 2];
     let input = verify_in(identity_buf(&mut bytes, groups.as_mut_ptr(), GROUPS_CAP));
-    let mut out = identified(VERDICT_IDENTITY, 0);
+    let mut out = verified(VERDICT_IDENTITY, 0);
     out.identity.subject = Span {
         offset: 60,
         len: 10,
@@ -266,7 +295,7 @@ fn verify_red_groups_over_cap_builds_no_slice() {
         NonNull::<Span>::dangling().as_ptr(),
         GROUPS_CAP,
     ));
-    let out = identified(VERDICT_IDENTITY, GROUPS_CAP + 1);
+    let out = verified(VERDICT_IDENTITY, GROUPS_CAP + 1);
     let f = check(slot::VERIFY, Outcome::Ready, &input, &out).unwrap_err();
     assert_eq!(f.rule, Rule::OverCap);
     assert_eq!(f.field, "verify.groups");
@@ -298,6 +327,83 @@ fn verify_red_a_foreign_in() {
         &out,
     );
     assert_eq!(rule(Auth::check(&a)), Rule::Foreign);
+}
+
+/// THE STRIPS (THE DESIGN, "Auth points and guest lists", step 3): a READY verify's strip
+/// names are read from the host's array whatever the verdict, bounded by its capacity.
+#[test]
+fn verify_green_strips_with_any_verdict() {
+    let mut bytes = [0u8; BUF_CAP];
+    let mut groups = [ABSENT; 2];
+    let mut strips = [StripName {
+        name: Span { offset: 20, len: 5 },
+        place: STRIP_FIELD,
+        _reserved: 0,
+    }];
+    let input = verify_in_with(
+        identity_buf(&mut bytes, groups.as_mut_ptr(), GROUPS_CAP),
+        strips.as_mut_ptr(),
+        1,
+    );
+    for v in [VERDICT_IDENTITY, VERDICT_PASS] {
+        let out = IdentifyOut {
+            strip_len: 1,
+            ..verified(v, 0)
+        };
+        assert_eq!(check(slot::VERIFY, Outcome::Ready, &input, &out), Ok(()));
+    }
+}
+
+/// RED: a strip count over the host's capacity is FAULT before any slice is built; an unknown
+/// place and a missing decision are the kind's vocabulary faults.
+#[test]
+fn verify_red_strips_and_decision() {
+    let mut bytes = [0u8; BUF_CAP];
+    let mut groups = [ABSENT; 2];
+    let input = verify_in_with(
+        identity_buf(&mut bytes, groups.as_mut_ptr(), GROUPS_CAP),
+        NonNull::<StripName>::dangling().as_ptr(),
+        1,
+    );
+    let out = IdentifyOut {
+        strip_len: 2,
+        ..verified(VERDICT_PASS, 0)
+    };
+    let f = check(slot::VERIFY, Outcome::Ready, &input, &out).unwrap_err();
+    assert_eq!((f.rule, f.field), (Rule::OverCap, "verify.strip"));
+
+    let mut strips = [StripName {
+        name: Span { offset: 20, len: 5 },
+        place: 9,
+        _reserved: 0,
+    }];
+    let input = verify_in_with(
+        identity_buf(&mut bytes, groups.as_mut_ptr(), GROUPS_CAP),
+        strips.as_mut_ptr(),
+        1,
+    );
+    let out = IdentifyOut {
+        strip_len: 1,
+        ..verified(VERDICT_PASS, 0)
+    };
+    let f = check(slot::VERIFY, Outcome::Ready, &input, &out).unwrap_err();
+    assert_eq!((f.rule, f.field), (Rule::UnknownCode, "verify.vocabulary"));
+    let f = check(
+        slot::VERIFY,
+        Outcome::Ready,
+        &input,
+        &identified(VERDICT_PASS, 0),
+    )
+    .unwrap_err();
+    assert_eq!((f.rule, f.field), (Rule::UnknownCode, "verify.vocabulary"));
+    // A credential without an identity contradicts the verdict.
+    let mut out = verified(VERDICT_PASS, 0);
+    out.identity.credential = Span { offset: 0, len: 4 };
+    let f = check(slot::VERIFY, Outcome::Ready, &input, &out).unwrap_err();
+    assert_eq!(
+        (f.rule, f.field),
+        (Rule::Contradiction, "verify.unexpected")
+    );
 }
 
 // ---- complete_login ----
@@ -380,7 +486,7 @@ fn fields_green_one_field_and_none() {
 #[test]
 fn fields_red_an_unknown_flag() {
     let mut bytes = [0u8; BUF_CAP];
-    let mut fields = [field(FIELD_SENSITIVE << 1), field(0)];
+    let mut fields = [field(FIELD_SENSITIVE << 2), field(0)];
     let input = fields_in(&mut bytes, fields.as_mut_ptr(), FIELDS_CAP);
     let f = check(slot::FIELDS, Outcome::Ready, &input, &fields_out(1)).unwrap_err();
     assert_eq!(f.rule, Rule::UnknownCode);
@@ -520,6 +626,20 @@ fn short_is_a_failed_answer_asking_for_more() {
         &real,
     );
     assert!(!Auth::short(&a));
+    // A strip array too small is a short answer too.
+    let strip_short = IdentifyOut {
+        needed_strip: 1,
+        ..identified(0, 0)
+    };
+    let a = answer(
+        slot::VERIFY,
+        Outcome::Failed,
+        &input,
+        size_of::<VerifyIn>(),
+        &strip_short,
+    );
+    assert_eq!(Auth::check(&a), Ok(()));
+    assert!(Auth::short(&a));
 
     let mut fbytes = [0u8; BUF_CAP];
     let mut fields = [field(0), field(0)];
@@ -543,4 +663,199 @@ fn short_is_a_failed_answer_asking_for_more() {
         &fields_out(0),
     );
     assert!(!Auth::short(&a));
+}
+
+/// THE TAIL'S LOGIN RULE: the login classification is `NONE` exactly when `CAP_LOGIN` is absent,
+/// and one the host knows; a tail where the two disagree refuses the load. The agreeing tails read
+/// back their login kind.
+#[test]
+fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
+    use busbar_contract::abi::auth::{
+        AuthTail, CAP_INBOUND, CAP_LOGIN, LOGIN_KIND_CREDENTIAL, LOGIN_KIND_NONE,
+        LOGIN_KIND_REDIRECT,
+    };
+    use busbar_contract::abi::mechanism::door::KindTailHead;
+    use busbar_contract::abi::sdk::door::statement;
+    let bind = |caps: u32, login_kind: u32| {
+        let tail = Box::leak(Box::new(AuthTail {
+            head: KindTailHead {
+                size: size_of::<AuthTail>() as u32,
+                _reserved: 0,
+            },
+            caps,
+            facts: 0,
+            login_kind,
+            inbound_points: if caps & CAP_INBOUND != 0 {
+                POINT_HEAD
+            } else {
+                0
+            },
+            styles: std::ptr::null(),
+            styles_len: 0,
+        }));
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            ..statement("t", "1", 0)
+        };
+        <Auth as Kind>::context(&st).map(|c| {
+            c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
+                .map(|f| f.login_kind)
+        })
+    };
+    assert_eq!(
+        bind(CAP_INBOUND, LOGIN_KIND_NONE),
+        Ok(Some(LOGIN_KIND_NONE))
+    );
+    assert_eq!(
+        bind(CAP_LOGIN, LOGIN_KIND_REDIRECT),
+        Ok(Some(LOGIN_KIND_REDIRECT))
+    );
+    assert_eq!(
+        bind(CAP_LOGIN, LOGIN_KIND_CREDENTIAL),
+        Ok(Some(LOGIN_KIND_CREDENTIAL))
+    );
+    assert!(
+        bind(CAP_LOGIN, LOGIN_KIND_NONE).is_err(),
+        "login without a kind"
+    );
+    assert!(
+        bind(CAP_INBOUND, LOGIN_KIND_REDIRECT).is_err(),
+        "a kind without login"
+    );
+    assert!(bind(CAP_LOGIN, 9).is_err(), "an unknown kind");
+}
+
+/// THE TAIL'S POINT RULES (THE DESIGN, "Auth points and guest lists"): an inbound plugin states
+/// a valid, non-empty inbound point set and no other plugin states one; every style states known
+/// flags and a valid, non-empty point set. Each broken tail refuses the load; the agreeing tails read
+/// back their inbound points.
+#[test]
+fn a_tail_with_a_broken_point_set_refuses() {
+    use busbar_contract::abi::auth::{
+        AuthPoints, AuthTail, StyleDecl, CAP_INBOUND, CAP_OUTBOUND, LOGIN_KIND_NONE, POINT_FRAME,
+        POINT_HEAD_BODY, POINT_PEER, STYLE_NEEDS_HEADERS,
+    };
+    use busbar_contract::abi::mechanism::door::KindTailHead;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    let bind = |caps: u32, inbound_points: u32, styles: &'static [StyleDecl]| {
+        let tail = Box::leak(Box::new(AuthTail {
+            head: KindTailHead {
+                size: size_of::<AuthTail>() as u32,
+                _reserved: 0,
+            },
+            caps,
+            facts: 0,
+            login_kind: LOGIN_KIND_NONE,
+            inbound_points,
+            styles: styles.as_ptr(),
+            styles_len: styles.len(),
+        }));
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            ..statement("t", "1", 0)
+        };
+        <Auth as Kind>::context(&st).map(|c| {
+            c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
+                .map(|f| f.inbound_points)
+        })
+    };
+    let style = |flags: u32, points: u32| -> &'static [StyleDecl] {
+        Box::leak(Box::new([StyleDecl {
+            name: abi_str("s"),
+            flags,
+            points,
+        }]))
+    };
+    assert_eq!(
+        bind(CAP_INBOUND, POINT_HEAD_BODY, &[]),
+        Ok(Some(AuthPoints::HEAD_BODY))
+    );
+    assert_eq!(
+        bind(CAP_OUTBOUND, 0, style(STYLE_NEEDS_HEADERS, POINT_HEAD)),
+        Ok(Some(AuthPoints::EMPTY))
+    );
+    // RED: the inbound set.
+    assert!(
+        bind(CAP_INBOUND, 0, &[]).is_err(),
+        "an inbound plugin with no point"
+    );
+    assert!(
+        bind(CAP_INBOUND, POINT_FRAME, &[]).is_err(),
+        "the reserved point"
+    );
+    assert!(
+        bind(CAP_INBOUND, POINT_HEAD | POINT_HEAD_BODY, &[]).is_err(),
+        "head with head-body"
+    );
+    assert!(
+        bind(CAP_OUTBOUND, POINT_PEER, &[]).is_err(),
+        "points without verify"
+    );
+    // RED: a style's set and flags.
+    assert!(
+        bind(CAP_OUTBOUND, 0, style(0, 0)).is_err(),
+        "a style with no point"
+    );
+    assert!(
+        bind(CAP_OUTBOUND, 0, style(0, POINT_FRAME)).is_err(),
+        "a style needing the reserved point"
+    );
+    assert!(
+        bind(CAP_OUTBOUND, 0, style(1, POINT_HEAD)).is_err(),
+        "the retired body-hash flag"
+    );
+}
+
+/// THE CARRIERS ARE STATEMENT MARKS (the design's One Statement: an auth plugin's inbound carriers
+/// are its Statement's `MARK_WORD_CARRIER` word marks, never a tail fact): the kind reads them off
+/// the Statement at bind, lower-case and in order, and skips every other word class. More than the
+/// host's bound refuses the load.
+#[test]
+fn the_carriers_are_the_statements_carrier_marks() {
+    use busbar_contract::abi::auth::{AuthTail, CAP_INBOUND, LOGIN_KIND_NONE, POINT_HEAD};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, MarkWord, MARK_WORD_HOOK};
+    use busbar_contract::abi::sdk::auth_door::carrier;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    const TAIL: AuthTail = AuthTail {
+        head: KindTailHead {
+            size: size_of::<AuthTail>() as u32,
+            _reserved: 0,
+        },
+        caps: CAP_INBOUND,
+        facts: 0,
+        login_kind: LOGIN_KIND_NONE,
+        inbound_points: POINT_HEAD,
+        styles: std::ptr::null(),
+        styles_len: 0,
+    };
+    let tail: &'static AuthTail = Box::leak(Box::new(TAIL));
+    let carriers = |words: &'static [MarkWord]| {
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            mark_words: words.as_ptr(),
+            mark_words_len: words.len(),
+            ..statement("t", "1", 0)
+        };
+        <Auth as Kind>::context(&st).map(|c| {
+            c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
+                .map(|f| f.carriers)
+        })
+    };
+    let hook = MarkWord {
+        class: MARK_WORD_HOOK,
+        _reserved: 0,
+        word: abi_str("not-a-carrier"),
+    };
+    let words: &'static [MarkWord] =
+        Box::leak(Box::new([carrier("X-Signature"), hook, carrier("x-id")]));
+    assert_eq!(
+        carriers(words),
+        Ok(Some(vec!["x-signature".to_string(), "x-id".to_string()]))
+    );
+    assert_eq!(carriers(&[]), Ok(Some(Vec::new())));
+    let many: &'static [MarkWord] = Box::leak(vec![carrier("x-many"); 65].into_boxed_slice());
+    assert!(
+        carriers(many).is_err(),
+        "more carriers than the host's bound"
+    );
 }

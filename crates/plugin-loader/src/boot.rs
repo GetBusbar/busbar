@@ -174,6 +174,16 @@ pub enum Origin {
     },
 }
 
+/// The `from` word of every rewrite of `class` (`REWRITE_*`) a Statement rendering states: an
+/// alias config may give the plugin ([`REWRITE_ALIAS`]), a reference key that names it
+/// ([`REWRITE_SUGAR`]).
+pub(crate) fn rewrites(r: &Read, class: u32) -> impl Iterator<Item = String> + '_ {
+    r.rewrites
+        .iter()
+        .filter(move |(c, _, _)| *c == class)
+        .map(|(_, from, _)| from.clone())
+}
+
 /// ONE DISCOVERED PLUGIN: the facts [`select`] reads, off its Statement rendering (a linked row's or
 /// a signed manifest's) — never off an opened plugin.
 #[derive(Debug, Clone)]
@@ -220,12 +230,7 @@ impl Candidate {
         })?;
         let kind = KindCode::from_raw(r.kind)
             .ok_or_else(|| format!("the Statement names kind {}", r.kind))?;
-        let words = |class| {
-            r.rewrites
-                .iter()
-                .filter(move |(c, _, _)| *c == class)
-                .map(|(_, from, _)| from.clone())
-        };
+        let words = |class| rewrites(&r, class);
         let mut aliases: Vec<String> = words(REWRITE_ALIAS).collect();
         if let Some(a) = alias.filter(|a| *a != r.name && !aliases.iter().any(|x| x == a)) {
             aliases.push(a.to_string());
