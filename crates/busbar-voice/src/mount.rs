@@ -615,7 +615,7 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
             method: RouteMethod::Get,
             auth: RouteAuth::None,
             handler: Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                Box::pin(metadata_route(ctx))
+                Box::pin(protected_resource_route(ctx))
             }),
         },
     ]
@@ -624,7 +624,7 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
 /// The protected-resource metadata document: the audience a token at this plane's doors must carry,
 /// as one reading of the public URL. No authorization server is named: the plane is configured with
 /// none.
-async fn metadata_route(ctx: PlaneReqCtx) -> axum::response::Response {
+async fn protected_resource_route(ctx: PlaneReqCtx) -> axum::response::Response {
     let Some(mount) = ctx.slot.downcast_ref::<VoiceMount>() else {
         return refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
