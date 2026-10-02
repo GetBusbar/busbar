@@ -18,11 +18,11 @@ schema = 1
 # ── Plugin-only crates ────────────────────────────────────────────────────────────────────────────
 # Rendered as `name = { version, default-features, features }`; `repos` and `reason` are for review.
 [plugin-deps.ldap3]
-version = "0.11"
+version = "0.12"
 default-features = false
 features = ["sync"]
 repos = ["busbar-auth-ldap"]
-reason = "the LDAP client of the ldap auth module. Its tls-rustls feature is a plugin-side TLS stack and is net-banned; ldap3 0.12 drops the rustls 0.21 / ring 0.16 second majors (DEPS-AUDIT cut #7)."
+reason = "the LDAP client of the ldap auth module. 0.12 is on rustls 0.23 / ring 0.17 (DEPS-AUDIT cut #7, busbar-auth-ldap#7). Its TLS features are a plugin-side TLS stack and are net-banned."
 
 [plugin-deps.mysql]
 version = "26"
