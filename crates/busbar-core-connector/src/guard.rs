@@ -40,8 +40,8 @@ use busbar_kernel::config::Destinations;
 
 /// THE DEFAULT POLICY, ONE TABLE (OWNER ruling Q7, 2026-10-02: operator infrastructure EXEMPT):
 /// the egress classes whose dials the private address refusal holds for. A destination the
-/// operator writes into config is trusted (provider/upstream URLs, export sinks, store, secret and
-/// auth plugin connections: the `provider` and `operator-infrastructure` classes, a
+/// operator writes into config is trusted (every configured URL and plugin connection: the
+/// `provider` and `operator-infrastructure` classes, a
 /// `loopback-allowed` need, and any need whose target its config names, see
 /// [`crate::Connector`]); the refusal holds for destinations that come from request data or the
 /// network (a caller- or plane-named target: the default class, `open-web`). Cloud metadata is

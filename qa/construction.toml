@@ -1553,7 +1553,7 @@ kernel_crate = "busbar-kernel"
 #    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
 # ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
 #    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
-kernel_ceiling = 55537
+kernel_ceiling = 55523
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
