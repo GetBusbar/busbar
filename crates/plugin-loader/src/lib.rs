@@ -33,11 +33,9 @@ use std::os::raw::c_void;
 use std::path::Path;
 
 pub mod auth;
-// The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
 /// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
 pub mod boot;
-pub mod builtin_secret;
 pub mod carrier;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
@@ -57,6 +55,8 @@ pub mod observe;
 pub mod plane;
 pub mod registry;
 pub mod scrape;
+/// THE SECRET AXIS over the one dispatcher: every admitted secret plugin, linked or dropped in.
+pub mod secret_calls;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.

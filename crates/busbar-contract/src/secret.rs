@@ -2,21 +2,20 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The SECRET-MODULE contract (`kind: secret` plugins). A secret module turns a config secret
-//! reference's opaque `settings` into the secret BYTES: the built-in `env` module reads an
-//! environment variable (settings.key), the built-in `file` module reads a file (settings.path),
-//! and a third-party module (vault, a cloud secret manager, a database) implements the same trait
-//! behind the plugin trust pipeline. The engine sees only `dyn SecretModule` - never the
-//! implementation - and treats every failure as FAIL-CLOSED (an unresolvable secret refuses boot,
-//! never resolves empty).
+//! reference's opaque `settings` into the secret BYTES: the `env` plugin reads an environment
+//! variable (settings.key), the `file` plugin reads a file (settings.path), and a third-party module
+//! (vault, a cloud secret manager, a database) implements the same contract behind the plugin trust
+//! pipeline. The engine sees only the contract - never the implementation - and treats every
+//! failure as FAIL-CLOSED (an unresolvable secret refuses boot, never resolves empty).
 //!
 //! Moved here, module-path-only, from `busbar-api` (DECISIONS #83/#84; the per-kind trait is the
 //! contract's, #35(a)). The error is [`SecretModuleError`] here because [`crate::kinds::SecretError`]
 //! is a different type (#35 de-collision); its `Debug` keeps the historical `SecretError` label so
-//! every rendering is byte-identical. The BUILT-IN resolution
-//! (`resolve_builtin`, the `env`/`file` readers) did not come: it reads the environment and the
-//! filesystem, which is machinery, not a shape (#83(b)); it went to the plugin loader, which opens
-//! those two built-in rows. The [`SecretResolve`] seam followed the config secret reference it takes
-//! into this crate once that reference merged here, when `busbar-api` retired.
+//! every rendering is byte-identical. The `env`/`file` sources are ordinary secret-kind plugins in
+//! their own repos (`busbar-secret-env`, `busbar-secret-file`; THE DESIGN §2), called through the
+//! secret kind table; the kernel reaches every loaded secret plugin through [`SecretAxis`] and
+//! [`SecretCalls`]. The [`SecretResolve`] seam followed the config secret reference it takes into
+//! this crate once that reference merged here, when `busbar-api` retired.
 
 use crate::secret_ref::SecretRef;
 
@@ -159,4 +158,65 @@ pub trait SecretResolve: Send + Sync {
     /// Resolve a reference to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or
     /// empty). Some consumers — a credential-minting path, for instance — need the string form.
     fn resolve_string(&self, secret: &SecretRef) -> Result<String, String>;
+}
+
+/// How a secret plugin refused a `resolve`: the `abi::secret::ERROR_KIND_*` code its answer carried
+/// and the operator-facing text (never secret material; the host passes it through verbatim).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretRefused {
+    /// One of `abi::secret::ERROR_KIND_*`; `ERROR_KIND_INTERNAL` when the plugin faulted or timed
+    /// out rather than answering.
+    pub error_kind: u32,
+    /// The refusal text.
+    pub text: String,
+}
+
+/// ONE OPENED SECRET PLUGIN INSTANCE'S CALLS, as the kernel's secret resolver makes them (every
+/// secret resolution crosses the secret kind table through the one dispatcher). The plugin loader
+/// implements it; the kernel names only this. Every call is boot-, refresh- or setup-time, off the
+/// request path, and blocks the calling thread up to its deadline.
+pub trait SecretCalls: Send + Sync {
+    /// `resolve` one reference's `settings` object (JSON bytes) to the secret's material. The
+    /// plugin's lease is released before this returns; the material is held only in the
+    /// [`Redacted`](crate::redacted::Redacted) it comes back in.
+    ///
+    /// # Errors
+    /// The plugin's refusal, its code and its text.
+    fn resolve(&self, settings: &[u8])
+        -> Result<crate::redacted::Redacted<Vec<u8>>, SecretRefused>;
+}
+
+/// THE SECRET AXIS, as the composition root hands it to the kernel (ARCHITECT ruling Q8: the kernel
+/// receives contract `<Kind>Axis` seams from the root, never the loader): every secret plugin the
+/// root admitted, linked or dropped in, by the `module` a reference spells (its Statement name or an
+/// alias). Installed once, in the root's rows; the kernel names nothing behind it.
+pub trait SecretAxis: Send + Sync {
+    /// Whether a secret plugin answers `module`, linked or dropped in.
+    fn answers(&self, module: &str) -> bool;
+
+    /// Whether `module` names a secret plugin this build LINKS (a reference to it needs no
+    /// `secrets:` block and no plugins directory).
+    fn linked(&self, module: &str) -> bool;
+
+    /// The process's ONE instance of the linked plugin `module` names, opened on first use with no
+    /// settings (a linked source takes no module-level configuration).
+    ///
+    /// # Errors
+    /// No linked plugin answers `module`, or it will not load or open; the text names it.
+    fn shared(&self, module: &str) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
+
+    /// OPEN a new instance of `module` over its module-level `settings` (as written: a secret
+    /// reference stays a reference), each settings key its Statement names in `secret_refs`
+    /// resolved through `resolve` and lent to `open` in that order. Closed when the last handle
+    /// drops.
+    ///
+    /// # Errors
+    /// No plugin answers `module`, a named secret reference does not resolve, or the plugin will not
+    /// load or open; the text names it.
+    fn open(
+        &self,
+        module: &str,
+        settings: &serde_json::Value,
+        resolve: &dyn Fn(&SecretRef) -> Result<Vec<u8>, String>,
+    ) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
 }
