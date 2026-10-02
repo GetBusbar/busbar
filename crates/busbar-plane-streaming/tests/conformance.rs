@@ -14,7 +14,6 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, CancelIn, CancelOut, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
 };
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN,
@@ -23,7 +22,7 @@ use busbar_plane_streaming::door;
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::{
     in_head, load_dropped, load_linked, out_head, Bind, DispatchConfig, Dispatcher, Frame,
-    ManifestFacts, NoSink, Plugin,
+    LinkedRow, NoSink, Plugin,
 };
 
 fn z<T>() -> T {
@@ -31,12 +30,20 @@ fn z<T>() -> T {
     unsafe { zeroed() }
 }
 
-fn bind(d: &Dispatcher) -> Bind {
+/// The bind for one instance, labelled `instance` (two instances never share a label).
+fn bind(d: &Dispatcher, instance: &str) -> Bind {
     Bind {
+        instance: Arc::from(instance),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
+        conns: None,
     }
+}
+
+/// The compiled-in row: the door and the Statement rendering it states.
+fn row() -> LinkedRow {
+    LinkedRow::of(door::door).expect("the streaming door states itself")
 }
 
 fn json(b: &'static [u8]) -> Blob {
@@ -102,7 +109,7 @@ fn snapshot(p: *const PlaneSnapshot) -> String {
 }
 
 fn linked(d: &Dispatcher) -> Plugin<Plane> {
-    load_linked::<Plane>(door::door, bind(d)).expect("the linked streaming door loads")
+    load_linked::<Plane>(&row(), bind(d, "linked")).expect("the linked streaming door loads")
 }
 
 /// The example `cdylib` in this target dir (`cargo test` builds examples). Under CI a missing
@@ -118,13 +125,10 @@ fn dropped(d: &Dispatcher) -> Option<Plugin<Plane>> {
         path.exists() || std::env::var_os("CI").is_none(),
         "the streaming_door example cdylib is not built under CI; a both-ways proof must not skip"
     );
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: KindCode::Plane,
-        kind_abi: KindCode::Plane.abi_version(),
-    };
+    let stated = row().statement;
     path.exists().then(|| {
-        load_dropped::<Plane>(&path, &facts, bind(d)).expect("the dropped streaming door loads")
+        load_dropped::<Plane>(&path, &stated, bind(d, "dropped"))
+            .expect("the dropped streaming door loads")
     })
 }
 
@@ -133,6 +137,8 @@ fn validate(p: &Plugin<Plane>, settings: &'static [u8]) -> Outcome {
         ValidateIn {
             head: in_head(),
             settings: json(settings),
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
         },
         out_head(),
     );
