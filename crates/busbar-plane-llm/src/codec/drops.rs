@@ -444,6 +444,15 @@ impl Carried {
     /// root) that this dialect does not carry, the shallowest only, each once, in the order met. A
     /// `null` member carries nothing and is not named.
     pub fn unmapped(&self, root: &str, body: &Value) -> Vec<String> {
+        // A frame keyed by its event name: an event the dialect does not carry is named whole, and
+        // one it carries whole names nothing below it.
+        if !root.is_empty() {
+            match self.cover(root) {
+                Cover::Carried => return Vec::new(),
+                Cover::Unmapped => return vec![root.to_string()],
+                Cover::Above => {}
+            }
+        }
         let mut out = Vec::new();
         self.walk(body, root, &mut out);
         out
