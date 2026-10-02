@@ -13,6 +13,8 @@
 //!   (PREFER and REJECT), which `check_decide` refuses: the host must answer FAULT.
 //! * [`untailed`] (linked only) — the conforming plugin whose Statement states no hook tail, which
 //!   the host refuses at load (ARCHITECT Q-SO8).
+//! * [`panicking`] (linked only) — the same plugin whose `decide` PANICS: the SDK's door catches
+//!   it and answers FAULT, which the hook axis answers as broken, never a verdict (PB-81).
 //!
 //! Both built doors state their tail ([`TAIL`]): a gate that asks for neither view.
 //! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`.
@@ -38,6 +40,8 @@ pub const NAME: &str = "both-ways-hook";
 pub const BROKEN_NAME: &str = "both-ways-hook-broken";
 /// The untailed door's Statement name.
 pub const UNTAILED_NAME: &str = "both-ways-hook-untailed";
+/// The panicking door's Statement name.
+pub const PANICKING_NAME: &str = "both-ways-hook-panicking";
 
 /// The status a rejected request is answered with.
 pub const REJECT_STATUS: u16 = 429;
@@ -112,6 +116,19 @@ impl SafeSlot for DecideBroken {
     ) -> Outcome {
         out.set(|o| &o.verbs, VERB_PREFER | VERB_REJECT);
         Outcome::Ready
+    }
+}
+
+/// `decide`, PANICKING: the slot body panics before it answers.
+pub struct DecidePanics;
+
+impl SafeSlot for DecidePanics {
+    type In = DecideIn;
+    type Out = DecideOut;
+    type State = Held<Gate>;
+
+    fn call(_: Instance<'_, Held<Gate>>, _: Lent<'_, DecideIn>, _: Out<'_, DecideOut>) -> Outcome {
+        panic!("the panicking hook fixture's decide panics")
     }
 }
 
@@ -192,4 +209,9 @@ pub mod untailed {
         @statement busbar_contract::abi::sdk::door::statement(super::UNTAILED_NAME, "1.6.0", 8),
         super::Decide
     );
+}
+
+/// The conforming plugin whose `decide` panics.
+pub mod panicking {
+    hook_door!(super::PANICKING_NAME, super::DecidePanics);
 }

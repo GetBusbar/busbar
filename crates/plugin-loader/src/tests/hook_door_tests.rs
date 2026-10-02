@@ -32,7 +32,7 @@ use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
 use crate::hook_door_conformance_tests::hook_door_plugin;
 
-use hook_door_plugin::{BROKEN_NAME, NAME, REJECT_STATUS, UNTAILED_NAME};
+use hook_door_plugin::{BROKEN_NAME, NAME, PANICKING_NAME, REJECT_STATUS, UNTAILED_NAME};
 
 /// Every call's budget.
 const BUDGET: Duration = Duration::from_secs(5);
@@ -236,6 +236,33 @@ async fn a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors() {
         linked,
         run(dropped_rows).await,
         "the same refusal, whichever door"
+    );
+}
+
+/// PB-81 (a panicking plugin is a fail-closed error): a hook whose `decide` PANICS is caught at
+/// its door and answered FAULT, which the axis answers as BROKEN, never a verdict, promptly and
+/// without unwinding into the host. The kernel reads every answer that is not READY as an error
+/// its `on_error` decides.
+#[tokio::test]
+async fn a_panicking_hook_is_broken_through_the_axis_never_a_verdict() {
+    let axis = rows(hook_door_plugin::panicking::door, "hook_door", Way::Linked).expect("linked");
+    let calls = axis
+        .open(
+            PANICKING_NAME,
+            "hooks.gate",
+            &json!({"reject_over_messages": 3}),
+            BUDGET,
+        )
+        .expect("the panicking hook opens: only its decide panics");
+    let started = std::time::Instant::now();
+    let answered = decided(2, &calls.decide(frame(2), BUDGET).await);
+    assert!(
+        answered.contains("broken (") && answered.contains("FAULT"),
+        "{answered}"
+    );
+    assert!(
+        started.elapsed() < BUDGET,
+        "a caught panic answers at once, not on the call's budget"
     );
 }
 

@@ -196,11 +196,6 @@ item = "abi::cold"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/hook.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
 file = "crates/plugin-loader/src/host.rs"
 item = "abi::cold"
 
@@ -312,11 +307,6 @@ item = "busbar_transport_decl"
 [[finding]]
 rule = "one-memory-abi:spawn-blocking"
 file = "crates/plugin-loader/src/export.rs"
-item = "spawn_blocking"
-
-[[finding]]
-rule = "one-memory-abi:spawn-blocking"
-file = "crates/plugin-loader/src/hook.rs"
 item = "spawn_blocking"
 
 [[finding]]
