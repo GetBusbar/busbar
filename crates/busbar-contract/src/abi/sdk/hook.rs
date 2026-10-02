@@ -800,14 +800,10 @@ pub trait HookOpen: 'static {
     fn open(settings: &str) -> Result<Box<dyn Hook>, String>;
 }
 
-/// The hook kind's Statement tail, for a plugin's `const`: `words` are its declared hook words.
+/// The hook kind's Statement tail, for a plugin's `const`. A plugin's hook words are Statement
+/// word marks ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)), not tail facts.
 #[must_use]
-pub const fn tail(
-    kind_class: u32,
-    prompt_access: u32,
-    user_access: u32,
-    words: &'static [AbiStr],
-) -> Tail {
+pub const fn tail(kind_class: u32, prompt_access: u32, user_access: u32) -> Tail {
     Tail {
         head: KindTailHead {
             size: std::mem::size_of::<Tail>() as u32,
@@ -822,12 +818,6 @@ pub const fn tail(
         requested_signals_len: 0,
         routes: std::ptr::null(),
         routes_len: 0,
-        declared_words: if words.is_empty() {
-            std::ptr::null()
-        } else {
-            words.as_ptr()
-        },
-        declared_words_len: words.len(),
     }
 }
 

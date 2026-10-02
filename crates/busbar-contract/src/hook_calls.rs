@@ -98,7 +98,7 @@ pub struct HookFacts {
     pub user: u32,
     /// Whether the plugin declares itself infallible.
     pub infallible: bool,
-    /// The hook words the plugin declares (its tail's `declared_words`).
+    /// The hook words the plugin declares (its Statement's `MARK_WORD_HOOK` word marks).
     pub words: Vec<String>,
 }
 
