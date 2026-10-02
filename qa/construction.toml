@@ -578,6 +578,18 @@ from    = 233
 to      = 236
 because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2026-09-30 (URL-PARSE audit) SEAM puts the one URL and host reader at busbar-contract/src/net.rs (BUSBAR-1.6.0.md, the engine-folds paragraph). The three hits are the web scheme names the reader must spell: net.rs:398 (the http literal of strip_scheme, moved verbatim from busbar-kernel-egress trust::net) and net.rs:518 (the http and ws arms of UrlFamily::of, folded from the two split_ws_url copies). The pair nets down in the same commit: busbar-kernel-egress x transport 56 -> 55 and x plane 16 -> 13 (net -1). Measured by cargo xtask gate kind-isolation --report on predev 8a4b18692: 233 at the base, 236 at the tip."
 
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 29392
+to      = 29397
+because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over predev 29392, after the union drain), merge-steward delegation <= +150 (ARCHITECT 2026-10-01). Predev arms 29392."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 29392
+to      = 29397
+because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over 29392, after the union drain), merge-steward delegation <= +150. Predev arms 29392."
+
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
 #
@@ -888,7 +900,8 @@ because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A deletes the dead hot/cold ABI; lower only).
-contract_caps = 29392
+# ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
+contract_caps = 29397
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1538,7 +1551,9 @@ kernel_crate = "busbar-kernel"
 #    field strip lives in busbar-kernel-egress and its two identical early refusals share one branch; lower-only.
 # ── LOWERED 55783 -> 55605 at the measurement by DEL-REQLOG (TODO PATH P2, card step 4): proxy/reqlog and its
 #    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
-kernel_ceiling = 55605
+# ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
+#    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
+kernel_ceiling = 55599
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
@@ -1667,7 +1682,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A; lower only).
-caps_contract_ceiling = 29392
+# ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
+caps_contract_ceiling = 29397
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
