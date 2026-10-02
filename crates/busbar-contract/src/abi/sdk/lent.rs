@@ -450,7 +450,7 @@ macro_rules! lend {
 }
 
 use crate::abi::auth::{IdentityBuf, NamedValue, VerifyIn};
-use crate::abi::mechanism::lifecycle::{OpenIn, RefreshIn, ValidateIn};
+use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
     ArriveIn, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn, ServeIn,
@@ -469,6 +469,7 @@ lend! {
         buf(err_buf, err_cap) -> u8;
     }
     RefreshIn { list(secrets, secrets_len) -> Blob; }
+    ReadyIn { one(host) -> HostTables; }
     // THE AUTH KIND (`abi::auth`): `verify`'s carriers, and the host's identity buffer.
     VerifyIn { list(carrier, carrier_len) -> NamedValue; }
     IdentityBuf {
