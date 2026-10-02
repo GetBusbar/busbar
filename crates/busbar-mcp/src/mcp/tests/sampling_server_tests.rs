@@ -6,7 +6,7 @@
 //! refusals that name that plane read its DECLARED display name, and a registry where no plane
 //! declares the class refuses exactly as a deployment with no such plane always has.
 
-use super::{complete, completion_server, refusal_text, NO_COMPLETION_SERVER};
+use super::{complete, completion_server, refusal_text, CompletionRefusal, NO_COMPLETION_SERVER};
 use crate::mcp::inputreq::Refusal;
 use crate::mcp::test_engine::*;
 use busbar_contract::plane::{PlaneDeclaration, ServedOpClass};
@@ -143,11 +143,10 @@ async fn a_plane_that_does_not_declare_the_class_answers_no_sampling_ask() {
 }
 
 /// THE HOST NAMES THE FACT, THIS PLANE WORDS IT (lean-core). The host's completion seam returns a
-/// neutral [`CompletionRefusal`](busbar_kernel::plane_host::CompletionRefusal); the words a sampling
-/// ask is refused in live here, byte for byte what the seam used to return as text.
+/// neutral [`CompletionRefusal`]; the words a sampling ask is refused in live here, byte for byte
+/// what the seam used to return as text.
 #[test]
 fn the_hosts_neutral_completion_refusals_read_in_this_planes_words() {
-    use busbar_kernel::plane_host::CompletionRefusal;
     assert_eq!(
         refusal_text(CompletionRefusal::NotInstalled),
         "no default chat protocol is installed"
