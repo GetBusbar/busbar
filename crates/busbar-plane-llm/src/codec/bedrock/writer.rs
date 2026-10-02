@@ -531,7 +531,8 @@ impl ProtocolWriter for BedrockWriter {
                         content_arr.push(serde_json::json!({ (keys::IMAGE): image_block }));
                     }
                 }
-                crate::codec::ir::IrBlock::Json(_) => {
+                crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                     // Structured-json content has no top-level Bedrock response shape (it is only a
                     // tool-result content member); omit it from an assistant response turn.
                 }
@@ -860,7 +861,8 @@ impl BedrockWriter {
                     | crate::codec::ir::IrBlock::Media { cache_control, .. } => {
                         cache_control.as_ref()
                     }
-                    crate::codec::ir::IrBlock::Json(_) => None,
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => None,
                 };
                 // The block's projection may be NOTHING (an image with no Converse source, an audio
                 // attachment); a cachePoint is only placed after a block that was actually written.
@@ -917,6 +919,8 @@ impl BedrockWriter {
                                 // decodes). Preserve the actual content instead of collapsing it to
                                 // the constant string `"{}"`: a JSON-string Text-equivalent or a
                                 // structured result that arrives via the IR is re-encoded faithfully.
+                                // A provider-run tool's record has no tool-result content form.
+                                crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
                                 crate::codec::ir::IrBlock::Json(value) => {
                                     // A structured-json tool-result block re-emits as a native
                                     // `{"json": <value>}` block, restoring same-protocol fidelity.
@@ -1047,7 +1051,8 @@ impl BedrockWriter {
                             content_arr.push(b);
                         }
                     }
-                    crate::codec::ir::IrBlock::Json(_) => {
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                         // Structured-json content is only a tool-result content member; it has no
                         // top-level message-content shape, so omit it from a message turn.
                     }
