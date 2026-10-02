@@ -41,21 +41,27 @@ pub fn rows() -> Rows {
 
 #[cfg(any(test, feature = "test-support"))]
 fn stand_in() -> Rows {
+    // The parsed rows live in one static and the borrowed table in a second, so every `&'static
+    // str` points into a static rather than into a leaked allocation.
+    static OWNED: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     static STAND_IN: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
         std::sync::OnceLock::new();
     STAND_IN.get_or_init(|| {
-        let doc: Value = serde_yaml::from_str(include_str!(
-            "../../tests/fixtures/frozen_customer_text.yaml"
-        ))
-        .expect("the frozen-text fixture parses");
-        doc.get("legacy_rows")
-            .and_then(Value::as_mapping)
-            .expect("the frozen-text fixture carries `legacy_rows`")
-            .iter()
-            .filter_map(|(k, v)| {
-                let leak = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
-                Some((leak(k.as_str()?), leak(v.as_str()?)))
+        OWNED
+            .get_or_init(|| {
+                let doc: Value = serde_yaml::from_str(include_str!(
+                    "../../tests/fixtures/frozen_customer_text.yaml"
+                ))
+                .expect("the frozen-text fixture parses");
+                doc.get("legacy_rows")
+                    .and_then(Value::as_mapping)
+                    .expect("the frozen-text fixture carries `legacy_rows`")
+                    .iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?.to_owned(), v.as_str()?.to_owned())))
+                    .collect()
             })
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect()
     })
 }
