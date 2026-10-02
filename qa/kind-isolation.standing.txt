@@ -37,7 +37,7 @@ kind-isolation:matrix	ratchet	busbar-plane-mcp × legacy	11
 kind-isolation:matrix	ratchet	busbar-plugin-loader × hooks	3
 kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	62
 kind-isolation:matrix	ratchet	busbar-store-memory × plane	6
-kind-isolation:matrix	ratchet	busbar-voice × contract	122
+kind-isolation:matrix	ratchet	busbar-voice × contract	119
 kind-isolation:matrix	ratchet	busbar-voice × plane	871
 kind-isolation:matrix	unlisted-cell	busbar × legacy	85
 kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
@@ -78,7 +78,7 @@ kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × legacy	3
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × plane	44
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × transport	25
 kind-isolation:matrix	unlisted-cell	busbar-plane-llm × legacy	40
-kind-isolation:matrix	unlisted-cell	busbar-plane-streaming × legacy	32
+kind-isolation:matrix	unlisted-cell	busbar-plane-streaming × legacy	24
 kind-isolation:matrix	unlisted-cell	busbar-plugin-example-plane × plane	2
 kind-isolation:matrix	unlisted-cell	busbar-transport-http × legacy	8
 kind-isolation:matrix	unlisted-cell	busbar-voice × kernel	9
