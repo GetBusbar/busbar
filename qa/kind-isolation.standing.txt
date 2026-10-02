@@ -128,7 +128,6 @@ kind-isolation:matrix	unlisted-edge	kernel -> store	2
 kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	9
 kind-isolation:matrix	unlisted-edge	root -> cleanliness	205
 kind-isolation:matrix	unlisted-edge	legacy -> auth	24
-kind-isolation:matrix	unlisted-edge	transport -> auth	1
 kind-isolation:matrix	unlisted-instance	busbar × export	8
 # KIND-ARRIVAL (ARCHITECT RULING 2026-09-30, WIRE-AUTH residual 3): "sigv4" at crates/busbar-contract/src/abi/cold/mod.rs:368, the dead cold lane; expires at M6-COLD-DELETE.
 kind-isolation:matrix	unlisted-instance	busbar-contract × auth	1
