@@ -58,8 +58,9 @@ use busbar_kernel::{
     },
     handlers::{request_handler, Op, OpDispatch},
     proto::convert_headers,
-    sigv4::uri_encode_path,
 };
+// The SigV4 path canonicaliser: the plane's own (byte-identical to the identity unit's).
+use busbar_plane_llm::exchange::attempt::uri_encode_path;
 // App-retype WEDGE 3 (THE FLIP): the engine no longer names core's `state::App`. The forward
 // path threads the neutral `host: &Arc<dyn EngineHost>` (minted core-side, carried on the arrival) and
 // the plane's own `rt: &Arc<NativeRuntime>` (resolved off the host slot) instead. Every `app.X` reach

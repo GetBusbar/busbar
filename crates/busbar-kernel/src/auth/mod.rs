@@ -17,8 +17,12 @@ use crate::diagnostics::{
     AUTH_CHAIN_OPEN_RELAY, AUTH_CHAIN_PANICKED, AUTH_OFFLOAD_SATURATED,
     KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
 };
-use crate::sigv4::{SIGV4_ALGORITHM, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
 use crate::state::App;
+use busbar_kernel_identity::egress_auth::sigv4::{uri_encode_path, SIGV4_ALGORITHM};
+use busbar_kernel_identity::ingress_sigv4::{
+    parse_authorization_header, verify_inbound_sigv4, InboundRequest, X_AMZ_CONTENT_SHA256,
+    X_AMZ_DATE,
+};
 
 /// The two non-`Authorization` headers that native vendor SDKs use to carry their API key:
 /// the Anthropic SDK sends `x-api-key`, the Gemini SDK sends `x-goog-api-key`. busbar accepts
@@ -62,7 +66,7 @@ pub const ADMIN_PATH: &str = "/api";
 const ADMIN_PATH_PREFIX: &str = "/api/";
 /// Fixed dummy secret used when an inbound SigV4 AccessKeyId is unknown: we still run the
 /// full HMAC verification so the timing is indistinguishable from a bad-signature rejection
-/// (no AccessKeyId-enumeration oracle). The `crate::sigv4` test module references this via
+/// (no AccessKeyId-enumeration oracle). The identity crate's SigV4 tests reference this via
 /// `crate::auth::DUMMY_SECRET` rather than maintaining a separate copy.
 pub const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
 
@@ -710,7 +714,7 @@ impl AuthMiddleware {
     /// above and otherwise yields `None` here. Inbound SigV4 is now handled SEPARATELY, under
     /// governance, by `verify_sigv4_ingress_credential` (the MinIO/S3-compatible model: an AWS-style
     /// access-key-id + secret access key issued per virtual key, whose signature busbar verifies via
-    /// `crate::sigv4`). On a successful verify the same `GovCtx` a bearer auth attaches is attached,
+    /// `busbar_kernel_identity::ingress_sigv4`). On a successful verify the same `GovCtx` a bearer auth attaches is attached,
     /// so a SigV4-signing ingress now receives full virtual-key governance under `token`/governance
     /// mode — it no longer requires `passthrough`. This token path itself is unchanged.
     pub fn extract_client_token(req: &Request<Body>) -> Option<String> {
@@ -1742,7 +1746,7 @@ pub(crate) async fn auth_middleware(
             .get(AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        let structurally_valid = crate::sigv4::parse_authorization_header(auth_value).is_ok()
+        let structurally_valid = parse_authorization_header(auth_value).is_ok()
             && req.headers().contains_key(X_AMZ_CONTENT_SHA256)
             && req.headers().contains_key(X_AMZ_DATE);
         if !structurally_valid {
@@ -1994,8 +1998,6 @@ fn verify_sigv4_ingress_credential(
     req: &Request<Body>,
     body: &[u8],
 ) -> Result<crate::governance::VirtualKey, ()> {
-    use crate::sigv4::{parse_authorization_header, verify_inbound_sigv4, InboundRequest};
-
     // Parse the Authorization header. (has_sigv4_authorization already confirmed the algorithm token,
     // but re-parse fully here — a malformed-but-AWS4-prefixed header still rejects.)
     let auth_value = req
@@ -2087,7 +2089,7 @@ fn verify_sigv4_ingress_credential(
         return Err(());
     };
 
-    let canonical_uri = crate::sigv4::uri_encode_path(req.uri().path());
+    let canonical_uri = uri_encode_path(req.uri().path());
     let canonical_qs = canonical_query_string(req.uri().query());
     let method = req.method().as_str().to_string();
 
