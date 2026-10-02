@@ -162,6 +162,7 @@ fn restart_phase() {
         // sealed and `/verify` reports nothing; the held run is then edited in place, and `/verify`
         // names the amendment chain. A process of its own, because the node journal is the
         // process's one journal.
+        #[cfg(feature = "root-admin")]
         "tamper" => {
             correct_counts(
                 busbar_contract::authz::Scope::Full,
@@ -222,6 +223,7 @@ fn run_phase(phase: &str, dir: &std::path::Path) {
 }
 
 /// U15: `GET /admin/verify` VERIFIES THE HELD AMENDMENT RUN ON DEMAND. See the `tamper` phase.
+#[cfg(feature = "root-admin")]
 #[test]
 fn verify_reports_an_edit_to_the_held_amendment_run() {
     let dir = std::env::temp_dir().join(format!(
