@@ -27,8 +27,7 @@ use super::HookRows;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
-#[path = "../../tests/fixtures/hook_door_plugin.rs"]
-mod hook_door_plugin;
+use crate::hook_door_conformance_tests::hook_door_plugin;
 
 use hook_door_plugin::{BROKEN_NAME, NAME, REJECT_STATUS};
 
