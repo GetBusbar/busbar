@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::sigv4;
 use busbar_contract::records::ScopeRef;
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
@@ -1226,7 +1227,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     store
         .put_key(&VirtualKey {
             id: "empty".to_string(),
-            generation_hash: crate::sigv4::sha256_hex(b""),
+            generation_hash: sigv4::sha256_hex(b""),
             name: "empty".to_string(),
             allowed_scopes: Some(vec![ScopeRef::pool("pa")]),
             enabled: true,
@@ -1357,7 +1358,7 @@ fn test_caller_token_debug_redacts_value() {
 
 /// Sign a SigV4 POST (the verifier is service-agnostic: the service is read from the credential scope) and return the full `Authorization` header value plus the headers
 /// (host / x-amz-date / x-amz-content-sha256) the client would send, using the SAME signer
-/// (`crate::sigv4::sign_v4`) a real client uses. `amzdate` controls the signature timestamp.
+/// (`sigv4::sign_v4`) a real client uses. `amzdate` controls the signature timestamp.
 fn sign_sigv4_request(
     secret: &str,
     access_key_id: &str,
@@ -1368,7 +1369,7 @@ fn sign_sigv4_request(
     amzdate: &str,
 ) -> (String, Vec<(String, String)>) {
     let datestamp = &amzdate[0..8];
-    let payload_hash = crate::sigv4::sha256_hex(body);
+    let payload_hash = sigv4::sha256_hex(body);
     let headers = vec![
         (
             "host".to_string(),
@@ -1377,8 +1378,8 @@ fn sign_sigv4_request(
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
         (X_AMZ_DATE.to_string(), amzdate.to_string()),
     ];
-    let canonical_uri = crate::sigv4::uri_encode_path(path);
-    let (sig, signed_headers) = crate::sigv4::sign_v4(
+    let canonical_uri = sigv4::uri_encode_path(path);
+    let (sig, signed_headers) = sigv4::sign_v4(
         secret,
         region,
         service,
@@ -1434,7 +1435,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_admits_with_govctx() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
     let path = "/model/vendor.model/converse";
@@ -1464,7 +1465,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
     let datestamp = &amzdate[0..8];
@@ -1472,7 +1473,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
     // The client's ONE correct URI-encoding of a value containing '/' (per AWS SigV4 query rules,
     // which — unlike CanonicalURI — are never double-encoded).
     let wire_query = "p=a%2Fb";
-    let payload_hash = crate::sigv4::sha256_hex(b"");
+    let payload_hash = sigv4::sha256_hex(b"");
     let headers = vec![
         (
             "host".to_string(),
@@ -1481,9 +1482,9 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
         (X_AMZ_DATE.to_string(), amzdate.to_string()),
     ];
-    let canonical_uri = crate::sigv4::uri_encode_path(path);
+    let canonical_uri = sigv4::uri_encode_path(path);
     // The client signs the wire query text UNCHANGED — that IS its CanonicalQueryString.
-    let (sig, signed_headers) = crate::sigv4::sign_v4(
+    let (sig, signed_headers) = sigv4::sign_v4(
         &secret,
         "us-east-1",
         "svc",
@@ -1510,7 +1511,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
 fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
     crate::metrics::init();
     let (gov, akid, _secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     // Sign with a DIFFERENT secret than the key's.
     let (auth, headers) = sign_sigv4_request(
@@ -1539,7 +1540,7 @@ fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
 fn test_verify_sigv4_ingress_credential_unknown_access_key_id_rejected() {
     crate::metrics::init();
     let (gov, _akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     // A well-formed signature under an AccessKeyId that does not exist in the store.
     let (auth, headers) = sign_sigv4_request(
@@ -1567,8 +1568,8 @@ fn test_verify_sigv4_ingress_credential_expired_date_rejected() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     // Sign with a timestamp 10 minutes in the past — outside the ±5min skew window.
-    let stale = busbar_kernel::store::now().saturating_sub(crate::sigv4::CLOCK_SKEW_SECS + 60);
-    let (a, _d) = crate::sigv4::format_amz_time(stale);
+    let stale = busbar_kernel::store::now().saturating_sub(sigv4::CLOCK_SKEW_SECS + 60);
+    let (a, _d) = sigv4::format_amz_time(stale);
     let path = "/model/vendor.model/converse";
     let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &a);
     let req = sigv4_request(path, &auth, &headers);
@@ -1611,7 +1612,7 @@ fn test_verify_sigv4_ingress_credential_disabled_key_rejected() {
         .unwrap();
     // Disable the key.
     gov.update_key(&key.id, Some(false), None).unwrap();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &a);
     let req = sigv4_request(path, &auth, &headers);
@@ -1649,7 +1650,7 @@ fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
         .unwrap();
 
     let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
     let path = "/model/vendor.model/converse";
@@ -1670,7 +1671,7 @@ fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
     // Re-sign a fresh request (same secret/akid) and assert the SigV4 path now REJECTS — the revoked
     // subject's SigV4 credential must be rejected exactly like its signed token would be.
     let amzdate2 = {
-        let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
     let (auth2, headers2) =
@@ -1690,7 +1691,7 @@ fn test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits() {
     // body): the verifier must re-hash THESE bytes and find they match the signed digest.
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     let body = br#"{"messages":[{"role":"user","content":"hi"}]}"#;
     let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, body, &a);
@@ -1709,7 +1710,7 @@ fn test_verify_sigv4_ingress_credential_tampered_body_rejected() {
     // failure (no oracle distinguishing "body tampered" from "bad signature").
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     let signed_body = br#"{"max_tokens":16}"#;
     let tampered_body = br#"{"max_tokens":999999}"#;
@@ -1733,7 +1734,7 @@ fn test_verify_sigv4_ingress_credential_unsigned_payload_rejected() {
     // rejects it independently of any signature check, with the same opaque `Err(())`.
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     let body = b"some-body";
     let (auth, mut headers) =
