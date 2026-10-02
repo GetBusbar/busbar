@@ -1952,16 +1952,16 @@
       }
     },
     {
-      "id": "576 a Gemini turn bills Google's totalTokenCount (tool-use prompt tokens count as input)",
+      "id": "576 a Gemini turn ledgers every count Google itemizes (tool-use prompt tokens count as input)",
       "kind": "improvement",
       "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
-      "by": "owner (Matthew Jackson), Q91 answered 2026-09-27 option A; ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:110)",
+      "by": "owner (Matthew Jackson), 2026-10-02: ledger what the plane reports; fix Gemini ledging (supersedes Q91 option A's 'bills Google's totalTokenCount')",
       "cells": "^usage\\.gemini\\|tool-use\\|(total-billed|total-not-a-sum)$",
       "expected_cells": 2,
       "classes": [
         "body"
       ],
-      "rationale": "Q91 (owner, 2026-09-27, option A): \"A Gemini turn bills Google's totalTokenCount: toolUsePromptTokenCount counts as input.\" 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the bill. On usage.gemini|tool-use|total-billed (promptTokenCount 18, toolUsePromptTokenCount 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and bills tokens_input 50, spend 64000000 where 1.5.5 answered 18 / 25 and 32000000. usage.gemini|tool-use|total-not-a-sum (Google total 64, which is NOT the sum 57) must bill Google's 64; predev bills 57, a defect routed to PROTO-FIXES, so this entry's premise on that cell is false (WITHHELD, the cell stays DIVERGING) until the fix lands. NOTE: written as a NEW entry: the ruling named \"the existing signed entry (accepted-differences.json:1083)\" but that line is S-8 and no register entry mentioned Gemini tool-use or Q91. PREMISE RE-CHECKED against PROTO-FIXES #157 (2026-10-02): the fix bills 50 input + 14 output = Google's 64 on total-not-a-sum, so the premise probes the ledger (tokens_input 50, tokens_output 14) rather than the response total.",
+      "rationale": "OWNER 2026-10-02: \"ledger what the plane reports; fix Gemini ledging\" and \"1.6.0 has to be bank auditor grade money\": correctness, not 1.5.5 parity. Every usageMetadata count in the pinned wire lock is ledgered in the existing meter class Google's semantics give it (prompt and toolUsePromptTokenCount -> input, cachedContentTokenCount -> cache read, candidates and thoughtsTokenCount -> output); totalTokenCount is Google's sum and is never a unit; a total above the itemized sum is WARN-logged with the gap and not ledgered. 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the ledger. On usage.gemini|tool-use|total-billed (prompt 18, toolUsePrompt 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and ledgers tokens_input 50, tokens_output 7 where 1.5.5 answered 18 / 25 and ledgered 18 / 7. usage.gemini|tool-use|total-not-a-sum (Google total 64 against the itemized 57) ledgers the same 50 / 7: the 7-token gap is reported, never ledgered (b8605a388's 'bill Google's total as output' is reverted by this ruling). usage.gemini|stream-grounded|no-tool-use-count and cached-content|subtractive ledger exactly what 1.5.5 ledgered and are not in scope.",
       "premise": {
         "all": [
           {
@@ -1977,14 +1977,19 @@
           {
             "cell": "usage.gemini|tool-use|total-not-a-sum",
             "pointer": "/steps/1/body/json/total/tokens_output",
-            "equals": 14
+            "equals": 7
           }
         ]
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-27",
-        "ruling": "Q91 owner answer 2026-09-27 option A; ARCHITECT ruling escalate.q:110 (2026-10-02T04:00Z); R5 signed"
+        "ruling": "Q91 owner answer 2026-09-27 option A; ARCHITECT ruling escalate.q:110 (2026-10-02T04:00Z); R5 signed",
+        "amended": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-02",
+          "ruling": "owner 2026-10-02: ledger what the plane reports; fix Gemini ledging. OWNER LAW 2026-10-02: 1.6.0 has to be bank auditor grade money"
+        }
       },
       "expires": {
         "baseline": "1.5.5",

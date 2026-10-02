@@ -360,13 +360,8 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
         &serves_none,
     );
     assert_eq!(sink.closed.len(), 1);
-    assert_eq!(
-        sink.closed[0].1,
-        TurnCounters {
-            audio_ms_in: 40_000,
-            tool_calls: 2
-        }
-    );
+    let closed = sink.closed[0].1;
+    assert_eq!((closed.audio_ms_in, closed.tool_calls), (40_000, 2));
 }
 
 #[test]
@@ -391,13 +386,8 @@ fn a_barge_in_bills_what_the_interrupted_turn_served_on_the_turn_that_takes_over
     );
     let _ = p.on_server_frame(usage_done(), 0, &mut sink, &serves_none);
     assert_eq!(sink.closed.len(), 1);
-    assert_eq!(
-        sink.closed[0].1,
-        TurnCounters {
-            audio_ms_in: 1_000,
-            tool_calls: 1
-        }
-    );
+    let closed = sink.closed[0].1;
+    assert_eq!((closed.audio_ms_in, closed.tool_calls), (1_000, 1));
 }
 
 #[test]
@@ -410,4 +400,52 @@ fn a_caller_frame_that_is_not_utf8_or_names_no_known_event_goes_nowhere() {
     assert!(unknown.upstream.is_empty() && unknown.downlink.is_empty());
     p.settle_open_turn(&mut sink);
     assert!(sink.closed.is_empty(), "nothing was counted");
+}
+
+/// The `audio_seconds_in` every closed turn bills, summed over the session.
+fn billed_audio_seconds(sink: &Turns) -> u64 {
+    sink.closed
+        .iter()
+        .flat_map(|(usage, counters)| crate::session::class_counts(usage.as_ref(), *counters))
+        .filter(|(class, _)| *class == crate::meta::CLASS_AUDIO_SECONDS_IN)
+        .map(|(_, n)| n)
+        .sum()
+}
+
+/// RED-BEFORE-GREEN (MONEY-AUDIT STR-2): a session is one unit, so its uplink audio converts to
+/// seconds ONCE. Rounding each turn's milliseconds up on its own billed 20 turns of 1050 ms as 40 s;
+/// the session spoke 21 000 ms, which is 21 s.
+#[test]
+fn twenty_turns_of_1050_ms_bill_21_audio_seconds_not_40() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    // 1050 ms of pcm16 (48 bytes per ms).
+    let b64 = busbar_contract::media::base64_encode(&[0u8; 1050 * 48]);
+    for _ in 0..20 {
+        let _ = p.on_client_frame(wire(serde_json::json!({
+            "type":"input_audio_buffer.append","audio": b64
+        })));
+        let _ = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
+    }
+    assert_eq!(sink.closed.len(), 20);
+    assert_eq!(billed_audio_seconds(&sink), 21);
+}
+
+/// RED-BEFORE-GREEN (MONEY-AUDIT STR-2): a frame's bytes need not divide into whole milliseconds,
+/// and the part left over is audio too. 960 frames of 50 bytes of pcm16 are 48 000 bytes, one second;
+/// flooring each frame to 1 ms counted 960 ms.
+#[test]
+fn the_part_of_a_millisecond_a_frame_leaves_over_is_carried_not_floored() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let b64 = busbar_contract::media::base64_encode(&[0u8; 50]);
+    for _ in 0..960 {
+        let _ = p.on_client_frame(wire(serde_json::json!({
+            "type":"input_audio_buffer.append","audio": b64
+        })));
+    }
+    let _ = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
+    assert_eq!(sink.closed.len(), 1);
+    assert_eq!(sink.closed[0].1.audio_ms_in, 1000);
+    assert_eq!(billed_audio_seconds(&sink), 1);
 }

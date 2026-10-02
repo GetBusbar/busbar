@@ -438,6 +438,14 @@ identically, and every 1.5.5 key and minted secret carries over.
   if your traffic uses Gemini server-side tools (grounding, code execution, function calling),
   expect those keys' recorded spend to rise to what Google actually invoices; no config change is
   needed.
+- 1.6.0 Improvements: a Gemini turn ledgers every usage count Google itemizes, each in its own
+  meter class, and nothing else. `promptTokenCount` and `toolUsePromptTokenCount` are input, `cachedContentTokenCount` is cache
+  read (out of the prompt), `candidatesTokenCount` and `thoughtsTokenCount` are output — every
+  integer count the pinned Gemini wire lock declares under `usageMetadata`, on the buffered, streamed
+  and truncated-recovery paths. `totalTokenCount` is Google's sum, never a unit: when it exceeds the
+  itemized counts, busbar logs an audit WARN naming the gap and ledgers no invented units for it (a
+  pre-release build billed that gap as output). A translated response or stream reports the same
+  itemized counts it ledgers. **Migration:** none.
 - 1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for
   you by --migrate-config). Every hook object served by `GET /api/v1/admin/hooks[/{name}]`, and the
   follow-up read of a hook write, gains `fires_at` (the resolved stage set), `groups` and `phase`

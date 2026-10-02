@@ -781,11 +781,9 @@ mod tests {
     }
 
     /// ITEM 120: THE RULE READS THE `transport` KIND. It read six kinds, so the oracle above owed
-    /// seven rows the rule never emitted. Every transport crate now gets a row, and
-    /// `busbar-transport-http`'s is GREEN: OWNER RULING 2026-09-28 (PLUGIN LIBRARIES) lets a
-    /// transport crate use whatever third-party library it needs, so `rustls`, `tokio` and the rest
-    /// of what it really depends on are named once in `[rules.manifest-allowlist.reviewed_extra]`
-    /// rather than refused. The control is that the row is judged, not a particular breach.
+    /// seven rows the rule never emitted. Every in-tree transport crate gets a row. The transport
+    /// crates live in their own plugin repos now (P5), so a tree with none owes none: the rule's
+    /// own rows for them run in each plugin repo's CI.
     #[test]
     fn the_manifest_allowlist_rule_emits_a_row_for_every_transport_crate() {
         let cx = Ctx::workspace().expect("workspace");
@@ -802,7 +800,6 @@ mod tests {
                 .iter()
                 .map(|d| crate_name_of_dir(d))
                 .collect();
-        assert!(!transports.is_empty(), "the control needs transport crates");
         let missing: Vec<&String> = transports
             .iter()
             .filter(|c| {
@@ -814,17 +811,6 @@ mod tests {
         assert!(
             missing.is_empty(),
             "no manifest-allowlist row for {missing:?}"
-        );
-        let http = rows
-            .iter()
-            .find(|r| r.id == "manifest-allowlist:busbar-transport-http")
-            .expect("the http row");
-        assert_eq!(http.status, Status::Pass, "{}", http.detail);
-        assert!(
-            http.detail
-                .contains("busbar-transport-http (transport): every dependency is busbar-contract or reviewed"),
-            "{}",
-            http.detail
         );
     }
 
