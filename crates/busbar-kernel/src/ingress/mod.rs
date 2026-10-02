@@ -406,7 +406,7 @@ pub fn destination_guard(
             proto,
             StatusCode::BAD_REQUEST,
             crate::proxy::KIND_INVALID_REQUEST,
-            &format!("no configured rate for model '{pool}'"),
+            &crate::door::VerifyRefusal::NoRate { name: pool.into() }.message(),
         );
         return Err(Box::new(finish_rejected(
             app, gov, proto, label, started, charged_at, resp,
