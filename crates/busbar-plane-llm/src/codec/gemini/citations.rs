@@ -151,6 +151,7 @@ pub(super) fn read_gemini_citations(
                 end_index,
                 encrypted_index: None,
                 raw: Some(src.clone()),
+                ..Default::default()
             }
         })
         .collect();
@@ -290,6 +291,7 @@ pub(super) fn read_gemini_grounding_citations(
                 // a `raw` carrying `uri`/`startIndex`/`endIndex` at its OWN top level, which a
                 // `{web: {...}}` / `{retrievedContext: {...}}` chunk never does.
                 raw: Some(chunk.clone()),
+                ..Default::default()
             });
         }
     }
@@ -311,6 +313,7 @@ pub(super) fn read_gemini_grounding_citations(
                 end_index: None,
                 encrypted_index: None,
                 raw: Some(chunk.clone()),
+                ..Default::default()
             });
         }
     }
