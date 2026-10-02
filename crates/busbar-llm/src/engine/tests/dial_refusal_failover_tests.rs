@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A PROVIDER DIAL THE DESTINATION GUARD REFUSES fails over exactly as a refused connection does
-//! (OWNER ruling DESTINATION GUARD; C19-REFUSAL parity: a connect failure, never a timeout).
+//! (OWNER ruling DESTINATION GUARD; C19-REFUSAL parity).
 //!
 //! The lane's name resolves, the address it answered with is refused before any socket opens, and
 //! the attempt is a transient upstream failure classified `connect` (not `timeout`): the lane cools
