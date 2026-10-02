@@ -141,6 +141,14 @@ const STAND_IN: RootInstall = RootInstall {
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
 };
 
+/// The hook doors a test build links in place of the root's (the stand-in hook axis,
+/// [`crate::test_support::hook_axis_stand_in`]): the ranking door, under its feature.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[
+    #[cfg(feature = "hooks-ranking")]
+    fixture_hook::linked::door,
+];
+
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
 /// compiled in, its ranking hooks), its resolved default store and its registry build, installed
 /// once before the first resolution.

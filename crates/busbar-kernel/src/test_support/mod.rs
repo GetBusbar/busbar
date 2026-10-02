@@ -2097,12 +2097,6 @@ pub fn hook_fixture_statement(cdylib: &std::path::Path) -> String {
     hex::encode(rendering)
 }
 
-/// The hook doors a test build links in place of the root's: the ranking door, under its feature.
-const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[
-    #[cfg(feature = "hooks-ranking")]
-    fixture_hook::linked::door,
-];
-
 /// THE STAND-IN HOOK AXIS: `preflight::RootInstall`'s `hook_axis` in a test build (a test build has
 /// no root). The loader's hook rows over `registry` on one test dispatcher — the rows the root's
 /// axis answers with.
@@ -2117,7 +2111,7 @@ pub fn hook_axis_stand_in(
     let dispatcher =
         DISPATCHER.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
     let rows = busbar_plugin_loader::hook_door::HookRows::new(
-        STAND_IN_HOOK_DOORS,
+        crate::preflight::STAND_IN_HOOK_DOORS,
         Some(registry.as_ref()),
         dispatcher.clone(),
     )?;
