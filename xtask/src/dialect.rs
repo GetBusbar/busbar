@@ -7,18 +7,24 @@
 //! The `dialect-map` gate ([`crate::gates::dialect_map`]) runs the same compile and refuses a
 //! committed file that differs from it.
 //!
-//! The file format (stage 0: flat request rows and word tables), read through [`crate::toml_lite`]:
+//! The file format (stage 1: request, response and stream rows, word tables, no-equivalent marks),
+//! read through [`crate::toml_lite`]. A mapping file is SELF-CONTAINED: it never names another
+//! dialect's rows or word tables (a shared spelling is copied, so editing one dialect never moves
+//! another).
 //!
-//! * `[dialect] request = ["<group>", "<other dialect>.<group>", ..]`: the request row groups,
-//!   walked in order;
+//! * `[dialect] wire = "<lock>"`: the dialect's wire lock, `testing/llm-conformance/wire/<lock>.wire.json`;
+//! * `[dialect] request = ["<group>", ..]`, `response = [..]`, `stream = [..]`: the row groups of
+//!   each direction, walked in order. Every `[rows.<group>]` is listed by exactly one direction;
 //! * `[dialect] label = "<name>"`: the dialect's name in a `cap` truncation diagnostic;
 //! * `[rows.<group>]`: one row per line, `"<wire path>" = { ir = "<slot>" [, words = "<table>"]
-//!   [, hook = "<hook>"] [, modifiers] }`, the path in inventory notation (`a.b`), the slot and
-//!   hook in snake case, resolved against the plane's one registry (`Slot`, `Hook`) when the table
-//!   compiles. `park = true` on its own line marks every row of the group. Modifiers: `park = true`
-//!   (same-dialect fidelity park); `clamp = [min, max]` with `clamp_warn = "<text>"` and
-//!   `clamp_parameter = true|false`; `cap = <n>`; `drop_if = "thinking"` with `drop_warn = "<text>"`
-//!   and `drop_warn_value = true|false` (default true);
+//!   [, hook = "<hook>"] [, modifiers] }`, the path in wire-lock notation A (`a.b`, `a[]`, `a{}`,
+//!   `<tag>=<arm>`; see [`crate::wire_lock`]), the slot and hook in snake case, resolved against the
+//!   plane's one registry (`Slot`, `Hook`) when the table compiles. `park = true` on its own line
+//!   marks every row of the group. Modifiers: `park = true` (same-dialect fidelity park);
+//!   `clamp = [min, max]` with `clamp_warn = "<text>"` and `clamp_parameter = true|false`;
+//!   `cap = <n>`; `drop_if = "thinking"` with `drop_warn = "<text>"` and
+//!   `drop_warn_value = true|false` (default true); `off_wire = "<reason>"` (a member busbar itself
+//!   reads or writes that is not in the published protocol, so not in the wire lock);
 //! * a `prim = "<name>"` row is a member the dialect's named structural code models: the walker
 //!   only counts it among the modelled keys (`ir` is optional);
 //! * `[controls]`: how a control slot beyond the rows is handled, one per line, `"<slot>" =
@@ -28,11 +34,18 @@
 //! * `[dialect] drop_warn = "<text>"`, `drop_field = "control" | "parameter"`: the warn for every
 //!   other derived drop (`parameter` texts name the slot as `{slot}`);
 //! * `[words.<table>]`: `base = "<table>"` (its rows come first), then one row per line,
-//!   `"<ir word>" = { wire = "<word>" [, dir = "read" | "write"] }`.
+//!   `"<ir word>" = { wire = "<word>" [, dir = "read" | "write"] }`;
+//! * `[unmapped.<direction>]`: one line per wire path this dialect deliberately does not map although
+//!   another dialect maps a field of that name, `"<wire path>" = { no-equivalent = "<reason>" }`
+//!   (the `dialect-candidates` gate).
+//!
+//! Only the request direction is emitted into `map.gen.rs` (the plane walks it at run time); every
+//! direction is read by the coverage gates ([`load_maps`]) and rendered into the generated
+//! translation matrix ([`MATRIX`]).
 
 use crate::ctx::{Ctx, WalkSpec};
 use crate::toml_lite;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where the hand-written mapping files live.
 pub const DIALECT_DIR: &str = "crates/busbar-plane-llm/dialects";
@@ -74,20 +87,92 @@ fn lit(s: &str) -> String {
     format!("{s:?}")
 }
 
-/// The const naming `kind` table `name` of `dialect`, as seen from `from`'s table file.
-fn const_ref(from: &str, dialect: &str, kind: &str, name: &str) -> String {
-    let c = format!("{kind}_{}", name.to_ascii_uppercase());
-    if from == dialect {
-        c
-    } else {
-        format!("crate::codec::{dialect}::map::{c}")
-    }
+/// The const naming `kind` table `name` in the dialect's own table file.
+fn const_ref(kind: &str, name: &str) -> String {
+    format!("{kind}_{}", name.to_ascii_uppercase())
 }
 
-/// `"<dialect>.<name>"` or `"<name>"` (this dialect) -> (dialect, name).
-fn qualified(this: &str, reference: &str) -> (String, String) {
-    let (d, n) = reference.split_once('.').unwrap_or((this, reference));
-    (d.to_string(), n.to_string())
+/// A row group or word table named by this file: a bare name. A `"<other dialect>.<name>"`
+/// reference is refused, since a map file never includes another dialect's rows.
+fn local<'a>(source: &str, what: &str, reference: &'a str) -> Result<&'a str, String> {
+    if reference.contains('.') {
+        return Err(format!(
+            "{source}: {what} `{reference}` names another dialect's table; a map file is \
+             self-contained, so copy the rows in"
+        ));
+    }
+    Ok(reference)
+}
+
+/// The directions a mapping file declares row groups for, in the wire locks' names.
+pub const DIRECTIONS: [&str; 3] = crate::wire_lock::DIRECTIONS;
+
+/// The directions the plane walks at run time, and so the ones emitted into `map.gen.rs`.
+const EMITTED: [&str; 1] = ["request"];
+
+/// One segment of a wire path in notation A.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seg<'a> {
+    /// `name`: an object member.
+    Key(&'a str),
+    /// `name[]`, `name{}`, `name{}[]`: the items of an array, the values of a map.
+    Each(&'a str),
+    /// `<tag>=<arm>`: one arm of a tagged union.
+    Arm(&'a str, &'a str),
+}
+
+/// Split a notation-A wire path into its segments; `Err` names the malformed segment.
+pub fn segments(path: &str) -> Result<Vec<Seg<'_>>, String> {
+    let word = |w: &str| !w.is_empty() && !w.contains(['[', ']', '{', '}', '=', ' ']);
+    path.split('.')
+        .map(|s| {
+            if let Some((tag, arm)) = s.split_once('=') {
+                return (word(tag) && word(arm))
+                    .then_some(Seg::Arm(tag, arm))
+                    .ok_or_else(|| format!("`{path}`: segment `{s}` is not <tag>=<arm>"));
+            }
+            let name = s
+                .strip_suffix("{}[]")
+                .or_else(|| s.strip_suffix("[]"))
+                .or_else(|| s.strip_suffix("{}"));
+            match name {
+                Some(n) if word(n) => Ok(Seg::Each(n)),
+                None if word(s) => Ok(Seg::Key(s)),
+                _ => Err(format!("`{path}`: segment `{s}` is not notation A")),
+            }
+        })
+        .collect()
+}
+
+/// Every `[rows.<group>]` this file lists, with the direction that lists it; `Err` for a listed
+/// group the file lacks, a group listed twice, or a group no direction lists.
+fn group_directions(
+    source: &str,
+    doc: &toml_lite::Document,
+) -> Result<Vec<(String, &'static str)>, String> {
+    let dialect_t = doc.table("dialect");
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    for dir in DIRECTIONS {
+        for g in dialect_t.get_list(dir) {
+            let g = local(source, "row group", &g)?.to_string();
+            if !doc.tables.contains_key(&format!("rows.{g}")) {
+                return Err(format!(
+                    "{source}: [dialect] {dir} lists `{g}` but there is no [rows.{g}]"
+                ));
+            }
+            if out.iter().any(|(have, _)| *have == g) {
+                return Err(format!("{source}: row group `{g}` is listed twice"));
+            }
+            out.push((g, dir));
+        }
+    }
+    for path in doc.tables.keys().filter(|k| k.starts_with("rows.")) {
+        let g = &path["rows.".len()..];
+        if !out.iter().any(|(have, _)| have == g) {
+            return Err(format!("{source}: [{path}] is listed by no direction"));
+        }
+    }
+    Ok(out)
 }
 
 /// The inline-table fields of one row, or an error naming the file and row.
@@ -126,8 +211,9 @@ fn word_rows(
     let mut out = Vec::new();
     for (key, raw) in &table.entries {
         if key == "base" {
-            let (bd, bn) = qualified(dialect, &toml_lite::string_value(raw));
-            out.extend(word_rows(all, &bd, &bn, depth + 1)?);
+            let base = toml_lite::string_value(raw);
+            let base = local(&format!("{dialect}.toml"), "word table base", &base)?;
+            out.extend(word_rows(all, dialect, base, depth + 1)?);
             continue;
         }
         let f = row_fields(&format!("{dialect}.toml"), key, raw)?;
@@ -160,23 +246,30 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
     let mut uses: BTreeSet<&str> = BTreeSet::new();
     let mut body = String::new();
 
-    // The row groups this file declares, in name order.
-    let groups: Vec<&String> = d
-        .doc
-        .tables
-        .keys()
-        .filter(|k| k.starts_with("rows."))
-        .collect();
-    for path in &groups {
-        let name = &path["rows.".len()..];
-        let table = &d.doc.tables[*path];
-        body.push_str(&format!(
+    for t in d.doc.tables.keys() {
+        let known = t == "dialect"
+            || t == "controls"
+            || ["rows.", "words.", "unmapped."]
+                .iter()
+                .any(|p| t.starts_with(p));
+        if !known {
+            return Err(format!("{source}: [{t}] is not a mapping-file table"));
+        }
+    }
+
+    // The row groups this file declares, in name order. Every group's rows are checked; only the
+    // groups of an EMITTED direction are written.
+    let directions: BTreeMap<String, &str> =
+        group_directions(&source, &d.doc)?.into_iter().collect();
+    for (name, dir) in &directions {
+        let path = format!("rows.{name}");
+        let table = &d.doc.tables[&path];
+        let emitted = EMITTED.contains(dir);
+        let mut group = format!(
             "\n/// Row group `{name}`.\npub(crate) const ROWS_{}: &[Field] = &[\n",
             name.to_ascii_uppercase()
-        ));
-        uses.insert("Field");
-        uses.insert("Slot");
-        uses.insert("row");
+        );
+        let mut group_uses: BTreeSet<&str> = ["Field", "Slot", "row", "ValueCodec"].into();
         let mut group_park = false;
         for (key, raw) in &table.entries {
             if key == "park" {
@@ -184,6 +277,7 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                 continue;
             }
             let f = row_fields(&source, key, raw)?;
+            let segs = segments(key).map_err(|e| format!("{source}: [{path}] {e}"))?;
             let prim = field(&f, "prim").map(toml_lite::string_value);
             let slot = match (field(&f, "ir").map(toml_lite::string_value), &prim) {
                 (Some(slot), _) => slot,
@@ -192,6 +286,12 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                     return Err(format!("{source}: [{path}] \"{key}\" names no ir slot"))
                 }
             };
+            if emitted && prim.is_none() && segs.iter().any(|s| !matches!(s, Seg::Key(_))) {
+                return Err(format!(
+                    "{source}: [{path}] \"{key}\": the {dir} walker carries object members only; \
+                     an array, map or union-arm path is a `prim` row (its structure is code)"
+                ));
+            }
             let codec = match (field(&f, "words"), field(&f, "hook")) {
                 (None, None) if prim.is_some() => {
                     format!(
@@ -201,14 +301,12 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                 }
                 (None, None) => "ValueCodec::Plain".to_string(),
                 (Some(w), None) => {
-                    let (wd, wn) = qualified(&d.name, &toml_lite::string_value(w));
-                    format!(
-                        "ValueCodec::Words({})",
-                        const_ref(&d.name, &wd, "WORDS", &wn)
-                    )
+                    let w = toml_lite::string_value(w);
+                    let w = local(&source, "word table", &w)?;
+                    format!("ValueCodec::Words({})", const_ref("WORDS", w))
                 }
                 (None, Some(h)) => {
-                    uses.insert("Hook");
+                    group_uses.insert("Hook");
                     format!(
                         "ValueCodec::Hook(Hook::{})",
                         camel(&toml_lite::string_value(h))
@@ -220,7 +318,6 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                     ))
                 }
             };
-            uses.insert("ValueCodec");
             const KNOWN: &[&str] = &[
                 "ir",
                 "prim",
@@ -234,6 +331,7 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                 "drop_if",
                 "drop_warn",
                 "drop_warn_value",
+                "off_wire",
             ];
             for (k, _) in &f {
                 if !KNOWN.contains(&k.as_str()) {
@@ -243,6 +341,11 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                 }
             }
             let text = |name: &str| field(&f, name).map(toml_lite::string_value);
+            if text("off_wire").is_some_and(|why| why.trim().is_empty()) {
+                return Err(format!(
+                    "{source}: [{path}] \"{key}\": off_wire needs its reason"
+                ));
+            }
             let flag = |name: &str, default: bool| text(name).map_or(default, |v| v == "true");
             let mut mods = String::new();
             if group_park || flag("park", false) {
@@ -290,7 +393,7 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                 let warn = text("drop_warn").ok_or_else(|| {
                     format!("{source}: [{path}] \"{key}\": drop_if needs drop_warn")
                 })?;
-                uses.insert("Cond");
+                group_uses.insert("Cond");
                 mods.push_str(&format!(
                     ".drop_if({cond}, {}, {})",
                     lit(&warn),
@@ -298,29 +401,34 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                 ));
             }
             let segs: Vec<String> = key.split('.').map(lit).collect();
-            body.push_str(&format!(
+            group.push_str(&format!(
                 "    row(&[{}], Slot::{}, {codec}){mods},\n",
                 segs.join(", "),
                 camel(&slot)
             ));
         }
-        body.push_str("];\n");
+        group.push_str("];\n");
+        if emitted {
+            uses.extend(group_uses);
+            body.push_str(&group);
+        }
     }
 
-    // The request table.
+    // The emitted direction tables.
     let dialect_t = d.doc.table("dialect");
-    if dialect_t.values.contains_key("request") {
+    for dir in EMITTED {
+        if !dialect_t.values.contains_key(dir) {
+            continue;
+        }
         uses.insert("Table");
         let refs: Vec<String> = dialect_t
-            .get_list("request")
+            .get_list(dir)
             .iter()
-            .map(|g| {
-                let (gd, gn) = qualified(&d.name, g);
-                const_ref(&d.name, &gd, "ROWS", &gn)
-            })
+            .map(|g| const_ref("ROWS", g))
             .collect();
         body.push_str(&format!(
-            "\n/// The request table, walked in order.\npub(crate) const REQUEST: Table = &[{}];\n",
+            "\n/// The {dir} table, walked in order.\npub(crate) const {}: Table = &[{}];\n",
+            dir.to_ascii_uppercase(),
             refs.join(", ")
         ));
     }
@@ -403,12 +511,12 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
     ))
 }
 
-/// Compile every mapping file under [`DIALECT_DIR`].
-pub fn compile_all(cx: &Ctx) -> Result<Vec<Compiled>, String> {
+/// Read every mapping file under [`DIALECT_DIR`].
+fn read_all(cx: &Ctx) -> Result<Vec<Dialect>, String> {
     let files = cx
         .walk(&WalkSpec::new([DIALECT_DIR]).ext("toml").min_files(1))
         .map_err(|e| e.to_string())?;
-    let all: Vec<Dialect> = files
+    Ok(files
         .iter()
         .map(|f| Dialect {
             name: f
@@ -418,7 +526,12 @@ pub fn compile_all(cx: &Ctx) -> Result<Vec<Compiled>, String> {
                 .unwrap_or_default(),
             doc: toml_lite::parse_text(&f.text),
         })
-        .collect();
+        .collect())
+}
+
+/// Compile every mapping file under [`DIALECT_DIR`].
+pub fn compile_all(cx: &Ctx) -> Result<Vec<Compiled>, String> {
+    let all = read_all(cx)?;
     all.iter()
         .map(|d| {
             Ok(Compiled {
@@ -428,6 +541,120 @@ pub fn compile_all(cx: &Ctx) -> Result<Vec<Compiled>, String> {
             })
         })
         .collect()
+}
+
+/// One row of a mapping file as the coverage gates read it: the direction, the wire path, the
+/// concept it maps (the slot, or the `prim` name of the structural code that models it) and its
+/// `off_wire` reason, when it has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapRow {
+    pub dir: &'static str,
+    pub path: String,
+    pub concept: String,
+    pub off_wire: Option<String>,
+}
+
+/// One `no-equivalent` mark: a wire path the dialect deliberately does not map, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mark {
+    pub dir: &'static str,
+    pub path: String,
+    pub reason: String,
+}
+
+/// One mapping file as the coverage gates read it.
+#[derive(Debug, Clone)]
+pub struct MapFile {
+    /// The file's stem (`openai_chat`).
+    pub name: String,
+    pub source: String,
+    /// The wire lock it maps (`openai`).
+    pub wire: String,
+    pub rows: Vec<MapRow>,
+    pub marks: Vec<Mark>,
+    /// `[controls]`: (slot, `code` name) for each control slot the dialect's own code carries.
+    pub code_controls: Vec<(String, String)>,
+}
+
+/// Every mapping file, read for the coverage gates, in file-name order. A file that does not
+/// compile is an `Err` naming it.
+pub fn load_maps(cx: &Ctx) -> Result<Vec<MapFile>, String> {
+    let all = read_all(cx)?;
+    let mut out = Vec::new();
+    for d in &all {
+        let source = format!("{DIALECT_DIR}/{}.toml", d.name);
+        compile_one(&all, d)?;
+        let wire = d
+            .doc
+            .table("dialect")
+            .get_one("wire")
+            .map(String::from)
+            .ok_or_else(|| format!("{source}: [dialect] names no wire lock"))?;
+        let mut rows = Vec::new();
+        for (g, dir) in group_directions(&source, &d.doc)? {
+            for (key, raw) in &d.doc.tables[&format!("rows.{g}")].entries {
+                if key == "park" {
+                    continue;
+                }
+                let f = row_fields(&source, key, raw)?;
+                let text = |name: &str| field(&f, name).map(toml_lite::string_value);
+                rows.push(MapRow {
+                    dir,
+                    path: key.clone(),
+                    concept: text("ir").or_else(|| text("prim")).unwrap_or_default(),
+                    off_wire: text("off_wire"),
+                });
+            }
+        }
+        let mut marks = Vec::new();
+        for (table, t) in d
+            .doc
+            .tables
+            .iter()
+            .filter(|(k, _)| k.starts_with("unmapped."))
+        {
+            let dir = DIRECTIONS
+                .into_iter()
+                .find(|dir| table["unmapped.".len()..] == **dir)
+                .ok_or_else(|| format!("{source}: [{table}] is not a direction"))?;
+            for (key, raw) in &t.entries {
+                segments(key).map_err(|e| format!("{source}: [{table}] {e}"))?;
+                let f = row_fields(&source, key, raw)?;
+                let reason = match f.as_slice() {
+                    [(k, v)] if k == "no-equivalent" => toml_lite::string_value(v),
+                    _ => String::new(),
+                };
+                if reason.trim().is_empty() {
+                    return Err(format!(
+                        "{source}: [{table}] \"{key}\" is not {{ no-equivalent = \"<reason>\" }}"
+                    ));
+                }
+                marks.push(Mark {
+                    dir,
+                    path: key.clone(),
+                    reason,
+                });
+            }
+        }
+        let mut code_controls = Vec::new();
+        if let Some(controls) = d.doc.tables.get("controls") {
+            for (key, raw) in &controls.entries {
+                let f = row_fields(&source, key, raw)?;
+                if let Some(code) = field(&f, "code") {
+                    code_controls.push((key.clone(), toml_lite::string_value(code)));
+                }
+            }
+        }
+        out.push(MapFile {
+            name: d.name.clone(),
+            source,
+            wire,
+            rows,
+            marks,
+            code_controls,
+        });
+    }
+    Ok(out)
 }
 
 /// `cargo xtask dialect compile`: write every table file.

@@ -36,7 +36,7 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 
 #[rustfmt::skip]
 #[path = "map.gen.rs"]
-pub(crate) mod map;
+mod map;
 pub mod handler;
 mod reader;
 pub(crate) mod slots;

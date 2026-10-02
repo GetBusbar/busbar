@@ -1324,7 +1324,7 @@ impl ProtocolReader for ResponsesReader {
                             cache_read_input_tokens: None,
                             detail: crate::codec::ir::IrUsageDetail {
                                 service_tier: crate::codec::carry::read_word(
-                                    crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
+                                    super::map::WORDS_SERVED_TIER,
                                     response_obj.get(keys::SERVICE_TIER),
                                 ),
                                 ..Default::default()

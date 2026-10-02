@@ -14,7 +14,7 @@ drop_warn = "dropping a request control on Gemini egress: generateContent has no
 "tools" = { prim = "tools" }
 "systemInstruction" = { prim = "system" }
 "model" = { prim = "model" }
-"__busbar_gemini_json_array" = { prim = "json_array_shim" }
+"__busbar_gemini_json_array" = { prim = "json_array_shim", off_wire = "busbar's own marker for a caller that asked for the JSON-array stream; stripped before egress" }
 
 # `generationConfig` rides `extra` raw; these rows overlay it. 1.5.4 silent-degrade: a stop list
 # past Gemini's cap of 5 is truncated, not refused.

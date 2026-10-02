@@ -1388,12 +1388,11 @@ impl ProtocolWriter for ResponsesWriter {
                     resp_obj.insert(keys::ERROR_WORD.to_string(), serde_json::Value::Null);
                 }
                 // RSP-17: the tier that served the response, as `write_response` emits it.
-                if let Some(tier) = usage.detail.service_tier.as_deref().and_then(|t| {
-                    crate::codec::carry::word_out(
-                        crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
-                        t,
-                    )
-                }) {
+                if let Some(tier) =
+                    usage.detail.service_tier.as_deref().and_then(|t| {
+                        crate::codec::carry::word_out(super::map::WORDS_SERVED_TIER, t)
+                    })
+                {
                     resp_obj.insert(keys::SERVICE_TIER.to_string(), serde_json::json!(tier));
                 }
                 // Spec-required request-echo members plus `incomplete_details: null` on a completed
@@ -1711,12 +1710,13 @@ impl ProtocolWriter for ResponsesWriter {
         // RSP-17: the tier that SERVED the response (Anthropic `usage.service_tier`, or a Responses
         // backend's own), in the Responses vocabulary; omitted when the IR carries none or a tier
         // this vocabulary has no word for.
-        if let Some(tier) = resp.usage.detail.service_tier.as_deref().and_then(|t| {
-            crate::codec::carry::word_out(
-                crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
-                t,
-            )
-        }) {
+        if let Some(tier) = resp
+            .usage
+            .detail
+            .service_tier
+            .as_deref()
+            .and_then(|t| crate::codec::carry::word_out(super::map::WORDS_SERVED_TIER, t))
+        {
             obj.insert(keys::SERVICE_TIER.to_string(), serde_json::json!(tier));
         }
         // The official SDK types `Response.error` as a REQUIRED nullable field present on EVERY

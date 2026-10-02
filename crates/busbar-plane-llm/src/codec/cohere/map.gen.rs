@@ -7,6 +7,13 @@
 
 use crate::codec::carry::{Field, Handled, Slot, Table, ValueCodec, row};
 
+/// Row group `penalties`.
+pub(crate) const ROWS_PENALTIES: &[Field] = &[
+    row(&["frequency_penalty"], Slot::FrequencyPenalty, ValueCodec::Plain),
+    row(&["presence_penalty"], Slot::PresencePenalty, ValueCodec::Plain),
+    row(&["seed"], Slot::Seed, ValueCodec::Plain),
+];
+
 /// Row group `sampling`.
 pub(crate) const ROWS_SAMPLING: &[Field] = &[
     row(&["temperature"], Slot::Temperature, ValueCodec::Plain).clamp(0.0, 1.0, "clamping temperature to Cohere's [0.0, 1.0] range; the requested value was outside it (e.g. an OpenAI/Responses value up to 2.0) and would 400 — the forwarded value diverges from the caller's request", true),
@@ -28,7 +35,7 @@ pub(crate) const ROWS_STRUCTURE: &[Field] = &[
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, crate::codec::openai_chat::map::ROWS_OPENAI_PENALTIES];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, ROWS_PENALTIES];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[

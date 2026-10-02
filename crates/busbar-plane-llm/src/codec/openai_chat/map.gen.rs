@@ -68,22 +68,11 @@ pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
     (Slot::CustomTool, Handled::Code("chat_custom_tools")),
 ];
 
-/// Word table `openai_served_tier`: (wire word, IR word, direction).
-pub(crate) const WORDS_OPENAI_SERVED_TIER: &[Word] = &[
-    ("default", "standard", Dir::Both),
-    ("default", "default", Dir::Write),
-    ("priority", "priority", Dir::Both),
-    ("flex", "flex", Dir::Write),
-    ("scale", "scale", Dir::Write),
-];
-
 /// Word table `served_tier`: (wire word, IR word, direction).
 pub(crate) const WORDS_SERVED_TIER: &[Word] = &[
     ("default", "standard", Dir::Both),
     ("default", "default", Dir::Write),
     ("priority", "priority", Dir::Both),
-    ("flex", "flex", Dir::Write),
-    ("scale", "scale", Dir::Write),
-    ("flex", "flex", Dir::Read),
-    ("scale", "scale", Dir::Read),
+    ("flex", "flex", Dir::Both),
+    ("scale", "scale", Dir::Both),
 ];

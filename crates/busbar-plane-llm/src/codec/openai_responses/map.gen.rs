@@ -5,7 +5,16 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Field, Handled, Slot, Table, ValueCodec, row};
+use crate::codec::carry::{Dir, Field, Handled, Slot, Table, ValueCodec, Word, row};
+
+/// Row group `openai_family`.
+pub(crate) const ROWS_OPENAI_FAMILY: &[Field] = &[
+    row(&["metadata"], Slot::Metadata, ValueCodec::Plain).park(),
+    row(&["service_tier"], Slot::ServiceTier, ValueCodec::Plain).park(),
+    row(&["store"], Slot::Store, ValueCodec::Plain).park(),
+    row(&["safety_identifier"], Slot::SafetyIdentifier, ValueCodec::Plain).park(),
+    row(&["prompt_cache_key"], Slot::PromptCacheKey, ValueCodec::Plain).park(),
+];
 
 /// Row group `responses`.
 pub(crate) const ROWS_RESPONSES: &[Field] = &[
@@ -26,8 +35,14 @@ pub(crate) const ROWS_RESPONSES_STRUCTURE: &[Field] = &[
     row(&["user"], Slot::Structure, ValueCodec::Prim("user")),
 ];
 
+/// Row group `sampling`.
+pub(crate) const ROWS_SAMPLING: &[Field] = &[
+    row(&["temperature"], Slot::Temperature, ValueCodec::Plain),
+    row(&["top_p"], Slot::TopP, ValueCodec::Plain),
+];
+
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_RESPONSES_STRUCTURE, crate::codec::openai_chat::map::ROWS_OPENAI_SAMPLING, crate::codec::openai_chat::map::ROWS_OPENAI_FAMILY, ROWS_RESPONSES];
+pub(crate) const REQUEST: Table = &[ROWS_RESPONSES_STRUCTURE, ROWS_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_RESPONSES];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
@@ -39,4 +54,13 @@ pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
     (Slot::N, Handled::Warn("responses writer: the /v1/responses API models no `n` candidate-count; dropping it (lossy-by-target)", true)),
     (Slot::OutputModalities, Handled::Code("responses_modalities")),
     (Slot::CustomTool, Handled::Code("responses_custom_tools")),
+];
+
+/// Word table `served_tier`: (wire word, IR word, direction).
+pub(crate) const WORDS_SERVED_TIER: &[Word] = &[
+    ("default", "standard", Dir::Both),
+    ("default", "default", Dir::Write),
+    ("priority", "priority", Dir::Both),
+    ("flex", "flex", Dir::Write),
+    ("scale", "scale", Dir::Write),
 ];
