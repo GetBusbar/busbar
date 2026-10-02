@@ -91,9 +91,7 @@ impl From<CanonicalError> for CardError {
 }
 
 // The card's structs: the plane's, one home ([`busbar_plane_a2a::a2a::agent_card`]).
-pub(crate) use busbar_plane_a2a::a2a::agent_card::{
-    AgentCapabilities, AgentCard, AgentInterface, AgentProvider,
-};
+pub(crate) use busbar_plane_a2a::a2a::agent_card::AgentCard;
 
 /// THE PINNED FINGERPRINT: a hash of the canonical WHOLE card, signatures included.
 ///

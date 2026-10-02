@@ -3655,13 +3655,9 @@ fn resumable_task(
     candidates.pop()
 }
 
-// DOES THIS METHOD NAME ASK FOR A STREAM? Both eras of the name: the plane's reading, one home
-// ([`busbar_plane_a2a::skill::reads_as_stream`]).
-use busbar_plane_a2a::skill::reads_as_stream;
-
 #[cfg(all(test, feature = "test-support"))]
 pub(crate) fn reads_as_stream_for_test(method: &str) -> bool {
-    reads_as_stream(method)
+    busbar_plane_a2a::skill::reads_as_stream(method)
 }
 
 #[cfg(all(test, feature = "test-support"))]

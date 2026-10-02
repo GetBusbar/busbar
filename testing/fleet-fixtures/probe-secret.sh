@@ -40,9 +40,11 @@ for p in "$LISTEN_PORT" "$MOCK_PORT" "$VAULT_PORT"; do
   assert_port_free "$p" || fail_here "port ${p} already in use before the probe starts" "refusing a possibly-false PASS."
 done
 
-# The mock upstream that will REJECT anything but the resolved key.
-python3 mock-upstream.py "$MOCK_PORT" "$MARKER" "$UPSTREAM_KEY" >/dev/null 2>&1 &
-track_pid $!
+# The mock upstream records every request it receives (headers unmasked), so the probe can read back
+# the exact credential busbar sent.
+EGRESS_DIR="${WORK}/egress"
+ORACLE_MOCK_CAPTURE_DIR="$EGRESS_DIR" start_oracle_mock "$MOCK_PORT" "$MARKER" \
+  || fail_here "the oracle mock upstream did not come up" "port ${MOCK_PORT}; bin/oracle could not obtain the pinned engine."
 # The fixture Vault holding that key.
 python3 vault-fixture.py "$VAULT_PORT" "$VAULT_TOKEN" api_key "$UPSTREAM_KEY" >/dev/null 2>&1 &
 track_pid $!
@@ -102,15 +104,17 @@ if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
   fail_here "busbar did not come up with the ${ALIAS} secret plugin" "$(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 500)"
 fi
 
-# The one request that can only succeed if the resolved value was USED as the upstream credential.
+# Drive one request; then read back what the upstream received. The resolved value can only be on the
+# wire if busbar fetched it through the plugin and used it as the provider credential.
 CHAT="$(curl -fsS -m 30 "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}' 2>/dev/null || true)"
 GOT="$(printf '%s' "$CHAT" | jq -r '.choices[0].message.content // empty' 2>/dev/null)"
-if [ "$GOT" != "$MARKER" ]; then
+SENT="$(cat "${EGRESS_DIR}"/*.json 2>/dev/null | jq -r '.headers.authorization // empty' 2>/dev/null | grep -cxF "Bearer ${UPSTREAM_KEY}" || true)"
+if [ "$GOT" != "$MARKER" ] || [ "${SENT:-0}" -lt 1 ]; then
   fail_here "the vault-resolved key was not used as the upstream credential" \
-    "the upstream rejects any key but the one held in the fixture vault, and the request did not round-trip (got '$(printf '%s' "$CHAT" | tr '\n' ' ' | tail -c 200)'). Either the ${ALIAS} plugin resolved nothing or busbar did not send the resolved value upstream."
+    "the upstream received no request carrying the key held in the fixture vault (round-trip got '$(printf '%s' "$CHAT" | tr '\n' ' ' | tail -c 200)', requests carrying the key: ${SENT:-0}). Either the ${ALIAS} plugin resolved nothing or busbar did not send the resolved value upstream."
 fi
 
 record "$ID" PASS "secret ${ALIAS}: a vault-referenced key resolved through the plugin and busbar used it upstream" \
-  "the upstream fixture accepted only the resolved value; the request round-tripped."
+  "the upstream recorded the resolved value as the request credential; the request round-tripped."
