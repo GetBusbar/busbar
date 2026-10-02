@@ -20,10 +20,12 @@ use std::task::Poll;
 use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_dest_judge, check_entitlement_check, check_random_fill, check_random_fill_in,
+    check_records_claim, check_records_claim_in, check_records_get, check_records_list,
     check_trust_due, check_trust_sight, op, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan,
-    RandomFillIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, TrustDueIn, TrustSightIn,
-    DEST_RESOLVE, ENTITLED,
+    RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead,
+    ServiceOut, TrustDueIn, TrustSightIn, CLAIM_WON, DEST_RESOLVE, ENTITLED, FOUND,
 };
+use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables};
@@ -103,11 +105,52 @@ impl Judged<'_> {
 
 /// The counterparty span `s` names: its key, present and UTF-8.
 fn name<'b>(bytes: &'b [u8], s: &ItemSpan) -> Option<&'b str> {
-    if s.key.offset == SPAN_ABSENT {
+    std::str::from_utf8(present(bytes, s.key)?).ok()
+}
+
+/// The bytes `s` covers, when it is present.
+fn present(bytes: &[u8], s: Span) -> Option<&[u8]> {
+    if s.offset == SPAN_ABSENT {
         return None;
     }
-    let at = s.key.offset as usize;
-    std::str::from_utf8(bytes.get(at..at.checked_add(s.key.len as usize)?)?).ok()
+    let at = s.offset as usize;
+    bytes.get(at..at.checked_add(s.len as usize)?)
+}
+
+/// `records.list`'s answer: the caller's records, each a key and a value as views into the
+/// caller's buffers, every one checked present before it is answered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Records<'b> {
+    bytes: &'b [u8],
+    spans: &'b [ItemSpan],
+}
+
+impl<'b> Records<'b> {
+    /// How many records.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.spans.len()
+    }
+
+    /// Whether there is none.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+
+    /// The records as `(key, value)`, in key order.
+    pub fn records(&self) -> impl Iterator<Item = (&'b [u8], &'b [u8])> + 'b {
+        let bytes = self.bytes;
+        self.spans
+            .iter()
+            .filter_map(move |s| Some((present(bytes, s.key)?, present(bytes, s.value)?)))
+    }
+
+    /// The key of the last record: the `after` that lists the next page.
+    #[must_use]
+    pub fn last_key(&self) -> Option<&'b [u8]> {
+        present(self.bytes, self.spans.last()?.key)
+    }
 }
 
 /// The host services an instance was opened with: its context and the table.
@@ -278,6 +321,130 @@ impl Services {
         named(crossed, buf, spans).map(|(_, due)| due)
     }
 
+    /// `records.get`: the record `key` of the caller's own record `kind`, written into the caller's
+    /// preallocated `buf`; reads see the instance's own queued writes. Ready: `Some` the record's
+    /// value, or `None` when there is no such record (a tombstone reads absent). May pend (the
+    /// kernel reads the store off the calling thread), so callable only from a ticketed op: on
+    /// [`Poll::Pending`] re-issue the SAME handle to read the stored answer. A short `buf` is
+    /// [`ServiceError::Short`]: re-call once, same handle, with the bytes it names.
+    pub fn records_get<'b>(
+        &self,
+        handle: CompletionHandle,
+        kind: &str,
+        key: &[u8],
+        buf: &'b mut [u8],
+    ) -> Pend<Option<&'b [u8]>> {
+        let mut span = [ItemSpan {
+            key: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 0 },
+        }];
+        let input = RecordsGetIn {
+            head: head::<RecordsGetIn>(op::RECORDS_GET, handle),
+            kind: text(kind),
+            key: raw(key),
+            into: bufs(buf, &mut span),
+        };
+        let crossed = self.cross(
+            op::RECORDS_GET,
+            |t| t.records_get,
+            &input,
+            check_records_get,
+        );
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let buf: &'b [u8] = buf;
+        Poll::Ready(crossed.and_then(ready).and_then(|out| {
+            if out.value != FOUND {
+                return Ok(None);
+            }
+            // FOUND writes the record into span `0`; one without it broke the rule.
+            let s = span.get(..out.items as usize).and_then(<[ItemSpan]>::first);
+            s.and_then(|s| present(&buf[..out.len as usize], s.value))
+                .map(Some)
+                .ok_or(ServiceError::Broken)
+        }))
+    }
+
+    /// `records.list`: the caller's own records of `kind` whose keys start with `prefix` (empty =
+    /// every key), in key order after `after` (`None` = from the first), at most `limit` (`0` = as
+    /// many as fit `MAX_SPANS`), written into the caller's preallocated `into` (bytes and spans).
+    /// A tombstoned key is not listed. May pend, so callable only from a ticketed op; a short
+    /// answer is [`ServiceError::Short`] (re-call once, same handle). A page's
+    /// [`Records::last_key`] is the next page's `after`.
+    pub fn records_list<'b>(
+        &self,
+        handle: CompletionHandle,
+        kind: &str,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: u32,
+        (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]),
+    ) -> Pend<Records<'b>> {
+        let input = RecordsListIn {
+            head: head::<RecordsListIn>(op::RECORDS_LIST, handle),
+            kind: text(kind),
+            prefix: raw(prefix),
+            after: after.map_or(NO_TEXT, raw),
+            limit,
+            _reserved: 0,
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(
+            op::RECORDS_LIST,
+            |t| t.records_list,
+            &input,
+            check_records_list,
+        );
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        Poll::Ready(crossed.and_then(ready).and_then(|out| {
+            // The service's check held `len` and `items` within the caps and every span inside
+            // `len`.
+            let records = Records {
+                bytes: &buf[..out.len as usize],
+                spans: &spans[..out.items as usize],
+            };
+            if records.records().count() == records.len() {
+                Ok(records)
+            } else {
+                Err(ServiceError::Broken)
+            }
+        }))
+    }
+
+    /// `records.claim`: claim `key` of the caller's own record `kind` once, for `ttl_ms`
+    /// milliseconds: a put-if-absent, THE ONE path for approval redemption and replay refusal.
+    /// Ready: `true` when this call won the claim, `false` when the key was already claimed. A
+    /// claim with no time to live is REFUSED here, before the host is called (there is no
+    /// default). May pend, so callable only from a ticketed op.
+    pub fn records_claim(
+        &self,
+        handle: CompletionHandle,
+        kind: &str,
+        key: &[u8],
+        ttl_ms: u64,
+    ) -> Pend<bool> {
+        let input = RecordsClaimIn {
+            head: head::<RecordsClaimIn>(op::RECORDS_CLAIM, handle),
+            kind: text(kind),
+            key: raw(key),
+            ttl_ms,
+        };
+        if check_records_claim_in(&input).is_err() {
+            return Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)));
+        }
+        verdict(self.cross(
+            op::RECORDS_CLAIM,
+            |t| t.records_claim,
+            &input,
+            check_records_claim,
+        ))
+        .map(|r| r.map(|v| v == CLAIM_WON))
+    }
+
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
     /// outcome, the `out` and how it filled the caller's buffers.
     fn cross<I>(
@@ -327,20 +494,11 @@ fn bufs(buf: &mut [u8], spans: &mut [ItemSpan]) -> ServiceBufs {
 /// names it wrote; a short answer, [`ServiceError::Short`]; any other outcome declined. A name
 /// absent or not UTF-8 is broken.
 fn named<'b>(
-    (outcome, out, filled): (Outcome, ServiceOut, Filled),
+    crossed: (Outcome, ServiceOut, Filled),
     buf: &'b [u8],
     spans: &'b [ItemSpan],
 ) -> Result<(ServiceOut, Names<'b>), ServiceError> {
-    match (outcome, filled) {
-        (Outcome::Ready, _) => {}
-        (Outcome::Failed, Filled::Short) => {
-            return Err(ServiceError::Short {
-                bytes: out.needed_bytes,
-                items: out.needed_items,
-            })
-        }
-        (other, _) => return Err(ServiceError::Declined(other)),
-    }
+    let out = ready(crossed)?;
     // The service's check held `len` and `items` within the caps and every span inside `len`.
     let names = Names {
         bytes: &buf[..out.len as usize],
@@ -350,6 +508,21 @@ fn named<'b>(
         return Err(ServiceError::Broken);
     }
     Ok((out, names))
+}
+
+/// A crossed answer that writes the caller's buffers: READY, its `out`; a short answer,
+/// [`ServiceError::Short`]; any other outcome declined.
+fn ready(
+    (outcome, out, filled): (Outcome, ServiceOut, Filled),
+) -> Result<ServiceOut, ServiceError> {
+    match (outcome, filled) {
+        (Outcome::Ready, _) => Ok(out),
+        (Outcome::Failed, Filled::Short) => Err(ServiceError::Short {
+            bytes: out.needed_bytes,
+            items: out.needed_items,
+        }),
+        (other, _) => Err(ServiceError::Declined(other)),
+    }
 }
 
 /// The head of an `I` for `service`, under `handle`.
@@ -363,11 +536,22 @@ const fn head<I>(service: u32, handle: CompletionHandle) -> ServiceHead {
 
 /// `s`, borrowed for the call.
 const fn text(s: &str) -> AbiStr {
+    raw(s.as_bytes())
+}
+
+/// `b`, borrowed for the call.
+const fn raw(b: &[u8]) -> AbiStr {
     AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
+        ptr: b.as_ptr(),
+        len: b.len(),
     }
 }
+
+/// An absent text: NULL, no length.
+const NO_TEXT: AbiStr = AbiStr {
+    ptr: std::ptr::null(),
+    len: 0,
+};
 
 /// A verdict service's answer: Ready its `value`, PENDING held on the ticket, else declined.
 fn verdict(crossed: Result<(Outcome, ServiceOut, Filled), ServiceError>) -> Pend<u64> {

@@ -83,9 +83,29 @@ impl HostServices for Provider {
         Ran::Later
     }
 
-    /// Not served by the double: refused, as the loader refuses a slot with no service.
-    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
-        Ran::Now(Stored::refused(UNIMPLEMENTED))
+    /// [`LISTED`] after `after`, key then value per record, one span each, at once.
+    fn records_list(&self, c: &Caller, list: RecordsList, _: Later) -> Ran {
+        self.saw(c, "records.list", list.kind.as_bytes());
+        let mut stored = Stored::ready(0);
+        for (k, v) in LISTED
+            .iter()
+            .filter(|(k, _)| list.after.as_deref().is_none_or(|a| *k > a))
+        {
+            let at = stored.bytes.len() as u32;
+            stored.bytes.extend_from_slice(k);
+            stored.bytes.extend_from_slice(v);
+            stored.spans.push(ItemSpan {
+                key: Span {
+                    offset: at,
+                    len: k.len() as u32,
+                },
+                value: Span {
+                    offset: at + k.len() as u32,
+                    len: v.len() as u32,
+                },
+            });
+        }
+        Ran::Now(stored)
     }
 
     fn records_claim(&self, c: &Caller, kind: &str, _key: &[u8], ttl: u64, _l: Later) -> Ran {
@@ -127,6 +147,9 @@ impl HostServices for Provider {
         }
     }
 }
+
+/// The records the double's `records.list` holds, in key order.
+const LISTED: [(&[u8], &[u8]); 2] = [(b"p/1", b"a"), (b"p/2", b"b")];
 
 /// The route half: records every wake.
 struct Route {
@@ -434,23 +457,9 @@ fn dest_judge_writes_the_judged_addresses_under_the_short_buffer_rule() {
 /// once).
 #[test]
 fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
-    use busbar_contract::abi::mechanism::ticket::HostTables;
-    use busbar_contract::abi::sdk::Services;
     let d = double();
-    let tables = HostTables {
-        size: size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: d.ctx,
-        wake: None,
-        conns: std::ptr::null(),
-        services: &HOST_SLOTS,
-    };
-    let s = Services::of(&tables).expect("the table is handed");
-    let handle = CompletionHandle {
-        ticket: TICKET,
-        seq: 2,
-        _reserved: 0,
-    };
+    let s = sdk(&d);
+    let handle = ticketed(2);
     let url = "https://api.example.com/v1";
     let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 2]);
     assert!(s
@@ -469,6 +478,104 @@ fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
         (DEST_ALLOWED, "198.51.100.7".to_owned())
     );
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
+}
+
+/// The SDK's services over this table, as `open` hands them to the double's instance.
+fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
+    use busbar_contract::abi::mechanism::ticket::HostTables;
+    let tables = HostTables {
+        size: size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: d.ctx,
+        wake: None,
+        conns: std::ptr::null(),
+        services: &HOST_SLOTS,
+    };
+    busbar_contract::abi::sdk::Services::of(&tables).expect("the table is handed")
+}
+
+/// The handle of a ticketed op's `seq`th service call.
+const fn ticketed(seq: u32) -> CompletionHandle {
+    CompletionHandle {
+        ticket: TICKET,
+        seq,
+        _reserved: 0,
+    }
+}
+
+/// THE SDK'S RECORDS WRAPPERS over this table (K-RECORDS): `records.get` reads the value the
+/// kernel answered for the caller; `records.list` its rows, and the next page after a key it
+/// answered (an `after` the plugin left absent reaches the kernel as none); `records.claim` the
+/// kernel's won or taken, and a claim with no time to live never leaves the plugin.
+#[test]
+fn the_sdk_records_wrappers_reach_the_kernel_as_their_caller() {
+    use std::task::Poll;
+    let d = double();
+    let s = sdk(&d);
+    let mut buf = [0u8; 16];
+    assert_eq!(
+        s.records_get(ticketed(0), "approval", b"k1", &mut buf),
+        Poll::Ready(Ok(Some(&b"=v"[..])))
+    );
+    let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 4]);
+    let Poll::Ready(Ok(all)) = s.records_list(
+        ticketed(1),
+        "task",
+        b"",
+        None,
+        0,
+        (&mut buf[..], &mut spans[..]),
+    ) else {
+        panic!("every record");
+    };
+    assert!(all.records().eq(LISTED));
+    let after = all.records().next().expect("a record").0.to_vec();
+    let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 4]);
+    let Poll::Ready(Ok(rest)) = s.records_list(
+        ticketed(2),
+        "task",
+        b"",
+        Some(after.as_slice()),
+        0,
+        (&mut buf[..], &mut spans[..]),
+    ) else {
+        panic!("the records after the first");
+    };
+    assert!(rest.records().eq(LISTED[1..].iter().copied()));
+    assert_eq!(
+        s.records_claim(ticketed(3), "approval", b"k1", 0),
+        Poll::Ready(Err(busbar_contract::abi::sdk::ServiceError::Declined(
+            Outcome::Refused
+        )))
+    );
+    assert_eq!(
+        s.records_claim(ticketed(4), "approval", b"k1", 1),
+        Poll::Ready(Ok(true))
+    );
+    assert_eq!(
+        s.records_claim(ticketed(5), "approval", b"k1", 2),
+        Poll::Ready(Ok(false))
+    );
+    let seen: Vec<_> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(who, what, _)| (who.clone(), *what))
+        .collect();
+    let me = || "double".to_string();
+    assert_eq!(
+        seen,
+        [
+            (me(), "records.get"),
+            (me(), "records.list"),
+            (me(), "records.list"),
+            (me(), "records.claim"),
+            (me(), "records.claim"),
+        ]
+    );
 }
 
 // ── the mechanism, kind-neutral ──────────────────────────────────────────────────────────────
