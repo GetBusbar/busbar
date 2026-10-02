@@ -8,6 +8,7 @@ use super::*;
 use crate::tls::Tls;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use sha2::Digest as _;
 
 // ── the unset trust is the posture every outbound connection already had ───────────────────────
 
