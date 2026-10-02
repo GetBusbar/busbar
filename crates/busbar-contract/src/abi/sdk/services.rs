@@ -20,11 +20,11 @@ use std::task::Poll;
 use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_dest_judge, check_entitlement_check, check_random_fill, check_random_fill_in,
-    check_trust_due, check_trust_sight, op, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan,
-    RandomFillIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, TrustDueIn, TrustSightIn,
-    DEST_RESOLVE, ENTITLED,
+    check_trust_due, check_trust_sight, check_trust_verify, op, DestJudgeIn, EntitlementCheckIn,
+    HostSlots, ItemSpan, RandomFillIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, TrustDueIn,
+    TrustSightIn, TrustVerifyIn, DEST_RESOLVE, ENTITLED,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
+use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_JSON, BLOB_OCTETS};
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables};
 
@@ -278,6 +278,47 @@ impl Services {
         named(crossed, buf, spans).map(|(_, due)| due)
     }
 
+    /// `trust.verify`: verify `signatures` (the document's signature list as written, one JSON
+    /// array; empty = none) over `payload` against the root key the kernel holds for
+    /// `counterparty`; the KERNEL judges. Ready: the `SIGNED_*` verdict and, for
+    /// `SIGNED_ALGORITHM` / `SIGNED_CRITICAL`, the name it refused, written into the caller's
+    /// preallocated `buf`. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when `buf` is short (re-call once, same handle); otherwise as every
+    /// service: unserved, declined, or broken (a name that is not UTF-8 is broken).
+    pub fn trust_verify<'b>(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        payload: &[u8],
+        signatures: &[u8],
+        buf: &'b mut [u8],
+    ) -> Result<Signed<'b>, ServiceError> {
+        let input = TrustVerifyIn {
+            head: head::<TrustVerifyIn>(op::TRUST_VERIFY, handle),
+            counterparty: text(counterparty),
+            payload: blob(payload, BLOB_OCTETS),
+            signatures: blob(signatures, BLOB_JSON),
+            into: bufs(buf, &mut []),
+        };
+        let crossed = self.cross(
+            op::TRUST_VERIFY,
+            |t| t.trust_verify,
+            &input,
+            check_trust_verify,
+        )?;
+        let out = ready(crossed)?;
+        let buf: &'b [u8] = buf;
+        let named =
+            std::str::from_utf8(&buf[..out.len as usize]).map_err(|_| ServiceError::Broken)?;
+        Ok(Signed {
+            verdict: out.value,
+            named,
+        })
+    }
+
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
     /// outcome, the `out` and how it filled the caller's buffers.
     fn cross<I>(
@@ -327,20 +368,11 @@ fn bufs(buf: &mut [u8], spans: &mut [ItemSpan]) -> ServiceBufs {
 /// names it wrote; a short answer, [`ServiceError::Short`]; any other outcome declined. A name
 /// absent or not UTF-8 is broken.
 fn named<'b>(
-    (outcome, out, filled): (Outcome, ServiceOut, Filled),
+    crossed: (Outcome, ServiceOut, Filled),
     buf: &'b [u8],
     spans: &'b [ItemSpan],
 ) -> Result<(ServiceOut, Names<'b>), ServiceError> {
-    match (outcome, filled) {
-        (Outcome::Ready, _) => {}
-        (Outcome::Failed, Filled::Short) => {
-            return Err(ServiceError::Short {
-                bytes: out.needed_bytes,
-                items: out.needed_items,
-            })
-        }
-        (other, _) => return Err(ServiceError::Declined(other)),
-    }
+    let out = ready(crossed)?;
     // The service's check held `len` and `items` within the caps and every span inside `len`.
     let names = Names {
         bytes: &buf[..out.len as usize],
@@ -350,6 +382,42 @@ fn named<'b>(
         return Err(ServiceError::Broken);
     }
     Ok((out, names))
+}
+
+/// A crossed answer that writes the caller's buffers: READY, its `out`; a short answer,
+/// [`ServiceError::Short`]; any other outcome declined.
+fn ready(
+    (outcome, out, filled): (Outcome, ServiceOut, Filled),
+) -> Result<ServiceOut, ServiceError> {
+    match (outcome, filled) {
+        (Outcome::Ready, _) => Ok(out),
+        (Outcome::Failed, Filled::Short) => Err(ServiceError::Short {
+            bytes: out.needed_bytes,
+            items: out.needed_items,
+        }),
+        (other, _) => Err(ServiceError::Declined(other)),
+    }
+}
+
+/// `b`, borrowed for the call, in format `fmt`.
+const fn blob(b: &[u8], fmt: u32) -> Blob {
+    Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        fmt,
+        flags: 0,
+    }
+}
+
+/// What `trust.verify` answered: the verdict, and the name a `SIGNED_ALGORITHM` /
+/// `SIGNED_CRITICAL` verdict refused (empty for every other verdict), a view into the caller's
+/// buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Signed<'b> {
+    /// The `SIGNED_*` verdict.
+    pub verdict: u64,
+    /// The refused algorithm or critical member.
+    pub named: &'b str,
 }
 
 /// The head of an `I` for `service`, under `handle`.

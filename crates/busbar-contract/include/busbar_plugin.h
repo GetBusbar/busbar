@@ -545,7 +545,8 @@ extern "C" {
 #define BB_HSVC_OP_HOOK_CALL UINT32_C(17) /* `hook.call`. */
 #define BB_HSVC_OP_RANDOM_FILL UINT32_C(18) /* `random.fill`. */
 #define BB_HSVC_OP_NEED_ADMIT UINT32_C(19) /* `need.admit`. */
-#define BB_HSVC_SERVICES UINT32_C(20) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_TRUST_VERIFY UINT32_C(20) /* `trust.verify`. */
+#define BB_HSVC_SERVICES UINT32_C(21) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
 #define BB_HSVC_FOUND UINT64_C(1) /* `value` of [`op::RECORDS_GET`]: the record is in span `0`. */
 #define BB_HSVC_CLAIM_WON UINT64_C(1) /* `value` of [`op::RECORDS_CLAIM`]: this call made the claim. */
@@ -564,6 +565,15 @@ extern "C" {
 #define BB_HSVC_TRUST_SAME UINT64_C(2) /* `trust.sight` verdict: the pinned catalogue. */
 #define BB_HSVC_TRUST_DRIFTED UINT64_C(3) /* `trust.sight` verdict: the catalogue moved from its pin. */
 #define BB_HSVC_TRUST_QUARANTINED UINT64_C(4) /* `trust.sight` verdict: the counterparty is quarantined. */
+#define BB_HSVC_SIGNED_VERIFIED UINT64_C(0) /* `trust.verify` verdict: a signature verified against the root key. */
+#define BB_HSVC_SIGNED_NONE UINT64_C(1) /* `trust.verify` verdict: the document carries no signature. */
+#define BB_HSVC_SIGNED_TOO_MANY UINT64_C(2) /* `trust.verify` verdict: more signatures than one document needs. */
+#define BB_HSVC_SIGNED_MALFORMED_HEADER UINT64_C(3) /* `trust.verify` verdict: a protected header that is not an encoded object. */
+#define BB_HSVC_SIGNED_ALGORITHM UINT64_C(4) /* `trust.verify` verdict: a header algorithm other than the root key's; the bytes name it. */
+#define BB_HSVC_SIGNED_CRITICAL UINT64_C(5) /* `trust.verify` verdict: a critical header member this verifier does not implement, named. */
+#define BB_HSVC_SIGNED_MALFORMED_SIGNATURE UINT64_C(6) /* `trust.verify` verdict: a signature that is not one encoded signature of the key's size. */
+#define BB_HSVC_SIGNED_NOT_BY_ROOT UINT64_C(7) /* `trust.verify` verdict: well-formed, and no signature is the root key's. */
+#define BB_HSVC_SIGNED_MALFORMED_ROOT UINT64_C(8) /* `trust.verify` verdict: the declared root key is not a key this verifier reads. */
 #define BB_HSVC_VERIFY_HIT UINT64_C(1) /* `verify.lookup`: a cached entry. */
 #define BB_HSVC_VERIFY_LEAD UINT64_C(2) /* `verify.lookup`: the caller leads. */
 #define BB_HSVC_VERIFY_FOLLOW UINT64_C(3) /* `verify.lookup`: the caller followed a leader, whose entry is in span `0`. */
@@ -910,6 +920,7 @@ typedef struct bb_hsvc_WorkSettleIn bb_hsvc_WorkSettleIn;
 typedef struct bb_hsvc_WorkResumeIn bb_hsvc_WorkResumeIn;
 typedef struct bb_hsvc_TrustSightIn bb_hsvc_TrustSightIn;
 typedef struct bb_hsvc_TrustDueIn bb_hsvc_TrustDueIn;
+typedef struct bb_hsvc_TrustVerifyIn bb_hsvc_TrustVerifyIn;
 typedef struct bb_hsvc_VerifyLookupIn bb_hsvc_VerifyLookupIn;
 typedef struct bb_hsvc_VerifyStoreIn bb_hsvc_VerifyStoreIn;
 typedef struct bb_hsvc_EntitlementCheckIn bb_hsvc_EntitlementCheckIn;
@@ -3332,6 +3343,15 @@ struct bb_hsvc_TrustDueIn {
     bb_hsvc_ServiceBufs into;
 };
 
+/* [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the */
+struct bb_hsvc_TrustVerifyIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr counterparty;
+    bb_mech_Blob payload;
+    bb_mech_Blob signatures;
+    bb_hsvc_ServiceBufs into;
+};
+
 /* [`op::VERIFY_LOOKUP`]'s `in`: the host-side verify cache, single-flight. `value` = */
 struct bb_hsvc_VerifyLookupIn {
     bb_hsvc_ServiceHead head;
@@ -3407,6 +3427,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn hook_call;
     bb_hsvc_ServiceFn random_fill;
     bb_hsvc_ServiceFn need_admit;
+    bb_hsvc_ServiceFn trust_verify;
 };
 
 /* ---- layout proof: 256 of 259 structures are pinned by the golden ---- */
@@ -5289,6 +5310,13 @@ BB_ASSERT(sizeof(bb_hsvc_TrustDueIn) == 56, "bb_hsvc_TrustDueIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustDueIn) == 8, "bb_hsvc_TrustDueIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TrustDueIn, head) == 0, "bb_hsvc_TrustDueIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustDueIn, into) == 24, "bb_hsvc_TrustDueIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_TrustVerifyIn) == 120, "bb_hsvc_TrustVerifyIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustVerifyIn) == 8, "bb_hsvc_TrustVerifyIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, head) == 0, "bb_hsvc_TrustVerifyIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, counterparty) == 24, "bb_hsvc_TrustVerifyIn.counterparty: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, payload) == 40, "bb_hsvc_TrustVerifyIn.payload: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, signatures) == 64, "bb_hsvc_TrustVerifyIn.signatures: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, into) == 88, "bb_hsvc_TrustVerifyIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_VerifyLookupIn) == 72, "bb_hsvc_VerifyLookupIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_VerifyLookupIn) == 8, "bb_hsvc_VerifyLookupIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_VerifyLookupIn, head) == 0, "bb_hsvc_VerifyLookupIn.head: offset");
@@ -5326,7 +5354,7 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_NeedAdmitIn) == 4, "bb_hsvc_NeedAdmitIn: alignment"
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, head) == 0, "bb_hsvc_NeedAdmitIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, need) == 24, "bb_hsvc_NeedAdmitIn.need: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, _reserved) == 28, "bb_hsvc_NeedAdmitIn._reserved: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 168, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 176, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5350,6 +5378,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, content_scan) == 136, "bb_hsvc_HostSlots.c
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_call) == 144, "bb_hsvc_HostSlots.hook_call: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, random_fill) == 152, "bb_hsvc_HostSlots.random_fill: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 160, "bb_hsvc_HostSlots.need_admit: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 168, "bb_hsvc_HostSlots.trust_verify: offset");
 #endif
 
 #ifdef __cplusplus

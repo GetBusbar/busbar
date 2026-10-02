@@ -146,10 +146,12 @@ pub mod op {
     pub const RANDOM_FILL: u32 = 18;
     /// `need.admit`.
     pub const NEED_ADMIT: u32 = 19;
+    /// `trust.verify`.
+    pub const TRUST_VERIFY: u32 = 20;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 20;
+pub const SERVICES: u32 = 21;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -164,6 +166,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::ENTITLEMENT_CHECK
             | op::RANDOM_FILL
             | op::NEED_ADMIT
+            | op::TRUST_VERIFY
     ) && service < SERVICES
 }
 
@@ -428,6 +431,46 @@ pub const TRUST_DRIFTED: u64 = 3;
 /// `trust.sight` verdict: the counterparty is quarantined.
 pub const TRUST_QUARANTINED: u64 = 4;
 
+/// [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the
+/// kernel holds for `counterparty` (the operator's out-of-band material its declared pin names).
+/// The key selects the algorithm; a signature's header is only checked against it. `value` = a
+/// `SIGNED_*` verdict; for [`SIGNED_ALGORITHM`] and [`SIGNED_CRITICAL`] the bytes written are the
+/// algorithm or the critical member the signature named, with no span. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustVerifyIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty whose root key verifies.
+    pub counterparty: AbiStr,
+    /// The signed payload: exactly the bytes signed, before encoding.
+    pub payload: Blob,
+    /// The document's signatures as written: a JSON array of objects, each with `protected` and
+    /// `signature`; empty = the document carries none.
+    pub signatures: Blob,
+    /// Where the refused algorithm or member goes.
+    pub into: ServiceBufs,
+}
+
+/// `trust.verify` verdict: a signature verified against the root key.
+pub const SIGNED_VERIFIED: u64 = 0;
+/// `trust.verify` verdict: the document carries no signature.
+pub const SIGNED_NONE: u64 = 1;
+/// `trust.verify` verdict: more signatures than one document needs.
+pub const SIGNED_TOO_MANY: u64 = 2;
+/// `trust.verify` verdict: a protected header that is not an encoded object.
+pub const SIGNED_MALFORMED_HEADER: u64 = 3;
+/// `trust.verify` verdict: a header algorithm other than the root key's; the bytes name it.
+pub const SIGNED_ALGORITHM: u64 = 4;
+/// `trust.verify` verdict: a critical header member this verifier does not implement, named.
+pub const SIGNED_CRITICAL: u64 = 5;
+/// `trust.verify` verdict: a signature that is not one encoded signature of the key's size.
+pub const SIGNED_MALFORMED_SIGNATURE: u64 = 6;
+/// `trust.verify` verdict: well-formed, and no signature is the root key's.
+pub const SIGNED_NOT_BY_ROOT: u64 = 7;
+/// `trust.verify` verdict: the declared root key is not a key this verifier reads.
+pub const SIGNED_MALFORMED_ROOT: u64 = 8;
+
 // ── verify ────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::VERIFY_LOOKUP`]'s `in`: the host-side verify cache, single-flight. `value` =
@@ -632,6 +675,8 @@ pub struct HostSlots {
     pub random_fill: Option<ServiceFn>,
     /// [`op::NEED_ADMIT`], in [`NeedAdmitIn`].
     pub need_admit: Option<ServiceFn>,
+    /// [`op::TRUST_VERIFY`], in [`TrustVerifyIn`].
+    pub trust_verify: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -1069,6 +1114,34 @@ pub fn check_need_admit(
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
     answer(ret, &i.head, out, bare(op::NEED_ADMIT, (0, 0)))
+}
+
+/// `trust.verify`'s answer: the common rules, and on READY no span, and bytes only with the two
+/// verdicts that name what they refused.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_verify(
+    i: &TrustVerifyIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let filled = answer(
+        ret,
+        &i.head,
+        out,
+        into(
+            op::TRUST_VERIFY,
+            i.into,
+            (SIGNED_VERIFIED, SIGNED_MALFORMED_ROOT),
+        ),
+    )?;
+    let names = matches!(out.value, SIGNED_ALGORITHM | SIGNED_CRITICAL);
+    if ret.outcome() == Outcome::Ready && (out.items != 0 || (out.len != 0 && !names)) {
+        return Err(fault(Rule::Contradiction, "trust_verify.out.len"));
+    }
+    Ok(filled)
 }
 
 #[cfg(test)]
