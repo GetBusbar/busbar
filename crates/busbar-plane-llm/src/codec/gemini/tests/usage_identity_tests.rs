@@ -510,7 +510,7 @@ fn relay_grounded_stream() -> (String, busbar_contract::billing::TokenUsage) {
         .expect("the stream's usage is captured for billing")
         .to_token_usage();
     (
-        mask_chunk_identity(&String::from_utf8(out).expect("utf8 SSE")),
+        mask_chunk_identity(&String::from_utf8(out).expect("utf8")),
         billed,
     )
 }
