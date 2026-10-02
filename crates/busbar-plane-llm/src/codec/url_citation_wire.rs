@@ -213,6 +213,7 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::codec
             end_index,
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         });
     }
     out

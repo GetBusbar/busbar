@@ -65,7 +65,7 @@
       "kind": "additive",
       "changelog": "Admin views gained fields; none changed.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
+      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok@hooks-webrequest$|^hooks\\|admin-list@hooks-webrequest$|^hooks\\|register\\|plugin-alias@hooks-webrequest$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok@hooks-webrequest$|^admin\\.ops\\|PostHooks\\|if-match-stale@hooks-webrequest$",
       "expected_cells": 9,
       "classes": [
         "body",
@@ -75,22 +75,22 @@
       "premise": {
         "all": [
           {
-            "cell": "admin.ops|GetHooks|ok",
+            "cell": "admin.ops|GetHooks|ok@hooks-webrequest",
             "pointer": "/items/0/at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooks|ok",
+            "cell": "admin.ops|GetHooks|ok@hooks-webrequest",
             "pointer": "/items/0/fires_at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/fires_at",
             "exists": true
           }
@@ -115,7 +115,7 @@
       "id": "F-011r hook write readback gains fires_at/groups/phase beside the kept `at`",
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage; split out 2026-09-05 (round-3 audit)",
-      "cells": "^admin\\.ops\\|(PostHooks|PutHooksName|PatchHooksNameSettings|DeleteHooksName)\\|ok$",
+      "cells": "^admin\\.ops\\|(PostHooks|PutHooksName|PatchHooksNameSettings|DeleteHooksName)\\|ok@hooks-webrequest$",
       "expected_cells": 4,
       "classes": [
         "effects.readback"
@@ -125,22 +125,22 @@
       "premise": {
         "all": [
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/fires_at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/groups",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/phase",
             "exists": true
           }
@@ -1493,51 +1493,6 @@
       "rationale": "Decision #64, quoted: \"#3: the `auth:` unknown-key error's 'expected one of' list gains `operator_pub` (a real new 1.6.0 auth field, D38 operator-sealing); exit code + main error unchanged — approved, oracle re-blesses `neutrality|NEUT-U-auth|validate`.\" MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66): after D-1's diagnostic-code rewrite the only stderr difference is `operator_pub` inserted into the backtick list after `signing_key`. kind=additive with text_list_growth, so the runner proves the list only GREW (a removed, reordered or respelled key stays red) rather than blanketing the stream; it carries D-1's own diagnostic-code rewrite (an additive entry's list proof reads its OWN transform, not D-1's). PREMISE (evaluated): the exit code is unchanged (1), which is the other half of what #64 approved. (#64's BOOT-135 half needs no entry: boot.refusal|BOOT-135|boot is byte-identical to 1.5.5 again, bd51e2cab.)"
     },
     {
-      "id": "Q31 a request whose upstream is down bills only what the upstream reported (nothing)",
-      "kind": "breaking",
-      "changelog": "1.6.0 Changed: a request whose upstream fails is billed only the usage the upstream reports.",
-      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q31 (via Q32)",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-09-24",
-        "ruling": "Q31 as ruled in Q32: failures surface as errors + charge upstream-reported usage",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^billing\\|key-usage\\|after-upstream-down$",
-      "expected_cells": 1,
-      "classes": [
-        "body"
-      ],
-      "premise": {
-        "all": [
-          {
-            "cell": "billing|key-usage|after-upstream-down",
-            "pointer": "/spend_cents",
-            "equals": 0
-          },
-          {
-            "cell": "billing|key-usage|after-upstream-down",
-            "pointer": "/tokens",
-            "equals": 0
-          },
-          {
-            "cell": "billing|key-usage|after-upstream-down",
-            "pointer": "/requests",
-            "equals": 1
-          }
-        ]
-      },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the key's usage after one chat whose upstream is DOWN (a 503 to the client) reads requests 1 / tokens 0 / spend_cents 0; 1.5.5 recorded requests 1 / tokens 18 / spend_cents 250 — it billed a request the upstream never answered. Owner ruling Q31 as ruled in Q32: a failed upstream charges only the usage the upstream reports, and a down upstream reports none. The cell's own `why` already stated the ruled figure (\"a 503: requests +1, billable refunded, spend 0\"). PREMISE (evaluated): exactly requests 1, tokens 0, spend 0 — any other figure withholds the entry. kind=breaking because it is a money figure a customer reads."
-    },
-    {
       "id": "M-1 refund reaches the cell the charge reached",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.",
@@ -1952,16 +1907,16 @@
       }
     },
     {
-      "id": "576 a Gemini turn bills Google's totalTokenCount (tool-use prompt tokens count as input)",
+      "id": "576 a Gemini turn ledgers every count Google itemizes (tool-use prompt tokens count as input)",
       "kind": "improvement",
       "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
-      "by": "owner (Matthew Jackson), Q91 answered 2026-09-27 option A; ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:110)",
+      "by": "owner (Matthew Jackson), 2026-10-02: ledger what the plane reports; fix Gemini ledging (supersedes Q91 option A's 'bills Google's totalTokenCount')",
       "cells": "^usage\\.gemini\\|tool-use\\|(total-billed|total-not-a-sum)$",
       "expected_cells": 2,
       "classes": [
         "body"
       ],
-      "rationale": "Q91 (owner, 2026-09-27, option A): \"A Gemini turn bills Google's totalTokenCount: toolUsePromptTokenCount counts as input.\" 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the bill. On usage.gemini|tool-use|total-billed (promptTokenCount 18, toolUsePromptTokenCount 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and bills tokens_input 50, spend 64000000 where 1.5.5 answered 18 / 25 and 32000000. usage.gemini|tool-use|total-not-a-sum (Google total 64, which is NOT the sum 57) must bill Google's 64; predev bills 57, a defect routed to PROTO-FIXES, so this entry's premise on that cell is false (WITHHELD, the cell stays DIVERGING) until the fix lands. NOTE: written as a NEW entry: the ruling named \"the existing signed entry (accepted-differences.json:1083)\" but that line is S-8 and no register entry mentioned Gemini tool-use or Q91. PREMISE RE-CHECKED against PROTO-FIXES #157 (2026-10-02): the fix bills 50 input + 14 output = Google's 64 on total-not-a-sum, so the premise probes the ledger (tokens_input 50, tokens_output 14) rather than the response total.",
+      "rationale": "OWNER 2026-10-02: \"ledger what the plane reports; fix Gemini ledging\" and \"1.6.0 has to be bank auditor grade money\": correctness, not 1.5.5 parity. Every usageMetadata count in the pinned wire lock is ledgered in the existing meter class Google's semantics give it (prompt and toolUsePromptTokenCount -> input, cachedContentTokenCount -> cache read, candidates and thoughtsTokenCount -> output); totalTokenCount is Google's sum and is never a unit; a total above the itemized sum is WARN-logged with the gap and not ledgered. 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the ledger. On usage.gemini|tool-use|total-billed (prompt 18, toolUsePrompt 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and ledgers tokens_input 50, tokens_output 7 where 1.5.5 answered 18 / 25 and ledgered 18 / 7. usage.gemini|tool-use|total-not-a-sum (Google total 64 against the itemized 57) ledgers the same 50 / 7: the 7-token gap is reported, never ledgered (b8605a388's 'bill Google's total as output' is reverted by this ruling). usage.gemini|stream-grounded|no-tool-use-count and cached-content|subtractive ledger exactly what 1.5.5 ledgered and are not in scope.",
       "premise": {
         "all": [
           {
@@ -1977,14 +1932,19 @@
           {
             "cell": "usage.gemini|tool-use|total-not-a-sum",
             "pointer": "/steps/1/body/json/total/tokens_output",
-            "equals": 14
+            "equals": 7
           }
         ]
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-27",
-        "ruling": "Q91 owner answer 2026-09-27 option A; ARCHITECT ruling escalate.q:110 (2026-10-02T04:00Z); R5 signed"
+        "ruling": "Q91 owner answer 2026-09-27 option A; ARCHITECT ruling escalate.q:110 (2026-10-02T04:00Z); R5 signed",
+        "amended": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-02",
+          "ruling": "owner 2026-10-02: ledger what the plane reports; fix Gemini ledging. OWNER LAW 2026-10-02: 1.6.0 has to be bank auditor grade money"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -2004,7 +1964,7 @@
       ],
       "rationale": "Fixes a fail-open: 1.5.5 passed the request through when a hook's transform failed under on_error: reject; the docs always said it fails closed. CELL OWED: no corpus cell exercises a failing transform under on_error: reject (every hooks|* cell uses on_error: nothing), so `cells` names the owed cell id and expected_cells is 0, the way AUTH-ROW's owed cells are written; the entry forgives nothing until hooks|on-error-reject|transform-failed is recorded (1.5.5 passes the request through) and expected_cells becomes 1. The premise probes the existing hooks|hooked-pool|ok cell, the one real hook-serving cell.",
       "premise": {
-        "cell": "hooks|hooked-pool|ok",
+        "cell": "hooks|hooked-pool|ok@hooks-webrequest",
         "status": 200
       },
       "signoff": {
@@ -2029,7 +1989,7 @@
       ],
       "rationale": "A hook holding a prompt: ro or prompt: rw grant is shown the tool-call arguments and tool results of a turn (the prompt projection walks ToolUse input and ToolResult content); 1.5.5 projected text blocks only. Already named in CHANGELOG.md and docs/hooks.md. CELL OWED: hooks|hooked-pool|* carry no tool blocks, so `cells` names the owed hooked-pool tool-turn cell and expected_cells is 0, the way AUTH-ROW's owed cells are written; the entry forgives nothing until that cell is recorded. The premise probes the existing hooks|hooked-pool|ok cell.",
       "premise": {
-        "cell": "hooks|hooked-pool|ok",
+        "cell": "hooks|hooked-pool|ok@hooks-webrequest",
         "status": 200
       },
       "signoff": {
