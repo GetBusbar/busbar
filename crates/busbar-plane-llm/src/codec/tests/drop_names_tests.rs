@@ -33,7 +33,12 @@ const CLOSED: Gates = Gates {
 };
 
 /// Translate `body` from `ingress` onto `egress`: what the seam audits, and the warns.
-fn translate(ingress: &str, egress: &str, body: &Value, gates: Gates) -> (Vec<String>, WarnCapture) {
+fn translate(
+    ingress: &str,
+    egress: &str,
+    body: &Value,
+    gates: Gates,
+) -> (Vec<String>, WarnCapture) {
     let _ = protocol_for(ingress);
     let handler = crate::codec::decl_of(ingress)
         .and_then(|d| d.handler)
@@ -65,9 +70,9 @@ fn translate(ingress: &str, egress: &str, body: &Value, gates: Gates) -> (Vec<St
 /// one drop path's warn (it carries `diag=`) or a writer's control warn (it does not).
 fn warned(cap: &WarnCapture, path: &str, drop_path: bool) -> bool {
     let field = format!("path={path}");
-    cap.messages().iter().any(|m| {
-        m.split_whitespace().any(|w| w == field) && m.contains("diag=") == drop_path
-    })
+    cap.messages()
+        .iter()
+        .any(|m| m.split_whitespace().any(|w| w == field) && m.contains("diag=") == drop_path)
 }
 
 /// A seam gate's drop is warned on the one drop path and audited under `path`, and never under the

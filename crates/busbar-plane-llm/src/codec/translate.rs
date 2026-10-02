@@ -159,8 +159,14 @@ pub trait TranslateCodec: OperationHandler {
                     Ok((wire, controls))
                 });
                 let (wire, controls) = written?;
-                let mut dropped_controls: Vec<String> =
-                    controls.into_iter().map(String::from).collect();
+                // A control is named by the caller's wire path for it, as every other drop is.
+                let mut dropped_controls: Vec<String> = Vec::new();
+                for control in controls {
+                    let path = crate::codec::drops::wire_path(prep.ingress_protocol, control, &[]);
+                    if !dropped_controls.contains(&path) {
+                        dropped_controls.push(path);
+                    }
+                }
                 for path in dropped {
                     if !dropped_controls.contains(&path) {
                         dropped_controls.push(path);

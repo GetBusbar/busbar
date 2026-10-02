@@ -61,11 +61,16 @@ pub struct Seam<'a> {
 #[derive(Clone, Debug)]
 pub struct Dropped {
     pub path: Cow<'static, str>,
+    /// Set when `path` is an IR name, not a wire path (a seam gate on an IR slot): [`note`] names
+    /// the drop by the caller's wire path for the IR names listed here ([`wire_path`]; empty: `path`
+    /// itself).
+    pub rows: Option<&'static [&'static str]>,
     pub diag: &'static Diagnostic,
     pub message: Cow<'static, str>,
 }
 
 impl Dropped {
+    /// A drop named by its wire path.
     pub fn new(
         path: impl Into<Cow<'static, str>>,
         diag: &'static Diagnostic,
@@ -73,9 +78,62 @@ impl Dropped {
     ) -> Dropped {
         Dropped {
             path: path.into(),
+            rows: None,
             diag,
             message: message.into(),
         }
+    }
+
+    /// A drop of the IR slot `name`, named on the open attempt by the caller's wire path for it
+    /// (by `name` itself when the caller's map file has no row for it).
+    pub fn slot(
+        name: &'static str,
+        diag: &'static Diagnostic,
+        message: impl Into<Cow<'static, str>>,
+    ) -> Dropped {
+        Dropped {
+            path: Cow::Borrowed(name),
+            rows: Some(&[]),
+            diag,
+            message: message.into(),
+        }
+    }
+
+    /// The IR names whose rows spell this slot drop's wire path, first found wins (default: the
+    /// slot's own name). The reasoning gate names an effort ask by the effort rows and a budget ask
+    /// by the budget rows.
+    pub fn rows(mut self, rows: &'static [&'static str]) -> Dropped {
+        self.rows = Some(rows);
+        self
+    }
+}
+
+/// THE NAME RESOLVER: the wire path (notation A, as its map file's rows spell it) at which the
+/// request dialect `dialect` carries the IR name `name` ([`crate::codec::carry::wire_path`]; the
+/// first of `rows` it has a row for, when `rows` lists any), else `name` itself. Gemini's `n` is
+/// `generationConfig.candidateCount`, OpenAI's `n` is `n`.
+pub fn wire_path(dialect: &str, name: &str, rows: &[&str]) -> String {
+    let rows = if rows.is_empty() { &[name][..] } else { rows };
+    crate::codec::proto_codec::with_reader(dialect, |r| {
+        rows.iter()
+            .find_map(|n| crate::codec::carry::wire_path(r.request_map(), n))
+    })
+    .flatten()
+    .unwrap_or_else(|| name.to_string())
+}
+
+/// The CALLER's wire path for the IR name `name`, for a drop warned outside [`note`] (a writer's
+/// control warn): on an open request attempt, [`wire_path`] in the caller's dialect; else `name`.
+pub fn caller_path(name: &str) -> String {
+    let ingress = OPEN.with(|o| {
+        o.borrow()
+            .as_ref()
+            .filter(|o| o.direction == Direction::Request)
+            .map(|o| o.ingress.clone())
+    });
+    match ingress {
+        Some(ingress) => wire_path(&ingress, name, &[]),
+        None => name.to_string(),
     }
 }
 
@@ -136,6 +194,13 @@ pub fn note(d: Dropped) {
         let mut o = o.borrow_mut();
         let Some(open) = o.as_mut() else {
             return;
+        };
+        let d = match d.rows {
+            Some(rows) if open.direction == Direction::Request => Dropped {
+                path: Cow::Owned(wire_path(&open.ingress, &d.path, rows)),
+                ..d
+            },
+            _ => d,
         };
         if open.paths.iter().any(|p| p.as_str() == d.path.as_ref()) {
             return;

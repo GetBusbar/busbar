@@ -89,10 +89,18 @@ pub enum DropWarn {
 /// reports, so the log and the seam's audit agree.
 pub fn warn_dropped<'a>(dropped: impl IntoIterator<Item = &'a str>, warn: &DropWarn) {
     for name in dropped {
+        let path = crate::codec::drops::caller_path(name);
         match warn {
-            DropWarn::Control(message) => tracing::warn!(control = name, "{}", message),
+            DropWarn::Control(message) => {
+                tracing::warn!(control = name, path = %path, "{}", message);
+            }
             DropWarn::Parameter(template) => {
-                tracing::warn!(parameter = name, "{}", template.replace("{slot}", name));
+                tracing::warn!(
+                    parameter = name,
+                    path = %path,
+                    "{}",
+                    template.replace("{slot}", name)
+                );
             }
         }
     }

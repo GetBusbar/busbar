@@ -10,7 +10,7 @@
 //! warn strings and their order are unchanged.
 
 use crate::codec::drops::{self, Dropped};
-use crate::codec::ir::{IrRequest, IrResponse};
+use crate::codec::ir::{IrReasoningAsk, IrRequest, IrResponse};
 use busbar_contract::billing::Billing;
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler};
 use busbar_contract::codec::{EgressWire, TranslatedResponse};
@@ -76,7 +76,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     // SAME-protocol passthrough never reaches here (the body is forwarded verbatim), so
     // `n>1` still works end-to-end where the response is not funneled through the IR.
     if ir.n.is_some_and(|n| n > 1) {
-        drops::note(Dropped::new(
+        drops::note(Dropped::slot(
             "n",
             &crate::codec::diagnostics::IR_CLAMP_N_TO_1,
             "clamping n>1 to 1 on the cross-protocol seam: the neutral response IR carries \
@@ -92,13 +92,22 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
         if prep.reasoning_allowed {
             ir.reasoning_budgets = Some(prep.reasoning_budgets);
         } else {
-            drops::note(Dropped::new(
-                "reasoning",
-                &crate::codec::diagnostics::IR_DROP_REASONING,
-                "dropping cross-protocol reasoning/thinking ask: the target lane does \
-                 not declare the capability; set `reasoning: true` on the model (or \
-                 pool member) if this backend accepts thinking params",
-            ));
+            // Named by the caller's member the ask came from: an effort word by the effort rows,
+            // a token budget by the budget rows.
+            let rows: &'static [&'static str] = match ir.reasoning {
+                Some(IrReasoningAsk::Budget(_) | IrReasoningAsk::Dynamic) => &["thinking_budget"],
+                _ => &["reasoning_effort", "reasoning"],
+            };
+            drops::note(
+                Dropped::slot(
+                    "reasoning",
+                    &crate::codec::diagnostics::IR_DROP_REASONING,
+                    "dropping cross-protocol reasoning/thinking ask: the target lane does \
+                     not declare the capability; set `reasoning: true` on the model (or \
+                     pool member) if this backend accepts thinking params",
+                )
+                .rows(rows),
+            );
             ir.reasoning = None;
         }
     }
@@ -132,7 +141,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
             cleared |= t.cache_control.take().is_some();
         }
         if cleared {
-            drops::note(Dropped::new(
+            drops::note(Dropped::slot(
                 "cache_control",
                 &crate::codec::diagnostics::IR_DROP_PROMPT_CACHE,
                 "dropping cross-protocol prompt-cache breakpoints: the target lane's \
@@ -188,7 +197,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
             }
         }
         if dropped > 0 {
-            drops::note(Dropped::new(
+            drops::note(Dropped::slot(
                 "cache_control",
                 &crate::codec::diagnostics::IR_DROP_CACHE_CONTROL_OVER_CAP,
                 format!(
