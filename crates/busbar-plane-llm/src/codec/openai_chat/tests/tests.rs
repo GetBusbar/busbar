@@ -940,6 +940,7 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let msg = &out["choices"][0]["message"];
@@ -979,6 +980,7 @@ fn write_response_content_null_when_no_text() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -1111,6 +1113,7 @@ fn cross_protocol_write_synthesizes_valid_id() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let id = out["id"].as_str().expect("synthesized id is a string");
@@ -1158,6 +1161,7 @@ fn cross_protocol_write_response_emits_fallback_model() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let obj = out.as_object().expect("response object");
@@ -1193,6 +1197,7 @@ fn write_response_preserves_upstream_model_over_fallback() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(out["model"], serde_json::json!("gpt-4o-mini"));
@@ -1474,6 +1479,7 @@ fn write_response_total_tokens_saturates_on_overflow() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     // Must not panic (debug) or wrap (release); saturates at u64::MAX.
     let out = openai_writer().write_response(&resp);
@@ -2409,6 +2415,7 @@ fn write_response_falls_back_to_stop_when_stop_reason_none() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let choice = out["choices"][0].as_object().expect("choice object");
@@ -2458,6 +2465,7 @@ fn write_response_maps_finish_reason_enum_values() {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         };
         let out = openai_writer().write_response(&resp);
         assert_eq!(
@@ -3477,6 +3485,7 @@ fn write_response_safety_round_trips_to_content_filter() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -3748,6 +3757,7 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let args = &out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"];
@@ -4885,6 +4895,7 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -4924,6 +4935,7 @@ fn write_response_omits_cached_details_when_no_cache_read() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(out["usage"]["prompt_tokens"], serde_json::json!(7));
@@ -5191,6 +5203,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         end_index: None,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     let text_block = |text: &str, citations: Vec<crate::codec::ir::IrCitation>| IrBlock::Text {
         text: text.into(),
@@ -5228,6 +5241,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let v = openai_writer().write_response(&resp);
@@ -5261,6 +5275,7 @@ fn url_annotation_offset_saturates_on_absurd_upstream_index() {
         end_index: Some(i64::MAX),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     }];
     // Must not panic.
     let anns = super::super::url_citation_wire::url_annotations("hi", 5, &citations);
@@ -5288,6 +5303,7 @@ fn url_annotation_base_accumulates_in_characters() {
         end_index: None,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     // "héllo wörld " has 12 CHARS but 14 BYTES (é and ö are 2 bytes each in UTF-8).
     let first_block = "héllo wörld ";
@@ -5327,6 +5343,7 @@ fn url_annotation_base_accumulates_in_characters() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let v = openai_writer().write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
@@ -5356,6 +5373,7 @@ fn url_annotation_quote_recovery_reports_character_indices() {
         end_index: None,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     }];
     // "héllo " is 6 chars / 7 bytes; "wörld" (the quote) is 5 chars / 6 bytes.
     let text = "héllo wörld";
@@ -5400,6 +5418,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let v = openai_writer().write_response(&resp);
     assert!(v["choices"][0]["message"].get("annotations").is_none());
@@ -5482,6 +5501,7 @@ fn anthropic_sourced_citation_indices_are_not_double_converted() {
         end_index: Some(11),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     }];
     let anns = super::super::url_citation_wire::url_annotations("héllo wörld", 0, &citations);
     assert_eq!(anns.len(), 1, "{anns:?}");
@@ -5711,6 +5731,7 @@ fn openai_write_drops_thinking_observably() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let cap = WarnCapture::default();
@@ -5860,6 +5881,7 @@ fn plain_ir_response(
         stop_sequence: None,
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     }
 }
 
