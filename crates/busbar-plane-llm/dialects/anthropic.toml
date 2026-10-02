@@ -78,6 +78,10 @@ drop_field = "parameter"
 "messages[].content[].type=tool_result.cache_control" = { prim = "cache_control" }
 "messages[].content[].type=thinking.thinking" = { prim = "thinking" }
 "messages[].content[].type=thinking.signature" = { prim = "signature" }
+"messages[].content[].type=web_search_tool_result" = { prim = "web_search_record" }
+"messages[].content[].type=web_search_tool_result.tool_use_id" = { prim = "web_search_record" }
+"messages[].content[].type=web_search_tool_result.content[].url" = { prim = "web_search_record" }
+"messages[].content[].type=web_search_tool_result.content[].title" = { prim = "web_search_record" }
 "messages[].content[].type=document.source.type=url.url" = { prim = "url" }
 "messages[].content[].type=document.context" = { prim = "context" }
 "messages[].content[].type=document.citations" = { prim = "citations" }
@@ -113,6 +117,11 @@ drop_field = "parameter"
 "usage.cache_creation.ephemeral_1h_input_tokens" = { prim = "ephemeral_1h_input_tokens" }
 "usage.server_tool_use.web_search_requests" = { prim = "web_search_requests" }
 "usage.service_tier" = { prim = "served_tier" }
+"content[].type=web_search_tool_result" = { ir = "web_search" }
+"content[].type=web_search_tool_result.tool_use_id" = { ir = "web_search" }
+"content[].type=web_search_tool_result.content[].url" = { ir = "web_search" }
+"content[].type=web_search_tool_result.content[].title" = { ir = "web_search" }
+"content[].type=web_search_tool_result.content.error_code" = { ir = "web_search" }
 
 # The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
 [rows.stream]
