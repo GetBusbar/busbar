@@ -22,16 +22,6 @@ class = "port"
 reason = "release step in RELEASE.md (version bump, changelog roll): becomes a busbar-release subcommand on the CLI-AUDIT tree"
 
 [[script]]
-path = "assets/readme/generate.py"
-class = "port"
-reason = "README asset generator, run by hand: becomes `cargo xtask readme-assets`"
-
-[[script]]
-path = "assets/readme/install-sizes.py"
-class = "port"
-reason = "README asset generator, run by hand: becomes `cargo xtask readme-assets`"
-
-[[script]]
 path = "examples/claude-code-bedrock/bedrock-usage.sh"
 class = "keep"
 reason = "user-facing example the README tells an operator to run (env.sh must be sourced into their own shell); product docs, not tooling"
