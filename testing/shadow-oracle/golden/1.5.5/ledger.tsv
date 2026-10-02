@@ -476,10 +476,7 @@ admin.ops|DeleteGroupsName|if-match-stale	PASS	HTTP 409; usage Δ {}
 admin.ops|DeleteGroupsName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|DeleteGroupsName|ok	PASS	HTTP 204; usage Δ {}	
 admin.ops|DeleteGroupsName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|DeleteHooksName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|DeleteHooksName|if-match-stale	PASS	HTTP 409; usage Δ {}	
 admin.ops|DeleteHooksName|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|DeleteHooksName|ok	PASS	HTTP 409; usage Δ {}	
 admin.ops|DeleteHooksName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|DeleteIdentityProvidersName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteIdentityProvidersName|if-match-stale	PASS	HTTP 409; usage Δ {}	
@@ -498,7 +495,6 @@ admin.ops|DeleteOverlaySection|not-found	PASS	HTTP 400; usage Δ {}
 admin.ops|DeleteOverlaySection|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|DeleteOverlaySection|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|DeletePluginsFile|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|DeletePluginsFile|ok	PASS	HTTP 204; usage Δ {}	
 admin.ops|DeletePluginsFile|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetAdminAuth|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetAdminAuth|unauth	PASS	HTTP 401; usage Δ {}	
@@ -531,18 +527,13 @@ admin.ops|GetGroupsName|unauth	PASS	HTTP 401; usage Δ {}
 admin.ops|GetGroups|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetGroups|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetHooksNameHealth|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetHooksNameHealth|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetHooksNameHealth|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetHooksNameSchema|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetHooksNameSchema|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetHooksNameSchema|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetHooksNameStatus|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetHooksNameStatus|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetHooksNameStatus|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetHooksName|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetHooksName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetHooksName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetHooks|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetHooks|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetIdentityProvidersName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetIdentityProvidersName|ok	PASS	HTTP 200; usage Δ {}	
@@ -566,9 +557,7 @@ admin.ops|GetModels|unauth	PASS	HTTP 401; usage Δ {}
 admin.ops|GetOpenapiJson|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetOpenapiJson|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetPluginsFileSchema|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetPluginsFileSchema|ok	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetPluginsFileSchema|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetPlugins|ok	PASS	HTTP 400; usage Δ {}	
 admin.ops|GetPlugins|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetPoolsName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetPoolsName|ok	PASS	HTTP 200; usage Δ {}	
@@ -593,10 +582,7 @@ admin.ops|PatchGroupsName|not-found	PASS	HTTP 404; usage Δ {}
 admin.ops|PatchGroupsName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PatchGroupsName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PatchHooksNameSettings|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PatchHooksNameSettings|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|PatchHooksNameSettings|if-match-stale	PASS	HTTP 409; usage Δ {}	
 admin.ops|PatchHooksNameSettings|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|PatchHooksNameSettings|ok	PASS	HTTP 409; usage Δ {}	
 admin.ops|PatchHooksNameSettings|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PatchIdentityProvidersNameSettings|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchIdentityProvidersNameSettings|if-match-malformed	PASS	HTTP 400; usage Δ {}	
@@ -636,9 +622,6 @@ admin.ops|PostGroups|if-match-stale	PASS	HTTP 201; usage Δ {}
 admin.ops|PostGroups|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostGroups|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostHooks|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostHooks|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostHooks|if-match-stale	PASS	HTTP 201; usage Δ {}	
-admin.ops|PostHooks|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostHooks|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostKeysIdRevoke|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRevoke|ok	PASS	HTTP 200; usage Δ {}	
@@ -654,17 +637,12 @@ admin.ops|PostKeys|idempotent-replay	PASS	HTTP 201; usage Δ {}
 admin.ops|PostKeys|ok	PASS	HTTP 201; usage Δ {}	
 admin.ops|PostKeys|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostPluginsInspect|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostPluginsInspect|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostPluginsInspect|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostPluginsReload|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostPluginsReload|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostPluginsRollback|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostPluginsRollback|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostPluginsRollback|if-match-stale	PASS	HTTP 200; usage Δ {}	
-admin.ops|PostPluginsRollback|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostPluginsRollback|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostPlugins|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostPlugins|ok	PASS	HTTP 201; usage Δ {}	
 admin.ops|PostPlugins|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostRestart|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostRestart|ok	PASS	HTTP 202; usage Δ {"unavailable":true}	
@@ -694,10 +672,7 @@ admin.ops|PutGroupsName|not-found	PASS	HTTP 404; usage Δ {}
 admin.ops|PutGroupsName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutGroupsName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PutHooksName|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PutHooksName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
-admin.ops|PutHooksName|if-match-stale	PASS	HTTP 409; usage Δ {}	
 admin.ops|PutHooksName|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|PutHooksName|ok	PASS	HTTP 409; usage Δ {}	
 admin.ops|PutHooksName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PutIdentityProvidersName|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PutIdentityProvidersName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
@@ -706,13 +681,6 @@ admin.ops|PutIdentityProvidersName|not-found	PASS	HTTP 200; usage Δ {}
 admin.ops|PutIdentityProvidersName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|admin-token|wrong-destination	PASS	HTTP 401; usage Δ {}	
-admin.plugins|type-auth	PASS	HTTP 200; usage Δ {}	
-admin.plugins|type-bogus	PASS	HTTP 400; usage Δ {}	
-admin.plugins|type-export	PASS	HTTP 400; usage Δ {}	
-admin.plugins|type-hooks	PASS	HTTP 200; usage Δ {}	
-admin.plugins|type-missing	PASS	HTTP 400; usage Δ {}	
-admin.plugins|type-secret	PASS	HTTP 200; usage Δ {}	
-admin.plugins|type-store	PASS	HTTP 200; usage Δ {}	
 auth.lifecycle|key-expiry	PASS	script key-expiry.sh: status 0	
 auth.lifecycle|key-revoke	PASS	script key-revoke.sh: status 0	
 auth.lifecycle|key-rotate	PASS	script key-rotate.sh: status 0	
@@ -723,7 +691,6 @@ billing|group-usage|broke-after-prime	PASS	HTTP 200; usage Δ {}
 billing|key-usage|after-1	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|after-3	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|after-cross-protocol	PASS	HTTP 200; usage Δ {}	
-billing|key-usage|after-upstream-down	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|broke-after-429	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|fresh	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|noscope-after-403	PASS	HTTP 200; usage Δ {}	
@@ -1149,7 +1116,6 @@ config|rate-card|append-not-replace	PASS	HTTP 400; usage Δ {}
 cooldown|trip-then-serve	PASS	script cooldown-trip.sh: status 200	
 crosscut.traps|exhausted-retry-after-floor	PASS	HTTP 503; usage Δ {"requests":1}	
 crosscut.traps|openapi-info-version	PASS	HTTP 200; usage Δ {}	
-crosscut.traps|plugin-digests	PASS	HTTP 200; usage Δ {}	
 crosscut.traps|request-duration-quantiles	PASS	HTTP 200; usage Δ {}	
 crosscut.traps|x-request-id-present	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 documented|changelog|admin-restart	PASS	script documented-admin-restart.sh: status 0	
@@ -1205,16 +1171,6 @@ export|request-log-file|jsonl	PASS	capture
 export|request-log-webhook|loopback-refused	PASS	capture	
 hazard|no-data-dir|files	PASS	script hazard-no-data-dir.sh: status 0	
 hazard|no-data-dir|logs	PASS	script hazard-no-data-dir.sh: status 0	
-hooks|admin-list	PASS	HTTP 200; usage Δ {}	
-hooks|config-settings-put|persist-non-boolean	PASS	HTTP 400; usage Δ {}	
-hooks|config-settings-put|persist-true	PASS	HTTP 200; usage Δ {}	
-hooks|hooked-pool|embedded-system-turn	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
-hooks|hooked-pool|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
-hooks|hooked-pool|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
-hooks|hooked-pool|unauth	PASS	HTTP 401; usage Δ {}	
-hooks|metrics-hooks	PASS	HTTP 200; usage Δ {}	
-hooks|register|plugin-alias	PASS	HTTP 201; usage Δ {}	
-hooks|unhooked-pool|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 http.crosscut|413|a2a-jsonrpc	SKIP	UNSUPPORTED: oversize on the A2A JSON-RPC mount (busbar-a2a-codec MOUNT_PATH) — needs a recorder config that mounts the agents: block	named gap: the fixture this cell needs is not in the tree yet
 http.crosscut|413|anthropic	PASS	HTTP 413; usage Δ {}	
 http.crosscut|413|api-prefix	PASS	HTTP 404; usage Δ {}	

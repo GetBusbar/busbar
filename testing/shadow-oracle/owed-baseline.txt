@@ -255,11 +255,12 @@ billing|group-usage|broke-after-prime
 billing|key-usage|after-1
 billing|key-usage|after-3
 billing|key-usage|after-cross-protocol
-billing|key-usage|after-upstream-down
 billing|key-usage|broke-after-429
 billing|key-usage|fresh
 billing|key-usage|noscope-after-403
 billing|key-usage|refund-across-window
+billing|key-usage|upstream-down-refunded
+billing|key-usage|upstream-healthy-billed
 billing|rate-card|epoch-mid-window
 billing|rate-card|history-mid-window
 boot.deprecated-env|BUSBAR_CONFIG_OVERLAY
@@ -734,6 +735,7 @@ hooks|hooked-pool|embedded-system-turn@hooks-webrequest
 hooks|hooked-pool|ok@hooks-webrequest
 hooks|hooked-pool|ok_stream@hooks-webrequest
 hooks|hooked-pool|unauth@hooks-webrequest
+hooks|hooked-pool|unmodelled-block@hooks-webrequest
 hooks|metrics-hooks@hooks-webrequest
 hooks|register|plugin-alias@hooks-webrequest
 hooks|unhooked-pool|ok@hooks-webrequest

@@ -1493,51 +1493,6 @@
       "rationale": "Decision #64, quoted: \"#3: the `auth:` unknown-key error's 'expected one of' list gains `operator_pub` (a real new 1.6.0 auth field, D38 operator-sealing); exit code + main error unchanged — approved, oracle re-blesses `neutrality|NEUT-U-auth|validate`.\" MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66): after D-1's diagnostic-code rewrite the only stderr difference is `operator_pub` inserted into the backtick list after `signing_key`. kind=additive with text_list_growth, so the runner proves the list only GREW (a removed, reordered or respelled key stays red) rather than blanketing the stream; it carries D-1's own diagnostic-code rewrite (an additive entry's list proof reads its OWN transform, not D-1's). PREMISE (evaluated): the exit code is unchanged (1), which is the other half of what #64 approved. (#64's BOOT-135 half needs no entry: boot.refusal|BOOT-135|boot is byte-identical to 1.5.5 again, bd51e2cab.)"
     },
     {
-      "id": "Q31 a request whose upstream is down bills only what the upstream reported (nothing)",
-      "kind": "breaking",
-      "changelog": "1.6.0 Changed: a request whose upstream fails is billed only the usage the upstream reports.",
-      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q31 (via Q32)",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-09-24",
-        "ruling": "Q31 as ruled in Q32: failures surface as errors + charge upstream-reported usage",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^billing\\|key-usage\\|after-upstream-down$",
-      "expected_cells": 1,
-      "classes": [
-        "body"
-      ],
-      "premise": {
-        "all": [
-          {
-            "cell": "billing|key-usage|after-upstream-down",
-            "pointer": "/spend_cents",
-            "equals": 0
-          },
-          {
-            "cell": "billing|key-usage|after-upstream-down",
-            "pointer": "/tokens",
-            "equals": 0
-          },
-          {
-            "cell": "billing|key-usage|after-upstream-down",
-            "pointer": "/requests",
-            "equals": 1
-          }
-        ]
-      },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the key's usage after one chat whose upstream is DOWN (a 503 to the client) reads requests 1 / tokens 0 / spend_cents 0; 1.5.5 recorded requests 1 / tokens 18 / spend_cents 250 — it billed a request the upstream never answered. Owner ruling Q31 as ruled in Q32: a failed upstream charges only the usage the upstream reports, and a down upstream reports none. The cell's own `why` already stated the ruled figure (\"a 503: requests +1, billable refunded, spend 0\"). PREMISE (evaluated): exactly requests 1, tokens 0, spend 0 — any other figure withholds the entry. kind=breaking because it is a money figure a customer reads."
-    },
-    {
       "id": "M-1 refund reaches the cell the charge reached",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.",

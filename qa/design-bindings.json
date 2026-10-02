@@ -791,7 +791,7 @@
    "checks": [
     {
      "kind": "oracle-cell",
-     "ref": "billing|key-usage|after-upstream-down",
+     "ref": "billing|key-usage|upstream-down-refunded",
      "status": "mapped",
      "why": "a 503: requests +1, billable refunded, spend 0",
      "source": "cells.json why"
@@ -819,7 +819,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|after-upstream-down, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx, test:test_pre_routing_failure_does_not_refund_prior_charge, test:finish_admitted_does_not_refund_an_uncharged_admit"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx, test:test_pre_routing_failure_does_not_refund_prior_charge, test:finish_admitted_does_not_refund_an_uncharged_admit"
   },
   {
    "id": "PB-17",
@@ -1182,7 +1182,7 @@
    "checks": [
     {
      "kind": "oracle-cell",
-     "ref": "billing|key-usage|after-upstream-down",
+     "ref": "billing|key-usage|upstream-down-refunded",
      "status": "mapped",
      "why": "a 503: requests +1, billable refunded, spend 0",
      "source": "cells.json why"
@@ -1245,7 +1245,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|after-upstream-down, test:test_unpriced_passthrough_model_rejected_when_rate_card_present, oracle-cell:http.crosscut|unknown-path|openai-suffix, test:test_governance_pool_acl_403_openai_native_envelope, test:test_governance_pool_acl_403_bedrock_native_envelope, test:test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx, test:test_pre_routing_failure_does_not_refund_prior_charge, test:test_bedrock_non_object_body_is_400"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:test_unpriced_passthrough_model_rejected_when_rate_card_present, oracle-cell:http.crosscut|unknown-path|openai-suffix, test:test_governance_pool_acl_403_openai_native_envelope, test:test_governance_pool_acl_403_bedrock_native_envelope, test:test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx, test:test_pre_routing_failure_does_not_refund_prior_charge, test:test_bedrock_non_object_body_is_400"
   },
   {
    "id": "PB-27",
@@ -1256,7 +1256,7 @@
    "checks": [
     {
      "kind": "oracle-cell",
-     "ref": "billing|key-usage|after-upstream-down",
+     "ref": "billing|key-usage|upstream-down-refunded",
      "status": "mapped",
      "why": "a 503: requests +1, billable refunded, spend 0",
      "source": "cells.json why"
@@ -1340,7 +1340,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|after-upstream-down, oracle-cell:route.failover|fo|primary-cut-stream, test:test_mid_stream_transport_error_does_not_bill_partial_usage, test:test_streaming_translate_abort_trips_breaker_and_skips_billing, test:test_untranslatable_2xx_does_not_charge_tokens, test:test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged, test:test_streaming_pre_first_byte_transport_error_refunds_budget, test:test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit, test:test_streaming_nonsse_mid_body_transport_error_records_transient, test:test_cancel_drop_bills_partial_tokens, test:test_cancel_drop_mid_stream_refunds_budget, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, oracle-cell:route.failover|fo|primary-cut-stream, test:test_mid_stream_transport_error_does_not_bill_partial_usage, test:test_streaming_translate_abort_trips_breaker_and_skips_billing, test:test_untranslatable_2xx_does_not_charge_tokens, test:test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged, test:test_streaming_pre_first_byte_transport_error_refunds_budget, test:test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit, test:test_streaming_nonsse_mid_body_transport_error_records_transient, test:test_cancel_drop_bills_partial_tokens, test:test_cancel_drop_mid_stream_refunds_budget, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx"
   },
   {
    "id": "PB-28",
