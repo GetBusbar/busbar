@@ -477,7 +477,7 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
     if out_dir == root.join("conformance").join("verdicts") {
         match reconcile_manifest(&root) {
             Ok(()) => {
-                println!("conformance record: manifest reconciled (conformance-sync --write)")
+                println!("conformance record: manifest reconciled (the conformance-sync write arm)")
             }
             Err(e) => {
                 eprintln!("conformance record: the manifest could not be reconciled: {e}");
@@ -488,20 +488,20 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
     0
 }
 
-/// `xtask gate conformance-sync --write`, run by this same xtask binary: it renders
-/// `conformance/manifest.json` (and the README block) from the registry + verdicts.
-fn reconcile_manifest(root: &Path) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("own executable: {e}"))?;
-    let status = std::process::Command::new(exe)
-        .args(["gate", "conformance-sync", "--write"])
-        .current_dir(root)
-        .status()
-        .map_err(|e| format!("spawning conformance-sync --write: {e}"))?;
-    // `--write` reports the rows it could not make true (e.g. freshness for a suite
-    // with no producer) as red: the manifest is still written. Only a gate that
-    // could not run (2 usage, 3 could not run) leaves it unwritten.
-    match status.code() {
-        Some(0 | 1) => Ok(()),
-        other => Err(format!("conformance-sync --write exited {other:?}")),
+/// `conformance/manifest.json` (and the README badge block) rendered from the registry and the
+/// verdicts on disk: the `conformance-sync` gate's own write arm, run in this process over a fresh
+/// context (so no memoised read of a verdict written above can stand in for it), never a second
+/// binary. The gate's other rows (freshness for a suite with no producer, the README markers) may
+/// be red and the manifest is still written; only an unwritten manifest is an error.
+pub fn reconcile_manifest(root: &Path) -> Result<(), String> {
+    use crate::gates::conformance_sync::{ConformanceSyncGate, ROW_MANIFEST_DRIFT};
+    let cx = Ctx::new(root)?.write_mode(true);
+    let verdict = crate::gates::execute(&ConformanceSyncGate, &cx);
+    match verdict.rows.iter().find(|r| r.id == ROW_MANIFEST_DRIFT) {
+        Some(r) if r.status == crate::ledger::Status::Pass => Ok(()),
+        Some(r) => Err(format!("{}: {}", r.title, r.detail)),
+        None => Err(format!(
+            "conformance-sync returned no `{ROW_MANIFEST_DRIFT}` row"
+        )),
     }
 }

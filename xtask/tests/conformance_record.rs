@@ -548,3 +548,58 @@ fn a_suite_with_no_registry_entry_is_an_argument_error() {
         2
     );
 }
+
+// ── the producer reconciles the manifest from the verdicts it wrote ────────────────────────────
+
+/// `conformance:manifest-drift` over `repo` as the gate judges it (no write): PASS only when
+/// `conformance/manifest.json` byte-equals a fresh render of the registry + verdicts on disk.
+fn manifest_drift(repo: &Path) -> xtask::ledger::Status {
+    use xtask::gates::conformance_sync::{ConformanceSyncGate, ROW_MANIFEST_DRIFT};
+    let cx = xtask::ctx::Ctx::new(repo).expect("a context over the fixture");
+    let verdict = xtask::gates::execute(&ConformanceSyncGate, &cx);
+    verdict
+        .rows
+        .iter()
+        .find(|r| r.id == ROW_MANIFEST_DRIFT)
+        .map(|r| r.status)
+        .expect("the gate owes its manifest-drift row")
+}
+
+#[test]
+fn the_verdicts_the_producer_writes_rebuild_the_manifest_in_process() {
+    let repo = fixture_repo("record-manifest");
+    let registry = repo.join("conformance/registry.toml");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::copy(repo_root().join("conformance/registry.toml"), &registry)
+        .expect("the tree's registry copies into the fixture");
+    let suites = xtask::gates::conformance_sync::render::parse_registry(
+        &xtask::ctx::Ctx::new(&repo).expect("a context over the fixture"),
+    )
+    .expect("the tree's registry parses");
+    let mcp = suites
+        .iter()
+        .find(|s| s.id == "mcp")
+        .expect("mcp is a registered suite");
+    let verdicts = repo.join("conformance/verdicts");
+
+    // No manifest yet: the gate reads it as drift, so a passing reconcile below is the
+    // reconcile's own work.
+    write_verdict(
+        &repo,
+        &verdicts,
+        mcp,
+        &Outcome::fail("the rig judged red", "rig/report.json"),
+    )
+    .expect("written");
+    assert_ne!(manifest_drift(&repo), xtask::ledger::Status::Pass);
+    xtask::conformance_record::reconcile_manifest(&repo).expect("the manifest is written");
+    assert!(repo.join("conformance/manifest.json").is_file());
+    assert_eq!(manifest_drift(&repo), xtask::ledger::Status::Pass);
+
+    // A new verdict makes the manifest stale again, and the next reconcile carries it.
+    write_verdict(&repo, &verdicts, mcp, &Outcome::pass("rig/report.json")).expect("written");
+    assert_ne!(manifest_drift(&repo), xtask::ledger::Status::Pass);
+    xtask::conformance_record::reconcile_manifest(&repo).expect("the manifest is rewritten");
+    assert_eq!(manifest_drift(&repo), xtask::ledger::Status::Pass);
+    let _ = std::fs::remove_dir_all(&repo);
+}
