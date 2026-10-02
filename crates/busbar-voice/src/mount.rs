@@ -36,7 +36,7 @@ use crate::plane_provider::{provider_ws_url, redact_url_credentials};
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{serve_to_teardown, serve_with_sweep, UplinkForwarder, VoiceSession};
-use crate::runtime::{EchoToolExecutor, VoiceRuntime};
+use crate::runtime::{ClientRelay, VoiceRuntime};
 use crate::topology::minter_https::HttpsTokenMinter;
 use crate::topology::telephony::{begin_telephony, g711_config, open_admitted_telephony};
 use crate::topology::webrtc::TokenMinter;
@@ -549,7 +549,7 @@ pub fn voice_build(ctx: &BuildCtx) -> Option<Arc<dyn Any + Send + Sync>> {
 fn dispatch_runtime() -> VoiceRuntime {
     VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(EchoToolExecutor),
+        Arc::new(ClientRelay),
     )
     .with_streams(&crate::config::configured())
 }
@@ -611,7 +611,34 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
             auth: RouteAuth::Key,
             handler: Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture { Box::pin(sdp_route(ctx)) }),
         },
+        // THE RFC 9728 DOCUMENT the refused caller's challenge points at: the one open route, read
+        // without a credential by the callers who do not have one yet.
+        PlaneRouteSpec {
+            path: METADATA_PATH.to_string(),
+            method: RouteMethod::Get,
+            auth: RouteAuth::None,
+            handler: Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(metadata_route(ctx))
+            }),
+        },
     ]
+}
+
+/// The protected-resource metadata document: the audience a token at this plane's doors must carry,
+/// as one reading of the public URL. No authorization server is named: the plane is configured with
+/// none.
+async fn metadata_route(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> axum::response::Response {
+    let Some(mount) = ctx.slot.downcast_ref::<VoiceMount>() else {
+        return refusal(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "streaming route reached without its dispatch slot",
+        );
+    };
+    busbar_kernel::ingress::protocol::metadata(&busbar_kernel::ingress::protocol::Metadata {
+        resource: std::borrow::Cow::Borrowed(mount.audience.as_str()),
+        authorization_servers: &[],
+        scopes_supported: &[],
+    })
 }
 
 /// THE PLANE'S WS-ACCEPT ENTRY HOOK ([`crate::linked`]): installs [`voice_ws_arrivals`] into the
@@ -935,27 +962,7 @@ async fn hook_gate(
 /// speaks, and the value is substituted for the plane's locked [`SessionConfig`]; admitting `7` would
 /// mean telling the hook its rewrite landed and then opening the session with something that is not a
 /// session config at all.
-pub(crate) fn committed_session_config(
-    locked: &SessionConfig,
-    args_json: &[u8],
-) -> Result<SessionConfig, String> {
-    let patch: serde_json::Value =
-        serde_json::from_slice(args_json).map_err(|e| format!("the output is not JSON: {e}"))?;
-    let serde_json::Value::Object(patch) = patch else {
-        return Err("the output is JSON but not a session-params object".to_string());
-    };
-    // The locked params as the hook itself was handed them (`serde_json::to_vec(cfg)` at the call
-    // seam), so the merge is over exactly the key set the hook screened.
-    let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(locked) else {
-        return Err(
-            "the plane's own locked session params did not project to an object".to_string(),
-        );
-    };
-    // A key the hook NAMED wins; a key it did not name keeps the plane's locked value.
-    merged.extend(patch);
-    serde_json::from_value::<SessionConfig>(serde_json::Value::Object(merged))
-        .map_err(|e| format!("the output is not a session config: {e}"))
-}
+pub(crate) use busbar_plane_streaming::session_params::committed_session_config;
 
 /// The hooks-TAP leg (`host.transform_over`) over the session-open params. `Ok(Some(cfg))` is a
 /// committed rewrite the caller substitutes for the locked params; `Ok(None)` is "no change" (no
@@ -1157,14 +1164,7 @@ async fn serve_sdp(
         .unwrap_or_else(|_| sideband_pending())
 }
 
-/// The last `rtc_<call_id>` path segment of a brokered call's `Location` header — the correlation key
-/// the SDP broker stamps onto the durable row. `None` when no segment carries the `rtc_` prefix.
-fn rtc_call_id_of(location: &str) -> Option<String> {
-    location
-        .rsplit('/')
-        .find(|seg| seg.starts_with("rtc_"))
-        .map(|seg| seg.split(['?', '#']).next().unwrap_or(seg).to_string())
-}
+use busbar_plane_streaming::broker::rtc_call_id_of;
 
 /// The substrate egress client the one-shot HTTPS passes dial through (the same posture the concrete
 /// minter uses). Built per pass; the composition root pools one once the provider config is threaded.

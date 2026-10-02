@@ -68,6 +68,8 @@ pub mod claims;
 pub mod codec;
 pub mod config;
 pub mod diagnostics;
+pub mod door;
+pub mod driven;
 pub mod governed;
 pub mod meta;
 pub mod oneshot;

@@ -37,15 +37,19 @@ pub trait ToolExecutor: Send + Sync {
     async fn execute(&self, name: &str, arguments: &[u8]) -> Vec<u8>;
 }
 
-/// A TEST/DEV executor that echoes the call back as a JSON object — enough to prove correlation
-/// (the right `name` + `arguments` reached the right call) without a real tool registry.
+/// THE DEFAULT: this node serves no tool. Every call the model makes is relayed to the caller, and
+/// the caller's result is relayed back, exactly as the upstream realtime protocols define the loop.
+/// The gateway never authors a tool's result.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct EchoToolExecutor;
+pub struct ClientRelay;
 
 #[async_trait]
-impl ToolExecutor for EchoToolExecutor {
-    async fn execute(&self, name: &str, arguments: &[u8]) -> Vec<u8> {
-        let args = String::from_utf8_lossy(arguments);
-        format!(r#"{{"tool":"{name}","echo":{args}}}"#).into_bytes()
+impl ToolExecutor for ClientRelay {
+    fn serves(&self, _name: &str) -> bool {
+        false
+    }
+
+    async fn execute(&self, _name: &str, _arguments: &[u8]) -> Vec<u8> {
+        Vec::new()
     }
 }

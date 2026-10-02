@@ -61,10 +61,8 @@ fn call_frames(id: &str, name: &str, args: &str) -> [WireEvent; 3] {
     [
         wire(serde_json::json!({"type":"response.output_item.added",
             "item":{"type":"function_call","call_id":id,"name":name}})),
-        wire(
-            serde_json::json!({"type":"response.function_call_arguments.delta",
-            "call_id":id,"delta":args}),
-        ),
+        wire(serde_json::json!({"type":"response.function_call_arguments.delta",
+            "call_id":id,"delta":args})),
         wire(serde_json::json!({"type":"response.function_call_arguments.done","call_id":id})),
     ]
 }
@@ -84,10 +82,7 @@ fn a_usage_report_closes_the_turn_with_its_counters_and_the_session_continues() 
     let (usage, counters) = sink.closed[0];
     let usage = usage.expect("the turn carries its usage");
     assert_eq!((usage.audio_in, usage.audio_out), (10, 20));
-    assert_eq!(
-        counters.audio_ms_in, 1000,
-        "48 000 bytes of pcm16 is one second"
-    );
+    assert_eq!(counters.audio_ms_in, 1000, "48 000 bytes of pcm16 is one second");
 }
 
 #[test]
@@ -108,19 +103,15 @@ fn a_barge_in_cancels_and_truncates_at_what_was_heard() {
     let mut sink = Turns::default();
     let b64 = busbar_contract::media::base64_encode(&[0u8; 96]);
     let _ = p.on_server_frame(
-        wire(
-            serde_json::json!({"type":"response.output_audio.delta","delta":b64,
-            "item_id":"it7","output_index":0,"content_index":0}),
-        ),
+        wire(serde_json::json!({"type":"response.output_audio.delta","delta":b64,
+            "item_id":"it7","output_index":0,"content_index":0})),
         0,
         &mut sink,
         &serves_all,
     );
     let (out, _) = p.on_server_frame(
-        wire(
-            serde_json::json!({"type":"input_audio_buffer.speech_started",
-            "audio_start_ms":0,"item_id":"it7"}),
-        ),
+        wire(serde_json::json!({"type":"input_audio_buffer.speech_started",
+            "audio_start_ms":0,"item_id":"it7"})),
         0,
         &mut sink,
         &serves_all,
@@ -154,10 +145,7 @@ fn a_tool_call_is_run_once_on_its_close_with_its_accumulated_arguments() {
     assert!(up.contains("response.create"));
     p.settle_open_turn(&mut sink);
     assert_eq!(sink.closed.len(), 1);
-    assert_eq!(
-        sink.closed[0].1.tool_calls, 1,
-        "the opened call is counted once"
-    );
+    assert_eq!(sink.closed[0].1.tool_calls, 1, "the opened call is counted once");
 }
 
 /// A table that records what the pump asked of it.
@@ -206,20 +194,15 @@ fn a_call_the_session_does_not_serve_waits_for_the_callers_reply() {
     let mut sink = Turns::default();
     for f in call_frames("cc", "lookup", "{}") {
         let (_, runs) = p.on_server_frame(f, 42, &mut sink, &serves_none);
-        assert!(
-            runs.is_empty(),
-            "the gateway never answers a call it does not serve"
-        );
+        assert!(runs.is_empty(), "the gateway never answers a call it does not serve");
     }
     assert_eq!(
         *table.planned.lock().expect("lock"),
         vec![(7, "cc".to_string(), 42)]
     );
     let reply = |id: &str| {
-        wire(
-            serde_json::json!({"type":"conversation.item.create","item":{
-            "type":"function_call_output","call_id":id,"output":"{}"}}),
-        )
+        wire(serde_json::json!({"type":"conversation.item.create","item":{
+            "type":"function_call_output","call_id":id,"output":"{}"}}))
     };
     let forged = p.on_client_frame(reply("nope"));
     assert!(forged.refused_reply && forged.upstream.is_empty());
@@ -249,14 +232,9 @@ fn a_callers_session_update_is_replaced_by_the_locked_config() {
 #[test]
 fn a_session_past_its_ceiling_is_told_why_in_its_dialect() {
     let mut p = pump();
-    let told = p
-        .ceiling_error(1800)
-        .expect("the dialect carries an error frame");
+    let told = p.ceiling_error(1800).expect("the dialect carries an error frame");
     let text = String::from_utf8_lossy(&told.0).into_owned();
-    assert!(
-        text.contains(SESSION_CEILING_REASON) && text.contains("1800 s"),
-        "{text}"
-    );
+    assert!(text.contains(SESSION_CEILING_REASON) && text.contains("1800 s"), "{text}");
 }
 
 #[test]
@@ -272,4 +250,28 @@ fn an_error_closes_the_open_turn_before_it_is_relayed() {
     assert_eq!(sink.closed.len(), 1);
     assert!(sink.closed[0].0.is_none());
     assert!(texts(&out.downlink).contains("error"));
+}
+
+#[test]
+fn a_call_no_one_on_this_node_serves_is_relayed_to_the_caller_and_never_answered_here() {
+    // No open-call table bound (an ungoverned node), and no tool served: the call reaches the
+    // caller, and nothing the gateway writes answers it.
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let (mut down, mut up) = (Vec::new(), Vec::new());
+    for f in call_frames("cu", "unknown_tool", "{\"q\":1}") {
+        let (out, runs) = p.on_server_frame(f, 0, &mut sink, &serves_none);
+        assert!(runs.is_empty(), "the gateway runs nothing for a tool it does not serve");
+        down.extend(out.downlink);
+        up.extend(out.upstream);
+    }
+    let down = texts(&down);
+    assert!(
+        down.contains("unknown_tool") && down.contains("\"call_id\":\"cu\""),
+        "the call is relayed to the caller: {down}"
+    );
+    assert!(
+        !texts(&up).contains("function_call_output"),
+        "no result is authored upstream by the gateway"
+    );
 }

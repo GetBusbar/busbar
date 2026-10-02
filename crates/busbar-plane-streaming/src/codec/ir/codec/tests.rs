@@ -622,7 +622,7 @@ fn an_out_of_range_content_index_falls_back_to_the_documented_default() {
 /// TOKEN SUMS SATURATE, THEY DO NOT WRAP.
 ///
 /// The four counts come from an upstream `usage` object — untrusted bytes. The crate already states
-/// this discipline for its counts ("a runaway turn pins the count, never
+/// this discipline in `IrDuplexUsage::to_billing_usage` ("a runaway turn pins the count, never
 /// wraps small"); the client-facing re-frame must not answer differently, because a wrapped total
 /// is a small, believable number that is simply false.
 #[test]
@@ -1012,19 +1012,27 @@ fn cached_input_tokens_are_not_billed_twice() {
     assert_eq!(u.audio_in, 1000);
     assert_eq!(u.cached, 800);
     // The BILLING fold is where the subset is netted out.
-    // The served meter bills the input as reported: the cached subset is part of it, billed once
-    // there, and no class bills it again (cached tokens are attribution only).
-    let billed = crate::session::class_counts(Some(u), crate::session::TurnCounters::default());
-    assert!(
+    let billed = u.to_billing_usage();
+    assert_eq!(
         billed
-            .iter()
-            .all(|(c, _)| c.as_str() != crate::meta::CLASS_CACHED_TOKENS.as_str()),
-        "the cached subset is never a class of its own: {billed:?}"
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
+        Some(200),
+        "input bills the UNCACHED remainder (1000 - 800), not the full input figure"
     );
     assert_eq!(
-        billed.iter().map(|(_, n)| n).sum::<u64>(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_CACHE_READ)
+            .copied(),
+        Some(800),
+        "the cached subset bills once, on the cache-read lane"
+    );
+    assert_eq!(
+        billed.usage_units.values().sum::<u64>(),
         1000,
-        "the billed classes sum to the turn's input, never to 1800"
+        "the billed lanes sum to the turn's input, never to 1800"
     );
 }
 
@@ -1109,24 +1117,22 @@ fn usage_falls_back_to_stated_totals_when_the_modality_breakdown_is_absent() {
     );
 
     // The lane the billing fold sums onto is what actually decides the invoice.
-    // The served meter bills the stated totals across its input and output classes, never zero.
-    let billed = crate::session::class_counts(Some(u), crate::session::TurnCounters::default());
-    let sum_of = |names: &[&str]| -> u64 {
-        billed
-            .iter()
-            .filter(|(c, _)| names.contains(&c.as_str()))
-            .map(|(_, n)| n)
-            .sum()
-    };
+    let billed = u.to_billing_usage();
     assert_eq!(
-        sum_of(&["audio_tokens_in", "text_tokens_in"]),
-        stated_in,
-        "the input classes bill the stated total, never zero"
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
+        Some(stated_in),
+        "the input lane bills the stated total, never zero"
     );
     assert_eq!(
-        sum_of(&["audio_tokens_out", "text_tokens_out"]),
-        stated_out,
-        "the output classes bill the stated total, never zero"
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_OUTPUT)
+            .copied(),
+        Some(stated_out),
+        "the output lane bills the stated total, never zero"
     );
 }
 

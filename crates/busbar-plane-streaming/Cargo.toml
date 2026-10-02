@@ -55,6 +55,9 @@ bytes = { workspace = true }
 # `#[async_trait]` desugaring it always was. A proc-macro that expands to `Box`ed futures and pulls no
 # I/O into this crate's closure.
 async-trait = { workspace = true }
+# THE DOOR'S ONE READING OF THE PUBLIC BASE URL (`door::absolute`): the audience and the metadata URL
+# replace the path of the deployment's public URL and drop its query and fragment, parsed once.
+url = { workspace = true }
 
 [dev-dependencies]
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
@@ -64,3 +67,12 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # The conformance rig drives the plane end-to-end over real openai-realtime (the voice dialect) wire
 # bytes, so it builds the same JSON fixtures the underlying codec tests use.
 serde_json = { workspace = true }
+# THE DOOR, BOTH WAYS (`tests/door.rs`): the loader's plane kind loads the linked door and the
+# dropped-in image the example below builds, and drives both through one script. Dev-only: absent
+# from every release build.
+busbar-plugin-loader = { path = "../plugin-loader" }
+
+# THE DROPPED-IN IMAGE ON THE ONE DOOR: built by `cargo test`.
+[[example]]
+name = "streaming_door"
+crate-type = ["cdylib"]

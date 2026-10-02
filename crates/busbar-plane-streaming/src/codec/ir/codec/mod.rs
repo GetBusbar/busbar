@@ -1057,7 +1057,7 @@ impl DuplexWriter for OpenAiRealtimeCodec {
 
 /// Re-frame the extracted token classes back onto a `usage` object (the inverse of [`extract_usage`]).
 ///
-/// The sums SATURATE, matching the crate's stated discipline for its counts ("a runaway
+/// The sums SATURATE, matching `IrDuplexUsage::to_billing_usage`'s stated discipline ("a runaway
 /// turn pins the count, never wraps small"): these counts came off an upstream `usage` object, and
 /// a wrapped total is a small, believable number that is false.
 fn usage_to_wire(u: &IrDuplexUsage) -> Value {

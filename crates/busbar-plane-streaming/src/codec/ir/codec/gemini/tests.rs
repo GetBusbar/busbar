@@ -1074,24 +1074,22 @@ fn usage_falls_back_to_stated_totals_when_the_modality_breakdown_is_absent() {
         50,
         "the turn's stated response total must not be dropped to zero"
     );
-    // The served meter bills the stated totals across its input and output classes, never zero.
-    let billed = crate::session::class_counts(Some(u), crate::session::TurnCounters::default());
-    let sum_of = |names: &[&str]| -> u64 {
-        billed
-            .iter()
-            .filter(|(c, _)| names.contains(&c.as_str()))
-            .map(|(_, n)| n)
-            .sum()
-    };
+    let billed = u.to_billing_usage();
     assert_eq!(
-        sum_of(&["audio_tokens_in", "text_tokens_in"]),
-        95,
-        "the input classes bill the stated total, never zero"
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
+        Some(95),
+        "a turn with no modality breakdown still bills its stated input tokens"
     );
     assert_eq!(
-        sum_of(&["audio_tokens_out", "text_tokens_out"]),
-        50,
-        "the output classes bill the stated total, never zero"
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_OUTPUT)
+            .copied(),
+        Some(50),
+        "a turn with no modality breakdown still bills its stated output tokens"
     );
 }
 
@@ -1123,19 +1121,27 @@ fn cached_content_tokens_are_not_billed_twice() {
     // Extraction stays wire-faithful.
     assert_eq!(u.audio_in, 1000);
     assert_eq!(u.cached, 800);
-    // The served meter bills the input as reported: the cached subset is part of it, billed once
-    // there, and no class bills it again (cached tokens are attribution only).
-    let billed = crate::session::class_counts(Some(u), crate::session::TurnCounters::default());
-    assert!(
+    let billed = u.to_billing_usage();
+    assert_eq!(
         billed
-            .iter()
-            .all(|(c, _)| c.as_str() != crate::meta::CLASS_CACHED_TOKENS.as_str()),
-        "the cached subset is never a class of its own: {billed:?}"
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
+        Some(200),
+        "input bills the UNCACHED remainder of the prompt (1000 - 800)"
     );
     assert_eq!(
-        billed.iter().map(|(_, n)| n).sum::<u64>(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_CACHE_READ)
+            .copied(),
+        Some(800),
+        "the cached subset bills once, on the cache-read lane"
+    );
+    assert_eq!(
+        billed.usage_units.values().sum::<u64>(),
         1000,
-        "the billed classes sum to the turn's input, never to 1800"
+        "the billed lanes sum to the turn's prompt, never to 1800"
     );
 }
 
