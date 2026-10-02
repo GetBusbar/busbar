@@ -82,7 +82,8 @@
 #               manifest's busbar git rev is its sha, and the rendered callers take busbar's reusable
 #               workflows at that sha. Moving it is one edit here, then `cargo xtask fleet sync`.
 #   name_pattern  every plugin repo is `busbar-<kind>-<name>`, and <kind> is the entry's kind.
-#   branches    exactly these branches, each with .github/fleet/protection.json's protection; any
+#   branches    exactly these branches; dev carries .github/fleet/protection.json's protection, main and
+#               qa are locked by the org ruleset "release branches: main + qa (owner say-so only)"; any
 #               other branch is stale.
 fleet:
   busbar_ref: "23d8a6b46deb158839df8bc02115b09023633040 1.6.0"
