@@ -35,7 +35,7 @@ fn the_mint_attempt_names_the_caller_and_carries_the_locked_session() {
         instructions: Some("locked".into()),
         ..SessionConfig::default()
     };
-    let a = mint_attempt(&cfg, "vk-1", None).expect("serializes");
+    let a = mint_attempt(&cfg, Some("vk-1"), None).expect("serializes");
     assert_eq!((a.verb, a.target), ("POST", "/v1/realtime/client_secrets"));
     assert_eq!(
         a.fields,
@@ -50,6 +50,12 @@ fn the_mint_attempt_names_the_caller_and_carries_the_locked_session() {
     assert!(
         a.fields.iter().all(|(n, _)| !n.eq_ignore_ascii_case("authorization")),
         "the plane never writes the credential; the kernel adds it"
+    );
+    let anonymous = mint_attempt(&cfg, None, None).expect("serializes");
+    assert_eq!(
+        anonymous.fields,
+        vec![("content-type", "application/json".to_string())],
+        "no reference lent, no caller named"
     );
 }
 

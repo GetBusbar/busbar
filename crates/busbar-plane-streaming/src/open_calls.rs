@@ -27,14 +27,28 @@ use busbar_contract::ids::{CorrelationRef, CorrelationValue, UnitKey};
 use busbar_contract::reply::{AwaitingReplies, NotWaiting};
 use busbar_contract::Millis;
 
+/// The fact key a tool call's reply wait correlates on.
+///
+/// Public because it is half of a correlation and the other half is entered somewhere else: the leg
+/// this plane plans names this key, and whatever holds the waiting table has to name the same one
+/// for a reply to match. Two spellings of one key is exactly the drift that makes a wait unmatchable
+/// while both sides look right on their own.
+pub const FACT_TOOL_CORRELATION: &str = crate::meta::FACT_CALL_ID;
+
+/// How long a tool call's reply leg waits, in seconds.
+///
+/// Declared here, beside the leg that names it, so the table that has to end an unanswered call at
+/// this deadline reads the plane's own figure rather than restating it.
+pub const TOOL_REPLY_DEADLINE_SECS: u32 = 30;
+
 /// The leg a provider-pushed tool call plans: deliver it to the client, and wait for the answer.
 ///
 /// The key and the deadline are the plane's own declarations, read from it rather than restated. A
 /// second spelling of either here would be a wait entered under one key and answered under another,
 /// with both files looking correct on their own.
 pub const TOOL_REPLY_LEG: ClientMode = ClientMode::AwaitReply {
-    correlation_key: crate::plane::FACT_TOOL_CORRELATION,
-    deadline_secs: crate::plane::TOOL_REPLY_DEADLINE_SECS,
+    correlation_key: FACT_TOOL_CORRELATION,
+    deadline_secs: TOOL_REPLY_DEADLINE_SECS,
 };
 
 /// Why a client's tool reply woke nothing.
@@ -256,7 +270,7 @@ impl NodeCalls {
 /// the key the plane's leg names — the one pair `planned` enters and `replied` answers.
 fn tool_call(call_id: &str) -> CorrelationRef<'_> {
     CorrelationRef {
-        fact_key: crate::plane::FACT_TOOL_CORRELATION,
+        fact_key: FACT_TOOL_CORRELATION,
         value: CorrelationValue::Str(call_id),
     }
 }
