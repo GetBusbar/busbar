@@ -77,6 +77,10 @@ pub mod store;
 // PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
 pub mod publish;
 pub use publish::{Generations, Keyed};
+
+// THE PLANE KIND'S PIECE ANSWER: what an `on_piece` answer owes the reply buffer across `more = 1`
+// re-calls, and the one settle of its field, unit and arena buffers (`abi::sdk::piece`).
+pub mod piece;
 // THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
 pub mod life;
 
