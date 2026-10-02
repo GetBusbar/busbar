@@ -2393,6 +2393,28 @@ pub fn trust_policy(
     })
 }
 
+/// A test build's store axis (it has no composition root): the loader's axis over a dispatcher of
+/// the test process's own, minting `op_id`s from the kernel's one allocator.
+pub fn store_axis_stand_in() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
+    static ONE: std::sync::OnceLock<std::sync::Arc<busbar_plugin_loader::dispatch::Dispatcher>> =
+        std::sync::OnceLock::new();
+    let dispatcher = ONE.get_or_init(|| {
+        std::sync::Arc::new(busbar_plugin_loader::dispatch::Dispatcher::new(
+            busbar_plugin_loader::dispatch::DispatchConfig::default(),
+        ))
+    });
+    let none = Default::default();
+    std::sync::Arc::new(busbar_plugin_loader::store_v3::DoorStoreAxis {
+        dispatcher: std::sync::Arc::clone(dispatcher),
+        logs: busbar_plugin_loader::dispatch::PluginLogConfig::from_words(
+            None, None, &none, None, None,
+        )
+        .expect("the plugins.logs defaults resolve"),
+        conns: None,
+        mint: crate::door::op_id,
+    })
+}
+
 /// A test build's registry build (it has no composition root): the root's composition over the
 /// loader's one build.
 pub fn registry_stand_in(

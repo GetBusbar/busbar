@@ -42,10 +42,20 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
 }
 
 type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
-/// A linked in-process STORE's entry: `(name, ephemeral, default, open)` — the name
-/// `governance.store` selects it by, whether what it holds is lost on restart, whether it claims to
-/// be the store a deployment that configures none runs on, and its open.
-pub type LinkedStore = (&'static str, bool, bool, StoreOpen);
+/// A linked STORE's entry: `(name, ephemeral, default, open, door)` — the name `governance.store`
+/// selects it by, whether what it holds is lost on restart, whether it claims to be the store a
+/// deployment that configures none runs on, its in-process open, and its store v3 door (the door
+/// boot opens it through, on the root's [`RootInstall::store_axis`]).
+pub type LinkedStore = (
+    &'static str,
+    bool,
+    bool,
+    StoreOpen,
+    busbar_contract::abi::mechanism::door::DoorFn,
+);
+/// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
+/// one dispatcher and opened through the store v3 table.
+pub type StoreAxisOf = fn() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis>;
 type HookOpen = fn(&str) -> Option<busbar_plugin_loader::registry::RankingPolicy>;
 /// A linked RANKING hook's entry: `(name, aliases, open)` — one row, its frozen strategy spellings
 /// the aliases, `open` handed the spelling a reference used.
@@ -120,6 +130,8 @@ pub struct RootInstall {
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
+    /// The root's store axis: what boot opens the configured store through.
+    pub store_axis: Option<StoreAxisOf>,
 }
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
@@ -134,6 +146,7 @@ const STAND_IN: RootInstall = RootInstall {
     default_store_module: fixture_store::linked::STORE.0,
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
+    store_axis: Some(crate::test_support::store_axis_stand_in),
 };
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
@@ -172,7 +185,7 @@ pub use busbar_kernel_identity::operator::{
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
     let RootInstall { stores, hooks, .. } = root_rows();
-    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1);
+    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1).with_store_door(s.4);
     let hook = |&(name, aliases, open): &LinkedHook| LinkedPlugin::ranking(name, aliases, open);
     let own = [
         config::secret::SECRET_MODULE_ENV,

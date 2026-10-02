@@ -1248,8 +1248,11 @@ fn the_default_store_is_the_row_that_declares_it() {
     fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         Err("never opened".into())
     }
-    const PLAIN: LinkedStore = ("acme-plain", false, false, open);
-    const CLAIMS: LinkedStore = ("acme-default", true, true, open);
+    extern "C" fn door() -> *const busbar_contract::abi::mechanism::door::Door {
+        std::ptr::null()
+    }
+    const PLAIN: LinkedStore = ("acme-plain", false, false, open, door);
+    const CLAIMS: LinkedStore = ("acme-default", true, true, open, door);
     assert_eq!(
         super::default_store(&[PLAIN, CLAIMS]),
         Ok(Some("acme-default"))
@@ -1279,9 +1282,12 @@ fn two_rows_declaring_the_default_refuse_boot() {
     fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         Err("never opened".into())
     }
-    const A: LinkedStore = ("acme-a", true, true, open);
-    const B: LinkedStore = ("acme-b", false, true, open);
-    const C: LinkedStore = ("acme-c", false, false, open);
+    extern "C" fn door() -> *const busbar_contract::abi::mechanism::door::Door {
+        std::ptr::null()
+    }
+    const A: LinkedStore = ("acme-a", true, true, open, door);
+    const B: LinkedStore = ("acme-b", false, true, open, door);
+    const C: LinkedStore = ("acme-c", false, false, open, door);
     assert_eq!(
         super::default_store(&[A, C, B]),
         Err(
