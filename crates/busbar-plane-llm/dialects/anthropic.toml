@@ -17,6 +17,9 @@ drop_field = "parameter"
 "system" = { prim = "system" }
 "tool_choice" = { prim = "tool_choice" }
 "tools" = { prim = "tools" }
+"metadata.user_id" = { prim = "user" }
+"output_config.effort" = { prim = "reasoning" }
+"messages[].content[].type=tool_use.input" = { prim = "tool_arguments" }
 
 # Thinking: Anthropic refuses a modified sampling knob beside a thinking ask; the ask wins and the
 # knob is omitted, observably. The temperature clamp is to Anthropic's [0.0, 1.0] (it 422s above).

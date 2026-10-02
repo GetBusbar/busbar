@@ -7,6 +7,7 @@ use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use crate::codec::keys;
+use crate::codec::leaf_codec::LeafCodec;
 use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::operation::OpVerb;
@@ -465,7 +466,7 @@ pub fn read_rerank_request(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let documents = super::super::cohere::handler::rerank_documents_pub(wire.get(keys::DOCUMENTS));
+    let documents = crate::codec::rerank_wire::read_documents(wire.get(keys::DOCUMENTS));
     if query.is_empty() || documents.is_empty() {
         return Err(IngressReject::BadRequest(
             "rerank request requires `query` and `documents`".into(),
@@ -498,7 +499,7 @@ pub fn read_rerank_response(
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     Ok(crate::codec::ir::rerank::RerankResp {
         id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
-        results: super::super::cohere::handler::read_rerank_results(v.get(keys::RESULTS)),
+        results: crate::codec::rerank_wire::read_results(v.get(keys::RESULTS)),
         // A Bedrock-hosted Cohere rerank model answers in Cohere's shape; the search units it billed
         // (`meta.billed_units.search_units`) are read EXACTLY, as the Cohere reader reads them. A body
         // without them stays the flat marker — nothing is estimated.
@@ -510,3 +511,27 @@ pub fn read_rerank_response(
         ..Default::default()
     })
 }
+
+/// This dialect's row of the leaf-op `(operation, protocol)` dispatch, carried on `super::ENTRY`.
+pub(crate) const LEAF: crate::codec::leaf_codec::LeafCodecs =
+    crate::codec::leaf_codec::LeafCodecs {
+        embeddings: Some(LeafCodec {
+            write_request: write_embeddings_request,
+            write_response: write_embeddings_response,
+            read_request: read_embeddings_request,
+            read_response: read_embeddings_response,
+        }),
+        rerank: Some(LeafCodec {
+            write_request: write_rerank_request,
+            write_response: write_rerank_response,
+            read_request: read_rerank_request,
+            read_response: read_rerank_response,
+        }),
+        image: Some(LeafCodec {
+            write_request: write_image_request,
+            write_response: write_image_response,
+            read_request: read_image_request,
+            read_response: read_image_response,
+        }),
+        ..crate::codec::leaf_codec::LeafCodecs::NONE
+    };

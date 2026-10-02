@@ -1,13 +1,12 @@
 # crates/busbar-plane-llm/dialects/openai_responses.toml: the HAND-WRITTEN wire <> IR mapping of
 # the OpenAI Responses dialect (stage 0: flat request fields). Format: see openai_chat.toml.
-# The served-tier words are openai_chat.toml's `openai_served_tier`.
 
 [dialect]
 wire = "responses"  # the wire lock: dialects/responses.wire.json (notation A paths)
 request = [
     "responses_structure",
-    "openai_chat.openai_sampling",
-    "openai_chat.openai_family",
+    "sampling",
+    "openai_family",
     "responses",
 ]
 
@@ -17,6 +16,10 @@ request = [
 "model" = { prim = "model" }
 "instructions" = { prim = "system" }
 "input" = { prim = "messages" }
+"input[].type=reasoning" = { prim = "reasoning" }
+"input[].type=function_call.arguments" = { prim = "tool_arguments" }
+"reasoning.effort" = { prim = "reasoning" }
+"tool_choice.type=allowed_tools.tools" = { prim = "tool_choice_subset" }
 "tools" = { prim = "tools" }
 "max_output_tokens" = { prim = "max_output" }
 "top_logprobs" = { prim = "logprobs" }
@@ -25,10 +28,29 @@ request = [
 "parallel_tool_calls" = { prim = "parallel_tool_calls" }
 "user" = { prim = "user" }
 
+# Sampling Responses spells as OpenAI Chat does.
+[rows.sampling]
+"temperature" = { ir = "temperature" }
+"top_p" = { ir = "top_p" }
+
+# The Q57 request members Responses and Chat spell alike (ir-slots-landed.md IR-03..06). A raw
+# member the slot cannot reproduce is parked in `extra` (same-dialect fidelity).
+[rows.openai_family]
+park = true
+"metadata" = { ir = "metadata" }
+"service_tier" = { ir = "service_tier" }
+"store" = { ir = "store" }
+"safety_identifier" = { ir = "safety_identifier" }
+"prompt_cache_key" = { ir = "prompt_cache_key" }
+
 # `text.verbosity` (IR-07), beside the `text.format` the dialect writes from `response_format`.
 [rows.responses]
 park = true
 "text.verbosity" = { ir = "verbosity" }
+
+# Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
+[unmapped.request]
+"moderation.model" = { no-equivalent = "the model of OpenAI's moderation pass, not the request's model; no other dialect has a moderation pass" }
 
 # Controls beyond the rows. The /v1/responses create API models no top_k, stop, penalties, seed or n
 # (openai-python ResponseCreateParamsBase); each drop is warned in these words and audited. The
@@ -43,3 +65,13 @@ park = true
 "n" = { warn = "responses writer: the /v1/responses API models no `n` candidate-count; dropping it (lossy-by-target)", value = true }
 "output_modalities" = { code = "responses_modalities" }
 "custom_tool" = { code = "responses_custom_tools" }
+
+# The response `service_tier` (the tier that SERVED the answer, RSP-17) <> the IR attribution word
+# (the Anthropic vocabulary: `default` IS `standard`). The OpenAI-family words are written as-is so
+# a tier that arrived in that vocabulary is not lost.
+[words.served_tier]
+"standard" = { wire = "default" }
+"default" = { wire = "default", dir = "write" }
+"priority" = { wire = "priority" }
+"flex" = { wire = "flex", dir = "write" }
+"scale" = { wire = "scale", dir = "write" }

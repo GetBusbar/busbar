@@ -24,6 +24,10 @@ pub(crate) const ROWS_CHAT_SAMPLING: &[Field] = &[
 pub(crate) const ROWS_CHAT_STRUCTURE: &[Field] = &[
     row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     row(&["messages"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["messages[]", "role=system"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["messages[]", "role=assistant", "tool_calls[]", "type=function", "function", "arguments"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
+    row(&["messages[]", "role=assistant", "function_call", "arguments"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
+    row(&["tool_choice", "type=allowed_tools", "allowed_tools", "tools"], Slot::Structure, ValueCodec::Prim("tool_choice_subset")),
     row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
     row(&["max_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
     row(&["max_completion_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
@@ -68,22 +72,11 @@ pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
     (Slot::CustomTool, Handled::Code("chat_custom_tools")),
 ];
 
-/// Word table `openai_served_tier`: (wire word, IR word, direction).
-pub(crate) const WORDS_OPENAI_SERVED_TIER: &[Word] = &[
-    ("default", "standard", Dir::Both),
-    ("default", "default", Dir::Write),
-    ("priority", "priority", Dir::Both),
-    ("flex", "flex", Dir::Write),
-    ("scale", "scale", Dir::Write),
-];
-
 /// Word table `served_tier`: (wire word, IR word, direction).
 pub(crate) const WORDS_SERVED_TIER: &[Word] = &[
     ("default", "standard", Dir::Both),
     ("default", "default", Dir::Write),
     ("priority", "priority", Dir::Both),
-    ("flex", "flex", Dir::Write),
-    ("scale", "scale", Dir::Write),
-    ("flex", "flex", Dir::Read),
-    ("scale", "scale", Dir::Read),
+    ("flex", "flex", Dir::Both),
+    ("scale", "scale", Dir::Both),
 ];

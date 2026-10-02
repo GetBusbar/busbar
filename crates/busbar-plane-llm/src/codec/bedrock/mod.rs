@@ -132,7 +132,7 @@ const VIDEO: &str = "video";
 const WIDTH: &str = "width";
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
-/// resolution, exactly as the registry's field doc requires. Mirrors `super::anthropic::protocol`.
+/// resolution, exactly as the registry's field doc requires.
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, BedrockReader, BedrockWriter)
 }
@@ -260,6 +260,18 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `AWS4-HMAC-SHA256` credential must NOT steer a models-list GET; the OpenAI residual wins).
     list_models_fingerprint_headers: &[],
     static_headers: &[],
+};
+
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = BedrockWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&BedrockReader),
+    leaf: &handler::LEAF,
 };
 
 /// The two response headers a native AWS Bedrock endpoint ALWAYS emits (lowercase on the wire):

@@ -625,6 +625,12 @@ Anthropic client — and records the row as a named gap of the spec, re-judged w
 moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 `testing/llm-conformance/README.md`.
 
+Three request fields now cross between dialects that 1.5.5 dropped on every crossing: Gemini's
+`serviceTier` and `store` translate to and from the OpenAI family's `service_tier` and `store`, and
+Bedrock Converse's `outputConfig.effort` reaches a foreign backend as the reasoning effort. What
+each dialect translates, field by field, is listed in the generated
+[LLM translation matrix](docs/llm-translation-matrix.md).
+
 ### Upgrade
 
 - **A 1.6.0 config is a 1.5.5 config plus whichever plane sections you write.** `mcp:`, `agents:`
