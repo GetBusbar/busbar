@@ -589,8 +589,8 @@ pub fn voice_admission(slot: &dyn Any) -> Option<PlaneAdmission> {
 /// receiving side (no dispatch slot), so a deployment that fronts nothing mounts nothing.
 #[must_use]
 pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_kernel::plane_routes::PlaneRouteFuture;
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_kernel::plane_routes::PlaneRouteFuture;
 
     if slot.downcast_ref::<VoiceMount>().is_none() {
         return Vec::new();
