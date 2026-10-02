@@ -28,7 +28,7 @@ it; `-` means the dialect has no form for it.
 | openai_chat | response | 34 | 1 |
 | openai_chat | stream | 4 | 0 |
 | openai_responses | request | 46 | 5 |
-| openai_responses | response | 28 | 3 |
+| openai_responses | response | 40 | 3 |
 | openai_responses | stream | 13 | 0 |
 
 ## request
@@ -158,6 +158,7 @@ it; `-` means the dialect has no form for it.
 | ephemeral_1h_input_tokens | `usage.cache_creation.ephemeral_1h_input_tokens` | - | - | - | - | - |
 | ephemeral_5m_input_tokens | `usage.cache_creation.ephemeral_5m_input_tokens` | - | - | - | - | - |
 | error | - | - | - | - | - | `error` |
+| file_citation | - | - | - | - | - | `output[].type=message.content[].type=output_text.annotations[].type=file_citation`<br>`output[].type=message.content[].type=output_text.annotations[].type=file_citation.file_id`<br>`output[].type=message.content[].type=output_text.annotations[].type=file_citation.filename`<br>`output[].type=message.content[].type=output_text.annotations[].type=file_citation.index`<br>`output[].type=message.content[].type=output_text.annotations[].type=container_file_citation`<br>`output[].type=message.content[].type=output_text.annotations[].type=file_path` |
 | finish_reason | `stop_reason` | `stopReason` | `finish_reason` | `candidates[].finishReason` | `choices[].finish_reason` | - |
 | grounding_metadata | - | - | - | `candidates[].groundingMetadata` | - | - |
 | guardrail | - | `trace.guardrail` | - | - | - | - |
@@ -185,7 +186,7 @@ it; `-` means the dialect has no form for it.
 | response_id | - | - | - | `responseId` | - | - |
 | role | `role` | `output.message.role` | `message.role` | - | `choices[].message.role` | - |
 | safety_ratings | - | - | - | `candidates[].safetyRatings`<br>`promptFeedback.safetyRatings` | - | - |
-| safety_verdict | - | - | - | - | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | - |
+| safety_verdict | - | - | - | - | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | `moderation.input.type=moderation_result.categories`<br>`moderation.output.type=moderation_result.categories` |
 | search_units | - | - | `usage.billed_units.search_units` | - | - | - |
 | served_tier | `usage.service_tier` | - | - | - | `service_tier` | `service_tier` |
 | status | - | - | - | - | - | `status`<br>`output[].type=message.status`<br>`output[].type=web_search_call.status` |
@@ -200,7 +201,7 @@ it; `-` means the dialect has no form for it.
 | total_tokens | - | `usage.totalTokens` | - | `usageMetadata.totalTokenCount` | `usage.total_tokens` | `usage.total_tokens` |
 | type | `type` | - | - | - | - | - |
 | usage_by_modality | - | - | - | - | `usage.prompt_tokens_details.text_tokens`<br>`usage.prompt_tokens_details.image_tokens`<br>`usage.completion_tokens_details.text_tokens` | - |
-| web_search | `content[].type=web_search_tool_result`<br>`content[].type=web_search_tool_result.tool_use_id`<br>`content[].type=web_search_tool_result.content[].url`<br>`content[].type=web_search_tool_result.content[].title`<br>`content[].type=web_search_tool_result.content.error_code` | - | - | - | - | - |
+| web_search | `content[].type=web_search_tool_result`<br>`content[].type=web_search_tool_result.tool_use_id`<br>`content[].type=web_search_tool_result.content[].url`<br>`content[].type=web_search_tool_result.content[].title`<br>`content[].type=web_search_tool_result.content.error_code` | - | - | - | - | `output[].type=web_search_call`<br>`output[].type=web_search_call.id`<br>`output[].type=web_search_call.status`<br>`output[].type=web_search_call.action.type=search.sources[].url` |
 | web_search_requests | `usage.server_tool_use.web_search_requests` | - | - | - | - | - |
 
 ## stream
