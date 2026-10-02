@@ -2613,6 +2613,10 @@
       "kind": "alias",
       "target": "std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>"
     },
+    "type Rows": {
+      "kind": "alias",
+      "target": "&'static [(&'static str, &'static str)]"
+    },
     "type Verdict": {
       "kind": "alias",
       "target": "u64"
