@@ -71,15 +71,16 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // (the same replies inside the observability envelope, #85): the decoder accepts either
         // shape, so THE FLOOR STAYS 1 and every published hook keeps loading.
         "hook" => &[1, busbar_contract::abi::cold::hook::HOOK_ABI_VERSION],
-        // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
-        // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
-        // vocabulary and REMOVED `audit` — an auditor is a projection made of other streams, not a
-        // data type of its own — so a v1 sink that declared `audit` no longer has a stream to
-        // declare, and v1 is not accepted here.
-        // v3 (DECISIONS #85) wraps the response in the observability envelope; v2 answers bare. BOTH
-        // load — the decoder accepts either shape and they are disjoint — so the FLOOR stays at the
-        // 1.5.3 vocabulary version and the envelope landing refuses no published sink.
-        "export" => &[2, busbar_contract::abi::cold::export::EXPORT_ABI_VERSION],
+        // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds. 1.6.0
+        // (THE DESIGN §11.8, ABI-b6): the export kind speaks its MEMORY ABI, version
+        // `abi::export::ABI_VERSION` (3), and nothing older: a 1.5.5 JSON-contract sink (2) is
+        // refused at scan naming the rebuild. M6-COLD-DELETE: the not-yet-ported cold sinks state
+        // the same number (the cold `EXPORT_ABI_VERSION` is 3 too) and are told apart at open by
+        // their missing door (`export_axis`).
+        "export" => &[
+            busbar_contract::abi::export::ABI_VERSION,
+            busbar_contract::abi::export::ABI_VERSION,
+        ],
         // A `kind: plane` plugin is a protocol plane delivered as a `cdylib` and driven over the
         // HOT-tier `#[repr(C)]` `PlaneDecl` vtable (`busbar_contract::abi::hot`) — NOT the six-symbol JSON
         // `call` wire the five cold kinds share. Its per-kind PAYLOAD axis is the AIRLOCK MINOR
@@ -130,6 +131,19 @@ impl LoadablePlugin {
             self.entry,
             Some(LinkedEntry::Store(_) | LinkedEntry::BuiltinSecret | LinkedEntry::Ranking { .. })
         )
+    }
+
+    /// M6-COLD-DELETE: whether this row is a LINKED cold boundary (`BUSBAR_COLD_ENTRY`).
+    pub fn image_is_cold_linked(&self) -> bool {
+        matches!(self.entry, Some(LinkedEntry::Boundary(_)))
+    }
+
+    /// A compiled-in memory-ABI row's door; `None` for any other row.
+    pub fn door(&self) -> Option<busbar_contract::abi::mechanism::door::DoorFn> {
+        match self.entry {
+            Some(LinkedEntry::Door(door)) => Some(door),
+            _ => None,
+        }
     }
 
     /// What the one load runs over: the linked boundary, or the verified bytes.
@@ -203,6 +217,10 @@ pub enum LinkedEntry {
         open: fn(&str) -> Option<RankingPolicy>,
         aliases: &'static [&'static str],
     },
+    /// A compiled-in plugin on its kind's memory ABI: the logic crate's `plugin_door!` door function,
+    /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN §11.4). Loaded
+    /// through [`crate::dispatch::load_linked`].
+    Door(busbar_contract::abi::mechanism::door::DoorFn),
 }
 
 impl LinkedPlugin {
@@ -211,6 +229,16 @@ impl LinkedPlugin {
         LinkedPlugin {
             manifest,
             entry: LinkedEntry::Boundary(entry),
+            ephemeral: false,
+        }
+    }
+
+    /// A linked MEMORY-ABI plugin: `manifest` and its door (THE DESIGN §11.4: the same door the
+    /// dropped-in build exports).
+    pub fn door(manifest: Manifest, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Door(door),
             ephemeral: false,
         }
     }

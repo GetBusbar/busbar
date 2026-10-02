@@ -61,6 +61,7 @@ pub mod dest;
 // `busbar-substrate-values::diagnostics` beside the rest; the catalog stays kernel-side.
 pub mod diagnostic;
 pub mod duration;
+pub mod export_calls;
 pub mod grammar;
 #[allow(missing_docs)]
 pub mod hooks;

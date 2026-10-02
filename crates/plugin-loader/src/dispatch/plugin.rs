@@ -681,6 +681,22 @@ impl Instance {
         };
         // A `validate`'s reason is copied: the buffer it was lent goes.
         drop(validate_reason);
+        // THE VALIDATE REFUSAL RULE (`abi::mechanism::lifecycle::check_validate_refusal`): the
+        // host renders a FAILED `validate`'s lines, so malformed lines are FAULT.
+        if s == slot::VALIDATE && outcome == Outcome::Failed {
+            let text = error.as_deref().unwrap_or_default();
+            if let Err(f) = busbar_contract::abi::mechanism::lifecycle::check_validate_refusal(text)
+            {
+                tracing::warn!(
+                    plugin = %self.name,
+                    kind = ?self.kind,
+                    rule = ?f.rule,
+                    field = f.field,
+                    "a validate refusal broke the refusal rule; the op answers FAULT"
+                );
+                return Crossed::host(Outcome::Fault);
+            }
+        }
         match (s, outcome) {
             (slot::OPEN, Outcome::Ready) => {
                 // SAFETY: `refuse` checked the frame holds an `OpenOut`.

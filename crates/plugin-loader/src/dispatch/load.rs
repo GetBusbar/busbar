@@ -244,27 +244,33 @@ pub enum LoadError {
     StatementMismatch,
 }
 
+/// What every refusal of a plugin built against an older contract tells the operator to do.
+pub const REBUILD: &str = "rebuild the plugin against the 1.6.0 SDK";
+
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ManifestMechanism { stated, host } => write!(
                 f,
-                "the manifest states mechanism version {stated}; this host speaks {host} — rebuild the plugin against the 1.6.0 SDK"
+                "the manifest states mechanism version {stated}; this host speaks {host} — {REBUILD}"
             ),
             Self::ManifestKind { stated, want } => {
                 write!(f, "the manifest states kind {stated:?}, not {want:?}")
             }
             Self::ManifestKindAbi { stated, host } => write!(
                 f,
-                "the manifest states kind ABI {stated}; this host speaks {host} — rebuild the plugin against the 1.6.0 SDK"
+                "the manifest states kind ABI {stated}; this host speaks {host} — {REBUILD}"
             ),
             Self::Open(e) => write!(f, "the library did not load: {e}"),
-            Self::NoDoor(e) => write!(f, "the library exports no busbar_plugin_door: {e}"),
+            Self::NoDoor(e) => write!(
+                f,
+                "the library exports no busbar_plugin_door ({e}) — a plugin built against the 1.5.5 JSON contract; {REBUILD}"
+            ),
             Self::NullDoor => f.write_str("the door function answered NULL"),
             Self::Magic(m) => write!(f, "the door's magic {m:#018x} is not BUSBARPL"),
             Self::Mechanism { door, host } => write!(
                 f,
-                "the door's mechanism version {door} is not this host's {host} — rebuild the plugin against the 1.6.0 SDK"
+                "the door's mechanism version {door} is not this host's {host} — {REBUILD}"
             ),
             Self::DoorSize { door, host } => {
                 write!(f, "the door is {door} bytes; this host's is {host}")
@@ -275,7 +281,7 @@ impl fmt::Display for LoadError {
             }
             Self::KindAbi { kind, door, host } => write!(
                 f,
-                "the door's {kind:?} ABI version {door} is not this host's {host} — rebuild the plugin against the 1.6.0 SDK"
+                "the door's {kind:?} ABI version {door} is not this host's {host} — {REBUILD}"
             ),
             Self::NullOps => f.write_str("the door's ops table is NULL"),
             Self::TableSlots { door, host } => {

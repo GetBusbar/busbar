@@ -120,10 +120,14 @@ pub struct RootInstall {
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
+    /// The export axis: every `kind: export` row, opened on the export kind's ABI by the root over
+    /// the process's one dispatcher (ARCHITECT ruling 2026-09-29, the opener seam). `None` = no
+    /// export module resolves.
+    pub export_axis: Option<&'static dyn busbar_contract::export_calls::ExportAxis>,
 }
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
-/// stand-in store (which claims the default) as the default.
+/// stand-in store (which claims the default) as the default, and the test axis for the exports.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
     stores: &[fixture_store::linked::STORE],
@@ -134,6 +138,7 @@ const STAND_IN: RootInstall = RootInstall {
     default_store_module: fixture_store::linked::STORE.0,
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
+    export_axis: Some(&crate::test_support::export_axis::STAND_IN),
 };
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when

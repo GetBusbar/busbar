@@ -606,7 +606,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=02f463307f9820faedda131467dcfaa83b25df78#02f463307f9820faedda131467dcfaa83b25df78"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=e0534d4c0dae2129c75b261b5f974de79c24e870#e0534d4c0dae2129c75b261b5f974de79c24e870"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -618,15 +618,16 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=02f463307f9820faedda131467dcfaa83b25df78#02f463307f9820faedda131467dcfaa83b25df78"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=e0534d4c0dae2129c75b261b5f974de79c24e870#e0534d4c0dae2129c75b261b5f974de79c24e870"
 dependencies = [
+ "busbar-contract",
  "busbar-export-otlp",
 ]
 
 [[package]]
 name = "busbar-export-prometheus"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f#0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1df4b10d12764fef89966b9c9bd007f5d481f6ed#1df4b10d12764fef89966b9c9bd007f5d481f6ed"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -636,8 +637,9 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f#0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1df4b10d12764fef89966b9c9bd007f5d481f6ed#1df4b10d12764fef89966b9c9bd007f5d481f6ed"
 dependencies = [
+ "busbar-contract",
  "busbar-export-prometheus",
 ]
 
@@ -964,7 +966,9 @@ dependencies = [
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-file-plugin",
+ "busbar-export-otlp",
  "busbar-export-otlp-plugin",
+ "busbar-export-prometheus",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook-plugin",
  "busbar-hook-test-plugin",

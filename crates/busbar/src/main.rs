@@ -819,10 +819,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     root::serve::compose(&cfg, &late_services);
-    // THE EXPORT AXIS'S SINKS, opened once — before the first app is built, so the routes they
-    // declare are in the boot route table (restart-to-apply, as every built-in PUSH sink is). A
-    // configured sink that will not open refuses the boot.
-    export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
     // The BASE hook + group names (config-defined, pre-overlay): the admin API refuses to
     // PUT-replace / DELETE one (edit config.yaml — the overlay can't durably shadow file config).
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
@@ -887,6 +883,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
     // one connector just built.
     root::linked::load_door_planes();
+    // THE EXPORT AXIS'S SINKS, opened once on the same dispatcher, each declaring its needs on the
+    // one connector just built — before the first app is built, so the routes they declare are in
+    // the boot route table (restart-to-apply, as every built-in PUSH sink is). A configured sink
+    // that will not open refuses the boot.
+    export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
