@@ -415,8 +415,8 @@ fn gate(args: &[String]) -> i32 {
     // a check that repairs what it is checking has not checked anything, and a caller that wanted
     // both would be asking a gate to make itself pass.
     if cx.env().write {
-        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD — the `[[cell]]`, `[[dep]]`
-        // and `[[face]]` numbers — and refuses WHOLESALE if any would rise. It answers through the
+        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD — the `[[dep]]`
+        // and `[[face]]` edge numbers — and refuses WHOLESALE if any would rise. It answers through the
         // ledger rather than through a `Result<String, _>` like its two neighbours, and that is
         // deliberate: the arm is a GATE RUN whose owed set is its own row, so `execute` reconciles
         // it exactly as it reconciles a judging run, and the refusal arrives as a FAIL row a
@@ -452,12 +452,6 @@ fn gate(args: &[String]) -> i32 {
         }
         let written = match reg.name {
             "design-bindings" => crate::gates::design_bindings::DesignBindingsGate::write(&cx),
-            // The construction gate's write arm RE-PINS ITS CEILINGS TO WHAT THEY MEASURE, and
-            // only downward — see `gates::construction::ceilings`. It is the same derivation the
-            // `ceiling-slack` row reports, so the arm that repairs and the arm that judges cannot
-            // disagree about what the tree measures; what the flag changes is whether the answer
-            // is printed or committed.
-            "construction" => crate::gates::construction::ceilings::rewrite(&cx),
             "abi-header" => crate::gates::abi_header::write(&cx),
             _ => {
                 eprintln!("xtask gate {name}: this gate has nothing to write");

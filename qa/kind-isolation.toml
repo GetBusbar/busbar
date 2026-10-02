@@ -125,16 +125,16 @@ reason = "legacy drain: the retiring MCP engine's tests drive the admin surface 
 # commit; there is no window in which the tree carries both.
 
 # ------------------------------------------------------------------------------------------------
-# [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
+# [[edge]] / [[cell]] — THE KIND × CRATE VOCABULARY MATRIX
 # ------------------------------------------------------------------------------------------------
 #
 # > "it's not just planes, it's everything. core is core, plugins are plugins, transport,
 # > everything. HAS TO BE PERFECT AND CLEAN." — owner, 2026-09-08
 #
-# The rows above are about the DEPENDENCY graph and the kind of a crate. These three are about its
-# VOCABULARY: `kind-isolation:matrix` counts, for every kind K and every crate C under `crates/`,
-# how many times C names K's derived vocabulary — K's member package names, their kind-qualified
-# ids, and (for the plane and transport families, the two the kind table itself calls instance
+# The rows above are about the DEPENDENCY graph and the kind of a crate. These two are about its
+# VOCABULARY: `kind-isolation:matrix` measures, for every kind K and every crate C under `crates/`,
+# whether C names K's derived vocabulary — K's member package names, their kind-qualified ids, and
+# (for the plane and transport families, the two the kind table itself calls instance
 # vocabularies) their bare ids. Every `.rs` and `.toml` under the crate, WHOLE TEXT: identifiers,
 # string literals, doc comments, ordinary comments, `cfg` attributes, Cargo dependency and feature
 # names, and the file's own path. TESTS ARE NOT EXCLUDED, and the COMPOSITION ROOT IS NOT EXEMPT —
@@ -143,23 +143,24 @@ reason = "legacy drain: the retiring MCP engine's tests drive the admin surface 
 #
 #   [[edge]]         from, to, cite, why, drain — one per kind -> kind CLASS. `cite` is the
 #                    BUSBAR-1.6.0.md clause that grants the edge, or the words that say none does;
-#                    `drain` is the line that deletes it, because a ceiling with no route to zero is
-#                    a ceiling nobody drains. The prose is on the class because that is what a
+#                    `drain` is the line that deletes it, because an allowance with no route to zero
+#                    is an allowance nobody drains. The prose is on the class because that is what a
 #                    reader reads.
-#   [[cell]]         crate, kind, count — TODAY'S MEASURED NUMBER, exactly. Not a budget. The number
-#                    is on the crate because that is what the ratchet moves.
-#   [[disagreement]] crate, kind, note — a cell whose two independent scanners return different
-#                    totals. The scored count is always the HIGHER of the two; the row records which
-#                    spelling they read differently, and it is RED to carry a disagreement without
-#                    one.
+#   [[cell]]         crate, kind — one per crate × kind EDGE: this crate names this kind's
+#                    vocabulary at all. PRESENCE, not size: no count. Size is not a CI check (owner
+#                    2026-10-02); the perf-time hash tool reads size, CI reads edges. A `count`
+#                    field here is refused at load.
 #
-# THE RATCHET IS EXACT IN BOTH DIRECTIONS. A count above its row is the landing that grew the
-# coupling; a count BELOW it is stale slack, and stale slack is how drift hides. A row whose cell
-# measures zero is a dead allowance and must be struck. A cell above zero with no `[[edge]]` class
-# is an UNLISTED EDGE and is refused whatever BUSBAR-1.6.0.md may or may not grant.
+# PRESENCE IS HARD. A crate × kind cell above zero with no `[[cell]]` row is a NEW CROSS-KIND EDGE
+# and is RED (`unlisted-cell`); a cell whose kind -> kind class has no `[[edge]]` row is RED
+# (`unlisted-edge`), whatever BUSBAR-1.6.0.md may or may not grant. A row whose cell measures zero
+# is a dead allowance and must be struck. A row this branch MINTED is refused (`minted-row`): that
+# is the rule that stops a branch legitimising a new edge by writing its row. More hits inside a
+# listed cell change nothing here.
 #
-# `cargo xtask gate kind-isolation --report` prints the whole matrix, these classes, and the DRAIN
-# LIST — every hit, file:line — so each file is handed its deleting line rather than re-derived.
+# `cargo xtask gate kind-isolation --report` prints the whole matrix with its numbers, these
+# classes, and the DRAIN LIST — every hit, file:line — so each file is handed its deleting line
+# rather than re-derived.
 #
 # The SHIP twin owes this row at ZERO everywhere and does not read these tables at all: what is
 # written here is what 1.6.0 still has to delete.
@@ -418,148 +419,111 @@ drain = "delete the transport name from the transport crate: a transport reaches
 [[cell]]
 crate = "busbar"
 kind = "cleanliness"
-count = "7"
 
 [[cell]]
 crate = "busbar"
 kind = "hooks"
-count = "5"
 
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "649"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "787"
 
 [[cell]]
 crate = "busbar"
 kind = "plugin-tooling"
-count = "12"
 
 [[cell]]
 crate = "busbar"
 kind = "store"
-count = "5"
 
 
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "295"
 
 [[cell]]
 crate = "busbar-a2a"
 kind = "hooks"
-count = "4"
 
 [[cell]]
 crate = "busbar-a2a"
 kind = "legacy"
-count = "8"
 
 [[cell]]
 crate = "busbar-a2a"
 kind = "plane"
-count = "2723"
 
 [[cell]]
 crate = "busbar-a2a"
 kind = "store"
-count = "9"
 
 [[cell]]
 crate = "busbar-a2a"
 kind = "transport"
-count = "632"
 
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "115"
 
-
-# 233 -> 236, Q77-PENDING (a), a MOVE forced by a cited ruling (ARCHITECT RULINGS 2026-09-30, URL-PARSE
-# SEAM: the URL/host reader lives in busbar-contract/src/net.rs). The three hits are the web scheme
-# names the reader must spell: net.rs:398 (`"http"`, moved verbatim from kernel-egress trust::net) and
-# net.rs:518 (`"http" | "https" | "ws" | "wss"`, the WHATWG family, folded from the two split_ws_url
-# copies). busbar-kernel-egress x transport falls 56 -> 55 and x plane 16 -> 13 in the same commit.
 [[cell]]
 crate = "busbar-contract"
 kind = "transport"
-count = "236"
 
 [[cell]]
 crate = "busbar-kernel"
 kind = "plane"
-count = "1369"
 
 [[cell]]
 crate = "busbar-kernel"
 kind = "transport"
-count = "4"
 
 [[cell]]
 crate = "busbar-kernel-breaker"
 kind = "plane"
-count = "2"
 
 [[cell]]
 crate = "busbar-kernel-breaker"
 kind = "transport"
-count = "134"
 
 [[cell]]
 crate = "busbar-kernel-budget"
 kind = "kernel"
-count = "14"
 
 [[cell]]
 crate = "busbar-kernel-egress"
 kind = "kernel"
-count = "22"
 
-# 16 -> 13, the measurement: the pure URL/host atoms left for busbar_contract::net (URL-SEAM).
 [[cell]]
 crate = "busbar-kernel-egress"
 kind = "plane"
-count = "13"
 
-# 56 -> 55, the measurement: the pure URL/host atoms left for busbar_contract::net (URL-SEAM).
 [[cell]]
 crate = "busbar-kernel-egress"
 kind = "transport"
-count = "55"
 
 [[cell]]
 crate = "busbar-kernel-identity"
 kind = "plane"
-count = "2"
 
 [[cell]]
 crate = "busbar-kernel-ledger"
 kind = "kernel"
-count = "5"
 
 [[cell]]
 crate = "busbar-llm"
 kind = "contract"
-count = "51"
 
 [[cell]]
 crate = "busbar-llm"
 kind = "plane"
-count = "515"
 
 [[cell]]
 crate = "busbar-llm"
 kind = "transport"
-# 546 -> 548, test anchors (RESOLVE-PIN): dial_refusal_failover_tests.rs:117, :123 (MockResponse::Sse).
-# Expires at LLM-ENGINE-DELETE.
-count = "548"
 
 
 
@@ -567,147 +531,118 @@ count = "548"
 [[cell]]
 crate = "busbar-mcp"
 kind = "cleanliness"
-count = "1"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "hooks"
-count = "7"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "legacy"
-count = "2"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3705"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "plugin-tooling"
-count = "4"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "store"
-count = "5"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "transport"
-count = "583"
 
 [[cell]]
 crate = "busbar-core-oauth2"
 kind = "plane"
-count = "22"
 
 [[cell]]
 crate = "busbar-core-oauth2"
 kind = "plugin-tooling"
-count = "2"
 
 [[cell]]
 crate = "busbar-core-oauth2"
 kind = "store"
-count = "5"
 
 [[cell]]
 crate = "busbar-core-oauth2"
 kind = "transport"
-count = "9"
 
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "legacy"
-count = "5"
 
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "plane"
-count = "26"
 
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "transport"
-count = "62"
 
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "plane"
-count = "10"
 
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "transport"
-count = "34"
 
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "legacy"
-count = "10"
 
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "plane"
-count = "13"
 
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "transport"
-count = "90"
 
 [[cell]]
 crate = "busbar-plane-streaming"
 kind = "plane"
-count = "43"
 
 [[cell]]
 crate = "busbar-plane-streaming"
 kind = "transport"
-count = "17"
 
 [[cell]]
 crate = "busbar-plugin-example-plane"
 kind = "plugin-tooling"
-count = "3"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "contract"
-count = "5"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "hooks"
-count = "2"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "kernel"
-count = "17"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "plane"
-count = "55"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "plugin-tooling"
-count = "4"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "store"
-count = "5"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "transport"
-count = "13"
 
 
 
@@ -718,7 +653,6 @@ count = "13"
 [[cell]]
 crate = "busbar-store-memory"
 kind = "plane"
-count = "1"
 
 
 
@@ -726,119 +660,53 @@ count = "1"
 [[cell]]
 crate = "busbar-transport-stdio"
 kind = "plane"
-count = "1"
 
 [[cell]]
 crate = "busbar-transport-stdio"
 kind = "transport"
-count = "3"
 
 
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "plane"
-count = "2"
 
-# 23 -> 24: the ws locate's ALPN id literal b"\x08http/1.1" (door/mod.rs:378; ARCHITECT ruling
-# 2026-09-29 for the offer, row approved 2026-09-30), armed at today's measurement on METER-FIX's meter.
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
-count = "24"
 
 [[cell]]
 crate = "busbar-voice"
 kind = "contract"
-count = "2"
 
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "817"
 
 [[cell]]
 crate = "busbar-voice"
 kind = "store"
-count = "1"
 
 [[cell]]
 crate = "busbar-voice"
 kind = "transport"
-count = "9"
 
 
 
-# L5-INTERIM, ruling-backed (K9b; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
+# L5-INTERIM, ruling-backed (K9b; decisions.md "L5 kind-isolation rows to add at regen").
 [[cell]]
 crate = "busbar-export-file"
 kind = "plane"
-count = "2"
 
-# L5-INTERIM, ruling-backed (K9b; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
-# L5-INTERIM, ruling-backed (K9b same shape; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
+# L5-INTERIM, ruling-backed (K9b same shape; decisions.md "L5 kind-isolation rows to add at regen").
 [[cell]]
 crate = "busbar-export-webhook"
 kind = "plane"
-count = "1"
 
-# L5-INTERIM, ruling-backed (K9b same shape; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
-# L5-INTERIM, ruling-backed (K9b same shape / K9d; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
+# L5-INTERIM, ruling-backed (K9b same shape / K9d; decisions.md "L5 kind-isolation rows to add at
+# regen").
 [[cell]]
 crate = "busbar-export-prometheus"
 kind = "plane"
-count = "2"
-
-# L5-INTERIM, ruling-backed (K9b same shape / K9d; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
-[[disagreement]]
-crate = "busbar"
-kind = "plane"
-note = "segment scanner 1942, window scanner 1941. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar"
-kind = "transport"
-note = "segment scanner 940, window scanner 949. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-a2a"
-kind = "plane"
-note = "segment scanner 3167, window scanner 3147; scored 3167. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the UNION of the two hit sets, never either one alone, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-a2a"
-kind = "transport"
-note = "segment scanner 1105, window scanner 1274; scored 1274. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the UNION of the two hit sets, never either one alone, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-contract"
-kind = "plane"
-note = "segment scanner 115, window scanner 113. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-contract"
-kind = "transport"
-note = "segment scanner 327, window scanner 345. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-kernel-breaker"
-kind = "transport"
-note = "segment scanner 218, window scanner 232. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-kernel-egress"
-kind = "transport"
-note = "segment scanner 99, window scanner 104. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-llm"
-kind = "transport"
-note = "segment scanner 1201, window scanner 1202. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-
-[[disagreement]]
-crate = "busbar-plane-a2a"
-kind = "transport"
-note = "segment scanner 105, window scanner 110; scored 110. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the UNION of the two hit sets, never either one alone, and it falls to zero with the hits."
 
 # ------------------------------------------------------------------------------------------------
 #
@@ -849,12 +717,13 @@ note = "segment scanner 105, window scanner 110; scored 110. The two read the br
 # trusted base and 13 it never rules on at all — every one held by 38 lines that recorded only which
 # pairs of kind WORDS had ever appeared together.
 #
-# So the row is the INSTANCE, and the ratchet moves one edge at a time, exactly in both directions,
-# on the same terms `[[cell]]` above already lives under. A count above its row is the landing that
-# grew the coupling. A count BELOW it is stale slack that was not drained on the commit that drained
-# the edge. A row whose edge is gone is a dead allowance and must be struck. An edge with NO row is
-# refused, whatever the architecture may or may not grant, because an edge nobody wrote down is an
-# edge nobody reviewed.
+# So the row is the INSTANCE, and the ratchet moves one edge at a time, exactly in both directions.
+# These counts are EDGE records — declarations of a dependency — not size, so they stay exact
+# where the `[[cell]]` rows above are presence only (size is not a CI check, owner 2026-10-02). A
+# count above its row is the landing that grew the coupling. A count BELOW it is stale slack that
+# was not drained on the commit that drained the edge. A row whose edge is gone is a dead
+# allowance and must be struck. An edge with NO row is refused, whatever the architecture may or
+# may not grant, because an edge nobody wrote down is an edge nobody reviewed.
 #
 #   from    — the crate that declares the dependency.
 #   to      — the crate it reaches. The PACKAGE, not the manifest key: a `package = "…"` rename and
@@ -871,8 +740,8 @@ note = "segment scanner 105, window scanner 110; scored 110. The two read the br
 #   why     — what the number is made of.
 #   drain   — the line that deletes it, or the words that say the architecture asks for it.
 #
-# `[[question]]` carries the question an `owner-ruling-pending` edge is asking — its own table, on
-# exactly the terms `[[disagreement]]` is: every row in this file is a fixed set of required fields,
+# `[[question]]` carries the question an `owner-ruling-pending` edge is asking — its own table
+# rather than an optional field: every row in this file is a fixed set of required fields,
 # and an optional one would be the first thing a reader has to remember. A pending row with no
 # question has stopped asking; a question about an edge that is no longer pending is struck.
 #
@@ -1871,15 +1740,16 @@ drain = "none: the #36 kernel group is intra-tier by design. What the paired [[c
 #
 # C1 says core names no instance, over SEVEN plugin kinds (DECISIONS #3). The matrix above measured
 # two: plane and transport. These rows are the other five — store, secret, auth, hooks, export —
-# for every Family::Neutral crate: how many times the crate writes one of that kind's INSTANCE
+# for every Family::Neutral crate: whether the crate writes one of that kind's INSTANCE
 # names as a whole string literal (`"otlp"`, `"valkey"`, `"admin-tokens"`, `"file"`). The
 # vocabulary is derived by `kind-isolation:matrix` from the census and the tree's own
 # `*_MODULE*` constants (see xtask/src/gates/kind_isolation/matrix/instances.rs); nothing here
 # lists it.
 #
-# ARMED AT TODAY'S MEASURED NUMBER (Law 9, TODO rule 9.4), exact in both directions: a rise is the
-# landing that grew the naming, a fall must bring the row down with it, a zero cell must be struck.
-# The ship twin owes ZERO in every neutral crate (law0-neutral-instance). The drain is Phase 4's.
+# PRESENCE ONLY, like `[[cell]]` (size is not a CI check, owner 2026-10-02): a row says this neutral
+# crate names this axis's instances at all. A cell above zero with no row is RED
+# (`unlisted-instance`); a row whose cell measures zero must be struck (`dead-instance`). The ship
+# twin owes ZERO in every neutral crate (law0-neutral-instance). The drain is Phase 4's.
 #
 # [[core-name]] — CORE'S OWN WORDS, which the learned vocabulary must not count (ARCHITECT ruling
 # 2026-09-30, KERNEL-AUTH-ZERO Q1: a lower-only MEASUREMENT CORRECTION, the class of INBOUND-LISTEN's
@@ -1906,77 +1776,62 @@ cite = "BUSBAR-1.6.0.md:175 — THE DESIGN, the kernel: `literal` and `none` are
 [[instance]]
 crate = "busbar"
 kind = "auth"
-count = "2"
 
 [[instance]]
 crate = "busbar"
 kind = "secret"
-count = "5"
 
 [[instance]]
 crate = "busbar-contract"
 kind = "secret"
-count = "6"
 
 [[instance]]
 crate = "busbar-core-admin"
 kind = "auth"
-count = "17"
 
 [[instance]]
 crate = "busbar-core-admin"
 kind = "export"
-count = "12"
 
 [[instance]]
 crate = "busbar-core-admin"
 kind = "hooks"
-count = "3"
 
 [[instance]]
 crate = "busbar-core-admin"
 kind = "secret"
-count = "40"
 
 [[instance]]
 crate = "busbar-core-admin"
 kind = "store"
-count = "10"
 
 [[instance]]
 crate = "busbar-kernel"
 kind = "export"
-count = "54"
 
 [[instance]]
 crate = "busbar-kernel"
 kind = "hooks"
-count = "1"
 
 [[instance]]
 crate = "busbar-kernel"
 kind = "secret"
-count = "40"
 
 [[instance]]
 crate = "busbar-kernel"
 kind = "store"
-count = "7"
 
 [[instance]]
 crate = "busbar-core-oauth2"
 kind = "secret"
-count = "5"
 
 [[instance]]
 crate = "busbar-plugin-loader"
 kind = "export"
-count = "1"
 
 [[instance]]
 crate = "busbar-plugin-loader"
 kind = "secret"
-count = "4"
 
 # THE ONE REDIRECT: busbar's own crates, as a pulled plugin repo names them. A default plugin lives in
 # its own repo and names busbar-contract (#40: contract only; the SDK is busbar_contract::abi::sdk,
