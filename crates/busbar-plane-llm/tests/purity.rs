@@ -64,6 +64,17 @@ fn the_source_holds_nothing_mutable() {
         "UnsafeCell",
         "thread_local",
     ];
+    // THE DOOR'S ABI-MANDATED STATE (ARCHITECT 2026-10-02): the memory-ABI door keeps, per
+    // instance, the shaping of its current refresh generation and the table of units in flight
+    // across their Ready|Pending calls (BUSBAR-1.6.0.md THE DESIGN §11: plugin-owned memory, valid to
+    // its next refresh generation). These lines are that state, named exactly; anything else in the
+    // door, and anything in the plane ([`LlmPlane`], [`Upstream`]), is still refused.
+    const DOOR_STATE: &[(&str, &str)] = &[
+        ("plane_door.rs", "shapings: Mutex<"),
+        ("plane_door.rs", "units: Mutex<"),
+        ("plane_door.rs", "tickets: Mutex<"),
+        ("plane_door.rs", "fn guard<T>(m: &Mutex<T>)"),
+    ];
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {
         if path.components().any(|c| c.as_os_str() == "codec") {
@@ -72,6 +83,12 @@ fn the_source_holds_nothing_mutable() {
         for (n, line) in text.lines().enumerate() {
             let trimmed = line.trim_start();
             if trimmed.starts_with("//") {
+                continue;
+            }
+            if DOOR_STATE
+                .iter()
+                .any(|(file, held)| path.ends_with(file) && trimmed.starts_with(held))
+            {
                 continue;
             }
             for name in banned {
