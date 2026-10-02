@@ -10,7 +10,8 @@ use busbar_contract::abi::plane::{TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED};
 use busbar_plane_llm::dialect::DIALECTS;
 use busbar_plane_llm::exchange::reply::Units;
 use busbar_plane_llm::plane_door::{
-    claims, counts, read_settings, EGRESS_SCHEMES, NEEDS, OPEN_CLASSES, STATEMENT, TAIL, VERSION,
+    claims, counts, read_settings, DENY_RESPONSE_HEADERS, EGRESS_SCHEMES, NEEDS, OPEN_CLASSES,
+    STATEMENT, TAIL, VERSION,
 };
 
 #[test]
@@ -98,8 +99,7 @@ fn claim_for(path: &str) -> busbar_contract::abi::sdk::publish::ClaimSpec {
         .find(|c| c.flags & CLAIM_EXACT != 0 && c.target == path);
     let under = |c: &&busbar_contract::abi::sdk::publish::ClaimSpec| {
         let t = c.target.trim_end_matches('/');
-        c.flags & CLAIM_EXACT == 0
-            && (path == c.target || path.starts_with(&format!("{t}/")))
+        c.flags & CLAIM_EXACT == 0 && (path == c.target || path.starts_with(&format!("{t}/")))
     };
     exact
         .or_else(|| post.filter(under).max_by_key(|c| c.target.len()))
@@ -187,4 +187,25 @@ fn an_open_count_is_reported_in_its_declared_class_and_never_dropped() {
         counts(&unknown).is_empty(),
         "a class the plane does not state is warned, never counted under another class"
     );
+}
+
+/// RED for the keep mode: every need relays the far end's whole head but the governed fields, and
+/// the deny list is exactly every dialect's governed response fields, each once.
+#[test]
+fn every_need_keeps_all_but_every_dialects_governed_response_fields() {
+    use busbar_contract::abi::host::conn::connector::KEEP_ALL_EXCEPT_DENIED;
+    let mut governed: Vec<&str> = DIALECTS
+        .iter()
+        .flat_map(|d| d.governed_response_headers.iter().copied())
+        .collect();
+    governed.sort_unstable();
+    governed.dedup();
+    let mut denied = DENY_RESPONSE_HEADERS.to_vec();
+    denied.sort_unstable();
+    assert_eq!(denied, governed);
+    for n in NEEDS {
+        assert_eq!(n.keep_mode, KEEP_ALL_EXCEPT_DENIED);
+        assert_eq!(n.keep_response_headers_len, 0);
+        assert_eq!(n.deny_response_headers_len, DENY_RESPONSE_HEADERS.len());
+    }
 }

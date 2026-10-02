@@ -10,7 +10,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::host::conn::connector::{service, EstablishIn, Need, DIRECTION_OUTBOUND};
+use busbar_contract::abi::host::conn::connector::{
+    service, EstablishIn, Need, DIRECTION_OUTBOUND, KEEP_NAMED,
+};
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::{Door, Statement};
@@ -115,6 +117,10 @@ const NEEDS: [Need; 1] = [Need {
     keep_response_headers: std::ptr::null(),
     keep_response_headers_len: 0,
     timeout_ms: 0,
+    keep_mode: KEEP_NAMED,
+    _reserved: 0,
+    deny_response_headers: core::ptr::null(),
+    deny_response_headers_len: 0,
 }];
 
 /// The test plugin's door, its Statement declaring `needs`, bound over `table`.
@@ -512,6 +518,10 @@ const NAMED: [Need; 1] = [Need {
     keep_response_headers: std::ptr::null(),
     keep_response_headers_len: 0,
     timeout_ms: 0,
+    keep_mode: KEEP_NAMED,
+    _reserved: 0,
+    deny_response_headers: core::ptr::null(),
+    deny_response_headers_len: 0,
 }];
 
 /// The ticket every op in these tests runs on.

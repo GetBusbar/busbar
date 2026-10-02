@@ -29,7 +29,9 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::ptr;
 
-use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER};
+use busbar_contract::abi::host::conn::connector::{
+    Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_NAMED,
+};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
@@ -132,6 +134,10 @@ pub const NEEDS: &[Need] = &[Need {
     keep_response_headers: KEEP_RESPONSE_HEADERS.as_ptr(),
     keep_response_headers_len: KEEP_RESPONSE_HEADERS.len(),
     timeout_ms: 0,
+    keep_mode: KEEP_NAMED,
+    _reserved: 0,
+    deny_response_headers: core::ptr::null(),
+    deny_response_headers_len: 0,
 }];
 
 /// THE STATEMENT TAIL: the plane's static facts, every list [`crate::driven::tail`]'s.
