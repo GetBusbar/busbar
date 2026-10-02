@@ -673,16 +673,6 @@ impl ProtocolWriter for BedrockWriter {
         super::ensure_metrics(value, elapsed_ms);
     }
 
-    fn same_protocol_buffered_response_translator(
-        &self,
-    ) -> Option<Box<dyn busbar_contract::protocol::StreamTranslator>> {
-        // A Bedrock -> Bedrock non-stream response used to relay verbatim, so a Converse body whose
-        // upstream omitted `metrics` reached the client without its required member (the only
-        // Converse response busbar served that way; every cross-protocol lane injects it above).
-        // The translator buffers the body and completes it at end-of-stream.
-        Some(Box::new(super::BedrockConverseBodyTranslator::new()))
-    }
-
     fn ingress_response_request_id(
         &self,
         upstream_request_id: Option<&str>,
