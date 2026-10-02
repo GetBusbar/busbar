@@ -25,7 +25,7 @@
 #
 # The moving leg (a plugin's `dev` against busbar's own tree) is busbar's side: the release engine
 # in busbar-release runs it when it admits a busbar candidate.
-name: plugin-ci
+name: "Plugins: CI"
 
 on:
   workflow_call:
