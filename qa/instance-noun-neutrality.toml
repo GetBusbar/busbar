@@ -5,7 +5,7 @@
 
 # Reviewed `noun-neutrality: frozen-literal` pragmas. May only fall.
 [pragma_ceiling]
-frozen_literal = 2
+frozen_literal = 1
 
 [[leak]]
 noun = "mcp"

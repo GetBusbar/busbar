@@ -107,7 +107,7 @@ fn a_kind_glob_matches_one_directory_level() {
 #[test]
 fn a_crate_parked_by_a_cited_owner_ruling_is_an_accepted_drop() {
     let rows = doc("[[gate.census.parked]]\ncrate = \"busbar-x-gone\"\n\
-         reason = \"parked on 1.6.x-mcp-stdio\"\nruling = \"OWNER 2026-10-02\"\n\n\
+         reason = \"parked by owner ruling\"\nruling = \"OWNER 2026-10-02\"\n\n\
          [[gate.census.parked]]\ncrate = \"busbar-x-unruled\"\nreason = \"tidy\"\n");
     let parked = parked_crates(&rows);
     assert_eq!(parked, vec!["busbar-x-gone".to_string()]);

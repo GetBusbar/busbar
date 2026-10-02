@@ -3216,9 +3216,10 @@ plane_crates = 4
 # rev) or one REMOVED BY A CITED OWNER RULING, named here (ARCHITECT 2026-10-02). `transport` 3 -> 2:
 # busbar-transport-stdio is parked, not moved out: busbar's default build does not link it, and its
 # repo stays a fleet member.
+# qa-names: busbar-transport-stdio -- qa/construction.toml -- parked by owner ruling: the package is not in the workspace, so it cannot resolve; the row names the crate the floor drop excuses
 [[gate.census.parked]]
 crate = "busbar-transport-stdio"
-reason = "parked on 1.6.x-mcp-stdio"
+reason = "parked: the stdio transport leaves the default build and its repo stays a fleet member"
 ruling = "OWNER 2026-10-02"
 
 #
