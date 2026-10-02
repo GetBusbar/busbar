@@ -1553,7 +1553,7 @@ kernel_crate = "busbar-kernel"
 #    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
 # ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
 #    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
-kernel_ceiling = 55339
+kernel_ceiling = 55537
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
@@ -1997,7 +1997,9 @@ words = [
 # neutral copies were deleted rather than re-homed. This is a floor now, not a ceiling: a unit crate
 # that names an open-vocabulary word again is RED with no slack to hide in.
 max_hits = 0
-# SITE-LEVEL review (exact `path:line`, never a whole file): busbar-core's config absorption into
+# SITE-LEVEL review (`<path> :: <literal text>`, the exact string in the exact file, never a whole
+# file; ARCHITECT 2026-10-02 STANDING-REDS option 2: an entry follows its literal when lines move, and
+# one that matches no literal is reported stale): busbar-core's config absorption into
 # busbar-kernel (W4.a) brought these findings over as-is; each is a literal `model`/`mcp`/`prompt`/
 # `completion` this rule's word list bans as DIALECT vocabulary, but every one below is actually one
 # of three things that are NOT dialect leaking into the kernel:
@@ -2018,54 +2020,54 @@ max_hits = 0
 # the pricer renders on usage reports, and changing operator-visible billing terminology is not a
 # call this rule's cleanup gets to make unilaterally.
 known_sites = [
-  "crates/busbar-kernel/src/appbuild.rs:240",
-  "crates/busbar-kernel/src/appbuild.rs:702",
-  "crates/busbar-kernel/src/appbuild.rs:776",
-  "crates/busbar-kernel/src/appbuild.rs:889",
-  "crates/busbar-kernel/src/config/migrate.rs:333",
-  "crates/busbar-kernel/src/config/migrate.rs:1505",
-  "crates/busbar-kernel/src/config/migrate.rs:1850",
-  "crates/busbar-kernel/src/config/migrate.rs:1851",
-  "crates/busbar-kernel/src/config/mod.rs:796",
-  "crates/busbar-kernel/src/config/mod.rs:2285",
-  "crates/busbar-kernel/src/config/pools.rs:302",
+  "crates/busbar-kernel/src/appbuild.rs :: model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
+  "crates/busbar-kernel/src/appbuild.rs :: model '{model}' references unknown provider '{}'",
+  "crates/busbar-kernel/src/appbuild.rs ::   model {} via {} ({}) max {}{}",
+  "crates/busbar-kernel/src/appbuild.rs :: pool '{name}' references unknown model '{}'",
+  "crates/busbar-kernel/src/config/migrate.rs :: `pools.{}.members[].target:` (renamed to model)",
+  "crates/busbar-kernel/src/config/migrate.rs :: prompt",
+  "crates/busbar-kernel/src/config/migrate.rs :: model",
+  "crates/busbar-kernel/src/config/migrate.rs :: pools.{pname}.members[].target -> model",
+  "crates/busbar-kernel/src/config/mod.rs :: completion",
+  "crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference.",
+  "crates/busbar-kernel/src/config/pools.rs :: a bare member name, or a member object `{ model, weight, ... }`",
   # Moved from the retired shared value crate with the code that carries them (#83a SD-8), reviewed
   # there and frozen: the omitted-`protocol:` default of the 1.5.3 providers.yaml grammar, and the
   # published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
-  "crates/busbar-kernel/src/config/providers.rs:104",
-  "crates/busbar-kernel/src/diagnostics/mod.rs:2843",
+  "crates/busbar-kernel/src/config/providers.rs :: anthropic",
+  "crates/busbar-kernel/src/diagnostics/mod.rs :: rate_card entry prices a model at ALL ZERO (metered as free, uncapped)",
   # `crates/busbar-kernel/src/config/providers.rs:75` STRUCK: the provider config shapes moved to
   # the LLM plane side and left that file 20 lines long, so the pin named a line that does not exist
   # and waived nothing. A reviewed site that points at nothing is a waiver waiting for the next
   # literal written there.
-  "crates/busbar-kernel/src/config/transaction.rs:365",
-  "crates/busbar-kernel/src/config_validate/mod.rs:132",
-  "crates/busbar-kernel/src/config_validate/mod.rs:140",
-  "crates/busbar-kernel/src/config_validate/mod.rs:152",
-  "crates/busbar-kernel/src/config_validate/mod.rs:181",
-  "crates/busbar-kernel/src/config_validate/mod.rs:192",
-  "crates/busbar-kernel/src/config_validate/mod.rs:213",
-  "crates/busbar-kernel/src/config_validate/mod.rs:232",
-  "crates/busbar-kernel/src/config_validate/mod.rs:232",
-  "crates/busbar-kernel/src/config_validate/mod.rs:260",
-  "crates/busbar-kernel/src/config_validate/mod.rs:306",
-  "crates/busbar-kernel/src/config_validate/mod.rs:306",
-  "crates/busbar-kernel/src/config_validate/mod.rs:394",
-  "crates/busbar-kernel/src/config_validate/mod.rs:423",
-  "crates/busbar-kernel/src/config_validate/mod.rs:428",
-  "crates/busbar-kernel/src/config_validate/mod.rs:1242",
-  "crates/busbar-kernel/src/config_validate/mod.rs:2192",
-  "crates/busbar-kernel/src/endpoints.rs:109",
-  "crates/busbar-kernel/src/ingress/mod.rs:404",
-  "crates/busbar-kernel/src/ingress/mod.rs:409",
-  "crates/busbar-kernel/src/ingress/mod.rs:724",
-  "crates/busbar-kernel/src/ingress/mod.rs:876",
-  "crates/busbar-kernel/src/metrics/money.rs:166",
-  "crates/busbar-kernel/src/metrics/money.rs:236",
-  "crates/busbar-kernel/src/plane_host/build_input.rs:152",
-  "crates/busbar-kernel/src/router.rs:424",
-  "crates/busbar-kernel/src/store/vocab.rs:137",
-  "crates/busbar-kernel/src/test_support/mod.rs:220",
+  "crates/busbar-kernel/src/config/transaction.rs :: loom-model",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' references unknown provider '{}'",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has max_concurrent: 0; must be >= 1, or omit it (default = unbounded)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has max_requests: 0; a lane with a zero lifetime budget never admits a request — use a positive cap, or omit it (default -1 = unlimited)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to disable the per-attempt cap",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has an empty upstream_model; set a non-empty provider model id, or omit it to use the config key",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool name '{}' conflicts with model name '{}'; pools and models must have distinct names",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: provider name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a provider reachable via the adhoc /admin/<model> route is unreachable to clients; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: provider name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a provider reachable via the adhoc /{}/<model> route is unreachable to clients; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool '{}' member '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to inherit the model's setting",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool '{}' member '{}' references model '{}', which is defined but whose provider is unresolvable; fix that model's provider reference (the model's 'references unknown provider' error is reported separately)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool '{}' references unknown model '{}'",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: provider '{provider_name}' base_url must use https for a public host (got '{base_url}'); plaintext http is permitted only for a private/loopback local-model upstream",
+  "crates/busbar-kernel/src/endpoints.rs :: model",
+  "crates/busbar-kernel/src/ingress/mod.rs :: governance: no configured rate for model; rejecting (rate_card is authoritative and complete)",
+  "crates/busbar-kernel/src/door.rs :: no configured rate for model '{name}'",
+  "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
+  "crates/busbar-kernel/src/ingress/mod.rs :: /{provider}/{model}/v1/messages",
+  "crates/busbar-kernel/src/metrics/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
+  "crates/busbar-kernel/src/metrics/money.rs :: model",
+  "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
+  "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
+  "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
+  "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
 ]
 
 # ── 18. no-default-bodies (BUSBAR-1.6.0.md THE DESIGN, §8) ─────────────────────────────────────────────────────

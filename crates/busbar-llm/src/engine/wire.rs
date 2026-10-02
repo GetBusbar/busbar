@@ -149,7 +149,10 @@ pub(crate) fn rendered_response_via(
 ) -> Response {
     let status = StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut rb = Response::builder().status(status);
-    for (name, value) in r.fields {
+    // A relayed far-end answer's per-connection fields are this answer's to re-derive.
+    let mut fields = r.fields;
+    strip_answer_mechanics(&mut fields);
+    for (name, value) in fields {
         rb = rb.header(name, value);
     }
     more(rb)
