@@ -1,0 +1,56 @@
+# dependabot-bundle: every open dependabot PR (whatever its base today) is merged into ONE branch (deps/bundle),
+# which carries ONE PR with auto-merge on. Merged PRs are closed with a link; a PR that conflicts
+# is listed in the bundle PR body and left open. The branch is only ever fast-forwarded (no force).
+# Secrets: BUNDLE_TOKEN (or FLEET_TOKEN) lets the bundle PR run CI and lets a github-actions bump
+# (a workflow-file change) be pushed; without one GITHUB_TOKEN is used and those cases fail loudly.
+# pull_request_target runs the BASE branch's copy of this file and never executes PR code: it only
+# fetches and merges the PR heads.
+name: dependabot-bundle
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+    branches: [dev]
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+concurrency:
+  group: dependabot-bundle
+env:
+  TARGET: dev
+  BUNDLE: deps/bundle
+  GH_TOKEN: ${{ secrets.BUNDLE_TOKEN || secrets.FLEET_TOKEN || github.token }}
+jobs:
+  bundle:
+    if: github.event_name != 'pull_request_target' || github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -euo pipefail
+          gh auth setup-git
+          git clone -q "https://github.com/$GITHUB_REPOSITORY" w && cd w
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "$BUNDLE" >/dev/null; then
+            git checkout -q -B "$BUNDLE" "origin/$BUNDLE"
+            git merge -q -m "deps: merge $TARGET" "origin/$TARGET"
+          else
+            git checkout -q -B "$BUNDLE" "origin/$TARGET"
+          fi
+          merged=(); bad=()
+          while IFS=$'\t' read -r n t; do
+            [ -n "$n" ] || continue
+            git fetch -q origin "pull/$n/head"
+            if git merge -q -m "deps: merge #$n $t" FETCH_HEAD; then merged+=("$n"); else git merge --abort; bad+=("$n"); fi
+          done < <(gh pr list --state open --author 'app/dependabot' --json number,title --jq '.[]|"\(.number)\t\(.title)"')
+          [ "$(git rev-list --count "origin/$TARGET..HEAD")" -gt 0 ] || { echo "nothing to bundle"; exit 0; }
+          git push -q origin "$BUNDLE"
+          body="Bundled dependabot updates, merged from: $(printf '#%s ' "${merged[@]}")"
+          [ ${#bad[@]} -eq 0 ] || body="$body"$'\n\n'"CONFLICT, left open (resolve or close by hand): $(printf '#%s ' "${bad[@]}")"
+          pr=$(gh pr list --head "$BUNDLE" --base "$TARGET" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then gh pr edit "$pr" --body "$body"
+          else pr=$(gh pr create --head "$BUNDLE" --base "$TARGET" --title "deps: bundled dependabot updates" --body "$body" | sed 's|.*/||'); fi
+          gh pr merge "$pr" --auto --merge || echo "::warning::auto-merge not enabled on #$pr"
+          for n in "${merged[@]}"; do gh pr close "$n" --comment "Merged into the bundle branch; continues in #$pr."; done
