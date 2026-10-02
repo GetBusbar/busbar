@@ -14,11 +14,11 @@
 //! provide.
 //!
 //! So there is ONE append ([`Chain::append`]/[`seal`]), ONE digest ([`digest`]) and ONE verifier
-//! ([`verify_chain`]/[`verify_window`]), and they live here. A plugin supplies the RECORD; it never
-//! supplies the mechanism. [`crate::trust`] is the precedent this copies rather than a new idea: it
-//! owns the trust lifecycle while a plugin supplies only the artifact, and a downstream plugin
-//! integration's own header states the same rule for its own domain: a plugin supplies an
-//! artifact; it does not supply a second state machine.
+//! ([`verify_chain`], and its test-build window form `verify_window`), and they live here. A
+//! plugin supplies the RECORD; it never supplies the mechanism. [`crate::trust`] is the precedent
+//! this copies rather than a new idea: it owns the trust lifecycle while a plugin supplies only the
+//! artifact, and a downstream plugin integration's own header states the same rule for its own
+//! domain: a plugin supplies an artifact; it does not supply a second state machine.
 //!
 //! ## ONE MECHANISM IS NOT ONE STREAM, and conflating them would be a different defect
 //!
@@ -493,7 +493,10 @@ pub(crate) fn verify_chain<R: ChainedRecord>(records: &[R]) -> Result<(), ChainB
 /// predecessor has legitimately been pruned, so its link cannot be checked and its `seq` is
 /// whatever the chain had reached. Everything after it is checked exactly as [`verify_chain`] does.
 /// It is deliberately a SEPARATE entry point rather than a lenient default: a caller that holds a
-/// whole chain and calls this would be silently excusing a missing head.
+/// whole chain and calls this would be silently excusing a missing head. Test builds only: its one
+/// production reader was the in-memory request chain (`proxy/reqlog`, deleted); the bounded audit
+/// ring's own check (`AuditRing::verify`) is test-only too.
+#[cfg(test)]
 pub(crate) fn verify_window<R: ChainedRecord>(records: &[R]) -> Result<(), ChainBreak> {
     walk(records, Anchor::Window)
 }
@@ -504,6 +507,7 @@ enum Anchor {
     Genesis,
     /// A window into a longer chain: the first record's `seq`/`prev_hash` are taken as given, and
     /// only its own digest is checked.
+    #[cfg(test)]
     Window,
 }
 
@@ -514,6 +518,7 @@ fn walk<R: ChainedRecord>(records: &[R], anchor: Anchor) -> Result<(), ChainBrea
     let scope = first.scope_of().to_string();
     let (mut expected_prev, mut expected_seq) = match anchor {
         Anchor::Genesis => (String::new(), 1u64),
+        #[cfg(test)]
         Anchor::Window => (first.prev_hash().to_string(), first.seq()),
     };
 

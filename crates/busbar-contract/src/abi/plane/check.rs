@@ -20,6 +20,7 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::reason_of;
+use super::{units_bill, UNITS_FLOOR};
 use super::{
     AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
@@ -30,7 +31,7 @@ use super::{
     INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
     PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_PIECEWISE,
     SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED,
-    UNITS_REPORTED, VERDICT_HARD,
+    VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -111,14 +112,15 @@ fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
         code(
             u64::from(u.source),
             u64::from(UNITS_ESTIMATED),
-            u64::from(UNITS_REPORTED),
+            u64::from(UNITS_FLOOR),
             "unit.source",
         )?;
-        // ONE CUMULATIVE COUNT per class and source: a second is a contradiction (two running
-        // totals of one thing), never a sum the host would have to add.
+        // ONE CUMULATIVE COUNT per class and source, and ONE BILLING COUNT per class: a second is a
+        // contradiction (two running totals of one thing), never a sum the host would have to add
+        // and never a choice it would have to make between a reported count and a floor.
         if counts[..i]
             .iter()
-            .any(|p| p.class == u.class && p.source == u.source)
+            .any(|p| p.class == u.class && units_bill(p.source) == units_bill(u.source))
         {
             return Err(fault(Rule::Contradiction, "unit.class"));
         }

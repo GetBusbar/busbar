@@ -25,6 +25,7 @@ use super::arrive::Arrived;
 use super::shaping::{FarShape, Lane, Shaping};
 use crate::codec::translate::{TranslateCodec as _, TranslateReqInput, TranslateReqReject};
 use crate::codec::DECLS;
+use crate::dialect::DIALECTS;
 
 /// A refusal the attempt answers the caller with instead of reaching the far end.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -588,7 +588,7 @@ impl Rig {
         // a control file the rig flips to take it down without busbar ever seeing a control header.
         // It is the `mock` SUBCOMMAND of the pinned native engine, spawned through the shim so the
         // engine is resolved in exactly one place. Its argv is the argv the retired
-        // `mock-upstream.py` took (`<port> [marker] [control-file]`) and it BLOCKS until killed, so
+        // Python mock took (`<port> [marker] [control-file]`) and it BLOCKS until killed, so
         // the rig's spawn/kill contract is unchanged. The shim `exec`s the engine, so the `Child`
         // here IS the mock process and `kill()` reaches it.
         let shim = oracle_shim();
