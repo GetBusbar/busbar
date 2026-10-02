@@ -115,7 +115,11 @@ fn the_current_payload_is_the_newest_live_generations_and_retire_drops_it() {
     gens.retire(1);
     assert_eq!((gens.current(), gens.at(1)), (None, None));
     assert_eq!(*held, "one");
-    assert_eq!(std::sync::Arc::strong_count(&held), 1, "retire dropped the SDK's hold");
+    assert_eq!(
+        std::sync::Arc::strong_count(&held),
+        1,
+        "retire dropped the SDK's hold"
+    );
 }
 
 /// Two instances' keyed state are two maps: nothing one inserts is seen by the other.

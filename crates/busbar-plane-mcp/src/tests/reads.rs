@@ -84,13 +84,16 @@ fn a_typed_prompt_renders_each_message_and_leaves_media_untouched() {
 fn an_ungranted_prompt_answers_exactly_like_a_nonexistent_one() {
     let c = catalogue();
     let none = |_: &str, _: &str| false;
-    let hidden = prompt_named(&c, &json!(1), Some(&json!({"name": "fs_greet"})), &none)
-        .expect_err("hidden");
+    let hidden =
+        prompt_named(&c, &json!(1), Some(&json!({"name": "fs_greet"})), &none).expect_err("hidden");
     let absent = prompt_named(&c, &json!(1), Some(&json!({"name": "fs_nope"})), &everyone)
         .expect_err("absent");
     assert_eq!((hidden.status, hidden.code), (404, -32000));
     assert_eq!((absent.status, absent.code), (404, -32000));
-    assert_eq!(hidden.message, "`fs_greet` is not a prompt this server exposes.");
+    assert_eq!(
+        hidden.message,
+        "`fs_greet` is not a prompt this server exposes."
+    );
     let missing = prompt_named(&c, &json!(1), Some(&json!({})), &everyone).expect_err("missing");
     assert_eq!((missing.status, missing.code), (400, -32602));
 }
@@ -134,10 +137,18 @@ fn a_template_answers_after_the_concrete_approvals_and_contends_like_one() {
 fn nothing_reachable_is_not_found_and_a_missing_uri_is_invalid() {
     let c = catalogue();
     let none = |_: &str, _: &str| false;
-    let r = resources_read(&c, &json!(1), Some(&json!({"uri": "file:///shared"})), &none)
-        .expect_err("hidden");
+    let r = resources_read(
+        &c,
+        &json!(1),
+        Some(&json!({"uri": "file:///shared"})),
+        &none,
+    )
+    .expect_err("hidden");
     assert_eq!((r.status, r.code), (404, -32000));
-    assert_eq!(r.message, "`file:///shared` is not a resource this server exposes.");
+    assert_eq!(
+        r.message,
+        "`file:///shared` is not a resource this server exposes."
+    );
     let r = resources_read(&c, &json!(1), None, &everyone).expect_err("missing");
     assert_eq!((r.status, r.code), (400, -32602));
 }
@@ -147,11 +158,19 @@ fn nothing_reachable_is_not_found_and_a_missing_uri_is_invalid() {
 fn a_template_binds_one_segment_and_never_a_subtree() {
     let t = "file:///t/{id}/data";
     assert_eq!(
-        crate::catalogue::match_uri_template(t, "file:///t/7/data")
-            .map(|b| b["id"].clone()),
+        crate::catalogue::match_uri_template(t, "file:///t/7/data").map(|b| b["id"].clone()),
         Some("7".to_string())
     );
-    assert_eq!(crate::catalogue::match_uri_template(t, "file:///t//data"), None);
-    assert_eq!(crate::catalogue::match_uri_template(t, "file:///t/a/b/data"), None);
-    assert_eq!(crate::catalogue::match_uri_template(t, "file:///t/7/data/x"), None);
+    assert_eq!(
+        crate::catalogue::match_uri_template(t, "file:///t//data"),
+        None
+    );
+    assert_eq!(
+        crate::catalogue::match_uri_template(t, "file:///t/a/b/data"),
+        None
+    );
+    assert_eq!(
+        crate::catalogue::match_uri_template(t, "file:///t/7/data/x"),
+        None
+    );
 }

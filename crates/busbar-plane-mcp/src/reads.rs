@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 
 use crate::arrival::Refusal;
-use crate::catalogue::{complete, Catalogue, Lookup, PromptEntry, ResourceEntry, ResourceTemplateEntry};
+use crate::catalogue::{
+    complete, Catalogue, Lookup, PromptEntry, ResourceEntry, ResourceTemplateEntry,
+};
 use crate::codec::{CODE_INVALID_PARAMS, CODE_REFUSED};
 use crate::config::PromptContentCfg;
 use crate::sanitize::{normalise, normalise_opt};

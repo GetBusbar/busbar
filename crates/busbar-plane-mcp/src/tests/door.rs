@@ -151,7 +151,10 @@ fn the_tail_states_every_operation_class_then_the_session_class() {
     for (i, op) in crate::ops::OP_CLASSES.iter().enumerate() {
         assert_eq!(op_class_index(*op) as usize, i);
         let abi = OP_CLASS_TABLE[i].op;
-        assert_eq!((abi.ptr, abi.len), (op.as_str().as_ptr(), op.as_str().len()));
+        assert_eq!(
+            (abi.ptr, abi.len),
+            (op.as_str().as_ptr(), op.as_str().len())
+        );
     }
     assert_eq!(OP_CLASS_SESSION as usize, crate::ops::OP_CLASSES.len());
     assert_eq!(TAIL.op_classes_len, OP_CLASS_TABLE.len());

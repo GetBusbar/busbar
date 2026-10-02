@@ -19,15 +19,15 @@
 
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
     PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
-    OutField, ServeIn, ServeOut, CANCEL_ABORTED, EMIT_DONE, FROM_CALLER, PIECE_LAST,
-    PRINCIPAL_REQUIRED, REFUSAL_ARRIVE,
+    ServeIn, ServeOut, CANCEL_ABORTED, EMIT_DONE, FROM_CALLER, PIECE_LAST, PRINCIPAL_REQUIRED,
+    REFUSAL_ARRIVE,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
@@ -47,9 +47,12 @@ const MAX_INFLIGHT: u32 = 64;
 /// The version the Statement names: the crate's (a test pins the two equal).
 pub const VERSION: &str = "1.6.0";
 
-/// THE STATEMENT: the plane's name and version, and its tail ([`door::TAIL`]).
+/// THE STATEMENT: the plane's name and version, the settings sections it declares
+/// ([`door::SECTIONS`]) and its tail ([`door::TAIL`]).
 pub const STATEMENT: Statement = Statement {
     kind_tail: (door::TAIL as *const busbar_contract::abi::plane::PlaneTail).cast::<KindTailHead>(),
+    sections: door::SECTIONS.as_ptr(),
+    sections_len: door::SECTIONS.len(),
     ..statement(crate::PLANE_KEY, VERSION, MAX_INFLIGHT)
 };
 
@@ -257,6 +260,24 @@ fn refusal_text(refusal: &crate::arrival::Refusal) -> String {
     .to_string()
 }
 
+/// [`ArriveOut::refusal`]: the arrival is refused in the plane's own words, at its own status (the
+/// words ride in the head's error, and `refusal` renders them).
+pub const REFUSED_IN_OWN_WORDS: u32 = 1;
+
+/// [`ArriveOut::refusal`]: the arrival names the discovery document, which is not answered on the
+/// request path.
+pub const UNSERVED: u32 = 2;
+
+/// The status of an arrival the request path does not serve.
+const STATUS_NOT_FOUND: u32 = 404;
+
+/// REFUSED in the plane's own `text`, at `status`: `refusal` renders them.
+fn refused(out: &mut Out<'_, ArriveOut>, status: u32, text: String) -> Outcome {
+    out.set(|o| &o.refusal, REFUSED_IN_OWN_WORDS);
+    out.set(|o| &o.refusal_status, status);
+    out.fail(Refusal::refused(text))
+}
+
 /// The words of an arrival on a verb the endpoint does not serve.
 const NOT_ALLOWED_TEXT: &str = r#"{"allow":"POST"}"#;
 
@@ -301,10 +322,16 @@ slot!(
         let fields = input.fields();
         if claim.is_some_and(|r| r.open) {
             // The discovery document is not answered on the request path.
+            out.set(|o| &o.refusal, UNSERVED);
+            out.set(|o| &o.refusal_status, STATUS_NOT_FOUND);
             return out.fail(Refusal::bare());
         }
         if claim.is_some_and(|r| r.verb != "POST") {
-            return out.fail(Refusal::refused(NOT_ALLOWED_TEXT));
+            return refused(
+                &mut out,
+                door::STATUS_METHOD_NOT_ALLOWED,
+                NOT_ALLOWED_TEXT.to_string(),
+            );
         }
         let decision = crate::arrival::decide(stdio, body, |name| {
             fields
@@ -317,7 +344,7 @@ slot!(
                 .and_then(|f| f.field(|f| &f.value).as_str().ok())
         });
         if let Decision::Refused(refusal) = &decision {
-            return out.fail(Refusal::refused(refusal_text(refusal)));
+            return refused(&mut out, refusal.status, refusal_text(refusal));
         }
         let (correlation, cancels) = match &decision {
             Decision::Request { correlation, .. } | Decision::Session { correlation, .. } => {

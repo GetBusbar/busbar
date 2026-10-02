@@ -105,7 +105,10 @@ fn discover_counts_what_the_caller_reaches_and_names_the_revisions() {
     let v = body(&a);
     assert_eq!(v["result"]["supportedVersions"], json!([PROTOCOL_VERSION]));
     assert_eq!(v["result"]["servers"], json!(["fs"]));
-    assert_eq!(v["result"]["counts"], json!({"tools": 1, "prompts": 2, "resources": 1}));
+    assert_eq!(
+        v["result"]["counts"],
+        json!({"tools": 1, "prompts": 2, "resources": 1})
+    );
     assert_eq!(v["result"]["registryEmpty"], false);
     assert_eq!(v["result"]["resultType"], "complete");
     assert_eq!(
@@ -127,8 +130,14 @@ fn discover_counts_what_the_caller_reaches_and_names_the_revisions() {
 /// A call, and a prompt that asks its caller first, are not answered here.
 #[test]
 fn a_call_and_an_asking_prompt_go_on() {
-    assert_eq!(run("tools/call", json!({"name": "fs_read_file"})), Answer::Far);
-    assert_eq!(run("prompts/get", json!({"name": "fs_confirm"})), Answer::Far);
+    assert_eq!(
+        run("tools/call", json!({"name": "fs_read_file"})),
+        Answer::Far
+    );
+    assert_eq!(
+        run("prompts/get", json!({"name": "fs_confirm"})),
+        Answer::Far
+    );
 }
 
 /// A local refusal is answered with its own status and body.
@@ -145,8 +154,19 @@ fn a_local_refusal_answers_its_own_status() {
 /// A notification is acknowledged with no body; a refused arrival answers its refusal.
 #[test]
 fn a_notice_is_acknowledged_and_a_refusal_answered() {
-    let d = decide(false, br#"{"jsonrpc":"2.0","method":"notifications/x"}"#, |_| None);
-    let a = answer(&d, None, &catalogue(), &everyone, |_| false, &mut Session::default());
+    let d = decide(
+        false,
+        br#"{"jsonrpc":"2.0","method":"notifications/x"}"#,
+        |_| None,
+    );
+    let a = answer(
+        &d,
+        None,
+        &catalogue(),
+        &everyone,
+        |_| false,
+        &mut Session::default(),
+    );
     assert_eq!(
         a,
         Answer::Here {
@@ -155,7 +175,14 @@ fn a_notice_is_acknowledged_and_a_refusal_answered() {
         }
     );
     let d = decide(false, b"not json", |_| None);
-    let a = answer(&d, None, &catalogue(), &everyone, |_| false, &mut Session::default());
+    let a = answer(
+        &d,
+        None,
+        &catalogue(),
+        &everyone,
+        |_| false,
+        &mut Session::default(),
+    );
     assert!(matches!(a, Answer::Here { status: 400, .. }));
     assert_eq!(body(&a)["error"]["code"], -32700);
 }
@@ -165,17 +192,34 @@ fn a_notice_is_acknowledged_and_a_refusal_answered() {
 fn the_session_verbs_keep_the_sessions_state() {
     let mut session = Session::default();
     let verb = |method: &str, params: Value, session: &mut Session| {
-        let body = serde_json::to_vec(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}))
-            .expect("bytes");
+        let body = serde_json::to_vec(
+            &json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}),
+        )
+        .expect("bytes");
         let d = decide(true, &body, |_| None);
-        answer(&d, Some(&params), &catalogue(), &everyone, |_| false, session)
+        answer(
+            &d,
+            Some(&params),
+            &catalogue(),
+            &everyone,
+            |_| false,
+            session,
+        )
     };
     let a = verb("logging/setLevel", json!({"level": "debug"}), &mut session);
     assert!(matches!(a, Answer::Here { status: 200, .. }));
     assert_eq!(session.level.as_deref(), Some("debug"));
-    verb("resources/subscribe", json!({"uri": "file:///readme"}), &mut session);
+    verb(
+        "resources/subscribe",
+        json!({"uri": "file:///readme"}),
+        &mut session,
+    );
     assert_eq!(session.subscriptions.entries().len(), 1);
-    verb("resources/unsubscribe", json!({"uri": "file:///readme"}), &mut session);
+    verb(
+        "resources/unsubscribe",
+        json!({"uri": "file:///readme"}),
+        &mut session,
+    );
     assert!(session.subscriptions.entries().is_empty());
     let init = verb("initialize", json!({}), &mut session);
     assert_eq!(body(&init)["result"]["protocolVersion"], PROTOCOL_VERSION);

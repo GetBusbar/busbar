@@ -20,11 +20,11 @@
 //! on the engine's side pins the two equal, entry by entry, until the engine is gone.
 
 use busbar_contract::abi::mechanism::call::AbiStr;
-use busbar_contract::abi::mechanism::door::KindTailHead;
+use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
 use busbar_contract::abi::plane::{
-    AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, Section, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
+    AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_ROOT,
-    SECTION_DECLARING, SHAPE_PIECEWISE, TRUST_PIN, TRUST_REVERIFY_TTL,
+    SHAPE_PIECEWISE, TRUST_PIN, TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
@@ -59,7 +59,9 @@ const NONE: AbiStr = AbiStr {
     len: 0,
 };
 
-const SECTIONS: &[Section] = &[
+/// THE SECTIONS THE PLANE'S STATEMENT DECLARES: `tools:`, which it owns and judges, and its endpoint
+/// block beside it.
+pub const SECTIONS: &[Section] = &[
     Section {
         name: abi_str(SECTION),
         flags: SECTION_DECLARING,
@@ -220,8 +222,6 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     signing_domain: NONE,
     signing_kid_prefix: NONE,
     cli_help: NONE,
-    sections: SECTIONS.as_ptr(),
-    sections_len: SECTIONS.len(),
     dialects: DIALECTS.as_ptr(),
     dialects_len: DIALECTS.len(),
     dialect_auth: std::ptr::null(),
@@ -238,14 +238,14 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     fee_units_len: FEE_UNITS.len(),
     record_kinds: RECORD_KINDS.as_ptr(),
     record_kinds_len: RECORD_KINDS.len(),
-    needs: std::ptr::null(),
-    needs_len: 0,
     egress_targets: std::ptr::null(),
     egress_targets_len: 0,
     record_chains: std::ptr::null(),
     record_chains_len: 0,
     trust_keys: TRUST_KEYS.as_ptr(),
     trust_keys_len: TRUST_KEYS.len(),
+    refusal_statuses: std::ptr::null(),
+    refusal_statuses_len: 0,
 };
 
 /// One path the plane answers on: the verb, the target, the transport claim it arrives over, and

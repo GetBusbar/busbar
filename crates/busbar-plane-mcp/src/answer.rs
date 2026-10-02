@@ -80,11 +80,7 @@ pub struct Session {
 
 /// `server/discover`: the capabilities, and the catalogue this caller reaches, counted.
 #[must_use]
-pub fn discover(
-    catalogue: &Catalogue,
-    id: &Value,
-    admit: &impl Fn(&str, &str) -> bool,
-) -> Vec<u8> {
+pub fn discover(catalogue: &Catalogue, id: &Value, admit: &impl Fn(&str, &str) -> bool) -> Vec<u8> {
     let tools = catalogue.tools_for(admit);
     let prompts = catalogue.prompts_for(admit);
     let resources = catalogue.resources_for(admit);
@@ -161,10 +157,7 @@ pub fn answer(
             },
             "resources/subscribe" | "resources/unsubscribe" => {
                 let subscribe = method == "resources/subscribe";
-                match session
-                    .subscriptions
-                    .apply(id, subscribe, params, |_| None)
-                {
+                match session.subscriptions.apply(id, subscribe, params, |_| None) {
                     Ok(()) => Answer::ok(local::ping(id)),
                     Err(refusal) => Answer::refused(&refusal),
                 }
