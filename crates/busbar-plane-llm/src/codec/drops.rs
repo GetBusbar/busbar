@@ -198,7 +198,7 @@ pub fn extra_paths(
             Some(Holds::Path(path)) => push(path.to_string()),
             Some(Holds::Members(except)) => {
                 for member in value.as_object().into_iter().flat_map(Map::keys) {
-                    if !except.iter().any(|e| *e == member.as_str())
+                    if !except.contains(&member.as_str())
                         && !mapped(&[key.as_str(), member.as_str()])
                     {
                         push(format!("{key}.{member}"));
@@ -208,7 +208,7 @@ pub fn extra_paths(
             Some(Holds::Items(path, except)) => {
                 let items = value.as_object().into_iter().flat_map(Map::values);
                 for member in items.flat_map(|i| i.as_object().into_iter().flat_map(Map::keys)) {
-                    if !except.iter().any(|e| *e == member.as_str()) {
+                    if !except.contains(&member.as_str()) {
                         push(format!("{path}.{member}"));
                     }
                 }
@@ -241,20 +241,17 @@ impl Blocks {
         let obj = block.as_object()?;
         match self.tag {
             Some(tag) => match obj.get(tag).and_then(Value::as_str) {
-                Some(kind) if self.modelled.iter().any(|m| *m == kind) => None,
+                Some(kind) if self.modelled.contains(&kind) => None,
                 Some(kind) => Some(kind),
                 None => Some(""),
             },
             None => {
-                if obj
-                    .keys()
-                    .any(|k| self.modelled.iter().any(|m| *m == k.as_str()))
-                {
+                if obj.keys().any(|k| self.modelled.contains(&k.as_str())) {
                     return None;
                 }
                 obj.keys()
                     .map(String::as_str)
-                    .find(|k| !self.companions.iter().any(|c| *c == *k))
+                    .find(|k| !self.companions.contains(k))
             }
         }
     }

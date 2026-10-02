@@ -3408,14 +3408,12 @@ fn read_openai_block_refusal_maps_to_text() {
 }
 
 #[test]
-fn read_openai_block_unknown_type_degrades_to_empty_text() {
-    // A future/unknown content-part type must not break otherwise-valid history.
+fn read_openai_part_unknown_type_is_dropped_not_substituted() {
+    // A future/unknown content-part type must not break otherwise-valid history, and nothing is put
+    // in its place (design F3 "Drops"): the part is not read; a translate attempt names it.
     let block = serde_json::json!({"type": "some_future_part", "foo": "bar"});
-    let ir = read_openai_block(&block).expect("unknown type must degrade, not error");
-    match ir {
-        crate::codec::ir::IrBlock::Text { text, .. } => assert_eq!(text, ""),
-        other => panic!("expected empty Text, got {other:?}"),
-    }
+    let ir = read_openai_part(&block).expect("unknown type must not error");
+    assert!(ir.is_none(), "an unknown part is dropped, got {ir:?}");
 }
 
 // --- finish_reason normalization (content_filter -> safety, function_call -> tool_use) ---

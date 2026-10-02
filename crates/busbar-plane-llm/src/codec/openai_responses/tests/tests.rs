@@ -66,15 +66,18 @@ fn responses_input_file_degrades_with_warn_not_silent_drop() {
             }))
             .expect("read_request")
     });
+    // A genuinely unmodeled block is dropped, never substituted (design F3 "Drops"): the read keeps
+    // the two text blocks only. The read itself says nothing (a relay's tap drops nothing); a
+    // translate attempt names the dropped kind (`codec::tests::drops_tests`).
     assert_eq!(
         ir2.messages[0].content.len(),
-        3,
-        "a genuinely unmodeled block must degrade IN PLACE, not vanish: {:?}",
+        2,
+        "an unmodeled block is dropped, not replaced: {:?}",
         ir2.messages[0].content
     );
     assert!(
-        cap2.contains("some_future_part"),
-        "the degrade must be logged, naming the unmodeled type: {:?}",
+        !cap2.contains("some_future_part"),
+        "the read is not a translate attempt: {:?}",
         cap2.messages()
     );
 }

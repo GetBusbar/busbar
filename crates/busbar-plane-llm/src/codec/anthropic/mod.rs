@@ -396,8 +396,9 @@ const PARKED: &[crate::codec::drops::Parked] = &[
 
 /// Take out of a request read for a translate attempt the empty text blocks [`read_block`] put in
 /// place of the blocks it does not model (they hold the turn's positions for a same-dialect
-/// write). Nothing is put in a dropped block's place. An empty text block is never the caller's
-/// own content: the Messages API refuses one.
+/// write), so nothing stands in for a dropped block beside the turn's other content. A turn whose
+/// only block is empty keeps it: that is the caller's own empty turn (`"content": ""`), and an
+/// emptied turn is a different request.
 fn strip_placeholders(req: &mut crate::codec::ir::IrRequest) {
     let placeholder = |b: &crate::codec::ir::IrBlock| {
         matches!(
@@ -410,9 +411,14 @@ fn strip_placeholders(req: &mut crate::codec::ir::IrRequest) {
             } if text.is_empty() && citations.is_empty()
         )
     };
-    req.system.retain(|b| !placeholder(b));
+    let strip = |blocks: &mut Vec<crate::codec::ir::IrBlock>| {
+        if blocks.iter().any(|b| !placeholder(b)) {
+            blocks.retain(|b| !placeholder(b));
+        }
+    };
+    strip(&mut req.system);
     for m in &mut req.messages {
-        m.content.retain(|b| !placeholder(b));
+        strip(&mut m.content);
     }
 }
 
