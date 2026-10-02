@@ -196,8 +196,8 @@ pub struct App {
     // the map goes unread in that config alone.
     #[allow(dead_code)]
     pub plane_rewrites: PlaneRewriteMap,
-    /// The plugin-resolution environment for hooks: the validated plugin registry + the shared
-    /// projectors. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
+    /// The plugin-resolution environment for hooks: the validated plugin registry + the root's hook
+    /// axis over it. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
     /// Prometheus scrape so they open a hook's `kind: hook` plugin the same way the request path's
     /// resolved transports did. Cheap to clone (Arc-backed). Replaces the retired webhook client the
     /// out-of-process transport needed.

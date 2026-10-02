@@ -385,11 +385,16 @@ pub trait RoutingPolicy: Send + Sync + 'static {
         None
     }
 
-    /// TAP (fire-and-forget): WRITE the pre-serialized request projection (JSON bytes, no trailing
-    /// newline — the transport frames it) to the hook and return. A tap is write-only in steady
-    /// state, so NO reply is read. Best-effort and bounded by `budget`; ANY error is swallowed,
-    /// because a tap can NEVER delay or fail the served request (the caller SPAWNS this off the
-    /// request path, which is why it takes owned bytes, not a borrowed projection). DEFAULT no-op:
-    /// in-process policies are not taps; only the out-of-process socket/webhook transports override it.
-    async fn notify(&self, _projection: &[u8], _budget: std::time::Duration) {}
+    /// TAP (fire-and-forget): hand the hook the tap's fixed view (`tap`, built once per firing by
+    /// [`NotifyFrame::build`](crate::abi::host::hook::NotifyFrame::build) and shared by every tap it
+    /// fires) and return. A tap is write-only in steady state, so NO reply is read. Best-effort and
+    /// bounded by `budget`; ANY error is swallowed, because a tap can NEVER delay or fail the served
+    /// request (the caller SPAWNS this off the request path, which is why it takes an owned frame,
+    /// not a borrowed projection). DEFAULT no-op: in-process ranking policies are not taps.
+    async fn notify(
+        &self,
+        _tap: std::sync::Arc<crate::abi::host::hook::NotifyFrame>,
+        _budget: std::time::Duration,
+    ) {
+    }
 }

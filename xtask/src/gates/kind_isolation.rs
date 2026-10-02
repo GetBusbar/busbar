@@ -6632,18 +6632,24 @@ impl Gate for KindIsolationGate {
             // loader re-points its `hook` both-ways row at a real hook crate the base never named,
             // takes it as a `[dev-dependencies]` edge, and records the row: the conformance test is
             // the fixture's only user, so the edge is #2's witness and not a new forbidden edge…
+            //
+            // The plant is anchored on the section headers the loader's manifest keeps whatever rows
+            // it carries (`[package.metadata.busbar.both-ways]`, `[dev-dependencies]`) and writes the
+            // witness's one user into the hook kind's door conformance file, so it plants the whole
+            // shape — row, edge and user — however the real `hook` row moves.
             let witness = |dev: bool, extra_user: bool| {
                 let rel = "crates/plugin-loader/Cargo.toml";
                 let fixture = "busbar-hooks-ranking = { path = \"../hooks-ranking\" }\n";
+                let table = "[package.metadata.busbar.both-ways]\n";
                 let mut m = cx.read(rel).unwrap_or_default().replacen(
-                    "hook = \"busbar-hook-test-plugin\"",
-                    "hook = \"busbar-hooks-ranking\"",
+                    table,
+                    &format!("{table}hook = \"busbar-hooks-ranking\"\n"),
                     1,
                 );
                 m = if dev {
                     m.replacen(
-                        "busbar-hook-test-plugin = { path = \"../hook-test-plugin\" }\n",
-                        &format!("busbar-hook-test-plugin = {{ path = \"../hook-test-plugin\" }}\n{fixture}"),
+                        "[dev-dependencies]\n",
+                        &format!("[dev-dependencies]\n{fixture}"),
                         1,
                     )
                 } else {
@@ -6657,6 +6663,15 @@ impl Gate for KindIsolationGate {
                 };
                 let mut ov = Overlay::new();
                 ov.set(rel, m);
+                let conformance = "crates/plugin-loader/src/tests/hook_door_conformance_tests.rs";
+                ov.set(
+                    conformance,
+                    manifest_plus(
+                        cx,
+                        conformance,
+                        "fn planted_witness() {\n    let _ = super::both_ways::hook_fixture::open;\n}\n",
+                    ),
+                );
                 ov.set(
                     REGISTRY_FILE,
                     format!(
@@ -6669,7 +6684,7 @@ impl Gate for KindIsolationGate {
                     ),
                 );
                 if extra_user {
-                    let t = "crates/plugin-loader/src/tests/hook_tests.rs";
+                    let t = "crates/plugin-loader/src/tests/hook_door_tests.rs";
                     ov.set(
                         t,
                         manifest_plus(

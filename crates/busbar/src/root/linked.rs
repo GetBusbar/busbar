@@ -304,6 +304,7 @@ pub fn register_stores(linked: &Linked) {
             default_store_module: default.unwrap_or_default(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
+            hook_axis: Some(crate::root::hooks::axis),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
@@ -1030,7 +1031,7 @@ pub fn load_door_planes() {
 static LOGS: std::sync::OnceLock<crate::root::loader::dispatch::PluginLogConfig> =
     std::sync::OnceLock::new();
 
-fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
+pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
     LOGS.get_or_init(|| {
         let none = Default::default();
         crate::root::loader::dispatch::PluginLogConfig::from_words(None, None, &none, None, None)

@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: secret`, `kind: auth`, `kind: store` AND `kind: hook`, PROVEN BY REAL PLUGINS.** The owner
+//! **`kind: secret`, `kind: auth` AND `kind: store`, PROVEN BY REAL PLUGINS.** The owner
 //! deleted the in-tree fixtures ("these are trash … real plugins are the examples",
 //! `docs/design/1.6.0-QUESTIONS.md` "FIXTURES"): the proofs of these kinds are the real plugin repos —
 //! `GetBusbar/busbar-secret-vault` (secret), `GetBusbar/busbar-auth-github` (auth), and, per the R-FIX2 ruling
 //! (dropped-in door proofs use REAL plugins), `GetBusbar/busbar-store-sqlite` (store: a durable file, a
-//! restart, two nodes on one file) and `GetBusbar/busbar-hook-webrequest` (hook: reject, restrict and a slow
-//! upstream, against a local mock upstream).
+//! restart, two nodes on one file). The hook kind's proofs are on its memory ABI, through the hook
+//! axis (`hook_door_tests`); the real forwarding hook proves itself in its own repo on that door.
 //!
 //! the removed ci.yml's `plugin-proofs` job checks hashicorp-vault and auth-github out beside this one at `dev`,
 //! `[patch]`es the busbar crates they name by git (busbar-contract, and busbar-plugin-loader
 //! dev-only) to this tree through cargo config, and builds their `cdylib`s; it checks store-sqlite
-//! and webrequest-hook out at the revs it pins and builds their `cdylib`s `--locked`
+//! out at the rev it pins and builds their `cdylib`s `--locked`
 //! against their own busbar pin (the artifact each repo ships). It runs these tests with `BUSBAR_PLUGIN_PROOF_DIR`
 //! naming the directory the `cdylib`s were built into. Each test takes the REAL artifact through the
 //! DROPPED-IN door ([`super::both_ways::dropped`]: signed first-party into a fresh `plugins/`,
@@ -255,8 +255,8 @@ fn store_holdings(store: &dyn busbar_contract::records::RecordStore) -> serde_js
 /// restart. The first instance writes a task and a three-link call chain and is closed; a FRESH
 /// scan and a fresh `open` (the only source of state left is the file the operator named) reads
 /// every record back. RED arms: the same bytes opened on ANOTHER file hold nothing (the state is the
-/// file's, not the process's), a config naming the file with the wrong JSON type is refused in the
-/// plugin's own words, and the bytes signed as `hook` are refused at the kind handshake.
+/// file's, not the process's), and a config naming the file with the wrong JSON type is refused in
+/// the plugin's own words.
 #[test]
 #[ignore = "needs BUSBAR_PLUGIN_PROOF_DIR (ci.yml plugin-proofs builds the real plugin repos)"]
 fn the_real_store_plugin_keeps_its_records_across_a_restart_through_the_dropped_in_door() {
@@ -322,27 +322,6 @@ fn the_real_store_plugin_keeps_its_records_across_a_restart_through_the_dropped_
     let want = artifact("proof_store_refusal");
     assert!(e.contains(want), "want `{want}`: {e}");
 
-    // RED: the same bytes signed as `hook` are refused at the kind handshake, naming both kinds.
-    let wrong = dropped(
-        "proof-store-as-hook",
-        manifest("hook", "proof-store-as-hook"),
-        &lib,
-    );
-    let e = match wrong.open_hook(
-        "proof-store-as-hook",
-        &cfg,
-        "proof-store-as-hook",
-        hook_projectors(),
-    ) {
-        Ok(_) => panic!("a store library signed as hook opened; it must be refused"),
-        Err(e) => e,
-    };
-    assert!(
-        e.contains(
-            "plugin 'proof-store-as-hook' exports kind 'store' but is being loaded as 'hook'"
-        ),
-        "{e}"
-    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -576,286 +555,4 @@ fn the_real_store_plugin_loses_no_record_across_two_nodes_on_one_file() {
     );
     drop(store);
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-// ── `kind: hook` — the REAL forwarding hook (GetBusbar/busbar-hook-webrequest), R-FIX2 ─────────────────────
-
-/// The engine-side projectors for the hook proofs: the decide projection carries the pool and the
-/// candidate indices, and the decide reply is read by the engine's reply precedence (reject, then
-/// restrict, then a ranked order, else abstain; an unreadable reply is an error) — the loader is
-/// handed these by the engine and never parses a reply itself.
-fn hook_projectors() -> std::sync::Arc<crate::hook::HookProjectors> {
-    use busbar_contract::hooks::{RoutingDecision, TransformOutcome};
-    std::sync::Arc::new(crate::hook::HookProjectors {
-        decide: Box::new(|req, cands, _ctx| {
-            serde_json::json!({
-                "request": {"pool": req.pool},
-                "candidates": cands.iter().map(|c| serde_json::json!({"idx": c.idx})).collect::<Vec<_>>(),
-            })
-        }),
-        transform: Box::new(|req| serde_json::json!({"request": {"pool": req.pool}})),
-        normalize: Box::new(|v, cands| {
-            if let Some(reject) = v.get("reject") {
-                return Ok(RoutingDecision::Reject {
-                    status: reject.get("status").and_then(|s| s.as_u64()).unwrap_or(403) as u16,
-                    message: reject
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or_default()
-                        .into(),
-                });
-            }
-            if let Some(restrict) = v.get("restrict") {
-                let tags = restrict
-                    .get("tags_any")
-                    .and_then(|t| t.as_array())
-                    .ok_or("restrict without tags_any")?;
-                return Ok(RoutingDecision::Restrict {
-                    tags_any: tags
-                        .iter()
-                        .filter_map(|t| t.as_str().map(Into::into))
-                        .collect(),
-                });
-            }
-            let Some(order) = v.get("order").and_then(|o| o.as_array()) else {
-                return Ok(RoutingDecision::Abstain);
-            };
-            let valid = cands.iter().map(|c| c.idx).collect();
-            Ok(RoutingDecision::from_ranked(
-                order.iter().filter_map(|x| x.as_u64().map(|x| x as usize)),
-                &valid,
-            ))
-        }),
-        transform_outcome: Box::new(|_| TransformOutcome::Abstain),
-        status: Box::new(|_| None),
-        describe_schema: Box::new(|v| v.get("schema").cloned()),
-    })
-}
-
-/// A LOCAL MOCK UPSTREAM for the forwarding hook: an HTTP/1.1 server on loopback whose reply is
-/// chosen by the request path — `/allow` ranks, `/reject` rejects, `/restrict` restricts, `/sleep`
-/// answers only after `SLOW_UPSTREAM`. Every request body it received is kept, in arrival order.
-struct MockUpstream {
-    base: String,
-    seen: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
-}
-
-/// How long the `/sleep` route waits before answering — well past the hook's configured timeout.
-const SLOW_UPSTREAM: std::time::Duration = std::time::Duration::from_millis(4_500);
-
-/// The hook's configured timeout on the `/sleep` route (the other routes keep the plugin's default,
-/// so a loaded machine never turns an answer into a timeout).
-const HOOK_TIMEOUT_MS: u64 = 500;
-
-impl MockUpstream {
-    fn start() -> Self {
-        use std::io::{BufRead, BufReader, Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the mock upstream");
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let log = seen.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { continue };
-                let log = log.clone();
-                std::thread::spawn(move || {
-                    let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).is_err() {
-                        return;
-                    }
-                    let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
-                    let mut len = 0usize;
-                    loop {
-                        let mut h = String::new();
-                        if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
-                            break;
-                        }
-                        if let Some((k, v)) = h.split_once(':') {
-                            if k.eq_ignore_ascii_case("content-length") {
-                                len = v.trim().parse().unwrap_or(0);
-                            }
-                        }
-                    }
-                    let mut body = vec![0u8; len];
-                    let _ = reader.read_exact(&mut body);
-                    let received = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-                    log.lock().unwrap().push((path.clone(), received));
-                    let reply = match path.as_str() {
-                        "/allow" => serde_json::json!({"order": [1, 0]}),
-                        "/reject" => serde_json::json!({"reject": {"status": 403, "message": "blocked upstream"}}),
-                        "/restrict" => serde_json::json!({"restrict": {"tags_any": ["baa"]}}),
-                        "/sleep" => {
-                            std::thread::sleep(SLOW_UPSTREAM);
-                            serde_json::json!({"order": [0]})
-                        }
-                        _ => serde_json::json!({}),
-                    }
-                    .to_string();
-                    let mut out = stream;
-                    let _ = write!(
-                        out,
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
-                        reply.len()
-                    );
-                });
-            }
-        });
-        MockUpstream { base, seen }
-    }
-
-    /// The hook's configuration pointing it at `route` on this upstream (keys are DATA); the `/sleep`
-    /// route also sets the hook's timeout to [`HOOK_TIMEOUT_MS`].
-    fn config(&self, route: &str) -> String {
-        let mut cfg = serde_json::Map::new();
-        cfg.insert(
-            artifact("proof_hook_url_key").into(),
-            serde_json::Value::String(format!("{}{route}", self.base)),
-        );
-        if route == "/sleep" {
-            cfg.insert(
-                artifact("proof_hook_timeout_key").into(),
-                serde_json::Value::from(HOOK_TIMEOUT_MS),
-            );
-        }
-        serde_json::Value::Object(cfg).to_string()
-    }
-}
-
-/// HOOK — REJECT, RESTRICT, SLEEP: the real forwarding hook, dropped in, relays what its upstream
-/// decides. Against a local mock upstream: a ranked reply ranks, a reject reply rejects the request
-/// with the upstream's status and words, a restrict reply restricts the candidate set to the
-/// upstream's tags, and an upstream that answers only after the hook's timeout fails the decision
-/// (the engine coerces it to the hook's `on_error`) promptly, in the plugin's own words. Each call
-/// reached the upstream as a `decide` envelope. RED arms: an empty config is refused in the plugin's
-/// own words, and the bytes signed as `store` are refused at the kind handshake.
-#[tokio::test]
-#[ignore = "needs BUSBAR_PLUGIN_PROOF_DIR (ci.yml plugin-proofs builds the real plugin repos)"]
-async fn the_real_hook_plugin_rejects_restricts_and_times_out_through_the_dropped_in_door() {
-    use busbar_contract::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
-    let lib = real_cdylib("hook");
-    let upstream = MockUpstream::start();
-    let registry = dropped("proof-hook", manifest("hook", "proof-hook"), &lib);
-    let open = |route: &str| {
-        registry
-            .open_hook(
-                "proof-hook",
-                &upstream.config(route),
-                "proof-hook",
-                hook_projectors(),
-            )
-            .expect("the real hook plugin opens as `hook`")
-    };
-    let cand = |idx| Candidate {
-        idx,
-        model: "m",
-        provider: "prov",
-        weight: 1,
-        context_max: None,
-        tier: None,
-        cost_per_mtok: None,
-        tags: &[],
-        latency_ms: None,
-        available_concurrency: 1,
-        budget_remaining: None,
-        rate_headroom: None,
-        signals: Default::default(),
-    };
-    let cands = [cand(0), cand(1)];
-    let req = RoutingRequest {
-        request_id: 1,
-        pool: "proof-pool",
-        ingress_protocol: "proto-a",
-        requested_model: None,
-        message_count: 1,
-        tool_count: 0,
-        has_tools: false,
-        total_chars: 5,
-        system_chars: 0,
-        max_tokens: None,
-        stream: false,
-        prompt: None,
-        identity: None,
-        signals: Default::default(),
-    };
-    let ctx = RoutingContext {
-        pool: "proof-pool",
-        budget_remaining: None,
-        budget: &[],
-    };
-    let budget = std::time::Duration::from_secs(5);
-
-    let allow = open("/allow").decide(&req, &cands, &ctx, budget).await;
-    assert_eq!(
-        allow.expect("the ranked reply"),
-        RoutingDecision::Prefer(vec![1, 0])
-    );
-
-    let reject = open("/reject").decide(&req, &cands, &ctx, budget).await;
-    assert_eq!(
-        reject.expect("the reject reply"),
-        RoutingDecision::Reject {
-            status: 403,
-            message: "blocked upstream".into()
-        }
-    );
-
-    let restrict = open("/restrict").decide(&req, &cands, &ctx, budget).await;
-    assert_eq!(
-        restrict.expect("the restrict reply"),
-        RoutingDecision::Restrict {
-            tags_any: vec!["baa".into()]
-        }
-    );
-
-    // Timed from the call, not the open: the upstream would answer `{"order":[0]}` (a success), so
-    // an error in the plugin's timeout words before the upstream answers is the cut-off.
-    let sleepy = open("/sleep");
-    let started = std::time::Instant::now();
-    let slow = sleepy.decide(&req, &cands, &ctx, budget).await;
-    let e = slow.expect_err("an upstream slower than the hook's timeout fails the decision");
-    assert!(
-        started.elapsed() < SLOW_UPSTREAM,
-        "the hook's own timeout must cut the call off before the upstream answers ({:?})",
-        started.elapsed()
-    );
-    let want = artifact("proof_hook_timeout_error");
-    assert!(e.to_string().contains(want), "want `{want}`: {e}");
-
-    // Every decision reached the upstream as a `decide` envelope carrying the engine's projection.
-    let seen = upstream.seen.lock().unwrap().clone();
-    let paths: Vec<&str> = seen.iter().map(|(p, _)| p.as_str()).collect();
-    assert_eq!(paths, ["/allow", "/reject", "/restrict", "/sleep"]);
-    for (path, envelope) in &seen {
-        assert_eq!(envelope["op"], "decide", "{path}: {envelope}");
-        assert_eq!(
-            envelope["request"]["pool"], "proof-pool",
-            "{path}: {envelope}"
-        );
-    }
-
-    // RED: an empty config is refused in the plugin's own words.
-    let e = match registry.open_hook("proof-hook", "", "proof-hook", hook_projectors()) {
-        Ok(_) => panic!("the hook plugin with no url opened; it must be refused"),
-        Err(e) => e,
-    };
-    let want = artifact("proof_hook_refusal");
-    assert!(e.contains(want), "want `{want}`: {e}");
-
-    // RED: the same bytes signed as `store` are refused at the kind handshake, naming both kinds.
-    let wrong = dropped(
-        "proof-hook-as-store",
-        manifest("store", "proof-hook-as-store"),
-        &lib,
-    );
-    let e = refused(
-        "a hook library signed as store",
-        wrong.open_store("proof-hook-as-store", &upstream.config("/allow")),
-    );
-    assert!(
-        e.contains(
-            "plugin 'proof-hook-as-store' exports kind 'hook' but is being loaded as 'store'"
-        ),
-        "{e}"
-    );
 }

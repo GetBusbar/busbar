@@ -682,6 +682,17 @@ impl NotifyFrame {
     pub fn input(&self) -> NotifyIn {
         self.input
     }
+
+    /// The 1.5.5 `notify` JSON a tap plugin written against the JSON contract is handed for this
+    /// view: the SDK's own rebuild ([`crate::abi::sdk::hook::DecodedTap::projection_json`]), read
+    /// here so an in-process tap reads exactly what a plugin reads.
+    #[must_use]
+    pub fn projection_json(&self) -> serde_json::Value {
+        // SAFETY: every pointer in `input` names storage this frame owns (`_store`), live while
+        // `self` is borrowed.
+        let lent = unsafe { crate::abi::sdk::Lent::new(&self.input) };
+        crate::abi::sdk::hook::DecodedTap::of(lent).projection_json()
+    }
 }
 
 #[cfg(test)]

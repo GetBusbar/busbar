@@ -1098,9 +1098,8 @@ const TAP_CHAIN: &str = "<the agent's prompt: rw chain>";
 ///
 /// # What can actually arrive here
 ///
-/// A PANICKING HOOK DOES NOT. A `kind: hook` cdylib's panic is caught three times before it could
-/// reach a join — the SDK's mandatory export-boundary `catch_unwind`, the engine's `ffi_guard`
-/// inside `transport_call`, and `DlopenPolicy::call`'s own belt-and-braces guard — and arrives as
+/// A PANICKING HOOK DOES NOT. A `kind: hook` plugin's panic is caught at its door (the SDK answers
+/// the op FAULT) and the host's hook seam reads that as a broken answer — it arrives as
 /// `TransformOutcome::Failed`, which the operator's `on_error` disposes of and the seam logs.
 /// Pinned by `hook_tap_tests::a_hook_that_panics_is_the_seams_own_failed_verdict_never_a_join_failure`.
 /// What reaches this arm is a panic in busbar's OWN glue on the blocking thread, or a blocking task

@@ -684,6 +684,7 @@ fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
             }),
         )),
     )
+    .expect("the registry's hook axis")
 }
 
 /// Register one GLOBAL gate hook whose `licenseKey` is a `kind: secret` PLUGIN reference, through the

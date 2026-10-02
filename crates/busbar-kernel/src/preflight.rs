@@ -120,7 +120,21 @@ pub struct RootInstall {
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
+    /// The hook axis the root builds over a registry (ARCHITECT ruling 2026-09-29, the opener seam;
+    /// the SWITCH-OVER hook axis): every `kind: hook` row, compiled in or dropped in, opened on the
+    /// hook kind's ABI over the process's one dispatcher. `None` = no hook opens.
+    pub hook_axis: Option<HookAxisBuild>,
 }
+
+/// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
+///
+/// # Errors
+/// A `kind: hook` row that will not state itself (a 1.5.5 JSON hook plugin is refused, naming the
+/// rebuild).
+pub type HookAxisBuild =
+    fn(
+        &std::sync::Arc<PluginRegistry>,
+    ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
 /// stand-in store (which claims the default) as the default.
@@ -134,6 +148,7 @@ const STAND_IN: RootInstall = RootInstall {
     default_store_module: fixture_store::linked::STORE.0,
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
+    hook_axis: Some(crate::test_support::hook_axis_stand_in),
 };
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when

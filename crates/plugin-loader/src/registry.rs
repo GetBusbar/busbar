@@ -65,11 +65,9 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // envelope (#85), which the decoder reads beside the bare shape. `[1, AUTH_ABI_VERSION]` =
         // `[1, 3]`.
         "auth" => &[1, busbar_contract::abi::cold::AUTH_ABI_VERSION],
-        // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
-        // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
-        // out-of-process socket/webhook hook transport. Payload schema v1 (bare replies) up to v2
-        // (the same replies inside the observability envelope, #85): the decoder accepts either
-        // shape, so THE FLOOR STAYS 1 and every published hook keeps loading.
+        // A `kind: hook` plugin states its Statement and is opened through the hook axis
+        // (`hook_door::HookRows`) on the hook kind's memory ABI; one whose manifest states none is
+        // refused there. The payload schema range is the manifest's (C21 narrows it).
         "hook" => &[1, busbar_contract::abi::cold::hook::HOOK_ABI_VERSION],
         // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
         // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
@@ -143,6 +141,11 @@ impl LoadablePlugin {
             Some(LinkedEntry::Door(door)) => Some(door),
             _ => None,
         }
+    }
+
+    /// Whether this row came in through the LINKED door (it has no tarball).
+    pub fn linked(&self) -> bool {
+        self.entry.is_some()
     }
 
     /// What the one load runs over: the linked boundary, or the verified bytes.
@@ -526,6 +529,15 @@ impl PluginRegistry {
         &self.skipped
     }
 
+    /// Every DROPPED-IN `kind: hook` row, in scan order: the rows the hook axis reads its
+    /// dropped-in candidates from ([`crate::hook_door::HookRows::new`]). The manifest's kind word is
+    /// read here, where every other kind's is ([`Self::open_planes`], [`Self::open_transports`]).
+    pub fn dropped_hooks(&self) -> impl Iterator<Item = &LoadablePlugin> {
+        self.loadable()
+            .iter()
+            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::HOOK && !p.linked())
+    }
+
     /// Resolve `name_or_alias` to a row of `kind`, or say why not — the one explanation every
     /// `open_*` below gives: a skipped match names the skip, a miss names the loadable set, a row of
     /// another kind says it cannot `role`.
@@ -636,30 +648,6 @@ impl PluginRegistry {
         let module =
             crate::auth::load_login_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)?;
         Ok((module, abi_version))
-    }
-
-    /// Open a HOOK plugin resolved by name or alias: verifies the resolved plugin's `kind` is `hook`,
-    /// then loads it over the kind-neutral C ABI and `open`s it with `cfg_json`, returning
-    /// `Arc<dyn RoutingPolicy>` — the seam the engine's routing/hook chains consume. Same trust and
-    /// load pipeline as store/secret/auth; only the kind (and consuming seam) differs. `name` is the
-    /// hook's registry name (metrics id); `projectors` are the engine's fail-closed projection/parse
-    /// closures. FAIL-CLOSED on any resolution/kind/load failure.
-    pub fn open_hook(
-        &self,
-        name_or_alias: &str,
-        cfg_json: &str,
-        name: &str,
-        projectors: std::sync::Arc<crate::hook::HookProjectors>,
-    ) -> Result<std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>, String> {
-        let p = self.resolve_kind(name_or_alias, "hook", "serve as a routing hook")?;
-        crate::hook::load_hook_image(
-            p.image(),
-            cfg_json,
-            &p.manifest.name,
-            &p.manifest.kind,
-            name,
-            projectors,
-        )
     }
 
     /// Open a BUILT-IN ranking strategy resolved by name or alias: the row must be a `kind: hook`
