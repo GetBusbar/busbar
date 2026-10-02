@@ -410,7 +410,7 @@ const PARKED: &[crate::codec::drops::Parked] = &[
 /// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
 // `stop_details` (the refusal category) is read beside the stop reason; the stream's block index is
 // structure; `ping` is a keepalive and `error` the terminal error, both carried by code.
-const RESPONSE_CODE: &[&str] = &["stop_details"];
+const RESPONSE_CODE: &[&str] = &[STOP_DETAILS];
 const STREAM_CODE: &[&str] = &["type=content_block_delta.index", "type=ping", "type=error"];
 
 /// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
