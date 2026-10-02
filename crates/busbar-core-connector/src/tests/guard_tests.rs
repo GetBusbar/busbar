@@ -6,7 +6,7 @@
 use super::*;
 
 use busbar_contract::abi::host::conn::connector::{
-    EGRESS_LOOPBACK_ALLOWED, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
+    EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
 };
 
 /// A class whose destinations come from request data: the private refusal holds.
