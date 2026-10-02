@@ -259,3 +259,215 @@ fn outside_an_attempt_the_writers_own_warn_is_said() {
         cap.messages()
     );
 }
+
+// ───────────────────────────── no substitution (design F3) ─────────────────────────────
+//
+// A value that maps is carried; one that does not is dropped on the one drop path (warn + audit
+// row); wrong-typed input to a mapped field is the caller's error in its own dialect's envelope
+// (spec Part 2 #76). Never a value put in the dropped one's place.
+
+/// Translate `body`, keeping the egress body: the body, what the seam audits, and the warns.
+fn translate_body(ingress: &str, egress: &str, body: &Value) -> (Value, Vec<String>, WarnCapture) {
+    let _ = protocol_for(ingress);
+    let handler = crate::codec::decl_of(ingress)
+        .and_then(|d| d.handler)
+        .and_then(|h| h.operation_handler(OpVerb::CHAT))
+        .expect("a chat handler");
+    let prep = EgressPrep {
+        ingress_protocol: ingress,
+        egress_requires_max_tokens: true,
+        lane_default_max_tokens: None,
+        global_default_max_tokens: 4096,
+        reasoning_allowed: true,
+        reasoning_budgets: crate::codec::ir::REASONING_BUDGET_DEFAULTS,
+        prompt_caching_allowed: true,
+        cache_control_cap: None,
+        lane_caps: Default::default(),
+        thought_signature_fill: false,
+    };
+    let cap = WarnCapture::default();
+    let out = tracing::subscriber::with_default(cap.clone(), || {
+        handler.translate_request(TranslateReqInput::Json(body), Some(egress), &prep, "m")
+    });
+    let Ok(out) = out else {
+        panic!("{ingress} -> {egress}: the request must translate");
+    };
+    let busbar_contract::codec::EgressWire::Json(wire) = out.wire else {
+        panic!("{ingress} -> {egress}: a JSON egress body");
+    };
+    (wire, out.dropped_controls, cap)
+}
+
+/// The caller's request is refused by its own dialect's reader: the seam answers in that
+/// dialect's error envelope (`ingress_reject_response`), and nothing goes upstream.
+fn refused_natively(ingress: &str, egress: &str, body: &Value) {
+    let _ = protocol_for(ingress);
+    let handler = crate::codec::decl_of(ingress)
+        .and_then(|d| d.handler)
+        .and_then(|h| h.operation_handler(OpVerb::CHAT))
+        .expect("a chat handler");
+    let prep = EgressPrep {
+        ingress_protocol: ingress,
+        egress_requires_max_tokens: true,
+        lane_default_max_tokens: None,
+        global_default_max_tokens: 4096,
+        reasoning_allowed: true,
+        reasoning_budgets: crate::codec::ir::REASONING_BUDGET_DEFAULTS,
+        prompt_caching_allowed: true,
+        cache_control_cap: None,
+        lane_caps: Default::default(),
+        thought_signature_fill: false,
+    };
+    let out = handler.translate_request(TranslateReqInput::Json(body), Some(egress), &prep, "m");
+    assert!(
+        matches!(
+            out,
+            Err(crate::codec::translate::TranslateReqReject::Ingress(
+                busbar_contract::codec::IngressReject::BadRequest(_)
+            ))
+        ),
+        "{ingress} -> {egress}: wrong-typed input to a mapped field is refused in the caller's \
+         own error envelope, never translated"
+    );
+}
+
+fn anthropic_image(media_type: Value) -> Value {
+    json!({"model": "m", "max_tokens": 100, "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "what is this"},
+        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": "QQ=="}}
+    ]}]})
+}
+
+/// Bedrock writer: an image whose media type is outside Converse's `ImageFormat` union is DROPPED
+/// on the drop path, never relabelled `format: "png"` (red: it was coerced to png with a plain warn
+/// and nothing audited).
+#[test]
+fn bedrock_drops_an_image_format_it_has_no_member_for_never_png() {
+    let (wire, audited, cap) =
+        translate_body("anthropic", "bedrock", &anthropic_image(json!("image/bmp")));
+    on_the_drop_path(
+        &audited,
+        &cap,
+        "messages[].content[]",
+        "BUSBAR-7085",
+        "dropping image block on Bedrock egress",
+    );
+    let content = wire.pointer("/messages/0/content").expect("content");
+    assert!(
+        !content.to_string().contains("\"image\""),
+        "no image block reaches Bedrock: {content}"
+    );
+    assert!(
+        !wire.to_string().contains("\"png\""),
+        "nothing is relabelled png: {wire}"
+    );
+}
+
+/// Bedrock writer: a format that maps is carried (`image/jpg` is the union's `jpeg`), no drop.
+#[test]
+fn bedrock_carries_an_image_format_that_maps() {
+    for (mt, want) in [
+        ("image/jpg", "jpeg"),
+        ("image/png", "png"),
+        ("image/webp", "webp"),
+    ] {
+        let (wire, audited, _) =
+            translate_body("anthropic", "bedrock", &anthropic_image(json!(mt)));
+        assert_eq!(
+            wire.pointer("/messages/0/content/1/image/format"),
+            Some(&json!(want)),
+            "{mt}: {wire}"
+        );
+        assert!(audited.is_empty(), "{mt}: nothing dropped: {audited:?}");
+    }
+}
+
+/// Wrong-typed `media_type` (a mapped field) is Anthropic's own 400, not an image read as `""`
+/// and written onto Bedrock as png (red: it translated, and Bedrock got `format: "png"`).
+#[test]
+fn a_wrong_typed_image_media_type_is_the_callers_error() {
+    refused_natively("anthropic", "bedrock", &anthropic_image(json!(5)));
+    refused_natively(
+        "anthropic",
+        "bedrock",
+        &anthropic_image(json!({"type": "png"})),
+    );
+}
+
+fn gemini_budget(budget: Value) -> Value {
+    json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"thinkingConfig": {"thinkingBudget": budget}}})
+}
+
+/// Gemini's "the model decides" (`thinkingBudget: -1`) has no OpenAI form: DROPPED on the drop
+/// path, never replaced by the effort table's `medium` (red: `reasoning_effort: "medium"` was
+/// written, with no warn and no audit row).
+#[test]
+fn a_gemini_dynamic_budget_is_dropped_never_replaced_by_medium() {
+    for (egress, member, text) in [
+        (
+            "openai",
+            "reasoning_effort",
+            "reasoning ask on OpenAI Chat egress: reasoning_effort has no dynamic form",
+        ),
+        (
+            "responses",
+            "reasoning",
+            "reasoning ask on Responses egress: reasoning.effort has no dynamic form",
+        ),
+        (
+            "anthropic",
+            "thinking",
+            "reasoning ask on Anthropic egress: this lane does not declare adaptive thinking",
+        ),
+    ] {
+        let (wire, audited, cap) = translate_body("gemini", egress, &gemini_budget(json!(-1)));
+        on_the_drop_path(
+            &audited,
+            &cap,
+            "generationConfig.thinkingConfig.thinkingBudget",
+            "BUSBAR-7079",
+            text,
+        );
+        assert!(
+            wire.get(member).is_none(),
+            "{egress}: no `{member}` put in the dropped ask's place: {wire}"
+        );
+    }
+}
+
+/// A Gemini budget that maps is carried: a positive count bucketizes onto OpenAI's word, and
+/// "the model decides" reaches Cohere as its own budget-less enable. Nothing dropped.
+#[test]
+fn a_gemini_budget_that_maps_is_carried() {
+    let (wire, audited, _) = translate_body("gemini", "openai", &gemini_budget(json!(16384)));
+    assert_eq!(wire["reasoning_effort"], "high", "{wire}");
+    assert!(
+        !audited.iter().any(|a| a.contains("thinkingBudget")),
+        "{audited:?}"
+    );
+    // proto3 JSON: an int32 may arrive as a decimal string.
+    let (wire, _, _) = translate_body("gemini", "openai", &gemini_budget(json!("16384")));
+    assert_eq!(wire["reasoning_effort"], "high", "{wire}");
+    let (wire, audited, _) = translate_body("gemini", "cohere", &gemini_budget(json!(-1)));
+    assert_eq!(wire["thinking"], json!({"type": "enabled"}), "{wire}");
+    assert!(
+        !audited.iter().any(|a| a.contains("thinkingBudget")),
+        "{audited:?}"
+    );
+}
+
+/// Wrong-typed `thinkingBudget` (a mapped field) is Gemini's own 400, never silently left out
+/// (red: the ask vanished and the request translated).
+#[test]
+fn a_wrong_typed_gemini_budget_is_the_callers_error() {
+    for bad in [
+        json!("lots"),
+        json!(true),
+        json!(1.5),
+        json!(-2),
+        json!({"n": 1}),
+    ] {
+        refused_natively("gemini", "openai", &gemini_budget(bad));
+    }
+}
