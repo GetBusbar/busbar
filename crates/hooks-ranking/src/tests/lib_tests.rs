@@ -46,7 +46,7 @@ fn req() -> RoutingRequest<'static> {
     RoutingRequest {
         request_id: 1,
         pool: "p",
-        ingress_protocol: "anthropic",
+        ingress_protocol: "wire-a",
         requested_model: None,
         message_count: 1,
         tool_count: 0,

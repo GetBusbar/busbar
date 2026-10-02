@@ -15,7 +15,7 @@
 // (`signCard`) rather than re-deriving it, so there is one implementation of "how busbar's JWS pin
 // verifies a card" in this tree, not two that can drift.
 //
-// EGRESS CAPTURE, the same on-disk contract testing/shadow-oracle/mock-upstream.py and
+// EGRESS CAPTURE, the same on-disk contract the oracle's `mock` subcommand and
 // scripts/mcp-subject/h2-mock-upstream.mjs use: when A2A_MOCK_CAPTURE_DIR is set, every request this
 // process receives (GET or POST) is written as its own JSON file `{ts}-{pid}-{seq}.json` holding
 // `{path, method, headers, body}`.
