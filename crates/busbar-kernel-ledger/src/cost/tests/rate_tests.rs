@@ -418,7 +418,10 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
     assert_eq!(nanos(&corrected, "gpt", "input"), Some(1_000));
     assert_eq!(nanos(&corrected, "gpt", "output"), Some(8_000));
     assert_eq!(nanos(&corrected, "claude", "output"), Some(15_000));
-    assert_eq!(nanos(&corrected, "plane-b\u{1f}search", "input"), Some(5_000));
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "input"),
+        Some(5_000)
+    );
     assert_eq!(corrected.fee(), 3, "a fee it does not name is kept");
 
     let corrected = card
@@ -427,8 +430,14 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
             Some(7),
         )
         .expect("plane-b's card is present");
-    assert_eq!(nanos(&corrected, "plane-b\u{1f}search", "input"), Some(9_000));
-    assert_eq!(nanos(&corrected, "plane-b\u{1f}search", "output"), Some(6_000));
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "input"),
+        Some(9_000)
+    );
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "output"),
+        Some(6_000)
+    );
     assert_eq!(
         nanos(&corrected, "gpt", "input"),
         Some(2_000),
