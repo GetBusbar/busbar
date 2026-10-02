@@ -540,6 +540,7 @@ fn cohere_stream_citation_end_pairs_with_start() {
         end_index: Some(8),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
 
     let frames = w.write_response_events(&IrStreamEvent::BlockDelta {
