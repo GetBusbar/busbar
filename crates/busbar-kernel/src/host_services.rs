@@ -754,6 +754,9 @@ pub const NO_POOL: &str = "no pool is bound";
 pub const POOL_REFUSED: &str = "the pool refused the store call";
 /// The FAILED answer of a store call that did not answer.
 pub const STORE_FAILED: &str = "the store did not answer";
+/// The refusal of a `records.secret` read by services that hold no credential source (the root
+/// composes the credential source over these services).
+pub const NO_CREDENTIAL_SOURCE: &str = "no credential source";
 /// The refusal of a `random.fill` of no bytes or more than `MAX_RANDOM_FILL`.
 pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes";
 /// The FAILED answer of a `random.fill` the OS randomness source did not serve.
@@ -1027,6 +1030,10 @@ impl HostServices for KernelServices {
         } else {
             svc::NOT_ENTITLED
         })
+    }
+
+    fn records_secret(&self, _kind: &str, _id: &str, _later: Later) -> Ran {
+        Ran::Now(Stored::refused(NO_CREDENTIAL_SOURCE))
     }
 
     fn random_fill(&self, len: u64) -> Stored {

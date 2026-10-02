@@ -204,6 +204,13 @@ impl HostServices for LateServices {
             Err(r) => r,
         }
     }
+
+    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.records_secret(kind, id, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
 }
 
 // ── the driver's caller side over today's ingress ────────────────────────────────────────────────

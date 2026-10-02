@@ -1284,7 +1284,9 @@ fn compute_layout() -> String {
             inbound_points,
             styles,
             styles_len,
-            operator_principal
+            operator_principal,
+            credential_kinds,
+            credential_kinds_len
         ]
     );
     record!(s, AuthNamedValue, [name, value]);
@@ -2048,7 +2050,8 @@ fn compute_layout() -> String {
             hook_call,
             random_fill,
             need_admit,
-            trust_verify
+            trust_verify,
+            records_secret
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
@@ -2057,6 +2060,7 @@ fn compute_layout() -> String {
         hsvc::TrustVerifyIn,
         [head, counterparty, payload, signatures, into]
     );
+    record!(s, hsvc::RecordsSecretIn, [head, kind, id, into]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);

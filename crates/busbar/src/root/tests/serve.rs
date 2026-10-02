@@ -49,6 +49,9 @@ impl HostServices for Judges {
     fn random_fill(&self, _: u64) -> Stored {
         Stored::ready(9)
     }
+    fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(Stored::ready(11))
+    }
 }
 
 fn judged(s: &LateServices) -> Stored {
@@ -113,6 +116,7 @@ fn every_service(s: &LateServices) -> Vec<Stored> {
         s.entitlement_check(&caller, None, "model:m"),
         s.random_fill(16),
         s.trust_verify(&caller, "peer", b"payload", b"[]"),
+        now(s.records_secret("sigv4", "AKID", Box::new(|_| {}))),
     ]
 }
 
@@ -127,7 +131,7 @@ fn every_service_is_the_installed_services_answer() {
     let after = every_service(&late);
     assert!(after.iter().all(|s| s.outcome == Outcome::Ready));
     let values: Vec<u64> = after.iter().map(|s| s.value).collect();
-    assert_eq!(values, (2..=10).collect::<Vec<u64>>());
+    assert_eq!(values, (2..=11).collect::<Vec<u64>>());
 }
 
 fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {

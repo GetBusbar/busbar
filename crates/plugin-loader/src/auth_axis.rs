@@ -163,6 +163,38 @@ impl AuthRows {
         })
     }
 
+    /// ONE VERIFIER PER CREDENTIAL KIND: a row whose Statement declares it reads a credential kind
+    /// refuses to open while another auth row declares the same kind (1.5.5 had one built-in
+    /// inbound verifier per credential kind and no way to declare a second, so there is no 1.5.5
+    /// equivalent to keep).
+    fn one_reader_per_kind(&self, row: &LoadablePlugin, mine: &[String]) -> Result<(), String> {
+        if mine.is_empty() {
+            return Ok(());
+        }
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        let alias = &row.manifest.alias;
+        for other in rows.filter(|p| p.manifest.kind == AUTH && p.manifest.alias != *alias) {
+            let Ok(Door::Memory(theirs, _)) = self.load(other, &other.manifest.alias) else {
+                continue;
+            };
+            let Some(f) = theirs.context::<AuthFacts>() else {
+                continue;
+            };
+            if let Some(kind) = mine.iter().find(|k| f.credential_kinds.contains(k)) {
+                return Err(format!(
+                    "auth plugins '{alias}' and '{}' both declare they read the credential kind \
+                     '{kind}'; one verifier reads a credential kind",
+                    other.manifest.alias
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// OPEN one instance of `module` over `settings` under the host's instance `label`.
     ///
     /// # Errors
@@ -178,6 +210,11 @@ impl AuthRows {
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
         match self.load(row, label)? {
             Door::Memory(plugin, sink) => {
+                let kinds = plugin
+                    .context::<AuthFacts>()
+                    .map(|f| f.credential_kinds.clone())
+                    .unwrap_or_default();
+                self.one_reader_per_kind(row, &kinds)?;
                 let (settings, secrets) = crate::auth_door::split_secrets(&plugin, settings);
                 let text = settings.to_string();
                 let opened = AuthInstance::open(

@@ -14,7 +14,8 @@
 //! * **May pend only on a ticket.** A service that may pend, called with no ticket, is REFUSED and
 //!   never runs.
 //! * **Served so far:** `clock.now`, `dest.judge`, `records.get`/`records.list`/`records.claim`,
-//!   `sign`, `trust.sight`, `trust.due` and `trust.verify`. Every other slot answers REFUSED
+//!   `sign`, `trust.sight`, `trust.due`, `trust.verify` and `records.secret` (to the credential
+//!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise). Every other slot answers REFUSED
 //!   ([`UNIMPLEMENTED`]).
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
@@ -32,8 +33,8 @@ use std::sync::{Arc, Mutex, Weak};
 use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in, may_pend,
     op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, RandomFillIn,
-    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceHead, ServiceOut, SignIn,
-    TrustDueIn, TrustSightIn, TrustVerifyIn, SERVICES,
+    RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut,
+    SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -57,6 +58,9 @@ pub const UNTICKETED: &str = "a service that may pend is callable only inside a 
 pub const SHORT: &str = "the buffer is too small";
 /// The refusal of a `random.fill` of no bytes or above `MAX_RANDOM_FILL`, before a byte is drawn.
 pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes";
+/// The refusal of a `records.secret` read of a credential kind the calling instance does not
+/// declare, before anything is read.
+pub const UNDECLARED_KIND: &str = "the caller does not declare that credential kind";
 /// The error text of the second short answer on one handle.
 pub const SECOND_SHORT: &str = "a second short answer on one handle";
 
@@ -327,6 +331,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     random_fill: Some(random_fill),
     need_admit: Some(need_admit),
     trust_verify: Some(trust_verify),
+    records_secret: Some(records_secret),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -591,6 +596,56 @@ extern "C" fn records_get(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             unsafe {
                 pended(&served, &route, &head, Some(&i.into), |later| {
                     provider.records_get(&caller, &kind, &key, later)
+                })
+            }
+        },
+    )
+}
+
+/// The credential kinds an instance's context declares it reads; none before bind stated them.
+fn credential_kinds(ctx: HostCtx) -> &'static [String] {
+    if ctx.ptr.is_null() {
+        return &[];
+    }
+    // SAFETY: every `HostCtx` the host hands out points to a leaked (`'static`) `InstanceWake`.
+    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    wake.credential_kinds.get().map_or(&[], Vec::as_slice)
+}
+
+extern "C" fn records_secret(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    slot(
+        ctx,
+        input,
+        out,
+        op::RECORDS_SECRET,
+        size_of::<RecordsSecretIn>(),
+        |served, route, head| {
+            // SAFETY: the head covered a `RecordsSecretIn`.
+            let i = unsafe { input.cast::<RecordsSecretIn>().read_unaligned() };
+            let (Some(kind), Some(id)) = (
+                text_of(i.kind, "records_secret.kind"),
+                text_of(i.id, "records_secret.id"),
+            ) else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            // THE DECLARED NEED: the caller's Statement names the kinds it reads; every other kind,
+            // and every caller that names none (any non-auth instance), is refused before the
+            // kernel reads anything.
+            if !credential_kinds(ctx).iter().any(|k| *k == kind) {
+                return Answered::bare(Outcome::Refused, UNDECLARED_KIND);
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.records_secret(&kind, &id, later)
                 })
             }
         },

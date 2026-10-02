@@ -478,3 +478,73 @@ fn an_auth_row_answers_to_its_statements_alias_rewrite() {
     rows.open("keyed-too", "by-alias", &settings)
         .expect("the row opens by its Statement's alias");
 }
+
+/// Two auth doors declaring they read the `sigv4` credential kind, and one declaring `bearer`.
+mod readers {
+    use busbar_contract::abi::sdk::auth_door::with_credential_kinds;
+
+    use super::*;
+
+    const SIGV4: &[AbiStr] = &[abi_str("sigv4")];
+    const BEARER: &[AbiStr] = &[abi_str("bearer")];
+    const SIGV4_TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), SIGV4);
+    const BEARER_TAIL: &AuthTail =
+        &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), BEARER);
+
+    pub(super) mod a {
+        use super::*;
+        busbar_contract::auth_verify_door!(
+            Judge,
+            with_tail(statement("reader-a", "1.0.0", 8), SIGV4_TAIL)
+        );
+    }
+    pub(super) mod b {
+        use super::*;
+        busbar_contract::auth_verify_door!(
+            Judge,
+            with_tail(statement("reader-b", "1.0.0", 8), SIGV4_TAIL)
+        );
+    }
+    pub(super) mod c {
+        use super::*;
+        busbar_contract::auth_verify_door!(
+            Judge,
+            with_tail(statement("reader-c", "1.0.0", 8), BEARER_TAIL)
+        );
+    }
+}
+
+/// ONE VERIFIER PER CREDENTIAL KIND (ARCHITECT 2026-10-01, Q2 ruling B): a row declaring a
+/// credential kind another auth row also declares refuses to open, naming both rows and the kind;
+/// a row whose kinds no other row declares opens. RED: without the check both readers opened.
+#[test]
+fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
+    let registry = PluginRegistry::empty()
+        .link(vec![
+            LinkedPlugin::auth_door("reader-a", readers::a::door),
+            LinkedPlugin::auth_door("reader-b", readers::b::door),
+            LinkedPlugin::auth_door("reader-c", readers::c::door),
+        ])
+        .expect("the linked doors register");
+    let rows = AuthRows::new(Arc::new(registry), dispatcher());
+    let err = rows
+        .open("reader-a", "reader-a", &serde_json::json!("ok"))
+        .err()
+        .expect("a second reader of sigv4 refuses");
+    assert_eq!(
+        err,
+        "auth plugins 'reader-a' and 'reader-b' both declare they read the credential kind \
+         'sigv4'; one verifier reads a credential kind"
+    );
+    assert!(rows
+        .open("reader-c", "reader-c", &serde_json::json!("ok"))
+        .is_ok());
+
+    let alone = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door("reader-a", readers::a::door)])
+        .expect("the linked door registers");
+    let rows = AuthRows::new(Arc::new(alone), dispatcher());
+    assert!(rows
+        .open("reader-a", "reader-a", &serde_json::json!("ok"))
+        .is_ok());
+}

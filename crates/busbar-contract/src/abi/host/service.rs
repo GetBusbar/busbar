@@ -148,10 +148,12 @@ pub mod op {
     pub const NEED_ADMIT: u32 = 19;
     /// `trust.verify`.
     pub const TRUST_VERIFY: u32 = 20;
+    /// `records.secret`.
+    pub const RECORDS_SECRET: u32 = 21;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 21;
+pub const SERVICES: u32 = 22;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -250,6 +252,32 @@ pub struct RecordsClaimIn {
     /// How long the claim stands, in milliseconds. Never `0`: there is no default.
     pub ttl_ms: u64,
 }
+
+/// [`op::RECORDS_SECRET`]'s `in`: the secret of one HOST-held credential, of a kind the calling
+/// plugin's Statement declares it reads (an auth plugin's
+/// [`FACT_READS_CREDENTIALS`](crate::abi::auth::FACT_READS_CREDENTIALS)); any other kind, or any
+/// other caller, is REFUSED before anything is read. Span `0`'s value is the secret (SECRET material:
+/// the plugin zeroes it when done) for ANY id: an unknown id answers a fixed dummy secret, in the
+/// same time as a known one, so a reply never says whether the id exists. `value` =
+/// [`SECRET_LIVE`] (the credential is live: its key enabled and not revoked) | [`SECRET_NOT_LIVE`]
+/// (anything else, an unknown id included). May pend (a store-backed credential).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RecordsSecretIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The credential kind (one the plugin declared).
+    pub kind: AbiStr,
+    /// The credential's id within its kind.
+    pub id: AbiStr,
+    /// Where the secret goes.
+    pub into: ServiceBufs,
+}
+
+/// `value` of [`op::RECORDS_SECRET`]: not live, or no such credential.
+pub const SECRET_NOT_LIVE: u64 = 0;
+/// `value` of [`op::RECORDS_SECRET`]: the credential is live.
+pub const SECRET_LIVE: u64 = 1;
 
 /// `value` of [`op::RECORDS_GET`]: no such record.
 pub const ABSENT: u64 = 0;
@@ -677,6 +705,8 @@ pub struct HostSlots {
     pub need_admit: Option<ServiceFn>,
     /// [`op::TRUST_VERIFY`], in [`TrustVerifyIn`].
     pub trust_verify: Option<ServiceFn>,
+    /// [`op::RECORDS_SECRET`], in [`RecordsSecretIn`].
+    pub records_secret: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -868,6 +898,24 @@ pub fn check_records_get(
         &i.head,
         out,
         into(op::RECORDS_GET, i.into, (ABSENT, FOUND)),
+    )
+}
+
+/// `records.secret`'s answer.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_records_secret(
+    i: &RecordsSecretIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        into(op::RECORDS_SECRET, i.into, (SECRET_NOT_LIVE, SECRET_LIVE)),
     )
 }
 

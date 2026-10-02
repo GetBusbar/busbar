@@ -108,6 +108,12 @@ pub trait HostServices: Send + Sync {
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.
     fn random_fill(&self, len: u64) -> Stored;
+
+    /// `records.secret`: the secret of the host-held credential `id` of `kind`, and whether it is
+    /// live (`SECRET_LIVE`), in span `0`; an unknown id answers a fixed dummy secret, not live, in
+    /// equal time. The loader has already checked that the caller declared `kind`. A host with no
+    /// credential source refuses.
+    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran;
 }
 
 /// A `records.list` request, as the host copied it out of the caller's `in`.

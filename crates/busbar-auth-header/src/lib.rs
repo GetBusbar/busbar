@@ -98,6 +98,8 @@ const TAIL: &AuthTail = &AuthTail {
     styles: STYLE_DECLS.as_ptr(),
     styles_len: STYLE_DECLS.len(),
     operator_principal: abi_str(""),
+    credential_kinds: std::ptr::null(),
+    credential_kinds_len: 0,
 };
 
 /// The diagnostic ids, in [`instance::diag`] order: 1.5.5's catalog codes where the line had one.

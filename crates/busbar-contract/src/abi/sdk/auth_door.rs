@@ -33,7 +33,7 @@ use crate::abi::auth::{
     DECISION_CONTINUE, DECISION_STOP, IDENTITY_HAS_TTL, SPAN_ABSENT, STRIP_FIELD, STRIP_QUERY,
     VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
 };
-use crate::abi::mechanism::call::{Blob, Outcome, Span, BLOB_ABSENT};
+use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_ABSENT};
 use crate::abi::mechanism::door::{KindTailHead, MarkWord, Statement, MARK_WORD_CARRIER};
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::lent::{HostBuf, Lent};
@@ -498,6 +498,8 @@ pub const fn verify_tail(facts: u32, points: AuthPoints) -> AuthTail {
         styles: ptr::null(),
         styles_len: 0,
         operator_principal: crate::abi::sdk::door::abi_str(""),
+        credential_kinds: ptr::null(),
+        credential_kinds_len: 0,
     }
 }
 
@@ -508,6 +510,18 @@ pub const fn with_operator(tail: AuthTail, principal: &'static str) -> AuthTail 
     AuthTail {
         facts: tail.facts | crate::abi::auth::FACT_OPERATOR,
         operator_principal: crate::abi::sdk::door::abi_str(principal),
+        ..tail
+    }
+}
+
+/// `tail` as a verifier that reads host-held credentials of `kinds` through `records.secret`: it
+/// states [`FACT_READS_CREDENTIALS`](crate::abi::auth::FACT_READS_CREDENTIALS) and the kinds.
+#[must_use]
+pub const fn with_credential_kinds(tail: AuthTail, kinds: &'static [AbiStr]) -> AuthTail {
+    AuthTail {
+        facts: tail.facts | crate::abi::auth::FACT_READS_CREDENTIALS,
+        credential_kinds: kinds.as_ptr(),
+        credential_kinds_len: kinds.len(),
         ..tail
     }
 }

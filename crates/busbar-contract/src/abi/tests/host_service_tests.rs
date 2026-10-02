@@ -476,6 +476,7 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, random_fill), op::RANDOM_FILL),
         (offset_of!(HostSlots, need_admit), op::NEED_ADMIT),
         (offset_of!(HostSlots, trust_verify), op::TRUST_VERIFY),
+        (offset_of!(HostSlots, records_secret), op::RECORDS_SECRET),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -636,4 +637,36 @@ fn trust_verify_never_pends_and_its_verdicts_end_at_the_root_key() {
     let mut o = out(Outcome::Ready);
     o.value = SIGNED_MALFORMED_ROOT + 1;
     assert!(check_trust_verify(&i, ready(&o), &o).is_err());
+}
+
+/// `records.secret`: a live or not-live secret in span `0` is legal; a value outside
+/// [`SECRET_NOT_LIVE`]..=[`SECRET_LIVE`] is FAULT; it may pend, so it is callable only on a ticket.
+#[test]
+fn records_secret_answers_live_or_not_live() {
+    let (mut b, mut s) = ([0u8; 4], [ItemSpan::default_absent(); 1]);
+    s[0].value.offset = 0;
+    s[0].value.len = 4;
+    let i = RecordsSecretIn {
+        head: head(
+            op::RECORDS_SECRET,
+            TICKET,
+            core::mem::size_of::<RecordsSecretIn>(),
+        ),
+        kind: none(),
+        id: none(),
+        into: bufs(&mut b, &mut s),
+    };
+    let mut o = out(Outcome::Ready);
+    o.len = 4;
+    o.items = 1;
+    for value in [SECRET_NOT_LIVE, SECRET_LIVE] {
+        o.value = value;
+        assert_eq!(check_records_secret(&i, ready(&o), &o), Ok(Filled::Written));
+    }
+    o.value = SECRET_LIVE + 1;
+    assert_eq!(
+        rule(check_records_secret(&i, ready(&o), &o)),
+        Rule::UnknownCode
+    );
+    assert!(may_pend(op::RECORDS_SECRET));
 }
