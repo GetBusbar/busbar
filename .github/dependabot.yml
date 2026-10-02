@@ -1,5 +1,5 @@
 # Dependabot configuration — keeps dependencies current with automated PRs.
-# Every update of an ecosystem is ONE grouped PR; .github/workflows/dependabot-bundle.yml folds the
+# Every update of an ecosystem is ONE grouped PR; busbar-release's dependabot-bundle workflow folds the
 # ecosystems into one branch (deps/bundle) and one PR.
 # Security updates are enabled separately in the repo's security settings.
 version: 2
