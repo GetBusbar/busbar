@@ -6,7 +6,7 @@ on: pull_request
 concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
 permissions: { contents: read }
 env:
-  RELEASE_REF: bf34a0043a3175ace168a7d9df42f8efe3d10d43
+  RELEASE_REF: c562ff90ec463019c4624315d97346d1ff7b78d5
   SHA: ${{ github.event.pull_request.head.sha }}
   TO: ${{ github.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -31,7 +31,8 @@ jobs:
       - run: bash busbar-release/ci/promote/hop.sh
         env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}" }
       - { if: always(), uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02, with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/turnstile-*.json", if-no-files-found: warn } } # v4
-      # The durable verdict hop.sh writes pass or fail (verdict/): artifact, sticky PR comment, branch health issue.
+      # The durable verdict hop.sh writes pass or fail (verdict/): idempotent rerun for a hop killed before its trap, the artifact, the sticky PR comment, the branch health issue.
+      - { if: always(), run: bash busbar-release/ci/promote/verdict.sh }
       - { if: always(), uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02, with: { name: "verdict-${{ env.SHA }}", path: "verdict/", retention-days: 90, if-no-files-found: warn } } # v4
       - if: always()
         run: bash busbar-release/ci/promote/publish.sh
@@ -39,3 +40,14 @@ jobs:
       - if: vars.PROMOTE_BOARD == 'true'
         run: bash busbar-release/ci/promote/board.sh
         env: { GITHUB_TOKEN: "${{ secrets.BUSBAR_TRAIN_TOKEN }}" }
+  # A hop whose runner was lost or timed out writes nothing; the API keeps the job and step conclusions after the logs are purged.
+  verdict-fallback:
+    needs: [preflight, hop]
+    if: always() && (needs.preflight.result != 'success' || needs.hop.result != 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: { contents: read, issues: write, pull-requests: write }
+    steps:
+      - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v4
+      - run: bash busbar-release/ci/promote/fallback.sh
+        env: { GH_TOKEN: "${{ github.token }}", PR_NUMBER: "${{ github.event.pull_request.number }}", PREFLIGHT_RESULT: "${{ needs.preflight.result }}", HOP_RESULT: "${{ needs.hop.result }}" }
