@@ -1159,75 +1159,34 @@ mod tests {
         );
     }
 
-    /// The directory floor is the third one, and it is counted off a different instrument than the
-    /// other two — so it too needs a fixture the other seven rules pass.
-    #[test]
-    fn the_crates_walk_floor_rejects_alone() {
-        let real = cx()
-            .walk(&WalkSpec::new(["crates"]).ext("toml"))
-            .expect("the real crates/ walk");
-        let mut ov = plant(&clean_members(), &clean_table());
-        for f in real.iter().skip(2) {
-            ov.remove(&f.rel);
-        }
-        assert_eq!(
-            failed_ids(ov),
-            vec![ROW_DISCOVERY.to_string()],
-            "an emptied crates/ must be named by the walk and by nothing else"
-        );
-    }
+    /// THE WALK READS EXACTLY THE DECLARED MEMBERS (ARCHITECT 2026-10-02). The `crates/` walk is
+    /// held to the root manifest's own member list rather than to a number: a declared `crates/`
+    /// member the walk did not find is RED by name, the real tree is green, and an extraction
+    /// (manifest AND member line gone) is not a miss, however few crates are left.
+    const MISSED: &str = "crates/busbar-kernel-scope";
 
-    /// The real `crates/` walk thinned to exactly `n` manifests, every other file removed.
-    fn crates_walk_holding(n: usize) -> Ctx {
-        let cx = cx();
-        let real = cx
-            .walk(&WalkSpec::new(["crates"]).ext("toml"))
-            .expect("the real crates/ walk");
-        // `crates/` also holds `.toml` files that are not manifests (kernel data, the LLM dialect
-        // mapping files): keep at most the first `n` manifests and remove every other `.toml`.
+    #[test]
+    fn a_crates_walk_that_misses_a_declared_member_is_red_naming_it() {
         let mut ov = Overlay::new();
-        let mut kept = 0;
-        for f in &real {
-            if f.rel.ends_with("Cargo.toml") && kept < n {
-                kept += 1;
-            } else {
-                ov.remove(&f.rel);
-            }
-        }
-        cx.with_overlay(ov)
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        let row = rule_discovery(&cx().with_overlay(ov));
+        assert_ne!(row.status, crate::ledger::Status::Pass, "{row:?}");
+        assert!(row.detail.contains(MISSED), "the miss is named: {row:?}");
+
+        let real = rule_discovery(&cx());
+        assert_eq!(real.status, crate::ledger::Status::Pass, "{real:?}");
     }
 
-    /// ITEM F0. The floor is a guard against a BLIND walk, not a ratchet on the roster: the fold's
-    /// planned end state (34 crates, and the 33 / 32 roster variants) must pass it, and a walk that
-    /// finds a handful must not. At 40 the floor errored at 39 crates, i.e. at fold #10.
-    ///
-    /// RE-MEASURED after the codec fold (owner ruling R7, 2026-09-27, #39): `busbar-llm-codec` and
-    /// `busbar-voice-codec` dissolved, taking two manifests out of `crates/` with them (36 -> 34
-    /// `.toml` files, the real walk this fixture truncates FROM). The sample set moves down with
-    /// it, one for one — it was never a ratchet on the roster, only a range of healthy sizes this
-    /// rule must not redden on.
-    ///
-    /// RE-MEASURED after the kernel's operator credential moved out: `crates/busbar-kernel/data/operator_credential.toml`
-    /// left the kernel for the root legacy table, so the real walk holds 33 `.toml` files, and the
-    /// sample set moves down with it, one for one (still clear of the floor of 30).
     #[test]
-    fn the_crates_walk_floor_admits_the_fold_end_state_and_rejects_a_collapse() {
-        for n in [33, 32, 31] {
-            let row = rule_discovery(&crates_walk_holding(n));
-            assert_eq!(
-                row.status,
-                crate::ledger::Status::Pass,
-                "a crates/ of {n} manifests is a planned fold end state, not a collapse: {row:?}"
-            );
-        }
-        for n in [0, 5, 20] {
-            let row = rule_discovery(&crates_walk_holding(n));
-            assert_ne!(
-                row.status,
-                crate::ledger::Status::Pass,
-                "a crates/ walk that found {n} manifests is a collapse and must be RED"
-            );
-        }
+    fn an_extracted_crate_is_not_a_missed_member() {
+        let root = cx().read("Cargo.toml").expect("the root manifest reads");
+        let line = format!("    \"{MISSED}\",\n");
+        assert!(root.contains(&line), "the root declares {MISSED}");
+        let mut ov = Overlay::new();
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        ov.set("Cargo.toml", root.replace(&line, ""));
+        let row = rule_discovery(&cx().with_overlay(ov));
+        assert_eq!(row.status, crate::ledger::Status::Pass, "{row:?}");
     }
 
     #[test]

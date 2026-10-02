@@ -776,14 +776,20 @@ mod tests {
         }
     }
 
-    /// THE FALSE ZERO, CONTROLLED. A `cargo metadata` that resolved almost nothing is an ERROR,
-    /// never a clean graph: an empty closure satisfies every dependency ban vacuously, and a
+    /// THE FALSE ZERO, CONTROLLED, WITH NO NUMBER. A `cargo metadata` whose package list misses a
+    /// workspace member it names is an ERROR naming that member, and one that names no member at
+    /// all is an ERROR too: an empty closure satisfies every dependency ban vacuously, and a
     /// subprocess that half-ran is exactly how a wall reports itself standing over nothing.
     #[test]
-    fn a_metadata_graph_under_the_floor_is_refused_rather_than_read_as_clean() {
-        let tiny = r#"{"packages":[{"name":"busbar-contract","dependencies":[]}]}"#;
-        let err = graph_from_metadata(tiny).expect_err("one package is not this workspace");
-        assert!(err.contains("under the floor"), "{err}");
+    fn a_metadata_graph_that_misses_a_member_is_refused_naming_it() {
+        let missed = r#"{"workspace_members":["busbar-contract 0.0.0 (path+file:///w/crates/busbar-contract)","busbar-kernel 0.0.0 (path+file:///w/crates/busbar-kernel)"],
+            "packages":[{"name":"busbar-contract","id":"busbar-contract 0.0.0 (path+file:///w/crates/busbar-contract)","dependencies":[]}]}"#;
+        let err = graph_from_metadata(missed).expect_err("a member with no package is a miss");
+        assert!(err.contains("missed-member"), "{err}");
+        assert!(err.contains("busbar-kernel"), "{err}");
+
+        let none = r#"{"workspace_members":[],"packages":[{"name":"busbar-contract","id":"c","dependencies":[]}]}"#;
+        let err = graph_from_metadata(none).expect_err("no member is not this workspace");
         assert!(err.contains("vacuously"), "{err}");
     }
 
@@ -791,19 +797,22 @@ mod tests {
     /// corroboration compares the same half of the graph the census walks.
     #[test]
     fn the_metadata_reader_takes_the_shipped_half_and_leaves_the_test_half() {
-        let mut pkgs: Vec<String> = (0..MIN_GRAPH_CRATES)
-            .map(|i| format!(r#"{{"name":"filler-{i}","dependencies":[]}}"#))
+        let mut pkgs: Vec<String> = (0..3)
+            .map(|i| format!(r#"{{"name":"filler-{i}","id":"filler-{i}","dependencies":[]}}"#))
             .collect();
         pkgs.push(
-            r#"{"name":"busbar-transport-tls","dependencies":[
+            r#"{"name":"busbar-transport-tls","id":"tls","dependencies":[
                  {"name":"filler-0"},
                  {"name":"filler-1","kind":"dev"},
                  {"name":"filler-2","kind":"build"},
                  {"name":"serde"}]}"#
                 .to_string(),
         );
-        let json = format!(r#"{{"packages":[{}]}}"#, pkgs.join(","));
-        let g = graph_from_metadata(&json).expect("the floor is cleared");
+        let json = format!(
+            r#"{{"workspace_members":["filler-0","filler-1","filler-2","tls"],"packages":[{}]}}"#,
+            pkgs.join(",")
+        );
+        let g = graph_from_metadata(&json).expect("every member resolves");
         let row: Vec<&str> = g["busbar-transport-tls"]
             .iter()
             .map(String::as_str)

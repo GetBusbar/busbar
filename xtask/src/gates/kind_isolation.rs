@@ -10248,74 +10248,80 @@ mod plant_tests {
         rule_registry(&cx, &crates, &reg_of(&cx), false)
     }
 
-    // ── item F0b: the two crate-count floors, lowered to 30, proven at their new boundary ────────
+    // ── THE CENSUS IS THE WORKSPACE, EXACTLY (ARCHITECT 2026-10-02) ─────────────────────────────
     //
-    // `MIN_MANIFESTS` and `closure::MIN_GRAPH_CRATES` moved 50 -> 30 and 40 -> 30 (same shape as
-    // F0's `workspace-deps` `MIN_CRATE_MANIFESTS`, `98434a220`) so the Phase 4 fold's planned end
-    // state (35 crates, 34 / 33 in the roster variants) clears both. The coarse collapse cases
-    // above (`all_but(cx, "toml", 4)`, `all_but(cx, "rs", 4)`) already prove each floor fires on a
-    // genuine collapse; these two prove the LOWERED floor fires exactly one manifest under itself
-    // and admits the real, un-planted tree — which sits well over 30 today, before the fold has
-    // touched a single crate. `:registry` and `:closure` both carry unrelated standing debt on the
-    // real tree right now (dead-kind/dead-transitional findings, a two-hop breach), so a
-    // `prove_rows_green` case asking either row to be wholly clean would be Impossible by
-    // construction (item 89); these read the FLOOR arm's own detail instead of the row's overall
-    // status, which is provable on the real tree regardless of that other debt.
+    // The two crate-count floors (`MIN_MANIFESTS`, `closure::MIN_GRAPH_CRATES`, both 30) guarded
+    // against a census that read a truncated tree, with a number. A number fights the roster
+    // (spec #39: the repo ends at 15 crates) and lowering it is re-ceilinging a gate. The rule that
+    // replaces them has no number: every `[workspace.members]` entry that is a crate of this tree
+    // is in the census, and a member the census missed is RED by name. Both rows are proven on one
+    // planted miss, on the real tree, and on an extraction (manifest AND member line gone), which
+    // must not read as a miss.
+
+    /// The member every case below takes out: a kernel unit no fold is planned to remove.
+    const MISSED: &str = "crates/busbar-kernel-scope";
+
+    fn census_misses_one() -> Overlay {
+        let mut ov = Overlay::new();
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        ov
+    }
+
+    /// The crate extracted the honest way: its manifest gone AND its member line struck.
+    fn crate_extracted() -> Overlay {
+        let root = ws().read("Cargo.toml").expect("the root manifest reads");
+        let line = format!("    \"{MISSED}\",\n");
+        assert!(root.contains(&line), "the root declares {MISSED}");
+        let mut ov = census_misses_one();
+        ov.set("Cargo.toml", root.replace(&line, ""));
+        ov
+    }
+
     #[test]
-    fn the_registry_census_floor_reds_one_below_thirty_and_admits_the_real_tree() {
-        assert_eq!(
-            MIN_MANIFESTS, 30,
-            "this case is pinned to the lowered floor"
-        );
+    fn a_census_that_misses_a_member_reds_the_registry_naming_it() {
         let cx = ws();
-
-        let plant = census_holding(&cx, MIN_MANIFESTS - 1);
-        assert_bites(&cx, &plant);
-        let planted = cx.with_overlay(plant);
-        assert_eq!(
-            crates_of(&planted).0.len(),
-            MIN_MANIFESTS - 1,
-            "the fixture must land the census exactly one under the floor"
-        );
+        assert_bites(&cx, &census_misses_one());
         assert_red_naming(
-            &registry_over(census_holding(&cx, MIN_MANIFESTS - 1)),
-            &["floor", &MIN_MANIFESTS.to_string()],
+            &registry_over(census_misses_one()),
+            &["missed-member", MISSED],
         );
-
         let real = registry_over(Overlay::new());
         assert!(
-            !real.detail.contains("collapsed below its floor"),
-            "the real tree's census must clear the lowered floor of {MIN_MANIFESTS}: {}",
+            !real.detail.contains("missed-member"),
+            "the real census reads every member: {}",
             real.detail
+        );
+        let extracted = registry_over(crate_extracted());
+        assert!(
+            !extracted.detail.contains("missed-member"),
+            "an extracted crate is not a missed member: {}",
+            extracted.detail
         );
     }
 
     #[test]
-    fn the_closure_graph_floor_reds_one_below_thirty_and_admits_the_real_tree() {
-        const MIN_GRAPH_CRATES: usize = 30;
+    fn a_census_that_misses_a_member_reds_the_closure_naming_it() {
         let cx = ws();
-
-        let plant = census_holding(&cx, MIN_GRAPH_CRATES - 1);
-        assert_bites(&cx, &plant);
-        let planted = cx.with_overlay(plant);
+        let planted = cx.with_overlay(census_misses_one());
         let (planted_crates, _) = crates_of(&planted);
-        assert_eq!(
-            planted_crates.len(),
-            MIN_GRAPH_CRATES - 1,
-            "the fixture must land the census exactly one under the floor"
-        );
         assert_red_naming(
             &closure::rule_closure(&planted, &planted_crates),
-            &["floor", &MIN_GRAPH_CRATES.to_string()],
+            &["missed-member", MISSED],
         );
-
         let (real_crates, _) = crates_of(&cx);
         let real = closure::rule_closure(&cx, &real_crates);
         assert!(
-            !real.detail.contains("under the floor")
-                && !real.detail.contains("could not be walked over this tree"),
-            "the real tree's census must clear the lowered floor of {MIN_GRAPH_CRATES}: {}",
+            !real.detail.contains("missed-member"),
+            "the real census reads every member: {}",
             real.detail
+        );
+        let extracted = cx.with_overlay(crate_extracted());
+        let (extracted_crates, _) = crates_of(&extracted);
+        let row = closure::rule_closure(&extracted, &extracted_crates);
+        assert!(
+            !row.detail.contains("missed-member"),
+            "an extracted crate is not a missed member: {}",
+            row.detail
         );
     }
 
