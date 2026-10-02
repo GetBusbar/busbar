@@ -108,12 +108,15 @@ pub(super) async fn build(
         }
     };
     egress_headers.insert(CONTENT_TYPE, ct_value);
-    // Native-SDK User-Agent for the egress protocol: without it the backend sees a UA-less request,
-    // a proxy fingerprint.
-    egress_headers.insert(
-        USER_AGENT,
-        axum::http::HeaderValue::from_static(crate::engine::egress_user_agent(hop.egress_name)),
-    );
+    // Native-SDK User-Agent for a TRANSLATED hop, which busbar writes in the far dialect: without
+    // it the backend sees a UA-less request, a proxy fingerprint. A same-dialect hop carries the
+    // client's own (forwarded below) and busbar fakes none.
+    if hop.ingress_protocol != hop.egress_name {
+        egress_headers.insert(
+            USER_AGENT,
+            axum::http::HeaderValue::from_static(crate::engine::egress_user_agent(hop.egress_name)),
+        );
+    }
     // Native-SDK Accept for the egress protocol (eventstream/json/SSE by stream intent), chosen by
     // the operation; not part of SigV4 SignedHeaders.
     egress_headers.insert(
@@ -122,13 +125,12 @@ pub(super) async fn build(
             hop.op.egress_accept(hop.egress_name, hop.wants_stream),
         ),
     );
-    // Forward the allowlisted client beta/version headers the caller actually sent, scoped to THIS
-    // egress dialect (no cross-dialect leak). A no-op when the caller sent none.
-    busbar_kernel::proxy::apply_client_headers(
-        &mut egress_headers,
-        hop.client_fwd,
-        &crate::engine::client_header_names_for_egress(hop.egress_name),
-    );
+    // Busbar is invisible to upstreams: a same-dialect hop forwards every client header it
+    // collected (none of them governed), the client's value winning over busbar's native defaults.
+    // A translated hop forwards none: no header maps between dialects.
+    if hop.ingress_protocol == hop.egress_name {
+        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, hop.client_fwd);
+    }
     let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
     drop(_cb_reqwest);
     Ok(hreq)

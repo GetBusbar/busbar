@@ -724,8 +724,10 @@ impl EgressFarEnd<'_> {
     }
 
     /// Send the attempt: the dispatch record, the auth fields, the connector's open.
-    async fn send_attempt(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
+    async fn send_attempt(&self, token: &Pass<Route>, mut request: OutboundRequest) -> bool {
         let e = self.egress;
+        // Busbar is invisible to upstreams; the per-connection mechanics are the connection's own.
+        crate::proxy::strip_re_derived(&mut request.fields);
         let (destination, record) = {
             let w = self.lock();
             let Some(live) = w.live.as_ref() else {
@@ -739,20 +741,13 @@ impl EgressFarEnd<'_> {
         // THE TARGET IS A PATH. Joined onto the operator's base_url, anything else could move the
         // authority (`@evil.test/x` makes `api.host@evil.test`) and carry the member's auth fields
         // to a host nobody configured: refused before the record, the auth call or the dial, and
-        // nothing is recorded against the member.
-        if !request.target.starts_with(b"/") {
+        // nothing is recorded against the member. Then 1. the dispatch record, durable BEFORE the
+        // dial; when it cannot be written nothing was recorded either. Neither has anything to
+        // abandon.
+        if !request.target.starts_with(b"/") || e.journal.dispatched(&record).is_err() {
             let mut w = self.lock();
             if let Some(live) = w.live.as_mut() {
-                live.answered = true; // nothing was dispatched, so nothing to abandon
-            }
-            self.settle(&mut w);
-            return false;
-        }
-        // 1. The dispatch record, durable BEFORE the dial.
-        if e.journal.dispatched(&record).is_err() {
-            let mut w = self.lock();
-            if let Some(live) = w.live.as_mut() {
-                live.answered = true; // nothing to abandon: nothing was recorded
+                live.answered = true;
             }
             self.settle(&mut w);
             return false;
@@ -785,10 +780,12 @@ impl EgressFarEnd<'_> {
                 f.value.expose_secret().clone(),
             )
         }));
+        // A plane field named like an auth field never doubles it: the auth binding's stands.
         head.0.extend(
             request
                 .fields
                 .iter()
+                .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
         drop(auth);
