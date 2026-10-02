@@ -979,7 +979,9 @@ busbar-llm = 226
 busbar-mcp = 280
 # busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
 # instead of per signature.
-busbar-a2a = 232
+# LOWERED 232 -> 229 (downward, at the measure) by FOLD-A2A: the door pins and the Origin rule read
+# the plane's and the contract's homes instead of the kernel's.
+busbar-a2a = 229
 busbar-voice = 88
 
 [rules.ports-only-tests]
