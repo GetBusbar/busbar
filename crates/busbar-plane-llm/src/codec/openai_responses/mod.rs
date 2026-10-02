@@ -1348,18 +1348,35 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
+/// Stable identifier of the identity [`read_responses_usage`] checks `usage.total_tokens` against,
+/// carried on [`crate::codec::ir::UsageIdentityNote::identity`].
+const RESPONSES_USAGE_IDENTITY: &str = "openai_responses.usage";
+
 /// A Responses `usage` object (`None` when absent) → the IR usage, through [`USAGE`]; the tier that
 /// served the response (RSP-17) is a word on `response`, not a count.
+///
+/// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/responses.wire.json`) DECLARES
+/// UNDER `usage` IS EITHER LEDGERED OR A SLICE OF A LEDGERED TOTAL: `input_tokens` (input, less its
+/// cached and cache-write slices), `cached_tokens` (cache read), `cache_write_tokens` (cache
+/// write), `output_tokens` (output); `output_tokens_details.reasoning_tokens` is a slice of
+/// `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
+/// ledgered classes and a gap is WARN-logged and carried as the usage identity note, never ledgered.
 fn read_responses_usage(
     usage: Option<&serde_json::Value>,
     response: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    let mut usage = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
-    usage.detail.service_tier = crate::codec::carry::read_word(
+    let mut ir = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
+    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
+        "openai_responses",
+        RESPONSES_USAGE_IDENTITY,
+        usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
+        &ir,
+    );
+    ir.detail.service_tier = crate::codec::carry::read_word(
         map::WORDS_SERVED_TIER,
         response.and_then(|r| r.get(keys::SERVICE_TIER)),
     );
-    Ok(usage)
+    Ok(ir)
 }
 
 /// OpenAI Responses streaming writer.
@@ -2317,3 +2334,7 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;
