@@ -14,7 +14,7 @@
 use busbar_contract::abi::plane::reason_of;
 use busbar_contract::protocol::{
     ProtocolDecl, APPLICATION_JSON, KIND_API_ERROR, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST,
-    KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE,
+    KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE,
 };
 use serde_json::Value;
 
@@ -86,9 +86,8 @@ pub fn kind_of(reason: &str, status: u16) -> &'static str {
         "over_budget" => KIND_INSUFFICIENT_QUOTA,
         "group_frozen" | "scope_denied" | "pool_not_permitted" | "hook_veto" => KIND_PERMISSION,
         "body_too_large" | "cursor_budget" | "credential_budget" => KIND_REQUEST_TOO_LARGE,
-        "no_rate" | "unpriced" | "no_destination" | "decode_failed" | "replayed" | "superseded" => {
-            KIND_INVALID_REQUEST
-        }
+        "no_rate" | "unpriced" | "decode_failed" | "replayed" | "superseded" => KIND_INVALID_REQUEST,
+        "no_destination" => KIND_NOT_FOUND,
         "meter_disputed" | "handoff_mismatch" | "plane_panic" | "task_lost"
         | "secret_placeholder" => KIND_API_ERROR,
         _ if status >= 500 && status != 503 => KIND_API_ERROR,
@@ -98,6 +97,16 @@ pub fn kind_of(reason: &str, status: u16) -> &'static str {
         _ if status == 413 => KIND_REQUEST_TOO_LARGE,
         _ => KIND_INVALID_REQUEST,
     }
+}
+
+/// The sentence the previous release answered a model with when it named no pool and no configured
+/// model: the dialect's own copy where the path gave one (`shaped`), else the neutral sentence.
+#[must_use]
+pub fn model_not_found(model: &str, shaped: Option<&str>) -> String {
+    shaped.map_or_else(
+        || format!("The model '{model}' does not exist or you do not have access to it."),
+        str::to_string,
+    )
 }
 
 /// Whether a reason is an authentication refusal: those answer in the dialect's own vendor terms.

@@ -914,7 +914,8 @@ slot!(
                 declined: Some(d), ..
             }) if given.plane_code != 0 => refuse::declined(d),
             _ => {
-                let envelope = match held.as_ref().and_then(|u| u.arrived.as_ref()) {
+                let arrived = held.as_ref().and_then(|u| u.arrived.as_ref());
+                let envelope = match arrived {
                     Some(a) => a.dialect,
                     None => {
                         let target =
@@ -923,11 +924,25 @@ slot!(
                         envelope_for(path)
                     }
                 };
+                // A model that resolved to no destination reads the previous release's not-found
+                // sentence, which names the model the caller asked for; every other refusal reads
+                // the kernel's own text.
+                let text = match arrived {
+                    Some(a) if given.reason == crate::refusal::reason::NO_DESTINATION => {
+                        refuse::model_not_found(
+                            &a.model,
+                            a.path_model
+                                .as_ref()
+                                .and_then(|p| p.model_not_found_message.as_deref()),
+                        )
+                    }
+                    _ => String::from_utf8_lossy(input.field(|i| &i.text).bytes()).into_owned(),
+                };
                 refuse::kernel_refusal(
                     envelope,
                     given.reason,
                     u16::try_from(given.status).unwrap_or(500),
-                    &String::from_utf8_lossy(input.field(|i| &i.text).bytes()),
+                    &text,
                     given.retry_after_s,
                 )
             }
