@@ -516,7 +516,12 @@ fn oidf_clients() -> Vec<OidfClient> {
     (1..=2)
         .map(|n| {
             let (private, public) = es256_jwk(&format!("k{n}")).unwrap();
-            OidfClient::new(n, "https://localhost.emobix.co.uk:8443/test/a/x/callback", private, public)
+            OidfClient::new(
+                n,
+                "https://localhost.emobix.co.uk:8443/test/a/x/callback",
+                private,
+                public,
+            )
         })
         .collect()
 }
@@ -527,7 +532,15 @@ fn oidf_clients() -> Vec<OidfClient> {
 #[test]
 fn the_oidf_subject_is_the_fapi2_posture_with_static_clients() {
     let clients = oidf_clients();
-    let cfg = oidf_subject_config("https://h:1", 1, "BASE\n", "/c.pem", "/k.pem", "PEM", &clients);
+    let cfg = oidf_subject_config(
+        "https://h:1",
+        1,
+        "BASE\n",
+        "/c.pem",
+        "/k.pem",
+        "PEM",
+        &clients,
+    );
     let doc: serde_json::Value =
         serde_yaml::from_str(&cfg.replacen("BASE\n", "", 1)).expect("the subject config is YAML");
     assert_eq!(doc["oauth_as"]["fapi2"], serde_json::json!(true));
@@ -535,7 +548,10 @@ fn the_oidf_subject_is_the_fapi2_posture_with_static_clients() {
     assert_eq!(declared.len(), 2);
     for (c, d) in clients.iter().zip(declared) {
         assert_eq!(d["client_id"], serde_json::json!(c.id));
-        assert!(d["jwks"]["keys"][0].get("d").is_none(), "public halves only: {d}");
+        assert!(
+            d["jwks"]["keys"][0].get("d").is_none(),
+            "public halves only: {d}"
+        );
     }
     assert!(declared[1]["redirect_uris"][0]
         .as_str()
@@ -557,7 +573,10 @@ fn the_oidf_subject_is_the_fapi2_posture_with_static_clients() {
 fn the_oidf_plan_config_drives_the_consent_screen_by_id() {
     let clients = oidf_clients();
     let plan = oidf_plan_config("https://h:1", "busbar test", &clients);
-    assert_eq!(plan["client"]["client_id"], serde_json::json!(clients[0].id));
+    assert_eq!(
+        plan["client"]["client_id"],
+        serde_json::json!(clients[0].id)
+    );
     assert!(plan["client2"]["jwks"]["keys"][0].get("d").is_some());
     assert_eq!(
         plan["resource"]["resourceUrl"],
@@ -567,9 +586,11 @@ fn the_oidf_plan_config_drives_the_consent_screen_by_id() {
     assert!(text.contains("Authorization error") && text.contains("update-image-placeholder"));
     assert!(text.contains(r#"["click","id","approve"]"#), "{text}");
     let over = &plan["override"];
-    assert!(over["fapi2-security-profile-final-user-rejects-authentication"]
-        .to_string()
-        .contains(r#"["click","id","deny"]"#));
+    assert!(
+        over["fapi2-security-profile-final-user-rejects-authentication"]
+            .to_string()
+            .contains(r#"["click","id","deny"]"#)
+    );
     assert!(over["fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds"]
         .to_string()
         .contains("revisit"));

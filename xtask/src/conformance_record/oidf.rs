@@ -13,15 +13,17 @@
 //!   2. its jar, built by its own `builder-compose.yml` (maven image pinned by digest);
 //!   3. its server, nginx front and mongodb by its own `docker-compose.yml`, with mongodb pinned by
 //!      digest and the server given `host.docker.internal` so it can reach the subject;
-//!   4. the SUBJECT: busbar on a TLS listener with an `oauth_as:` block whose issuer is the name the
-//!      suite reaches it by; two clients registered through busbar's own RFC 7591 endpoint with
-//!      the plan's client authentication and freshly minted ES256 keys;
+//!   4. the SUBJECT: busbar on a TLS listener with an `oauth_as:` block in the FAPI 2.0 posture
+//!      (`fapi2: true`) whose issuer is the name the suite reaches it by; the plan's two
+//!      `private_key_jwt` clients PROVISIONED in `oauth_as.clients:` with the public halves of
+//!      freshly minted ES256 keys (FAPI 2.0 plans have no registration variant: their clients are
+//!      static); the resource ([`RESOURCE_PATH`]) behind an OIDC data chain that trusts the AS;
 //!   5. `run-test-plan.py` for each plan in [`SUITES`], its per-module results read back.
 //!
 //! THE JUDGEMENT ([`decide_oidf`]): every module FINISHED with result PASSED, WARNING or REVIEW
 //! (REVIEW is the suite's "no failure; a human looks at the screenshot" result) ⇒ `pass`. Any
 //! FAILED, INTERRUPTED, SKIPPED or unfinished module ⇒ `fail` naming it. busbar refusing to boot,
-//! to publish its metadata or to register the plan's clients ⇒ `fail`. A run that produced no
+//! to publish its metadata or to run the FAPI 2.0 posture ⇒ `fail`. A run that produced no
 //! module result at all ⇒ `not-run`.
 //!
 //! ARCHITECT RULINGS 2026-10-02 (handoff CONFORMANCE-RIGS.md). `oidf-oauth2` is the plan under
@@ -61,8 +63,154 @@ const SUBJECT_HOST: &str = "host.docker.internal";
 const ALIAS: &str = "busbar-conformance";
 /// The scope the plan asks for, and the subject grants self-registered clients.
 const SCOPE: &str = "conformance";
-/// The served subject route the suite calls with an issued access token (see the module docs).
-pub const RESOURCE_PATH: &str = "/mcp";
+/// The served subject route the suite calls with an issued access token: `GET /stats`, a route every
+/// busbar mounts that requires a busbar token (ARCHITECT ruling 2026-10-02: any served route that
+/// requires one). The subject's data chain is an OIDC module trusting this AS's JWKS, so a
+/// DPoP-bound token the AS minted, presented with its proof, is what admits the call.
+pub const RESOURCE_PATH: &str = "/stats";
+/// The subject's identity provider for the AS's own tokens.
+const IDP: &str = "fapi-as";
+
+/// One of the plan's two clients: provisioned in the subject's `oauth_as.clients:` with its PUBLIC
+/// key, handed to the suite with its PRIVATE key. FAPI 2.0 plans have no client-registration
+/// variant (`AbstractFAPI2SPFinalServerTestModule`'s `@VariantParameters` name none at
+/// release-v5.3.1): the suite's clients are always static, which is the ARCHITECT's static_client
+/// ruling.
+pub struct OidfClient {
+    pub id: String,
+    pub redirect_uri: String,
+    pub private: Value,
+    pub public: Value,
+}
+
+impl OidfClient {
+    /// Client `n` (1 or 2). Client 2 is provisioned on the callback with
+    /// `?dummy1=lorem&dummy2=ipsum`: the happy flow's second-client leg sends exactly that
+    /// `redirect_uri`, and the AS matches redirect URIs exactly.
+    pub fn new(n: usize, callback: &str, private: Value, public: Value) -> Self {
+        let redirect_uri = if n == 2 {
+            format!("{callback}?dummy1=lorem&dummy2=ipsum")
+        } else {
+            callback.to_string()
+        };
+        Self {
+            id: format!("oidf-suite-client-{n}"),
+            redirect_uri,
+            private,
+            public,
+        }
+    }
+}
+
+/// The subject's config: `base` (listeners), TLS, the authorization server in the FAPI 2.0 posture
+/// with the plan's clients provisioned, and a data chain whose only provider is the OIDC module
+/// trusting this AS (`jwks_url` over loopback, the rig's CA, the token's `scope` as its role, bound
+/// to every pool). The admin chain is the explicit open posture so the suite's browser reaches the
+/// consent screen on this loopback subject.
+pub fn oidf_subject_config(
+    issuer: &str,
+    data: u16,
+    base: &str,
+    cert: &str,
+    key: &str,
+    ca_pem: &str,
+    clients: &[OidfClient],
+) -> String {
+    let declared: Vec<Value> = clients
+        .iter()
+        .map(|c| {
+            json!({
+                "client_id": c.id,
+                "redirect_uris": [c.redirect_uri],
+                "jwks": { "keys": [c.public] },
+            })
+        })
+        .collect();
+    let rest = json!({
+        "tls": { "cert": { "file": cert }, "key": { "file": key } },
+        "oauth_as": {
+            "issuer": issuer,
+            "default_grant": [SCOPE],
+            "fapi2": true,
+            "clients": declared,
+        },
+        "identity-providers": {
+            IDP: {
+                "module": "oidc",
+                "settings": {
+                    "issuer": issuer,
+                    "audience": issuer,
+                    "jwks_url": format!("https://127.0.0.1:{data}/jwks"),
+                    "role_claim": "scope",
+                    "ca_cert_pem": ca_pem,
+                },
+            },
+        },
+        "auth": {
+            "chain": [IDP],
+            "admin_auth": [],
+            "role_bindings": { IDP: { SCOPE: {} } },
+        },
+    });
+    format!("{base}{}", serde_yaml::to_string(&rest).unwrap_or_default())
+}
+
+/// The suite's plan configuration for the subject at `issuer`.
+pub fn oidf_plan_config(issuer: &str, description: &str, clients: &[OidfClient]) -> Value {
+    let client =
+        |c: &OidfClient| json!({"client_id": c.id, "scope": SCOPE, "jwks": {"keys": [c.private]}});
+    let callback = json!({
+        "task": "The AS redirected to the suite's callback",
+        "match": format!("{SUITE_URL}test/a/{ALIAS}/callback*"),
+        "optional": true,
+        "commands": [["wait", "id", "submission_complete", 15]]
+    });
+    // A refused authorization request is an HTML page at /authorize carrying the literal
+    // "Authorization error" (busbar-core-oauth2 `routes::error_page`); the wait fills the module's
+    // ExpectXxxErrorPage placeholder. `xpath` because the runner fills only from a real selector.
+    let error_page = json!({
+        "task": "The AS refused the authorization request with its error page",
+        "match": format!("{issuer}/authorize*"),
+        "optional": true,
+        "commands": [["wait", "xpath", "//*", 10, "Authorization error", "update-image-placeholder"]]
+    });
+    let browser = |click: Value| {
+        json!([{
+            "match": format!("{issuer}/*"),
+            "tasks": [
+                {
+                    "task": "The consent screen",
+                    "match": format!("{issuer}/consent*"),
+                    "optional": true,
+                    "commands": [click]
+                },
+                error_page.clone(),
+                callback.clone()
+            ]
+        }])
+    };
+    json!({
+        "alias": ALIAS,
+        "description": description,
+        "server": {"discoveryUrl": format!("{issuer}/.well-known/oauth-authorization-server")},
+        "client": client(&clients[0]),
+        "client2": client(&clients[1]),
+        "resource": {"resourceUrl": format!("{issuer}{RESOURCE_PATH}")},
+        "browser": browser(json!(["click", "id", "approve"])),
+        "override": {
+            "fapi2-security-profile-final-user-rejects-authentication": {
+                "browser": browser(json!(["click", "id", "deny"]))
+            },
+            // Nobody signs in on the first visit; the repeat showing of the same pushed request
+            // carries `id="revisit"`, and only then is Approve pressed (`optional`: absent = no-op).
+            "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": {
+                "browser": browser(json!([
+                    "click", "xpath", "//*[@id='revisit']/following::button[@id='approve']", "optional"
+                ]))
+            }
+        }
+    })
+}
 
 /// One suite id: the plan it runs and the variant it runs under.
 pub struct Plan {
@@ -477,8 +625,8 @@ impl Runner {
         out
     }
 
-    /// Boot the authorization-server subject, register the plan's two clients through its own
-    /// registration endpoint, and write the suite's plan configuration. `Err` is busbar's.
+    /// Boot the authorization-server subject with the plan's two clients provisioned, check it runs
+    /// the FAPI 2.0 posture, and write the suite's plan configuration. `Err` is busbar's.
     fn oidf_subject(
         &self,
         bin: &Path,
@@ -488,12 +636,23 @@ impl Runner {
         let (data, admin) = (ports[0], ports[1]);
         let issuer = format!("https://{SUBJECT_HOST}:{data}");
         let pki = subject::mint_pki(pdir, &[SUBJECT_HOST, "localhost", "127.0.0.1"])?;
+        let ca_pem =
+            std::fs::read_to_string(&pki.ca).map_err(|e| format!("{}: {e}", pki.ca.display()))?;
+        let callback = format!("{SUITE_URL}test/a/{ALIAS}/callback");
+        let mut clients = Vec::new();
+        for n in 1..=2 {
+            let (private, public) = es256_jwk(&format!("{ALIAS}-{n}"))?;
+            clients.push(OidfClient::new(n, &callback, private, public));
+        }
         // The data listener is reachable from the suite's container; the admin listener is not.
-        let config = format!(
-            "{}tls:\n  cert: {{ file: {} }}\n  key: {{ file: {} }}\noauth_as:\n  issuer: \"{issuer}\"\n  default_grant: [{SCOPE}]\n",
-            subject::base_config(&format!("0.0.0.0:{data}"), admin),
-            pki.cert.display(),
-            pki.key.display()
+        let config = oidf_subject_config(
+            &issuer,
+            data,
+            &subject::base_config(&format!("0.0.0.0:{data}"), admin),
+            &pki.cert.display().to_string(),
+            &pki.key.display().to_string(),
+            &ca_pem,
+            &clients,
         );
         let booted = subject::boot(
             bin,
@@ -523,74 +682,20 @@ impl Runner {
                 meta.status
             )
         })?;
-        let register = meta
-            .get("registration_endpoint")
-            .and_then(Value::as_str)
-            .ok_or("the subject's metadata advertises no registration_endpoint")?
-            .to_string();
-        let callback = format!("{SUITE_URL}test/a/{ALIAS}/callback");
-        let mut clients = Vec::new();
-        for n in 1..=2 {
-            let (private, public) = es256_jwk(&format!("{ALIAS}-{n}"))?;
-            let body = json!({
-                // Not the deployment's name: busbar's open registration refuses a client that
-                // names itself after the gateway (busbar-core-oauth2 policy.rs, consent phishing).
-                "client_name": format!("oidf-suite-client-{n}"),
-                "redirect_uris": [callback],
-                "grant_types": ["authorization_code", "refresh_token"],
-                "response_types": ["code"],
-                "token_endpoint_auth_method": "private_key_jwt",
-                "jwks": {"keys": [public]},
-                "scope": SCOPE,
-            });
-            let r = curl(
-                &scratch,
-                "POST",
-                &register,
-                &[("content-type", "application/json")],
-                Some(body.to_string().as_bytes()),
-                &via,
-            )
-            .map_err(|e| format!("client registration got no answer: {e}"))?;
-            let id = serde_json::from_slice::<Value>(&r.body)
-                .ok()
-                .and_then(|v| {
-                    v.get("client_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "the subject refused the plan's client registration ({}): {}",
-                        r.status,
-                        String::from_utf8_lossy(&r.body)
-                    )
-                })?;
-            clients.push(json!({"client_id": id, "scope": SCOPE, "jwks": {"keys": [private]}}));
+        if meta.get("pushed_authorization_request_endpoint").is_none() {
+            return Err(
+                "the subject's metadata advertises no PAR endpoint: the FAPI 2.0 posture is not on"
+                    .into(),
+            );
         }
-        let plan_config = json!({
-            "alias": ALIAS,
-            "description": format!("busbar {}", super::head_commit(&self.root).unwrap_or_default()),
-            "server": {"discoveryUrl": format!("{issuer}/.well-known/oauth-authorization-server")},
-            "client": clients[0],
-            "client2": clients[1],
-            "resource": {"resourceUrl": format!("{issuer}{RESOURCE_PATH}")},
-            "browser": [{
-                "match": format!("{issuer}/*"),
-                "tasks": [
-                    {
-                        "task": "Approve on the consent screen",
-                        "match": format!("{issuer}/*consent*"),
-                        "commands": [["click", "xpath", "//button[@type='submit']"]]
-                    },
-                    {
-                        "task": "Verify the callback",
-                        "match": format!("{SUITE_URL}test/a/{ALIAS}/callback*"),
-                        "commands": [["wait", "id", "submission_complete", 10]]
-                    }
-                ]
-            }]
-        });
+        let plan_config = oidf_plan_config(
+            &issuer,
+            &format!(
+                "busbar {}",
+                super::head_commit(&self.root).unwrap_or_default()
+            ),
+            &clients,
+        );
         let path = pdir.join("plan-config.json");
         std::fs::write(
             &path,
