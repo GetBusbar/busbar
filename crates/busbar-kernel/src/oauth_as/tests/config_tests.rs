@@ -12,6 +12,7 @@ fn cfg(issuer: &str) -> OauthAsCfg {
         key_id: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
+        fapi2: false,
     }
 }
 
@@ -115,4 +116,41 @@ fn the_registration_path_is_always_derived() {
         "/tenant1/register",
         "a tenant-prefixed issuer keeps its registration endpoint under the prefix"
     );
+}
+
+/// THE FAPI 2.0 POSTURE IS OFF UNLESS THE OPERATOR WRITES IT. An `oauth_as:` block that does not
+/// name `fapi2` is the plain OAuth 2.1 server: no PAR endpoint, no mandatory DPoP, no profile
+/// narrowing. Proven from the operator's own spelling (the block as written), not from the struct
+/// default, because `#[serde(default)]` is the line that makes it true.
+#[test]
+fn the_fapi2_posture_is_off_unless_the_block_names_it() {
+    let written: OauthAsCfg =
+        serde_json::from_value(serde_json::json!({ "issuer": "https://gw.example.com" }))
+            .expect("a block naming only the issuer parses");
+    assert!(!written.fapi2, "an unnamed `fapi2` must parse as off");
+    let id = AsIdentity::from_cfg(&written).expect("valid");
+    assert!(!id.fapi2(), "the plain block must validate to the plain posture");
+}
+
+/// `fapi2: true` is the one line that turns the FAPI 2.0 Security Profile posture on.
+#[test]
+fn fapi2_true_turns_the_posture_on() {
+    let written: OauthAsCfg = serde_json::from_value(serde_json::json!({
+        "issuer": "https://gw.example.com",
+        "fapi2": true,
+    }))
+    .expect("a block naming fapi2 parses");
+    assert!(AsIdentity::from_cfg(&written).expect("valid").fapi2());
+}
+
+/// RFC 9126 s5: the pushed authorization request endpoint is derived under the issuer exactly as
+/// every other endpoint is, so a tenant-prefixed issuer keeps it under the prefix, and the absolute
+/// URL the metadata advertises is the path the router mounts.
+#[test]
+fn the_par_endpoint_is_derived_under_the_issuer() {
+    let id = AsIdentity::from_cfg(&cfg("https://gw.example.com/tenant1")).expect("valid");
+    assert_eq!(id.par_path(), "/tenant1/par");
+    assert_eq!(id.par_endpoint(), "https://gw.example.com/tenant1/par");
+    let root = AsIdentity::from_cfg(&cfg("https://gw.example.com")).expect("valid");
+    assert_eq!(root.par_path(), "/par");
 }
