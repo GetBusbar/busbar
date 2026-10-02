@@ -64,7 +64,6 @@ kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
 kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	350
 kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	33
 kind-isolation:matrix	unlisted-cell	busbar-contract × auth	5
-kind-isolation:matrix	unlisted-cell	busbar-contract × kernel	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × plugin-tooling	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × store	1
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × auth	5
@@ -119,7 +118,6 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> plane	93
 kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	92
 kind-isolation:matrix	unlisted-edge	cleanliness -> transport	26
 kind-isolation:matrix	unlisted-edge	contract -> auth	5
-kind-isolation:matrix	unlisted-edge	contract -> kernel	1
 kind-isolation:matrix	unlisted-edge	contract -> plugin-tooling	1
 kind-isolation:matrix	unlisted-edge	contract -> store	1
 kind-isolation:matrix	unlisted-edge	hooks -> plane	4

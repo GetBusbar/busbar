@@ -13,8 +13,8 @@ it; `-` means the dialect has no form for it.
 
 | dialect | direction | mapped paths | no-equivalent marks |
 | --- | --- | ---: | ---: |
-| anthropic | request | 66 | 12 |
-| anthropic | response | 15 | 0 |
+| anthropic | request | 70 | 12 |
+| anthropic | response | 20 | 0 |
 | anthropic | stream | 10 | 0 |
 | bedrock | request | 50 | 8 |
 | bedrock | response | 13 | 1 |
@@ -25,7 +25,7 @@ it; `-` means the dialect has no form for it.
 | gemini | request | 41 | 1 |
 | gemini | response | 21 | 1 |
 | openai_chat | request | 70 | 1 |
-| openai_chat | response | 27 | 1 |
+| openai_chat | response | 34 | 1 |
 | openai_chat | stream | 4 | 0 |
 | openai_responses | request | 46 | 5 |
 | openai_responses | response | 28 | 3 |
@@ -130,6 +130,7 @@ it; `-` means the dialect has no form for it.
 | user | `metadata.user_id` | - | `messages[].role=user` | - | `user`<br>`messages[].role=user` | `user` |
 | verbosity | - | - | - | - | `verbosity` | `text.verbosity` |
 | web_search | - | - | - | `tools[].googleSearch` | `web_search_options` | - |
+| web_search_record | `messages[].content[].type=web_search_tool_result`<br>`messages[].content[].type=web_search_tool_result.tool_use_id`<br>`messages[].content[].type=web_search_tool_result.content[].url`<br>`messages[].content[].type=web_search_tool_result.content[].title` | - | - | - | - | - |
 
 ## response
 
@@ -140,6 +141,7 @@ it; `-` means the dialect has no form for it.
 | annotations | - | - | - | - | `choices[].message.annotations` | - |
 | arguments | - | - | - | - | - | `output[].type=function_call.arguments` |
 | audio | - | - | - | - | `choices[].message.audio` | - |
+| audio_output | - | - | - | - | `choices[].message.audio.data`<br>`choices[].message.audio.transcript` | - |
 | audio_tokens | - | - | - | - | `usage.prompt_tokens_details.audio_tokens`<br>`usage.completion_tokens_details.audio_tokens` | - |
 | avg_logprobs | - | - | - | `candidates[].avgLogprobs` | - | - |
 | block_reason | - | - | - | `promptFeedback.blockReason` | - | - |
@@ -183,6 +185,7 @@ it; `-` means the dialect has no form for it.
 | response_id | - | - | - | `responseId` | - | - |
 | role | `role` | `output.message.role` | `message.role` | - | `choices[].message.role` | - |
 | safety_ratings | - | - | - | `candidates[].safetyRatings`<br>`promptFeedback.safetyRatings` | - | - |
+| safety_verdict | - | - | - | - | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | - |
 | search_units | - | - | `usage.billed_units.search_units` | - | - | - |
 | served_tier | `usage.service_tier` | - | - | - | `service_tier` | `service_tier` |
 | status | - | - | - | - | - | `status`<br>`output[].type=message.status`<br>`output[].type=web_search_call.status` |
@@ -196,6 +199,8 @@ it; `-` means the dialect has no form for it.
 | tool_use_prompt_token_count | - | - | - | `usageMetadata.toolUsePromptTokenCount` | - | - |
 | total_tokens | - | `usage.totalTokens` | - | `usageMetadata.totalTokenCount` | `usage.total_tokens` | `usage.total_tokens` |
 | type | `type` | - | - | - | - | - |
+| usage_by_modality | - | - | - | - | `usage.prompt_tokens_details.text_tokens`<br>`usage.prompt_tokens_details.image_tokens`<br>`usage.completion_tokens_details.text_tokens` | - |
+| web_search | `content[].type=web_search_tool_result`<br>`content[].type=web_search_tool_result.tool_use_id`<br>`content[].type=web_search_tool_result.content[].url`<br>`content[].type=web_search_tool_result.content[].title`<br>`content[].type=web_search_tool_result.content.error_code` | - | - | - | - | - |
 | web_search_requests | `usage.server_tool_use.web_search_requests` | - | - | - | - | - |
 
 ## stream

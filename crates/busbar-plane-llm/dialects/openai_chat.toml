@@ -120,6 +120,13 @@ park = true
 
 # The answer members the dialect's reader and writer carry (`prim`: code carries them).
 [rows.response]
+"moderation.input.type=moderation_results.results[].categories" = { ir = "safety_verdict" }
+"moderation.output.type=moderation_results.results[].categories" = { ir = "safety_verdict" }
+"choices[].message.audio.data" = { ir = "audio_output" }
+"choices[].message.audio.transcript" = { ir = "audio_output" }
+"usage.prompt_tokens_details.text_tokens" = { ir = "usage_by_modality" }
+"usage.prompt_tokens_details.image_tokens" = { ir = "usage_by_modality" }
+"usage.completion_tokens_details.text_tokens" = { ir = "usage_by_modality" }
 "usage.completion_tokens_details.reasoning_tokens" = { prim = "reasoning_tokens" }
 "usage.prompt_tokens" = { prim = "input_tokens" }
 "usage.completion_tokens" = { prim = "output_tokens" }
