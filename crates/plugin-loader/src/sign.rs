@@ -894,7 +894,8 @@ pub fn validate_abi(
         if r.max < floor || r.min > max {
             return Err(format!(
                 "plugin '{}' supports contract ABI v{}..=v{} for kind '{}', and this binary \
-                 supports v{floor}..=v{max}: the ranges share no version, refusing to load it",
+                 supports v{floor}..=v{max}: the ranges share no version, refusing to load it; \
+                 rebuild the plugin against the 1.6.0 SDK",
                 m.name, r.min, r.max, m.kind
             ));
         }
@@ -911,7 +912,7 @@ pub fn validate_abi(
         (Some(&floor), Some(&max)) => {
             return Err(format!(
                 "manifest abi_version {} is not supported for kind '{}' by this binary (supported \
-                 range v{floor}..=v{max})",
+                 range v{floor}..=v{max}): rebuild the plugin against the 1.6.0 SDK",
                 m.abi_version, m.kind
             ));
         }

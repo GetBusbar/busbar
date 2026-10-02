@@ -76,20 +76,9 @@ fn panicking_plugin_returns_status_panic_with_a_body() {
 /// the BUILD, not a test, on the day the window moved.
 const _: () = assert!(busbar_contract::abi::cold::export::EXPORT_ABI_VERSION == 3);
 
-/// The runtime half: the window `export` actually resolves to.
-///
-/// `[2, 3]`, and the FLOOR is the load-bearing half. v1 is still refused (1.5.3 removed the `audit`
-/// stream, so a v1 sink declares a stream the engine cannot route), but v2 is NOT: a sink built
-/// before the observability envelope answers a bare `ExportResponse` and the loader's decoder reads
-/// both shapes, so #85 widened the window rather than moving it. Refusing v2 here would have been
-/// the one outcome a migration may not produce — a working deployment that stops loading on upgrade
-/// — in exchange for nothing, since no published sink exists to be protected from the old shape.
+/// The runtime half: the window `export` actually resolves to — exactly the current version
+/// (THE DESIGN §11.8: one version per kind). The 1.5.5 sink (v2, bare response) is refused at boot.
 #[test]
-fn export_abi_window_admits_the_pre_envelope_sink_and_the_enveloped_one() {
-    assert_eq!(
-        crate::registry::supported_abi("export"),
-        &[2, 3],
-        "v1 must not load (1.5.3 removed the `audit` stream); v2 (bare response) and v3 (the #85 \
-         envelope) must both load"
-    );
+fn export_abi_window_is_the_current_version_only() {
+    assert_eq!(crate::registry::supported_abi("export"), &[3]);
 }
