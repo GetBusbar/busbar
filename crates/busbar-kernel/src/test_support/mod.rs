@@ -2303,12 +2303,14 @@ pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthBoundary, OperatorWords,
 };
 
-/// The SigV4 helpers a dependent crate's tests sign an inbound request with: the identity unit's
-/// own, named here because the kernel's `sigv4` re-export path is gone (D3).
+/// The SigV4 helpers a test signs an inbound request with, named once here because the
+/// `busbar_kernel::sigv4` re-export path is gone (D3).
 pub mod sigv4 {
     pub use busbar_contract::redacted::sha256_hex;
-    pub use busbar_kernel_identity::egress_auth::sigv4::{format_amz_time, uri_encode_path};
-    pub use busbar_kernel_identity::ingress_sigv4::{sign_v4, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
+    pub use busbar_kernel_identity::{
+        egress_auth::sigv4::{format_amz_time, uri_encode_path},
+        ingress_sigv4::{sign_v4, CLOCK_SKEW_SECS, X_AMZ_CONTENT_SHA256, X_AMZ_DATE},
+    };
 }
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's

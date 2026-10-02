@@ -39,7 +39,7 @@ use busbar_contract::upstream::StatusClass;
 use busbar_kernel::handlers::op_for;
 use busbar_kernel::plane_host::OnExhaustedInput as OnExhausted;
 use busbar_kernel::{
-    auth::{present_caller, CallerCredential as KernelCallerCredential},
+    auth::{present_caller, uri_encode_path, CallerCredential as KernelCallerCredential},
     breaker::{classify as classify_disposition, normalize_raw_error, parse_retry_after},
     // The kernel diagnostic codes the engine's modules emit, named once here for all of them.
     diagnostics::{
@@ -59,8 +59,6 @@ use busbar_kernel::{
     handlers::{request_handler, Op, OpDispatch},
     proto::convert_headers,
 };
-// The SigV4 path canonicaliser: the plane's own (byte-identical to the identity unit's).
-use busbar_plane_llm::exchange::attempt::uri_encode_path;
 // App-retype WEDGE 3 (THE FLIP): the engine no longer names core's `state::App`. The forward
 // path threads the neutral `host: &Arc<dyn EngineHost>` (minted core-side, carried on the arrival) and
 // the plane's own `rt: &Arc<NativeRuntime>` (resolved off the host slot) instead. Every `app.X` reach
