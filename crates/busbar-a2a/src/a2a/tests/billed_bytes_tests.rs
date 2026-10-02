@@ -277,6 +277,74 @@ async fn a_hop_refused_before_the_socket_counts_nothing() {
     );
 }
 
+/// **A HOP REFUSED BEFORE THE SOCKET KEEPS NO FEE (Q35).** At `agents.fees.per_request: 2`, the
+/// CONTROL hop reaches the dying backend (a 401 trips its breaker) and keeps its fee of 2; the three
+/// submissions after it are admitted — the admission counts a fee unit each — and then refused by
+/// the open breaker before the socket. Each gives its fee back: the bucket reads 2, not 8, and only
+/// the hop that left has a request on the ledger.
+#[tokio::test]
+async fn a_hop_refused_before_the_socket_keeps_no_fee() {
+    crate::testkit::install_test_seams();
+    let limits = vec![per_day(LimitMetric::Budget, 1_000)];
+    let h = harness_priced(
+        Outcome::Answers(401, "denied".to_string()),
+        None,
+        limits.clone(),
+    )
+    .await;
+    let (s1, b1) = call(&h).await;
+    assert_eq!(s1, 502, "the control hop reaches the dying backend: {b1}");
+    for n in 1..=3 {
+        let (status, body) = call(&h).await;
+        assert_eq!(
+            status, 503,
+            "call {n} is refused by the open breaker: {body}"
+        );
+    }
+    assert_eq!(
+        h.sent().len(),
+        1,
+        "only the control hop reached the backend"
+    );
+
+    let deploy = config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\nagents:\n  fees: { per_request: 2 }\n",
+    )
+    .expect("the config parses");
+    let root = config::resolve(&deploy, &Default::default()).expect("resolves");
+    let group = GroupCfg {
+        limits,
+        ..Default::default()
+    };
+    let groups = [("g".to_string(), group)].into();
+    let cost = CostModel::resolve_parts(None, 0, &groups).with_plane_fees(&root.plane_fees);
+    let priced: std::sync::Arc<dyn CostKit> = std::sync::Arc::new(cost);
+    h.gov.flush_budgets();
+    let read = h
+        .gov
+        .derived_bucket_usage(&*priced, "group:g@day", "day", true, crate::host_now())
+        .expect("the group reads");
+    assert_eq!(
+        read.spend_cents, 2,
+        "the hop that left keeps its fee of 2; the three refused before the socket keep none"
+    );
+
+    h.gov.flush_metering();
+    let requests: u64 = h
+        .gov
+        .store()
+        .list_metering(busbar_kernel::governance::metering_bucket(crate::host_now()))
+        .expect("metering reads back")
+        .into_iter()
+        .filter(|r| r.provider == "a2a")
+        .map(|r| r.requests)
+        .sum();
+    assert_eq!(
+        requests, 1,
+        "only the hop that left is a request on the ledger"
+    );
+}
+
 /// **`agents.fees.per_request` BOOTS AND CHARGES; `agents.fees.per_session` REFUSES** (ARCHITECT
 /// ruling, fees). Each hop is admitted under the plane-qualified pool, one fee unit on the plane's
 /// fee lane, so a fee of 2 reads 2 × 3 = 6 over three hops. The plane opens no session account, so a

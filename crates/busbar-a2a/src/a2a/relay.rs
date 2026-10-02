@@ -1679,6 +1679,9 @@ fn prepare<'a>(
     // build) and none of it reaches a backend, so counting an attempt for one of those would report
     // traffic at an agent busbar never contacted. See `count_leg_failure` for the other half.
     busbar_kernel::telemetry::upstream_attempt_on(call.agent_id, framed_leg(call.framing));
+    if let Some(bytes) = call.bytes {
+        bytes.mark_left();
+    }
     Ok((framed_url, pin, request))
 }
 
