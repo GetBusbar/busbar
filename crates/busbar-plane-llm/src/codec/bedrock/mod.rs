@@ -1138,7 +1138,8 @@ fn set_preceding_block_cache_control(blocks: &mut [crate::codec::ir::IrBlock]) {
                 *cache_control = cc;
             }
             // Json is a tool-result member only; the positional stash carries the marker.
-            crate::codec::ir::IrBlock::Json(_) => {}
+            crate::codec::ir::IrBlock::Json(_)
+            | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
         }
     }
 }
@@ -2110,7 +2111,8 @@ pub fn bedrock_response_to_eventstream(
             IrBlock::ToolResult { .. }
             | IrBlock::Image { .. }
             | IrBlock::Media { .. }
-            | IrBlock::Json(_) => {}
+            | IrBlock::Json(_)
+            | IrBlock::HostedToolRecord { .. } => {}
         }
     }
 

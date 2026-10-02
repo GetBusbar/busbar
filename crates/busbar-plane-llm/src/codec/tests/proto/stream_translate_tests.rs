@@ -478,6 +478,7 @@ fn test_all_protocols_nonstream_write_read_roundtrip_preserves_text() {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         };
         let body = proto.writer().write_response(&resp);
         let back = proto.reader().read_response(&body).unwrap_or_else(|e| {
@@ -1361,6 +1362,7 @@ fn stream_anthropic_single_citations_project_to_valid_gemini_citation_metadata()
             end_index: Some(3),
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }]),
     };
     for url in ["https://x/1", "https://x/2", "https://x/3"] {
@@ -1413,6 +1415,7 @@ fn redacted_reasoning_drops_on_writers_without_a_native_form() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     // Bind each writer to a local (interior-mutable per-stream state).
@@ -4998,6 +5001,7 @@ fn test_buffered_as_stream_remaps_tool_ids_exactly_once() {
         system_fingerprint: None,
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     // The engine's order: prepare the answer for the ingress client FIRST (that is where the id is
     // reshaped), then synthesize the client's native stream from the prepared answer.
