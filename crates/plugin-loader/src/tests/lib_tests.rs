@@ -1671,6 +1671,32 @@ fn dyn_proof_store_with_fake_call() -> Option<DynStore> {
     dyn_proof_store_with_fake_call_at_abi(busbar_contract::abi::cold::ABI_VERSION)
 }
 
+/// The 1.5.5 store payload schema (v2) the legacy store wire speaks. No loaded plugin states it
+/// since THE DESIGN §11.8 (the registry refuses it at boot); these suites hold the wire until it is
+/// deleted.
+const PUBLISHED_STORE_SCHEMA: u32 = 2;
+
+/// [`dyn_proof_store_with_fake_call`] bound to a chosen payload schema, so a test can hold the
+/// PUBLISHED one (v2) rather than the schema this binary was built against.
+fn dyn_proof_store_with_fake_call_at_abi(abi_version: u32) -> Option<DynStore> {
+    let path = store_proof_plugin_path()?;
+    let bytes = std::fs::read(&path).expect("read the in-tree store proof's cdylib");
+    let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-example")
+        .expect("stage the in-tree store proof for the fake-call harness");
+    let mut raw = wire_up_raw(
+        lib,
+        "{}",
+        "fake-call-example".to_string(),
+        abi_kind::STORE,
+        abi_kind::STORE,
+        Some(staged),
+    )
+    .expect("wire up raw");
+    raw.call = fake_call;
+    raw.free = fake_free;
+    Some(DynStore::new(raw, abi_version))
+}
+
 /// Run `op` against a store whose seam returns `(status, body)`, once per shape.
 fn under_old_plugin_shapes<T: std::fmt::Debug + PartialEq>(
     store: &DynStore,

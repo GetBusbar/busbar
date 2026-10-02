@@ -87,8 +87,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_extract_error_bad_api_key_classifies_as_auth_harddown", "gemini bad key classifies HardDown auth"),
     ]),
     ("PB-11", &[
-        ("test", "supported_abi_auth_floor_admits_v1", "the auth window [1,2]"),
-        ("test", "a_v2_store_artifact_is_accepted_at_load", "a v2 store artifact loads through the adapter"),
+        ("test", "supported_abi_is_one_version_per_kind", "one current version per kind (THE DESIGN 11.8)"),
+        ("test", "a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild", "a published 1.5.5 plugin is refused at boot naming the rebuild (C21)"),
         ("test", "untrusted_is_skipped_not_fatal_but_reference_fails_loud", "an untrusted plugin is logged and skipped, never dlopened"),
         ("gate", "scripts/signing-gate.sh", "signed loads; unsigned, wrong-key and tampered manifests refused with the literal messages"),
     ]),
@@ -597,7 +597,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
 /// that asserts the OPPOSITE of a binding is not a proof; it is a design/code conflict.
 pub static NOTES: &[(&str, &str)] = &[
     ("PB-7", "Resolved 2026-09-05 in 1.5.5: the shed was restored; proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency|inbound-shed|n8 cell."),
-    ("PB-11", "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only."),
+    ("PB-11", "Resolved 2026-10-02 by THE DESIGN 11.8 (ruling C21/ABI-o1): the loader accepts one version per kind; registry_tests.rs supported_abi_is_one_version_per_kind pins the windows and a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild the refusal; the oracle cell plugins.abi|json-contract|store-sqlite records 1.5.5 serving the published plugin (accepted difference ABI-o1)."),
     ("PB-84", "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth@hooks-webrequest records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged."),
     ("PB-13", "data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the tripwire is armed anyway: no_data_dir_neutrality.rs boots a 1.5.5-shaped config and asserts no ledger/journal/hold/WAL series and no keyset/data-dir boot line, and the ops.scrape no-ledger-series cell records the same absence against 1.5.5."),
     ("PB-15", "No WAL or high-water concept exists in crates/ yet; the neutrality tripwire (no_data_dir_neutrality.rs + the ops.scrape no-ledger-series cell) turns red the day a WAL series or boot line appears on a config without data_dir."),

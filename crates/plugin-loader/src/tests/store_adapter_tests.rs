@@ -41,7 +41,7 @@ use std::sync::Arc;
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
 fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    let store = dyn_proof_store_with_fake_call_at_abi(crate::registry::STORE_ABI_FLOOR)?;
+    let store = dyn_proof_store_with_fake_call_at_abi(PUBLISHED_STORE_SCHEMA)?;
     Some(StoreAdapter::over_loaded_store(store))
 }
 
@@ -61,8 +61,7 @@ fn slice_request(wanted: u64, epoch: u64) -> SliceRequest {
 #[test]
 fn no_payload_schema_this_binary_can_load_speaks_the_added_operations() {
     let window = crate::registry::supported_abi("store");
-    let (floor, max) = (window[0], window[1]);
-    assert_eq!(floor, 2, "the published store schema is the floor");
+    let (floor, max) = (window[0], window[window.len() - 1]);
     for abi in floor..=max {
         assert!(
             !speaks_new_ops(abi),
@@ -280,7 +279,7 @@ impl TestClock {
 
 /// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
 fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
-    let store = dyn_proof_store_with_fake_call_at_abi(crate::registry::STORE_ABI_FLOOR)?;
+    let store = dyn_proof_store_with_fake_call_at_abi(PUBLISHED_STORE_SCHEMA)?;
     let abi_version = store.abi_version;
     Some(StoreAdapter::with_clock(
         Arc::new(store),
@@ -401,7 +400,7 @@ fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
     };
     assert_eq!(
         adapter.abi_version(),
-        crate::registry::STORE_ABI_FLOOR,
+        PUBLISHED_STORE_SCHEMA,
         "the adapter carries the schema the manifest declared"
     );
     let row = VirtualKey {
@@ -424,6 +423,163 @@ fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
         keys[0].id, "vk_pass",
         "the row is the plugin's, not the shim's"
     );
+}
+
+/// Two handles onto one adapter are one shim: the kernel's slice draw and the verbs unit's restore
+/// see each other, because the root binds all three seams to the SAME store.
+#[test]
+fn the_three_seams_share_one_shim() {
+    let Some(adapter) = adapter_over_published_schema() else {
+        eprintln!("skip: the store proof's cdylib is not built");
+        return;
+    };
+    let slices: Arc<dyn SliceStore> = adapter.slice_store();
+    let verbs: Arc<dyn VerbStore + Send + Sync> = adapter.verb_store();
+    let mut shipper = adapter.shipper();
+
+    slices.reserve(&slice_request(9, 0)).expect("reserve");
+    shipper
+        .ship(&[Record::new(2, 1, b"x".to_vec())])
+        .expect("ship");
+    assert_eq!(adapter.shim_state().slices_outstanding, 1);
+    assert_eq!(adapter.shim_state().records_shipped, 1);
+    verbs.store_restore(&admin(), "b-2").expect("store_restore");
+    assert_eq!(
+        adapter.shim_state().slices_outstanding,
+        0,
+        "the verbs unit's restore is visible to the kernel's slice seam: one shim, one node"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The round trip through the PUBLISHED sqlite store.
+// ---------------------------------------------------------------------------------------------
+
+/// The published sqlite store tarball, fetched by pinned digest into the oracle cache by
+/// `testing/shadow-oracle/fetch-plugin.sh`. `None` when the cache is cold — the script downloads on
+/// demand and a unit test must not, so this reads the cache the oracle already fills.
+pub(super) fn cached_published_store_tarball() -> Option<std::path::PathBuf> {
+    let asset_triple = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        _ => return None,
+    };
+    let root = match std::env::var_os("BUSBAR_ORACLE_CACHE") {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".cache/busbar-oracle"),
+    };
+    let versions = std::fs::read_dir(
+        root.join("plugins")
+            .join(crate::tests::artifact("published_store_plugin_id")),
+    )
+    .ok()?;
+    versions
+        .flatten()
+        .filter_map(|tag| {
+            std::fs::read_dir(tag.path())
+                .ok()?
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.contains(asset_triple) && n.ends_with(".tar.gz"))
+                })
+        })
+        .max()
+}
+
+/// A round trip through the REAL published store: the adapter hands out the loaded plugin, a key
+/// written through it comes back from sqlite, and every added operation is still the shim's silent
+/// answer on the same handle.
+///
+/// This is the artifact the oracle's store-persist cell drives — the same tarball, by the same
+/// pinned digest — so what it proves about the published wire and what this proves about the
+/// adapter are about one binary.
+#[test]
+fn a_round_trip_through_the_published_store() {
+    let Some(tarball_path) = cached_published_store_tarball() else {
+        let id = crate::tests::artifact("published_store_plugin_id");
+        eprintln!(
+            "skip: no published {id} tarball in the oracle cache (run \
+             `testing/shadow-oracle/fetch-plugin.sh {id}`)"
+        );
+        return;
+    };
+    let bytes = std::fs::read(&tarball_path).expect("read the cached published tarball");
+    let unpacked = tarball::unpack(&bytes).expect("the published tarball unpacks");
+    assert_eq!(unpacked.manifest.kind, "store");
+    assert_eq!(
+        unpacked.manifest.abi_version, PUBLISHED_STORE_SCHEMA,
+        "the published store is at the published payload schema"
+    );
+
+    let db = std::env::temp_dir().join(format!(
+        "busbar-store-adapter-roundtrip-{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&db);
+    let cfg = serde_json::json!({ "db_path": db.to_string_lossy() }).to_string();
+    let store = match load_dyn_store_from_bytes_at_abi(
+        &unpacked.lib_bytes,
+        &cfg,
+        "published-store",
+        &unpacked.manifest.kind,
+        unpacked.manifest.abi_version,
+    ) {
+        Ok(store) => store,
+        Err(e) => panic!("the published store must load on this binary: {e}"),
+    };
+    let adapter = StoreAdapter::over_loaded_store(store);
+    assert!(
+        !adapter.speaks_new_ops(),
+        "a published store predates the added operations"
+    );
+
+    // The published wire: write a key through the adapter's pass-through handle and read it back
+    // out of sqlite.
+    let key = VirtualKey {
+        id: "vk_roundtrip".to_string(),
+        generation_hash: "gen".to_string(),
+        name: "adapter-roundtrip".to_string(),
+        enabled: true,
+        created_at: 1_700_000_000,
+        ..Default::default()
+    };
+    adapter
+        .store()
+        .put_key(&key)
+        .expect("the published wire takes a key");
+    let read_back = adapter
+        .store()
+        .get_key("vk_roundtrip")
+        .expect("the published wire reads a key")
+        .expect("the row is there");
+    assert_eq!(read_back.id, "vk_roundtrip");
+    assert_eq!(read_back.name, "adapter-roundtrip");
+
+    // And on the same handle, every added operation is the shim's silent answer.
+    let log = EventLog::default();
+    let mut failures: Vec<String> = Vec::new();
+    tracing::subscriber::with_default(log.clone(), || {
+        sweep_every_seam_method(&adapter, &mut failures);
+    });
+    assert!(
+        failures.is_empty(),
+        "on the published store no seam method may error; failures:\n{}",
+        failures.join("\n")
+    );
+    assert!(
+        log.lines().is_empty(),
+        "on the published store no seam method may log; captured:\n{}",
+        log.lines().join("\n")
+    );
+    assert_eq!(adapter.shim_state().records_shipped, 1);
+
+    drop(adapter);
+    let _ = std::fs::remove_file(&db);
 }
 
 /// A store with no rows at all, for tests that touch only the node-local shim.
@@ -498,7 +654,7 @@ impl busbar_contract::records::RecordStore for NoRows {
 /// by joining; it waits a generous multiple of the park and fails if the read has not answered.
 #[test]
 fn reading_the_shim_state_never_wedges_against_a_concurrent_restore() {
-    let adapter = StoreAdapter::new(Arc::new(NoRows), crate::registry::STORE_ABI_FLOOR);
+    let adapter = StoreAdapter::new(Arc::new(NoRows), PUBLISHED_STORE_SCHEMA);
     // Something to read, so the answer is checked rather than merely arriving.
     adapter
         .slice_store()

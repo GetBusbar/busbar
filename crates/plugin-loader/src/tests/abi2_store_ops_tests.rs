@@ -11,9 +11,8 @@
 //!
 //! The ABI-2 plugin is modelled the only way it can be from this side of the seam: the in-tree
 //! store proof (the store both-ways fixture) with its `call` seam faked to answer
-//! `STATUS_UNSUPPORTED` for the verbs it predates. The store really does load at the
-//! `supported_abi` floor of 2, so the `DynStore` path exercised is the one a real 1.5.x plugin
-//! lands on.
+//! `STATUS_UNSUPPORTED` for the verbs it predates. The registry refuses a v2 store at boot
+//! (THE DESIGN §11.8); this suite holds the legacy `DynStore` path until it is deleted.
 //!
 //! The log-line half is captured with a thread-local `tracing` subscriber on the calling thread —
 //! the thread `DynStore`'s own diagnostics fire on. (The FFI call itself runs on a loader-owned
