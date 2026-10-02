@@ -846,7 +846,7 @@ impl HookAxis for HookRows {
 
     fn first_party(&self, module: &str) -> bool {
         self.find(module).is_some_and(|c| {
-            matches!(c.origin, Origin::Linked(_)) || self.first_party.iter().any(|n| *n == c.name)
+            matches!(c.origin, Origin::Linked(_)) || self.first_party.contains(&c.name)
         })
     }
 }
