@@ -6,7 +6,7 @@ on: pull_request
 concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
 permissions: { contents: read }
 env:
-  RELEASE_REF: f4c8b01d09c07d82726a6750aad70dcf087687b8
+  RELEASE_REF: 9ba9ab5c90ac6436fc5edbb450e645d1cdc45a10
   SHA: ${{ github.event.pull_request.head.sha }}
   TO: ${{ github.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -23,7 +23,6 @@ jobs:
   hop:
     needs: preflight
     runs-on: ${{ needs.preflight.outputs.runner }}
-    concurrency: { group: "promote-hop-${{ github.base_ref }}", cancel-in-progress: false }
     timeout-minutes: 330
     steps:
       - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v4

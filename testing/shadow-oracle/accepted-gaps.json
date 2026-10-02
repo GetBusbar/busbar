@@ -123,6 +123,12 @@
       "cells": "^decisions\\|",
       "owner": "decisions plane (KERNEL<>PLUGINS step 33/34)",
       "rationale": "no 1.5.5 baseline; predev fence. 1.5.5 had no decisions plane. On predev the plane is inert, so there is nothing to fence yet: it claims no path, admits no caller, has no build or routes, and places no byte on the wire (crates/busbar/src/root/plane_decisions.rs PLANE_HOOKS: claims empty, admission/build/routes None). A `decisions:` block reaches only the config-validation surface. The fence for its metering and egress is recorded from a named predev build, into fence/predev-<sha>/ under the same ARCHITECT rules, in the landing that makes the plane serve. Until then no decisions| cell exists, and this entry names that on purpose."
+    },
+    {
+      "id": "streams-family",
+      "cells": "^streams\\|",
+      "owner": "streaming-plane",
+      "rationale": "the streams family is a 1.6.0 plane: 1.5.5 never served it, so the 1.5.5 golden holds no reference for these cells and owed-baseline.txt never listed them. Their reference is golden/1.6.0-pre/, recorded from the pinned pre-fold predev build, and the cells carry no 1.5.5 claim."
     }
   ]
 }

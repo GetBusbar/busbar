@@ -90,7 +90,7 @@ pub fn signing_preimage(digest_hex: &str) -> Vec<u8> {
 /// [`signing_preimage`], under the checkpoint's own domain.
 #[must_use]
 pub fn checkpoint_preimage(body: &[u8]) -> Vec<u8> {
-    let digest_hex = crate::legacy::sha256_hex(body);
+    let digest_hex = crate::digest::sha256_hex(body);
     let mut preimage = Vec::with_capacity(CHECKPOINT_SIGNATURE_DOMAIN.len() + 1 + digest_hex.len());
     preimage.extend_from_slice(CHECKPOINT_SIGNATURE_DOMAIN.as_bytes());
     preimage.push(0);
@@ -193,7 +193,7 @@ fn nibble(c: u8) -> Result<u8, KeyError> {
 /// the whole point of publishing a key set is that nothing has to be taken on trust from us.
 #[must_use]
 pub fn key_id_of(public_key: &VerifyingKey) -> String {
-    let digest = crate::legacy::sha256_hex(public_key.as_bytes());
+    let digest = crate::digest::sha256_hex(public_key.as_bytes());
     // `sha256_hex` returns 64 lowercase hex characters, so the first 16 are the first 8 bytes.
     digest[..KEY_ID_BYTES * 2].to_string()
 }

@@ -16,7 +16,7 @@
 # and running the SAME legs there is the same proof, minus the queue.
 #
 # ── WHAT IT PROVES, AND WHERE THAT LIST COMES FROM ──────────────────────────────────────────────
-# Exactly the legs keep-proof.yml runs, in the same order, scoped by the SAME .keep-proof.toml the
+# Exactly the legs the removed keep-proof.yml runs, in the same order, scoped by the SAME .keep-proof.toml the
 # workflow reads off the branch root: workspace build, rustfmt, clippy -D warnings, the named test
 # packages (or the whole suite when the branch names none), `cargo xtask gate --all`, `xtask
 # selftest`, and the shadow oracle over `families` against the published 1.5.5 recording. A green
@@ -50,7 +50,7 @@ done
 # cells, 6.9%, and three package names that do not exist), every proof after it quietly proved
 # less while printing the same GREEN. So:
 #   * the file is read from the TIP BEING PROVEN (`git show <tip>:.keep-proof.toml`), the same place
-#     keep-proof.yml reads it — not from whatever the operator's working tree happens to hold;
+#     the removed keep-proof.yml reads it — not from whatever the operator's working tree happens to hold;
 #   * with no file, the fallback is logged as what it is: EVERY family, the WHOLE workspace;
 #   * a file present on anything that is not a `keep-*` branch (detached HEAD included) is REFUSED,
 #     exit 3, before a box is touched. There is no override: a hand-back that wants a scope is a
@@ -286,7 +286,7 @@ step "shadow oracle (filter: $FAMILIES)"
 # "(the oracle leg is NOT part of this verdict)" -- five lines above an unconditional "PROVE-REMOTE:
 # GREEN". A bin/oracle that lost its exec bit (a tracked 100644 makes `[ -x ]` false on every
 # checkout; two scripts in this tree are tracked that way today) or went missing turned an
-# eight-leg proof into seven with a GREEN verdict, while manual-keep-proof.yml runs ./bin/oracle
+# eight-leg proof into seven with a GREEN verdict, while the removed manual-keep-proof.yml runs ./bin/oracle
 # unconditionally. A missing or non-executable oracle is a RED, never a skip. `--selftest` extracts
 # this exact function and drives it.
 oracle_leg() {

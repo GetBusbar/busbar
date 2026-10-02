@@ -19,8 +19,8 @@ use crate::budget::LifetimeBudget;
 use crate::cell::{BreakerCell, BreakerState, FailureEffect, ProbeAdmit};
 use crate::cfg::{BreakerCfg, TripConfig, TripMode};
 use crate::classify::{
-    classify, normalize_raw_error, parse_retry_after, status_class_from_str, CanonicalSignal,
-    Disposition, NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
+    classify, normalize_raw_error, status_class_from_str, CanonicalSignal, Disposition,
+    NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
 };
 use crate::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
 use busbar_contract::caps::{KernelSeal, Pass, Route};
@@ -189,51 +189,6 @@ fn test_unmapped_structured_type_falls_through_to_http() {
     };
     let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
     assert_eq!(sig.class, StatusClass::RateLimit);
-}
-
-#[test]
-fn retry_after_accepts_the_http_date_form() {
-    // A hand-written IMF-fixdate (see module doc: no `httpdate` dependency to format one, so the
-    // string is written out directly), read against a `now` the caller supplies.
-    let secs = parse_retry_after("Sun, 06 Nov 2286 08:49:37 GMT", NOW);
-    let n = secs.expect("HTTP-date Retry-After must parse");
-    assert!(n > 0);
-}
-
-#[test]
-fn retry_after_accepts_delay_seconds() {
-    assert_eq!(parse_retry_after("120", NOW), Some(120));
-}
-
-#[test]
-fn a_past_http_date_retry_after_floors_at_zero() {
-    assert_eq!(
-        parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT", NOW),
-        Some(0)
-    );
-}
-
-#[test]
-fn a_missing_retry_after_is_none() {
-    assert_eq!(parse_retry_after("", NOW), None);
-}
-
-/// An HTTP-date `Retry-After` is "how long until that instant", which needs a NOW — and the now is
-/// the kernel's, handed in, not one this crate reads for itself. Stated as the arithmetic it is: the
-/// answer is exactly the remaining seconds against the supplied `now`, and moving `now` moves the
-/// answer by the same amount, with no reference to the wall clock at all.
-#[test]
-fn an_http_date_retry_after_is_a_pure_function_of_the_supplied_now() {
-    // 2286-11-20T17:46:40Z == 10_000_000_000 seconds since the epoch.
-    const DATE: &str = "Thu, 20 Nov 2286 17:46:40 GMT";
-    const INSTANT: u64 = 10_000_000_000;
-    assert_eq!(parse_retry_after(DATE, INSTANT - 300), Some(300));
-    assert_eq!(parse_retry_after(DATE, INSTANT - 1), Some(1));
-    assert_eq!(parse_retry_after(DATE, INSTANT), Some(0));
-    assert_eq!(parse_retry_after(DATE, INSTANT + 5_000), Some(0));
-    // The delay-seconds form ignores `now` entirely, whatever it is.
-    assert_eq!(parse_retry_after("120", 0), Some(120));
-    assert_eq!(parse_retry_after("120", u64::MAX), Some(120));
 }
 
 #[test]

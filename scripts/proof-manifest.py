@@ -14,7 +14,7 @@
 # renders. It carries NO source, NO secrets, NO file contents, NO internal URLs. The companion guard
 # scripts/check-proof-manifest-public.mjs fails the build if anything source-like appears.
 #
-# HONESTY RULE (carried from qa/segments.toml). A source that did not actually run renders `unknown`,
+# HONESTY RULE (carried from the removed qa/segments.toml). A source that did not actually run renders `unknown`,
 # never green. A report-only gate (plane-grep today) renders `report-only`, never `pass`. A class
 # verdict is `fail` if any non-reserved source failed, `unknown` if any is unknown and none failed,
 # else `pass`. The collator never launders a not-run into a pass.

@@ -6,7 +6,7 @@
 # regression. Two independent guards now make that structurally impossible:
 #   1. The BUILD-PROVENANCE STAMP (crates/busbar/build.rs → `busbar --build-info`) makes every binary
 #      self-report profile / opt-level / debug-assertions / pgo. CI asserts a release build reports
-#      the optimized values (see the build-provenance gate in ci.yml).
+#      the optimized values (see the build-provenance gate in the removed ci.yml).
 #   2. THIS SCRIPT locks the SOURCE OF those values: `[profile.release]` in the workspace Cargo.toml.
 #      `lto` and the profile `debug-assertions` bit are NOT exposed to a build script (so build.rs
 #      cannot bake them), which is exactly why they need a source-level lock. If someone weakens the

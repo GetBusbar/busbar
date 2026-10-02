@@ -5,7 +5,7 @@
 # THE BAR: an exporter is verified only when a real busbar has loaded it, a request has been driven,
 # and the SINK actually received the export. "busbar booted with the exporter configured" is the
 # it-loaded claim; delivery is the it-works claim, and only a receiver outside busbar tells them
-# apart. docker.yml once recorded a bundle rebuild that "succeeded" having shipped only `test` — the
+# apart. the removed docker.yml once recorded a bundle rebuild that "succeeded" having shipped only `test` — the
 # same it-built-≠-it-works gap, one layer down.
 #
 #   1. an export instance (module under test) points at a sink fixture URL

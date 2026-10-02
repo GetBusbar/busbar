@@ -14,6 +14,7 @@ use super::render::{
     apply_readme, apply_region, fill, readme_headings, readme_skeleton, region_of, render,
     restructure, rust_version_of, Mode, Templates,
 };
+use super::sync::missing_release_branches;
 use crate::ctx::Ctx;
 
 const PIN: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -69,23 +70,26 @@ struct Repo {
     files: BTreeMap<String, String>,
     branches: Vec<String>,
     protection: BTreeMap<String, Value>,
+    /// The rule types the org ruleset puts on a branch (`rules/branches/<b>`).
+    rules: BTreeMap<String, Vec<String>>,
     settings: Settings,
     /// No commits at all (GitHub's 409 "Git Repository is empty").
     empty: bool,
 }
 
 impl Default for Repo {
-    /// The fleet norm's settings: public, Apache-2.0, `dev` the default branch.
+    /// The fleet norm's settings: public, Apache-2.0, `main` the default branch.
     fn default() -> Repo {
         Repo {
             files: BTreeMap::new(),
             branches: Vec::new(),
             protection: BTreeMap::new(),
+            rules: BTreeMap::new(),
             empty: false,
             settings: Settings {
                 visibility: "public".into(),
                 license: "Apache-2.0".into(),
-                default_branch: "dev".into(),
+                default_branch: "main".into(),
             },
         }
     }
@@ -95,7 +99,11 @@ impl Default for Repo {
 struct Fake {
     repos: RefCell<BTreeMap<String, Repo>>,
     unreadable: Vec<String>,
+    unreadable_rules: Vec<String>,
 }
+
+/// What the org ruleset "release branches: main + qa (owner say-so only)" puts on a branch.
+const RULESET: [&str; 4] = ["creation", "deletion", "non_fast_forward", "update"];
 
 impl Remote for Fake {
     fn is_empty(&self, repo: &str) -> Result<bool, String> {
@@ -127,6 +135,16 @@ impl Remote for Fake {
     }
     fn protection(&self, repo: &str, b: &str) -> Result<Option<Value>, String> {
         Ok(self.repos.borrow()[repo].protection.get(b).cloned())
+    }
+    fn release_rules(&self, repo: &str, b: &str) -> Result<Vec<String>, String> {
+        if self.unreadable_rules.iter().any(|r| r == repo) {
+            return Err("HTTP 403: Resource not accessible".into());
+        }
+        Ok(self.repos.borrow()[repo]
+            .rules
+            .get(b)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 
@@ -160,8 +178,11 @@ fn conforming(fleet: &Fleet, t: &Templates) -> Fake {
             branches: vec!["dev".into(), "qa".into(), "main".into()],
             ..Default::default()
         };
-        for b in &r.branches.clone() {
-            r.protection.insert(b.clone(), as_github_reports(&spec));
+        // Classic protection is `dev`'s alone; `main` and `qa` are the ruleset's.
+        r.protection.insert("dev".into(), as_github_reports(&spec));
+        for b in ["main", "qa"] {
+            r.rules
+                .insert(b.into(), RULESET.iter().map(|x| x.to_string()).collect());
         }
         let skeleton = readme_skeleton(fleet, p, t).unwrap();
         for f in render(fleet, p, t).unwrap() {
@@ -200,6 +221,7 @@ fn conforming(fleet: &Fleet, t: &Templates) -> Fake {
     Fake {
         repos: RefCell::new(repos),
         unreadable: vec![],
+        unreadable_rules: vec![],
     }
 }
 
@@ -286,6 +308,7 @@ fn the_render_is_a_pure_function_of_the_registry_and_the_templates() {
         paths,
         [
             ".busbar-ref",
+            ".github/dependabot.yml",
             ".github/workflows/ci.yml",
             ".github/workflows/consumer-verify.yml",
             ".github/workflows/release.yml",
@@ -426,9 +449,9 @@ fn every_kind_of_drift_is_red_and_names_the_repo_and_the_file() {
     );
 
     let f = plant(&|r| {
-        r.protection.remove("main");
+        r.protection.remove("dev");
     });
-    one(&f, a, "protection main", "unprotected");
+    one(&f, a, "protection dev", "unprotected");
 
     let f = plant(&|r| {
         r.files.insert(
@@ -662,9 +685,9 @@ fn a_top_level_path_outside_the_twin_shape_is_red() {
     // ...and anything under .github/ the render does not produce, not just workflows and scripts.
     let f = plant(&|r| {
         r.files
-            .insert(".github/dependabot.yml".into(), "version: 2\n".into());
+            .insert(".github/FUNDING.yml".into(), "github: x\n".into());
     });
-    one(&f, a, ".github/dependabot.yml", "unmanaged");
+    one(&f, a, ".github/FUNDING.yml", "unmanaged");
 }
 
 #[test]
@@ -750,12 +773,12 @@ fn settings_outside_the_fleet_norm_are_red() {
     assert_eq!(f.len(), 1, "{f:#?}");
     let f = plant(&|r| r.settings.license = "none".into());
     one(&f, a, "license", "is `none`");
-    let f = plant(&|r| r.settings.default_branch = "main".into());
+    let f = plant(&|r| r.settings.default_branch = "dev".into());
     one(
         &f,
         a,
         "default branch",
-        "is `main`, the fleet norm is `dev`",
+        "is `dev`, the fleet norm is `main`",
     );
     assert_eq!(f.len(), 1, "{f:#?}");
     // Settings that cannot be read are a finding, not a pass.
@@ -1038,4 +1061,147 @@ fn an_export_sinks_registry_alias_is_its_module_name() {
     ] {
         assert_eq!(fleet.plugin(repo).unwrap().alias, module, "{repo}");
     }
+}
+
+#[test]
+fn main_and_qa_are_held_to_the_org_ruleset_and_dev_to_the_classic_protection() {
+    let (fleet, t) = (fixture(), templates());
+    let a = "busbar-store-alpha";
+    let plant = |edit: &dyn Fn(&mut Repo)| {
+        let fake = conforming(&fleet, &t);
+        edit(fake.repos.borrow_mut().get_mut(a).unwrap());
+        run(&fleet, &t, &fake)
+    };
+    // The control: no classic protection on main or qa, the ruleset on both: green.
+    assert!(run(&fleet, &t, &conforming(&fleet, &t)).is_empty());
+    // A branch the ruleset does not cover (no `update` rule) is named, repo and branch.
+    for b in ["main", "qa"] {
+        let f = plant(&|r| {
+            r.rules
+                .insert(b.into(), vec!["deletion".into(), "creation".into()]);
+        });
+        one(&f, a, &format!("ruleset {b}"), "`update`");
+        assert_eq!(f.len(), 1, "{f:#?}");
+        let f = plant(&|r| {
+            r.rules.remove(b);
+        });
+        one(&f, a, &format!("ruleset {b}"), "`update`");
+    }
+    // Classic protection on main or qa is not compared: it is dev's alone.
+    let f = plant(&|r| {
+        r.protection
+            .insert("main".into(), serde_json::json!({"x": 1}));
+    });
+    assert!(f.is_empty(), "{f:#?}");
+    // dev is still compared against protection.json.
+    let f = plant(&|r| {
+        r.protection.get_mut("dev").unwrap()["required_pull_request_reviews"]
+            ["required_approving_review_count"] = Value::from(0);
+    });
+    one(
+        &f,
+        a,
+        "protection dev",
+        "differs from .github/fleet/protection.json",
+    );
+    // A missing release branch is the branch finding alone, not a second ruleset finding.
+    let f = plant(&|r| r.branches.retain(|b| b != "qa"));
+    one(&f, a, "branch qa", "missing");
+    assert_eq!(f.len(), 1, "{f:#?}");
+    // Rules that cannot be read are a finding, not a pass.
+    let mut fake = conforming(&fleet, &t);
+    fake.unreadable_rules.push(a.into());
+    one(&run(&fleet, &t, &fake), a, "ruleset main", "could not read");
+}
+
+#[test]
+fn sync_reports_a_missing_release_branch_and_never_touches_main_or_qa() {
+    let fleet = fixture();
+    let have = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        missing_release_branches(&fleet, &have(&["dev"])),
+        have(&["qa", "main"])
+    );
+    assert_eq!(
+        missing_release_branches(&fleet, &have(&["dev", "qa", "main", "fix/x"])),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        missing_release_branches(&fleet, &have(&["dev", "main"])),
+        have(&["qa"])
+    );
+    // The ARCHITECT seeds main and qa as orphans in an owner-approved window; sync holds no code
+    // path that creates a ref or applies classic protection to a release branch.
+    let src = include_str!("sync.rs");
+    for forbidden in [
+        "\"POST\"",
+        "git/refs\"",
+        "branches/{b}/protection",
+        "HEAD:refs/heads/{b}",
+    ] {
+        assert!(!src.contains(forbidden), "sync.rs holds {forbidden}");
+    }
+}
+
+#[test]
+fn dependabot_is_a_fleet_file_every_repo_carries_identically() {
+    let (fleet, t) = (fixture(), templates());
+    let path = ".github/dependabot.yml";
+    let content = |p: &super::registry::Plugin| {
+        render(&fleet, p, &t)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("the render does not own {path}"))
+    };
+    let (a, b) = (content(&fleet.plugins[0]), content(&fleet.plugins[1]));
+    assert_eq!(a.mode, Mode::Whole);
+    assert_eq!(
+        a.content, b.content,
+        "every repo carries the identical file"
+    );
+    assert!(
+        a.content.starts_with(
+            "# Dependency updates target dev; they reach main only through a release.\n"
+        ),
+        "{}",
+        a.content
+    );
+    let v: Value = serde_yaml::from_str(&a.content).expect("dependabot.yml is YAML");
+    assert_eq!(v["version"], 2);
+    let updates = v["updates"].as_array().unwrap();
+    let ecosystems: Vec<&str> = updates
+        .iter()
+        .map(|u| u["package-ecosystem"].as_str().unwrap())
+        .collect();
+    assert_eq!(ecosystems, ["cargo", "github-actions"]);
+    for u in updates {
+        assert_eq!(u["directory"], "/");
+        assert_eq!(u["target-branch"], "dev");
+        assert_eq!(u["schedule"]["interval"], "weekly");
+    }
+    // The render owns it: a conforming repo is green, a drifted or missing one is red.
+    let plant = |edit: &dyn Fn(&mut Repo)| {
+        let fake = conforming(&fleet, &t);
+        edit(
+            fake.repos
+                .borrow_mut()
+                .get_mut("busbar-store-alpha")
+                .unwrap(),
+        );
+        run(&fleet, &t, &fake)
+    };
+    let f = plant(&|r| {
+        r.files.insert(path.into(), "version: 2\n".into());
+    });
+    one(&f, "busbar-store-alpha", path, "differs from the render");
+    let f = plant(&|r| {
+        r.files.remove(path);
+    });
+    one(
+        &f,
+        "busbar-store-alpha",
+        path,
+        "missing (the render owns it)",
+    );
 }

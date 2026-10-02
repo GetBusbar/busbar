@@ -9,7 +9,7 @@ a failing run proves only that the code agrees with itself. This script hashes t
 framing of the same fixtures by hand, with nothing but the standard library, so the pinned values
 come from a second implementation of the encoding.
 
-The framing (`legacy::Framing::LengthPrefixed`): every field is an 8-byte big-endian length followed
+The framing (`digest::Framing::LengthPrefixed`): every field is an 8-byte big-endian length followed
 by its bytes; a number is its 8-byte big-endian value, framed the same way; the digest is SHA-256 of
 the concatenation, in lower-case hex.
 

@@ -927,14 +927,14 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::hash_chain_links_and_verifies",
+     "ref": "crates/busbar-kernel/src/tests/audit_ring_tests.rs::hash_chain_links_and_verifies",
      "proves": "genesis prev_hash is empty; tamper breaks verify",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::export_load_roundtrip_resumes_chain",
+     "ref": "crates/busbar-kernel/src/tests/audit_ring_tests.rs::export_load_roundtrip_resumes_chain",
      "proves": "restore resumes the sequence",
      "source": "curated",
      "status": "mapped"
@@ -955,7 +955,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification, test:crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::hash_chain_links_and_verifies, test:crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::export_load_roundtrip_resumes_chain, test:admin_audit_chain_boot_verifies_from_frozen_bytes, oracle-cell:admin.ops|GetAudit|ok"
+   "verdict_detail": "test:a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification, test:crates/busbar-kernel/src/tests/audit_ring_tests.rs::hash_chain_links_and_verifies, test:crates/busbar-kernel/src/tests/audit_ring_tests.rs::export_load_roundtrip_resumes_chain, test:admin_audit_chain_boot_verifies_from_frozen_bytes, oracle-cell:admin.ops|GetAudit|ok"
   },
   {
    "id": "PB-21",
@@ -3158,15 +3158,15 @@
   {
    "id": "PB-66",
    "surface": "request and response headers",
-   "binding": "OWNER DECISION: an ALLOW-LISTED client request header rides upstream verbatim, scoped per egress dialect so a beta header sent for one dialect never leaks to a different one on a cross-protocol route or failover — `anthropic-beta` and `anthropic-version` only to a matching `anthropic` upstream, `OpenAI-Beta` only to a matching `openai` or `responses` upstream; every OTHER client request header is dropped, never forwarded; egress headers are otherwise the four-group construction (credential, three-case `content-type`, pinned native-SDK `user-agent`, `accept` with the Bedrock eventstream override) plus the allow-listed set above; on the response `retry-after` is busbar-SET (no dialect parses an upstream `Retry-After`); `content-type` is the upstream's VERBATIM on a same-protocol relay (`engine/mod.rs:2300-2321`) and otherwise the three cases of dialects :1304 — `application/json` for buffered and error responses, `writer.streaming_content_type()` when reframed (SSE, the gemini JSON array, bedrock `application/vnd.amazon.eventstream`), upstream verbatim same-protocol, and the relayed set is PER INGRESS WRITER — `ingress_relayed_response_header_names()`: bedrock `[\"x-amzn-requestid\", \"x-amzn-errortype\"]` (UUID v4 when absent), anthropic `[\"request-id\"]` (synthesized `req_01<24 base62>` when absent), every other dialect `[]`; everything else stripped; `advanced.response_headers.*` injections per PB-73 are outside this list",
-   "inventory": "dialects (:1305-1316; `proto/mod.rs:695-697`), (:997); `engine/egress.rs` `FORWARDED_CLIENT_HEADERS`",
-   "note": "CONTRADICTED in part by green tests: crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs client_anthropic_beta_reaches_matching_anthropic_upstream and client_openai_beta_reaches_matching_openai_upstream assert an allowlisted anthropic-beta / OpenAI-Beta client header DOES ride upstream, where the binding says NO client request header is forwarded. Owner decision needed.",
+   "binding": "OWNER HARD RULE 2026-10-02 (BUSBAR IS INVISIBLE TO UPSTREAMS): on a same-dialect route EVERY client request header rides upstream verbatim except what busbar governs — the dialects' credential headers and tenant selectors (declared as data per dialect), replaced from busbar's config, and the per-connection mechanics (hop-by-hop, `host`, `content-length`), re-derived; a translated route (client dialect differs from the upstream's, including on failover) forwards no client header; egress headers are otherwise the four-group construction (credential, three-case `content-type`, pinned native-SDK `user-agent`, `accept` with the Bedrock eventstream override), a forwarded client value replacing the default of the same name; on the response `retry-after` is busbar-SET (no dialect parses an upstream `Retry-After`); `content-type` is the upstream's VERBATIM on a same-protocol relay (`engine/mod.rs:2300-2321`) and otherwise the three cases of dialects :1304 — `application/json` for buffered and error responses, `writer.streaming_content_type()` when reframed (SSE, the gemini JSON array, bedrock `application/vnd.amazon.eventstream`), upstream verbatim same-protocol, and the relayed set is PER INGRESS WRITER — `ingress_relayed_response_header_names()`: bedrock `[\"x-amzn-requestid\", \"x-amzn-errortype\"]` (UUID v4 when absent), anthropic `[\"request-id\"]` (synthesized `req_01<24 base62>` when absent), every other dialect `[]`; everything else stripped; `advanced.response_headers.*` injections per PB-73 are outside this list",
+   "inventory": "dialects (:1305-1316; `proto/mod.rs:695-697`), (:997); `crates/busbar-plane-llm/src/dialect.rs` `governed_headers`",
+   "note": "Resolved 2026-10-02: the owner's HARD RULE (BUSBAR IS INVISIBLE TO UPSTREAMS) replaced the allowlist; crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs pins every same-dialect client header forwarded, the governed and per-connection ones dropped, and none on a translated route.",
    "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "non_allowlisted_client_header_is_not_forwarded",
-     "proves": "a non-allowlisted client header never reaches the upstream",
+     "ref": "same_dialect_anthropic_forwards_every_client_header",
+     "proves": "every same-dialect client header reaches the upstream",
      "source": "curated",
      "status": "mapped"
     },
@@ -3228,7 +3228,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:non_allowlisted_client_header_is_not_forwarded, test:test_egress_accept_matches_native_sdk, test:test_egress_ua_versions_are_pinned_and_present, test:test_ingress_stream_content_type_by_protocol, test:test_bedrock_ingress_success_carries_amzn_request_id, test:test_forward_once_bedrock_error_relays_amzn_headers, test:test_anthropic_ingress_success_carries_request_id_header, test:test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once, test:test_synth_anthropic_request_id_is_well_formed"
+   "verdict_detail": "test:same_dialect_anthropic_forwards_every_client_header, test:test_egress_accept_matches_native_sdk, test:test_egress_ua_versions_are_pinned_and_present, test:test_ingress_stream_content_type_by_protocol, test:test_bedrock_ingress_success_carries_amzn_request_id, test:test_forward_once_bedrock_error_relays_amzn_headers, test:test_anthropic_ingress_success_carries_request_id_header, test:test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once, test:test_synth_anthropic_request_id_is_well_formed"
   },
   {
    "id": "PB-67",

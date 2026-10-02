@@ -2826,7 +2826,7 @@ pub static REGISTRY: &[Registration] = &[
         name: "instance-noun-neutrality",
         batch: 1,
         // RELEASE-TIME, NOT PER-PUSH (item 185): red by design on a tracked burndown baseline, run
-        // in full by release-stage.yml's `done-oracle` job on the sha being staged, on the same
+        // in full by the removed release-stage.yml's `done-oracle` job on the sha being staged, on the same
         // footing as its Tier::Full siblings (reachability, plane-purity-strict, kind-isolation-ship).
         tier: Tier::Full,
         build: || Box::new(instance_noun_neutrality::InstanceNounNeutralityGate::check()),
@@ -2837,7 +2837,7 @@ pub static REGISTRY: &[Registration] = &[
         name: "plane-pricing-blindness",
         batch: 1,
         // RELEASE-TIME, NOT PER-PUSH (item 185): red by design on a tracked burndown baseline, run
-        // in full by release-stage.yml's `done-oracle` job on the sha being staged, on the same
+        // in full by the removed release-stage.yml's `done-oracle` job on the sha being staged, on the same
         // footing as its Tier::Full siblings (reachability, plane-purity-strict, kind-isolation-ship).
         tier: Tier::Full,
         build: || Box::new(plane_pricing_blindness::PlanePricingBlindnessGate),
