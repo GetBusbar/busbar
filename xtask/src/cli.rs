@@ -38,6 +38,8 @@ usage:
   cargo xtask dialect wire [--write | --diff] <dialect|all>
   cargo xtask dialect wire --diff-files <old.wire.json> <new.wire.json>
   cargo xtask dialect compile
+  cargo xtask readme-assets [<outdir>]   (redraw the README SVGs from assets/readme/data.json + install.json)
+  cargo xtask install-sizes [--check]    (re-measure the image sizes from the registries into assets/readme/install.json)
   cargo xtask [--root <worktree>] ship \"<PR title>\" [--body <file>]   (lane-* only: merge predev, pre-flight, push, PR, auto-merge)
   cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
 
@@ -61,6 +63,8 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "perf-ab",
     "perf-ab-mock",
     "dialect",
+    "readme-assets",
+    "install-sizes",
     "ship",
 ];
 
@@ -132,6 +136,17 @@ pub fn main(args: &[String]) -> i32 {
                 crate::wire_lock::main(&cx, &args[1..])
             }
             Ok(cx) => crate::dialect::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        // THE README GENERATORS. Not gates: a human runs them after a re-measure. `readme-assets`
+        // WRITES the figure SVGs from `assets/readme/data.json`; `install-sizes` reads the image
+        // registries and WRITES `assets/readme/install.json` (or, with `--check`, reports drift).
+        Some("readme-assets") => match open_ctx() {
+            Ok(cx) => crate::readme_assets::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        Some("install-sizes") => match open_ctx() {
+            Ok(cx) => crate::install_sizes::main(&cx, &args[1..]),
             Err(code) => code,
         },
         // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
