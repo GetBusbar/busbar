@@ -25,6 +25,7 @@ jobs:
       # The pre-flight is busbar-release's Rust CLI (preflight.json is the one list): it sizes the hop
       # (runner= to $GITHUB_OUTPUT) and runs every pre-flight check against the candidate. Built with no
       # default features (no GitHub client), as the CLI documents for this job.
+      # package-selector: busbar-release-cli -- .github/workflows/promote.yml -- the package lives in the busbar-release checkout at RELEASE_REF (working-directory busbar-release), not in this workspace
       - id: pre
         working-directory: busbar-release
         run: cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release -- ci preflight
