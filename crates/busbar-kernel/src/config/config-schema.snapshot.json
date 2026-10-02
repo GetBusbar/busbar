@@ -2282,10 +2282,14 @@
           "type": "String"
         },
         "crv": {
-          "optional": false,
+          "optional": true,
           "type": "String"
         },
         "d": {
+          "optional": true,
+          "type": "String"
+        },
+        "e": {
           "optional": true,
           "type": "String"
         },
@@ -2297,12 +2301,16 @@
           "optional": false,
           "type": "String"
         },
+        "n": {
+          "optional": true,
+          "type": "String"
+        },
         "x": {
-          "optional": false,
+          "optional": true,
           "type": "String"
         },
         "y": {
-          "optional": false,
+          "optional": true,
           "type": "String"
         }
       },

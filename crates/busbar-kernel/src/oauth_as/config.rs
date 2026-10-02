@@ -101,15 +101,24 @@ pub struct StaticClientJwks {
     pub keys: Vec<StaticClientJwk>,
 }
 
-/// One PUBLIC ES256 key. Not `deny_unknown_fields`: RFC 7517 s4 has a reader ignore members it does
-/// not understand (`use`, `key_ops`, `x5c`, ...), and a JWK pasted from a client's own tooling
-/// carries them. `d` is named so it can be REFUSED: a private key has no business in a config file.
+/// One PUBLIC key: EC P-256 for ES256 (`crv`, `x`, `y`) or RSA for PS256 (`n`, `e`, RFC 7518
+/// s6.3.1), the two algorithms FAPI 2.0 s5.4.1 admits. Not `deny_unknown_fields`: RFC 7517 s4 has a
+/// reader ignore members it does not understand (`use`, `key_ops`, `x5c`, ...), and a JWK pasted
+/// from a client's own tooling carries them. `d` is named so it can be REFUSED: every private JWK
+/// carries it (RFC 7518 s6.2.2.1, s6.3.2.1), and a private key has no business in a config file.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct StaticClientJwk {
     pub kty: String,
-    pub crv: String,
-    pub x: String,
-    pub y: String,
+    #[serde(default)]
+    pub crv: Option<String>,
+    #[serde(default)]
+    pub x: Option<String>,
+    #[serde(default)]
+    pub y: Option<String>,
+    #[serde(default)]
+    pub n: Option<String>,
+    #[serde(default)]
+    pub e: Option<String>,
     #[serde(default)]
     pub kid: Option<String>,
     #[serde(default)]
@@ -381,6 +390,12 @@ fn validate_clients(clients: &[StaticClientCfg]) -> Result<(), AsCfgError> {
                 "jwks.keys is empty; a private_key_jwt client needs a key",
             ));
         }
+        let kty = &client.jwks.keys[0].kty;
+        if client.jwks.keys.iter().any(|k| &k.kty != kty) {
+            return Err(refuse(
+                "a client's keys must share one algorithm: all EC (ES256) or all RSA (PS256)",
+            ));
+        }
         for key in &client.jwks.keys {
             if key.d.is_some() {
                 return Err(refuse(
@@ -388,22 +403,52 @@ fn validate_clients(clients: &[StaticClientCfg]) -> Result<(), AsCfgError> {
                      private key stays with the client",
                 ));
             }
-            if key.kty != "EC" || key.crv != "P-256" {
-                return Err(refuse("only EC P-256 keys (ES256) are accepted"));
+            validate_public_jwk(key).map_err(refuse)?;
+        }
+    }
+    Ok(())
+}
+
+/// The shape of one public key: EC P-256 for ES256, or RSA of at least 2048 bits for PS256.
+fn validate_public_jwk(key: &StaticClientJwk) -> Result<(), &'static str> {
+    let decoded = |v: &Option<String>| {
+        v.as_deref().and_then(|v| {
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, v).ok()
+        })
+    };
+    match key.kty.as_str() {
+        "EC" => {
+            if key.crv.as_deref() != Some("P-256") {
+                return Err("an EC key must be P-256 (ES256)");
             }
             if key.alg.as_deref().is_some_and(|alg| alg != "ES256") {
-                return Err(refuse("a key's `alg`, when given, must be ES256"));
+                return Err("an EC key's `alg`, when given, must be ES256");
             }
-            let coordinate = |c: &str| {
-                base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, c)
-                    .is_ok_and(|b| b.len() == 32)
-            };
+            let coordinate = |c: &Option<String>| decoded(c).is_some_and(|b| b.len() == 32);
             if !coordinate(&key.x) || !coordinate(&key.y) {
-                return Err(refuse(
-                    "a P-256 coordinate (`x`, `y`) is 32 bytes of unpadded base64url",
-                ));
+                return Err("a P-256 coordinate (`x`, `y`) is 32 bytes of unpadded base64url");
             }
         }
+        "RSA" => {
+            // RS256 is what FAPI 2.0 s5.4.1 forbids; an RSA key here signs PS256 or nothing.
+            if key.alg.as_deref().is_some_and(|alg| alg != "PS256") {
+                return Err("an RSA key's `alg`, when given, must be PS256");
+            }
+            let modulus = decoded(&key.n).unwrap_or_default();
+            let significant = modulus.iter().skip_while(|b| **b == 0).collect::<Vec<_>>();
+            let bits = significant.first().map_or(0, |top| {
+                significant.len() * 8 - top.leading_zeros() as usize
+            });
+            if bits < 2048 {
+                return Err(
+                    "an RSA modulus (`n`) must be at least 2048 bits of unpadded base64url",
+                );
+            }
+            if decoded(&key.e).is_none_or(|e| e.iter().all(|b| *b == 0)) {
+                return Err("an RSA key carries its public exponent (`e`)");
+            }
+        }
+        _ => return Err("only EC P-256 (ES256) and RSA (PS256) keys are accepted"),
     }
     Ok(())
 }

@@ -29,7 +29,7 @@ use oauth_as::store::MemoryStorage;
 use busbar_kernel::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
 use busbar_kernel::oauth_as::config::AsIdentity;
 
-use super::signer::{RingEs256Key, RingEs256Verifier};
+use super::signer::{RingEs256Key, RingEs256Verifier, RingPs256Verifier};
 
 /// The store this plane runs on: [`MemoryStorage`] behind the ONE changed read that serves Client
 /// ID Metadata Documents. See [`super::cimd::CimdStore`].
@@ -180,6 +180,9 @@ impl AsPlane {
                 // `private_key_jwt` assertion. `oauth-as` refuses every signed credential whose
                 // algorithm has no verifier, and advertises exactly the algorithms that have one.
                 .with_jws_verifier(Arc::new(RingEs256Verifier))
+                // PS256, FAPI 2.0 s5.4.1's other algorithm: an RSA-keyed provisioned client's
+                // assertions and DPoP proofs. The plain posture's document advertises neither list.
+                .with_jws_verifier(Arc::new(RingPs256Verifier))
                 .with_registration_policy(Box::new(super::policy::OpenRegistration)),
         );
 
@@ -195,6 +198,7 @@ impl AsPlane {
         let plain_metadata = (!identity.fapi2()).then(|| plain_metadata(&server));
         let mut dpop_verifiers = oauth_as::jwt::JwsVerifiers::new();
         dpop_verifiers.install(Arc::new(RingEs256Verifier));
+        dpop_verifiers.install(Arc::new(RingPs256Verifier));
 
         Ok(Self {
             identity,
@@ -311,8 +315,9 @@ impl AsPlane {
     }
 }
 
-/// `oauth_as.clients:` as `oauth-as` clients: confidential, authenticating with an RFC 7523 ES256
-/// assertion against the configured PUBLIC keys, for the authorization-code and refresh grants,
+/// `oauth_as.clients:` as `oauth-as` clients: confidential, authenticating with an RFC 7523
+/// assertion against the configured PUBLIC keys — ES256 for EC keys, PS256 for RSA keys, one
+/// algorithm per client (boot refuses a mix), for the authorization-code and refresh grants,
 /// with the operator's `default_grant` as their whole scope (the same ceiling every other client
 /// lands under). The keys were validated at boot (`AsIdentity::from_cfg`): EC P-256, no `d`.
 fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
@@ -324,18 +329,12 @@ fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
             client_id: oauth_as::client::ClientId::new(&c.client_id),
             auth: oauth_as::client::ClientAuth::ConfidentialAssertion {
                 keys: oauth_as::client_assertion::AssertionKeys::PublicKeys {
-                    alg: oauth_as::jwt::JwsAlg::Es256,
-                    keys: c
-                        .jwks
-                        .keys
-                        .iter()
-                        .map(|k| oauth_as::jwt::Jwk::Ec {
-                            crv: oauth_as::jwt::EcCurve::P256,
-                            x: k.x.clone(),
-                            y: k.y.clone(),
-                            kid: k.kid.clone(),
-                        })
-                        .collect(),
+                    alg: if c.jwks.keys.first().is_some_and(|k| k.kty == "RSA") {
+                        oauth_as::jwt::JwsAlg::Ps256
+                    } else {
+                        oauth_as::jwt::JwsAlg::Es256
+                    },
+                    keys: c.jwks.keys.iter().map(public_jwk).collect(),
                 },
             },
             grant_types: vec![
@@ -349,6 +348,26 @@ fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
             registration: None,
         })
         .collect()
+}
+
+/// One validated `oauth_as.clients:` key as `oauth-as`'s JWK. `AsIdentity::from_cfg` already
+/// refused every shape but EC P-256 and RSA, so the members read here are present.
+fn public_jwk(k: &busbar_kernel::oauth_as::config::StaticClientJwk) -> oauth_as::jwt::Jwk {
+    let member = |v: &Option<String>| v.clone().unwrap_or_default();
+    if k.kty == "RSA" {
+        oauth_as::jwt::Jwk::Rsa {
+            n: member(&k.n),
+            e: member(&k.e),
+            kid: k.kid.clone(),
+        }
+    } else {
+        oauth_as::jwt::Jwk::Ec {
+            crv: oauth_as::jwt::EcCurve::P256,
+            x: member(&k.x),
+            y: member(&k.y),
+            kid: k.kid.clone(),
+        }
+    }
 }
 
 /// THE FAPI 2.0 SECURITY PROFILE POSTURE, written onto a plain `ServerConfig`. The values are the

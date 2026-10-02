@@ -87,7 +87,8 @@ listen: "0.0.0.0:8080"
 #
 #   # Confidential private_key_jwt (RFC 7523) clients you provision yourself; none by default.
 #   # Registration over the wire cannot carry a key, so this is how a FAPI 2.0 client gets a
-#   # client_id. The PUBLIC half of an EC P-256 (ES256) key only - a key carrying `d` is refused.
+#   # client_id. PUBLIC keys only, EC P-256 (ES256) or RSA of 2048+ bits (PS256), one algorithm per
+#   # client; a key carrying `d` is refused.
 #   # Each client may ask for no more than default_grant.
 #   clients:
 #     - client_id: payments-app
