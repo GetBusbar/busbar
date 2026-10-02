@@ -127,3 +127,8 @@ impl Plugin for LlmPlane {
         AbiVersion(1)
     }
 }
+
+/// CANARY (lane PIPELINE, do not merge): a deliberate type error the predev hop must deny.
+pub fn pipeline_canary_type_error() -> u32 {
+    "not a u32"
+}
