@@ -472,101 +472,6 @@ fn file_literals(rel: &str, text: &str) -> std::sync::Arc<Vec<(usize, String)>> 
     out
 }
 
-/// THE INSTANCE NAMES THAT ARE ALSO AN HTTP WORD (TODO: "a word collision never raises a cell: it
-/// gets a mask"; ARCHITECT ruling 2026-09-30, kernel × auth instance-ratchet +14). `header` is the
-/// auth instance `busbar-auth-header`'s id, and it is also the word HTTP uses for a request line:
-/// RFC 9728's `bearer_methods_supported: ["header"]` (customer bytes), the config's credential
-/// placement, a JSON object's key, a panic message. When the census learned `header` from the new
-/// crate's name, 8 pre-existing kernel lines of that word started counting as kernel × auth.
-///
-/// A `"header"` literal is masked ONLY in these contexts (see [`word_collisions`]):
-///
-/// * PROSE — it sits in a `.rs` `//` comment (a doc quoting a value);
-/// * A PANIC MESSAGE — it is the whole argument of `.expect(…)`;
-/// * AN OBJECT KEY — it is followed by `:` (not `::`): `json!({"header": …})`, a `.json` key;
-/// * THE RFC 9728/6750 BEARER METHOD — its line, or the non-blank line before it, names
-///   `bearer_methods_supported`;
-/// * A CREDENTIAL PLACEMENT — in a `.json`, an element of a `"variants": [` array of a type whose
-///   name ends `Placement` (the config schema's `CredentialPlacement`);
-/// * AN OPENAPI LOCATION — the string value of an OpenAPI `"in":` key (a parameter's or a
-///   securityScheme's location, customer bytes: `"in": "header"`; ARCHITECT ruling 2026-09-30,
-///   WIRE-AUTH RISE (a), `busbar-core-admin × auth` +31).
-///
-/// Everything else still counts: `m == "header"`, `lookup("header", …)`, `const AUTH_MODULE: &str
-/// = "header"`, a match arm, a list element. The mask only ever LOWERS a cell; it never re-spells
-/// a name (Q81), and a literal spelled any other way (`" header"`, a `concat!`) is not masked.
-pub(super) const COLLIDING_LITERALS: &[&str] = &["header"];
-
-/// How many `"word"` literals on line `at` (0-based) of `lines`, a file at `rel`, are the WORD and
-/// not the instance (see [`COLLIDING_LITERALS`]).
-fn word_collisions(rel: &str, lines: &[&str], at: usize, word: &str) -> usize {
-    let Some(line) = lines.get(at).copied() else {
-        return 0;
-    };
-    let low = line.to_ascii_lowercase();
-    let quoted = format!("\"{word}\"");
-    let prose_at = if rel.ends_with(".rs") {
-        super::comment_start(line)
-    } else {
-        None
-    };
-    let prev = lines[..at]
-        .iter()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .copied()
-        .unwrap_or("");
-    let bearer_method =
-        line.contains("bearer_methods_supported") || prev.contains("bearer_methods_supported");
-    let placement = rel.ends_with(".json") && placement_variant(lines, at);
-    let mut n = 0;
-    let mut from = 0;
-    while let Some(off) = low[from..].find(&quoted) {
-        let i = from + off;
-        let j = i + quoted.len();
-        from = j;
-        let before = line[..i].trim_end();
-        let after = line[j..].trim_start();
-        let prose = prose_at.is_some_and(|p| i >= p);
-        let message = before.ends_with(".expect(") && after.starts_with(')');
-        let key = after.starts_with(':') && !after.starts_with("::");
-        let openapi_in = before.ends_with("\"in\":");
-        if prose || message || key || bearer_method || placement || openapi_in {
-            n += 1;
-        }
-    }
-    n
-}
-
-/// Whether line `at` of a `.json` sits in a `"variants": [` array of a type named `…Placement`.
-fn placement_variant(lines: &[&str], at: usize) -> bool {
-    let indent = |l: &str| l.len() - l.trim_start().len();
-    let mut k = at;
-    let open = loop {
-        if k == 0 {
-            return false;
-        }
-        k -= 1;
-        let t = lines[k].trim();
-        if t.contains(']') {
-            return false;
-        }
-        if t.ends_with('[') {
-            if !t.starts_with("\"variants\"") {
-                return false;
-            }
-            break k;
-        }
-    };
-    let depth = indent(lines[open]);
-    let owner = lines[..open]
-        .iter()
-        .rev()
-        .find(|l| indent(l) < depth && l.trim_end().ends_with('{'));
-    let name = owner.map_or("", |l| l.trim().trim_end_matches(&['{', ':', ' ', '"'][..]));
-    name.trim_start_matches('"').ends_with("Placement")
-}
-
 /// THE FIVE AXES, MEASURED over every `Family::Neutral` crate.
 pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) -> Instances {
     let by_dir: BTreeMap<&str, &CrateInfo> = crates
@@ -595,28 +500,10 @@ pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) 
         let Some(c) = by_dir.get(dir.as_str()) else {
             continue;
         };
-        let lits = file_literals(rel, text);
-        let collides = |l: &String| COLLIDING_LITERALS.contains(&l.as_str());
-        let lines: Vec<&str> = if lits.iter().any(|(_, l)| collides(l)) {
-            text.lines().collect()
-        } else {
-            Vec::new()
-        };
-        // Per line and colliding word: how many of its literals are still the word, not the name.
-        let mut words_left: BTreeMap<(usize, &str), usize> = BTreeMap::new();
-        for (line, lit) in lits.iter() {
+        for (line, lit) in file_literals(rel, text).iter() {
             let Some(kinds) = lookup.get(lit) else {
                 continue;
             };
-            if let Some(w) = COLLIDING_LITERALS.iter().find(|w| **w == lit.as_str()) {
-                let left = words_left
-                    .entry((*line, *w))
-                    .or_insert_with(|| word_collisions(rel, &lines, line - 1, w));
-                if *left > 0 {
-                    *left -= 1;
-                    continue;
-                }
-            }
             for (k, owners) in kinds {
                 // A crate is never measured against its own name.
                 if owners.contains(&c.name.as_str()) {
@@ -936,109 +823,6 @@ pub fn selftest<'a>(
         &["unattributed-instance-name", "frobnicate", "FROB_MODULE"],
     ));
 
-    // A WORD COLLISION NEVER RAISES A CELL: IT GETS A MASK — and the mask is not a hole. Core
-    // writing `"header"` as the HTTP word, in every masked shape the kernel holds (a doc, a panic
-    // message, a JSON key, RFC 9728's bearer method, the config's credential placement), is no
-    // auth instance; the same file with ONE real reference to the `header` auth instance added
-    // counts exactly that one. The auth-header manifest is planted only if the tree has none, so
-    // the pair measures the `header` instance whatever the crate's future.
-    let header_words = || {
-        let mut ov = super::plant(
-            cx,
-            &format!("{CORE}/src/planted_header_words.rs"),
-            "/// `bearer_methods_supported` is `[\"header\"]` and is not a parameter.\n\
-             pub fn doc() -> serde_json::Value {\n    \
-                 let _ = std::str::from_utf8(b\"x\").expect(\"header\");\n    \
-                 let _ = serde_json::json!({\"header\": 1, \"trim_start\": false});\n    \
-                 let _ = (\n        \"bearer_methods_supported\",\n        \
-                 vec![\"header\"],\n    );\n    \
-                 serde_json::json!({\"bearer_methods_supported\": [\"header\"]})\n\
-             }\n",
-        );
-        let schema = "{\n  \"types\": {\n    \"CredentialPlacement\": {\n      \"kind\": \
-                      \"enum\",\n      \"variants\": [\n        \"bearer\",\n        \
-                      \"header\"\n      ]\n    }\n  }\n}\n";
-        ov.set(
-            format!("{CORE}/src/planted-schema.snapshot.json"),
-            schema.to_string(),
-        );
-        const AUTH_HEADER: &str = "crates/busbar-auth-header/Cargo.toml";
-        if !cx.exists(AUTH_HEADER) {
-            ov.set(
-                AUTH_HEADER,
-                "[package]\nname = \"busbar-auth-header\"\nversion = \"0.0.0\"\n".to_string(),
-            );
-        }
-        ov
-    };
-    report.push(prove_rows_green(
-        cx,
-        gate,
-        "`\"header\"` as the HTTP word (doc, panic message, JSON key, bearer method, credential \
-         placement) is no auth instance",
-        &[ROW_MATRIX],
-        header_words(),
-    ));
-    let mut real = header_words();
-    real.set(
-        format!("{CORE}/src/planted_header_pick.rs"),
-        "pub fn pick(module: &str) -> bool {\n    module == \"header\"\n}\n".to_string(),
-    );
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "a real reference to the `header` auth instance still counts beside the masked words",
-        &[ROW_MATRIX],
-        real,
-        &[
-            "unlisted-instance",
-            "busbar-core-connector \u{d7} auth = 1",
-            "planted_header_pick.rs",
-        ],
-    ));
-
-    // THE OPENAPI LOCATION in core-admin: `"in": "header"` (customer bytes) is the HTTP word and
-    // leaves core-admin × auth where it was; a bare `"header"` instance literal in the same crate
-    // still raises it.
-    const ADMIN: &str = "crates/busbar-core-admin";
-    let openapi = || {
-        let mut ov = super::plant(
-            cx,
-            &format!("{ADMIN}/src/planted_openapi.json"),
-            "{\n  \"parameters\": [\n    {\n      \"in\": \"header\",\n      \"name\": \
-             \"If-Match\"\n    }\n  ],\n  \"adminToken\": {\"type\": \"apiKey\", \"in\": \
-             \"header\", \"name\": \"x\"}\n}\n",
-        );
-        const AUTH_HEADER: &str = "crates/busbar-auth-header/Cargo.toml";
-        if !cx.exists(AUTH_HEADER) {
-            ov.set(
-                AUTH_HEADER,
-                "[package]\nname = \"busbar-auth-header\"\nversion = \"0.0.0\"\n".to_string(),
-            );
-        }
-        ov
-    };
-    report.push(prove_rows_green(
-        cx,
-        gate,
-        "an OpenAPI `\"in\": \"header\"` location in core-admin is no auth instance",
-        &[ROW_MATRIX],
-        openapi(),
-    ));
-    let mut bare = openapi();
-    bare.set(
-        format!("{ADMIN}/src/planted_header_pick.rs"),
-        "pub fn pick(module: &str) -> bool {\n    module == \"header\"\n}\n".to_string(),
-    );
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "a bare `header` instance literal in core-admin still raises core-admin × auth",
-        &[ROW_MATRIX],
-        bare,
-        &["instance-ratchet", "busbar-core-admin \u{d7} auth"],
-    ));
-
     // A CRATE IS NEVER MEASURED AGAINST ITS OWN NAME — the store instance writing its own id is
     // the instance, not a neutral crate naming one.
     report.push(prove_rows_green(
@@ -1265,60 +1049,6 @@ mod tests {
         // …and a name split across a concat! is still one name to the per-file reading.
         let lits = file_literals("crates/x/src/a.rs", "let n = concat!(\"ot\", \"lp\");\n");
         assert!(lits.iter().any(|(_, l)| l == "otlp"), "{lits:?}");
-    }
-
-    #[test]
-    fn header_the_http_word_is_masked_and_header_the_instance_is_not() {
-        let n = |rel: &str, text: &str| {
-            let lines: Vec<&str> = text.lines().collect();
-            (0..lines.len())
-                .map(|at| word_collisions(rel, &lines, at, "header"))
-                .sum::<usize>()
-        };
-        // The kernel's eight shapes, one each.
-        let rs = "/// `bearer_methods_supported` is `[\"header\"]` and is not a parameter\n\
-                  /// `[\"header\"]` tells a conforming client not to try the others\n\
-                  doc.insert(\n    \"bearer_methods_supported\".into(),\n    \
-                  Value::from(vec![\"header\"]),\n);\n\
-                  assert_eq!(body[\"bearer_methods_supported\"], json!([\"header\"]));\n\
-                  HeaderValue::from_str(&sig).expect(\"header\"),\n\
-                  HeaderValue::from_str(&x).expect( \"header\" ),\n\
-                  serde_json::json!({\"header\": header, \"trim_start\": trim_start})\n";
-        assert_eq!(n("crates/k/src/a.rs", rs), 7);
-        let json = "{\n  \"CredentialPlacement\": {\n    \"kind\": \"enum\",\n    \
-                    \"variants\": [\n      \"bearer\",\n      \"header\"\n    ]\n  }\n}\n";
-        assert_eq!(
-            n("crates/k/src/config/config-schema.snapshot.json", json),
-            1
-        );
-        // OpenAPI locations, in a `.json` document and in a `.rs` `json!` literal.
-        let openapi = "        \"in\": \"header\",\n\
-                       \"adminToken\": {\"type\": \"apiKey\", \"in\": \"header\", \"name\": X},\n";
-        assert_eq!(n("crates/k/src/v1/json/openapi.json", openapi), 2);
-        assert_eq!(n("crates/k/src/v1/json/handlers.rs", openapi), 2);
-        // THE INSTANCE STILL COUNTS: a comparison, a call argument, a module constant, a match arm,
-        // a list element, a value after a key, and a variant of a type that is not a placement.
-        for real in [
-            "if module == \"header\" {",
-            "lookup_credential(\"header\", key)",
-            "pub const AUTH_MODULE_HEADER: &str = \"header\";",
-            "    \"header\" => Kind::Header,",
-            "const AUTHS: &[&str] = &[\"header\", \"sigv4\"];",
-            "json!({\"module\": \"header\"})",
-            "json!({\"within\": \"header\"})",
-            "path::to::x(\"header\")::y",
-        ] {
-            assert_eq!(n("crates/k/src/a.rs", real), 0, "{real}");
-        }
-        let modules =
-            "{\n  \"AuthModule\": {\n    \"variants\": [\n      \"header\"\n    ]\n  }\n}\n";
-        assert_eq!(n("crates/k/src/s.json", modules), 0);
-        // A prose `//` inside a string is not a comment, and the placement rule is `.json` only.
-        assert_eq!(
-            n("crates/k/src/a.rs", "let u = \"a//b\"; f(\"header\");"),
-            0
-        );
-        assert_eq!(n("crates/k/src/a.yaml", json), 0);
     }
 
     #[test]
