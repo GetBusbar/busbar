@@ -43,6 +43,8 @@
 
 /// The session revisions raised into, and lowered out of, the one dispatch.
 pub mod adapt;
+pub mod arrival;
+pub mod checks;
 pub mod claims;
 pub mod client;
 pub mod codec;

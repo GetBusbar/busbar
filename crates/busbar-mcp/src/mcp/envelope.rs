@@ -44,7 +44,6 @@
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use base64::Engine as _;
 
 use super::sse;
 // The kernel seams this file and `super::session_serve` both use, named in ONE line so the
@@ -692,16 +691,7 @@ pub(super) fn decode_param_sentinel(value: &str) -> Option<String> {
 }
 
 fn decode_sentinel(value: &str) -> Option<String> {
-    let Some(inner) = value
-        .strip_prefix("=?base64?")
-        .and_then(|v| v.strip_suffix("?="))
-    else {
-        return Some(value.to_string());
-    };
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(inner)
-        .ok()?;
-    String::from_utf8(bytes).ok()
+    busbar_plane_mcp::checks::decode_sentinel(value)
 }
 
 /// A header's value as UTF-8, or `None` when absent or not UTF-8. A non-UTF-8 header value cannot
