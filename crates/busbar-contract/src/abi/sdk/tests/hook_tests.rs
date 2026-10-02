@@ -658,7 +658,7 @@ extern "C" fn establish_pends(
     // SAFETY: every service `in` leads with a `ServiceHead`; `out` is the SDK's, live for the call.
     let (head, out) = unsafe { (*input.cast::<ServiceHead>(), &mut *out) };
     assert_eq!((head.op, head.handle.seq), (service::ESTABLISH, 0));
-    let o = if ESTABLISHED.fetch_add(1, Ordering::SeqCst) % 2 == 0 {
+    let o = if ESTABLISHED.fetch_add(1, Ordering::SeqCst).is_multiple_of(2) {
         Outcome::Pending
     } else {
         out.error = AbiStr {
