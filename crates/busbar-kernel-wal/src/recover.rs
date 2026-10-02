@@ -31,8 +31,11 @@
 //!
 //! A WHOLE frame that was altered after it was written is something else again, and is never cut
 //! silently wherever it sits, the tail included. A version-2 frame carries a header check over its
-//! fixed header fields: a write that stopped inside the header fails that check (torn), while a
-//! frame whose header checks and whose digest does not was written in full and changed afterwards.
+//! fixed header fields: a write that stopped inside the header fails that check and leaves nothing
+//! past it but zeros (torn), while a frame whose header checks and whose digest does not — or whose
+//! header does not check but which holds bytes past the check, its digest at least — was written in
+//! full and changed afterwards. "Torn" is a statement about the WRITE: a frame that is short, or
+//! zeros past the point the write stopped. A whole frame is never torn, whichever check it fails.
 //! Its record was acknowledged; a silent cut would drop a settlement the node had already made,
 //! and let recovery settle the unit again at its checkpoint. So it is CORRUPT, and the record's
 //! bytes as they now read are handed to the caller (`Quarantine::damaged`), which is the one place
@@ -57,7 +60,10 @@ use std::io;
 use std::path::PathBuf;
 
 use crate::backend::SegmentFactory;
-use crate::record::{checked_header, decode_frame, frame_version, FrameError, Record, FRAME_BYTES};
+use crate::record::{
+    checked_header, decode_frame, frame_version, unchecked_whole, written_whole, FrameError,
+    Record, FRAME_BYTES,
+};
 use crate::segment::Segment;
 
 /// How a scan of a segment ended.
@@ -128,8 +134,10 @@ pub struct Quarantine {
     /// Every record the set-aside bytes hold whose frames' HEADERS check, assembled as the bytes now
     /// read: a whole altered record (header checks, digest does not) and every acknowledged record
     /// behind the damage. They are gone from the log, and the caller reads what they named — a
-    /// settlement the node made must not be settled again as if it never happened. A frame whose
-    /// header does not check (a torn or unreadable one) contributes nothing.
+    /// settlement the node made must not be settled again as if it never happened. A whole
+    /// version-2 frame whose header does not check contributes its record as its bytes now read
+    /// (unverified, so a caller that cannot decode it holds back what it cannot rule out); a torn
+    /// or unreadable frame contributes nothing.
     pub damaged: Vec<Record>,
     /// When recovery set them aside, in milliseconds since the Unix epoch. The quarantine file's
     /// name carries the same number.
@@ -264,7 +272,7 @@ pub fn scan(segment: &Segment) -> io::Result<Recovered> {
         }
         let (header, payload) = match decode_frame(&frame) {
             Ok(decoded) => decoded,
-            Err(FrameError::NotAFrame) => {
+            Err(FrameError::NotAFrame) if frame.iter().all(|&b| b == 0) => {
                 // Zeros: preallocated space that was never written to. The ordinary end.
                 break;
             }
@@ -322,12 +330,15 @@ pub fn scan(segment: &Segment) -> io::Result<Recovered> {
     let len = segment.len()?;
     let mut beyond = look_past(segment, durable_end, stop_at, len)?;
     let unreadable_layout = matches!(stopped_because, Some(FrameError::UnknownVersion { .. }));
-    // A WHOLE frame altered after it was written: its header checks and its digest does not. The
-    // write that made it completed, so this is never a torn tail.
+    // A WHOLE frame altered after it was written: its header checks and its digest does not, or its
+    // header does not check and it holds bytes past the check. The write that made it completed, so
+    // this is never a torn tail.
     let altered = stopped_because.is_some_and(|why| {
         let mut stop_frame = [0u8; FRAME_BYTES];
         read_full(segment, stop_at, &mut stop_frame).unwrap_or(false)
-            && why.is_altered_whole_frame(frame_version(&stop_frame))
+            && (why.is_altered_whole_frame(frame_version(&stop_frame))
+                || (matches!(why, FrameError::HeaderMismatch | FrameError::NotAFrame)
+                    && written_whole(&stop_frame)))
     });
     let corrupt = beyond.verifies || unreadable_layout || altered;
     let damaged = if corrupt {
@@ -366,9 +377,10 @@ pub fn scan(segment: &Segment) -> io::Result<Recovered> {
 
 /// Every record in `[from, len)`, read frame by frame through each frame's HEADER CHECK (a
 /// version-2 frame) or its full verification (a version-1 frame), payloads joined as they now read.
-/// A frame that neither checks nor verifies is skipped, and so is a record whose parts do not run in
-/// order: what comes back is what the bytes can still attribute, never a record assembled from
-/// guesses.
+/// A WHOLE frame whose header does not check is read as its bytes stand ([`unchecked_whole`]): it
+/// was acknowledged, so its identity is taken and its record is handed over rather than dropped —
+/// a caller that cannot decode it holds back what it cannot rule out, which is the safe side. A
+/// frame that is none of these is skipped, and so is a record whose parts do not run in order.
 fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<Record>> {
     let mut frame = [0u8; FRAME_BYTES];
     let mut at = from;
@@ -378,7 +390,9 @@ fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<Reco
         at += FRAME_BYTES as u64;
         let read = match decode_frame(&frame) {
             Ok((header, payload)) => Some((header, payload.to_vec())),
-            Err(_) => checked_header(&frame).map(|(header, payload)| (header, payload.to_vec())),
+            Err(_) => checked_header(&frame)
+                .or_else(|| unchecked_whole(&frame))
+                .map(|(header, payload)| (header, payload.to_vec())),
         };
         let Some((header, payload)) = read else {
             open = None;
