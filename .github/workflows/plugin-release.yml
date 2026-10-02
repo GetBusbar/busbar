@@ -1,5 +1,5 @@
 # plugin-release — build, sign, pack and publish ONE first-party plugin release, for every plugin
-# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `cargo xtask fleet
+# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `busbar-release plugin
 # render <repo>` from plugins.yaml: on a `v*` tag it runs plugin-ci.yml on the tagged commit, then this
 # file, then plugin-consumer-verify.yml, each taken at the busbar commit the repo pins.
 #
@@ -19,7 +19,10 @@
 #   verify-assets     a release with ZERO assets is a phantom: red, and it stays a draft. Only now is
 #                     it published and marked latest.
 #   notify-marketing  the site rebuild dispatch (RELEASE_DISPATCH_TOKEN), loud when unprovisioned.
-name: plugin-release
+#
+# A PRE-RELEASE tag (`vX.Y.Z-dev.N`, cut from a plugin repo's dev branch) runs the same build, sign and
+# pack, but its release is a GitHub pre-release: published, never marked latest, and no site dispatch.
+name: "Plugins: release"
 
 on:
   workflow_call:
@@ -127,8 +130,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TITLE: ${{ inputs.asset_prefix }}
         run: |
+          pre=(); case "${GITHUB_REF_NAME}" in *-*) pre=(--prerelease) ;; esac
           gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
-            --title "${TITLE} ${GITHUB_REF_NAME}" --draft --verify-tag --generate-notes \
+            --title "${TITLE} ${GITHUB_REF_NAME}" --draft --verify-tag --generate-notes "${pre[@]}" \
           || gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}"
 
   build:
@@ -247,12 +251,17 @@ jobs:
             echo "::error::PHANTOM RELEASE: ${GITHUB_REF_NAME} has 0 assets; it stays a draft. Fix the build, delete the tag and the draft, and re-cut." >&2
             exit 1
           fi
-          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
+          case "${GITHUB_REF_NAME}" in
+            *-*) gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease --latest=false ;;
+            *) gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest ;;
+          esac
           echo "::notice::published ${GITHUB_REF_NAME} with ${count} asset(s)"
 
   notify-marketing:
     name: site rebuild dispatch
     needs: verify-assets
+    # A pre-release is not announced.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

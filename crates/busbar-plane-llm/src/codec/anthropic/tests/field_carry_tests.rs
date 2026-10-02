@@ -1,9 +1,9 @@
-//! FIELD-COVERAGE CARRY tests for the anthropic dialect (qa/field-coverage.status).
+//! FIELD-COVERAGE CARRY tests for the anthropic dialect (`dialects/anthropic.toml`).
 //!
 //! Each `#[test]` here is the named INSTRUMENT for one or more `anthropic/*` field ids: it drives the
 //! real reader→IR→writer path (or the same-protocol byte short-circuit, for a keepalive) and asserts,
 //! per field, that the field SURVIVES. A mutation that stops carrying a field breaks the matching
-//! assertion — which is the whole contract of the field-coverage gate. Provider-specific fields with
+//! assertion — which is the whole contract of these tests. Provider-specific fields with
 //! no cross-protocol slot are carried 100% lossless SAME-protocol (read→write) and, where they are
 //! dropped on a foreign egress, that drop is asserted too.
 use super::super::proto_codec::{ProtocolReader, ProtocolWriter};
@@ -683,6 +683,7 @@ fn anthropic_response_carries_every_spec_required_member_with_default_shapes() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(out["stop_details"], serde_json::Value::Null);
@@ -780,6 +781,7 @@ fn anthropic_response_cache_creation_is_null_when_total_known_but_tiers_are_not(
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(out["usage"]["cache_creation_input_tokens"], 9);

@@ -9,11 +9,8 @@ fn reasoning_effort_parse_round_trips_and_rejects_unknown() {
     assert!(IrReasoningEffort::parse("verylow").is_none());
     assert!(IrReasoningEffort::parse("").is_none());
     // OpenAI-safe projection folds the o-series-invalid `minimal` to `low`.
-    assert_eq!(
-        IrReasoningEffort::Minimal.as_openai_reasoning_effort(),
-        "low"
-    );
-    assert_eq!(IrReasoningEffort::High.as_openai_reasoning_effort(), "high");
+    assert_eq!(IrReasoningEffort::Minimal.as_three_word_str(), "low");
+    assert_eq!(IrReasoningEffort::High.as_three_word_str(), "high");
 }
 
 #[test]
@@ -438,12 +435,48 @@ fn ir09_reasoning_off_and_effort_above_high() {
     assert_eq!(IrReasoningEffort::parse_extended("high"), Some(High));
     assert_eq!(XHigh.as_str(), "xhigh");
     assert_eq!(Max.as_str(), "max");
-    assert_eq!(XHigh.as_openai_reasoning_effort(), "high");
-    assert_eq!(Max.as_openai_reasoning_effort(), "high");
+    assert_eq!(XHigh.as_three_word_str(), "high");
+    assert_eq!(Max.as_three_word_str(), "high");
     assert_eq!(Effort(XHigh).to_budget(table), 16000);
     assert_eq!(Effort(Max).to_budget(table), 16000);
     assert_eq!(Off.to_budget(table), 0);
     assert_eq!(Off.to_effort(table), Minimal);
     // A budget never bucketizes above High: the table has no row there.
     assert_eq!(Budget(u32::MAX).to_effort(table), High);
+}
+
+/// MONEY LAW (ARCHITECT ruling 2026-10-02, DF-MAP item 4): the by-modality split is presentation
+/// only. What the plane reports for billing (`to_token_usage`) and the normalization total are
+/// byte-equal with and without it populated.
+#[test]
+fn usage_by_modality_never_moves_a_billed_figure() {
+    let plain = IrUsage {
+        input_tokens: 120,
+        output_tokens: 40,
+        cache_read_input_tokens: Some(20),
+        cache_creation_input_tokens: Some(5),
+        ..Default::default()
+    };
+    let mut split = plain.clone();
+    split.detail.by_modality = Some(IrUsageByModality {
+        input: IrModalityCounts {
+            text: Some(100),
+            image: Some(20),
+            ..Default::default()
+        },
+        output: IrModalityCounts {
+            text: Some(30),
+            audio: Some(10),
+            ..Default::default()
+        },
+        cache: IrModalityCounts {
+            text: Some(20),
+            ..Default::default()
+        },
+    });
+    assert_eq!(
+        format!("{:?}", plain.to_token_usage()),
+        format!("{:?}", split.to_token_usage())
+    );
+    assert_eq!(plain.billable_tokens(), split.billable_tokens());
 }

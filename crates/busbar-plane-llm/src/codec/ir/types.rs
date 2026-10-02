@@ -387,6 +387,49 @@ pub struct IrResponse {
     /// the nearest coarse variant beside it. `None` == no refinement.
     pub stop_detail: Option<IrStopDetail>,
     pub request_echo: Option<Value>,
+    /// The safety / moderation verdicts the upstream reported on this exchange (ARCHITECT ruling
+    /// 2026-10-02, DF-MAP item 1): the common core only, one per category. Empty == none reported.
+    pub safety: Vec<IrSafetyVerdict>,
+    /// Audio the model produced (ARCHITECT ruling 2026-10-02, DF-MAP item 3). `None` == none.
+    pub audio: Option<IrAudioOutput>,
+}
+
+/// A safety or moderation verdict, the core every dialect that reports one shares (Gemini
+/// `safetyRatings`, the OpenAI family's `moderation`, Bedrock's guardrail trace): which category,
+/// whether it was flagged, whether it blocked content. Scores, probabilities and trace detail are not
+/// comparable across providers and do not cross (ARCHITECT ruling 2026-10-02, DF-MAP item 1).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrSafetyVerdict {
+    /// The category as the provider names it.
+    pub category: String,
+    pub flagged: bool,
+    pub blocked: bool,
+}
+
+/// Audio the model produced in its answer (ARCHITECT ruling 2026-10-02, DF-MAP item 3).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrAudioOutput {
+    /// The audio bytes, base64, as the provider sent them.
+    pub data: Option<String>,
+    /// The audio format word (`wav`, `mp3`, `pcm16`, ...).
+    pub format: Option<String>,
+    /// The spoken text.
+    pub transcript: Option<String>,
+}
+
+/// The kind of a [`IrBlock::HostedToolRecord`]: only web search has a counterpart in more than one
+/// dialect (ARCHITECT ruling 2026-10-02, DF-MAP item 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrHostedToolKind {
+    WebSearch,
+}
+
+/// One result of a hosted search.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrSearchResult {
+    pub url: String,
+    pub title: Option<String>,
+    pub snippet: Option<String>,
 }
 
 /// An empty assistant answer: no content, no stop reason, zero usage, no identity. Exists so a
@@ -409,6 +452,9 @@ impl Default for IrResponse {
             logprobs: Vec::new(),
             request_echo: None,
             stop_detail: None,
+            safety: Vec::new(),
+            audio: None,
+            ..Default::default()
         }
     }
 }
@@ -494,7 +540,8 @@ impl IrReasoningAsk {
 }
 
 impl IrReasoningEffort {
-    /// The OpenAI-family `reasoning_effort` value. Identical to [`Self::as_str`] EXCEPT `Minimal`
+    /// The effort on the three-word `low`/`medium`/`high` scale every reasoning model accepts (the
+    /// OpenAI-family writers' `reasoning_effort` value). Identical to [`Self::as_str`] EXCEPT `Minimal`
     /// maps to `"low"`: `"minimal"` is only accepted by newer OpenAI reasoning models (gpt-5),
     /// while the o-series accepts only low/medium/high. `Minimal` reaches an OpenAI egress writer
     /// only via a small cross-protocol budget (Anthropic/Gemini source), and the lane's reasoning
@@ -505,7 +552,7 @@ impl IrReasoningEffort {
     /// `XHigh`/`Max` project to `"high"` for the same reason: `"xhigh"` is accepted only by the
     /// newest OpenAI reasoning models, and the lane's model is not known here. A writer that KNOWS
     /// its lane accepts it may emit [`Self::as_str`] instead.
-    pub fn as_openai_reasoning_effort(self) -> &'static str {
+    pub fn as_three_word_str(self) -> &'static str {
         match self {
             IrReasoningEffort::Minimal => "low",
             IrReasoningEffort::XHigh | IrReasoningEffort::Max => "high",
@@ -711,6 +758,15 @@ pub enum IrBlock {
     /// stringly-typed smell). Bedrock re-emits it natively; protocols whose tool-result content is
     /// text/image-only drop it with a warn (there is no lossless cross-protocol projection).
     Json(Value),
+    /// A record of a tool the PROVIDER ran (ARCHITECT ruling 2026-10-02, DF-MAP item 2): Anthropic
+    /// `web_search_tool_result`, Responses `web_search_call`, Gemini grounding. Its citations stay on
+    /// the text blocks ([`IrCitation`]).
+    HostedToolRecord {
+        kind: IrHostedToolKind,
+        call_id: Option<String>,
+        status: Option<String>,
+        results: Vec<IrSearchResult>,
+    },
 }
 
 impl IrBlock {
@@ -794,7 +850,8 @@ impl IrBlock {
             | IrBlock::ToolResult { .. }
             | IrBlock::Image { .. }
             | IrBlock::Media { .. }
-            | IrBlock::Json(_) => false,
+            | IrBlock::Json(_)
+            | IrBlock::HostedToolRecord { .. } => false,
         }
     }
 }
@@ -993,6 +1050,17 @@ pub struct IrCitation {
     /// BED-14: the web source's domain — the Converse `web` citation location's
     /// `domain` member (`{url, domain}`). Only Bedrock carries it natively; `None` elsewhere.
     pub domain: Option<String>,
+    /// A citation of an uploaded file (Responses `file_citation` / `container_file_citation` /
+    /// `file_path`; ARCHITECT ruling 2026-10-02, DF-MAP item 5). `None` for every other location.
+    pub file: Option<IrFileLocation>,
+}
+
+/// Where in an uploaded file a citation points.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrFileLocation {
+    pub file_id: Option<String>,
+    pub filename: Option<String>,
+    pub index: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1202,6 +1270,28 @@ pub struct IrUsageDetail {
     /// `billable_tokens` ignores this field like every other on the struct, so populating it can
     /// never change what busbar bills.
     pub usage_identity_note: Option<UsageIdentityNote>,
+    /// The tokens split by modality (OpenAI `*_tokens_details.{text,image,audio}_tokens`, Gemini
+    /// `*TokensDetails[].{modality,tokenCount}`). PRESENTATION ONLY (ARCHITECT ruling 2026-10-02,
+    /// DF-MAP item 4, MONEY LAW): it creates no meter class, feeds no ledger, and changes no billed
+    /// figure; `billable_tokens` and the facts projection ignore it.
+    pub by_modality: Option<IrUsageByModality>,
+}
+
+/// Token counts by modality, each a slice of a total in [`IrUsage`], never an addition to it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrUsageByModality {
+    pub input: IrModalityCounts,
+    pub output: IrModalityCounts,
+    pub cache: IrModalityCounts,
+}
+
+/// One side's tokens by modality. `None` == the provider did not report that modality.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrModalityCounts {
+    pub text: Option<u64>,
+    pub image: Option<u64>,
+    pub audio: Option<u64>,
+    pub video: Option<u64>,
 }
 
 /// One provider `usage` block whose per-bucket counts do not sum to the total the provider itself
@@ -1233,9 +1323,8 @@ impl IrUsage {
     /// the Anthropic/Bedrock family (whose cache reads/writes are separate from input). All adds are
     /// `saturating_add`: the operands are UPSTREAM-CONTROLLED counts, so an unchecked `+` could
     /// panic in debug / wrap in release.
-    // Production billing now ledgers the TIER SPLIT (`proxy::usage::tier_tokens`); this total
-    // survives as the normalization contract's test surface (stream translate/fanout tests).
-    #[cfg_attr(not(test), allow(dead_code))]
+    // Production billing ledgers the TIER SPLIT (`proxy::usage::tier_tokens`); this total is what a
+    // provider's stated total is checked against (`usage_count::stated_total_note`).
     pub fn billable_tokens(&self) -> u64 {
         self.input_tokens
             .saturating_add(self.cache_read_input_tokens.unwrap_or(0))
@@ -1454,11 +1543,11 @@ pub struct StreamDecodeState {
     /// the engine now rejects `n>1`/`candidateCount>1` on a cross-protocol route up front, so this
     /// path should not be reached — but if a drop path survives, this makes it observable.
     pub multi_candidate_warned: bool,
-    /// One-way latch so the `MAX_GEMINI_TOOL_FRAMES` cap's drop `warn!` fires ONCE per stream
-    /// rather than once per dropped `functionCall` part. Set the first time a streaming chunk
-    /// tries to open a tool-call frame past the cap, making an otherwise-silent drop of model
-    /// output observable. Gemini reader only; other readers leave it false.
-    pub gemini_tool_frame_cap_warned: bool,
+    /// One-way latch so a reader's tool-frame cap drop `warn!` fires ONCE per stream rather than
+    /// once per dropped tool-call part. Set the first time a streaming chunk tries to open a
+    /// tool-call frame past the cap, making an otherwise-silent drop of model output observable.
+    /// Set by the readers that cap tool frames (Gemini today); other readers leave it false.
+    pub tool_frame_cap_warned: bool,
     /// Monotone next-free IR block index, for readers that allocate slots by ORDER OF FIRST
     /// APPEARANCE. NEVER reset for the life of the stream. The terminal branch's `mem::take` of
     /// `open_tools`/`tool_ir_index` (openai_chat reader) clears WHO IS OPEN — it must not also be

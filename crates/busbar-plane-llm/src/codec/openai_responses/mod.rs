@@ -44,7 +44,6 @@ mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution: `ResponsesWriter` carries per-STREAM mutable state (`sequence`, `response_id`).
-/// Mirrors `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, ResponsesReader, ResponsesWriter)
 }
@@ -127,6 +126,18 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = ResponsesWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&ResponsesReader),
+    leaf: &crate::codec::leaf_codec::LeafCodecs::NONE,
+};
+
 /// Largest wire `output_index` we accept in a streaming Responses event before clamping. The
 /// Responses API, like Chat Completions, documents at most 128 parallel output items, so any larger
 /// index is malformed; clamp it to this value (the highest valid 0-based index, 127) before the
@@ -139,14 +150,14 @@ const MAX_OUTPUT_INDEX: usize = 127;
 /// omits `model` fails a strict Pydantic/Zod decoder — and a real `/v1/responses` endpoint never
 /// omits it, making the omission a distinguishability tell. On any cross-protocol path
 /// (Anthropic→Responses, Bedrock→Responses) the IR `model` is `None`; emit this fallback rather
-/// than dropping the key. Mirrors `openai_chat::OPENAI_FAMILY_DEFAULT_MODEL`.
-const DEFAULT_MODEL: &str = super::openai_chat::OPENAI_FAMILY_DEFAULT_MODEL;
+/// than dropping the key. One value with the Chat writer's (`dialect::FALLBACK_MODEL`).
+const DEFAULT_MODEL: &str = crate::codec::dialect::FALLBACK_MODEL;
 
 /// Hard cap on the number of DISTINCT output indices tracked per stream in `StreamDecodeState`
 /// (`open_tools`) and in the writer's open-item sets. Bounds per-request memory against a
 /// pathological backend that emits a unique `output_index` per event (a per-connection amplification
-/// DoS). Matches `openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS` (OpenAI's documented parallel-tool-call limit, 128).
-const MAX_OPEN_TOOLS: usize = super::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
+/// DoS). The shared `dialect::MAX_OPEN_TOOL_CALLS` (OpenAI's documented parallel-tool-call limit, 128).
+const MAX_OPEN_TOOLS: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
 /// The BYTE ceiling any ONE of the writer's per-item accumulators may reach over the life of a
 /// stream. `MAX_OPEN_TOOLS` bounds how MANY items accumulate; this bounds how large one of them
@@ -599,13 +610,13 @@ fn fill_required_response_members(
 
 /// Neutral IR logprobs in the Responses `LogProb` shape carried on an `output_text` content part
 /// (`token`, `logprob`, `bytes`, `top_logprobs[{token, logprob, bytes}]`). This is the same
-/// per-token entry the Chat Completions writer emits, so the Chat encoder builds it and the
-/// `content` array is lifted out. Empty input yields `[]`, the spec-required present-but-empty form.
+/// per-token entry the shared logprob wire object carries (`crate::codec::logprob_wire`), so that
+/// encoder builds it and the `content` array is lifted out. Empty input yields `[]`, the spec-required present-but-empty form.
 fn write_responses_part_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> serde_json::Value {
     if lps.is_empty() {
         return serde_json::json!([]);
     }
-    super::openai_chat::write_openai_logprobs(lps)
+    crate::codec::logprob_wire::write_token_logprobs(lps)
         .get_mut(keys::CONTENT)
         .map(serde_json::Value::take)
         .unwrap_or_else(|| serde_json::json!([]))
@@ -635,13 +646,13 @@ fn write_responses_event_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> s
 
 /// A Responses `logprobs` ARRAY — the `LogProb` entries on an `output_text` part, or the
 /// `ResponseLogProb` entries on an `output_text.delta` (the same entry minus `bytes`) — into the
-/// neutral IR entries. The entry is the Chat Completions entry, so the Chat decoder reads it; this
-/// only supplies the `{content: [...]}` envelope Chat wraps the array in. Absent, `null` or not an
+/// neutral IR entries. The entry is the shared logprob wire entry, so `crate::codec::logprob_wire`
+/// reads it; this only supplies the `{content: [...]}` envelope that object wraps the array in. Absent, `null` or not an
 /// array yields no entries (the caller asked for none).
 fn read_responses_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::codec::ir::IrTokenLogprob> {
     match v {
         Some(arr @ serde_json::Value::Array(entries)) if !entries.is_empty() => {
-            super::openai_chat::read_openai_logprobs(Some(
+            crate::codec::logprob_wire::read_token_logprobs(Some(
                 &serde_json::json!({ (keys::CONTENT): arr }),
             ))
         }
@@ -905,7 +916,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
             // carries annotations, so this only fires for `output_text`.
             let citations = obj
                 .get(keys::ANNOTATIONS)
-                .map(super::openai_annotations::read_url_annotations)
+                .map(super::url_citation_wire::read_url_annotations)
                 .unwrap_or_default();
             Ok(crate::codec::ir::IrBlock::Text {
                 text,
@@ -1288,18 +1299,35 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
+/// Stable identifier of the identity [`read_responses_usage`] checks `usage.total_tokens` against,
+/// carried on [`crate::codec::ir::UsageIdentityNote::identity`].
+const RESPONSES_USAGE_IDENTITY: &str = "openai_responses.usage";
+
 /// A Responses `usage` object (`None` when absent) → the IR usage, through [`USAGE`]; the tier that
 /// served the response (RSP-17) is a word on `response`, not a count.
+///
+/// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/responses.wire.json`) DECLARES
+/// UNDER `usage` IS EITHER LEDGERED OR A SLICE OF A LEDGERED TOTAL: `input_tokens` (input, less its
+/// cached and cache-write slices), `cached_tokens` (cache read), `cache_write_tokens` (cache
+/// write), `output_tokens` (output); `output_tokens_details.reasoning_tokens` is a slice of
+/// `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
+/// ledgered classes and a gap is WARN-logged and carried as the usage identity note, never ledgered.
 fn read_responses_usage(
     usage: Option<&serde_json::Value>,
     response: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    let mut usage = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
-    usage.detail.service_tier = crate::codec::carry::read_word(
-        crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
+    let mut ir = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
+    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
+        "openai_responses",
+        RESPONSES_USAGE_IDENTITY,
+        usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
+        &ir,
+    );
+    ir.detail.service_tier = crate::codec::carry::read_word(
+        map::WORDS_SERVED_TIER,
         response.and_then(|r| r.get(keys::SERVICE_TIER)),
     );
-    Ok(usage)
+    Ok(ir)
 }
 
 /// OpenAI Responses streaming writer.
@@ -2228,8 +2256,7 @@ mod tests;
 #[path = "tests/input_hardening_tests.rs"]
 mod input_hardening_tests;
 
-// The field-coverage carry instruments (qa/field-coverage.status → `carried <fn>`). Each named
-// test FAILS if its field stops surviving the read→IR→write hop, per the gate's rigor contract.
+// The field carry instruments: each test FAILS if its field stops surviving the read→IR→write hop.
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
@@ -2258,3 +2285,7 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;

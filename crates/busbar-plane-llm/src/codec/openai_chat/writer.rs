@@ -82,7 +82,8 @@ impl ProtocolWriter for OpenAiWriter {
                 | crate::codec::ir::IrBlock::ToolResult { .. }
                 | crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. }
-                | crate::codec::ir::IrBlock::Json(_) => "",
+                | crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => "",
             };
             messages_array.push(serde_json::json!({
                 (keys::ROLE): system_role,
@@ -185,7 +186,8 @@ impl ProtocolWriter for OpenAiWriter {
                             // Lossy-by-necessity: OpenAI Chat Completions has no thinking/reasoning
                             // content block on request input, so a Thinking block is dropped here.
                         }
-                        crate::codec::ir::IrBlock::Json(_) => {
+                        crate::codec::ir::IrBlock::Json(_)
+                        | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                             // Structured-json (a Bedrock tool-result content member) has no OpenAI
                             // message-content shape; dropped here.
                         }
@@ -463,7 +465,7 @@ impl ProtocolWriter for OpenAiWriter {
                 .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
             out.insert(
                 REASONING_EFFORT.to_string(),
-                serde_json::json!(ask.to_effort(table).as_openai_reasoning_effort()),
+                serde_json::json!(ask.to_effort(table).as_three_word_str()),
             );
         }
         // The logprobs ask in OpenAI's native spelling (a Gemini `responseLogprobs`/`logprobs`
@@ -741,7 +743,7 @@ impl ProtocolWriter for OpenAiWriter {
                     // and a zero base — a citation whose span cannot be resolved is then emitted
                     // WITHOUT one rather than with a fabricated one.
                     let annotations =
-                        super::super::openai_annotations::chat_url_annotations("", 0, cits);
+                        super::super::url_citation_wire::chat_url_annotations("", 0, cits);
                     if annotations.is_empty() {
                         return None;
                     }
@@ -761,7 +763,7 @@ impl ProtocolWriter for OpenAiWriter {
                             (CHOICES): [{
                                 (keys::INDEX): 0,
                                 (keys::DELTA): {},
-                                (keys::LOGPROBS): write_openai_logprobs(lps),
+                                (keys::LOGPROBS): crate::codec::logprob_wire::write_token_logprobs(lps),
                                 (keys::FINISH_REASON): null
                             }]
                         });
@@ -1134,7 +1136,7 @@ impl ProtocolWriter for OpenAiWriter {
                 text, citations, ..
             } = block
             {
-                annotations.extend(super::super::openai_annotations::chat_url_annotations(
+                annotations.extend(super::super::url_citation_wire::chat_url_annotations(
                     text, base, citations,
                 ));
                 // CHARACTERS, not bytes: the IR citation contract (`IrCitation::start_index`/
@@ -1177,7 +1179,7 @@ impl ProtocolWriter for OpenAiWriter {
             if resp.logprobs.is_empty() {
                 serde_json::Value::Null
             } else {
-                write_openai_logprobs(&resp.logprobs)
+                crate::codec::logprob_wire::write_token_logprobs(&resp.logprobs)
             },
         );
         choice_obj.insert(keys::FINISH_REASON.to_string(), finish_reason);
@@ -1244,8 +1246,20 @@ impl ProtocolWriter for OpenAiWriter {
                     serde_json::json!(cache_read),
                 );
             }
-            if let Some(a) = resp.usage.detail.input_audio_tokens {
+            let modality = resp.usage.detail.by_modality.as_ref();
+            if let Some(a) = resp
+                .usage
+                .detail
+                .input_audio_tokens
+                .or(modality.and_then(|m| m.input.audio))
+            {
                 ptd.insert(AUDIO_TOKENS.to_string(), serde_json::json!(a));
+            }
+            if let Some(t) = modality.and_then(|m| m.input.text) {
+                ptd.insert(TEXT_TOKENS.to_string(), serde_json::json!(t));
+            }
+            if let Some(i) = modality.and_then(|m| m.input.image) {
+                ptd.insert(IMAGE_TOKENS.to_string(), serde_json::json!(i));
             }
             if !ptd.is_empty() {
                 usage_map.insert(
@@ -1263,8 +1277,17 @@ impl ProtocolWriter for OpenAiWriter {
             if let Some(rt) = resp.usage.detail.reasoning_tokens {
                 ctd.insert(keys::REASONING_TOKENS.to_string(), serde_json::json!(rt));
             }
-            if let Some(a) = resp.usage.detail.output_audio_tokens {
+            let modality = resp.usage.detail.by_modality.as_ref();
+            if let Some(a) = resp
+                .usage
+                .detail
+                .output_audio_tokens
+                .or(modality.and_then(|m| m.output.audio))
+            {
                 ctd.insert(AUDIO_TOKENS.to_string(), serde_json::json!(a));
+            }
+            if let Some(t) = modality.and_then(|m| m.output.text) {
+                ctd.insert(TEXT_TOKENS.to_string(), serde_json::json!(t));
             }
             if let Some(t) = resp.usage.detail.accepted_prediction_tokens {
                 ctd.insert(ACCEPTED_PREDICTION_TOKENS.to_string(), serde_json::json!(t));

@@ -31,7 +31,7 @@ mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires (the writer carries per-stream mutable
-/// state). Mirrors `super::anthropic::protocol`.
+/// state).
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, CohereReader, CohereWriter)
 }
@@ -131,6 +131,18 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = CohereWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&CohereReader),
+    leaf: &handler::LEAF,
+};
+
 /// Upstream URL path for the Cohere v2 chat endpoint. Mirrors the `PATH_UPSTREAM` pattern used by
 /// openai_chat.rs and anthropic.rs — single source of truth for the string that was previously
 /// hard-coded in `upstream_path()`.
@@ -199,6 +211,7 @@ pub fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate::codec:
             end_index: end,
             encrypted_index: None,
             raw: Some(entry.clone()),
+            ..Default::default()
         });
     }
     out

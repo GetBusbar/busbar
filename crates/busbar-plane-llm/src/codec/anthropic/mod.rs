@@ -222,6 +222,18 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[(HDR_ANTHROPIC_VERSION, ANTHROPIC_API_VERSION)],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = AnthropicWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&AnthropicReader),
+    leaf: &crate::codec::leaf_codec::LeafCodecs::NONE,
+};
+
 /// Value of the required `anthropic-version` request header (the Messages API version busbar
 /// targets). Bump when adopting a newer Anthropic API version.
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
@@ -705,6 +717,16 @@ fn stream_error_type(err: &IrError) -> &'static str {
 ///   string, matching the `""` seed the `content_block_start` writer already emits).
 ///
 /// A value the source reported is left untouched.
+/// A provider-run tool's record from ANOTHER dialect has no Anthropic form: a `web_search_tool_result`
+/// must carry each result's `encrypted_content`, which only Anthropic mints (DF-MAP item 2). The
+/// record is dropped, observably; its citations still ride the text blocks.
+fn warn_hosted_record_dropped() {
+    tracing::warn!(
+        "dropping a hosted web-search record on Anthropic egress: a web_search_tool_result needs \
+         the encrypted_content only Anthropic mints (lossy-by-target)"
+    );
+}
+
 fn write_response_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
     let mut val = write_block(block);
     if let Some(obj) = val.as_object_mut() {
@@ -1158,7 +1180,7 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             }
             doc
         }
-        crate::codec::ir::IrBlock::Json(_) => {
+        crate::codec::ir::IrBlock::Json(_) | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
             // A structured-json tool-result block has no top-level Anthropic content shape; it is
             // dropped before reaching write_block (see the json-tool-result filter in the ToolResult
             // arm). Defensive empty placeholder for the unreachable case.
@@ -1411,6 +1433,10 @@ fn write_message(
             if let Some(raw) = find_stashed_block(unmodeled_sentinel, m, i) {
                 return Some(raw);
             }
+            if let crate::codec::ir::IrBlock::HostedToolRecord { .. } = block {
+                warn_hosted_record_dropped();
+                return None;
+            }
             Some(write_block(block))
         })
         .collect();
@@ -1617,3 +1643,7 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/hosted_record_tests.rs"]
+mod hosted_record_tests;

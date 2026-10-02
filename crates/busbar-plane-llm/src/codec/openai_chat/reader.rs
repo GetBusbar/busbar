@@ -78,9 +78,8 @@ impl ProtocolReader for OpenAiReader {
 
     #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
-        // Identical to ResponsesReader::classify — both emit the same OpenAI error envelope, so the
-        // mapping is single-sourced in `super::openai_classify` (the OpenAI dialect's codec home).
-        super::openai_classify(status, body)
+        // Both bearer-envelope dialects classify alike: single-sourced in the shared dialect module.
+        crate::codec::dialect::bearer_error_classify(status.as_u16(), body)
     }
 
     fn read_request(
@@ -278,6 +277,19 @@ impl ProtocolReader for OpenAiReader {
                         if let Some(tool_calls) = msg_val.get(keys::TOOL_CALLS) {
                             if let Some(tc_arr) = tool_calls.as_array() {
                                 for tc_val in tc_arr {
+                                    // A replayed CUSTOM-tool call (`{"type":"custom","custom":{name,
+                                    // input}}`, free-text input) has no IR tool-call form: it is a
+                                    // valid native message the reader must not refuse (design F2,
+                                    // reader tolerance). It is dropped, observably.
+                                    if tc_val.get(keys::TYPE).and_then(|t| t.as_str())
+                                        == Some(keys::CUSTOM)
+                                    {
+                                        tracing::warn!(
+                                            "dropping a replayed custom-tool call on translate: the \
+                                             IR carries function tool calls only (no-equivalent)"
+                                        );
+                                        continue;
+                                    }
                                     // A present tool call MUST carry a non-empty string `id`: it is
                                     // the correlation key an egress dialect emits back to pair the
                                     // eventual tool result. An absent/blank/wrong-typed id yields an
@@ -889,7 +901,9 @@ impl ProtocolReader for OpenAiReader {
         let lp_entries = if state.text_block_closed {
             Vec::new()
         } else {
-            read_openai_logprobs(choice0.and_then(|c| c.get(keys::LOGPROBS)))
+            crate::codec::logprob_wire::read_token_logprobs(
+                choice0.and_then(|c| c.get(keys::LOGPROBS)),
+            )
         };
         if !lp_entries.is_empty() {
             if !state.text_block_open {
@@ -926,7 +940,7 @@ impl ProtocolReader for OpenAiReader {
         //     `read_url_annotations` gives (the buffered path drops them the same way).
         let citations = delta
             .and_then(|d| d.get(keys::ANNOTATIONS))
-            .map(super::super::openai_annotations::read_url_annotations)
+            .map(super::super::url_citation_wire::read_url_annotations)
             .unwrap_or_default();
         if !citations.is_empty() {
             if state.text_block_closed && !state.text_block_open {
@@ -1261,7 +1275,7 @@ impl ProtocolReader for OpenAiReader {
                     // `read_url_annotations` for why offsets are deliberately not carried.
                     let citations = message_val
                         .get(keys::ANNOTATIONS)
-                        .map(super::super::openai_annotations::read_url_annotations)
+                        .map(super::super::url_citation_wire::read_url_annotations)
                         .unwrap_or_default();
                     content.push(crate::codec::ir::IrBlock::Text {
                         text: text.to_string(),
@@ -1423,7 +1437,8 @@ impl ProtocolReader for OpenAiReader {
 
         // Per-token logprobs from the first choice, carried neutrally so a foreign-dialect caller
         // (e.g. Gemini) receives them in its own shape.
-        let logprobs = read_openai_logprobs(choices[0].get(keys::LOGPROBS));
+        let logprobs =
+            crate::codec::logprob_wire::read_token_logprobs(choices[0].get(keys::LOGPROBS));
 
         Ok(crate::codec::ir::IrResponse {
             logprobs,
@@ -1439,9 +1454,17 @@ impl ProtocolReader for OpenAiReader {
 
             request_echo: None,
             stop_detail: None,
+            safety: super::read_moderation(obj.get(MODERATION)),
+            audio: super::read_message_audio(
+                choice.get(keys::MESSAGE).and_then(|m| m.get(super::AUDIO)),
+            ),
+            ..Default::default()
         })
     }
 }
+
+/// The top-level moderation results of a Chat completion.
+const MODERATION: &str = "moderation";
 
 /// The `tool_ir_index` key that records the IR index of a Thinking block opened AFTER the answer
 /// phase began (OAI-14). Tool keys are upstream `tool_calls[].index` values clamped to

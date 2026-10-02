@@ -25,18 +25,18 @@ path = "src/main.rs"
 # carries no feature flag, unlike the protocol crates below, because `oauth-as` (the underlying
 # crate) was always a normal dependency of the engine and 1.6.0's extraction did not change that:
 # the plane costs nothing until `oauth_as:` is configured. The composition root (`main`) calls
-# `busbar_oauth2::install()` once, registering this crate's seam implementation into
+# `busbar_core_oauth2::install()` once, registering this crate's seam implementation into
 # `busbar_core::oauth_as::seam` — core cannot name this crate directly (one-way dependency; core
 # depends on nothing here), so the registration is the one place the binary's own manifest and
 # `main.rs` have to know this plane exists.
-busbar-oauth2 = { path = "../busbar-oauth2" }
+busbar-core-oauth2 = { path = "../busbar-core-oauth2" }
 # The admin API service (`/api/v1/admin/*`), a MANDATORY sibling crate (not a plugin). Always linked;
 # `main` registers its mount seam unconditionally. Feature-neutral defaults off — the binary's own
 # feature forwards below turn on `busbar-admin`'s features in lock-step with busbar-core's.
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false }
 # The core-side connection-security seam (DECISIONS #40): builds the opaque `ConnectionSecurity`
 # wrap (identity for a plaintext binding, rustls-backed for a TLS one) the composition root hands
-# to `busbar_kernel::tls::serve`. A mandatory sibling, like `busbar-admin`/`busbar-oauth2` above —
+# to `busbar_kernel::tls::serve`. A mandatory sibling, like `busbar-admin`/`busbar-core-oauth2` above —
 # never a plugin, always linked.
 busbar-core-connector = { path = "../busbar-core-connector" }
 # `amend_rate_history` decodes the correction body and digests the operator's free-text reason
@@ -153,7 +153,7 @@ busbar-export-otlp = { workspace = true, optional = true }
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
-busbar-transport-http = { path = "../busbar-transport-http" }
+busbar-transport-http = { workspace = true }
 # gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport").
 busbar-transport-grpc = { path = "../busbar-transport-grpc" }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else

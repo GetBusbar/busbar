@@ -502,10 +502,10 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-oauth2/src",
+   "id": "crates/busbar-core-oauth2/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-oauth2/src"
+    "crates/busbar-core-oauth2/src"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -516,7 +516,7 @@
    "auditor": null,
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-oauth2/src/tests"
+    "crates/busbar-core-oauth2/src/tests"
    ]
   },
   {
@@ -607,24 +607,6 @@
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-streaming/src/tests"
-   ]
-  },
-  {
-   "id": "crates/busbar-transport-http/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-transport-http/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-transport-http/src/tests"
    ]
   },
   {
@@ -1213,10 +1195,10 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-oauth2/src/tests",
+   "id": "crates/busbar-core-oauth2/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-oauth2/src/tests"
+    "crates/busbar-core-oauth2/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -1352,36 +1334,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar-plane-streaming/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-http/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-http/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-http/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-http/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

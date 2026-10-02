@@ -147,7 +147,7 @@ const FAM_GRPC: &[&str] = &["busbar-transport-grpc"];
 const FAM_NONE: &[&str] = &[];
 
 // ── AUTH SCHEMES (DECISION #3: currently internal units, so heavy known-debt into core/units) ──
-const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-oauth2"];
+const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-core-oauth2"];
 
 /// DOCUMENTED EXEMPTION for the `gcp` noun: these 2 files use "GCP" as the general
 /// Google-Cloud-Platform term in cloud-metadata/SSRF security prose — `busbar-a2a`'s
@@ -158,7 +158,7 @@ const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-oauth2"];
 /// already excludes bare `aws` for (broad infra, never an instance spelling);
 /// `gcp` was never given the same treatment even though no code anywhere in this tree defines a
 /// `"gcp"` scheme constant for either file to be leaking (checked: `auth-static-plugin`,
-/// `auth-admin-tokens`, `busbar-oauth2` name nothing spelled `gcp`). Excluded by exact file, not by
+/// `auth-admin-tokens`, `busbar-core-oauth2` name nothing spelled `gcp`). Excluded by exact file, not by
 /// loosening the token or dropping the noun — a real `gcp` auth scheme, when one lands, will get its
 /// own unambiguous scheme spelling (a plugin crate identifier), and that spelling
 /// (not bare `gcp`) is what should be tracked.

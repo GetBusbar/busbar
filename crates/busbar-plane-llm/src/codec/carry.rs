@@ -21,7 +21,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::codec::ir::{IrRequest, IrServiceTier, IrVerbosity};
+use crate::codec::ir::{IrReasoningAsk, IrReasoningEffort, IrRequest, IrServiceTier, IrVerbosity};
 
 /// A flat IR request slot a field table can name. Each slot has ONE neutral JSON spelling (the
 /// slot's own number / flag / string, a string map, or the IR word); a row's [`ValueCodec`] maps it to
@@ -60,10 +60,45 @@ pub enum Slot {
     N,
     /// `IrRequest::stop`: read from a string or an array of strings, written as an array.
     Stop,
+    /// `IrRequest::reasoning` as an effort word (`IrReasoningEffort`): filled only when no other
+    /// reasoning ask was read; written only when the ask is an effort.
+    ReasoningEffort,
     /// An OpenAI custom (free-form grammar) tool in `IrRequest::hosted_tools` (carried by code).
     CustomTool,
     /// A member the dialect's own structural code models (`prim` rows): no slot of its own.
     Structure,
+}
+
+/// THE ANSWER-SIDE SLOT REGISTRY: the response and stream concepts a mapping file's `response` /
+/// `stream` rows may name as `ir = "<slot>"` (snake case), each a member of the IR answer added once
+/// for every dialect that has the field (design F3; ARCHITECT ruling 2026-10-02, DF-MAP items 1-5).
+/// `cargo xtask dialect compile` refuses an answer row naming any other slot. The answer walk lives in
+/// each dialect's reader and writer code; this registry is the shared vocabulary they map onto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerSlot {
+    /// `IrResponse::safety`: a safety or moderation verdict (category, flagged, blocked).
+    SafetyVerdict,
+    /// `IrBlock::HostedToolRecord` of kind `WebSearch`: a provider-run web search and its results.
+    WebSearch,
+    /// `IrResponse::audio`: audio the model produced (data, format, transcript).
+    AudioOutput,
+    /// `IrUsageDetail::by_modality`: tokens by modality (presentation only, never billed).
+    UsageByModality,
+    /// `IrCitation::file`: a citation of an uploaded file.
+    FileCitation,
+}
+
+impl AnswerSlot {
+    /// The slot's registry name, as a mapping file spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            AnswerSlot::SafetyVerdict => "safety_verdict",
+            AnswerSlot::WebSearch => "web_search",
+            AnswerSlot::AudioOutput => "audio_output",
+            AnswerSlot::UsageByModality => "usage_by_modality",
+            AnswerSlot::FileCitation => "file_citation",
+        }
+    }
 }
 
 /// THE CONTROL ORDER: every request control a dialect may have no form for, in the order a
@@ -287,6 +322,10 @@ impl Slot {
             Slot::Seed => r.seed.map(Value::from),
             Slot::N => r.n.map(Value::from),
             Slot::Stop => (!r.stop.is_empty()).then(|| Value::from(r.stop.clone())),
+            Slot::ReasoningEffort => match r.reasoning {
+                Some(IrReasoningAsk::Effort(e)) => Some(Value::from(e.as_str())),
+                _ => None,
+            },
             Slot::CustomTool | Slot::Structure => None,
         }
     }
@@ -310,6 +349,7 @@ impl Slot {
             Slot::Seed => "seed",
             Slot::N => "n",
             Slot::Stop => "stop",
+            Slot::ReasoningEffort => "reasoning_effort",
             Slot::CustomTool => "custom_tool",
             Slot::Structure => "structure",
         }
@@ -369,6 +409,12 @@ impl Slot {
                     r.stop = crate::codec::ir::read_stop_sequences(Some(v));
                 }
             }
+            Slot::ReasoningEffort => first(
+                &mut r.reasoning,
+                v.as_str()
+                    .and_then(IrReasoningEffort::parse_extended)
+                    .map(IrReasoningAsk::Effort),
+            ),
             Slot::CustomTool | Slot::Structure => {}
         }
     }
