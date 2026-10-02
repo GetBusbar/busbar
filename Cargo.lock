@@ -531,6 +531,7 @@ dependencies = [
  "http",
  "indexmap",
  "jsonschema",
+ "libc",
  "memchr",
  "serde",
  "serde_json",
