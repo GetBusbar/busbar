@@ -107,6 +107,108 @@ pub const fn arrive(claim: u32) -> Option<Arrival> {
     }
 }
 
+// ── the plane's answer at each loop step (THE DESIGN §1's order) ─────────────────────────────────
+
+/// AUTHENTICATE: whom a unit on `door` needs. Every keyed door needs a principal; the metadata
+/// document answers anyone.
+#[must_use]
+pub const fn authenticate(door: Door) -> u32 {
+    if door.is_open() {
+        busbar_contract::abi::plane::PRINCIPAL_NONE
+    } else {
+        busbar_contract::abi::plane::PRINCIPAL_REQUIRED
+    }
+}
+
+/// VERIFY: where, inside the plane's section, the destination a session dials is named. The kernel
+/// resolves it through the root models and judges it.
+#[must_use]
+pub const fn verify() -> &'static str {
+    crate::door::EGRESS_TARGET
+}
+
+/// APPROVE: the grant a key must hold to open a session here: the `session` kind, for the one pool
+/// every session is served on.
+#[must_use]
+pub const fn approve() -> (&'static str, &'static str) {
+    (crate::door::SCOPE, crate::door::SESSION_POOL)
+}
+
+/// ADMIT: the units a unit on `door` is expected to cost before the far end reports any. None: a
+/// session is admitted at open and pays for what the far end reports (and its per-session fee,
+/// which the kernel counts); the one-request doors report nothing.
+#[must_use]
+pub fn admit(door: Door) -> Vec<(u32, u64)> {
+    match door {
+        Door::Mint | Door::Sdp | Door::Sideband | Door::Gemini | Door::Twilio | Door::Metadata => {
+            Vec::new()
+        }
+    }
+}
+
+/// ROUTE: the request an attempt on `door` sends the far end. The session doors dial the dialect's
+/// realtime socket (the credential is the kernel's, never in the target); the mint and SDP doors send
+/// their one request; the metadata document is answered here and sends nothing.
+///
+/// # Errors
+/// The mint body's serializer text.
+pub fn route(
+    door: Door,
+    config: &SessionConfig,
+    caller_ref: Option<&str>,
+    body: &[u8],
+) -> Result<Option<Attempt>, String> {
+    Ok(match door {
+        Door::Mint => Some(mint_attempt(config, caller_ref, None)?),
+        Door::Sdp => Some(sdp_attempt(body)),
+        Door::Sideband | Door::Twilio => Some(Attempt {
+            verb: "GET",
+            target: REALTIME_SOCKET_PATH,
+            fields: Vec::new(),
+            body: Vec::new(),
+        }),
+        Door::Gemini => Some(Attempt {
+            verb: "GET",
+            target: GEMINI_SOCKET_PATH,
+            fields: Vec::new(),
+            body: Vec::new(),
+        }),
+        Door::Metadata => None,
+    })
+}
+
+/// METER: a session's units so far, per billable class index, the zero classes left out. Counts
+/// only; the kernel prices nothing the plane names.
+#[must_use]
+pub fn meter(units: &crate::session_unit::CumulativeUnits) -> Vec<(u32, u64)> {
+    units
+        .0
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| **n != 0)
+        .map(|(i, n)| (i as u32, *n))
+        .collect()
+}
+
+/// AUDIT: the action a unit on `door` is audited under.
+#[must_use]
+pub const fn audit(door: Door) -> &'static str {
+    match door {
+        Door::Metadata => "streaming.metadata.read",
+        _ => SESSION_OPEN_ACTION,
+    }
+}
+
+/// The action a session open is audited under.
+pub const SESSION_OPEN_ACTION: &str = "streaming.session.open";
+
+/// The realtime socket an OpenAI Realtime session dials, under the member's base URL.
+pub const REALTIME_SOCKET_PATH: &str = "/v1/realtime";
+
+/// The socket a Gemini Live session dials, under the member's base URL.
+pub const GEMINI_SOCKET_PATH: &str =
+    "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+
 /// A request bound for the far end: verb and target explicit, then its head fields and body. The
 /// kernel adds the credential and sends it; the target is under the member's base URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,8 +276,10 @@ fn mint_failed(reason: &str) -> Reply {
     Reply {
         status: MINT_FAILED_STATUS,
         fields: Vec::new(),
-        body: format!("streaming ephemeral-secret mint failed: ephemeral token mint failed: {reason}")
-            .into_bytes(),
+        body: format!(
+            "streaming ephemeral-secret mint failed: ephemeral token mint failed: {reason}"
+        )
+        .into_bytes(),
         rtc_call_id: None,
     }
 }
@@ -308,7 +412,10 @@ pub fn metadata_reply(audience: &str) -> Reply {
         status: 200,
         fields: vec![
             ("cache-control", "public, max-age=3600".to_string()),
-            (FIELD_CONTENT_TYPE, "application/json; charset=utf-8".to_string()),
+            (
+                FIELD_CONTENT_TYPE,
+                "application/json; charset=utf-8".to_string(),
+            ),
         ],
         body: serde_json::to_vec(&serde_json::json!({
             "resource": audience,

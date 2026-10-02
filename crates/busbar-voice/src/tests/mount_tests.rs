@@ -822,7 +822,7 @@ async fn the_resource_metadata_the_challenge_points_at_is_served() {
         .expect("the pointer's path is a route the plane serves");
     assert_eq!(route.auth, RouteAuth::None, "readable without a credential");
     let host = crate::testkit::fixture_host::FixtureHost::new().into_host();
-    let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
+    let ctx = super::PlaneReqCtx {
         path: path.clone(),
         uri: axum::http::Uri::default(),
         method: RouteMethod::Get,

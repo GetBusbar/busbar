@@ -1066,9 +1066,11 @@ max_sites = 0
 # kernel-minted Pass (`KernelSeal::acquire_for_kernel()`) instead of the test seal, and egress's
 # test-seal dev-dependency went with it. The rule's pattern matches no file under either crate, so
 # the entry is not repointed (a row on a path with no finding would only excuse a future forgery);
-# it is struck, and both paths are held to the rule. The seal debt that remains is the two below.
+# it is struck, and both paths are held to the rule.
+#
+# STRUCK 2026-10-04: `crates/busbar-plane-streaming/src/tests/harness.rs`, deleted by the streaming
+# fold (its tests drive the door). The seal debt that remains is the one below.
 known_sites = [
-  "crates/busbar-plane-streaming/src/tests/harness.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
 ]
 

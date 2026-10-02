@@ -110,4 +110,3 @@ pub fn class_counts(
     .filter(|(_, n)| *n != 0)
     .collect()
 }
-

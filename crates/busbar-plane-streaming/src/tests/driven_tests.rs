@@ -21,12 +21,12 @@ fn every_published_claim_arrives_at_its_door_in_its_dialect() {
             Some((Door::Metadata, 0, 0)),
         ]
     );
-    assert_eq!(arrive(6), None, "a claim the plane never published arrives nowhere");
     assert_eq!(
-        crate::door::ROUTES.len(),
-        6,
-        "one door per published claim"
+        arrive(6),
+        None,
+        "a claim the plane never published arrives nowhere"
     );
+    assert_eq!(crate::door::ROUTES.len(), 6, "one door per published claim");
 }
 
 #[test]
@@ -48,7 +48,9 @@ fn the_mint_attempt_names_the_caller_and_carries_the_locked_session() {
     assert_eq!(body["expires_after"]["seconds"], 600);
     assert_eq!(body["session"]["instructions"], "locked");
     assert!(
-        a.fields.iter().all(|(n, _)| !n.eq_ignore_ascii_case("authorization")),
+        a.fields
+            .iter()
+            .all(|(n, _)| !n.eq_ignore_ascii_case("authorization")),
         "the plane never writes the credential; the kernel adds it"
     );
     let anonymous = mint_attempt(&cfg, None, None).expect("serializes");
@@ -64,7 +66,10 @@ fn a_minted_secret_is_answered_and_a_failure_keeps_the_served_text() {
     let ok = mint_reply(200, br#"{"value":"ek_1","expires_at":9}"#);
     assert_eq!(ok.status, 200);
     let v: serde_json::Value = serde_json::from_slice(&ok.body).expect("json");
-    assert_eq!(v, serde_json::json!({"value": "ek_1", "expires_at_unix": 9}));
+    assert_eq!(
+        v,
+        serde_json::json!({"value": "ek_1", "expires_at_unix": 9})
+    );
 
     let refused = mint_reply(400, b"{}");
     assert_eq!(refused.status, 502);
@@ -75,14 +80,19 @@ fn a_minted_secret_is_answered_and_a_failure_keeps_the_served_text() {
     );
     let not_ek = mint_reply(200, br#"{"value":"sk-real"}"#);
     assert_eq!(not_ek.status, 502);
-    assert!(!String::from_utf8(not_ek.body).expect("utf-8").contains("sk-real"));
+    assert!(!String::from_utf8(not_ek.body)
+        .expect("utf-8")
+        .contains("sk-real"));
 }
 
 #[test]
 fn the_sdp_offer_is_relayed_and_its_answer_names_the_call() {
     let a = sdp_attempt(b"v=0\r\n");
     assert_eq!((a.verb, a.target), ("POST", "/v1/realtime/calls"));
-    assert_eq!(a.fields, vec![("content-type", "application/sdp".to_string())]);
+    assert_eq!(
+        a.fields,
+        vec![("content-type", "application/sdp".to_string())]
+    );
     assert_eq!(a.body, b"v=0\r\n");
 
     let r = sdp_reply(201, Some("/v1/realtime/calls/rtc_abc"), b"v=0 answer");
@@ -111,4 +121,40 @@ fn the_metadata_document_names_the_audience() {
     let v: serde_json::Value = serde_json::from_slice(&r.body).expect("json");
     assert_eq!(v["resource"], "https://gw.example.com/v1/realtime");
     assert_eq!(v["bearer_methods_supported"], serde_json::json!(["header"]));
+}
+
+#[test]
+fn each_loop_step_has_the_planes_answer() {
+    use busbar_contract::abi::plane::{PRINCIPAL_NONE, PRINCIPAL_REQUIRED};
+    assert_eq!(authenticate(Door::Mint), PRINCIPAL_REQUIRED);
+    assert_eq!(authenticate(Door::Twilio), PRINCIPAL_REQUIRED);
+    assert_eq!(authenticate(Door::Metadata), PRINCIPAL_NONE);
+    assert_eq!(verify(), "session.model");
+    assert_eq!(approve(), ("session", "streaming-server"));
+    assert!(
+        admit(Door::Sideband).is_empty(),
+        "a session pays for what the far end reports"
+    );
+    let cfg = SessionConfig::default();
+    let sock = route(Door::Gemini, &cfg, None, b"")
+        .expect("routes")
+        .expect("a session dials");
+    assert_eq!(sock.verb, "GET");
+    assert!(
+        !sock.target.contains("key="),
+        "the credential is never in the target"
+    );
+    assert_eq!(
+        route(Door::Sdp, &cfg, None, b"v=0").expect("routes"),
+        Some(sdp_attempt(b"v=0"))
+    );
+    assert_eq!(
+        route(Door::Metadata, &cfg, None, b"").expect("routes"),
+        None
+    );
+    let mut units = crate::session_unit::CumulativeUnits::default();
+    units.0[1] = 20;
+    units.0[4] = 2;
+    assert_eq!(meter(&units), vec![(1, 20), (4, 2)]);
+    assert_eq!(audit(Door::Mint), "streaming.session.open");
 }
