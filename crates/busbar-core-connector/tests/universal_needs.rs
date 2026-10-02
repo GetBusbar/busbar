@@ -232,14 +232,12 @@ fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::fram
 /// The door a composing door is built over: of the libraries beside this test binary, one that
 /// frames the host's socket (an empty `composes_over`) and claims `layer`, found by kind and claim.
 fn layer_door(
-    layer: &str,
+    layer: &'static str,
 ) -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
     libraries_beside_the_test()
         .into_iter()
         .filter_map(|p| open_door(&p))
-        .find(|d| {
-            d.facts().composes_over.is_empty() && d.facts().claims.iter().any(|c| *c == layer)
-        })
+        .find(|d| d.facts().composes_over.is_empty() && d.facts().claims.contains(&layer))
 }
 
 /// `path` admitted and opened through the one dispatcher as a transport door; `None` when it is
