@@ -10,7 +10,7 @@ use busbar_contract::abi::plane::{TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED};
 use busbar_plane_llm::dialect::DIALECTS;
 use busbar_plane_llm::exchange::reply::Units;
 use busbar_plane_llm::plane_door::{
-    claims, counts, read_settings, EGRESS_SCHEMES, NEEDS, STATEMENT, TAIL, VERSION,
+    claims, counts, read_settings, EGRESS_SCHEMES, NEEDS, OPEN_CLASSES, STATEMENT, TAIL, VERSION,
 };
 
 #[test]
@@ -36,9 +36,10 @@ fn the_tail_is_one_the_contract_accepts() {
     assert_eq!(TAIL.dialects_len, DIALECTS.len());
     assert_eq!(TAIL.op_classes_len, 7);
     assert_eq!(
-        TAIL.billable_classes_len, 4,
-        "tokens in, out, cache read, cache write"
+        TAIL.billable_classes_len, 5,
+        "tokens in, out, cache read, cache write, then the open classes"
     );
+    assert_eq!(OPEN_CLASSES, &[("search_units", "units")]);
 }
 
 #[test]
@@ -157,4 +158,33 @@ fn the_fallback_is_a_prefix_claim_on_the_root_for_every_verb() {
     assert!(all
         .iter()
         .all(|c| !c.verb.is_empty() && c.target.starts_with('/') && c.carrier == "http"));
+}
+
+/// RED for the `$` G3 commit: an open count the far end reported reaches the kernel in its
+/// declared class, beside or without token counts; before it, `counts()` dropped it.
+#[test]
+fn an_open_count_is_reported_in_its_declared_class_and_never_dropped() {
+    let open = Units {
+        open: std::collections::BTreeMap::from([("search_units".to_string(), 12)]),
+        ..Units::default()
+    };
+    let got: Vec<(u32, u64, bool)> = counts(&open)
+        .iter()
+        .map(|u| (u.class, u.amount, u.source == UNITS_REPORTED))
+        .collect();
+    assert_eq!(got, vec![(4, 12, true)], "no token counts, one open count");
+    let both = Units {
+        tokens_in: 5,
+        ..open.clone()
+    };
+    let classes: Vec<u32> = counts(&both).iter().map(|u| u.class).collect();
+    assert_eq!(classes, vec![0, 1, 2, 3, 4]);
+    let unknown = Units {
+        open: std::collections::BTreeMap::from([("nothing_stated".to_string(), 3)]),
+        ..Units::default()
+    };
+    assert!(
+        counts(&unknown).is_empty(),
+        "a class the plane does not state is warned, never counted under another class"
+    );
 }

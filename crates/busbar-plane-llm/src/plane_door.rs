@@ -30,8 +30,9 @@
 //! `more = 1` re-delivers it, never re-computes it. Every kernel or far-end piece reads the host's
 //! `clock.now` once ([`Services::clock_now`]); the plane reads no clock of its own.
 //!
-//! COUNTS, NEVER MONEY: a unit reports the far end's cumulative token counts in the tail's
-//! billable classes; the kernel prices them.
+//! COUNTS, NEVER MONEY: a unit reports the far end's cumulative token counts, and each open count
+//! it counted beside them ([`OPEN_CLASSES`]), in the tail's billable classes; the kernel prices
+//! them.
 
 use std::collections::{BTreeMap, HashMap};
 use std::mem::size_of;
@@ -67,6 +68,7 @@ use busbar_contract::ids::{MeterClassDecl, OpClassId};
 use busbar_contract::plane::PlaneMeta;
 use serde_json::Value;
 
+use crate::codec::ir::rerank::SEARCH_UNITS_CLASS;
 use crate::dialect::DIALECTS;
 use crate::exchange::arrive::{self, envelope_for, Arrived, Declined};
 use crate::exchange::attempt::{self, stream_intent, FarRequest};
@@ -139,11 +141,31 @@ const DIALECT_NAMES: &[AbiStr] = &[
     dialect(5),
 ];
 const OP_CLASSES: &[OpClass] = &[op(0), op(1), op(2), op(3), op(4), op(5), op(6)];
-const BILLABLE_CLASSES: &[BillableClass] = &[billable(0), billable(1), billable(2), billable(3)];
+/// THE OPEN CLASSES a far end counts beside its tokens, each `(class, family)`: every name the
+/// reply can report in its open counts, enumerated from the codec (a counted billing names its
+/// class there, and only a rerank's search units do: `codec/ir/rerank.rs`, priced under
+/// `rate_card.<model>.units`), so no reported count is dropped. They follow the token classes in
+/// the tail's billable classes.
+pub const OPEN_CLASSES: &[(&str, &str)] = &[(SEARCH_UNITS_CLASS, "units")];
+
+const fn open_class(k: usize) -> BillableClass {
+    BillableClass {
+        class: abi_str(OPEN_CLASSES[k].0),
+        family: abi_str(OPEN_CLASSES[k].1),
+    }
+}
+
+const BILLABLE_CLASSES: &[BillableClass] = &[
+    billable(0),
+    billable(1),
+    billable(2),
+    billable(3),
+    open_class(0),
+];
 const _: () = assert!(
     DIALECTS.len() == DIALECT_NAMES.len()
         && OPS.len() == OP_CLASSES.len()
-        && METER.len() == BILLABLE_CLASSES.len(),
+        && METER.len() + OPEN_CLASSES.len() == BILLABLE_CLASSES.len(),
     "the tail states every dialect, op class and token class the plane declares"
 );
 
@@ -474,27 +496,43 @@ fn owned(fields: &[(String, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
         .collect()
 }
 
-/// The far end's cumulative counts, in the tail's billable-class order (tokens in, tokens out,
-/// cache read, cache write). Nothing until the far end has reported a count.
+/// The far end's cumulative counts, in the tail's billable-class order: tokens in, tokens out,
+/// cache read, cache write, then each open class it counted ([`OPEN_CLASSES`]). Nothing until the
+/// far end has reported a count.
 #[must_use]
 pub fn counts(units: &Units) -> Vec<UnitCount> {
-    let all = [
+    let tokens = [
         units.tokens_in,
         units.tokens_out,
         units.cache_read,
         units.cache_write,
     ];
-    if all.iter().all(|&n| n == 0) {
-        return Vec::new();
-    }
-    all.iter()
-        .zip(0u32..)
-        .map(|(&amount, class)| UnitCount {
+    let mut out = Vec::new();
+    if tokens.iter().any(|&n| n != 0) {
+        out.extend(tokens.iter().zip(0u32..).map(|(&amount, class)| UnitCount {
             class,
             source: UNITS_REPORTED,
             amount,
-        })
-        .collect()
+        }));
+    }
+    for (name, &amount) in &units.open {
+        match OPEN_CLASSES
+            .iter()
+            .position(|(class, _)| *class == name.as_str())
+        {
+            Some(k) => out.push(UnitCount {
+                class: u32::try_from(METER.len() + k).unwrap_or(u32::MAX),
+                source: UNITS_REPORTED,
+                amount,
+            }),
+            // Every open class the codec can count is stated above: a name outside the table is a
+            // defect, reported, never counted as zero in silence.
+            None => {
+                tracing::warn!(class = %name, "an open count names a class the plane does not state");
+            }
+        }
+    }
+    out
 }
 
 fn verdict(v: Verdict) -> u32 {
