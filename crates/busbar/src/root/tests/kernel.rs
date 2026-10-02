@@ -1013,6 +1013,75 @@ fn a_rate_apply_before_the_book_is_bound_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The engine staging the deployment at `price` with `holder` at `at`, ahead of the save.
+fn stage_at(holder: &RootHistory, price: f64, at: u64) -> Result<(), super::CardRefused> {
+    let lanes = lanes_at(price);
+    let fees = plane_fees();
+    holder.stage_rates(
+        &busbar_kernel::rate_apply::RawRates {
+            lanes: &lanes,
+            units: &[("gpt".to_string(), "search_units".to_string(), 2_000)],
+            flat_minor: 4,
+            present: true,
+            plane_fees: &fees,
+        },
+        at,
+    )
+}
+
+/// **A STAGED CARD WHOSE CONFIG CHANGE DID NOT COMMIT NEVER PRICES AN INSTANT** (MONEY-AUDIT D-6,
+/// ARCHITECT ruling 2026-10-02): staged, it is on the journal and not published; withdrawn, the
+/// card in force goes back on the chain at the staged card's own instant, so the history a restart
+/// rebuilds is the live one, entry for entry. A staged card that commits is published as
+/// journalled: no second record, dated at its staging.
+#[test]
+fn a_staged_card_whose_change_did_not_commit_never_prices_an_instant() {
+    let dir = journal_dir("staged-withdrawn");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    stage_at(holder, 5.0, APPLIED_B).expect("the journal takes the staged card");
+    assert_eq!(
+        flat_price_at(holder, EARNED_B),
+        Some(3_000),
+        "a staged card is not published"
+    );
+    holder.withdraw_staged(APPLIED_B + 1);
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    let live = holder.len();
+    assert_eq!(
+        cards_on_chain(&book),
+        3,
+        "the boot card, the staged card, its withdrawal"
+    );
+    drop(book);
+
+    let restarted = process_holder();
+    apply_at(restarted, 3.0, REBOOT);
+    let book = boot_book(restarted, &dir);
+    assert_eq!(
+        flat_price_at(restarted, EARNED_B),
+        Some(3_000),
+        "a restart priced an instant at a card whose change never committed"
+    );
+    assert_eq!(
+        restarted.len(),
+        live,
+        "the live history is the one the chain rebuilds"
+    );
+
+    stage_at(restarted, 7.0, REBOOT_CHANGED).expect("the journal takes the staged card");
+    apply_at(restarted, 7.0, REBOOT_CHANGED + 5);
+    assert_eq!(flat_price_at(restarted, REBOOT_CHANGED), Some(7_000));
+    assert_eq!(
+        cards_on_chain(&book),
+        4,
+        "the commit wrote no second record"
+    );
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A holder that was not armed — every test holder, and a build with no root ledger — rebuilds
 /// nothing and journals nothing; a node with NO data directory keeps the boot card from instant
 /// zero exactly as the previous release did, and writes no card anywhere.

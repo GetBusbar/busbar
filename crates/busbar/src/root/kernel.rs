@@ -199,6 +199,12 @@ pub struct RootHistory {
     /// One config apply at a time, so an entry's number on the history and its record's position
     /// on the chain are the same order.
     applying: Mutex<()>,
+    /// THE CARD A CONFIG CHANGE STAGED: on the journal, not yet published, because the change it
+    /// was staged for has not committed. Published by the commit ([`Self::apply_rates`]) or
+    /// withdrawn ([`Self::withdraw_staged`]).
+    staged: Mutex<Option<CardApplied>>,
+    /// The form of the config card in force, as the journal holds it: what a withdrawal puts back.
+    in_force: Mutex<Option<CardForm>>,
 }
 
 /// Where a holder's applied cards go (see [`RootHistory::arm_journal`]).
@@ -358,6 +364,17 @@ impl RootHistory {
         register_classes(rates);
         let card = card_from_raw(rates);
         let form = CardForm::of(rates, &card);
+        // THE COMMIT OF A STAGED CARD: already on the journal, so it is published as journalled —
+        // its own `effective_from`, its own epoch — and nothing is written twice. A staged card
+        // that is not this one belongs to a change that did not commit, and is withdrawn first.
+        let staged = self.staged.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(staged) = staged {
+            if staged.form == form {
+                *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = Some(form);
+                return Ok(self.append_config(card, staged.appended_at, staged.policy_epoch));
+            }
+            self.withdraw(staged, now_ms);
+        }
         // One apply at a time (the lock above), so the epoch and the `effective_from` read here are
         // the ones the append below lands with.
         let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
@@ -365,13 +382,114 @@ impl RootHistory {
             effective_from: self.effective_from_for(now_ms),
             appended_at: now_ms,
             policy_epoch,
-            form,
+            form: form.clone(),
         })?;
         self.resolutions.fetch_max(
             policy_epoch.saturating_add(1),
             std::sync::atomic::Ordering::Relaxed,
         );
+        *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = Some(form);
         Ok(self.append_config(card, now_ms, policy_epoch))
+    }
+
+    /// **STAGE THE CARD A CONFIG CHANGE IS ABOUT TO COMMIT** (MONEY-AUDIT D-6, ARCHITECT ruling
+    /// 2026-10-02): put it on the journal BEFORE the change is saved, and publish nothing. The
+    /// commit publishes it ([`Self::apply_rates`]); a change that does not commit withdraws it
+    /// ([`Self::withdraw_staged`]). Only a bound journal stages: a holder journalling nothing (Off)
+    /// or holding the boot's card for its book (Armed) has nothing to make durable yet.
+    ///
+    /// # Errors
+    ///
+    /// The journal refused the card, or the book's handle is not bound yet: the config change is
+    /// refused whole, so the old configuration and the old card both stay.
+    pub fn stage_rates(
+        &self,
+        rates: &busbar_kernel::rate_apply::RawRates<'_>,
+        now_ms: u64,
+    ) -> Result<(), CardRefused> {
+        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
+        match *self.journal.lock().unwrap_or_else(|p| p.into_inner()) {
+            CardJournal::Off | CardJournal::Armed(_) => return Ok(()),
+            CardJournal::Restored => return Err(CardRefused::Unbound),
+            CardJournal::Bound { .. } => {}
+        }
+        let stale = self.staged.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(stale) = stale {
+            self.withdraw(stale, now_ms);
+        }
+        register_classes(rates);
+        let card = card_from_raw(rates);
+        let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
+        let applied = CardApplied {
+            effective_from: self.effective_from_for(now_ms),
+            appended_at: now_ms,
+            policy_epoch,
+            form: CardForm::of(rates, &card),
+        };
+        self.journal_applied(applied.clone())?;
+        self.resolutions.fetch_max(
+            policy_epoch.saturating_add(1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        *self.staged.lock().unwrap_or_else(|p| p.into_inner()) = Some(applied);
+        Ok(())
+    }
+
+    /// **THE STAGED CARD'S CONFIG CHANGE DID NOT COMMIT**: withdraw it. A no-op with nothing staged.
+    pub fn withdraw_staged(&self, now_ms: u64) {
+        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
+        let staged = self.staged.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(staged) = staged {
+            self.withdraw(staged, now_ms);
+        }
+    }
+
+    /// Put the card in force back on the journal at the staged card's own `effective_from`, so the
+    /// staged entry never prices an instant — on the chain a restart rebuilds from, and in memory,
+    /// where both entries land in one step and the history stays the one the chain will rebuild.
+    /// The caller holds `applying`.
+    fn withdraw(&self, staged: CardApplied, now_ms: u64) {
+        let prior = self
+            .in_force
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let Some(prior) = prior else {
+            tracing::error!(
+                effective_from = staged.effective_from,
+                "a staged rate card was withdrawn with no card in force to put back"
+            );
+            return;
+        };
+        let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
+        let back = CardApplied {
+            effective_from: staged.effective_from,
+            appended_at: now_ms,
+            policy_epoch,
+            form: prior,
+        };
+        if let Err(refused) = self.journal_applied(back.clone()) {
+            tracing::error!(
+                ?refused,
+                effective_from = staged.effective_from,
+                "the journal did not take the withdrawal of a staged rate card: a restart prices \
+                 from this instant at a card that was never in force"
+            );
+            return;
+        }
+        self.resolutions.fetch_max(
+            policy_epoch.saturating_add(1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.history.rcu(|current| {
+            let mut next = match current {
+                Some(history) => busbar_kernel_ledger::cost::History::clone(history),
+                None => busbar_kernel_ledger::cost::History::new(),
+            };
+            next.append(staged.draft());
+            next.append(back.draft());
+            Some(Arc::new(next))
+        });
     }
 
     /// ARM THE JOURNAL: from here on every apply is recorded — held until the boot's book has
@@ -432,7 +550,12 @@ impl RootHistory {
     fn restore(
         journalled: Vec<JournalledCard>,
         held: Vec<CardApplied>,
-    ) -> (busbar_kernel_ledger::cost::History, Vec<CardApplied>, u64) {
+    ) -> (
+        busbar_kernel_ledger::cost::History,
+        Vec<CardApplied>,
+        u64,
+        Option<CardForm>,
+    ) {
         use busbar_kernel_ledger::cost::{CardEntryDraft, History};
         let mut opening: Option<CardEntryDraft> = None;
         let mut rest: Vec<CardEntryDraft> = Vec::new();
@@ -476,7 +599,7 @@ impl RootHistory {
         for draft in opening.into_iter().chain(rest) {
             history.append(draft);
         }
-        (history, write, next_epoch)
+        (history, write, next_epoch, newest)
     }
 
     /// **THE BOOT'S REBUILD, RUN BY THE BOOK** before it prices a replayed posting: `records` is the
@@ -507,7 +630,7 @@ impl RootHistory {
         let CardJournal::Armed(held) = &mut *journal else {
             return Ok(());
         };
-        let (history, write, next_epoch) =
+        let (history, write, next_epoch, newest) =
             Self::restore(journalled_cards(records), std::mem::take(held));
         let token = new_kernel().durability_token();
         for applied in &write {
@@ -518,6 +641,7 @@ impl RootHistory {
         }
         self.resolutions
             .fetch_max(next_epoch, std::sync::atomic::Ordering::Relaxed);
+        *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = newest;
         *journal = CardJournal::Restored;
         durability.cards_from = Some(self);
         Ok(())
@@ -698,6 +822,16 @@ pub(crate) fn card_from_config<'r>(
 pub struct CardRepricer;
 
 impl busbar_kernel::rate_apply::RateApply for CardRepricer {
+    fn rates_staged(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) -> Result<(), String> {
+        ROOT_CARD
+            .stage_rates(rates, busbar_kernel::store::now_ms())
+            .map_err(|refused| format!("the journal did not take the rate card ({refused:?})"))
+    }
+
+    fn rates_withdrawn(&self) {
+        ROOT_CARD.withdraw_staged(busbar_kernel::store::now_ms());
+    }
+
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
         if let Err(refused) = ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms()) {
             tracing::error!(
