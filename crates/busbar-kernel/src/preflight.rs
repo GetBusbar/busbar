@@ -252,7 +252,10 @@ pub(crate) fn builtin_ranking(
     let calls = axis
         .open(name, name, &serde_json::json!({ "policy": name }), budget)
         .ok()?;
-    Some((crate::hooks::plugin::HookPolicy::policy(calls, name), budget))
+    Some((
+        crate::hooks::plugin::HookPolicy::policy(calls, name),
+        budget,
+    ))
 }
 
 /// The build's own secret module `module` names on the secret axis — a linked `kind: secret` row,
