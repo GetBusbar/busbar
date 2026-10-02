@@ -17,8 +17,8 @@ it; `-` means the dialect has no form for it.
 | anthropic | response | 20 | 0 |
 | anthropic | stream | 10 | 0 |
 | bedrock | request | 50 | 8 |
-| bedrock | response | 13 | 1 |
-| bedrock | stream | 6 | 0 |
+| bedrock | response | 20 | 0 |
+| bedrock | stream | 7 | 0 |
 | cohere | request | 38 | 0 |
 | cohere | response | 14 | 0 |
 | cohere | stream | 11 | 0 |
@@ -186,9 +186,9 @@ it; `-` means the dialect has no form for it.
 | response_id | - | - | - | `responseId` | - | - |
 | role | `role` | `output.message.role` | `message.role` | - | `choices[].message.role` | - |
 | safety_ratings | - | - | - | `candidates[].safetyRatings`<br>`promptFeedback.safetyRatings` | - | - |
-| safety_verdict | - | - | - | `candidates[].safetyRatings[].category`<br>`candidates[].safetyRatings[].blocked`<br>`promptFeedback.safetyRatings[].category`<br>`promptFeedback.safetyRatings[].blocked` | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | `moderation.input.type=moderation_result.categories`<br>`moderation.output.type=moderation_result.categories` |
+| safety_verdict | - | `trace.guardrail.inputAssessment{}.contentPolicy.filters[].type`<br>`trace.guardrail.inputAssessment{}.contentPolicy.filters[].action`<br>`trace.guardrail.inputAssessment{}.contentPolicy.filters[].detected`<br>`trace.guardrail.outputAssessments{}[].contentPolicy.filters[].type`<br>`trace.guardrail.outputAssessments{}[].contentPolicy.filters[].action`<br>`trace.guardrail.outputAssessments{}[].contentPolicy.filters[].detected` | - | `candidates[].safetyRatings[].category`<br>`candidates[].safetyRatings[].blocked`<br>`promptFeedback.safetyRatings[].category`<br>`promptFeedback.safetyRatings[].blocked` | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | `moderation.input.type=moderation_result.categories`<br>`moderation.output.type=moderation_result.categories` |
 | search_units | - | - | `usage.billed_units.search_units` | - | - | - |
-| served_tier | `usage.service_tier` | - | - | `usageMetadata.serviceTier` | `service_tier` | `service_tier` |
+| served_tier | `usage.service_tier` | `serviceTier.type` | - | `usageMetadata.serviceTier` | `service_tier` | `service_tier` |
 | status | - | - | - | - | - | `status`<br>`output[].type=message.status`<br>`output[].type=web_search_call.status` |
 | stop_sequence | `stop_sequence` | - | - | - | - | - |
 | summary | - | - | - | - | - | `output[].type=reasoning.summary` |
@@ -234,6 +234,7 @@ it; `-` means the dialect has no form for it.
 | metadata | - | `metadata` | - | code `gemini_labels` | - | - |
 | refusal | - | - | - | - | `choices[].delta.refusal` | - |
 | role | - | - | - | - | `choices[].delta.role` | - |
+| served_tier | - | `metadata.serviceTier.type` | - | - | - | - |
 | signature_delta | `type=content_block_delta.delta.type=signature_delta` | - | - | - | - | - |
 | text_delta | `type=content_block_delta.delta.type=text_delta` | - | - | - | - | - |
 | thinking_delta | `type=content_block_delta.delta.type=thinking_delta` | - | - | - | - | - |

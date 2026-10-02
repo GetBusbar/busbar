@@ -2362,3 +2362,63 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;
+
+/// The answer's (or the stream `metadata` frame's) `serviceTier.type`: the tier that served the
+/// turn, in the IR's served-tier vocabulary (Converse's words, as Anthropic's `usage.service_tier`
+/// is carried verbatim).
+fn read_served_tier(body: &serde_json::Value) -> Option<String> {
+    body.get(SERVICE_TIER_CAMEL)
+        .and_then(|t| t.get(keys::TYPE))
+        .and_then(|t| t.as_str())
+        .map(String::from)
+}
+
+const SERVICE_TIER_CAMEL: &str = "serviceTier";
+const CONTENT_POLICY: &str = "contentPolicy";
+const FILTERS: &str = "filters";
+const DETECTED: &str = "detected";
+const ACTION: &str = "action";
+const ACTION_BLOCKED: &str = "BLOCKED";
+
+/// A guardrail trace's content-policy filters -> the IR's safety verdicts (DF-MAP item 1): one per
+/// filter that `detected` or BLOCKED, its `type` the category. `confidence` and `filterStrength`
+/// are AWS's own scale and do not cross; the other policies (topics, words, PII, grounding) have
+/// no counterpart.
+fn read_guardrail_verdicts(
+    trace: Option<&serde_json::Value>,
+) -> Vec<crate::codec::ir::IrSafetyVerdict> {
+    let Some(g) = trace.and_then(|t| t.get(GUARDRAIL)) else {
+        return Vec::new();
+    };
+    let input = g
+        .get(GUARDRAIL_INPUT_ASSESSMENT)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values());
+    let output = g
+        .get(GUARDRAIL_OUTPUT_ASSESSMENTS)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|a| a.as_array())
+        .flatten();
+    input
+        .chain(output)
+        .filter_map(|a| a.get(CONTENT_POLICY)?.get(FILTERS)?.as_array())
+        .flatten()
+        .filter_map(|f| {
+            let blocked = f.get(ACTION).and_then(|a| a.as_str()) == Some(ACTION_BLOCKED);
+            let detected = f.get(DETECTED).and_then(|d| d.as_bool()).unwrap_or(blocked);
+            (detected || blocked).then_some(())?;
+            Some(crate::codec::ir::IrSafetyVerdict {
+                category: f.get(keys::TYPE)?.as_str()?.to_string(),
+                flagged: true,
+                blocked,
+            })
+        })
+        .collect()
+}

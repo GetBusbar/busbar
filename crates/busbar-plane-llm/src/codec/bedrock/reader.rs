@@ -1172,7 +1172,10 @@ impl ProtocolReader for BedrockReader {
                 // streamed.
                 let usage_val = data.get(keys::USAGE);
                 let usage = match read_bedrock_usage(usage_val) {
-                    Ok(usage) => usage,
+                    Ok(mut usage) => {
+                        usage.detail.service_tier = super::read_served_tier(data);
+                        usage
+                    }
                     Err(refusal) => {
                         out.push(IrStreamEvent::Error(refusal));
                         return out;
@@ -1386,9 +1389,11 @@ impl ProtocolReader for BedrockReader {
         let usage_obj = obj.get(keys::USAGE);
         // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens` — rides the same table
         // as the totals (see `USAGE`). Absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-        let usage = read_bedrock_usage(usage_obj)?;
+        let mut usage = read_bedrock_usage(usage_obj)?;
         // The guardrail policy units AWS bills beside the tokens ride `trace`, not `usage`.
         warn_guardrail_units(body);
+        // The tier that served the turn: the IR home existed, the reader missed it (DF-MAP).
+        usage.detail.service_tier = super::read_served_tier(body);
 
         Ok(crate::codec::ir::IrResponse {
             logprobs: Vec::new(),
@@ -1418,6 +1423,7 @@ impl ProtocolReader for BedrockReader {
 
             request_echo: None,
             stop_detail,
+            safety: super::read_guardrail_verdicts(obj.get(TRACE)),
             ..Default::default()
         })
     }
