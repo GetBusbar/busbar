@@ -248,8 +248,6 @@ impl super::RootCfg {
             .into_iter()
             .flat_map(|(_, p)| &p.allow_metadata_hosts);
         Destinations {
-            block_private_addresses: self.block_private_addresses,
-            allow: self.allow_destinations.clone(),
             legacy_allow: self
                 .allow_metadata_hosts
                 .iter()
@@ -258,6 +256,7 @@ impl super::RootCfg {
                 .collect(),
             blocked: self.blocked_metadata_hosts.clone(),
             allow_all_metadata: self.allow_all_metadata,
+            ..self.guard.clone()
         }
     }
 }

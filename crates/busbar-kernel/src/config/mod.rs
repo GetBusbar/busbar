@@ -499,10 +499,8 @@ pub struct RootCfg {
     /// DISABLED — every cloud-metadata endpoint is reachable by every provider. Logs a startup WARN.
     /// Default false.
     pub allow_all_metadata: bool,
-    /// `advanced.block_private_addresses` (the destination guard; [`RootCfg::destinations`]).
-    pub block_private_addresses: bool,
-    /// `advanced.allow_destinations` (the destination guard's allowlist, as written).
-    pub allow_destinations: Vec<String>,
+    /// The `advanced` destination-guard keys, as written ([`RootCfg::destinations`] adds the rest).
+    pub guard: Destinations,
     /// Fully-resolved operational limits ("NEVER CODED CAPS"), projected from the `limits:` /
     /// `observability:` / `governance:` / `metrics:` / `health:` / `routing:` config sections. Every
     /// value defaults to its historical hardcoded const, so an all-default config is unchanged. Read
@@ -2621,8 +2619,11 @@ pub fn resolve(
             blocked_metadata_hosts: security.blocked_metadata_hosts,
             allow_metadata_hosts: security.allow_metadata_hosts,
             allow_all_metadata: security.allow_all_metadata,
-            block_private_addresses: deploy.advanced.block_private_addresses,
-            allow_destinations: deploy.advanced.allow_destinations.clone(),
+            guard: Destinations {
+                block_private_addresses: deploy.advanced.block_private_addresses,
+                allow: deploy.advanced.allow_destinations.clone(),
+                ..Destinations::default()
+            },
             // Project the operational-limit sections onto a flat resolved struct. The `advanced:` /
             // `export:` blocks are optional; absent ⇒ their section defaults (the historical
             // hardcoded values, via the manual `Default` impls).
