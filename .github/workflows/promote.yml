@@ -2,17 +2,19 @@ name: Promote
 # Every same-repo PR is one hop up the branch ladder. The hop is GetBusbar/busbar-release's
 # ci/promote scripts at RELEASE_REF (private, so no `uses:`); these jobs only check out both repos
 # and run them. BOARD (fast-forward of the base) runs only when vars.PROMOTE_BOARD is "true".
-on: pull_request
-concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
+# predev lands through GitHub's merge queue (OWNER 2026-10-02): `merge_group` runs the same two
+# required jobs on the queue's merge commit, judged no worse than the base the queue built it on.
+on: [pull_request, merge_group]
+concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: true }
 permissions: { contents: read }
 env:
-  RELEASE_REF: 9ba9ab5c90ac6436fc5edbb450e645d1cdc45a10
-  SHA: ${{ github.event.pull_request.head.sha }}
-  TO: ${{ github.base_ref }}
-  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  RELEASE_REF: b11f4dd5ba5d65030d6e2336d4b3042f3f4afb4a
+  SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+  TO: ${{ github.base_ref || github.event.merge_group.base_ref }}
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
 jobs:
   preflight:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs: { runner: "${{ steps.pre.outputs.runner }}" }
@@ -22,6 +24,7 @@ jobs:
       - { id: pre, run: bash busbar-release/ci/promote/preflight.sh }
   hop:
     needs: preflight
+    permissions: { contents: read, issues: write, pull-requests: write }
     runs-on: ${{ needs.preflight.outputs.runner }}
     timeout-minutes: 330
     steps:
@@ -30,6 +33,23 @@ jobs:
       - run: bash busbar-release/ci/promote/hop.sh
         env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/turnstile-*.json", if-no-files-found: warn } } # v7.0.1
-      - if: vars.PROMOTE_BOARD == 'true'
+      # The durable verdict hop.sh writes pass or fail (verdict/): idempotent rerun for a hop killed before its trap, the artifact, the sticky PR comment, the branch health issue.
+      - { if: always(), run: bash busbar-release/ci/promote/verdict.sh }
+      - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "verdict-${{ env.SHA }}", path: "verdict/", retention-days: 90, if-no-files-found: warn } } # v7.0.1
+      - if: always()
+        run: bash busbar-release/ci/promote/publish.sh
+        env: { GH_TOKEN: "${{ github.token }}" }
+      - if: vars.PROMOTE_BOARD == 'true' && github.event_name == 'pull_request'
         run: bash busbar-release/ci/promote/board.sh
         env: { GITHUB_TOKEN: "${{ secrets.BUSBAR_TRAIN_TOKEN }}" }
+  # A hop whose runner was lost or timed out writes nothing; the API keeps the job and step conclusions after the logs are purged.
+  verdict-fallback:
+    needs: [preflight, hop]
+    if: always() && (needs.preflight.result != 'success' || needs.hop.result != 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: { contents: read, issues: write, pull-requests: write }
+    steps:
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
+      - run: bash busbar-release/ci/promote/fallback.sh
+        env: { GH_TOKEN: "${{ github.token }}", PR_NUMBER: "${{ github.event.pull_request.number }}", PREFLIGHT_RESULT: "${{ needs.preflight.result }}", HOP_RESULT: "${{ needs.hop.result }}" }
