@@ -24,7 +24,7 @@ use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{Frame, Plugin};
 
 #[path = "../../tests/fixtures/hook_door_plugin.rs"]
-mod hook_door_plugin;
+pub(crate) mod hook_door_plugin;
 
 /// The instance's settings: reject a request of more than three messages.
 const SETTINGS: &[u8] = br#"{"reject_over_messages": 3}"#;
