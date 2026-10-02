@@ -324,12 +324,10 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     let dial_bound = dial_bound_for(spec.pin.as_ref());
     let http = tunnel::TunnelConnector::new(http, proxy, dial_bound);
 
-    let tls = rustls_client_config(spec)?;
+    let mut tls = rustls_client_config(spec)?;
     let https = if spec.http1_only {
-        // hyper-rustls leaves an http1-only config's ALPN empty; 1.5.5's hello (reqwest) offered
-        // `http/1.1`, so the engine states it. `From` is the builder's `https_or_http` minus its
-        // empty-ALPN assertion.
-        let mut tls = tls;
+        // hyper-rustls leaves http1-only ALPN empty; 1.5.5 (reqwest) offered `http/1.1`. `From` is
+        // the builder's `https_or_http` minus its empty-ALPN assertion.
         tls.alpn_protocols = vec![b"http/1.1".to_vec()];
         hyper_rustls::HttpsConnector::from((http, tls))
     } else {

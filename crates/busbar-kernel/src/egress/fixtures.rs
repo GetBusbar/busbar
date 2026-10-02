@@ -93,8 +93,7 @@ pub struct ConnRecord {
     /// Whether the TLS handshake completed. `false` marks a connection the client refused
     /// (wrong-name certificate, missing identity against an mTLS peer).
     pub handshake_ok: bool,
-    /// The protocol the handshake agreed (ALPN) — `None` when the client offered none the
-    /// fixture serves, which is also what a ClientHello with no ALPN extension reads as.
+    /// The protocol the handshake agreed (ALPN); `None` for a hello with no ALPN extension.
     pub alpn: Option<Vec<u8>>,
     /// How many HTTP requests rode this one connection — the pooled-reuse observation.
     pub requests: usize,
