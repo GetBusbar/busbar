@@ -981,7 +981,7 @@ impl Journal {
         })
     }
 
-    /// Read the chain back out of the log's current segment, verifying as it goes.
+    /// Read the chain back out of the whole log, every segment oldest first, verifying as it goes.
     ///
     /// # Errors
     ///

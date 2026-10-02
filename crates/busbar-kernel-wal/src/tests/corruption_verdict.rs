@@ -307,6 +307,9 @@ impl SegmentFactory for CrashBeforeCut {
     fn highest_index(&self) -> std::io::Result<Option<u64>> {
         self.0.highest_index()
     }
+    fn existing(&self, index: u64) -> std::io::Result<Option<Box<dyn SegmentBackend>>> {
+        self.0.existing(index)
+    }
     fn is_durable(&self) -> bool {
         true
     }
@@ -384,6 +387,9 @@ impl SegmentFactory for NoQuarantine {
     }
     fn highest_index(&self) -> std::io::Result<Option<u64>> {
         self.0.highest_index()
+    }
+    fn existing(&self, index: u64) -> std::io::Result<Option<Box<dyn SegmentBackend>>> {
+        self.0.existing(index)
     }
     fn is_durable(&self) -> bool {
         true

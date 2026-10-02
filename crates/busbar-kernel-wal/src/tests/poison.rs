@@ -97,6 +97,38 @@ fn batches_n_and_n_plus_one_are_re_appended_to_a_fresh_segment_in_order() {
     );
 }
 
+/// The batch a poisoned segment lost can sit WHOLE in two segments: its bytes reached the poisoned
+/// one before the sync failed, and the roll wrote it again on the fresh one. Reading the whole log
+/// back hands it over once, in the place it was first written, with what came before the poison.
+#[test]
+fn reading_back_across_a_poison_roll_returns_each_record_once_oldest_first() {
+    let (mut wal, switch, memory) = wal_with_faults();
+    let token = durability_token();
+    // The poisoned segment stays resident, the way a data directory keeps its file.
+    let _segment_zero = memory.segment_bytes(0);
+
+    let earlier = records(1, 1, 2, 40);
+    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &earlier)
+        .unwrap();
+    switch.arm(Fault::SyncEio);
+    let n = records(1, 3, 2, 40);
+    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &n)
+        .expect_err("the sync was armed to fail");
+    let n_plus_one = records(1, 5, 2, 40);
+    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &n_plus_one)
+        .expect("the fresh segment takes both batches");
+    assert!(wal.segments_used() > 1, "the log rolled");
+
+    let mut expected = earlier;
+    expected.extend(n);
+    expected.extend(n_plus_one);
+    assert_eq!(
+        wal.read_back().unwrap().records,
+        expected,
+        "the whole log, each record once, oldest first"
+    );
+}
+
 #[test]
 fn re_appending_a_batch_that_is_already_in_the_log_writes_nothing_twice() {
     let (mut wal, _switch, _memory) = wal_with_faults();
