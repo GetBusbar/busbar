@@ -79,7 +79,7 @@ impl ProtocolReader for OpenAiReader {
     #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
         // Both bearer-envelope dialects classify alike: single-sourced in the shared dialect module.
-        crate::codec::dialect::bearer_error_classify(status, body)
+        crate::codec::dialect::bearer_error_classify(status.as_u16(), body)
     }
 
     fn read_request(

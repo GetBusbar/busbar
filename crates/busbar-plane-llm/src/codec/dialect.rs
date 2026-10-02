@@ -163,17 +163,16 @@ pub fn bearer_error_code(error_type: &str) -> serde_json::Value {
 /// then 429→RateLimit, 401/403→Auth, 5xx→ServerError, other 4xx→ClientError — is single-sourced here,
 /// beside [`bearer_error_code`], so neither dialect imports the other (design F3 SELF-CONTAINED).
 ///
-/// It is test-only (the production
+/// `status` is the HTTP status code. It is test-only (the production
 /// classification path is `OpenAiReader::extract_error` / `ResponsesReader::extract_error`, which this
 /// mirrors for the confinement/parity test suite), so it stays `#[cfg(test)]` here exactly as it was
 /// `#[cfg(any(test, feature = "test-support"))]` in the substrate — no other crate named it.
 #[cfg(test)]
 pub(crate) fn bearer_error_classify(
-    status: busbar_contract::http::StatusCode,
+    status: u16,
     body: &[u8],
 ) -> busbar_contract::upstream::CanonicalSignal {
     use crate::codec::keys;
-    use busbar_contract::http::StatusCode;
     use busbar_contract::upstream::{CanonicalSignal, StatusClass};
     // context-length-exceeded — the lane is healthy; this must fail over (to a larger-context
     // model), not penalize the breaker. Detect by OpenAI code/message first.
@@ -198,7 +197,7 @@ pub(crate) fn bearer_error_classify(
     // first was a mirror that showed a different picture. Every test proving oversized-request
     // failover through this function was then proving behaviour production does not have, for three
     // of the four phrasings the providers actually send.
-    let oversized = status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE;
+    let oversized = status == 400 || status == 413;
     let prose_is_context =
         oversized && context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
     if code_is_context || prose_is_context {
@@ -209,7 +208,7 @@ pub(crate) fn bearer_error_classify(
         };
     }
 
-    if status == StatusCode::TOO_MANY_REQUESTS {
+    if status == 429 {
         return CanonicalSignal {
             class: StatusClass::RateLimit,
             provider_signal: Some("429".to_string()),
@@ -217,7 +216,7 @@ pub(crate) fn bearer_error_classify(
         };
     }
 
-    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+    if status == 401 || status == 403 {
         return CanonicalSignal {
             class: StatusClass::Auth,
             provider_signal: Some(keys::AUTH_WORD.to_string()),
@@ -225,7 +224,7 @@ pub(crate) fn bearer_error_classify(
         };
     }
 
-    if status.is_server_error() {
+    if (500..600).contains(&status) {
         return CanonicalSignal {
             class: StatusClass::ServerError,
             provider_signal: Some("5xx".to_string()),
@@ -233,10 +232,10 @@ pub(crate) fn bearer_error_classify(
         };
     }
 
-    if status.is_client_error() {
+    if (400..500).contains(&status) {
         return CanonicalSignal {
             class: StatusClass::ClientError,
-            provider_signal: Some(format!("{}", status.as_u16())),
+            provider_signal: Some(format!("{status}")),
             retry_after: None,
         };
     }
