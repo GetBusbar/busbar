@@ -9,8 +9,8 @@
   "body": {
     "json": {
       "config_version": 1,
-      "file": "busbar-headroom-2.0.7-<TRIPLE>.tar.gz",
-      "name": "busbar-headroom",
+      "file": "busbar-webrequest-1.0.6-<TRIPLE>.tar.gz",
+      "name": "busbar-webrequest",
       "note": "rolled the plugin DOWN to the prior version and hot-swapped to it; the version pin is persisted (survives restart) and the anti-downgrade floor was lowered ONLY for this explicit, audited action — a silent replay of an old artifact is still refused.",
       "publisher": "busbar",
       "version": "<VERSION>"
@@ -25,7 +25,7 @@
           "actor": "admin",
           "chain_ok": true,
           "outcome": "applied",
-          "resource": "plugin:busbar-headroom-2.0.7-<TRIPLE>.tar.gz"
+          "resource": "plugin:busbar-webrequest-1.0.6-<TRIPLE>.tar.gz"
         }
       ]
     },
