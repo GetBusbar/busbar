@@ -208,6 +208,7 @@ pub const HOSTED_TOOL: Member = block(kind::HOSTED_TOOL);
 pub mod name {
     pub const N: &str = "n";
     pub const REASONING: &str = "reasoning";
+    pub const THINKING_BUDGET: &str = "thinking_budget";
     pub const CACHE_CONTROL: &str = "cache_control";
     pub const STOP: &str = "stop";
     pub const TOOLS: &str = "tools";

@@ -546,6 +546,33 @@ fn a_request_readers_unknown_modality_is_on_the_drop_path() {
     );
 }
 
+/// An ANSWER reader's drop: audited as `path` and warned once on the drop path with `diag`. (The
+/// usage tap also reads the answer outside the attempt, where the reader's own warn is said
+/// unchanged, as before.)
+fn on_the_answer_drop_path(
+    audited: &[String],
+    cap: &WarnCapture,
+    path: &str,
+    diag: &str,
+    text: &str,
+) {
+    assert!(
+        audited.iter().any(|a| a == path),
+        "the reader's drop is audited as `{path}`: {audited:?}"
+    );
+    let on_path: Vec<String> = cap
+        .messages()
+        .into_iter()
+        .filter(|m| m.contains(text) && m.split_whitespace().any(|w| w == format!("path={path}")))
+        .collect();
+    assert_eq!(on_path.len(), 1, "one drop-path warn: {:?}", cap.messages());
+    assert!(
+        on_path[0].contains(&format!("diag={diag}")),
+        "{}",
+        on_path[0]
+    );
+}
+
 #[test]
 fn an_answer_readers_extra_choices_are_on_the_drop_path() {
     let (audited, cap) = answer(
@@ -558,7 +585,7 @@ fn an_answer_readers_extra_choices_are_on_the_drop_path() {
             ],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}),
     );
-    on_the_drop_path(
+    on_the_answer_drop_path(
         &audited,
         &cap,
         "choices[]",
@@ -578,7 +605,7 @@ fn an_answer_readers_extra_candidates_are_on_the_drop_path() {
             ],
             "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}}),
     );
-    on_the_drop_path(
+    on_the_answer_drop_path(
         &audited,
         &cap,
         "candidates[]",
@@ -597,7 +624,7 @@ fn an_answer_readers_bedrock_only_member_is_on_the_drop_path() {
             "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
             "trace": {"guardrail": {"modelOutput": []}}}),
     );
-    on_the_drop_path(
+    on_the_answer_drop_path(
         &audited,
         &cap,
         "trace",
@@ -617,7 +644,7 @@ fn an_answer_readers_request_echo_is_on_the_drop_path() {
                 "content": [{"type": "output_text", "text": "hi", "annotations": []}]}],
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}),
     );
-    on_the_drop_path(
+    on_the_answer_drop_path(
         &audited,
         &cap,
         "instructions",

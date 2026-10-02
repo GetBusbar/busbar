@@ -320,8 +320,13 @@ const IR_BLOCK_KINDS: &[(&str, &str)] = &[
 
 /// The IR request members the reader carries by code from a path no map-file row names (how a drop
 /// of one is named by the caller's wire path).
-const REQUEST_CODE_NAMES: &[(&str, &str)] =
-    &[(crate::codec::drops::name::REASONING, keys::THINKING)];
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (crate::codec::drops::name::REASONING, keys::THINKING),
+    (
+        crate::codec::drops::name::THINKING_BUDGET,
+        "thinking.token_budget",
+    ),
+];
 
 /// The IR request members the reader never sets.
 // No candidate count, cache marks, parallel-call switch, metadata, top-logprob count, output
