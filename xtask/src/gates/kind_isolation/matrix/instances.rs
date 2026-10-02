@@ -43,13 +43,13 @@
 //! compiler reads it (escapes decoded, adjacent literals joined — [`super::decoded_line`]), so
 //! `"\x6f\x74lp"` and `concat!("ot", "lp")` are `"otlp"`.
 //!
-//! ## ARMED AT TODAY'S NUMBER
+//! ## PRESENCE, NOT SIZE
 //!
-//! Every non-zero cell carries an `[[instance]]` row in `qa/kind-isolation.toml` with TODAY'S
-//! measured count (a first measurement, not a raise). The ratchet is exact in both
-//! directions like `[[cell]]`: a rise is the landing that grew the naming, a fall with the row left
-//! standing is stale slack, and a row over a zero cell is dead. The ship twin owes zero in every
-//! neutral crate through the Law 0 class. The drain is Phase 4's.
+//! Every non-zero cell carries an `[[instance]]` row in `qa/kind-isolation.toml` — crate and kind,
+//! no count, exactly like `[[cell]]`. Size is not a CI check (owner 2026-10-02): a cell with no row
+//! is a NEW naming and is RED (`unlisted-instance`), a row over a zero cell is dead, and more names
+//! inside a listed cell change nothing here. The ship twin owes zero in every neutral crate through
+//! the Law 0 class. The drain is Phase 4's.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -535,7 +535,23 @@ fn heaviest(cell: &Cell) -> String {
         .join(", ")
 }
 
-/// THE RATCHET — every finding the `[[instance]]` table owes, exact in both directions.
+/// The files a cell's names sit in, heaviest first, WITHOUT their counts: a finding that is about
+/// presence names where to look and carries no figure (size is not a CI check, owner 2026-10-02).
+fn files_of(cell: &Cell) -> String {
+    let mut per: BTreeMap<&str, usize> = BTreeMap::new();
+    for h in &cell.hits {
+        if let Some(at) = h.split('\t').nth(1).and_then(|p| p.rsplit_once(':')) {
+            *per.entry(at.0).or_default() += 1;
+        }
+    }
+    let mut v: Vec<(&str, usize)> = per.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    v.truncate(6);
+    v.iter().map(|(f, _)| *f).collect::<Vec<_>>().join(", ")
+}
+
+/// EVERY FINDING THE `[[instance]]` TABLE OWES — presence only: an unlisted cell, a dead row, a
+/// duplicate row.
 pub fn offenders(
     measured: &Instances,
     vocab: &Vocab,
@@ -557,10 +573,10 @@ pub fn offenders(
         }
     }
 
-    let mut listed: BTreeMap<(String, String), i64> = BTreeMap::new();
+    let mut listed: BTreeSet<(String, String)> = BTreeSet::new();
     let mut seen: BTreeMap<(String, String), usize> = BTreeMap::new();
     for c in &reg.instance_cells {
-        listed.insert((c.krate.clone(), c.kind.clone()), c.count);
+        listed.insert((c.krate.clone(), c.kind.clone()));
         *seen.entry((c.krate.clone(), c.kind.clone())).or_default() += 1;
     }
     for ((krate, kind), n) in seen {
@@ -573,33 +589,17 @@ pub fn offenders(
     }
 
     for ((krate, kind), cell) in measured {
-        let key = (krate.clone(), (*kind).to_string());
-        match listed.get(&key) {
-            None => out.push(format!(
-                "unlisted-instance\t{krate} \u{d7} {kind} = {}\t{krate} names {} `{kind}` \
-                 instance(s) as a value and there is no `[[{TABLE}]] crate = \"{krate}\", kind = \
-                 \"{kind}\"` in {led}. C1: core names no instance. {}",
-                cell.count,
-                cell.count,
-                heaviest(cell)
-            )),
-            Some(&n) if n as usize != cell.count => {
-                let verb = if (n as usize) < cell.count {
-                    "RAISED — this landing grew the naming"
-                } else {
-                    "STALE SLACK — the count fell and the ceiling did not; slack is how drift hides"
-                };
-                out.push(format!(
-                    "instance-ratchet\t{krate} \u{d7} {kind}\tceiling {n} vs measured {} ({verb}). \
-                     The ceiling must equal the count, exactly. {}",
-                    cell.count,
-                    heaviest(cell)
-                ));
-            }
-            Some(_) => {}
+        if cell.count == 0 || listed.contains(&(krate.clone(), (*kind).to_string())) {
+            continue;
         }
+        out.push(format!(
+            "unlisted-instance\t{krate} \u{d7} {kind}\t{krate} names `{kind}` instances as a \
+             value and there is no `[[{TABLE}]] crate = \"{krate}\", kind = \"{kind}\"` in \
+             {led}. C1: core names no instance. In: {}",
+            files_of(cell)
+        ));
     }
-    for (krate, kind) in listed.keys() {
+    for (krate, kind) in &listed {
         let live = measured
             .iter()
             .any(|((k, kd), c)| k == krate && kd == kind && c.count > 0);
@@ -681,7 +681,7 @@ fn one_name_per_axis(cx: &crate::ctx::Ctx) -> Result<Vec<(&'static str, String)>
     Ok(out)
 }
 
-/// THE STALE-SLACK FIXTURE'S CRATE: a neutral `kernel`-kind crate that exists only in the overlay,
+/// THE FIXTURE CRATE: a neutral `kernel`-kind crate that exists only in the overlay,
 /// so the instance cases measure a cell no live crate owns and no fold can take away.
 // qa-names: crates/busbar-kernel-planted -- xtask/src/gates/kind_isolation/matrix/instances.rs -- an overlay-only fixture crate the instance and cell cases plant whole (manifest and sources); it is absent from the tree on purpose, so no live crate or fold decides what those cases measure
 pub(super) const FIXTURE_DIR: &str = "crates/busbar-kernel-planted";
@@ -758,7 +758,7 @@ pub fn selftest<'a>(
                 super::plant(cx, &rel, &body),
                 &[
                     "unlisted-instance",
-                    &format!("{CORE_NAME} \u{d7} {k} = 1"),
+                    &format!("{CORE_NAME} \u{d7} {k}"),
                     &rel,
                 ],
             ));
@@ -768,19 +768,21 @@ pub fn selftest<'a>(
         return;
     }
 
-    // THE BREACH ITSELF, ONE MORE: the kernel growing its closed list of export instance names.
+    // PRESENCE, NOT SIZE (owner 2026-10-02: size is not a CI check). The kernel's export cell is
+    // a listed `[[instance]]` row, so one more export instance name inside it is not a new edge and
+    // adds no finding. The RED half of the same rule is every `unlisted-instance` case above: a
+    // cell with no row at all.
     if let Some((_, name)) = names.iter().find(|(k, _)| *k == "export") {
-        report.push(prove_rows_red(
+        report.push(prove_rows_green(
             cx,
             gate,
-            "the kernel naming one more export instance is a RAISED instance cell",
+            "the kernel naming one more export instance inside its listed cell adds no finding",
             &[ROW_MATRIX],
             super::plant(
                 cx,
                 "crates/busbar-kernel/src/planted_export_instance.rs",
                 &format!("pub const ALSO: &str = \"{name}\";\n"),
             ),
-            &["instance-ratchet", "busbar-kernel \u{d7} export", "RAISED"],
         ));
     }
 
@@ -803,7 +805,7 @@ pub fn selftest<'a>(
         ov,
         &[
             "unlisted-instance",
-            "busbar-core-connector \u{d7} store = 1",
+            "busbar-core-connector \u{d7} store",
             "planted_new_store.rs",
         ],
     ));
@@ -878,7 +880,7 @@ pub fn selftest<'a>(
         core_word(false, false),
         &[
             "unlisted-instance",
-            &format!("{CORE_NAME} \u{d7} auth = 1"),
+            &format!("{CORE_NAME} \u{d7} auth"),
             "planted_core_word.rs",
         ],
     ));
@@ -931,67 +933,68 @@ pub fn selftest<'a>(
         &["bad-core-name-cite", "zebedee"],
     ));
 
-    // THE RATCHET IS EXACT BOTH WAYS, and a ceiling for an axis nothing measures is refused at load.
+    // A LISTED CELL IS GREEN, AND A ROW FOR AN AXIS NOTHING MEASURES IS REFUSED AT LOAD.
     //
-    // THE STALE-SLACK CASE BUILDS ITS OWN ROW, ON A CRATE IT BUILDS. It used to add 1 to the live
-    // `busbar-kernel × export` ceiling, a cell whose ceiling sits BELOW its count on this tree (54
-    // vs 79, RAISED — owner question Q77): ceiling + 1 is still below the count, so the planted run
-    // could only say RAISED again and never STALE SLACK — a proof that could not be had (item 89).
-    // Its later fixtures were live crates' cells (`busbar-timing` until that crate folded into
-    // the kernel, then `busbar-kernel-scope`), and a live crate is one a fold can take away. So
-    // the fixture is now wholly the battery's: [`FIXTURE_CRATE`], a neutral kernel-kind crate that
-    // exists only in the overlay, names the store instance `memory` once, and the ledger gains an
-    // `[[instance]]` row for exactly that cell. At `count = "1"` the row equals its measurement and
-    // the row is GREEN (the control below); at `count = "2"` the ceiling sits one above the count,
-    // which is the stale slack this case exists to prove the ratchet refuses. Only the number
-    // differs between the two plants.
+    // THE FIXTURE IS WHOLLY THE BATTERY'S: [`FIXTURE_CRATE`], a neutral kernel-kind crate that
+    // exists only in the overlay, names the store instance `memory` once. With an `[[instance]]`
+    // row for exactly that cell it is GREEN; without one it is `unlisted-instance` (RED). Only the
+    // row differs between the two plants. The row carries no count — presence only (owner
+    // 2026-10-02) — and a `count` written back into it is refused at load.
     //
-    // THE ROW PRE-DATES THE BRANCH IN BOTH, because the base's copy of the ledger is planted with
-    // it. A row that is in no copy of the ledger at the merge-base is `minted-row` whatever its
-    // count, so without that the control could never be green and the red case would be red for
-    // two reasons at once; with it, the count is the only thing either case is about.
-    let slack_fixture = |count: &str| {
+    // THE ROW PRE-DATES THE BRANCH, because the base's copy of the ledger is planted with it. A row
+    // that is in no copy of the ledger at the merge-base is `minted-row`, so without that the
+    // control could never be green; with it, the row is the only thing either case is about.
+    let listed_fixture = |row: Option<&str>| {
         let mut ov = fixture_crate();
         ov.set(
-            format!("{FIXTURE_DIR}/src/planted_slack.rs"),
+            format!("{FIXTURE_DIR}/src/planted_listed.rs"),
             "pub const S: &str = \"memory\";\n".to_string(),
         );
-        let ledger = format!(
-            "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\ncount = \"{count}\"\n",
-            cx.read(super::LEDGER).unwrap_or_default().trim_end()
-        );
-        if let Some(sha) = super::super::debt_free::pinned_base(cx) {
-            ov.set_command(format!("git-show:{sha}:{}", super::LEDGER), ledger.clone());
+        if let Some(extra) = row {
+            let ledger = format!(
+                "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\n{extra}",
+                cx.read(super::LEDGER).unwrap_or_default().trim_end()
+            );
+            if let Some(sha) = super::super::debt_free::pinned_base(cx) {
+                ov.set_command(format!("git-show:{sha}:{}", super::LEDGER), ledger.clone());
+            }
+            ov.set(super::LEDGER, ledger);
         }
-        ov.set(super::LEDGER, ledger);
         ov
     };
     report.push(prove_rows_green(
         cx,
         gate,
-        "an [[instance]] ceiling equal to its count is green (the stale-slack fixture's control)",
+        "an [[instance]] row over a live cell is green, whatever the cell's size",
         &[ROW_MATRIX],
-        slack_fixture("1"),
+        listed_fixture(Some("")),
     ));
     report.push(prove_rows_red(
         cx,
         gate,
-        "an [[instance]] ceiling left above its count is stale slack",
+        "the same cell with no [[instance]] row is an unlisted instance cell",
         &[ROW_MATRIX],
-        slack_fixture("2"),
+        listed_fixture(None),
         &[
-            "instance-ratchet",
+            "unlisted-instance",
             &format!("{FIXTURE_CRATE} \u{d7} store"),
-            "ceiling 2 vs measured 1",
-            "STALE SLACK",
+            "planted_listed.rs",
         ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `count` written back into an [[instance]] row is refused at load — presence only",
+        &[super::super::ROW_REGISTRY],
+        listed_fixture(Some("count = \"1\"\n")),
+        &["unknown-field", "`[[instance]]` declares `count`"],
     ));
     let text = cx.read(super::LEDGER).unwrap_or_default();
     let mut dead = fixture_crate();
     dead.set(
         super::LEDGER,
         format!(
-            "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\ncount = \"1\"\n",
+            "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\n",
             text.trim_end()
         ),
     );
@@ -1012,7 +1015,7 @@ pub fn selftest<'a>(
             cx,
             super::LEDGER,
             &format!(
-                "{}\n\n[[instance]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"1\"\n",
+                "{}\n\n[[instance]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\n",
                 text.trim_end()
             ),
         ),

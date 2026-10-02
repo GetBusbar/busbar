@@ -58,11 +58,12 @@
 //! * `kind-isolation:matrix` — the rows above hold the line for the WIRES, and none of them looked
 //!   at `crates/busbar`, the COMPOSITION ROOT, where the tree hand-wires one file per plane and
 //!   where a plane-named accept loop was landed on a sibling branch, all of it green because
-//!   nothing counted it. This row counts, for EVERY kind and EVERY crate, how many times that crate
+//!   nothing counted it. This row measures, for EVERY kind and EVERY crate, whether that crate
 //!   names that kind's derived vocabulary — every `.rs` and `.toml` under it, WHOLE TEXT, comments
-//!   and tests and Cargo features and filenames included — against per-cell ceilings in
-//!   [`REGISTRY_FILE`]'s `[[edge]]`, `[[cell]]` and `[[disagreement]]` tables, exact in both
-//!   directions. See [`matrix`].
+//!   and tests and Cargo features and filenames included — and holds every such crate × kind EDGE
+//!   to a row in [`REGISTRY_FILE`]'s `[[edge]]` and `[[cell]]` tables: a new edge is RED, a row
+//!   whose edge is gone is RED. PRESENCE, not size: size is not a CI check (owner 2026-10-02).
+//!   See [`matrix`].
 //!
 //! ## THE TARGET NAMING SCHEME IS `busbar-<kind>-<name>`, AND THE GATE ACCEPTS BOTH
 //!
@@ -916,12 +917,13 @@ struct MatrixEdge {
     drain: String,
 }
 
-/// One `[[cell]]` row: what one crate's naming of one kind MEASURES TODAY, exactly.
+/// One `[[cell]]` (or `[[instance]]`) row: one crate names one kind's vocabulary at all — a
+/// crate-level cross-kind EDGE that exists and was reviewed. Presence only: size is not a CI check
+/// (owner 2026-10-02), so the row carries no count.
 #[derive(Debug, Clone)]
 struct MatrixCell {
     krate: String,
     kind: String,
-    count: i64,
 }
 
 /// One `[[core-name]]` row: a word the instance vocabulary learns off a module-name constant that is
@@ -940,19 +942,6 @@ struct CoreName {
     kind: String,
     name: String,
     cite: String,
-}
-
-/// One `[[disagreement]]` row: a cell whose two scanners return different totals, and why.
-///
-/// Its own table rather than an optional field on `[[cell]]`, because every other row in this file
-/// is a fixed set of required fields and an optional one would be the first thing a reader has to
-/// remember. A disagreement is also its own fact: it says a spelling exists that one scanner cannot
-/// see, which is a finding about the MEASUREMENT and not about the count.
-#[derive(Debug, Clone)]
-struct MatrixDisagreement {
-    krate: String,
-    kind: String,
-    note: String,
 }
 
 /// One `[[dep]]` row: one crate's dependency on one other crate, in one half of the build graph,
@@ -984,10 +973,10 @@ struct DepEdge {
 
 /// One `[[question]]` row: the question an `owner-ruling-pending` edge is asking.
 ///
-/// Its own table rather than an optional field, on exactly the terms `[[disagreement]]` is: every
-/// row in this file is a fixed set of required fields, and an optional one would be the first thing
-/// a reader has to remember. A question is also its own fact — it says the architecture has not
-/// ruled, which is a statement about the DESIGN and not about the count.
+/// Its own table rather than an optional field: every row in this file is a fixed set of required
+/// fields, and an optional one would be the first thing a reader has to remember. A question is
+/// also its own fact — it says the architecture has not ruled, which is a statement about the
+/// DESIGN and not about the count.
 #[derive(Debug, Clone)]
 struct DepQuestion {
     from: String,
@@ -1026,15 +1015,13 @@ struct KindRegistry {
     dep_questions: Vec<DepQuestion>,
     /// The `:faces` row's table — one row per crate that implements another kind's entry face.
     faces: Vec<FaceDebt>,
-    /// The `:matrix` row's three tables. They live in this reader rather than in a second one
+    /// The `:matrix` row's two tables. They live in this reader rather than in a second one
     /// because there is ONE registry file and a file read twice is a file two rules can disagree
     /// about.
     matrix_edges: Vec<MatrixEdge>,
     matrix_cells: Vec<MatrixCell>,
-    matrix_disagreements: Vec<MatrixDisagreement>,
     /// The `[[instance]]` table: the five plugin-instance axes C1 was never measured over (item
-    /// 118). Same row shape as `[[cell]]` — crate, kind, today's exact count. See
-    /// `matrix::instances`.
+    /// 118). Same row shape as `[[cell]]` — crate, kind, presence only. See `matrix::instances`.
     instance_cells: Vec<MatrixCell>,
     /// The `[[core-name]]` table: core's own words the instance vocabulary must not count. See
     /// [`CoreName`] and `matrix::instances::vocabulary`.
@@ -1264,9 +1251,9 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             }
             reg.registered.push(Registered { name, kind, reason });
         }
-        // THE `:matrix` ROW'S THREE TABLES. Same reader, same refusals: an unknown field is
-        // refused, an empty one is refused, and a missing one is refused, because a ceiling with
-        // half a sentence is a budget.
+        // THE `:matrix` ROW'S TABLES. Same reader, same refusals: an unknown field is refused, an
+        // empty one is refused, and a missing one is refused, because an edge with half a sentence
+        // is a budget.
         "edge" => {
             let Some(v) = take_row(
                 fields,
@@ -1285,41 +1272,16 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 drain: v[4].clone(),
             });
         }
+        // EXISTENCE ONLY (owner 2026-10-02: size is not a CI check). A row says this crate × kind
+        // edge exists and is reviewed; it carries no count, and a leftover `count` field is refused
+        // as an unknown field so the integers cannot come back one row at a time.
         "cell" => {
-            let Some(v) = take_row(fields, &["crate", "kind", "count"], table, at, &mut reg.errors)
-            else {
+            let Some(v) = take_row(fields, &["crate", "kind"], table, at, &mut reg.errors) else {
                 return;
             };
-            let Ok(count) = v[2].parse::<i64>() else {
-                reg.errors.push(format!(
-                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[cell]] count = \"{}\"` is not a number. A \
-                     ceiling that cannot be compared to a measurement is not a ceiling",
-                    v[2]
-                ));
-                return;
-            };
-            // A NEGATIVE CEILING IS A PER-CELL OFF SWITCH, and it is refused HERE rather than
-            // tolerated downstream. `count = "-1"` parses, so every load-time refusal let it
-            // through; the exact-both-directions comparison then skipped the cell entirely,
-            // `dead-cell` keys on the MEASURED count so it never fired, and one character turned
-            // the ratchet off for one crate × kind with nothing anywhere saying so. A number no
-            // measurement can ever equal is not a ceiling — it is the absence of one, spelled to
-            // look like a reviewed figure.
-            if count < 0 {
-                reg.errors.push(format!(
-                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[cell]] count = \"{}\"` is negative. No \
-                     measurement is ever below zero, so a negative ceiling is not a ceiling this \
-                     rule can compare against — it is this cell's ratchet switched off in a value \
-                     that reads like a reviewed figure. Write the count the tree measures, or \
-                     strike the row",
-                    v[2]
-                ));
-                return;
-            }
             reg.matrix_cells.push(MatrixCell {
                 krate: v[0].clone(),
                 kind: v[1].clone(),
-                count,
             });
         }
         // `[patch]` AND `[replace]` REDIRECT WHAT CARGO COMPILES, AND NOTHING IN THIS GATE READ
@@ -1340,29 +1302,18 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 reason: v[2].clone(),
             });
         }
-        // THE FIVE INSTANCE AXES' CEILINGS (item 118). The same refusals as `[[cell]]`, plus one:
-        // a row naming a kind that is not one of the five axes would be a ceiling no measurement
-        // ever produces, so it is refused at load rather than scored dead forever.
+        // THE FIVE INSTANCE AXES' EDGES (item 118). Existence only, on the same terms as
+        // `[[cell]]`, plus one refusal: a row naming a kind that is not one of the five axes would
+        // be an edge no measurement ever produces, so it is refused at load rather than scored dead
+        // forever.
         "instance" => {
-            let Some(v) = take_row(fields, &["crate", "kind", "count"], table, at, &mut reg.errors)
-            else {
+            let Some(v) = take_row(fields, &["crate", "kind"], table, at, &mut reg.errors) else {
                 return;
-            };
-            let count = match v[2].parse::<i64>() {
-                Ok(n) if n >= 0 => n,
-                _ => {
-                    reg.errors.push(format!(
-                        "bad-count\t{REGISTRY_FILE}:{at}\t`[[instance]] count = \"{}\"` is not a \
-                         non-negative number. A ceiling no measurement can equal is not a ceiling",
-                        v[2]
-                    ));
-                    return;
-                }
             };
             if !matrix::instance_axes().contains(&v[1].as_str()) {
                 reg.errors.push(format!(
                     "bad-instance-kind\t{REGISTRY_FILE}:{at}\t`[[instance]] kind = \"{}\"` is not \
-                     one of the instance axes ({}). A ceiling for an axis nothing measures is never \
+                     one of the instance axes ({}). A row for an axis nothing measures is never \
                      compared to anything",
                     v[1],
                     matrix::instance_axes().join(", ")
@@ -1372,7 +1323,6 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             reg.instance_cells.push(MatrixCell {
                 krate: v[0].clone(),
                 kind: v[1].clone(),
-                count,
             });
         }
         // CORE'S OWN WORDS (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q1). A mask over the learned
@@ -1423,17 +1373,6 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 kind: v[0].clone(),
                 name,
                 cite: v[2].clone(),
-            });
-        }
-        "disagreement" => {
-            let Some(v) = take_row(fields, &["crate", "kind", "note"], table, at, &mut reg.errors)
-            else {
-                return;
-            };
-            reg.matrix_disagreements.push(MatrixDisagreement {
-                krate: v[0].clone(),
-                kind: v[1].clone(),
-                note: v[2].clone(),
             });
         }
         // THE `:deps` AND `:test-deps` ROWS' TWO TABLES. Same reader, same refusals — and two more
@@ -1543,8 +1482,8 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
-             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[disagreement]]`, `[[instance]]`, \
-             `[[core-name]]` and `[[patch]]` rows and nothing else"
+             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` \
+             and `[[patch]]` rows and nothing else"
         )),
     }
 }
@@ -1579,7 +1518,8 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[edge]]`, `[[cell]]`, `[[disagreement]]` and `[[patch]]` rows and nothing else",
+                 `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` and `[[patch]]` rows and \
+                 nothing else",
                 i + 1
             ));
             continue;
@@ -5591,7 +5531,7 @@ pub const ROW_WRITE: &str = "kind-isolation:write";
 
 /// One row of the registry whose number this run would move.
 struct Repin {
-    /// `[[cell]] busbar × plane`, `[[dep]] a -> b (shipped)`, `[[face]] c / Plane` — what a reader
+    /// `[[dep]] a -> b (shipped)`, `[[face]] c / Plane` — what a reader
     /// is looking at.
     label: String,
     /// The lines that identify the row in the file, so the rewrite cannot move the wrong one.
@@ -5605,46 +5545,9 @@ struct Repin {
 fn repins(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Result<Vec<Repin>, String> {
     let mut out: Vec<Repin> = Vec::new();
 
-    let cells = matrix::measured_cells(cx, crates)?;
-    for c in &reg.matrix_cells {
-        let now = cells
-            .get(&(c.krate.clone(), c.kind.clone()))
-            .copied()
-            .unwrap_or(0) as i64;
-        if now != c.count {
-            out.push(Repin {
-                label: format!("[[cell]] {} × {}", c.krate, c.kind),
-                keys: vec![
-                    ("crate".to_string(), c.krate.clone()),
-                    ("kind".to_string(), c.kind.clone()),
-                ],
-                table: "cell",
-                was: c.count,
-                now,
-            });
-        }
-    }
-
-    let inst = matrix::measured_instances(cx, crates, &reg.core_names)?;
-    for c in &reg.instance_cells {
-        let now = inst
-            .get(&(c.krate.clone(), c.kind.clone()))
-            .copied()
-            .unwrap_or(0) as i64;
-        if now != c.count {
-            out.push(Repin {
-                label: format!("[[instance]] {} × {}", c.krate, c.kind),
-                keys: vec![
-                    ("crate".to_string(), c.krate.clone()),
-                    ("kind".to_string(), c.kind.clone()),
-                ],
-                table: "instance",
-                was: c.count,
-                now,
-            });
-        }
-    }
-
+    // `[[cell]]` and `[[instance]]` rows carry no count (size is not a CI check, owner
+    // 2026-10-02), so there is nothing of theirs to re-pin. `[[dep]]` and `[[face]]` counts are
+    // EDGE records — declarations and implementations — and stay exact.
     for half in [Half::Shipped, Half::Test] {
         let measured = measure_edges(crates, half);
         for row in reg.dep_edges.iter().filter(|d| d.half == half.word()) {
@@ -5750,8 +5653,10 @@ fn rewrite_counts(text: &str, repins: &[Repin]) -> String {
 /// The ratchet is exact in both directions, and that is what makes it a ratchet: a count above its
 /// row is the landing that grew the coupling, and a count BELOW it is stale slack nobody drained on
 /// the commit that drained the edge. Exactness has one cost, though, and it lands on the landing
-/// that does the RIGHT thing: a cut that removes two of a crate's plane hits leaves the row three
-/// too high, and the gate is red until somebody edits a number by hand. That is a tax on draining,
+/// that does the RIGHT thing: a cut that removes one of a crate's dependency declarations leaves
+/// its `[[dep]]` row one too high, and the gate is red until somebody edits a number by hand.
+/// (`[[cell]]` and `[[instance]]` rows carry no number to re-pin: size is not a CI check, owner
+/// 2026-10-02.) That is a tax on draining,
 /// which is the opposite of what the ratchet is for.
 ///
 /// So the flag exists, and it does exactly one thing: it lowers a row to what the tree measures.
@@ -6122,15 +6027,16 @@ impl Gate for KindIsolationGate {
                 self,
                 "--write refuses wholesale when any count would RISE",
                 &[ROW_WRITE],
-                matrix::cell_subst(cx, "busbar-kernel", "plane", "0"),
+                // A `[[dep]]` row, because `[[cell]]` rows carry no count any more (size is not a
+                // CI check, owner 2026-10-02); the dependency ledger is an EDGE record and still
+                // re-pins exactly.
+                dep_subst(cx, "busbar-kernel", "busbar-contract", "0"),
                 &[
                     "would RISE",
                     "NOTHING was written",
-                    // THE CELL AND THE CEILING THIS PLANT WROTE, not the measurement beside them.
-                    // A fixture cannot know what the tree measures without running the gate, and
-                    // the number that used to be here (`0 -> 1`) was a measurement copied out of a
-                    // ratchet that has since re-pinned it to four figures.
-                    "busbar-kernel × plane 0 ->",
+                    // THE ROW AND THE COUNT THIS PLANT WROTE, not the measurement beside them. A
+                    // fixture cannot know what the tree measures without running the gate.
+                    "busbar-kernel -> busbar-contract (shipped) 0 ->",
                 ],
             ));
             // …AND THE WRITE ARM MEASURES THE WHOLE GATE BEFORE IT WRITES ANYTHING. It did not:
@@ -6939,22 +6845,16 @@ impl Gate for KindIsolationGate {
                 &["new-forbidden-edge", "busbar-planted-clean -> busbar-plugin-loader"],
             ));
 
-            // A NEGATIVE COUNT IS A PER-CELL OFF SWITCH, and it is refused where every other
-            // unreadable value is: at load. `-1` parses as a number, so `bad-count` let it through,
-            // and the exact-both-directions comparison then SKIPPED the cell — one character
-            // turning off one crate × kind's ratchet, with nothing anywhere saying so.
+            // A `[[cell]]` ROW IS EXISTENCE ONLY, and a `count` written back into one is refused
+            // at load: size is not a CI check (owner 2026-10-02), and a field the reader still
+            // accepted would be the integers coming back one row at a time.
             report.push(plant_registry(
                 cx,
                 subject,
-                "a negative `[[cell]]` count is refused at load — it is not a ceiling, it is the \
-                 absence of one",
+                "a `count` field on a `[[cell]]` row is refused at load — the row is presence only",
                 &[ROW_DEPS],
-                matrix::cell_subst(cx, "busbar-llm", "contract", "-1"),
-                &[
-                    "bad-count",
-                    "is negative",
-                    "No measurement is ever below zero",
-                ],
+                matrix::cell_subst(cx, "busbar-llm", "contract", "count = \"1\""),
+                &["unknown-field", "`[[cell]]` declares `count`"],
             ));
 
             // `to = "*"` IS A LEGAL TRAILING GLOB AND A BLANKET AMNESTY. `covers` does
@@ -8552,9 +8452,14 @@ impl Gate for KindIsolationGate {
                 &["unknown-kind", "registered", "nosuchkind"][..],
             ),
             (
-                "a [[cell]] count that is not a number is refused",
+                "a [[cell]] row carrying a count is refused — the row is presence only",
                 "[[cell]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"lots\"\n",
-                &["bad-count", "lots", "not a number"][..],
+                &["unknown-field", "cell", "count"][..],
+            ),
+            (
+                "a [[disagreement]] row is refused — the table went with the counts",
+                "[[disagreement]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\nnote = \"x\"\n",
+                &["unknown-table", "disagreement"][..],
             ),
             (
                 "a [[table]] this gate does not read is refused, not skipped",

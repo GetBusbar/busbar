@@ -4,9 +4,13 @@
 //! The shadow oracle proves the code on HEAD is user-correct. Nothing else measures whether it is
 //! well constructed: one function sends the upstream attempt, request-path functions are readable,
 //! planes talk to the kernel through the ABI only, every installable seam is actually installed by
-//! production, the neutral crates know no dialect, the request terminal has one set of doors, the
-//! section 1.1 ceilings are spent by the call graph and not by the crate boundary. Each is an
-//! invariant the design states and the code drifted from because no instrument watched it.
+//! production, the neutral crates know no dialect, the request terminal has one set of doors. Each
+//! is an invariant the design states and the code drifted from because no instrument watched it.
+//!
+//! SIZE IS NOT HERE. The section 1.1 line-count ceilings (`loc-ceilings:*`, `surface-ceiling:*`)
+//! and the two rules about them (`ceiling-rose`, `ceiling-slack`) are deleted: size is not a CI
+//! check (owner 2026-10-02); it is measured by hand at PERF with `cargo xtask loc`. What stays is
+//! structural, and the zero-armed tripwires stay hard (`no-unit-crates`, `token-sealed`, ...).
 //!
 //! WHAT MOVED IN THE CONVERSION, AND WHAT DID NOT.
 //!
@@ -58,40 +62,10 @@ use crate::gates::{Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::toml_doc;
 
-use model::{plain, CRow, Cfg};
+use model::{CRow, Cfg};
 use tree::{crate_name_of_dir, dirs_for_globs, Tree};
 
 pub const CEILINGS: &str = "qa/construction.toml";
-
-/// The three section 1.1 surface ceilings, each with the crates it sums and the words the row uses
-/// for them. The figures live in `[gate.surface_ceilings]`; only the labels are here, because a
-/// label is not a threshold.
-const SURFACE: [(&str, &str, &str, &str, i64); 2] = [
-    (
-        "contract",
-        "contract_caps",
-        "busbar-contract",
-        "the contract crate's plugin-visible surface (caps folded in, #37/#38)",
-        3500,
-    ),
-    // REPOINTED AT THE MODULE THE CRATE BECAME. `busbar-grammar` was folded INTO `busbar-contract`
-    // (DECISIONS #40) and this row went on naming the retired CRATE, so it summed nothing, measured
-    // nothing, and was a ceiling in name only — the exact "zero is not clean" shape the counter's
-    // own refusal exists for, sitting in the gate's own table. `crates/busbar-contract/src/
-    // json_grammar.rs` IS that crate's body, moved by identity: it measures 388, which is the
-    // figure the crate was pinned at. `grammar.rs` beside it is deliberately NOT here — that is the
-    // CLAIMS/SELECTOR grammar, a different closed grammar and ordinary contract surface already
-    // spent against `contract_caps`; `spans.rs` is the re-export shim, likewise. A path subject is
-    // read by `external::loc_surface`, and a path that stops existing is REFUSED like a crate that
-    // stops existing.
-    (
-        "grammar",
-        "grammar",
-        "crates/busbar-contract/src/json_grammar.rs",
-        "the closed JSON span grammar's surface",
-        500,
-    ),
-];
 
 /// The two halves of the `forbid-unsafe` rule: the ceilings-file key listing the kinds each holds,
 /// the key listing the tracked debt it ratchets, and the row-id prefix it emits under.
@@ -131,8 +105,7 @@ impl ConstructionGate {
     ///
     /// The three `legacy-reach:<crate>` rows USED TO BE HERE and are not any more: a per-crate
     /// figure nothing could fail on let `busbar_substrate` sit twenty-one over it, passing, which
-    /// is the whole of what the exemption bought. They gate now, and `ceiling-slack` holds them to
-    /// the measurement from below.
+    /// is the whole of what the exemption bought. They gate now.
     pub fn informational_ids(cx: &Ctx) -> Vec<String> {
         let mut ids = vec!["duplicate-dispatch".to_string()];
         if let Ok(cfg) = ConstructionGate::cfg(cx) {
@@ -203,10 +176,7 @@ impl ConstructionGate {
             "no-response-escapes-audit",
             "terminal-doors-in-audit-step",
             "one-pick-site",
-            "loc-ceilings:kernel",
-            "loc-ceilings:caps-contract",
-            "loc-ceilings:unit-total",
-            "loc-ceilings:union",
+            rules2::ROW_NO_UNIT_CRATES,
             "lean-core",
             "no-default-bodies",
             "sealed-unit-traits",
@@ -226,8 +196,6 @@ impl ConstructionGate {
             "one-pricing-site",
             "one-pricing-site:fee-fields",
             "legacy-reach",
-            ceilings::ROW_ROSE,
-            ceilings::ROW_SLACK,
             // UNCONDITIONAL, AND THAT IS THE ENTIRE POINT. Every id below this block is derived
             // from the same `Cfg` the rules read, so deleting a rule table deletes the obligation
             // to run it in the same edit. This one is a literal: `ceiling-census` is owed whatever
@@ -243,9 +211,6 @@ impl ConstructionGate {
         for crate_name in cfg.plane_crates()? {
             ids.push(format!("ports-only:{crate_name}"));
             ids.push(format!("ports-only-tests:{crate_name}"));
-        }
-        for (key, _) in cfg.doc.children("rules.loc-ceilings.kernel_files") {
-            ids.push(format!("loc-ceilings:kernel:{key}"));
         }
         for (key, _) in cfg.doc.children("rules.legacy-reach.prefixes") {
             ids.push(format!("legacy-reach:{key}"));
@@ -325,9 +290,6 @@ impl ConstructionGate {
             }
         }
 
-        for (id, ..) in SURFACE {
-            ids.push(format!("surface-ceiling:{id}"));
-        }
         ids.sort();
         ids.dedup();
         Ok(ids)
@@ -407,8 +369,8 @@ impl ConstructionGate {
             &mut rows,
         );
         take(
-            "loc-ceilings",
-            rules2::loc_ceilings(cx, &tree, &cfg),
+            rules2::ROW_NO_UNIT_CRATES,
+            rules2::no_unit_crates(cx, &tree, &cfg),
             &mut rows,
         );
         take(
@@ -490,11 +452,6 @@ impl ConstructionGate {
             &mut rows,
         );
 
-        rows.extend(surface_rows(cx, &cfg));
-        // LAST, AND IN THIS ORDER. `ceiling-slack` reads the OTHER ROWS' measurements rather than
-        // re-deriving them, so it must see every row this run produced — including the three
-        // surface rows above, which are the ones a re-measurement would be most likely to disagree
-        // with, since they come from a subprocess.
         // ── THE SCAN-SET FLOOR ───────────────────────────────────────────────────────────────────
         // AN ABSENT SUBJECT IS RED, NOT PASS. Around eight rules print `vacuous: <path> does not
         // exist yet` and return PASS, so every one of them is a rule that reports green precisely
@@ -511,12 +468,10 @@ impl ConstructionGate {
         // report, not a claim, so there is nothing for a floor to hold it to.
         score_absent_subjects(&mut rows);
 
-        // THE CENSUS BEFORE THE ROSE. It counts the rule tables the rest of the gate was derived
-        // from, so a run that lost one says so next to the ceilings that went with it.
+        // THE CENSUS, LAST. It counts the rule tables the rest of the gate was derived from, so a
+        // run that lost one says so beside the rows that went with it. There is no `ceiling-rose`
+        // or `ceiling-slack` after it any more: size is not a CI check (owner 2026-10-02).
         rows.extend(census::ceiling_census(cx, &cfg));
-        rows.extend(ceilings::ceiling_rose(cx));
-        let slack = ceilings::ceiling_slack(&cfg, &rows);
-        rows.extend(slack);
         Ok((rows, problems))
     }
 }
@@ -556,35 +511,6 @@ pub fn score_absent_subjects(rows: &mut [CRow]) {
             r.status = crate::ledger::Status::Fail;
         }
     }
-}
-
-/// The section 1.1 surface ceilings, as ledger rows. The shell turned a subprocess's exit code into
-/// a row and nothing more; so does this, including the trailing space its `tr '\n' ' '` left on a
-/// failing detail — a byte the parity comparison would otherwise flag. The subprocess is gone:
-/// `external::loc_surface` asks `cargo xtask loc` in process, and it is the only line counter left
-/// in this tree.
-fn surface_rows(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
-    let table = cfg.doc.table_or_empty("gate.surface_ceilings");
-    let mut out = Vec::new();
-    for (id, key, crates, what, default) in SURFACE {
-        let limit = table.int_of(key).unwrap_or(default);
-        let m = external::loc_surface(cx, crates, limit);
-        let detail = if m.ok {
-            format!("{what} is {} lines", m.total)
-        } else {
-            m.tail.clone()
-        };
-        out.push(plain(
-            format!("surface-ceiling:{id}"),
-            m.ok,
-            format!("{what} stays under its ceiling"),
-            detail,
-            m.total.parse::<i64>().unwrap_or(-1),
-            limit,
-            vec![],
-        ));
-    }
-    out
 }
 
 impl Gate for ConstructionGate {
@@ -695,13 +621,14 @@ pub fn by_id(rows: &[CRow]) -> BTreeMap<&str, &CRow> {
 mod tests {
     use super::*;
     use crate::ledger::Status;
+    use model::plain;
 
     fn passing(detail: &str) -> CRow {
         plain("rule:row", true, "a rule", detail, 0, 0, vec![])
     }
 
     /// ITEM 189: EVERY SPELLING OF AN ABSENT SUBJECT IS SCORED, not only the prefix. The two
-    /// suffix spellings below are the live `loc-ceilings` details, verbatim.
+    /// suffix spellings below are the (since deleted) `loc-ceilings` details, verbatim.
     #[test]
     fn a_passing_row_that_declares_an_absent_subject_in_any_spelling_fails() {
         let mut rows = vec![
@@ -732,7 +659,7 @@ mod tests {
     }
 
     /// ITEM 189, OVER THE REAL TREE: no gating row the gate emits passes while declaring an absent
-    /// subject. On the unfixed floor the two `loc-ceilings` rows did exactly that.
+    /// subject. On the unfixed floor the two (since deleted) `loc-ceilings` rows did exactly that.
     #[test]
     fn no_row_on_the_tree_passes_over_an_absent_subject() {
         let cx = Ctx::workspace().expect("workspace");
@@ -950,5 +877,78 @@ mod tests {
             .expect("the a2a row");
         assert_eq!(row.status, Status::Fail, "{}", row.detail);
         assert!(row.detail.contains("MISSING"), "{}", row.detail);
+    }
+
+    /// Every row id and its status, for comparing two measurements of the gate.
+    fn statuses(cx: &Ctx) -> BTreeMap<String, Status> {
+        let (rows, _) = ConstructionGate::measure(cx).expect("the construction gate measures");
+        rows.into_iter().map(|r| (r.id, r.status)).collect()
+    }
+
+    /// LOC-ONCE RED ARM 1: A KERNEL THAT GROWS BY 500 LINES MOVES NO ROW. Size is not a CI check
+    /// (owner 2026-10-02): the plant appends 500 lines of plain code to the Teller loop's own file,
+    /// which `loc-ceilings:kernel` and `loc-ceilings:kernel:teller` used to refuse, and every row
+    /// the gate emits keeps the status it had on the unplanted tree. The turnstile then judges the
+    /// candidate no worse than its base and ADMITs it.
+    #[test]
+    fn a_kernel_that_grows_by_500_lines_moves_no_row() {
+        let cx = Ctx::workspace().expect("workspace");
+        let teller = "crates/busbar-kernel/src/teller.rs";
+        let text = cx.read(teller).expect("the Teller loop's file");
+        let pad: String = (0..500)
+            .map(|i| format!("pub const LOC_ONCE_PAD_{i}: u32 = {i};\n"))
+            .collect();
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(teller, format!("{text}\n{pad}"));
+        let before = statuses(&cx);
+        let after = statuses(&cx.with_overlay(ov));
+        assert_eq!(before, after, "a 500-line kernel growth moved a row");
+        let size_rows: Vec<&String> = after
+            .keys()
+            .filter(|id| {
+                id.starts_with("loc-ceilings")
+                    || id.starts_with("surface-ceiling")
+                    || id.as_str() == "ceiling-rose"
+                    || id.as_str() == "ceiling-slack"
+            })
+            .collect();
+        assert!(
+            size_rows.is_empty(),
+            "a size row is still emitted: {size_rows:?}"
+        );
+    }
+
+    /// LOC-ONCE RED ARM 2: A ZERO-ARMED TRIPWIRE STILL DENIES. A `busbar-unit-*` crate coming back
+    /// is an architecture regression, not a size: `no-unit-crates` is PASS on the tree and FAIL,
+    /// naming the crate, the moment one is planted.
+    #[test]
+    fn a_unit_crate_coming_back_is_still_denied() {
+        let cx = Ctx::workspace().expect("workspace");
+        assert_eq!(
+            statuses(&cx).get(rules2::ROW_NO_UNIT_CRATES),
+            Some(&Status::Pass),
+            "the control: no unit crate on the tree"
+        );
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(
+            "crates/busbar-unit-planted/Cargo.toml",
+            "[package]\nname = \"busbar-unit-planted\"\nversion = \"0.0.0\"\n",
+        );
+        ov.set("crates/busbar-unit-planted/src/lib.rs", "pub fn f() {}\n");
+        let pcx = cx.with_overlay(ov);
+        let cfg = ConstructionGate::cfg(&pcx).expect("ceilings");
+        let tree = Tree::load(
+            &pcx,
+            &cfg.scan_roots().expect("scan roots"),
+            &cfg.test_path_fragments().expect("fragments"),
+        )
+        .expect("tree");
+        let rows = rules2::no_unit_crates(&pcx, &tree, &cfg).expect("the rule runs");
+        assert_eq!(rows[0].status, Status::Fail, "{}", rows[0].detail);
+        assert!(
+            rows[0].detail.contains("busbar-unit-planted"),
+            "{}",
+            rows[0].detail
+        );
     }
 }

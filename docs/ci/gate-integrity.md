@@ -22,11 +22,14 @@ Two halves, and they are enforced by two different mechanisms.
 must go RED, and `cargo xtask selftest` refuses a gate with an unproven row. A manual mutation run is
 described under *The mutation job* below.
 
-*Nothing already held stops being held* is the ratchets that were already here: the ceilings in
-`qa/construction.toml` and `qa/kind-isolation.toml`, held exactly (not approximately) by
-`ceiling-slack`, and held against the merge-base by `ceiling-rose`. A number that goes up is a
-landing that grew the coupling; a number left above what it measures is slack, and slack is where
-drift hides.
+*Nothing already held stops being held* is the ratchets that were already here: the zero-armed
+tripwires and count ratchets in `qa/construction.toml`, the edges in `qa/kind-isolation.toml`, and
+the census that refuses a rule table deleted together with its floor. A new edge or a rise in a
+zero-armed tripwire is a landing that grew the coupling.
+
+Size is NOT one of them. The line-count ceilings, `ceiling-rose`, `ceiling-slack` and the
+kind-isolation figure counts are deleted: size is not a CI check (owner 2026-10-02), and it is
+measured by hand at PERF with `cargo xtask loc`.
 
 `ship-ready` is the row that says both halves are true at the same time, on a tree that is asking to
 be promoted.
@@ -91,21 +94,21 @@ it), keeps that cost out of every mutant.
 
 ## The ship-ready row
 
-`cargo xtask gate ship-ready` is the old ship checklist, as four rows that can each go red on their
+`cargo xtask gate ship-ready` is the old ship checklist, as two rows that can each go red on their
 own:
 
 - `ship-ready:ship-twin` — `kind-isolation-ship` is green: the twin measures zero everywhere.
-- `ship-ready:ceiling-slack` — every ceiling equals the thing it measures.
-- `ship-ready:ceiling-rose` — no number in a `qa` ceilings file went up on this branch.
 - `ship-ready:standing-reds` — the standing-red list is EMPTY, for a `qa`/`main` posture.
+
+(`ship-ready:ceiling-slack` and `ship-ready:ceiling-rose` are deleted with the construction rows they
+read: size is not a CI check, owner 2026-10-02.)
 
 (The `gate-mutants` mutation verdict was a fifth row here. Per owner ruling it is now manual-only
 and optional — it tests the tests, it does not gate a release — so ship-ready no longer owes or
 reads it, and branch protection no longer requires the `gate-mutants` check.)
 
-The first three are read from the gates that own those rules rather than re-implemented here; a rule
-implemented in two places is a rule two gates can disagree about while both stay green. If the
-construction gate stops emitting `ceiling-slack` at all, this gate goes **red**, not quiet.
+The ship twin is read from the gate that owns it rather than re-implemented here; a rule
+implemented in two places is a rule two gates can disagree about while both stay green.
 
 `ship-ready:standing-reds` is the one row that reads a posture. The standing-red list is a *dev-line
 convenience*: construction rows that are known red, written down, and deliberately not blocking the

@@ -428,12 +428,6 @@ fn gate(args: &[String]) -> i32 {
         }
         let written = match reg.name {
             "design-bindings" => crate::gates::design_bindings::DesignBindingsGate::write(&cx),
-            // The construction gate's write arm RE-PINS ITS CEILINGS TO WHAT THEY MEASURE, and
-            // only downward — see `gates::construction::ceilings`. It is the same derivation the
-            // `ceiling-slack` row reports, so the arm that repairs and the arm that judges cannot
-            // disagree about what the tree measures; what the flag changes is whether the answer
-            // is printed or committed.
-            "construction" => crate::gates::construction::ceilings::rewrite(&cx),
             "abi-header" => crate::gates::abi_header::write(&cx),
             _ => {
                 eprintln!("xtask gate {name}: this gate has nothing to write");

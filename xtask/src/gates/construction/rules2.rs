@@ -1,4 +1,4 @@
-//! THE KIND, CEILING AND MONEY RULES: the section 1.1 LOC ceilings by call graph, the section 1.2
+//! THE KIND, CEILING AND MONEY RULES: the zero-armed `busbar-unit-*` tripwire, the section 1.2
 //! manifest allow-list and source denylist, the sealed traits, the hold discipline, the capability
 //! seal sites, and the plane/price wall.
 //!
@@ -15,10 +15,6 @@ use crate::gates::construction::tree::{
 };
 use crate::rx::{self, Regex};
 use crate::toml_doc::Table;
-
-fn basename(rel: &str) -> &str {
-    rel.rsplit('/').next().unwrap_or(rel)
-}
 
 fn join_or_none(items: &[String]) -> String {
     if items.is_empty() {
@@ -50,242 +46,46 @@ fn kind_crate_dirs(cx: &Ctx, cfg: &Cfg, kind: &str) -> Result<Vec<String>, Strin
     Ok(dirs_for_globs(cx, &cfg.kind_globs(kind)?))
 }
 
-// ── 14. loc-ceilings ─────────────────────────────────────────────────────────────────────────────
+// ── 14. no-unit-crates ───────────────────────────────────────────────────────────────────────────
 
-pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
-    let c = cfg.rule("loc-ceilings")?;
-    let kernel_crate = need_str(c, "kernel_crate", "loc-ceilings")?;
-    let kernel_ceiling = need_int(c, "kernel_ceiling", "loc-ceilings")?;
-    let contract_crate = need_str(c, "contract_crate", "loc-ceilings")?;
-    let caps_contract_ceiling = need_int(c, "caps_contract_ceiling", "loc-ceilings")?;
-    let unit_glob = need_str(c, "unit_crate_glob", "loc-ceilings")?;
-    let unit_total_ceiling = need_int(c, "unit_total_ceiling", "loc-ceilings")?;
-    let union_ceiling = need_int(c, "union_ceiling", "loc-ceilings")?;
-    let teller_file_names = c.list_of("teller_files");
+/// The row id of the zero-armed `busbar-unit-*` tripwire.
+pub const ROW_NO_UNIT_CRATES: &str = "no-unit-crates";
 
-    // ── THE ONE COUNTER ───────────────────────────────────────────────────────────────────────
-    // This used to count the lines itself, off `tree`'s own test classification, and that made it
-    // the SECOND instrument in the tree answering "how many lines is this crate" — the first being
-    // `scripts/loc-surface.py`, which answered differently. Both were wrong, differently: the
-    // script billed nested `src/<module>/tests/**` as production surface, and `tree`'s scanner only
-    // enters a test scope for `#[cfg(test)] mod`, so a `#[cfg(test)] fn` or `#[cfg(test)] impl`
-    // body spent kernel budget. `cargo xtask loc` parses the file and takes the item span from the
-    // AST; this reads its per-file `code` figure and decides nothing about counting itself.
-    let measured = crate::loc::measure_worktree_cached(cx)
-        .map_err(|e| format!("loc-ceilings: cargo xtask loc could not measure the tree: {e}"))?;
-    let per_file = measured.file_code_map();
-    let loc = |rel: &str| -> i64 { per_file.get(rel).copied().unwrap_or(0) };
-    // A FILE THAT WOULD NOT PARSE COUNTS AS ZERO, AND ZERO IS THE DIRECTION A CEILING FORGIVES.
-    // Scoped to the crates THIS rule measures, so an unrelated crate's half-written file is not
-    // this rule's refusal; within them it is, because a ceiling honoured by a file nobody could
-    // read is not honoured.
-    let unreadable: Vec<String> = [kernel_crate, contract_crate]
+/// NO `busbar-unit-*` CRATE, ARMED AT ZERO. Fold F14 2/2 deleted the last unit crate; a crate that
+/// matches `unit_crate_glob` coming back is an architecture regression, not a size, so this row is
+/// a STRUCTURAL tripwire with no figure to raise. It replaces the `loc-ceilings` family, whose size
+/// ceilings are gone: size is not a CI check (owner 2026-10-02) and is measured by hand at PERF.
+///
+/// A unit crate the TREE holds source for counts whether or not its directory is on disk: the
+/// directory listing reads the filesystem only, so a crate in the tree this rule was handed (a
+/// selftest plant) and not in the checkout would otherwise be invisible.
+pub fn no_unit_crates(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule(ROW_NO_UNIT_CRATES)?;
+    let unit_glob = need_str(c, "unit_crate_glob", ROW_NO_UNIT_CRATES)?;
+    let mut unit_crates: BTreeSet<String> = dirs_for_globs(cx, &[format!("crates/{unit_glob}")])
         .iter()
-        .flat_map(|c| measured.errors_for(c))
-        .map(|e| format!("{} ({})", e.path, e.error))
+        .map(|d| crate_name_of_dir(d))
         .collect();
-    if !unreadable.is_empty() {
-        return Err(format!(
-            "loc-ceilings: {} file(s) in the crates this rule measures could not be parsed, so \
-             their lines counted as ZERO — the direction a ceiling forgives: {}",
-            unreadable.len(),
-            unreadable.join("; ")
-        ));
-    }
-    let crate_total = |name: &str| -> i64 { tree.crate_files(name).iter().map(|r| loc(r)).sum() };
-
-    let unit_dirs = dirs_for_globs(cx, &[format!("crates/{unit_glob}")]);
-    let mut unit_crates: Vec<String> = unit_dirs.iter().map(|d| crate_name_of_dir(d)).collect();
-    // A UNIT CRATE THE TREE HOLDS SOURCE FOR IS A UNIT CRATE, whether or not its directory is on
-    // disk yet. The directory listing above reads the filesystem only, so a crate that exists in
-    // the tree this rule was handed (a selftest plant, the day a unit crate comes back) and not in
-    // the checkout was invisible and spent nothing. Since fold F14 2/2 no unit crate is on disk at
-    // all and the ceiling is 0, which made that the only way the row could ever go red.
     for rel in tree.files.keys() {
         let name = tree.crate_of(rel);
-        if rel.starts_with("crates/") && fnmatch(&name, unit_glob) && !unit_crates.contains(&name) {
-            unit_crates.push(name);
+        if rel.starts_with("crates/") && fnmatch(&name, unit_glob) {
+            unit_crates.insert(name);
         }
     }
-
-    let kernel_files_all = tree.crate_files(kernel_crate);
-    let teller_files: Vec<&String> = kernel_files_all
-        .iter()
-        .filter(|rel| teller_file_names.iter().any(|n| n == basename(rel)))
-        .collect();
-    let local_kernel_fns: BTreeSet<&str> = kernel_files_all
-        .iter()
-        .flat_map(|rel| tree.fns.get(rel).into_iter().flat_map(|v| v.iter()))
-        .map(|f| f.name.as_str())
-        .collect();
-    let call_rx = Regex::new(r"(?<![A-Za-z0-9_.:])([a-z_][A-Za-z0-9_]*)\s*\(")?;
-    let mut called_names: BTreeSet<String> = BTreeSet::new();
-    for rel in &teller_files {
-        for l in tree.files[rel.as_str()].iter() {
-            if l.intest {
-                continue;
-            }
-            for m in call_rx.find_iter(l.code_bytes()) {
-                if let Some(nm) = m.str_of(l.code_bytes(), 1) {
-                    if !local_kernel_fns.contains(nm.as_str()) && nm.len() >= 4 {
-                        called_names.insert(nm);
-                    }
-                }
-            }
-        }
-    }
-    let mut extra_files: BTreeSet<String> = BTreeSet::new();
-    let mut extra_hits: BTreeSet<String> = BTreeSet::new();
-    for cr in &unit_crates {
-        for rel in tree.crate_files(cr) {
-            for f in tree.fns.get(&rel).into_iter().flat_map(|v| v.iter()) {
-                if !f.intest && called_names.contains(&f.name) {
-                    extra_files.insert(rel.clone());
-                    extra_hits.insert(f.name.clone());
-                }
-            }
-        }
-    }
-    let extra_loc: i64 = extra_files.iter().map(|r| loc(r)).sum();
-    let kernel_own = crate_total(kernel_crate);
-    let kernel_total = kernel_own + extra_loc;
-
-    let mut rows = Vec::new();
-    let offenders: Vec<String> = extra_files
-        .iter()
-        .take(10)
-        .map(|rel| {
-            let here: BTreeSet<&str> = tree
-                .fns
-                .get(rel)
-                .into_iter()
-                .flat_map(|v| v.iter())
-                .map(|f| f.name.as_str())
-                .collect();
-            let shared: Vec<&str> = extra_hits
-                .iter()
-                .filter(|n| here.contains(n.as_str()))
-                .map(String::as_str)
-                .collect();
-            format!(
-                "{rel} ({} lines) shares a name with a call from {}: {}",
-                loc(rel),
-                py_list(&teller_file_names),
-                shared.join(", ")
-            )
-        })
-        .collect();
-    rows.push(plain(
-        "loc-ceilings:kernel",
-        kernel_total <= kernel_ceiling,
-        "busbar-kernel (own files + call-graph-reachable busbar-unit-* files) stays within its LOC \
-         ceiling",
+    let found: Vec<String> = unit_crates.into_iter().collect();
+    let n = found.len() as i64;
+    Ok(vec![plain(
+        ROW_NO_UNIT_CRATES,
+        found.is_empty(),
+        format!("no {unit_glob} crate exists (armed at 0)"),
         format!(
-            "{kernel_own} own + {extra_loc} reachable-by-name in {} busbar-unit-* file(s) = \
-             {kernel_total} (ceiling {kernel_ceiling}); reachability is a NAME-MATCH approximation \
-             (see rule why), never a true call graph",
-            extra_files.len()
+            "{n} {unit_glob} crate(s) (ceiling 0): {}",
+            join_or_none(&found)
         ),
-        kernel_total,
-        kernel_ceiling,
-        offenders,
-    ));
-
-    for (key, spec) in cfg.doc.children("rules.loc-ceilings.kernel_files") {
-        let patterns = spec.list_of("patterns");
-        let ceiling = need_int(spec, "ceiling", "loc-ceilings.kernel_files")?;
-        let label = need_str(spec, "label", "loc-ceilings.kernel_files")?;
-        let matched: Vec<String> = kernel_files_all
-            .iter()
-            .filter(|rel| patterns.iter().any(|p| p == basename(rel)))
-            .cloned()
-            .collect();
-        let cur: i64 = matched.iter().map(|r| loc(r)).sum();
-        let note = if matched.is_empty() {
-            " -- no matching file under busbar-kernel/src yet (vacuous 0)"
-        } else {
-            ""
-        };
-        rows.push(plain(
-            format!("loc-ceilings:kernel:{key}"),
-            cur <= ceiling,
-            format!("busbar-kernel's {label} stays within its LOC ceiling"),
-            format!(
-                "{label} ({}): {cur} line(s) (ceiling {ceiling}){note}",
-                patterns.join(", ")
-            ),
-            cur,
-            ceiling,
-            matched,
-        ));
-    }
-
-    // ONE CRATE, NOT TWO. `caps_crate = "busbar-caps"` was read here until 2026-09-22 and the
-    // crate has not been in this workspace since 2c9eddecf folded it into busbar-contract (#37/#38,
-    // now `crates/busbar-contract/src/caps/`). `crate_total` returned 0 for it, so the row printed
-    // `busbar-caps 0 + busbar-contract 6837 = 6837`: a term that could only ever be zero, summed
-    // into a total that read like it had two measured halves. The key is struck in the ceilings
-    // file rather than repointed, because the caps lines are already inside `contract_crate` and
-    // naming that crate twice would double-count it. THE ROW ID AND THE CEILING ARE UNCHANGED —
-    // `loc-ceilings:caps-contract` is what `ceilings.rs` pins to `caps_contract_ceiling` — so the
-    // measurement, the ratchet and this row's standing red all survive the rename of its subject.
-    let caps_contract = crate_total(contract_crate);
-    rows.push(plain(
-        "loc-ceilings:caps-contract",
-        caps_contract <= caps_contract_ceiling,
-        format!("{contract_crate} (busbar-caps folded in, #37/#38) stays within its LOC ceiling"),
-        format!("{contract_crate} {caps_contract} (ceiling {caps_contract_ceiling})"),
-        caps_contract,
-        caps_contract_ceiling,
-        vec![],
-    ));
-
-    let mut per_unit: Vec<(i64, String)> = unit_crates
-        .iter()
-        .map(|cr| (crate_total(cr), cr.clone()))
-        .collect();
-    per_unit.sort_by(|a, b| b.cmp(a));
-    let unit_total: i64 = per_unit.iter().map(|(n, _)| n).sum();
-    rows.push(plain(
-        "loc-ceilings:unit-total",
-        unit_total <= unit_total_ceiling,
-        "all busbar-unit-* crates together stay within their LOC ceiling",
-        format!(
-            "{} busbar-unit-* crate(s), {unit_total} line(s) total (ceiling {unit_total_ceiling})",
-            unit_crates.len()
-        ),
-        unit_total,
-        unit_total_ceiling,
-        per_unit
-            .iter()
-            .take(8)
-            .map(|(n, cr)| format!("{cr}: {n}"))
-            .collect(),
-    ));
-
-    // `loc-ceilings:unit-verbs` IS STRUCK (item 3 of P1A-con). It was a sub-ceiling of the unit
-    // union for `busbar-unit-verbs`, and that crate left the unit set by OWNER-LOCKED DECISION #36
-    // ("EXITS from the unit set: `verbs` -> `busbar-core-admin`"), drained by 427cbe399 and folded
-    // into core-admin by 92e823cd5 — a cleanliness crate outside the kernel + contract + unit union
-    // this rule budgets. Nothing is left for the row to measure, and a `busbar-unit-verbs` that came
-    // back would match `unit_crate_glob` and spend `unit-total`, whose ceiling is today's one unit
-    // crate — so no line the row could ever have caught goes unmeasured.
-    let union_total = kernel_total + caps_contract + unit_total;
-    rows.push(plain(
-        "loc-ceilings:union",
-        union_total <= union_ceiling,
-        "the kernel + contract + unit-* union stays within its LOC ceiling",
-        format!(
-            "kernel {kernel_total} + contract {caps_contract} + unit-* {unit_total} = \
-             {union_total} (ceiling {union_ceiling}); a call-graph-reachable unit file counts once \
-             here AND once in its own crate's unit-total, so this sum over-counts rather than \
-             hides an overage"
-        ),
-        union_total,
-        union_ceiling,
-        vec![],
-    ));
-    Ok(rows)
+        n,
+        0,
+        found,
+    )])
 }
 
 // ── 15. manifest-allowlist ───────────────────────────────────────────────────────────────────────
@@ -313,7 +113,7 @@ pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>,
         "secret",
         "transport",
     ];
-    let unit_names: BTreeSet<String> = match cfg.rule("loc-ceilings") {
+    let unit_names: BTreeSet<String> = match cfg.rule(ROW_NO_UNIT_CRATES) {
         Ok(lc) => dirs_for_globs(
             cx,
             &[format!(

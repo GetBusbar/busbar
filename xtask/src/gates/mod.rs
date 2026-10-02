@@ -295,10 +295,8 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // clean checkout of b7200b496, base pinned to origin/predev, is red on exactly the rows on this
     // list. Three names were STALE and are struck here and in scripts/land.sh in the same commit:
     // `ports-only-tests:busbar-llm`, `request-path-fn-size` and `terminal-doors-in-audit-step` are
-    // PASS on that run. `ceiling-rose` is green again because the ten expired kind-isolation raises
-    // in qa/construction.toml were struck in the same commit (each cell already reads its `to` at
-    // the base). The rows below were red and on no list, so `--posture` scored them NEW; each is a
-    // true finding, named with what it measures and the phase that drains it.
+    // PASS on that run. The rows below were red and on no list, so `--posture` scored them NEW;
+    // each is a true finding, named with what it measures and the phase that drains it.
     //
     // MONEY — DRAIN: Phase 2.
     // `one-pricing-site`: `busbar_kernel_ledger::cost::price` called from
@@ -324,13 +322,8 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // `neutral-no-dialect` STRUCK 2026-09-25: the dialect and strict-purity drains emptied it, and
     // `--posture` scored the name STALE.
     //
-    // `loc-ceilings:union`: the kernel + contract + unit-* union measures 59342 against 57456 — the
-    // union had been absorbing its members' overage while it read their slack (item 378 made it
-    // read their ceilings). A TRUE red, held under OWNER RULING Q50. Its two members
-    // `loc-ceilings:caps-contract` and `surface-ceiling:contract` are STRUCK 2026-09-25: the pair was
-    // re-armed at the measurement (OWNER RULING Q68(3)), both rows are green, and `--posture` scored
-    // the two names STALE.
-    "loc-ceilings:union",
+    // `loc-ceilings:union` STRUCK 2026-10-02 WITH THE ROW ITSELF: size is not a CI check (owner
+    // 2026-10-02), and every `loc-ceilings:*` and `surface-ceiling:*` row is deleted.
 ];
 
 /// THE `qa-names` GATE'S STANDING REDS, BY NAME.

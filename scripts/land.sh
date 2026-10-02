@@ -163,46 +163,10 @@ land_floor_plan() {
 # now indistinguishable from nothing.
 #
 # THIS LIST IS A RATCHET AND IT EXPIRES BY ITSELF. A name here that is no longer red is struck by
-# the leg as STALE — red, not tolerated — the same transaction `[gate.ceiling_raises]` forces in
-# qa/construction.toml. Otherwise the list would only ever grow, and a list that only grows is the
+# the leg as STALE — red, not tolerated. Otherwise the list would only ever grow, and a list that only grows is the
 # report-only posture it exists to replace. Keep it in step with `REPORT_ONLY`'s construction entry
 # in xtask/src/gates/mod.rs, which names the same rows for `gate --all`.
-#
-# `ceiling-rose` is deliberately NOT here: it is red only on the stale `[gate.ceiling_raises]`
-# 26 -> 47 entry, which is being struck separately, and naming it would outlive that fix.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-# ──────────────────────────────────────────────────────────────────────────────────────────────────
-# THE CEILING RATCHET'S VERDICT OVER A CONSTRUCTION --report LOG.  $1 = log path.
-#
-# A function rather than four lines inline, for the same reason land_floor_plan is one: it is the
-# answer to "can this leg report green having measured no ceiling", and the selftest can ask it
-# directly instead of staging a whole landing.
-#
-# THE EMISSION CHECK IS THE POINT. This leg used to be a single grep for
-# `^FAIL  (ceiling-rose|ceiling-slack)`, and a grep is satisfied by ABSENCE: rename the row, delete
-# the rule, or have it throw before it emits, and the grep matches nothing, the result is empty, and
-# the leg reports GREEN having compared no ceiling to anything. The `rows > 0` floor does not help —
-# it counts ANY rows, not these two. Measured: renaming `ROW_ROSE` to `ceiling-rose2` passed the old
-# leg with rows=112 while the gate itself printed `RED construction: ceiling-rose2: FAIL`.
-# A filter that matches nothing is red.
-# ──────────────────────────────────────────────────────────────────────────────────────────────────
-land_ceiling_verdict() {
-  local clog="$1" missing="" bad
-  grep -qE '^(PASS|FAIL)  ceiling-rose '  "$clog" || missing="$missing ceiling-rose"
-  grep -qE '^(PASS|FAIL)  ceiling-slack ' "$clog" || missing="$missing ceiling-slack"
-  if [ -n "$missing" ]; then
-    echo "land.sh: RED — the construction gate emitted no row for:$missing — the ceiling ratchet was not measured at all (renamed or deleted rule?) (log: $clog)" >&2
-    return 1
-  fi
-  bad="$(grep -E '^FAIL  (ceiling-rose|ceiling-slack) ' "$clog" || true)"
-  if [ -n "$bad" ]; then
-    printf '%s\n' "$bad" >&2
-    echo "land.sh: RED — a ceiling rose, or a ceiling has slack under it (log: $clog)" >&2
-    return 1
-  fi
-  return 0
-}
-
 # THE LIST BELOW IS A DEV-LINE CONVENIENCE, NOT A GRANT. It exists so that a landing on the
 # integration branch is not held hostage by a red the team already knows about and has not gotten
 # around to fixing — the dev line moves fast, and a fixed cost re-litigated on every single landing
@@ -230,7 +194,6 @@ token-sealed:admit-token-mint
 token-sealed:kernel-seal
 token-sealed:secret-once-mint
 lean-core
-loc-ceilings:union
 EOF
 )"
   case "${P_to:-}" in
@@ -247,7 +210,7 @@ EOF
 }
 
 # THE GATE LEG'S VERDICT, PULLED OUT OF THE prove_tree CASE ARM SO IT IS A FUNCTION THE SELFTEST CAN
-# CALL ON A FIXTURE LOG. This is exactly the land_ceiling_verdict move above, for the same reason: a
+# CALL ON A FIXTURE LOG, for the same reason land_floor_plan is one: a
 # case arm buried inside prove_tree can only be exercised by staging a whole landing, and the one
 # fact that matters here — does a standing-red row under `--to qa` still abort the leg — has to be
 # provable without building the real xtask gate binary. The behaviour is byte-identical to what used
@@ -750,11 +713,10 @@ EOF
 
       # …AND THE GATES' OWN DATA AND SOURCE. A landing that edits a ceiling, a waiver table or the
       # rule that reads one must run something that READS it; see land_gate_data's header for what
-      # this used to cost. The construction gate is the reader for `qa/*.toml` — its `ceiling-rose`
-      # row compares every integer in qa/construction.toml and qa/kind-isolation.toml against the
-      # base, and its `ceiling-slack` row holds each ratcheted ceiling to its measurement — and its
-      # self-test is what proves the gate that reads them can still fail. The gate is RED BY DESIGN
-      # on HEAD, so its exit status is not the verdict here; the two ceiling rows are.
+      # this used to cost. The construction gate is the reader for `qa/*.toml`, and its self-test is
+      # what proves the gate that reads them can still fail. The gate is RED BY DESIGN on HEAD, so
+      # its exit status is not the verdict here. (The `ceiling-rose` / `ceiling-slack` rows this leg
+      # used to read are deleted: size is not a CI check, owner 2026-10-02.)
       local gate_data; gate_data="$(land_gate_data "$touched")"
       if [ -n "$gate_data" ]; then
         local ndata; ndata="$(printf '%s\n' "$gate_data" | grep -c . || true)"
@@ -768,8 +730,7 @@ EOF
         ( cd "$here" && cargo xtask gate construction --report ) >"$clog" 2>&1 || true
         local crows; crows="$(grep -cE '^(PASS|FAIL)  ' "$clog" || true)"
         [ "${crows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $clog)" >&2; return 1; }
-        land_ceiling_verdict "$clog" || return 1
-        PROVEN="$PROVEN $ndata gate data/source file(s): construction self-test + ceiling ratchets green;"
+        PROVEN="$PROVEN $ndata gate data/source file(s): construction self-test green;"
       fi
       # EVERY REGISTERED GATE'S SELF-TEST, ONCE, WHEN THE RUNNER CHANGED. xtask/tests/cli.rs carries
       # a case that does exactly this (`xtask selftest` over every gate). It took 46 minutes of one
@@ -1376,29 +1337,8 @@ land_selftest() {
   _stgrep "plan(named) has the oracle leg"             "$root/plan-full.txt" 'oracle'
   _stno   "plan(named) does NOT fall back to workspace" "$root/plan-full.txt" 'workspace-clippy'
 
-  echo "land.sh selftest: the ceiling ratchet's verdict (a filter that matches nothing is red)"
-  # Both rows present and passing: the only shape that is green.
-  printf 'PASS  ceiling-rose   x\nPASS  ceiling-slack  x\nPASS  other  x\n' >"$root/cl-ok.txt"
-  _st "ceilings: both rows PASS is green"        0 land_ceiling_verdict "$root/cl-ok.txt"
-  # A row that ran and failed. Must be red — this part always worked.
-  printf 'FAIL  ceiling-rose   x\nPASS  ceiling-slack  x\n' >"$root/cl-fail.txt"
-  _st "ceilings: a risen ceiling is red"         1 land_ceiling_verdict "$root/cl-fail.txt"
-  # THE MISS. The rule was renamed, so neither the old FAIL grep nor the rows>0 floor sees anything
-  # and the leg used to report green. 112 other rows are not a substitute for these two.
-  printf 'FAIL  ceiling-rose2  x\nPASS  ceiling-slack  x\nPASS  other  x\n' >"$root/cl-renamed.txt"
-  _st "ceilings: a RENAMED rose row is red"      1 land_ceiling_verdict "$root/cl-renamed.txt"
-  _stgrep "ceilings: the rename names the row"   "$ST_OUT" 'emitted no row for: ceiling-rose'
-  # The slack row deleted outright, with rose still present and green.
-  printf 'PASS  ceiling-rose   x\nPASS  other  x\n' >"$root/cl-noslack.txt"
-  _st "ceilings: a DELETED slack row is red"     1 land_ceiling_verdict "$root/cl-noslack.txt"
-  _stgrep "ceilings: the deletion names the row" "$ST_OUT" 'emitted no row for: ceiling-slack'
-  # A gate that produced nothing at all.
-  : >"$root/cl-empty.txt"
-  _st "ceilings: an empty report is red"         1 land_ceiling_verdict "$root/cl-empty.txt"
-
   echo "land.sh selftest: the construction gate's standing reds"
   _stgrep "standing reds: the list is not empty" <(land_construction_standing_reds) '[^[:space:]]'
-  _stno   "standing reds: ceiling-rose is NOT excused" <(land_construction_standing_reds) '^ceiling-rose$'
 
   echo "land.sh selftest: --to posture and the standing-red allowance"
   # `P_to=X land_construction_standing_reds` is a plain simple command: a one-word variable
