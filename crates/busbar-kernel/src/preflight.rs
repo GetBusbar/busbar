@@ -216,7 +216,6 @@ fn linked_rows() -> Vec<LinkedPlugin> {
     let secrets = own.map(LinkedPlugin::builtin_secret);
     let rows = stores.iter().map(store).chain(secrets);
     let auths = busbar_kernel_identity::operator::linked().iter();
-    let rows = rows.chain(hooks.iter().map(hook));
     rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
         .collect()
 }
