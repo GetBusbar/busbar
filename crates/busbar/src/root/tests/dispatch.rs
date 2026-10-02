@@ -49,11 +49,7 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
         .expect("a minimal deployment");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
     let (credentials, credential_handle) = crate::root::credentials::AppCredentials::late();
-    crate::root::serve::compose(
-        crate::root::connector::dest_judge(&cfg),
-        &late,
-        credentials,
-    );
+    crate::root::serve::compose(crate::root::connector::dest_judge(&cfg), &late, credentials);
     assert_eq!(
         judged(&dispatcher, "https://93.184.216.34/"),
         Stored::ready(svc::DEST_ALLOWED)
