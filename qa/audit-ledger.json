@@ -628,24 +628,6 @@
    ]
   },
   {
-   "id": "crates/busbar-transport-tcp/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-transport-tcp/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-transport-tcp/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-voice/src",
    "kind": "production",
    "paths": [
@@ -1346,21 +1328,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar-transport-stdio/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-tcp/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-tcp/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

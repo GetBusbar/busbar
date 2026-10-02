@@ -10,7 +10,6 @@ members = [
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-contract",
-    "crates/busbar-transport-tcp",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-scope",
@@ -83,6 +82,10 @@ busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-h
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
 busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "2812d6355610673614681bd4f523da9bed32d07b" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
+# THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
+# links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "89d08ebcb91e5b2d4001b667fba151d9bc09d22d" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "89d08ebcb91e5b2d4001b667fba151d9bc09d22d" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all
