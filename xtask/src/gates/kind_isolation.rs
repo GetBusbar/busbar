@@ -3944,6 +3944,10 @@ struct SourceIndex {
     /// dirs that export a door through the SDK door macro (`export_door!(..)` on a production line
     /// of their `src/` or `examples/`). See [`door_carries`].
     door_exports: BTreeSet<String>,
+    /// dirs whose shipped source builds a door with an SDK door builder. See [`builds_door`].
+    door_builders: BTreeSet<String>,
+    /// dir -> the kinds whose memory ABI its shipped source names. See [`door_kind_marks`].
+    door_kinds: BTreeMap<String, BTreeSet<&'static str>>,
     /// dir -> whether it has a `src/lib.rs` at all.
     has_lib: BTreeSet<String>,
     /// dir -> it carries a `tests/*conformance*.rs` battery file WITH AT LEAST ONE LIVE ENTRY.
@@ -4135,6 +4139,8 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         impls: BTreeMap::new(),
         doors: BTreeMap::new(),
         door_exports: BTreeSet::new(),
+        door_builders: BTreeSet::new(),
+        door_kinds: BTreeMap::new(),
         has_lib: BTreeSet::new(),
         conformance: BTreeSet::new(),
         conformance_dead: BTreeSet::new(),
@@ -4173,6 +4179,15 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         if facts.door_tails > 0 {
             *idx.doors.entry(dir.clone()).or_default() += facts.door_tails;
         }
+        if facts.builds_door {
+            idx.door_builders.insert(dir.clone());
+        }
+        if !facts.door_kinds.is_empty() {
+            idx.door_kinds
+                .entry(dir.clone())
+                .or_default()
+                .extend(facts.door_kinds.iter().copied());
+        }
     }
     Ok(idx)
 }
@@ -4197,6 +4212,10 @@ struct SourceFacts {
     door_tails: usize,
     /// Whether it exports a door through the SDK door macro. See [`exports_door`].
     exports_door: bool,
+    /// Whether it builds a door with an SDK door builder, when shipped. See [`builds_door`].
+    builds_door: bool,
+    /// The kinds whose memory ABI it names, when shipped. See [`door_kind_marks`].
+    door_kinds: Vec<&'static str>,
 }
 
 /// The per-file memo behind [`source_facts`]. The key hashes the path, the owning directory and the
@@ -4232,7 +4251,11 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
     let mut mods = None;
     let mut heads = Vec::new();
     let mut tails = 0;
+    let mut builds = false;
+    let mut kinds = Vec::new();
     if shipped {
+        builds = builds_door(text);
+        kinds = door_kind_marks(text);
         if rel == format!("{dir}/src/lib.rs") {
             let mut found = Vec::new();
             for (_, code) in scan::production_lines(text) {
@@ -4258,6 +4281,8 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
         heads,
         door_tails: tails,
         exports_door: exports,
+        builds_door: builds,
+        door_kinds: kinds,
     });
     memo.lock()
         .expect("the source-facts memo mutex is never poisoned")
@@ -4382,27 +4407,74 @@ fn exports_door(text: &str) -> bool {
         .any(|(_, code)| code.contains("export_door!(") && !code.contains("macro_rules!"))
 }
 
-/// THE DOOR IS THE KIND'S IMPLEMENTATION (ARCHITECT ruling GRPC-DOOR 2026-10-02, spec §11,
-/// owner-locked 2026-09-27: a plugin talks to busbar ONLY through its memory-ABI door table, and
-/// compiled in = dropped in = the same table). A transport crate whose shipped source builds a
-/// door tail ([`door_tails`]) AND exports it through the SDK door macro ([`exports_door`])
-/// implements the kind through its door, not through an in-process `impl Transport`.
-///
-/// Such a door already carries the parts of the transport skeleton ([`kind_skeleton`]) the spec
-/// files as modules: the entry (`transport`) is the `TransportTail` the door builds; the claims
-/// (`claims`) are the Statement's `claims` names and the tail's `claim_rows`, required fields of
-/// the contract's own types; the associated consts (`meta`) are the Statement's identity,
-/// `statement(key, version, ..)`. So [`DOOR_CARRIES`] is dropped from its skeleton, and on
-/// `:testkit` the door is the battery's subject. A transport crate with no door (or a door it does
-/// not export) is held to the skeleton and the `impl` as written.
-fn door_carries(idx: &SourceIndex, dir: &str, kind: &str) -> bool {
-    kind == "transport"
-        && idx.doors.get(dir).copied().unwrap_or(0) > 0
-        && idx.door_exports.contains(dir)
+/// The SDK's door BUILDERS: the macros that build a kind's door table (`plugin_door!` for any kind,
+/// and the kinds' safe-layer builders). `export_door!` only exports a door some builder made.
+const DOOR_BUILDERS: &[&str] = &["plugin_door!", "store_door!(", "auth_verify_door!("];
+
+/// Whether a file builds a door: a production line invoking one of [`DOOR_BUILDERS`] (a builder's
+/// own `macro_rules!` definition is not an invocation).
+fn builds_door(text: &str) -> bool {
+    scan::production_lines(text).into_iter().any(|(_, code)| {
+        !code.contains("macro_rules!") && DOOR_BUILDERS.iter().any(|b| code.contains(b))
+    })
 }
 
-/// The transport skeleton parts an exported door carries (see [`door_carries`]).
-const DOOR_CARRIES: &[&str] = &["transport", "claims", "meta"];
+/// Each door-bearing kind and the module of `busbar_contract::abi` that is its memory ABI: the
+/// kind's ops table, tail and slot shapes live there, so a door of the kind names it.
+const DOOR_KIND_MODULES: &[(&str, &str)] = &[
+    ("plane", "plane"),
+    ("transport", "transport"),
+    ("store", "store"),
+    ("auth", "auth"),
+    ("secret", "secret"),
+    ("hooks", "hook"),
+    ("export", "export"),
+];
+
+/// The kinds whose memory ABI a file names on a production line: `abi::<module>::…` /
+/// `abi::<module>;`, or a kind's own door builder (`store_door!` builds a store door,
+/// `auth_verify_door!` an auth door).
+fn door_kind_marks(text: &str) -> Vec<&'static str> {
+    let lines = scan::production_lines(text);
+    DOOR_KIND_MODULES
+        .iter()
+        .filter(|(kind, module)| {
+            let path = format!("abi::{module}::");
+            let leaf = format!("abi::{module};");
+            let builder = match *kind {
+                "store" => Some("store_door!("),
+                "auth" => Some("auth_verify_door!("),
+                _ => None,
+            };
+            lines.iter().any(|(_, code)| {
+                code.contains(&path)
+                    || code.contains(&leaf)
+                    || builder.is_some_and(|b| code.contains(b))
+            })
+        })
+        .map(|(kind, _)| *kind)
+        .collect()
+}
+
+/// THE DOOR IS THE KIND'S IMPLEMENTATION (ARCHITECT ruling GRPC-DOOR 2026-10-02, widened to every
+/// kind; spec §11, owner-locked 2026-09-27: a plugin talks to busbar ONLY through its memory-ABI
+/// door table, and compiled in = dropped in = the same table). A crate of kind K whose shipped
+/// source BUILDS a door with an SDK builder ([`builds_door`]) over K's memory ABI
+/// ([`door_kind_marks`]) AND exports it through the SDK door macro ([`exports_door`], in `src/` or
+/// `examples/`) implements its kind through that door, not through an in-process `impl K`.
+///
+/// Such a door carries the parts of the kind's skeleton ([`kind_skeleton`]) the spec files as
+/// modules, all of it: the entry (`<kind>`) is the door's ops table and tail; the
+/// associated consts (`meta`) are its Statement's identity, `statement(name, version, ..)`; and for
+/// a claiming kind the claims (`claims`) are the Statement's `claims` names (and, for a transport,
+/// the tail's `claim_rows`), fields of the contract's own types. So those parts are dropped from
+/// its skeleton, and on `:testkit` the door is the battery's subject. A crate with no exported door
+/// of its own kind is held to the skeleton and the `impl` as written.
+fn door_carries(idx: &SourceIndex, dir: &str, kind: &str) -> bool {
+    idx.door_exports.contains(dir)
+        && idx.door_builders.contains(dir)
+        && idx.door_kinds.get(dir).is_some_and(|k| k.contains(kind))
+}
 
 /// HOW MANY ENTRIES `dir` STATES FOR `kind` (ARCHITECT ruling 2026-09-30, option A). A kind's
 /// entry is its trait implemented in shipped source; for `transport` it is ALSO the memory-ABI
@@ -4421,10 +4493,12 @@ fn entry_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> us
         .and_then(|m| m.get(want_trait))
         .copied()
         .unwrap_or(0);
+    // A transport counts its door TAILS (a crate building two tables states two entries); any
+    // other kind counts its exported door once ([`door_carries`]).
     let doors = if kind == "transport" {
         idx.doors.get(dir).copied().unwrap_or(0)
     } else {
-        0
+        usize::from(door_carries(idx, dir, kind))
     };
     impls + doors
 }
@@ -4434,7 +4508,7 @@ fn entry_note(kind: &str) -> &'static str {
     if kind == "transport" {
         " (its `impl` blocks plus its door tails)"
     } else {
-        ""
+        " (its `impl` blocks plus its exported door)"
     }
 }
 
@@ -4519,7 +4593,7 @@ fn rule_shape(
             // spec applies to the crate that models it first of all.
             let mut mine = idx.skeleton.get(&c.dir).cloned().unwrap_or_default();
             if door_carries(idx, &c.dir, kind) {
-                mine.extend(DOOR_CARRIES.iter().map(|m| m.to_string()));
+                mine.extend(kind_skeleton(kind));
             }
             let missing: Vec<&String> = skeleton.difference(&mine).collect();
             if !missing.is_empty() {
@@ -4746,11 +4820,7 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
                      passes over no implementor is not evidence about this crate",
                     c.dir,
                     c.name,
-                    if *kind == "transport" {
-                        " and exports no door through the SDK door macro"
-                    } else {
-                        ""
-                    }
+                    format!(" and exports no `{kind}` door through the SDK door macro")
                 ));
             }
             if idx.conformance_dead.contains(&c.dir) {
@@ -9320,7 +9390,64 @@ impl Gate for KindIsolationGate {
             &[
                 "no-implementor",
                 "busbar-transport-planted-doorless",
-                "exports no door through the SDK door macro",
+                "exports no `transport` door through the SDK door macro",
+            ],
+        ));
+
+        // THE SAME RED ARM FOR ANOTHER KIND (the door rule is kind-general): an auth crate with
+        // neither an `impl Auth`, an exported auth door nor a conformance test.
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "an auth crate with neither a door nor a conformance test",
+            &[ROW_TESTKIT],
+            {
+                let mut ov = manifest_plant(
+                    "crates/busbar-auth-planted-doorless",
+                    "busbar-auth-planted-doorless",
+                    &[],
+                );
+                ov.set(
+                    "crates/busbar-auth-planted-doorless/src/lib.rs",
+                    "pub struct P;\n",
+                );
+                ov
+            },
+            &[
+                "no-implementor",
+                "busbar-auth-planted-doorless",
+                "exports no `auth` door through the SDK door macro",
+            ],
+        ));
+
+        // A DOOR OF ANOTHER KIND IS NOT THE KIND'S DOOR. This transport crate builds and exports a
+        // STORE door, with a live battery: the door is real and exported, and it is no transport.
+        // With the door's kind read off the memory ABI it names the rule fires; were any exported
+        // door enough, this case would be GREEN.
+        let mut ov = manifest_plant(
+            "crates/busbar-transport-planted-storedoor",
+            "busbar-transport-planted-storedoor",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-transport-planted-storedoor/src/lib.rs",
+            "pub struct S;\nbusbar_contract::store_door!(S, \"s\", \"1\", 1);\n\
+             busbar_contract::export_door!(crate::door);\n",
+        );
+        ov.set(
+            "crates/busbar-transport-planted-storedoor/tests/conformance.rs",
+            "#[test]\nfn kind_is_declared_once() {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a crate exporting a door of another kind has no door of its own kind",
+            &[ROW_TESTKIT],
+            ov,
+            &[
+                "no-implementor",
+                "busbar-transport-planted-storedoor",
+                "Transport",
             ],
         ));
 
@@ -10727,13 +10854,16 @@ mod plant_tests {
     /// is neither a skeleton nor a `no-implementor` finding; the same crate with its door
     /// unexported is both.
     #[test]
-    fn an_exported_door_carries_the_transport_skeleton_and_is_the_batterys_subject() {
+    fn an_exported_door_carries_its_kinds_skeleton_and_is_the_batterys_subject() {
         let door = transport_crate("busbar-transport-planted-door");
         let mut idx = empty_index();
         idx.has_lib.insert(door.dir.clone());
         idx.skeleton
             .insert(door.dir.clone(), ["door".to_string()].into());
         idx.doors.insert(door.dir.clone(), 1);
+        idx.door_builders.insert(door.dir.clone());
+        idx.door_kinds
+            .insert(door.dir.clone(), ["transport"].into());
         idx.conformance.insert(door.dir.clone());
         let unexported_shape = rule_shape(std::slice::from_ref(&door), &idx, &BTreeMap::new());
         let unexported_kit = rule_testkit(std::slice::from_ref(&door), &idx);
@@ -10760,6 +10890,26 @@ mod plant_tests {
         );
     }
 
+    /// The door's kind is the memory ABI it names, and a builder's definition is not a door.
+    #[test]
+    fn a_door_is_read_with_its_kind() {
+        assert!(builds_door(
+            "busbar_contract::plugin_door! {\n    ops: Ops,\n}\n"
+        ));
+        assert!(!builds_door(
+            "macro_rules! plugin_door {\n    () => {};\n}\n"
+        ));
+        assert_eq!(
+            door_kind_marks("use busbar_contract::abi::transport::{Ops, TransportTail};\n"),
+            vec!["transport"]
+        );
+        assert_eq!(
+            door_kind_marks("busbar_contract::auth_verify_door!(P, STATEMENT);\n"),
+            vec!["auth"]
+        );
+        assert!(door_kind_marks("// use busbar_contract::abi::plane::Ops;\n").is_empty());
+    }
+
     #[test]
     fn exports_door_reads_an_invocation_not_the_definition_or_a_comment() {
         assert!(exports_door(
@@ -10779,6 +10929,8 @@ mod plant_tests {
             impls: BTreeMap::new(),
             doors: BTreeMap::new(),
             door_exports: BTreeSet::new(),
+            door_builders: BTreeSet::new(),
+            door_kinds: BTreeMap::new(),
             has_lib: BTreeSet::new(),
             conformance: BTreeSet::new(),
             conformance_dead: BTreeSet::new(),
