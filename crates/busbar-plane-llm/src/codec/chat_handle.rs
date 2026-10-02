@@ -119,7 +119,8 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
                     | crate::codec::ir::IrBlock::Image { cache_control, .. }
                     | crate::codec::ir::IrBlock::Media { cache_control, .. } => cache_control,
                     // A raw JSON tool-result block carries no cache breakpoint.
-                    crate::codec::ir::IrBlock::Json(_) => continue,
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => continue,
                 };
                 cleared |= cc.take().is_some();
             }
@@ -161,7 +162,8 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
                     | crate::codec::ir::IrBlock::ToolResult { cache_control, .. }
                     | crate::codec::ir::IrBlock::Image { cache_control, .. }
                     | crate::codec::ir::IrBlock::Media { cache_control, .. } => cache_control,
-                    crate::codec::ir::IrBlock::Json(_) => continue,
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => continue,
                 };
                 if cc.is_some() {
                     if seen < cap {

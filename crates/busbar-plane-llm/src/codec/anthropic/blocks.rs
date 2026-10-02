@@ -362,6 +362,7 @@ pub(super) fn read_block(
                     // `raw` would have the Anthropic writer re-emit it as a CITATION on a
                     // foreign→Anthropic hop — a different wire shape than the one it came from.
                     raw: None,
+                    ..Default::default()
                 }]
             };
             let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;

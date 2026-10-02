@@ -193,7 +193,8 @@ impl ProtocolWriter for ResponsesWriter {
                             } => {
                                 content_arr.extend(input_file_part(*kind, source, name.as_deref()));
                             }
-                            crate::codec::ir::IrBlock::Json(_) => {
+                            crate::codec::ir::IrBlock::Json(_)
+                            | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                                 // Structured-json (Bedrock tool-result content) has no Responses
                                 // input-content shape; dropped here.
                             }
@@ -1667,7 +1668,8 @@ impl ProtocolWriter for ResponsesWriter {
                 // nothing to project here and nothing is lost by omitting these.
                 crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. }
-                | crate::codec::ir::IrBlock::Json(_) => {}
+                | crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
             }
         }
 

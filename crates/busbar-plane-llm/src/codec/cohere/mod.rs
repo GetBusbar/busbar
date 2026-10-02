@@ -211,6 +211,7 @@ pub fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate::codec:
             end_index: end,
             encrypted_index: None,
             raw: Some(entry.clone()),
+            ..Default::default()
         });
     }
     out
