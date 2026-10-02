@@ -1,4 +1,4 @@
-name: promote
+name: Promote
 # Every same-repo PR is one hop up the branch ladder. The hop is GetBusbar/busbar-release's
 # ci/promote scripts at RELEASE_REF (private, so no `uses:`); these jobs only check out both repos
 # and run them. BOARD (fast-forward of the base) runs only when vars.PROMOTE_BOARD is "true".
