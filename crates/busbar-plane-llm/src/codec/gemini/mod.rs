@@ -214,6 +214,7 @@ pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::D
         f(&w)
     },
     with_reader: |f| f(&GeminiReader),
+    leaf: &handler::LEAF,
 };
 
 /// GEMINI'S RESPONSE-side untranslatable metadata: `safetyRatings` (Google's own harm-category

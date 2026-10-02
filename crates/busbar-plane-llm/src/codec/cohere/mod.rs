@@ -140,6 +140,7 @@ pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::D
         f(&w)
     },
     with_reader: |f| f(&CohereReader),
+    leaf: &handler::LEAF,
 };
 
 /// Upstream URL path for the Cohere v2 chat endpoint. Mirrors the `PATH_UPSTREAM` pattern used by

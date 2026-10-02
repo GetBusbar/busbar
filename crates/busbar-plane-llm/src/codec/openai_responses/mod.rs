@@ -135,6 +135,7 @@ pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::D
         f(&w)
     },
     with_reader: |f| f(&ResponsesReader),
+    leaf: &crate::codec::leaf_codec::LeafCodecs::NONE,
 };
 
 /// Largest wire `output_index` we accept in a streaming Responses event before clamping. The

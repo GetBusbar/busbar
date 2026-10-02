@@ -271,6 +271,7 @@ pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::D
         f(&w)
     },
     with_reader: |f| f(&BedrockReader),
+    leaf: &handler::LEAF,
 };
 
 /// The two response headers a native AWS Bedrock endpoint ALWAYS emits (lowercase on the wire):

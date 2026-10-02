@@ -231,6 +231,7 @@ pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::D
         f(&w)
     },
     with_reader: |f| f(&AnthropicReader),
+    leaf: &crate::codec::leaf_codec::LeafCodecs::NONE,
 };
 
 /// Value of the required `anthropic-version` request header (the Messages API version busbar

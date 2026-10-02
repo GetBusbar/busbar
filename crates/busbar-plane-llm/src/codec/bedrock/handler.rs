@@ -7,6 +7,7 @@ use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use crate::codec::keys;
+use crate::codec::leaf_codec::LeafCodec;
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::operation::OpVerb;
@@ -561,3 +562,27 @@ pub fn read_rerank_response(
         ..Default::default()
     })
 }
+
+/// This dialect's row of the leaf-op `(operation, protocol)` dispatch, carried on `super::ENTRY`.
+pub(crate) const LEAF: crate::codec::leaf_codec::LeafCodecs =
+    crate::codec::leaf_codec::LeafCodecs {
+        embeddings: Some(LeafCodec {
+            write_request: write_embeddings_request,
+            write_response: write_embeddings_response,
+            read_request: read_embeddings_request,
+            read_response: read_embeddings_response,
+        }),
+        rerank: Some(LeafCodec {
+            write_request: write_rerank_request,
+            write_response: write_rerank_response,
+            read_request: read_rerank_request,
+            read_response: read_rerank_response,
+        }),
+        image: Some(LeafCodec {
+            write_request: write_image_request,
+            write_response: write_image_response,
+            read_request: read_image_request,
+            read_response: read_image_response,
+        }),
+        ..crate::codec::leaf_codec::LeafCodecs::NONE
+    };

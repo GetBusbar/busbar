@@ -982,6 +982,8 @@ pub struct DialectEntry {
     pub with_writer: fn(&mut dyn FnMut(&dyn ProtocolWriter)),
     /// Hand the (stateless) reader to the callback ([`with_reader`]).
     pub with_reader: fn(&mut dyn FnMut(&dyn ProtocolReader)),
+    /// The dialect's row of the leaf-op `(operation, protocol)` dispatch.
+    pub leaf: &'static crate::codec::leaf_codec::LeafCodecs,
 }
 
 /// The registration of the dialect named `name`, read off [`crate::codec::DIALECTS`]. `None` for a

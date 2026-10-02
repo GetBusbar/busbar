@@ -170,6 +170,7 @@ pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::D
         f(&w)
     },
     with_reader: |f| f(&OpenAiReader),
+    leaf: &handler::LEAF,
 };
 
 /// Largest upstream `tool_calls[].index` we accept in a streaming chunk. OpenAI documents at most
