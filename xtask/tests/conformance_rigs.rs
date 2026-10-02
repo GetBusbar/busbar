@@ -14,7 +14,7 @@ use xtask::conformance_record::{
     TlsRun, NEGATIVE_PAIRS, OIDF_SUITES, REPORTED_UNITS,
 };
 use xtask::conformance_record::{
-    oidf_plan_config, oidf_subject_config, OidfClient, OIDF_RESOURCE_PATH,
+    oidf_plan_config, oidf_subject_config, rsa_jwk_from_pkcs8, OidfClient, OIDF_RESOURCE_PATH,
 };
 
 fn registry_ids() -> Vec<String> {
@@ -515,7 +515,7 @@ fn base64url_is_rfc4648_section_5_unpadded() {
 fn oidf_clients() -> Vec<OidfClient> {
     (1..=2)
         .map(|n| {
-            let (private, public) = es256_jwk(&format!("k{n}")).unwrap();
+            let (private, public) = rsa_jwk_from_pkcs8(&rsa_fixture(), &format!("k{n}")).unwrap();
             OidfClient::new(
                 n,
                 "https://localhost.emobix.co.uk:8443/test/a/x/callback",
@@ -539,6 +539,7 @@ fn the_oidf_subject_is_the_fapi2_posture_with_static_clients() {
         "/c.pem",
         "/k.pem",
         "PEM",
+        "/plugins",
         &clients,
     );
     let doc: serde_json::Value =
@@ -560,6 +561,21 @@ fn the_oidf_subject_is_the_fapi2_posture_with_static_clients() {
     assert_eq!(doc["auth"]["chain"], serde_json::json!(["fapi-as"]));
     assert_eq!(doc["auth"]["admin_auth"], serde_json::json!([]));
     assert_eq!(doc["identity-providers"]["fapi-as"]["module"], "oidc");
+    // The module is the dropped-in plugin (no shipped binary links it), loaded from the rig's own
+    // unsigned tarball, and its JWKS destination is declared the way an operator declares one.
+    assert_eq!(doc["plugins"]["dir"], "/plugins");
+    assert_eq!(
+        doc["plugins"]["trust"]["allow_unsigned"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        doc["advanced"]["allow_destinations"],
+        serde_json::json!(["127.0.0.1"])
+    );
+    assert_eq!(
+        declared[0]["jwks"]["keys"][0]["kty"], "RSA",
+        "the suite's clients are PS256 so the RS256 refusal module runs"
+    );
     assert_eq!(
         doc["identity-providers"]["fapi-as"]["settings"]["jwks_url"],
         "https://127.0.0.1:1/jwks"
@@ -594,4 +610,68 @@ fn the_oidf_plan_config_drives_the_consent_screen_by_id() {
     assert!(over["fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds"]
         .to_string()
         .contains("revisit"));
+}
+
+/// TEST-ONLY RSA-2048 PKCS#8 DER (hex), minted once with `openssl genpkey`; it signs nothing.
+const RSA_FIXTURE_HEX: &str = concat!(
+    "308204bd020100300d06092a864886f70d0101010500048204a7308204a30201000282010100bbc981a6e415055b27bb",
+    "93a54a272496ce84529c37fe26ebf87bf605ee37ac5bce8ba6aa50eca2e1045e2858c62d28f2bd6a27d0374dc6ff3bfd",
+    "39d43672e30bb616d5a77a44e4cda142f92777af88245a21081b1a5c42a8f1c3e8abfd08325408ebfa4bea9401e94e95",
+    "182b103c4e446cd451ebc8bee07d775137774a7be2b359ea76d224704bc4fef54106151e16ae949a4cc1fef7316f1cb9",
+    "ffdae307fc068cafb2875a6ea18d4e5dbccfb2969c63e8931d9d252ed7dd90846e2b705c176768c059ba91455e1def11",
+    "930b4945a546b75ed10edd818c04a1ce34f13e01072363c264d17c03add6e0cdf82bb7093e0154fd656c10a983db8386",
+    "6503aff0066d020301000102820100552b839e49fc2ebdb53ba22f697e6f5de6b4a5332d421c2d123a46cf51c7f6687d",
+    "39619205ba0df5b8a16bf3378eebef8c7145356e9fdc0d8f0bbedabd07466add5f65efdbc8bb6d782284169e76026d5a",
+    "6378e5b202fe48d9be5d1d045a5f5935e2b1571541a3cc4953ddee4a22cfecc0df5b78714801516678738bab409d04ab",
+    "2f3a5acd217085484cf771d4e72a76b6e18b0c3fb28a69aa8d9f259191ebc57daab017473208ded1af81c2d3d94cb065",
+    "c4bdbcd8ab9c0f3825dd7cb3d7995d2da047c82e5e24c759288e5aabe8c347d815f03fc45dd5b3b63a0b9190bbb6feee",
+    "025bdf64bc9b6fce6af422ea0b96c4355bc4017b6a6c4f1c9d0c0249ccd09102818100f5745fa92c1612bd5b42070ccc",
+    "4ac3c5d9863fa528ae5cdba8f0b744797fdfc241fc94936cf1a3f97f6d5fdb4fc513dee5df7c68beefc297050135649f",
+    "60d31304d40808d3ddcc1b1063b7cfd06e193704da0d9c9db50728047eed37f22c5212f9172971817f1ee594da45ea34",
+    "8839327dbd423e64385004686c13072d5f357b02818100c3dae0f3c8888b4ee02416774421b42562d954d29b85d2da08",
+    "578c6d57617ae81ffad3cc85d0e92ceaf61efe30c2da5309573d0275d06359981caf05b609eeadf840e1e63069fd3df8",
+    "46c90c99a4bd6c5fc0f1f952cd398175ad3ebc5342d8dea09b5e5c7e6d8b498ad59966b28190206b020bd846beecb8bf",
+    "4a9d3b4349cb370281803bf9244a84901c2212432ecfccb6d3e0eac66794a63cfc495b9cfd5a88c95ad5ef2394f5f49f",
+    "922e2b19815b67c1429aaad61162d28c68a257c1b4d7122e2944b3604f5a40d227c5d11a5c56359a4124f555860fe764",
+    "cd0bd5156246d2304c1980ad4d1e03c318bc85c35363e754058db5b56193370f9f5584622bc00c310033028181008269",
+    "e1b692c65134d14d56644e4abf00d2047355d5d7536279818a7158690185459e28a01c4ed2a5654343b9f0d01ebe820e",
+    "c4023a5eeb78c22fff5f272b0ff269c71264cbc217adc6ffa36a2f78a1e56311404ecb92fa02b95005e132f3e522c101",
+    "13e135124e5847091a1f67279cc7e9593077f00bbbe6fd017b16f624521b02818039945e5b5cf2a6730bd153200e91e6",
+    "b9554fcb0fce9f384bcf371b8d6e05cd4c4d2e8a44691b12d22bca8a0f2cf368f10e1d1f000ad242e9c70f7be8693b4e",
+    "1d10689620736aa24e6614c6fb639243c56f2386fefd9d251a56f8412799bf56bb142e27be6b61dc6e253b559c9c09a5",
+    "51aa38499f6274694d8f98a6aeaa883b2b",
+);
+
+fn rsa_fixture() -> Vec<u8> {
+    (0..RSA_FIXTURE_HEX.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&RSA_FIXTURE_HEX[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// The suite's PS256 clients: an RSA private key as the RFC 7518 s6.3 JWK the suite signs with, and
+/// its public half (no private member) for the subject's config.
+#[test]
+fn an_rsa_pkcs8_key_becomes_a_ps256_jwk_pair() {
+    let (private, public) = rsa_jwk_from_pkcs8(&rsa_fixture(), "r1").unwrap();
+    assert_eq!(public["kty"], "RSA");
+    assert_eq!(public["alg"], "PS256");
+    assert_eq!(public["e"], "AQAB");
+    assert_eq!(
+        public["n"].as_str().unwrap().len(),
+        342,
+        "a 2048-bit modulus is 256 bytes, 342 unpadded base64url characters"
+    );
+    for member in ["d", "p", "q", "dp", "dq", "qi"] {
+        assert!(
+            public.get(member).is_none(),
+            "public half carries no `{member}`"
+        );
+        assert!(
+            private[member].as_str().is_some_and(|v| !v.is_empty()),
+            "private carries `{member}`"
+        );
+    }
+    assert_eq!(private["n"], public["n"]);
+    assert!(rsa_jwk_from_pkcs8(b"not der", "x").is_err());
 }
