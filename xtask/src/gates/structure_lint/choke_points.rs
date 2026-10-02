@@ -318,13 +318,13 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "H-operator-authored-ask".into(),
             tag: "ASK-NOT-OPERATOR-AUTHORED".into(),
-            owner: format!("{mcp}/config.rs (AskEntryCfg, deserialised from operator YAML) + {mcp}/callerask.rs (the private `authored` module, sole constructor)"),
+            owner: format!("crates/busbar-plane-mcp/src/config.rs (AskEntryCfg, deserialised from operator YAML; the tools: grammar moved into the plane, MCP-1 M1a) + {mcp}/callerask.rs (the private `authored` module, sole constructor)"),
             class_test: format!("{mcp}/tests/callerask_tests.rs::the_asks_params_are_the_operators_bytes_and_nothing_else"),
             remedy: "let the operator write the ask: an AskEntryCfg is deserialised, never assembled".into(),
             rules: vec![BanRule::new(
                 r"AskEntryCfg[[:space:]]*\{",
                 "an AskEntryCfg built in code rather than deserialised from operator configuration",
-                &[format!("{mcp}/config.rs")],
+                &["crates/busbar-plane-mcp/src/config.rs".to_string()],
             )],
             why: "the text and schema a caller is shown when busbar asks it to confirm something must be bytes the operator wrote; the moment a value can flow from an upstream response into that ask, busbar is laundering an upstream demand for authority under its own name".into(),
         },

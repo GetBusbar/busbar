@@ -46,6 +46,7 @@ pub mod adapt;
 pub mod claims;
 pub mod client;
 pub mod codec;
+pub mod config;
 pub mod diagnostics;
 pub mod facts;
 pub mod identity;

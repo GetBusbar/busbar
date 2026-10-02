@@ -932,6 +932,7 @@ dependencies = [
  "base64 0.23.1",
  "busbar-contract",
  "bytes",
+ "indexmap",
  "serde",
  "serde_json",
 ]

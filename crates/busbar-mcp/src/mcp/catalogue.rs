@@ -84,7 +84,7 @@ use busbar_kernel::catalogue::{Caller, CatalogueItem};
 use busbar_kernel::trust::validate::Grant;
 
 use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
-use super::config::{McpServerDefCfg, PromptMessageCfg, ToolsCfg, NAMESPACE_SEP};
+use super::config::{McpServerDefCfg, PromptMessageCfg, ToolsCfg};
 use busbar_kernel::trust::Approval;
 
 /// THE TWO SCOPE KINDS AN MCP CAPABILITY IS REACHED THROUGH.
@@ -1053,9 +1053,7 @@ fn match_uri_template(
 
 /// `{server}_{tool}` — the routing key. One function so the catalogue, the grant value and every
 /// operator-facing rendering are the same string by construction.
-pub(crate) fn namespaced(server: &str, capability: &str) -> String {
-    format!("{server}{NAMESPACE_SEP}{capability}")
-}
+pub(crate) use super::config::namespaced;
 
 /// WHY a dispatch was refused, derived AFTER the gate has ALREADY said no.
 ///
@@ -1130,26 +1128,27 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
     // `Declares` impl beside `TransportPin` — which mechanisms are roots, and the artifact for each
     // reading. It supplies no sequence and no blank-key rule, so an operator's `key: "  "` is
     // refused here by the same line that refuses it on the sibling plane.
-    let approval =
-        match busbar_kernel::trust::declared::declared_pin::<TransportPin>(def.pin.declaration()) {
-            Some(pin) => Approval::declared(
-                pin,
-                def.tools_allow
-                    .iter()
-                    // A BLANK HASH RECORDS NO APPROVAL. An operator who wrote `schema_hash: ""`
-                    // (or a line of whitespace) put `Some("")` in here, so the approval held
-                    // `At("")`, `ToolEntry::dispatch_digest` offered `""`, and the two MATCHED —
-                    // a tool dispatching against an approval of nothing, on exactly the comparison
-                    // that exists to catch a rug-pull, while the operator believed they had pinned
-                    // the manifest. `approved_hash` is the SAME normaliser the catalogue entry
-                    // runs, so the two operands of that comparison cannot disagree.
-                    .filter_map(|(tool, allow)| {
-                        approved_hash(allow.schema_hash.as_deref()).map(|h| (tool.clone(), h))
-                    })
-                    .collect(),
-            ),
-            None => Approval::registered(),
-        };
+    let approval = match busbar_kernel::trust::declared::declared_pin::<TransportPin>(
+        super::config::pin_declaration(&def.pin),
+    ) {
+        Some(pin) => Approval::declared(
+            pin,
+            def.tools_allow
+                .iter()
+                // A BLANK HASH RECORDS NO APPROVAL. An operator who wrote `schema_hash: ""`
+                // (or a line of whitespace) put `Some("")` in here, so the approval held
+                // `At("")`, `ToolEntry::dispatch_digest` offered `""`, and the two MATCHED —
+                // a tool dispatching against an approval of nothing, on exactly the comparison
+                // that exists to catch a rug-pull, while the operator believed they had pinned
+                // the manifest. `approved_hash` is the SAME normaliser the catalogue entry
+                // runs, so the two operands of that comparison cannot disagree.
+                .filter_map(|(tool, allow)| {
+                    approved_hash(allow.schema_hash.as_deref()).map(|h| (tool.clone(), h))
+                })
+                .collect(),
+        ),
+        None => Approval::registered(),
+    };
     // `validate_endpoint` has already refused every mixture of the two halves, so this is a lift and
     // not a second decision: a registration that spawns carries a command and no url, and one that
     // does not carries a url and no command.

@@ -466,14 +466,16 @@ fn mcp_parse_section(
     v: &serde_yaml::Value,
 ) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
     serde_yaml::from_value::<config::ToolsCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_kernel::plane::config::PlaneCfg>)
+        .map(|c| {
+            Box::new(config::ToolsSectionCfg(c)) as Box<dyn busbar_kernel::plane::config::PlaneCfg>
+        })
         .map_err(|e| e.to_string())
 }
 
 /// [`busbar_kernel::plane::registry::PlaneDecl::default_section`] hook — the empty `tools:` registry, so an
 /// ABSENT section defaults to `ToolsCfg::default()` byte-identically to the pre-seam typed field.
 fn mcp_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
-    Box::<config::ToolsCfg>::default()
+    Box::<config::ToolsSectionCfg>::default()
 }
 
 /// PARSE THE `mcp:` ENDPOINT block through the MCP plane's own `Deserialize` — the

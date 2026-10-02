@@ -50,6 +50,10 @@ pub use busbar_plane_mcp::diagnostics;
 /// and `diagnostics` are. `mcp::client` re-exports its modules under their old paths.
 pub(crate) use busbar_plane_mcp::client as plane_client;
 
+/// THE `tools:` GRAMMAR, defined in the plane crate and reached through this crate root, as
+/// [`plane_client`] is. `mcp::config` re-exports it and keeps the host's glue.
+pub(crate) use busbar_plane_mcp::config as plane_config;
+
 /// The committed per-plane diagnostics pages, rendered through the host's renderers.
 #[cfg(test)]
 #[path = "tests/diagnostics_page_tests.rs"]
