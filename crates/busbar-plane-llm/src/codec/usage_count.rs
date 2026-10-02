@@ -406,6 +406,54 @@ pub fn read_usage(
     })
 }
 
+/// THE STATED-TOTAL CROSS-CHECK: the total a provider states beside its itemized counts, against
+/// what the dialect's usage table LEDGERS from those counts (the four meter classes: uncached
+/// input, cache read, cache write, output). A provider's total is its own sum of the counts it
+/// itemizes, never a unit: nothing is ledgered from it, and nothing is zeroed, clamped or
+/// back-filled to make the two agree.
+///
+/// `None` in the ordinary case — no total on the usage object (absent, `null`, or not a count: a
+/// total is checked, never billed, so an unreadable one is not a refusal), or a total equal to the
+/// ledgered sum. Otherwise the gap is WARN-logged with both figures and returned as the note the IR
+/// carries beside the counts: a POSITIVE `unaccounted` is units the provider counted that land in
+/// no meter class (a counter the table does not read, e.g. an OpenAI-compatible backend reporting
+/// reasoning outside `completion_tokens`), a negative one is a total below its own terms.
+///
+/// `protocol` names the dialect on the log line, `identity` the usage object checked (stable, for
+/// a caller to branch on), `total` the provider's stated total member.
+#[must_use]
+pub fn stated_total_note(
+    protocol: &'static str,
+    identity: &'static str,
+    total: Option<&serde_json::Value>,
+    ledgered: &crate::codec::ir::IrUsage,
+) -> Option<crate::codec::ir::UsageIdentityNote> {
+    let reported_total = total.and_then(read_count_u64)?;
+    let summed_total = ledgered.billable_tokens();
+    if summed_total == reported_total {
+        return None;
+    }
+    let unaccounted = i64::try_from(reported_total).unwrap_or(i64::MAX)
+        - i64::try_from(summed_total).unwrap_or(i64::MAX);
+    tracing::warn!(
+        protocol,
+        identity,
+        reported_total,
+        summed_total,
+        unaccounted,
+        "usage does not reconcile: the provider's stated total disagrees with the sum of the \
+         meter classes its itemized counts ledger (input, cache read, cache write, output). The \
+         ledger holds the itemized counts only; the gap is not ledgered. A positive gap is a \
+         count the provider reports that this dialect's usage table does not read."
+    );
+    Some(crate::codec::ir::UsageIdentityNote {
+        reported_total,
+        summed_total,
+        unaccounted,
+        identity,
+    })
+}
+
 #[cfg(test)]
 #[path = "tests/usage_count_tests.rs"]
 mod tests;
