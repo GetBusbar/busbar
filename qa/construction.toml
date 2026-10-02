@@ -425,6 +425,24 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 # figure.
 
 
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 55599
+to      = 55650
+because = "R-KERNEL exception, ARCHITECT S7-TICK 2026-10-01 (rulings a/c, (iii)): K-TICK, the plane driver mints the instance's one driver ticket, admits the instance (KernelServices::admit) and runs its tick schedule with mark_due + flush_tick (plane_driver/mod.rs). Approved delta over what predev measures: cargo xtask gate construction on lane-k-tick (busbar-run/k-tick/lane-fast5.log) measures 55840 at the tip against 55789 at its base, +51."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 29397
+to      = 29413
+because = "ARCHITECT S7-TICK 2026-10-01 (PlaneCalls gains declared()/driver()/tick() and InstanceDecl, busbar-contract/src/plane_calls.rs): approved delta over what predev measures, +16 (cargo xtask gate construction on lane-k-tick, busbar-run/k-tick/lane-fast5.log: 29803 -> 29819 over its base); predev carries 29397, so 29397 + 16 = 29413."
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 29397
+to      = 29413
+because = "ARCHITECT S7-TICK 2026-10-01 (PlaneCalls gains declared()/driver()/tick() and InstanceDecl, busbar-contract/src/plane_calls.rs): approved delta over what predev measures, +16 (cargo xtask gate construction on lane-k-tick, busbar-run/k-tick/lane-fast5.log: 29803 -> 29819 over its base); predev carries 29397, so 29397 + 16 = 29413."
+
 [gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
 file    = "qa/construction.toml"
 from    = 599
@@ -901,7 +919,8 @@ because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over 29392, 
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A deletes the dead hot/cold ABI; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-contract_caps = 29397
+# ── RE-ARMED 29397 -> 29413 with its pair, ARCHITECT S7-TICK 2026-10-01 (K-TICK: PlaneCalls declared/driver/tick, InstanceDecl; +16), declared above.
+contract_caps = 29413
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1553,7 +1572,8 @@ kernel_crate = "busbar-kernel"
 #    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
 # ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
 #    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
-kernel_ceiling = 55599
+# ── RE-ARMED 55599 -> 55650, R-KERNEL exception, ARCHITECT S7-TICK 2026-10-01 (K-TICK: driver ticket, admission, tick schedule; +51), declared above.
+kernel_ceiling = 55650
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
@@ -1683,7 +1703,8 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-caps_contract_ceiling = 29397
+# ── RE-ARMED 29397 -> 29413 with its pair (K-TICK +16, ARCHITECT S7-TICK 2026-10-01), declared above.
+caps_contract_ceiling = 29413
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
