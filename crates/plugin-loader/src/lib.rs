@@ -2188,3 +2188,24 @@ mod dispatch_kind_hook_tests;
 #[cfg(test)]
 #[path = "tests/dispatch_kind_auth_tests.rs"]
 mod dispatch_kind_auth_tests;
+
+/// The both-ways harness on the memory ABI (TODO ABI-b4): one door loaded LINKED and DROPPED IN
+/// through the one dispatcher, one script, two transcripts compared.
+#[cfg(test)]
+#[path = "tests/door_both_ways.rs"]
+mod door_both_ways;
+
+/// `kind: store` through both doors on the memory ABI: get/put identical, a broken store refused.
+#[cfg(test)]
+#[path = "tests/store_door_conformance_tests.rs"]
+mod store_door_conformance_tests;
+
+/// `kind: secret` through both doors on the memory ABI: resolve identical, a broken one refused.
+#[cfg(test)]
+#[path = "tests/secret_door_conformance_tests.rs"]
+mod secret_door_conformance_tests;
+
+/// `kind: hook` through both doors on the memory ABI: decide identical, a broken one refused.
+#[cfg(test)]
+#[path = "tests/hook_door_conformance_tests.rs"]
+mod hook_door_conformance_tests;
