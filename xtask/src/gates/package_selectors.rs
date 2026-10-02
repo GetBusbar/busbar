@@ -19,7 +19,7 @@
 //! 'busbar-core' did not match any packages` — a NON-ZERO exit, which is this script's green —
 //! while compiling nothing at all. A pass condition satisfied by a build failure. The same shape
 //! was in the release-cutting workflows, where it could only ever have been discovered at the
-//! moment of cutting a release, and in `ci.yml`'s feature matrix, where a `tests:` cell selected a
+//! moment of cutting a release, and in the removed `ci.yml`'s feature matrix, where a `tests:` cell selected a
 //! package that no longer existed and a libtest filter over zero packages exits 0.
 //!
 //! THE SHAPE OF THE CONTRACT is the one `qa-names` keeps: membership is DERIVED from the tree (the workspace
@@ -49,7 +49,7 @@
 //! WHAT IS DELIBERATELY NOT COVERED, stated so it is not mistaken for held: the general "no string
 //! literal anywhere names a non-workspace crate". Historical crate names legitimately appear in
 //! prose everywhere — commit messages, design docs, the comments that RECORD these very repointings
-//! — and `verify-deploy.yml` installs a real PyPI package called `busbar-admin`. That version needs
+//! — and the removed `verify-deploy.yml` installs a real PyPI package called `busbar-admin`. That version needs
 //! an allowlist, and an allowlist needs its own liveness check; this one needs neither, because a
 //! comment is not an executable position.
 //!
@@ -112,10 +112,10 @@ pub const ROW_DECL_REASON: &str = "package-selectors:declaration-reason";
 /// makes every selector in the tree look dead, which is a defect in the instrument reported as a
 /// defect in the tree.
 pub const UNIVERSE_FLOOR: usize = 40;
-/// The floor under the discovered selector sites. Measured at 98, across 277 covered files, once
+/// The floor under the discovered selector sites. Measured at 65, across 273 covered files, once
 /// the deleted workflows' selectors left the tree (it read 200 across 245 files before). This is the floor that matters: an empty scan set is the one state in
 /// which "every selector resolves" is true and means nothing.
-pub const SITE_FLOOR: usize = 98;
+pub const SITE_FLOOR: usize = 65;
 /// The shortest exemption reason that is a reason rather than a shrug.
 pub const MIN_REASON: usize = 30;
 
@@ -335,7 +335,7 @@ fn segments(line: &str) -> Vec<&str> {
 }
 
 /// The file's lines with backslash continuations JOINED, each paired with the line number the
-/// JOINED command STARTS on. `ci.yml` spreads one `cargo build` over five lines, one `-p` each, and
+/// JOINED command STARTS on. the removed `ci.yml` spreads one `cargo build` over five lines, one `-p` each, and
 /// a scanner that reads lines would see four selectors with no cargo anywhere near them.
 fn logical_lines(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
@@ -361,7 +361,7 @@ fn logical_lines(text: &str) -> Vec<(usize, String)> {
 /// Whole-line comments only. A shell `#` mid-line is not reliably a comment (`"$#"`, `${x#y}`, a
 /// URL fragment), and the sites this gate exists for are all executable lines anyway — while the
 /// PROSE that would otherwise be reported (the comments recording these very repointings, and
-/// `qa-gate-run.sh`'s note about what the selector used to read) is all whole-line.
+/// the removed `qa-gate-run.sh`'s note about what the selector used to read) is all whole-line.
 fn scan_commands(rel: &str, text: &str, out: &mut Vec<Site>) {
     for (line, joined) in logical_lines(text) {
         if joined.trim_start().starts_with('#') {

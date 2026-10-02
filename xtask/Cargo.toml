@@ -49,3 +49,12 @@ serde_yaml = { workspace = true }
 # The spec reader's YAML -> JSON visitor (serde is already in the closure via serde_json).
 serde = { workspace = true }
 syn = { workspace = true }
+# `cargo xtask audit-verify` checks a node's published audit-chain signatures (ed25519) WITHOUT the
+# product's code (#82(c), TODO 597). ring is the workspace's one crypto backend and already in
+# Cargo.lock; xtask is dev tooling and ships in no binary (ARCHITECT 2026-10-01, MC-2).
+ring = { workspace = true }
+
+[dev-dependencies]
+# Test-only: proves the verifier's small-order key table against an independent curve
+# implementation (`VerifyingKey::is_weak`), already in Cargo.lock as busbar-kernel-audit's signer.
+ed25519-dalek = { workspace = true }

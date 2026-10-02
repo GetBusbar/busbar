@@ -7,9 +7,8 @@
 # Checks, in order:
 #   1. Registry shape: required fields, valid kinds/gates, unique repo/alias/crate, and every repo is
 #      named busbar-<kind>-<name> for its OWN kind (owner ruling: repo = crate = artifact prefix).
-#   2. scripts/qa-gate-run.sh derives its sibling checkouts from the registry (its clone loop calls this
-#      script's --list mode) — per-plugin hand-written checkout steps are gone by design, so the
-#      check is "the registry-driven step exists", not "a literal step per plugin exists".
+#   2. (retired with the qa gate's runner: nothing in this repository clones siblings from the
+#      registry any more.)
 #   3. release-check.sh coverage per entry's `gate` kind:
 #        suite  — the registry-driven loop exists (calls --list) AND the entry's `service` has a
 #                 handler arm in release-check.sh (a new service value needs a new container spec).
@@ -25,7 +24,7 @@
 #        scripts/plugin-registry-check.sh --list
 #
 # --list is the machine-readable registry feed the other consumers iterate (release-check.sh's
-# suite loop, qa-gate-run.sh's clone loop): one tab-separated line per plugin —
+# suite loop): one tab-separated line per plugin —
 #   repo <TAB> dir <TAB> alias <TAB> kind <TAB> service <TAB> release_gate <TAB> gate <TAB> checkout_ref
 # where dir is checkout_dir (falling back to repo) and checkout_ref is "-" when unset. Shape
 # validation (check 1) still runs first, so a malformed registry fails every consumer loudly.
@@ -50,7 +49,7 @@ if [ "$MODE" = "--selftest" ]; then
   # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
   # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
   # turns a green exit with any case unrun into RED.
-  SELFTEST_CASES=16
+  SELFTEST_CASES=14
   ran=0
   selftest_exit() {
     local st=$?
@@ -131,65 +130,13 @@ PAGES
   probe "an unregistered busbar-transport-* repo is caught by the org sweep" \
     want-present "org repo 'busbar-transport-bogus' matches plugin naming"
 
-  # ── CHECK 2, FAIL-INJECTED. A COMMENT MENTIONING THE LOOP IS NOT THE LOOP ──────────────────────
-  # Check 2 asserted only that the string `plugin-registry-check.sh --list` appeared SOMEWHERE in
-  # scripts/qa-gate-run.sh, and scripts/qa-gate-run.sh's header documents that loop in prose. Deleting
-  # the real invocation from cmd_siblings therefore left the gate green on the strength of the
-  # sentence describing what had just been removed -- the sibling fan-out would have cloned nothing
-  # while this gate reported it registry-driven. Proven by OBSERVATION against a throwaway tree in
-  # which the invocation is deleted and only the comment remains, with the unmutated tree as the
-  # control so the case cannot pass by having broken check 2 outright.
-  echo
-  echo "plugin-registry-check selftest (check 2, the registry-driven sibling loop)"
-  c2="$tmp/c2"
-  mkdir -p "$c2/scripts" "$c2/.github/workflows"
-  cp plugins.yaml "$c2/plugins.yaml"
-  cp scripts/plugin-registry-check.sh scripts/release-check.sh "$c2/scripts/"
-  [ -f scripts/release-check-1.5.2.sh ] && cp scripts/release-check-1.5.2.sh "$c2/scripts/"
-
-  # Capture, never `producer | grep -q`. Under `pipefail` grep -q exits on its first match, the
-  # producer takes SIGPIPE, and the pipeline reports failure whether or not the text was there --
-  # which inverts both arms of this case. (Same trap plugin-ci-refs.sh's selftest documents.)
-  c2_says() {  # c2_says <needle>  -> 0 when the gate's output contains it
-    local out; out="$( (cd "$c2" && ./scripts/plugin-registry-check.sh --offline) 2>&1 || true)"
-    case "$out" in *"$1"*) return 0 ;; *) return 1 ;; esac
-  }
-  C2_NEEDLE='does not clone siblings via the registry'
-
-  # CONTROL: the unmutated copy must still pass check 2, so a RED below is the mutation talking.
-  cp scripts/qa-gate-run.sh "$c2/scripts/qa-gate-run.sh"
-  ran=$((ran + 1))
-  if c2_says "$C2_NEEDLE"; then
-    printf '  [FAILED] %s\n' "control: the UNMUTATED tree failed check 2 (the check is broken, not the subject)"; rc=1
-  else
-    printf '  [ok]     %s\n' "control: the unmutated tree passes check 2"
-  fi
-
-  # MUTATION: delete the real invocation, keep every comment that mentions it.
-  python3 - "$c2/scripts/qa-gate-run.sh" <<'MUT'
-import re, sys
-p = sys.argv[1]
-out = []
-for ln in open(p, encoding="utf-8"):
-    if "plugin-registry-check.sh --list" in ln and not ln.lstrip().startswith("#"):
-        ln = re.sub(r'\./scripts/plugin-registry-check\.sh --list', 'echo', ln)
-    out.append(ln)
-open(p, "w", encoding="utf-8").write("".join(out))
-MUT
-  ran=$((ran + 1))
-  if c2_says "$C2_NEEDLE"; then
-    printf '  [ok]     %s\n' "deleting the loop but keeping the comment that describes it is RED"
-  else
-    printf '  [FAILED] %s\n' "check 2 passed with the registry-driven loop DELETED — a comment satisfied it"; rc=1
-  fi
-
   # ── CHECK 1, THE NAME. A registered repo outside busbar-<kind>-<name>, or named for another kind,
   # is RED; the committed registry (the control) is not. Planted in a copy of plugins.yaml.
   echo
   echo "plugin-registry-check selftest (check 1, every repo is busbar-<its kind>-<name>)"
   c1="$tmp/c1"; mkdir -p "$c1/scripts" "$c1/.github/workflows"
   cp plugins.yaml "$c1/plugins.yaml"
-  cp scripts/plugin-registry-check.sh scripts/release-check.sh scripts/qa-gate-run.sh "$c1/scripts/"
+  cp scripts/plugin-registry-check.sh scripts/release-check.sh "$c1/scripts/"
   [ -f scripts/release-check-1.5.2.sh ] && cp scripts/release-check-1.5.2.sh "$c1/scripts/"
   c1_says() { local out; out="$( (cd "$c1" && ./scripts/plugin-registry-check.sh --offline) 2>&1 || true)"; case "$out" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
   first="$(sed -n 's/^  - repo: //p' plugins.yaml | head -1)"
@@ -235,7 +182,7 @@ MUT
     printf '  [FAILED] %s\n' "check 1 passed manifest_name ${first}-plugin"; rc=1
   fi
   # A `pending_crate: true` entry (registered, its crates not moved in yet) is kept OUT of the --list
-  # feed every cloning/testing consumer iterates, so qa-gate and release-check do not clone or test an
+  # feed every cloning/testing consumer iterates, so release-check does not clone or test an
   # empty repo; an entry WITHOUT it stays in (the RED arm: the filter is the flag, not a blanket drop).
   c1_list() { (cd "$c1" && ./scripts/plugin-registry-check.sh --list) 2>/dev/null | cut -f1; }
   cp plugins.yaml "$c1/plugins.yaml"
@@ -361,19 +308,6 @@ if list_mode:
         ]))
     sys.exit(0)
 
-# ── 2. the qa gate derives its checkouts from the registry (no hand-written per-plugin steps).
-#
-# The loop lives in scripts/qa-gate-run.sh (the qa gate's runner; no workflow in this repository
-# dispatches it any more). The loop must exist in that file, and it must not be satisfied by a mere
-# comment mentioning the string.
-#
-# A COMMENT MENTIONING THE LOOP IS NOT THE LOOP. This scanned the raw file text, and
-# scripts/qa-gate-run.sh's own header documents the registry-driven checkout in prose -- the exact
-# string `plugin-registry-check.sh --list` appears there as commentary. So deleting the real
-# invocation from cmd_siblings left this check GREEN on the strength of the sentence describing the
-# thing that had just been removed: the gate would have reported a registry-driven sibling fan-out
-# while every plugin sibling silently went un-cloned. The comment two paragraphs up already claimed
-# this could not happen. Strip whole-line comments before scanning so the claim is true.
 def _code(path):
     """A file's contents with whole-line comments removed."""
     if not os.path.exists(path):
@@ -382,13 +316,8 @@ def _code(path):
                    if not ln.lstrip().startswith(("#", "//")))
 
 
-devgate = _code("scripts/qa-gate-run.sh")
-if "plugin-registry-check.sh --list" not in devgate:
-    fail.append("the qa gate does not clone siblings via the registry (expected "
-                "scripts/qa-gate-run.sh to iterate `scripts/plugin-registry-check.sh --list`)")
-
 # ── 3. release-check.sh coverage, per each entry's declared gate kind.
-# Comment-stripped for the same reason check 2 is: release-check.sh's own prose names both the
+# Comment-stripped (whole-line comments removed): release-check.sh's own prose names both the
 # registry loop and several `../<dir>` sibling paths, so a phase deleted from the code would still
 # have been "found" in the sentence that described it.
 relcheck = _code("scripts/release-check.sh")
@@ -416,7 +345,7 @@ for p in plugins:
 # whether the loop lives in release-check.sh or the sourced 1.5.2 script.
 tokenx = ""
 for _f in ("scripts/release-check.sh", "scripts/release-check-1.5.2.sh"):
-    tokenx += "\n" + _code(_f)  # comment-stripped: see check 2
+    tokenx += "\n" + _code(_f)  # comment-stripped
 tokenx_loop_present = "plugin-registry-check.sh --list" in tokenx and "auth_plugin_flows" in tokenx
 for p in plugins:
     if p["kind"] != "auth":

@@ -39,10 +39,10 @@ pub(crate) fn artifact(key: &str) -> &'static str {
 /// not exist, and the only thing setting `DEV_GATE` ran on `qa`, so on every push these tests
 /// skipped in silence):
 ///
-/// * EVERY PUSH, `.github/workflows/ci.yml`'s `check` job (`cargo test --workspace`, `CI` set, no
+/// * EVERY PUSH, the removed `ci.yml`'s `check` job (`cargo test --workspace`, `CI` set, no
 ///   sibling checkout): the in-tree store proof's cdylib serves, and its absence is a HARD FAILURE
 ///   (`store_proof_plugin_path`'s panic), never a skip.
-/// * `qa`, `.github/workflows/qa-gate.yml`'s `loader` job (`scripts/qa-gate-run.sh loader`, which
+/// * `qa`, the removed `qa-gate.yml`'s `loader` job (the removed `scripts/qa-gate-run.sh loader`, which
 ///   builds the sibling and runs `DEV_GATE=1 cargo test --release -p busbar-plugin-loader`): the
 ///   sibling sqlite cdylib is REQUIRED — `CI` + `DEV_GATE` without it is a hard failure, so the real
 ///   sqlite plugin's coverage cannot quietly degrade to the example one there.
@@ -98,7 +98,7 @@ fn resolve_store_fixture(
     }
 }
 
-/// ITEM 391 — the decision table, including the two shapes ci.yml and qa-gate.yml present.
+/// ITEM 391 — the decision table, including the two shapes the removed ci.yml and the removed qa-gate.yml present.
 #[test]
 fn the_store_fixture_hard_fails_where_its_doc_says() {
     let sib = || {
@@ -112,11 +112,11 @@ fn the_store_fixture_hard_fails_where_its_doc_says() {
             "/target/libin_tree_store_proof.so",
         ))
     };
-    // ci.yml `check` (CI, no DEV_GATE, no sibling): the in-tree cdylib serves — coverage RUNS.
+    // the removed ci.yml `check` (CI, no DEV_GATE, no sibling): the in-tree cdylib serves — coverage RUNS.
     assert_eq!(resolve_store_fixture(None, ex, true, false), Ok(ex()));
-    // ci.yml with the in-tree cdylib missing: a HARD failure, never a skip.
+    // the removed ci.yml with the in-tree cdylib missing: a HARD failure, never a skip.
     assert!(resolve_store_fixture(None, || None, true, false).is_err());
-    // qa-gate.yml `loader` (CI + DEV_GATE) without the sibling: a HARD failure even though the
+    // the removed qa-gate.yml `loader` (CI + DEV_GATE) without the sibling: a HARD failure even though the
     // in-tree one is there — the sqlite plugin is what that leg exists to load.
     assert!(resolve_store_fixture(None, ex, true, true).is_err());
     assert!(resolve_store_fixture(None, || None, true, true).is_err());
@@ -129,7 +129,7 @@ fn the_store_fixture_hard_fails_where_its_doc_says() {
     assert_eq!(resolve_store_fixture(None, ex, false, false), Ok(ex()));
 }
 
-/// ITEM 391 — the live check: under `CI` (ci.yml's `check` job sets it; `cargo test --workspace`
+/// ITEM 391 — the live check: under `CI` (the removed ci.yml's `check` job sets it; `cargo test --workspace`
 /// builds the in-tree store cdylib), the store fixture RESOLVES, so the loader-mechanism tests run
 /// on every push instead of returning early. Locally it holds whenever either cdylib is built.
 #[test]

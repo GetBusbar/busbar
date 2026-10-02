@@ -11,7 +11,7 @@
 # agents and names them.
 #
 # ORG level, not repo level, on purpose: one pool serves busbar and every sibling repo, and a box
-# that finishes a keep-proof run is immediately available to ci.yml instead of sitting idle behind
+# that finishes a keep-proof run is immediately available to the removed ci.yml instead of sitting idle behind
 # a repo boundary.
 #
 # THE TOKEN IS MINTED IN ONE PLACE: register_agents in scripts/ci-runners-lib.sh, which this
