@@ -1,9 +1,9 @@
 # plugin-repin — move a plugin repo's busbar pin, and decide by COMMIT whether that is a cut.
 #
-# The repo's `.github/workflows/repin.yml` is a thin caller rendered by `cargo xtask fleet render`.
+# The repo's `.github/workflows/repin.yml` is a thin caller rendered by `busbar-release plugin sync`.
 # It fires on a `busbar-repin` repository_dispatch (client_payload: sha, version), which busbar sends
 # when the fleet pin moves, and on workflow_dispatch. The fleet's pin policy is ONE pin for every
-# plugin repo (plugins.yaml `fleet.busbar_ref`, held by `cargo xtask fleet check`), so this is how the
+# plugin repo (plugins.yaml `fleet.busbar_ref`, held by `busbar-release plugin check`), so this is how the
 # pin reaches a repo without a human editing four files by hand.
 #
 #   decide   scripts/fleet/repin.sh --decide: skip when the incoming commit IS the pin (or older by
