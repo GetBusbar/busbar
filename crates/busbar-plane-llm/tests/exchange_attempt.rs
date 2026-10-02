@@ -351,3 +351,14 @@ fn a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it(
     let r = build(&a, &h, &shaping(), "p", "gem").expect("built");
     assert_eq!(String::from_utf8_lossy(&r.body), body);
 }
+
+/// A conversation history carrying a `custom` tool call (a type the IR does not model) is relayed
+/// byte-identical within one dialect.
+#[test]
+fn a_history_with_a_custom_tool_call_relays_byte_identical() {
+    let h = head(&[("content-type", "application/json")]);
+    let body = r#"{"model":"gpt","messages":[{"role":"user","content":"go"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_c","type":"custom","custom":{"name":"grammar","input":"x = 1"}}]},{"role":"tool","tool_call_id":"call_c","content":"ok"}],"tools":[{"type":"custom","custom":{"name":"grammar"}}]}"#;
+    let a = arrived("/v1/chat/completions", &h, body);
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(String::from_utf8_lossy(&r.body), body);
+}

@@ -6087,3 +6087,50 @@ fn status_word_golden() {
         );
     }
 }
+
+/// A `custom` tool call in the conversation history (a type the IR does not model) is skipped by
+/// the reader, never refused: the reader is a tap, and a same-dialect relay carries the call byte
+/// for byte (DIALECT-FIDELITY-DESIGN F2 reader tolerance). The `function` call beside it is still
+/// read. RED arm: the reader that required `function` on every call answered a 400 here. A call
+/// that claims `function` and carries none stays malformed.
+#[test]
+fn a_custom_tool_call_in_history_is_skipped_not_refused() {
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_c", "type": "custom", "custom": {"name": "grammar", "input": "x = 1"}},
+                {"id": "call_f", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_c", "content": "ok"}
+        ]
+    });
+    let ir = OpenAiReader
+        .read_request(&body)
+        .expect("a custom tool call is not a refusal");
+    let uses: Vec<&str> = ir
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            IrBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(uses, ["call_f"]);
+    let answer = serde_json::json!({
+        "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-4o",
+        "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant",
+            "content": null, "tool_calls": [
+                {"id": "call_c", "type": "custom", "custom": {"name": "grammar", "input": "x"}}
+            ]}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    });
+    assert!(OpenAiReader.read_response(&answer).is_ok());
+    let malformed = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "assistant", "tool_calls": [{"id": "call_x", "type": "function"}]}]
+    });
+    assert!(OpenAiReader.read_request(&malformed).is_err());
+}

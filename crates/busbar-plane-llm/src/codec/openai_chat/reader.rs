@@ -288,8 +288,12 @@ impl ProtocolReader for OpenAiReader {
                                         .filter(|s| !s.is_empty())
                                         .ok_or_else(ir_parse_error)?
                                         .to_string();
-                                    let func =
-                                        tc_val.get(keys::FUNCTION).ok_or_else(ir_parse_error)?;
+                                    let Some(func) = tc_val.get(keys::FUNCTION) else {
+                                        if unmodeled_tool_call(tc_val) {
+                                            continue;
+                                        }
+                                        return Err(ir_parse_error());
+                                    };
                                     let name = func
                                         .get(keys::NAME)
                                         .and_then(|v| v.as_str())
@@ -1324,7 +1328,12 @@ impl ProtocolReader for OpenAiReader {
                     // deterministic `call_…` id when the backend supplied none — so the correlation key
                     // is never blank. (`unwrap_or("")` previously let an empty id through to egress.)
                     let raw_id = tc_val.get(keys::ID).and_then(|v| v.as_str()).unwrap_or("");
-                    let func = tc_val.get(keys::FUNCTION).ok_or_else(ir_parse_error)?;
+                    let Some(func) = tc_val.get(keys::FUNCTION) else {
+                        if unmodeled_tool_call(tc_val) {
+                            continue;
+                        }
+                        return Err(ir_parse_error());
+                    };
                     let name = func
                         .get(keys::NAME)
                         .and_then(|v| v.as_str())
@@ -1531,3 +1540,15 @@ fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value
 #[cfg(test)]
 #[path = "tests/unreadable_count_refusal_tests.rs"]
 mod unreadable_count_refusal_tests;
+
+/// A tool call of a type the IR does not model (a `custom` tool call, or a type OpenAI adds later):
+/// its `type` names something other than `function`. The reader is a TAP: it skips such a call
+/// rather than refuse the request, so a same-dialect relay carries it byte for byte (LLM DIALECT
+/// FIDELITY; DIALECT-FIDELITY-DESIGN F2 reader tolerance). A call that claims `function` (or names
+/// no type) and carries none is still malformed in its own dialect.
+fn unmodeled_tool_call(tc_val: &serde_json::Value) -> bool {
+    tc_val
+        .get(keys::TYPE)
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|t| t != keys::FUNCTION)
+}
