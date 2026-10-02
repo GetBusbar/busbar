@@ -993,12 +993,18 @@ pub struct DialectEntry {
     /// Build the dialect's wire codec: a fresh instance per resolution ([`protocol_for`]).
     pub protocol: fn() -> Protocol,
     /// Hand a fresh writer, built on the stack, to the callback ([`with_writer`]).
-    pub with_writer: fn(&mut dyn FnMut(&dyn ProtocolWriter)),
+    pub with_writer: WithWriter,
     /// Hand the (stateless) reader to the callback ([`with_reader`]).
-    pub with_reader: fn(&mut dyn FnMut(&dyn ProtocolReader)),
+    pub with_reader: WithReader,
     /// The dialect's row of the leaf-op `(operation, protocol)` dispatch.
     pub leaf: &'static crate::codec::leaf_codec::LeafCodecs,
 }
+
+/// A dialect's stack-writer callback: builds a fresh writer and hands it to the closure.
+pub type WithWriter = fn(&mut dyn FnMut(&dyn ProtocolWriter));
+
+/// A dialect's reader callback: hands its (stateless) reader to the closure.
+pub type WithReader = fn(&mut dyn FnMut(&dyn ProtocolReader));
 
 /// The registration of the dialect named `name`, read off [`crate::codec::DIALECTS`]. `None` for a
 /// name this plane does not register.
