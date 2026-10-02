@@ -307,8 +307,8 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     http.set_nodelay(true);
 
     // rustls client config over the compiled-in webpki roots — the same trust anchors reqwest's
-    // rustls-tls used. ALPN is set below: `http1_only` offers `http/1.1`; the builder's
-    // `enable_all_versions` offers h2 then h1 and asserts the config arrives ALPN-empty.
+    // rustls-tls used. ALPN is set below: `http/1.1` under `http1_only`, else `h2` then
+    // `http/1.1`.
     // The tunnel wrapper sits BETWEEN TCP and TLS: with no proxy env (every known deployment) it
     // delegates to the plain connector untouched; with one, it CONNECTs through the proxy the
     // target's SCHEME selects and TLS then handshakes over the tunnel with the real target's SNI
@@ -325,18 +325,15 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     let http = tunnel::TunnelConnector::new(http, proxy, dial_bound);
 
     let mut tls = rustls_client_config(spec)?;
-    let https = if spec.http1_only {
-        // hyper-rustls leaves http1-only ALPN empty; 1.5.5 (reqwest) offered `http/1.1`. `From` is
-        // the builder's `https_or_http` minus its empty-ALPN assertion.
-        tls.alpn_protocols = vec![b"http/1.1".to_vec()];
-        hyper_rustls::HttpsConnector::from((http, tls))
+    // 1.5.5's hello (reqwest) offered `http/1.1` under http1-only, `h2, http/1.1` otherwise. The
+    // builder's http1-only path leaves ALPN empty, so the offer is stated here and the connector
+    // is made from the config directly (`https_or_http`, the builder's own result).
+    tls.alpn_protocols = if spec.http1_only {
+        vec![b"http/1.1".to_vec()]
     } else {
-        hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls)
-            .https_or_http()
-            .enable_all_versions()
-            .wrap_connector(http)
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
     };
+    let https = hyper_rustls::HttpsConnector::from((http, tls));
     // One wall-clock bound over the WHOLE connect — TCP + tunnel + TLS handshake (see
     // `deadline`; reqwest's connect_timeout parity on the pinned postures, a strict tightening
     // of the latent black-hole-TLS gap on the pooled posture). Then the peer-identity observation,
