@@ -8,7 +8,7 @@
 // suite's own scenario names and carry no egress-capture instrumentation. The H2 gating scenarios
 // (scripts/mcp-subject/h2-*.sh) need something narrower: one tool, on one path, that records EVERY
 // request it receives so a scenario can assert "zero egress reached the upstream" the same way
-// testing/shadow-oracle/mock-upstream.py does for the llm plane. This is that mock, written once
+// the oracle's `mock` subcommand does for the llm plane. This is that mock, written once
 // and shared by every h2-*.sh script (each boots its own instance on its own port).
 //
 // Protocol surface: `2026-07-28` has no handshake (every request is self-describing via
