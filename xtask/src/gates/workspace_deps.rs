@@ -1192,7 +1192,7 @@ mod tests {
     /// it, one for one — it was never a ratchet on the roster, only a range of healthy sizes this
     /// rule must not redden on.
     ///
-    /// RE-MEASURED after KERNEL-AUTH-ZERO (Q2): `crates/busbar-kernel/data/operator_credential.toml`
+    /// RE-MEASURED after the kernel's operator credential moved out: `crates/busbar-kernel/data/operator_credential.toml`
     /// left the kernel for the root legacy table, so the real walk holds 33 `.toml` files, and the
     /// sample set moves down with it, one for one (still clear of the floor of 30).
     #[test]

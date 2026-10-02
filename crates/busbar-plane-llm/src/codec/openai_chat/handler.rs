@@ -8,6 +8,7 @@ use crate::codec::ir::moderation::{
     ModerationInput, ModerationReq, ModerationResp, ModerationResult,
 };
 use crate::codec::keys;
+use crate::codec::leaf_codec::LeafCodec;
 use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
 // The leaf cells' trait, which the dialect's handler tests call through.
 #[cfg(test)]
@@ -1446,3 +1447,39 @@ pub fn read_moderation_response(
         extra: BTreeMap::new(),
     })
 }
+
+/// This dialect's row of the leaf-op `(operation, protocol)` dispatch, carried on `super::ENTRY`.
+pub(crate) const LEAF: crate::codec::leaf_codec::LeafCodecs =
+    crate::codec::leaf_codec::LeafCodecs {
+        embeddings: Some(LeafCodec {
+            write_request: write_embeddings_request,
+            write_response: write_embeddings_response,
+            read_request: read_embeddings_request,
+            read_response: read_embeddings_response,
+        }),
+        image: Some(LeafCodec {
+            write_request: write_image_request,
+            write_response: write_image_response,
+            read_request: read_image_request,
+            read_response: read_image_response,
+        }),
+        transcription: Some(LeafCodec {
+            write_request: write_transcription_request,
+            write_response: write_transcription_response,
+            read_request: read_transcription_request,
+            read_response: read_transcription_response,
+        }),
+        speech: Some(LeafCodec {
+            write_request: write_speech_request,
+            write_response: write_speech_response,
+            read_request: read_speech_request,
+            read_response: read_speech_response,
+        }),
+        moderation: Some(LeafCodec {
+            write_request: write_moderation_request,
+            write_response: write_moderation_response,
+            read_request: read_moderation_request,
+            read_response: read_moderation_response,
+        }),
+        ..crate::codec::leaf_codec::LeafCodecs::NONE
+    };

@@ -121,15 +121,13 @@ pub(super) async fn build(
         }
     };
     egress_headers.insert(CONTENT_TYPE, ct_value);
-    // Native-SDK User-Agent for a TRANSLATED hop, which busbar writes in the far dialect: without
-    // it the backend sees a UA-less request, a proxy fingerprint. A same-dialect hop carries the
-    // client's own (forwarded below) and busbar fakes none.
-    if hop.ingress_protocol != hop.egress_name {
-        egress_headers.insert(
-            USER_AGENT,
-            axum::http::HeaderValue::from_static(crate::engine::egress_user_agent(hop.egress_name)),
-        );
-    }
+    // Native-SDK User-Agent for the egress protocol: without it the backend sees a UA-less request,
+    // a proxy fingerprint (1.5.5's bytes). A same-dialect caller's own user-agent replaces it below
+    // with the rest of its forwarded headers.
+    egress_headers.insert(
+        USER_AGENT,
+        axum::http::HeaderValue::from_static(crate::engine::egress_user_agent(hop.egress_name)),
+    );
     // Native-SDK Accept for the egress protocol (eventstream/json/SSE by stream intent), chosen by
     // the operation; not part of SigV4 SignedHeaders.
     egress_headers.insert(
