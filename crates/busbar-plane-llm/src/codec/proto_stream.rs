@@ -326,6 +326,9 @@ impl StreamTranslate {
             // delta below keeps the prompt-token count from vanishing across the cross-protocol seam.
             if let Some(u) = usage {
                 self.start_usage = Some(u.clone());
+                // The far end has REPORTED these counts: they bill even when the stream ends
+                // before its terminal delta (cut or abandoned), so they fold into `last_usage` now.
+                self.fold_reported_usage(u);
             }
             *id = None;
             *created = None;
@@ -348,18 +351,7 @@ impl StreamTranslate {
             // zero usage, then a usage-only delta) does not let the first zero clobber the second's
             // real counts. `last_usage` is the production billing source the stream-end arm reads
             // for the per-request token fee (Change A step 3, now permanent).
-            let acc = self.last_usage.get_or_insert(crate::codec::ir::IrUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail::default(),
-            });
-            // The ONE per-field non-zero/`Some`-wins merge (shared with the terminal-usage
-            // fold), so this A-tap and the fold cannot drift — and the DETAIL sub-buckets ride
-            // along here too instead of being silently dropped by a hand-copied totals-only
-            // merge.
-            merge_trailing_usage(acc, usage);
+            self.fold_reported_usage(usage);
         }
         // A-tap terminal-error capture (Change A): a reader-emitted `Error` event is the IR-sourced
         // breaker-failure signal that replaces the byte-scanner's `UsageTap::terminal_error`. Record
@@ -623,6 +615,22 @@ impl StreamTranslate {
         Some(out)
     }
 
+    /// Fold a far-end-reported usage into `last_usage`, the billing source. The ONE per-field
+    /// non-zero/`Some`-wins merge (shared with the terminal-usage fold), so the cross-protocol and
+    /// same-protocol A-taps cannot drift and the DETAIL sub-buckets ride along. Fed by every usage the
+    /// far end reports: the stream-start counts (Anthropic `message_start`) as well as the terminal
+    /// delta, so a stream that ends before its terminal frame bills what was reported so far (#62).
+    fn fold_reported_usage(&mut self, reported: &crate::codec::ir::IrUsage) {
+        let acc = self.last_usage.get_or_insert(crate::codec::ir::IrUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::codec::ir::IrUsageDetail::default(),
+        });
+        merge_trailing_usage(acc, reported);
+    }
+
     /// SAME-PROTOCOL usage side-channel (Change B step 2). Runs ONLY the egress reader + the
     /// start-usage/backfill/`last_usage` accumulation that `translate_event` does — and NOTHING ELSE
     /// (no tool-id remap, no identity strip, no writer/fan-out/reframe). The same-proto path re-emits
@@ -638,6 +646,7 @@ impl StreamTranslate {
         {
             if let crate::codec::ir::IrStreamEvent::MessageStart { usage: Some(u), .. } = &ev {
                 self.start_usage = Some(u.clone());
+                self.fold_reported_usage(u);
             }
             // A-tap terminal-error capture (Change A) on the SAME-PROTOCOL path: a reader-emitted
             // `Error` event is the IR-sourced breaker-failure signal replacing the byte-scanner's
@@ -662,14 +671,7 @@ impl StreamTranslate {
                 if let Some(start) = &self.start_usage {
                     backfill_from_start_usage(&mut trailing, start);
                 }
-                let acc = self.last_usage.get_or_insert(crate::codec::ir::IrUsage {
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_creation_input_tokens: None,
-                    cache_read_input_tokens: None,
-                    detail: crate::codec::ir::IrUsageDetail::default(),
-                });
-                merge_trailing_usage(acc, &trailing);
+                self.fold_reported_usage(&trailing);
             }
         }
     }

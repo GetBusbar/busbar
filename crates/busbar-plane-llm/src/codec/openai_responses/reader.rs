@@ -1195,12 +1195,42 @@ impl ProtocolReader for ResponsesReader {
                         let class = class_for_response_failed(
                             provider_signal.as_deref().unwrap_or(SIGNAL_RESPONSE_FAILED),
                         );
+                        // BILLED COUNTS: a failed response that still REPORTS its usage (the
+                        // tokens the far end generated before it failed) bills them (#62: a cut is
+                        // not a refund). A present-but-UNREADABLE count refuses (#42) in place of
+                        // the failure, exactly as the completed arm below does.
+                        // A native failed response usually says `"usage": null`: nothing reported,
+                        // nothing to carry.
+                        let usage = match response_obj
+                            .get(keys::USAGE)
+                            .filter(|u| !u.is_null())
+                            .map(|u| read_responses_usage(Some(u), Some(response_obj)))
+                            .transpose()
+                        {
+                            Ok(usage) => usage,
+                            Err(refusal) => {
+                                out.push(IrStreamEvent::Error(refusal));
+                                return out;
+                            }
+                        };
                         out.push(IrStreamEvent::Error(IrError {
                             class,
                             provider_signal,
                             retry_after: None,
                         }));
                         close_open_blocks(&mut out, state);
+                        // The usage rides a `MessageDelta{Error}` AFTER the Error, the shape the
+                        // Cohere `ERROR` and Gemini `MALFORMED_FUNCTION_CALL` arms already emit: the
+                        // translator folds it into the billing source, and every writer reads a
+                        // delta that follows an Error as the end of a failed stream (RSP-11).
+                        if let Some(usage) = usage {
+                            out.push(IrStreamEvent::MessageDelta {
+                                stop_reason: Some(crate::codec::ir::IrStopReason::Error),
+                                stop_sequence: None,
+                                usage,
+                                stop_detail: None,
+                            });
+                        }
                         out.push(IrStreamEvent::MessageStop);
                         return out;
                     }
