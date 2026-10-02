@@ -143,8 +143,16 @@ kid="$(jq -r '.id // empty' <<<"$mint")"; tok="$(jq -r '.token // empty' <<<"$mi
 step mint_status "$mint_code"
 st="$(curl -sS -m 20 -o "$W/chat.body" -w '%{http_code}' -X POST "http://127.0.0.1:${LP}/v1/chat/completions" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"ping"}]}')"
 step chat_status "$st"
-sleep 0.5
-u1="$(curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)')"
+# USAGE IS COUNTED BEHIND THE ANSWER, so the read POLLS (every 0.1s, bounded at 10s) until it counts
+# the request, instead of a fixed 0.5s sleep a loaded runner outruns: busbar-release golden job run
+# 37018595669 read requests 0 on its second recording of the mysql cell and called persistence "no"
+# against a golden that says 1 and "yes". The bytes recorded are unchanged; only the wait is.
+u1=""; i=0
+while [ $i -lt 100 ]; do
+  u1="$(curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)')"
+  [ "$(jq -r '.requests // 0' <<<"$u1" 2>/dev/null)" -ge 1 ] 2>/dev/null && break
+  sleep 0.1; i=$((i+1))
+done
 step usage_before_restart "$u1"
 kill $pid; wait $pid 2>/dev/null
 # THE OLD PROCESS MUST BE PROVEN GONE ON BOTH PORTS before the restart binds them, or the second
