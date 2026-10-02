@@ -369,12 +369,17 @@ pub const ADMIN_VERBS: &[(&str, &str)] = &[
     ("POST", "/agents/{name}/approve"),
 ];
 
+/// The word the kernel's audit row names each [`ADMIN_VERBS`] request by: the engine's audit verbs
+/// (the shared `connect`, and `approve`).
+pub const ADMIN_AUDIT_VERBS: [&str; 2] = ["connect", "approve"];
+
 const fn admin_route(i: usize) -> AdminRoute {
     AdminRoute {
         verb: abi_str(ADMIN_VERBS[i].0),
         target: abi_str(ADMIN_VERBS[i].1),
         flags: 0,
         _reserved: 0,
+        audit_verb: abi_str(ADMIN_AUDIT_VERBS[i]),
     }
 }
 
