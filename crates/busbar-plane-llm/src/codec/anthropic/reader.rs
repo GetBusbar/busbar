@@ -5,10 +5,12 @@ use crate::codec::keys;
 impl ProtocolReader for AnthropicReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        // An unreadable billed count yields NO recovered usage, never a zero one (#42): the caller
-        // then bills its conservative floor estimate for the truncated body instead of $0.
+        // The whole usage table, as the buffered read takes it: a truncated turn that ran web
+        // searches ledgers them exactly as its complete twin does. An unreadable billed count
+        // yields NO recovered usage, never a zero one (#42): the caller then bills its
+        // conservative floor estimate for the truncated body instead of $0.
         Some(
-            crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), &USAGE[..4])
+            crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE)
                 .ok()?
                 .to_token_usage(),
         )

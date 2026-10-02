@@ -116,10 +116,14 @@ pub struct Units {
 }
 
 impl Units {
-    /// The units of a token usage.
+    /// The units of a token usage: its four token tiers, and every open class it counted (a turn's
+    /// billed searches) beside the open classes the answer's billing named.
     #[must_use]
-    pub fn of(usage: Option<&TokenUsage>, open: BTreeMap<String, u64>) -> Self {
+    pub fn of(usage: Option<&TokenUsage>, mut open: BTreeMap<String, u64>) -> Self {
         let u = usage.cloned().unwrap_or_default();
+        for (class, n) in u.open_units.into_iter().filter(|(_, n)| *n != 0) {
+            open.entry(class).or_insert(n);
+        }
         Units {
             tokens_in: u.input,
             tokens_out: u.output,

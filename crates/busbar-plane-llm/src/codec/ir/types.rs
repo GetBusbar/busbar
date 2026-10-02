@@ -1293,8 +1293,28 @@ impl IrUsage {
                 .unwrap_or(self.output_tokens),
             cache_read: self.cache_read_input_tokens,
             cache_creation: self.cache_creation_input_tokens,
+            open_units: self.open_units(),
             ..Default::default()
         }
+    }
+
+    /// THE SEPARATELY BILLED COUNTS, by the meter class each lands in (MONEY-AUDIT A-F1; owner
+    /// 2026-10-02: every billed count lands in an existing class by the provider's own semantics,
+    /// and the plane reports units, never a price). Anthropic bills each server-side web search
+    /// (`usage.server_tool_use.web_search_requests`) as one search, so the count is the declared
+    /// open class `search_units` (a rerank's billed searches, item 134) that a rate card prices per
+    /// lane under `units:`. A zero count is not carried: a zero search is no hit on the class.
+    fn open_units(&self) -> std::collections::BTreeMap<String, u64> {
+        let searches = self.detail.web_search_requests.unwrap_or(0);
+        (searches != 0)
+            .then(|| {
+                (
+                    crate::codec::ir::rerank::SEARCH_UNITS_CLASS.to_string(),
+                    searches,
+                )
+            })
+            .into_iter()
+            .collect()
     }
 }
 
