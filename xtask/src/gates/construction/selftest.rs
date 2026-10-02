@@ -1417,6 +1417,68 @@ fn money_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &refs(&naming),
     ));
 
+    // THE ONE FUNCTION UNDER ANOTHER NAME (ARCHITECT 2026-09-30). The planted shape is named so
+    // that no `entry_path_patterns` spelling matches it: a one-line cost-unit
+    // wrapper that takes the ledger slice and hands it to `price_in_view`, called by a reader that
+    // builds the slice itself. A wrapper around that wrapper is found too, so the second arm plants
+    // two layers and calls only the outer one.
+    let wrapper = |name: &str, inner: &str| {
+        format!(
+            "pub fn {name}(\n    entries: &[crate::cost::LedgerEntry],\n    view: \
+             &crate::cost::HistoryView<'_>,\n) -> Result<i64, crate::cost::MoneyError> {{\n    \
+             {inner}\n}}\n"
+        )
+    };
+    let caller = |name: &str| {
+        format!(
+            "pub fn planted_reader() {{\n    let _ = \
+             busbar_kernel_ledger::cost::{name}(&entries, view);\n}}\n"
+        )
+    };
+    for (arm, plants, outer) in [
+        (
+            "a renamed one-line wrapper around price_in_view",
+            vec![wrapper(
+                "read_the_row_figure",
+                "crate::cost::price_in_view(entries, view)?.micros_i64()",
+            )],
+            "read_the_row_figure",
+        ),
+        (
+            "a wrapper around a renamed wrapper around price_in_view",
+            vec![
+                wrapper(
+                    "read_the_row_figure",
+                    "crate::cost::price_in_view(entries, view)?.micros_i64()",
+                ),
+                wrapper("row_figure_again", "read_the_row_figure(entries, view)"),
+            ],
+            "row_figure_again",
+        ),
+    ] {
+        let mut ov = on(base);
+        ov.set(
+            "crates/busbar-kernel-ledger/src/cost/zz_planted_wrapper.rs",
+            plants.concat(),
+        );
+        ov.set(
+            "crates/busbar-core-admin/src/v1/zz_planted_wrapper_call.rs",
+            caller(outer),
+        );
+        let named = format!(
+            "`busbar_kernel_ledger::cost::{outer}` (a renamed pricing entry) at \
+             crates/busbar-core-admin/src/v1/zz_planted_wrapper_call.rs"
+        );
+        r.push(prove_red(
+            cx,
+            gate,
+            format!("a reader outside the homes calls {arm}"),
+            &["one-pricing-site"],
+            ov,
+            &[named.as_str()],
+        ));
+    }
+
     let mut ov = on(base);
     let doubles = listed("no-test-doubles-in-production", "forbidden");
     if doubles.is_empty() {

@@ -1432,6 +1432,96 @@ pub fn plane_no_money(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Str
 
 // ── 29. one-pricing-site ─────────────────────────────────────────────────────────────────────────
 
+/// THE ONE FUNCTION UNDER ANOTHER NAME: every production function in the cost unit (`cost_path`)
+/// whose signature names one of `wrapper_inputs` (the one function's own input, the ledger slice)
+/// and whose body reaches a pricing entry. "Reaches" is a call matching an `entry_path_patterns`
+/// tail (`price_in_view(`, `price_exact(`, `apply_tier(`), one of `wrapper_reaches` (the
+/// accumulator itself), or a call to a wrapper already found, so a wrapper around a wrapper is
+/// found too. The NAME plays no part: renaming a wrapper does not hide it.
+///
+/// Returns the wrappers the path patterns do NOT already see (those are counted there), and how
+/// many functions matched in all, the one function itself included. A count of zero is a blind
+/// scan, not a clean one.
+fn pricing_wrappers(
+    tree: &Tree,
+    c: &Table,
+    cost_path: &str,
+    path_rx: &Regex,
+) -> Result<(Vec<String>, usize), String> {
+    use crate::gates::construction::model::word;
+    const COST_PATH: &str = "busbar_kernel_ledger::cost::";
+    let inputs = c.list_of("wrapper_inputs");
+    if inputs.is_empty() {
+        return Err(
+            "[rules.one-pricing-site] lists no `wrapper_inputs`, so a pricing entry under another \
+             name is invisible"
+                .to_string(),
+        );
+    }
+    let input_rx = Regex::new(&inputs.iter().map(|t| word(t)).collect::<Vec<_>>().join("|"))?;
+    let mut reach: Vec<String> = c
+        .list_of("entry_path_patterns")
+        .iter()
+        .map(|p| {
+            let tail = p.strip_prefix(COST_PATH).unwrap_or(p);
+            format!(r"(?<![A-Za-z0-9_])(?:{tail})[A-Za-z0-9_]*\s*\(")
+        })
+        .collect();
+    reach.extend(c.list_of("wrapper_reaches"));
+
+    // (name, signature, body), over the blanked text so a string literal neither opens a body nor
+    // reads as a call.
+    let mut candidates: Vec<(String, String, String)> = Vec::new();
+    for (rel, fns) in &tree.fns {
+        if !(rel == cost_path || rel.starts_with(&format!("{cost_path}/"))) {
+            continue;
+        }
+        let Some(lines) = tree.files.get(rel) else {
+            continue;
+        };
+        for f in fns.iter().filter(|f| !f.intest) {
+            let text = lines
+                .iter()
+                .filter(|l| l.no >= f.start && l.no <= f.end)
+                .map(|l| l.blank.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let Some(open) = text.find('{') else {
+                continue;
+            };
+            candidates.push((
+                f.name.clone(),
+                text[..open].to_string(),
+                text[open..].to_string(),
+            ));
+        }
+    }
+
+    let mut found: Vec<String> = Vec::new();
+    loop {
+        let mut pats = reach.clone();
+        pats.extend(found.iter().map(|n| format!(r"{}\s*\(", word(n))));
+        let reach_rx = Regex::new(&pats.join("|"))?;
+        let before = found.len();
+        for (name, sig, body) in &candidates {
+            if !found.contains(name) && input_rx.is_match_str(sig) && reach_rx.is_match_str(body) {
+                found.push(name.clone());
+            }
+        }
+        if found.len() == before {
+            break;
+        }
+    }
+    let seen = found.len();
+    let mut wrappers: Vec<String> = found
+        .into_iter()
+        .filter(|n| !path_rx.is_match_str(&format!("{COST_PATH}{n}")))
+        .collect();
+    wrappers.sort();
+    wrappers.dedup();
+    Ok((wrappers, seen))
+}
+
 pub fn one_pricing_site(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("one-pricing-site")?;
     let max_extra = need_int(c, "max_extra_sites", "one-pricing-site")?;
@@ -1470,6 +1560,36 @@ pub fn one_pricing_site(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             .unwrap_or_default();
         sites.push((format!("`{hit}`"), rel.to_string(), l.no));
     }
+    // THE ONE FUNCTION UNDER ANOTHER NAME (ARCHITECT 2026-09-30). A cost-unit function that
+    // takes the one function's own input and hands it on to a pricing entry IS that entry, whatever
+    // it is called, so a call to it from outside the homes is counted like a call to the entry.
+    let cost_home = need_str(c, "wrapper_home", "one-pricing-site")?;
+    let cost_path = homes
+        .iter()
+        .find(|(k, _)| k == cost_home)
+        .map(|(_, p)| p.clone())
+        .ok_or_else(|| {
+            format!(
+                "[rules.one-pricing-site] wrapper_home = \"{cost_home}\" names no \
+                 [rules.one-pricing-site.allowed.*] home"
+            )
+        })?;
+    let (wrappers, seen_inputs) = pricing_wrappers(tree, c, &cost_path, &path_rx)?;
+    for w in &wrappers {
+        for (rel, l) in call_sites(tree, w, None)? {
+            let names_cost_unit = tree
+                .files
+                .get(rel)
+                .is_some_and(|ls| ls.iter().any(|x| x.code.contains("busbar_kernel_ledger")));
+            if names_cost_unit {
+                sites.push((
+                    format!("`busbar_kernel_ledger::cost::{w}` (a renamed pricing entry)"),
+                    rel.to_string(),
+                    l.no,
+                ));
+            }
+        }
+    }
     let (mut extra, mut inside) = (Vec::new(), Vec::new());
     for (what, rel, no) in &sites {
         match home_of(rel) {
@@ -1477,19 +1597,29 @@ pub fn one_pricing_site(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             None => extra.push(format!("{what} at {rel}:{no}")),
         }
     }
+    // BLIND, NOT CLEAN: the wrapper scan must at least see the one function itself take its input.
+    // Zero means the input type was renamed under the scan, and every wrapper would go unseen.
+    if seen_inputs == 0 {
+        extra.push(format!(
+            "the wrapper scan is BLIND: no function in {cost_path} takes any of {} and reaches a \
+             pricing entry, not even the one function",
+            py_list(&c.list_of("wrapper_inputs"))
+        ));
+    }
     let current = extra.len() as i64;
     let mut home_keys: Vec<String> = homes.iter().map(|(k, _)| k.clone()).collect();
     home_keys.sort();
     let detail = format!(
         "{current} pricing-entry call site(s) outside the reviewed homes {} (ceiling \
-         {max_extra}): {}; reviewed sites seen: {}",
+         {max_extra}): {}; reviewed sites seen: {}; entries under another name: {}",
         py_list(&home_keys),
         join_or_none(&extra),
         if inside.is_empty() {
             "NONE \u{2014} no production code prices at all today".to_string()
         } else {
             inside.join("; ")
-        }
+        },
+        join_or_none(&wrappers)
     );
     let mut rows = vec![plain(
         "one-pricing-site",
