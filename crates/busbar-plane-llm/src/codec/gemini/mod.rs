@@ -324,7 +324,6 @@ const RESPONSE_CODE: &[&str] = &["usageMetadata.candidatesTokensDetails"];
 /// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
 /// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
 const RESPONSE_DROPS: &[&str] = &[
-    "candidates[].avgLogprobs",
     "candidates[].citationMetadata.citationSources[].license",
     "candidates[].content.parts[].audioTranscription",
     "candidates[].content.parts[].codeExecutionResult",
@@ -356,8 +355,6 @@ const RESPONSE_DROPS: &[&str] = &[
     "candidates[].logprobsResult.chosenCandidates[].tokenId",
     "candidates[].logprobsResult.logProbabilitySum",
     "candidates[].logprobsResult.topCandidates[].candidates[].tokenId",
-    "candidates[].safetyRatings",
-    "promptFeedback.safetyRatings",
 ];
 
 /// Router-internal shim key the gemini ingress route injects into the request body when the client

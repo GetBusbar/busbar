@@ -1182,21 +1182,8 @@ const RESPONSE_DROPS: &[&str] = &[
     "output[].type=tool_search_output",
     "output[].type=web_search_call",
 ];
-const STREAM_DROPS: &[&str] = &[
-    "type=response.content_part.added",
-    "type=response.content_part.done",
-    "type=response.created",
-    "type=response.function_call_arguments.done",
-    "type=response.output_item.added",
-    "type=response.output_item.done",
-    "type=response.output_text.annotation.added",
-    "type=response.output_text.done",
-    "type=response.queued",
-    "type=response.reasoning_summary_part.added",
-    "type=response.reasoning_summary_part.done",
-    "type=response.reasoning_summary_text.done",
-    "type=response.reasoning_text.done",
-];
+// Every stream event section E listed is now carried (the map's stream rows, `STREAM_CODE`).
+const STREAM_DROPS: &[&str] = &[];
 
 /// Build an IR `Image` block from a Responses `input_image` content object. Prefers an inline
 /// `image_url` (parsed via the shared `parse_image_url` into a `Base64`/`Url` source). Otherwise, an

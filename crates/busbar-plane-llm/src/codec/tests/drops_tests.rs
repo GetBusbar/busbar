@@ -715,3 +715,33 @@ fn the_answer_walk_names_only_true_drops_over_the_golden_corpus() {
     }
     assert!(seen > 20, "the corpus was read: {seen}");
 }
+
+/// A dialect never lists as dropped a path it carries (a map row or a code-carried path): the walk
+/// would name a member that crosses (red: Responses' stream events and three Gemini answer members
+/// were both carried and listed as drops after DF-MAP mapped them).
+#[test]
+fn no_dialect_drops_a_path_it_carries() {
+    for dialect in [
+        "anthropic",
+        "bedrock",
+        "cohere",
+        "gemini",
+        "openai",
+        "responses",
+    ] {
+        crate::codec::proto_codec::with_reader(dialect, |r| {
+            for (direction, carried) in [
+                ("answer", r.response_carried()),
+                ("stream", r.stream_carried()),
+            ] {
+                let Some(c) = carried else { continue };
+                for d in c.drops {
+                    assert!(
+                        !c.map.contains(d) && !c.code.contains(d),
+                        "{dialect} {direction}: `{d}` is carried and listed as dropped"
+                    );
+                }
+            }
+        });
+    }
+}
