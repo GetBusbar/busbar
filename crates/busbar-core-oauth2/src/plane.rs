@@ -397,7 +397,7 @@ fn plain_metadata(server: &AsServer) -> bytes::Bytes {
 }
 
 /// THE SEAM-TYPED DPoP VERIFIER (`AsPlaneSeam::verify_dpop`): downcasts core's type-erased plane
-/// and defers to [`AsPlane::verify_dpop`]. A plane that is not this crate's verifies nothing.
+/// and hands it to [`AsPlane::verify_dpop`]. A plane that is not this crate's verifies nothing.
 pub(crate) fn seam_verify_dpop(
     plane: &Arc<dyn std::any::Any + Send + Sync>,
     presented: busbar_kernel::oauth_as::seam::DpopPresentation,
