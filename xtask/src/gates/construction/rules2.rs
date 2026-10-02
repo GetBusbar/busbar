@@ -535,8 +535,20 @@ pub fn lean_core(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
 
     // A SITE-LEVEL review, not a file-level one: a busbar-kernel file this size is otherwise-neutral
     // and a directory-wide excuse would hide a genuinely new dialect word landing anywhere else in
-    // it. Each entry is `path:line`, exact, so reviewing a site does not excuse its neighbours.
-    let known_sites = c.list_of("known_sites");
+    // it. Each entry is `<path> :: <literal text>` (ARCHITECT 2026-10-02, STANDING-REDS lean-core
+    // option 2): the reviewed STRING in the reviewed FILE, so the review follows its code when lines
+    // move above it, and a different literal in the same file is still unreviewed. A `path:line`
+    // entry went stale on every edit above it, and five reviewed literals turned this row red that
+    // way. An entry that matches no literal is reported, so the list cannot carry a dead waiver.
+    let mut known: BTreeMap<String, bool> = BTreeMap::new();
+    for entry in c.list_of("known_sites") {
+        if entry.split_once(LEAN_CORE_SEP).is_none() {
+            return Err(format!(
+                "lean-core known_sites entry `{entry}` is not `<path>{LEAN_CORE_SEP}<literal text>`"
+            ));
+        }
+        known.insert(entry, false);
+    }
 
     let (mut offenders, mut tracked) = (Vec::new(), Vec::new());
     for crate_name in &crates {
@@ -553,25 +565,30 @@ pub fn lean_core(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
                     for (_, (bs, be)) in tree.lexer.string_literals(&l.code) {
                         let content = &l.code.as_bytes()[bs..be];
                         if word_rx.is_match(content) {
-                            out.push(format!(
-                                "{}\u{1}\"{}\" at {rel}:{}",
-                                l.no,
-                                String::from_utf8_lossy(content),
-                                l.no
-                            ));
+                            let text = String::from_utf8_lossy(content);
+                            out.push(format!("{text}\u{1}\"{text}\" at {rel}:{}", l.no));
                         }
                     }
                 }
                 out
             });
             for h in hits.iter() {
-                let (no, where_) = h.split_once('\u{1}').unwrap_or(("", h));
-                if known_sites.iter().any(|s| s == &format!("{rel}:{no}")) {
-                    tracked.push(where_.to_string());
-                } else {
-                    offenders.push(where_.to_string());
+                let (text, where_) = h.split_once('\u{1}').unwrap_or(("", h));
+                match known.get_mut(&lean_core_key(&rel, text)) {
+                    Some(seen) => {
+                        *seen = true;
+                        tracked.push(where_.to_string());
+                    }
+                    None => offenders.push(where_.to_string()),
                 }
             }
+        }
+    }
+    for (entry, seen) in &known {
+        if !seen {
+            offenders.push(format!(
+                "stale known_sites entry `{entry}`: no such literal in that file; strike it"
+            ));
         }
     }
     let current = offenders.len() as i64;
@@ -598,6 +615,23 @@ pub fn lean_core(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
         max_hits,
         offenders,
     )])
+}
+
+/// The separator of a `lean-core` `known_sites` entry: `<path> :: <literal text>`.
+pub const LEAN_CORE_SEP: &str = " :: ";
+
+/// The `known_sites` entry that reviews `text` (a string literal's body, as written) in `rel`.
+pub fn lean_core_key(rel: &str, text: &str) -> String {
+    format!("{rel}{LEAN_CORE_SEP}{text}")
+}
+
+/// The `known_sites` entry that would review one `lean-core` offender (`"<text>" at <rel>:<line>`),
+/// or `None` for an offender that is not a literal (a stale entry).
+pub fn lean_core_key_of(offender: &str) -> Option<String> {
+    let body = offender.strip_prefix('"')?;
+    let (text, loc) = body.rsplit_once("\" at ")?;
+    let (rel, _line) = loc.rsplit_once(':')?;
+    Some(lean_core_key(rel, text))
 }
 
 // ── 18. no-default-bodies ────────────────────────────────────────────────────────────────────────
