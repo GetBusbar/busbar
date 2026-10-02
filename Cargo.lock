@@ -523,7 +523,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plugin-loader",
- "busbar-transport-http-plugin",
  "busbar-transport-tcp-plugin",
  "crc32fast",
  "dimpl",
@@ -999,15 +998,6 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tower",
-]
-
-[[package]]
-name = "busbar-transport-http-plugin"
-version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=17cfd311eb8f72340dc323f9947f0055a8b537bd#17cfd311eb8f72340dc323f9947f0055a8b537bd"
-dependencies = [
- "busbar-contract",
- "busbar-transport-http",
 ]
 
 [[package]]
