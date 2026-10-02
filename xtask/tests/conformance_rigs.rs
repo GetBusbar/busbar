@@ -13,6 +13,9 @@ use xtask::conformance_record::{
     provenance_commit, rig_for, tests_passed, CaseResult, H2Run, JevRun, OidfRun, SlsaRun, Status,
     TlsRun, NEGATIVE_PAIRS, OIDF_SUITES, REPORTED_UNITS,
 };
+use xtask::conformance_record::{
+    oidf_plan_config, oidf_subject_config, OidfClient, OIDF_RESOURCE_PATH,
+};
 
 fn registry_ids() -> Vec<String> {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -505,4 +508,69 @@ fn base64url_is_rfc4648_section_5_unpadded() {
     assert_eq!(b64url(b"foo"), "Zm9v");
     assert_eq!(b64url(b"foob"), "Zm9vYg");
     assert_eq!(b64url(&[0xfb, 0xff]), "-_8");
+}
+
+// ── oidf subject and plan (ARCHITECT FAPI2 rulings 2026-10-02) ───────────────────────────────
+
+fn oidf_clients() -> Vec<OidfClient> {
+    (1..=2)
+        .map(|n| {
+            let (private, public) = es256_jwk(&format!("k{n}")).unwrap();
+            OidfClient::new(n, "https://localhost.emobix.co.uk:8443/test/a/x/callback", private, public)
+        })
+        .collect()
+}
+
+/// The subject runs the FAPI 2.0 posture, provisions the plan's two clients by config with their
+/// PUBLIC keys only (client2 on the query-carrying redirect URI the happy flow's second leg sends),
+/// and puts its token-requiring resource behind an IdP that trusts this AS's JWKS.
+#[test]
+fn the_oidf_subject_is_the_fapi2_posture_with_static_clients() {
+    let clients = oidf_clients();
+    let cfg = oidf_subject_config("https://h:1", 1, "BASE\n", "/c.pem", "/k.pem", "PEM", &clients);
+    let doc: serde_json::Value =
+        serde_yaml::from_str(&cfg.replacen("BASE\n", "", 1)).expect("the subject config is YAML");
+    assert_eq!(doc["oauth_as"]["fapi2"], serde_json::json!(true));
+    let declared = doc["oauth_as"]["clients"].as_array().expect("clients");
+    assert_eq!(declared.len(), 2);
+    for (c, d) in clients.iter().zip(declared) {
+        assert_eq!(d["client_id"], serde_json::json!(c.id));
+        assert!(d["jwks"]["keys"][0].get("d").is_none(), "public halves only: {d}");
+    }
+    assert!(declared[1]["redirect_uris"][0]
+        .as_str()
+        .unwrap()
+        .ends_with("?dummy1=lorem&dummy2=ipsum"));
+    assert_eq!(doc["auth"]["chain"], serde_json::json!(["fapi-as"]));
+    assert_eq!(doc["auth"]["admin_auth"], serde_json::json!([]));
+    assert_eq!(doc["identity-providers"]["fapi-as"]["module"], "oidc");
+    assert_eq!(
+        doc["identity-providers"]["fapi-as"]["settings"]["jwks_url"],
+        "https://127.0.0.1:1/jwks"
+    );
+}
+
+/// The plan config: the two static clients with their PRIVATE keys, the token-requiring resource,
+/// browser tasks that click by id and fill the error-page placeholder, and the two per-module
+/// overrides (deny for user-rejects; approve only on the repeat showing for the reused request_uri).
+#[test]
+fn the_oidf_plan_config_drives_the_consent_screen_by_id() {
+    let clients = oidf_clients();
+    let plan = oidf_plan_config("https://h:1", "busbar test", &clients);
+    assert_eq!(plan["client"]["client_id"], serde_json::json!(clients[0].id));
+    assert!(plan["client2"]["jwks"]["keys"][0].get("d").is_some());
+    assert_eq!(
+        plan["resource"]["resourceUrl"],
+        serde_json::json!(format!("https://h:1{OIDF_RESOURCE_PATH}"))
+    );
+    let text = plan.to_string();
+    assert!(text.contains("Authorization error") && text.contains("update-image-placeholder"));
+    assert!(text.contains(r#"["click","id","approve"]"#), "{text}");
+    let over = &plan["override"];
+    assert!(over["fapi2-security-profile-final-user-rejects-authentication"]
+        .to_string()
+        .contains(r#"["click","id","deny"]"#));
+    assert!(over["fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds"]
+        .to_string()
+        .contains("revisit"));
 }
