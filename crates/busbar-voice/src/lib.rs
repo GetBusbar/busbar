@@ -208,7 +208,9 @@ pub use busbar_plane_streaming::codec::PLANE_KEY;
 /// registry key is the first, and both are the plane's [`PLANE_HOOKS`] wire formats.
 pub use busbar_plane_streaming::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 
-// A dialect's provider address rules (the streaming plane's), read by the mount's provider dial.
+// A dialect's provider address rules (the streaming plane's), read by the mount's provider dial
+// (runtime-only, as the mount is).
+#[cfg(feature = "runtime")]
 use busbar_plane_streaming::provider as plane_provider;
 
 // A live session's durable row (the streaming plane's shape), bound by the runtime's session scope.
