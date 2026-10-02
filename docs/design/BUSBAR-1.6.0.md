@@ -2252,7 +2252,7 @@ are IN this file — nothing outside it does.
 
 | 75 | **Channel-2 (plugin→OS/RAM) residual is ACCEPTED because trust is first-party-only by default; drop-in hijack is impossible without an explicit admin opt-in. OWNER-LOCKED 2026-09-20 (risk-acceptance rationale for #55/#40/#70).** The capability model (Pass/Grant #72–#74) does NOT sandbox a plugin from the OS/process RAM — a native cdylib that ignores the ABI could read secrets/the MAC key. That hole is UNREACHABLE by an outside attacker: default trust is signed + FIRST-PARTY-ONLY (loader refuses unsigned/non-allowlisted, #70); running a 3rd-party/untrusted plugin requires a DELIBERATE admin opt-in (`allow_third_party`/`allow_unsigned` + publisher allowlist). So "drop a hostile .so in and hijack" cannot happen by default. RESIDUAL (named, accepted): supply-chain / signing-key compromise of an explicitly-trusted publisher — signing proves origin, not good behavior. A second named residual, data-plane (owner residual-risk register, on or before 2026-09-04): any token-exchange principal mints `user:*` template instances without a second approver, unbounded when `max_auto_provisioned_groups = 0` (the default) — possibly of uncapped leaves, stated as such. This is the standard native-plugin trust model (nginx/Postgres/kernel modules); posture B (WASM/OS sandbox, #55) would further contain it and is not part of 1.6.0 (owner-tabled), and is not a cut blocker. | default posture first-party-only (loader refuses untrusted); 3rd-party requires admin opt-in; channel-2 residual documented + accepted; posture B tabled |
 
-| 76 | **Lossless carry / zero-waiver is the product's core differentiator. OWNER LAW (genesis, `4f245182`).** busbar carries EVERY field 100% losslessly across protocols — "we don't leave things on the floor" is what we sell. Implement all and translate all where possible; an un-looked-at field is a MAJOR violation, not an acceptable gap. Cross-protocol no-equivalent = drop + warn + covered by a test; wrong-typed input = a native ingress error envelope (never a silent coercion). Waivers are very minimal — each a recorded, tested exception, never a silent drop. Owner: *"We sell this product as being able to carry every field 100% losslessly … 307 fields un looked at is major violation"*; *"implement all and translate all where possible, thats literally the product"*; *"IR completion is key. we don't leave things on floor, its our differentiator."* Client headers (owner 2026-10-02, supersedes the 2026-09-04 allow-list): busbar is invisible to upstreams except what it governs — every client header passes on a same-dialect attempt except hop-by-hop, Host, Content-Length, Accept-Encoding (governed: the usage tap reads plain bytes) and busbar's own control headers, and the dialect's DECLARED credential and tenant headers are set from config; upstream response headers are relayed back on the same terms; across dialects a header rides only where it translates (see THE LLM DIALECT FIDELITY RULE). | IR/field-coverage: every source field mapped-or-(dropped+warned+tested); waiver register minimal + tested; wrong-typed ingress → native error envelope |
+| 76 | **Lossless carry / zero-waiver is the product's core differentiator. OWNER LAW (genesis, `4f245182`).** busbar carries EVERY field 100% losslessly across protocols — "we don't leave things on the floor" is what we sell. Implement all and translate all where possible; an un-looked-at field is a MAJOR violation, not an acceptable gap. Cross-protocol no-equivalent = drop + warn + covered by a test; wrong-typed input = a native ingress error envelope (never a silent coercion). Waivers are very minimal — each a recorded, tested exception, never a silent drop. Owner: *"We sell this product as being able to carry every field 100% losslessly … 307 fields un looked at is major violation"*; *"implement all and translate all where possible, thats literally the product"*; *"IR completion is key. we don't leave things on floor, its our differentiator."* Client headers (owner 2026-10-02, supersedes the 2026-09-04 allow-list): busbar is invisible to upstreams except what it governs — every client header passes on a same-dialect attempt except hop-by-hop, Host, Content-Length, Accept-Encoding (governed: the usage tap reads plain bytes) and busbar's own control headers, and the dialect's DECLARED credential and tenant headers are set from config; upstream response headers are relayed back on the same terms; across dialects a header rides only where it translates (see THE LLM DIALECT FIDELITY RULE). | same dialect: per-dialect byte-identity proofs (a never-seen member arrives unchanged, RED arm kept); across dialects: `dialect-candidates` unclassified = 0 and `dialect-map-in-lock` green (owner 2026-10-02; `qa/field-coverage.status` retired); every drop = warn + audit row naming the wire path, through the one drop path, tested; wrong-typed ingress → native error envelope |
 | 77 | **Money-model core invariants (complements #42/#43/#44/#62/#66/#71). OWNER-LOCKED (`f9c0fb91`).** (1) **Pricing keys live on their OWN noun, never on a plugin/plane** — money/ledger keyed by `(principal, meter_class[, lane], units, timestamp)`; money types hold NO plugin/plane field, so per-plugin/per-plane pricing is UNREPRESENTABLE (not merely banned). "Different price per plane" = planes DECLARE different meter-class strings (llm `tokens`, mcp `calls`, a2a `hops`, streaming `audio-seconds`) an operator prices — same capability, zero plugin identity. (2) **ONE sealed FACTS line per unit, written ONCE at the END** — never edited; no early accrual, no refunds, no adjusting lines. The plane is the one decider: it reports units (and fee units) as they happen; running reports are checkpoints, never lines; the kernel writes what it is told and adds no floor (THE DESIGN §7). (3) **Price is NEVER stored — money is a read-time conversion** (rate rows only ever ADDED; retroactive repricing is free, dated view #dated-card/S0). (4) **Classes are STRINGS declared by the plane** (data); a flat fee = the `request` class (#44). (5) **Unpriced class = BOOT REFUSAL** when billing is on; free is an EXPLICIT zero row, never silent (#42). One scoped exception (owner, 2026-09-27): an absent reserved token tier on a rate-card entry prices at 0, as 1.5.5 read it; classes under `units:` still refuse. (6) **Budgets** enforced over any operator window ($/min,$/hr,$/week) per key/group via in-memory holds released when the line is written, hydrated from store on restart; `concurrent` stays a limit, not a budget. `admission: exact` (default) or `estimate` — one check at admit (THE DESIGN §7). (7) **`on_exhaustion` = finish-unit (default) | cut-stream** — a cut is NOT a refusal (#62): it settles a closed Abort arm carrying class+cap+delivered-qty, costs one row. That is the ledger. The client is told: where the protocol has a place to say so, a cut ends the stream with an error frame naming budget exhaustion, never a silent end (owner: *"A cut IS a reason the client is told"*; THE DESIGN §7). Defaults `exact` + `finish-unit`; a non-streaming unit overshoots by at most one request. (8) **Integer-only math, NO floating point on any money path** (the 1.6.0 model is UNITLESS — no currency/minor-units, #66); new per-N-units terms use banker's rounding (#44); the legacy 1.5.5 path reproduces its existing rounding byte-identically. (9) **8-verb admin surface** — the dispute/overdraft/adjustment verbs (`adjust, resolve_slice, resolve_dispute, set_dispute_max_age`, overdraft-ceiling) are REMOVED. The admin API is dumb (owner, 2026-09-08): one admin tier; roles, who may call what and whether a change wants a second pair of eyes live in the calling application. `set_operator_key`, `set_escrow`, `set_dual_control`, `approve` and `export_keyset` do not exist, and no verb carries dual control, escrow or operator signatures. Each verb is a plain scoped verb authorized by the per-verb allow-list on the admin token (`verbs: [ … ]` or `verbs: "*"`; `read-only` and `full` stay the 1.5.5 shorthands); the replay cache keyed `(actor, verb, idempotency-key)` is a mechanism, never a control. A kernel verb binds over HTTP as `<kebab-case-verb>` under the admin prefix — POST for every mutating verb, GET for `verify` and `plane_facts` (CG-56, 2026-09-05). (10) **"No flags"** — a single group-commit durability mode. | money types carry no plugin/plane field; one sealed facts-line per unit written at end; price never stored (read-time view); unpriced⇒boot-refusal (billing on); integer-only + banker's; 8-verb admin surface (no dispute/overdraft verbs); oracle byte-green on the money path |
 
 | 78 | **CI cost model = job-tier-by-cadence + $100 hard cap; mutation testing is optional. OWNER-LOCKED 2026-09-20.** Runner spend is priority-1 (the whole point of the autoscaler). Latchkey bills PER JOB-MINUTE, rounded up per job; idle/warm/parked runners are FREE (LK's always-on warm-small baseline is theirs, not billed) — so "0 jobs = $0" is already true; the lever is job-minutes, not infra. **Hard cap $100/period** total infra; **$50 soft-alarm, $80 review** → on breach find the top workflow and cut its trigger/right-size. Cost driver was measured: gate-mutants = 69% of runner-minutes, 89% of minutes on `latchkey-xlarge`. **Job tiers by cadence (a job runs where it belongs, once):** (a) **push** (integration/**, dev, qa + PR) = `ci` only — fmt/clippy/build/test + the required gate battery (structure-lint, construction-gate, ship-ready, shadow-oracle) = fast dev feedback; (b) **qa gate** (push qa) = conformance (a2a/mcp/voice), codeql, security, release-stage — the exhaustive "may this ship" set, run ONCE per promotion; (c) **main** = release/verify only, NO test-gates (qa→main is same-SHA fast-forward, so qa's checks ride the commit — re-testing on main is duplicate spend); (d) **manual** = gate-mutants (workflow_dispatch only); (e) **scheduled/reusable** = monthly-refresh/oracle-store-cells/security-weekly, and workflow_call reusables. **Mutation testing (gate-mutants) is TEST-ENHANCING, not release-breaking** — it measures whether the test suite catches injected bugs; it finds no product bugs and hardens no release. So it is MANUAL-ONLY and 100% OPTIONAL: REMOVED from qa+main branch protection (`scripts/ci-branch-protection.sh`) and the `ship-ready` gate no longer owes/reads a mutation verdict (`xtask/src/gates/ship_ready.rs`). **Nothing does the same job twice** — `keep-proof` was ~75% a re-run of `ci` on the same commit, so it is DISPATCH-ONLY now (its one unique capability, the hand-back-SCOPED shadow-oracle, stays on demand). The turnstile RE-RUNS the battery itself (never reads CI statuses), so it is the promotion arbiter and CI is per-push feedback — that macro overlap is by design. Workflow-file RENAMES to a cadence prefix (`push-`/`qa-`/`manual-`/`sched-`/`reusable-`) ride the W6 atomic rename wave (#34), NOT piecemeal now (name/path renames break required-check names, `workflow_run` links, cosign identity, and cross-repo `uses:`). **Where gate logic lives (owner, 2026-09-06):** in Rust, in `xtask`, as `cargo xtask gate <name>`; a workflow step calls one command per gate and holds no gate logic; no new shell or Python script is added to the repo, and the existing ones convert (#80 takes the oracle's Python to zero). | LK bill ≤ $100/period (soft-alarm $50); ci=push-only, conformance/codeql/security=qa-only, no test-gate on main, gate-mutants=dispatch-only + not a required check + not owed by ship-ready; keep-proof=dispatch-only; cost-watch checks the LK Cost-Analysis each period |
@@ -3084,16 +3084,15 @@ autoscaler" confusion.
 
 | Branch | Rule | CI |
 |---|---|---|
-| `predev` | **permanent WIP.** Every in-flight session lands here and forks from here. | No push CI. predev MUST stay green: the LANDER's full proof runs before every push, and a train that would leave any gate or selftest red does not land. |
+| `predev` | **permanent WIP.** Every in-flight session lands here and forks from here. | Pull requests only; `promote.yml` `preflight` + `hop` are the required checks and the verdict is "no worse than base" (see "How work lands" below). |
 | `dev` | **release-train-write-only.** "Next version's WIP, nowhere near done." | full `ci.yml` |
 | `qa` | promotion target. **The one release build happens here** — the PGO build that ships, tested for real. | full CI + the real-media matrix |
 | `main` | **a push here cuts a release** — tag, GitHub Release, container promotion, `latest` moved. Irreversible. **`main` never compiles:** it tags and publishes the artifacts, by digest, that `qa` built and verified. | release orchestration |
 
-**Never push `dev`, `qa` or `main` by hand.** `--force-with-lease` is permitted only on `predev`
-(#61), which carries no protection rule and no ruleset. **Branch protection is on `qa` only** —
+**Never push `dev`, `qa` or `main` by hand.** `predev` and `dev` take changes by pull request only
+(ruleset; OWNER R3 2026-10-01); `--force-with-lease` is permitted only on your own `lane-*` branch. **Branch protection is on `qa` only** —
 required CI and train-only pushes (OWNER ruling 2026-09-28); the ARCHITECT drafts the settings and
-the owner applies them. Only the LANDER commits to `predev` and pushes it (`1.6.0-TODO.md`, THE RULES
-2.6).
+the owner applies them. Nobody pushes `predev`: lanes land by PR (see "How work lands" below).
 
 **The qa build is the bytes that ship** (owner, 2026-09-05): *"when qa is green it's prod ready and
 we just tag it and move it to main and release, but the qa build is what we release"* and *"we
@@ -3240,6 +3239,92 @@ job-minutes. (The comment at `ci.yml:23` claiming `branches: ['**']` is stale; t
 is narrow.) Deleting `pr/*` auto-closes those PRs, which also fires nothing, because `closed` is not
 in the default `pull_request` types.
 
+
+## How work lands: the PR flow and the rules every contributor follows
+
+These are the binding process rules, moved here from the laptop-side `agent-rules.md` (lane R7,
+2026-10-01). Where a line in this Part above disagrees (the LANDER pushing `predev`, "no push CI"),
+this section wins. `CONTRIBUTING.md` points here.
+
+**The PR flow** (ARCHITECT 2026-10-01T23:54Z, pilot #134 admitted; OWNER R3 ruling 2026-10-01:
+"require `promote` (PR-only, ff) on predev and dev"; OWNER 2026-10-01: predev and the `lane-*`
+branches live on GitHub so CI runs the pipeline).
+
+1. One branch per lane, `lane-<name>`, cut from `origin/predev`. A branch that depends on another
+   unmerged lane says so in its PR body.
+2. Changes reach `predev` and `dev` **only by pull request**. The ruleset on both requires the two
+   jobs of `.github/workflows/promote.yml`, `preflight` and `hop`; no direct push, no force-push, no
+   deletion. `dev` moves only through the promote engine.
+3. The promote run on the PR is the proof of record. Its verdict is "no worse than base": a PR may
+   not add a red. A local Latchkey run is for iteration only.
+4. A `$` (money-touching) change is its own PR, never bundled with anything else.
+5. On merge the branch is deleted (OWNER 2026-10-01, BRANCH LIFETIME: "as soon as merged into
+   predev get rid of the branch").
+
+**Ship and stop** (ARCHITECT 2026-10-02, supersedes every polling instruction). When a slice is
+ready, run one command from the lane's worktree:
+`cargo xtask ship "<PR title>" [--body <file>]`. It refuses any branch that is not `lane-*`,
+merges `origin/predev` in, runs the local pre-flight, commits what the pre-flight changed (tracked
+files only), pushes, opens or reuses the PR into `predev` and turns on auto-merge. Then STOP: no
+polling of CI, PRs or Latchkey, no sleep loops. A red or conflicted PR comes back to the owning
+lane as a new task; fix it, ship again, stop again.
+
+**Never bless a golden or a ratchet.** A red is fixed forward with a root cause; nothing is waived
+and nothing is blessed (OWNER 2026-10-01, PREDEV IS THE CONVERGENCE BRANCH). Customer-visible
+bytes stay 1.5.5's. A golden cell that must change goes to the owner as one batch, each cell with
+its bytes and its diff against 1.5.5; lanes record and draft, the owner signs (OWNER 2026-10-02,
+§9.2 OWNER ACTS).
+
+**The 1.5.5 golden is read-only.** `golden/1.5.5` is the recording of the PUBLISHED 1.5.5 (OWNER
+Q108, 2026-10-02: comparisons are against the published 1.5.5 only). No lane re-records,
+regenerates or edits it; the only writes are the owner-approved batch above and a harness-stamp
+re-record proven byte-identical (ARCHITECT 2026-10-02, ORACLE-COMMIT).
+
+**Line count is not a CI check** (OWNER 2026-10-02, SIZE). No PR carries a ceiling re-arm and no
+gate fails on lines. **Size is judged by hand at PERF** (`1.6.0-TODO.md` PERF-1, OWNER 2026-10-01:
+"messy code = slow code"; "dig in HARD at perf time"): `tools/loc.py` and `tools/dup.py` on the
+frozen DEV-GREEN sha. Until then the SIZE PRINCIPLE (OWNER 2026-10-01) still binds the author: code
+moved into a plugin shrinks and grows only by the ABI glue, the source is deleted in the same lane,
+and no wrappers, mirror types, From/Into ladders or per-dialect copies are added.
+
+**Git.**
+- `git -C <path>` only, never `cd <path> && git`.
+- No `git stash`: the stash list is shared by every worktree of a repo, so a pop in one lane
+  applies another lane's work (ARCHITECT 2026-10-02). Set work aside as a WIP commit on your own
+  branch or `git diff > file`.
+- No force-push, except `--force-with-lease` on your OWN `lane-*` branch after a rebase.
+- No AI attribution and no `Co-Authored-By` trailers, in commits or PR bodies (OWNER).
+- Never print a secret, a token or a process's argv; kill processes by PID, never by pattern.
+
+**No builds on the laptop** (OWNER, HARD RULE 0). The laptop is for development only. Locally a
+contributor runs the pre-flight and nothing else: `cargo fmt --all`, `cargo metadata
+--format-version 1` (refreshes a stale `Cargo.lock` without compiling) and `cargo xtask gate
+abi-header --write`. Every build, test, clippy, gate and oracle run happens in CI or on Latchkey.
+
+**Quality rules that still bind every PR.**
+- Red-before-green: every behaviour change ships a test that fails without it.
+- Tests live in separate files; no inline `#[cfg(test)] mod tests { … }` bodies in production
+  files (OWNER 2026-10-01).
+- One home per fact, and the same rule in every dialect or kind is data walked once, not code per
+  dialect (OWNER 2026-10-01).
+- Dependencies (OWNER 2026-09-30, "keep an eye on bloat"): a PR that adds or changes a third-party
+  dependency states the `cargo tree` delta in its body; one protocol = one library, one crypto
+  backend = `ring`; no C dependency without ARCHITECT approval.
+- A seam question the sources do not answer is never designed around: open a `needs-owner` issue
+  on `GetBusbar/busbar` with the question and a proposed option. Owner rulings are recorded as
+  comments on the pinned "Rulings log" issue, and the binding ones are folded into this spec.
+
+**Product hard rules carried from the same rule set** (each OWNER 2026-10-02):
+- busbar does not act on the data it carries. Request in, response out, in every plane; content is
+  read only to translate dialects and to meter. A tool call is relayed to the caller, never executed.
+- busbar is invisible to upstreams. On a same-dialect route every client header and body field
+  passes through unchanged, except what busbar governs: credential headers and tenant selectors
+  (declared as dialect data), the mapped model, hook rewrites, and hop-by-hop headers plus
+  Host/Content-Length.
+
+**Retired with the laptop pipeline** (no longer rules): `handin.queue` and the CONVERGER / MERGE
+STEWARD, the LANDER and its trains, the interim "paste an `lk-cached.sh` proof in the PR body" rule
+(retired when the hop builds and tests, #181), the STANDING CEILING RULE and every ceiling re-arm.
 
 ---
 
@@ -5141,6 +5226,43 @@ live at `/specification/2026-07-28`). Authorization: `/specification/<rev>/basic
 | AWS Bedrock InvokeModel / InvokeModelWithResponseStream (older, model-native payloads) | HTTP POST (SigV4) + event-stream | client | still current, some model families still require raw InvokeModel shape | **no evidence found** — only Converse dialect present | model-specific raw-payload access if a customer needs it | S (if needed) | http (event-stream framing) |
 | Cohere v2 (not requested, found anyway) | HTTP POST + SSE | client | current | **yes** — `codec/cohere/` (bonus dialect) | — | — | http + SSE |
 | OpenAI Realtime / Gemini Live | WebSocket (see §4 — these are **not** LLM-plane dialects) | — | — | handled in streaming plane, not here | — | — | — |
+
+#### How the LLM plane translates: one map file per dialect, one drop path (owner 2026-10-02, THE LLM DIALECT FIDELITY RULE)
+Each attempt is a RELAY (same dialect: the client's bytes, governed byte splices only, the reader as a
+read-only tap; Part 3 #5) or a TRANSLATE (different dialects: reader -> IR -> writer). A TRANSLATE is
+driven by data:
+- **Stage-1 map files.** Each dialect has ONE hand-written map file `crates/busbar-plane-llm/dialects/<d>.toml`
+  mapping its wire paths, in all three directions (request, response, stream) and at any depth
+  (notation A: `messages[].content[].cache_control`), to the shared slot vocabulary (the existing slot
+  registry; no second concept list). Value codecs are declarative (rename, scale, clamp, cap, enum table).
+  Structural grammar (block grammar, stream event grammar, tool-call encoding) stays in that dialect's
+  reader/writer code. `cargo xtask dialect compile` generates the dialect's tables (`codec/<d>/map.gen.rs`);
+  the `dialect-map` gate refuses a stale table. A map file never includes another dialect's rows, and a
+  dialect module never names a sibling dialect: what two dialects share is a mechanism in a neutral module
+  (`tests/dialect_self_contained.rs` holds this).
+- **A provider gains a feature another dialect maps:** one line in that dialect's map file, then the
+  compile. Every pair that maps the slot now translates it both ways, with no code change. A slot no dialect
+  has yet is added once to the registry.
+- **The `dialect-candidates` gate.** A candidate is a path in dialect B's wire lock whose leaf matches (same
+  leaf name or a declared alias) a path dialect A maps in the same direction, and that B does not map. Every
+  candidate is mapped or marked `no-equivalent = "<reason>"` in B's map file: unclassified candidates = 0,
+  hard; a mark that classifies nothing is stale and red. A provider spec re-pin that adds such a path turns
+  the gate red, naming it. The `dialect-map-in-lock` gate holds every mapped or marked path to its dialect's
+  generated wire lock (typo or spec drift = red). `qa/field-coverage.status` and the pinned-unclassified set
+  are retired.
+- **The translation matrix.** `docs/llm-translation-matrix.md` (slot x dialect, plus mapped paths per dialect
+  and direction) is generated from the map files by the same compile: the customer-facing list of what
+  translates.
+- **One drop path.** Whatever a TRANSLATE attempt cannot carry, in either direction and from every dialect,
+  goes through ONE function (`codec/drops.rs`): a WARN naming the wire path (computed at runtime by walking
+  the input against what the dialect declares: its map file, the members its reader parks, its block
+  grammar), once per path per attempt, and an audit row per path (`egress.control_unrepresentable`,
+  `<path> on <dialect>`, degraded). Nothing is substituted for a dropped member (no empty text block in place
+  of an unknown one), nothing is dropped silently, and a clamp or cap always warns. Wrong-typed input to a
+  MAPPED field stays the dialect's native error envelope (#76). A RELAY drops nothing. Both hosts, the engine's
+  exchange path and the plane's own `impl Plane`, take the same path (F7).
+- **Same-dialect proof.** Per dialect, request, buffered answer and stream: a member busbar has never heard of
+  arrives at the far end byte-identical, with a RED arm that plants a reserialize and watches it fail.
 
 ---
 

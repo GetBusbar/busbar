@@ -3,7 +3,7 @@
 
 //! FIELD-COVERAGE CARRY INSTRUMENTS for the `responses` (OpenAI Responses API) dialect.
 //!
-//! Every test here is named by a `carried <fn>` line in `qa/field-coverage.status`, and each is a
+//! Every test here watches fields of `dialects/openai_responses.toml`, and each is a
 //! genuine WATCHER: it drives a real read→IR→write hop (or a same-protocol byte-identity check, or a
 //! documented drop+warn) and asserts the named field SURVIVES. If a future edit drops or ignores the
 //! field, the corresponding assertion fails. A field with no target equivalent is carried as a

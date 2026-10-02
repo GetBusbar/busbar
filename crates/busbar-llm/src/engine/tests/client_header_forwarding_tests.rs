@@ -345,8 +345,8 @@ async fn translated_route_drops_what_does_not_map() {
     server.shutdown().await;
 }
 
-/// A request that sends no client header leaves busbar's own egress headers standing, and a
-/// same-dialect hop fakes no user-agent.
+/// A request that sends no client header leaves busbar's own egress headers standing: the pinned
+/// anthropic-version and the native client's user-agent (1.5.5's bytes).
 #[tokio::test]
 async fn no_client_header_leaves_egress_unchanged() {
     let (state, server, app) = upstream(
@@ -363,7 +363,10 @@ async fn no_client_header_leaves_egress_unchanged() {
         Some("2023-06-01"),
         "busbar's own pinned anthropic-version stands"
     );
-    assert_eq!(state.get_last_request_header("user-agent"), None);
+    assert_eq!(
+        state.get_last_request_header("user-agent").as_deref(),
+        Some(crate::engine::egress_user_agent("anthropic"))
+    );
     server.shutdown().await;
 }
 
@@ -461,4 +464,116 @@ fn neutral_apply_replaces_then_appends() {
         .map(|v| v.to_str().unwrap())
         .collect();
     assert_eq!(values, vec!["first", "second"]);
+}
+
+// ── THE ANSWER: busbar is invisible on a same-dialect answer too (DIALECT-FIDELITY-DESIGN F2) ──────
+
+/// One request through a lane of `protocol` answering `status` + `headers` + `body`, the caller's
+/// answer head returned.
+async fn answer_head(
+    ingress: &'static str,
+    protocol: &'static str,
+    status: StatusCode,
+    body: serde_json::Value,
+    headers: Vec<(&'static str, &'static str)>,
+) -> HeaderMap {
+    crate::testkit::install_test_seams();
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::ServerErrorWithHeaders {
+        status,
+        body,
+        headers,
+    });
+    let server = MockServer::new(state.clone()).await;
+    let app = TestApp::new()
+        .lane(LaneSpec::new("test-model", protocol, &server.base_url()).provider("zai"))
+        .pool("p", &[(0, 1)])
+        .build();
+    let request = if ingress == "anthropic" {
+        anthropic_body()
+    } else {
+        openai_body()
+    };
+    let resp = forward_with_pool_keyed(
+        &app,
+        vec![crate::engine::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        request,
+        None,
+        None,
+        "p",
+        None,
+        ingress,
+        crate::test_support::CHAT,
+        None,
+        Vec::new(),
+    )
+    .await;
+    let head = resp.headers().clone();
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+    server.shutdown().await;
+    head
+}
+
+const UPSTREAM_ANSWER_HEADERS: &[(&str, &str)] = &[
+    ("x-ratelimit-remaining-tokens", "99"),
+    ("openai-processing-ms", "12"),
+    ("openai-organization", "org-operator"),
+    ("openai-project", "proj-operator"),
+];
+
+/// A same-dialect 2xx answer relays every upstream head field but the ones busbar governs (the
+/// far end's echo of the operator's tenant).
+#[tokio::test]
+async fn a_same_dialect_answer_relays_the_upstream_head() {
+    let head = answer_head(
+        "openai",
+        crate::proto_codec::PROTO_OPENAI,
+        StatusCode::OK,
+        openai_reply(),
+        UPSTREAM_ANSWER_HEADERS.to_vec(),
+    )
+    .await;
+    assert_eq!(head.get("x-ratelimit-remaining-tokens").unwrap(), "99");
+    assert_eq!(head.get("openai-processing-ms").unwrap(), "12");
+    assert!(head.get("openai-organization").is_none());
+    assert!(head.get("openai-project").is_none());
+}
+
+/// A same-dialect error answer relays the upstream head the same way.
+#[tokio::test]
+async fn a_same_dialect_error_relays_the_upstream_head() {
+    let mut headers = UPSTREAM_ANSWER_HEADERS.to_vec();
+    headers.push(("retry-after", "7"));
+    let head = answer_head(
+        "openai",
+        crate::proto_codec::PROTO_OPENAI,
+        StatusCode::BAD_REQUEST,
+        json!({"error": {"message": "bad", "type": "invalid_request_error"}}),
+        headers,
+    )
+    .await;
+    assert_eq!(head.get("x-ratelimit-remaining-tokens").unwrap(), "99");
+    assert_eq!(head.get("retry-after").unwrap(), "7");
+    assert!(head.get("openai-organization").is_none());
+}
+
+/// A translated answer relays no upstream head field: it is busbar's own answer in the caller's
+/// dialect.
+#[tokio::test]
+async fn a_translated_answer_relays_no_upstream_head() {
+    let head = answer_head(
+        "anthropic",
+        crate::proto_codec::PROTO_OPENAI,
+        StatusCode::OK,
+        openai_reply(),
+        UPSTREAM_ANSWER_HEADERS.to_vec(),
+    )
+    .await;
+    assert!(head.get("x-ratelimit-remaining-tokens").is_none());
+    assert!(head.get("openai-processing-ms").is_none());
 }
