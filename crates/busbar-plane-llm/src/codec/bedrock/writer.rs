@@ -919,6 +919,8 @@ impl BedrockWriter {
                                 // decodes). Preserve the actual content instead of collapsing it to
                                 // the constant string `"{}"`: a JSON-string Text-equivalent or a
                                 // structured result that arrives via the IR is re-encoded faithfully.
+                                // A provider-run tool's record has no tool-result content form.
+                                crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
                                 crate::codec::ir::IrBlock::Json(value) => {
                                     // A structured-json tool-result block re-emits as a native
                                     // `{"json": <value>}` block, restoring same-protocol fidelity.
