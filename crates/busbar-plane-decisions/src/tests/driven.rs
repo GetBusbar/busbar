@@ -73,7 +73,7 @@ fn far_end_pieces_are_relayed_unchanged_and_the_count_read_over_the_whole_answer
     assert_eq!(reading.piece(a), &a[..]);
     assert_eq!(reading.piece(b), &b[..]);
     assert_eq!(
-        reading.units(200),
+        reading.units(),
         Some(Units {
             class: 0,
             reported: true,
@@ -86,10 +86,32 @@ fn far_end_pieces_are_relayed_unchanged_and_the_count_read_over_the_whole_answer
 fn an_error_answer_reports_no_units() {
     let mut reading = FarEndReading::new();
     reading.piece(br#"{"error":{"code":"invalid_state"},"usage":{"units":3}}"#);
-    assert_eq!(reading.units(200), None);
+    assert_eq!(reading.units(), None);
+}
+
+/// RED: the count is read as `decode_response` reads it. Success is the absence of an `/error`
+/// member, whatever the status (a 4xx with no `/error` still reports its count, as predev's decode
+/// sets the fact), and a count past `i64::MAX` reports nothing (predev's `i64::try_from` drops it).
+#[test]
+fn the_count_is_read_as_decode_response_reads_it() {
     let mut reading = FarEndReading::new();
     reading.piece(br#"{"usage":{"units":3}}"#);
-    assert_eq!(reading.units(422), None);
+    assert_eq!(reading.units().map(|u| u.amount), Some(3));
+    for (body, amount) in [
+        (
+            format!(r#"{{"usage":{{"units":{}}}}}"#, i64::MAX),
+            Some(i64::MAX as u64),
+        ),
+        (
+            format!(r#"{{"usage":{{"units":{}}}}}"#, i64::MAX as u64 + 1),
+            None,
+        ),
+        (format!(r#"{{"usage":{{"units":{}}}}}"#, u64::MAX), None),
+    ] {
+        let mut reading = FarEndReading::new();
+        reading.piece(body.as_bytes());
+        assert_eq!(reading.units().map(|u| u.amount), amount, "{body}");
+    }
 }
 
 #[test]
@@ -102,12 +124,7 @@ fn a_count_that_is_not_a_whole_number_reports_no_units() {
     ] {
         let mut reading = FarEndReading::new();
         reading.piece(body);
-        assert_eq!(
-            reading.units(200),
-            None,
-            "{}",
-            String::from_utf8_lossy(body)
-        );
+        assert_eq!(reading.units(), None, "{}", String::from_utf8_lossy(body));
     }
 }
 
@@ -115,7 +132,7 @@ fn a_count_that_is_not_a_whole_number_reports_no_units() {
 fn the_units_never_read_state_or_answers() {
     let mut reading = FarEndReading::new();
     reading.piece(br#"{"usage":{"units":7},"state":{"units":999},"answers":{"units":888}}"#);
-    assert_eq!(reading.units(200).map(|u| u.amount), Some(7));
+    assert_eq!(reading.units().map(|u| u.amount), Some(7));
 }
 
 #[test]

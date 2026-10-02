@@ -5,8 +5,8 @@
 # proof-manifest.py -- THE COLLATOR for the Build Proof Dashboard (docs/proof/README.md).
 #
 # It changes NO gate. It is a thin capture layer over apparatus that already runs in CI: it runs (or
-# reads) the neutrality gates, enumerates the golden corpus, parses the field-coverage ledger, and
-# ingests the MCP/A2A conformance JSON reports, then reduces every one to a public-safe verdict object
+# reads) the neutrality gates, enumerates the golden corpus, counts the dialect map files, and ingests
+# the MCP/A2A conformance JSON reports, then reduces every one to a public-safe verdict object
 # and emits docs/proof/<version>.json per the proof-manifest schema.
 #
 # PUBLIC-SAFE BY CONSTRUCTION. The manifest carries verdicts, counts, gate names, test-function names,
@@ -50,6 +50,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -400,86 +401,80 @@ def verdict_composability(root, run_cargo):
 
 
 # ── VERDICT: lossless field-coverage ────────────────────────────────────────────────────────────────
+# #76 coverage (DIALECT-FIDELITY F4): every dialect's ONE map file (crates/busbar-plane-llm/dialects/
+# <d>.toml) maps a wire path or marks it `no-equivalent = "<reason>"`, and `cargo xtask gate
+# dialect-candidates` proves no cross-dialect candidate is left unclassified. The counts come from the
+# map files; the verdict comes from the gate.
 
-DIALECTS = ["anthropic", "openai", "gemini", "cohere", "bedrock", "responses"]
+DIALECT_DIR = "crates/busbar-plane-llm/dialects"
 
 
-def verdict_field_coverage(root):
-    status_path = root / "qa/field-coverage.status"
-    missing_path = root / "qa/field-coverage.missing"
-    carried = 0
-    waived = 0
-    by_dialect = {d: 0 for d in DIALECTS}
+def verdict_field_coverage(root, run_gate=True):
+    mapped = 0
+    by_dialect = {}
     waivers = []
-    if status_path.is_file():
-        for raw in status_path.read_text().splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            mc = re.match(r"^(\S+)\s*=\s*carried\s+(\S+)\s*$", line)
-            mw = re.match(r"^(\S+)\s*=\s*waived\s+(\d{4}-\d{2}-\d{2})\s+(.+)$", line)
-            if mc:
-                carried += 1
-                d = mc.group(1).split("/")[0]
-                if d in by_dialect:
-                    by_dialect[d] += 1
-            elif mw:
-                waived += 1
-                waivers.append({"field": mw.group(1), "date": mw.group(2), "reason": mw.group(3)})
-    missing = 0
-    if missing_path.is_file():
-        missing = sum(
+    for f in sorted((root / DIALECT_DIR).glob("*.toml")):
+        doc = tomllib.loads(f.read_text())
+        meta = doc.get("dialect", {})
+        lock = meta.get("wire", f.stem)
+        rows = sum(
             1
-            for ln in missing_path.read_text().splitlines()
-            if ln.strip() and not ln.strip().startswith("#")
+            for direction in ("request", "response", "stream")
+            for group in meta.get(direction, [])
+            for path in doc.get("rows", {}).get(group, {})
+            if path != "park"
         )
-    total_classified = carried + waived + missing
+        mapped += rows
+        by_dialect[lock] = rows
+        for direction, marks in doc.get("unmapped", {}).items():
+            for path, mark in marks.items():
+                waivers.append({"field": f"{lock}/{direction}/{path}",
+                                "reason": mark.get("no-equivalent", "")})
+    waived = len(waivers)
 
-    # ── THE EVIDENCE FLOOR, THE SAME RULE GOLDEN_MIN APPLIES ABOVE ──────────────────────────────
-    # `carried`, `waived` and `missing` all start at 0 and both reads above are guarded by
-    # `is_file()`, so a ledger that has been renamed, moved or emptied does not fail here — it
-    # simply never contributes a row. `missing == 0` is then VACUOUSLY true and this class
-    # published `"status": "pass"` with `evidence_count: 0` behind the title "Every provider field
-    # is accounted for". That is the identical shape the golden corpus published when its directory
-    # moved (total 0, status pass), and it is the shape a reader is least likely to question,
-    # because the word next to it is `pass`. Zero fields classified is not zero fields missing.
-    ledger_note = None
-    if not status_path.is_file():
-        ledger_status = "unknown"
-        ledger_note = (f"no ledger at qa/field-coverage.status, so NOTHING was classified. "
-                       f"`missing == 0` over an absent ledger accounts for no field at all. Fix: "
-                       f"restore the ledger, or correct the path in this file if it moved.")
-    elif total_classified == 0:
-        ledger_status = "unknown"
-        ledger_note = ("qa/field-coverage.status classified ZERO fields (no carried, waived or "
-                       "missing rows parsed). A 'no fields missing' verdict over an empty ledger "
-                       "compares nothing; it is not evidence that the fields are covered.")
+    # THE EVIDENCE FLOOR: zero rows read is not zero fields missing. An absent or emptied map
+    # directory is UNKNOWN, never a pass over nothing.
+    note = None
+    unclassified = 0
+    if mapped + waived == 0:
+        status = "unknown"
+        note = (f"no rows in {DIALECT_DIR}/*.toml, so NOTHING was classified: a gate green over "
+                f"no map compares nothing. Fix: restore the map files, or correct DIALECT_DIR.")
+    elif not run_gate:
+        status = "unknown"
+        note = "the dialect-candidates gate was not run, so no verdict was measured"
     else:
-        ledger_status = "pass" if missing == 0 else "fail"
+        code, text = run(["cargo", "xtask", "gate", "dialect-candidates"], cwd=root, timeout=600)
+        m = re.search(r"(\d+) unclassified", text)
+        unclassified = int(m.group(1)) if m else 0
+        if code in (124, 127):
+            status = "unknown"
+            note = "cargo xtask gate dialect-candidates could not run (timeout or no cargo)"
+        else:
+            status = "pass" if code == 0 else "fail"
 
     src = {
         "id": "field-coverage",
-        "kind": "ledger",
-        "status": ledger_status,
-        # The evidence this source stands on, named, so mark_sources() can refuse to stamp a pass
-        # onto it when the ledger is not there.
-        "evidence": "qa/field-coverage.status",
-        "evidence_present": status_path.is_file() and total_classified > 0,
-        "note": ledger_note,
-        "carried": carried,
+        "kind": "gate",
+        "status": status,
+        "evidence": "xtask/src/gates/dialect_coverage.rs",
+        "evidence_present": (root / "xtask/src/gates/dialect_coverage.rs").is_file()
+        and mapped + waived > 0,
+        "note": note,
+        "carried": mapped,
         "waived": waived,
-        "missing": missing,
+        "missing": unclassified,
         "by_dialect": by_dialect,
         "waivers": waivers,
-        "drilldown": {"type": "field-ledger", "path": "qa/field-coverage.status"},
+        "drilldown": {"type": "dialect-map", "path": DIALECT_DIR},
     }
     return {
         "class": "field-coverage",
         "title": "Every provider field is accounted for",
-        "status": src["status"],
-        "evidence_count": carried,
-        "evidence_total": total_classified,
-        "unit": "fields carried",
+        "status": status,
+        "evidence_count": mapped,
+        "evidence_total": mapped + waived,
+        "unit": "wire paths mapped",
         "sources": [src],
     }
 
@@ -739,25 +734,23 @@ def selftest(root):
     finally:
         shutil.rmtree(empty_root, ignore_errors=True)
 
-    # 2b. THE SAME FLOOR ON THE FIELD LEDGER. `missing == 0` is vacuously true when no ledger was
-    #     read at all, so an absent or empty qa/field-coverage.status published "Every provider
-    #     field is accounted for: pass" over zero fields. Driven through the real function against
-    #     a root with no ledger in it, and against the real tree as the positive control.
+    # 2b. THE SAME FLOOR ON THE DIALECT MAPS. A gate green over no map file classifies nothing:
+    #     driven through the real function against a root with no map in it, and against the real
+    #     tree (counts only; the gate itself is not run here) as the positive control.
     empty_root = Path(tempfile.mkdtemp(prefix="proof-selftest-"))
     try:
         fc0 = verdict_field_coverage(empty_root)
         ok(fc0["status"] == "unknown" and fc0["evidence_count"] == 0,
-           "an absent field-coverage ledger is UNKNOWN, not a pass over zero fields",
+           "absent dialect maps are UNKNOWN, not a pass over zero fields",
            "got status=%r count=%r" % (fc0["status"], fc0["evidence_count"]))
         ok("classified" in (fc0["sources"][0].get("note") or ""),
            "and it says why, naming that nothing was classified")
     finally:
         shutil.rmtree(empty_root, ignore_errors=True)
-    fc = verdict_field_coverage(root)
-    ok(fc["status"] in ("pass", "fail") and fc["evidence_total"] > 0,
-       "the real ledger still yields a concrete verdict over %d classified field(s)"
-       % fc["evidence_total"],
-       "the floor must refuse an empty ledger, not refuse the ledger")
+    fc = verdict_field_coverage(root, run_gate=False)
+    ok(fc["evidence_total"] > 0 and fc["sources"][0]["waived"] > 0,
+       "the real map files yield %d classified path(s), marks included" % fc["evidence_total"],
+       "the floor must refuse an empty map, not refuse the map")
 
     # 3. Every oracle names a file that is actually there.
     missing = [s["id"] + " -> " + s["evidence"]
@@ -794,7 +787,7 @@ def selftest(root):
     # 4c. And every source this collator actually emits names its evidence, so none of them are
     #     silently unmarkable. Checked over the whole manifest rather than the byte-identity class.
     all_v = [verdict_byte_identity(root, False), verdict_composability(root, False),
-             verdict_field_coverage(root), verdict_conformance(root, None)]
+             verdict_field_coverage(root, run_gate=False), verdict_conformance(root, None)]
     unnamed = [s["id"] for v in all_v for s in v["sources"] if not s.get("evidence")]
     ok(not unnamed, "every source the collator emits names an evidence path",
        "sources with no evidence key: %s" % ", ".join(unnamed))
