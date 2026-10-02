@@ -472,6 +472,20 @@ pub fn wire_and_canonical_path(url_path: &str) -> (String, String) {
     (wire, canonical)
 }
 
+/// Whether busbar governs the request header `name` (compared without case) for ANY dialect.
+///
+/// The union, not the arrival dialect's own row: busbar reads its caller's credential from any of
+/// these carriers whatever the dialect, so a name another dialect declares a credential is never a
+/// header to hand a far end either.
+#[must_use]
+pub fn governed(name: &str) -> bool {
+    DIALECTS.iter().any(|d| {
+        d.governed_headers
+            .iter()
+            .any(|g| name.eq_ignore_ascii_case(g))
+    })
+}
+
 /// A value a head field can carry as text: visible ASCII and the tab.
 fn legal_field_value(v: &[u8]) -> bool {
     v.iter().all(|b| *b == b'\t' || (0x20..0x7f).contains(b))
@@ -479,7 +493,7 @@ fn legal_field_value(v: &[u8]) -> bool {
 
 /// The head fields a native client of `lane`'s dialect sends (its user-agent only when translating),
 /// then, when the caller speaks that dialect, every field the caller sent but the ones busbar
-/// governs ([`crate::dialect::governed`]):
+/// governs ([`governed`]):
 /// busbar is invisible to upstreams (OWNER HARD RULE 2026-10-02). The caller's value of a name
 /// replaces busbar's native default; the per-connection mechanics are the kernel's to drop as it
 /// writes the head. A translated route forwards no caller field: none maps between dialects.
@@ -532,7 +546,7 @@ fn head_fields(
         .iter()
         .filter_map(|(name, value)| {
             let name = std::str::from_utf8(name).ok()?.to_ascii_lowercase();
-            (!crate::dialect::governed(&name)).then(|| (name, value.to_vec()))
+            (!governed(&name)).then(|| (name, value.to_vec()))
         })
         .collect();
     fields.retain(|(own, _)| !forwarded.iter().any(|(name, _)| name == own));

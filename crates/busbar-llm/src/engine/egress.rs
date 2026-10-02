@@ -318,7 +318,7 @@ pub(crate) fn egress_accept(egress_protocol: &str, wants_stream: bool) -> &'stat
 /// The client request headers the dialects GOVERN (their credential headers and tenant selectors,
 /// declared as data in the plane's dialect table): every other client header a same-dialect egress
 /// forwards unchanged, these never (OWNER HARD RULE 2026-10-02, "BUSBAR IS INVISIBLE TO UPSTREAMS").
-pub(crate) use busbar_plane_llm::dialect::governed;
+pub(crate) use crate::engine::xchg::attempt::governed;
 
 /// THE REFERENCE `(protocol × operation)` UPSTREAM-PATH COMPOSITION — relocated from core's inherent
 /// `Op::upstream_path(&Lane, …)` with the engine (money-path Phase 3-4 C): it names the plane's

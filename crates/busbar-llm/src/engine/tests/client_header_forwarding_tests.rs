@@ -6,7 +6,7 @@
 //!
 //! On a same-dialect route every client header and body field passes through unchanged, except what
 //! busbar governs: the dialects' credential headers and tenant selectors (declared as data in
-//! `busbar_plane_llm::dialect`, replaced from busbar's config), and the per-connection mechanics
+//! the plane's dialect table, replaced from busbar's config), and the per-connection mechanics
 //! (hop-by-hop, `host`, `content-length`), which the upstream connection re-derives. A translated
 //! route translates what maps and drops the rest; no header maps. Each test drives a real request
 //! through `forward_with_pool_keyed` and inspects what the `MockServer` upstream received.

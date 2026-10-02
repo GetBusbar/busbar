@@ -66,7 +66,6 @@ use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
 
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
-use super::HeadFields;
 
 /// The bytes one read of the far end takes.
 const READ_BYTES: usize = 16 * 1024;
@@ -320,26 +319,6 @@ impl Drop for Head {
     fn drop(&mut self) {
         self.wipe();
     }
-}
-
-/// Drop the plane's per-connection fields: busbar is invisible to upstreams (OWNER HARD RULE
-/// 2026-10-02), and the mechanics are the connection's own. A hop-by-hop field, one a `connection`
-/// field nominates, `host` and `content-length` never reach the wire; the connection re-derives them
-/// ([`crate::proxy::re_derived`], the one statement of the set). busbar's own namespace
-/// ([`crate::proxy::CONTROL_PREFIX`]) is addressed to busbar and never goes upstream either.
-fn strip_re_derived(fields: &mut HeadFields) {
-    let nominated: Vec<Vec<u8>> = fields
-        .iter()
-        .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
-        .map(|(_, v)| v.clone())
-        .collect();
-    fields.retain(|(n, _)| {
-        !std::str::from_utf8(n).is_ok_and(|n| {
-            crate::proxy::re_derived(n, nominated.iter().map(Vec::as_slice))
-                || n.to_ascii_lowercase()
-                    .starts_with(crate::proxy::CONTROL_PREFIX)
-        })
-    });
 }
 
 /// A far-end piece that ends the attempt without reaching the plane: fail over.
@@ -747,7 +726,8 @@ impl EgressFarEnd<'_> {
     /// Send the attempt: the dispatch record, the auth fields, the connector's open.
     async fn send_attempt(&self, token: &Pass<Route>, mut request: OutboundRequest) -> bool {
         let e = self.egress;
-        strip_re_derived(&mut request.fields);
+        // Busbar is invisible to upstreams; the per-connection mechanics are the connection's own.
+        crate::proxy::strip_re_derived(&mut request.fields);
         let (destination, record) = {
             let w = self.lock();
             let Some(live) = w.live.as_ref() else {
@@ -761,20 +741,13 @@ impl EgressFarEnd<'_> {
         // THE TARGET IS A PATH. Joined onto the operator's base_url, anything else could move the
         // authority (`@evil.test/x` makes `api.host@evil.test`) and carry the member's auth fields
         // to a host nobody configured: refused before the record, the auth call or the dial, and
-        // nothing is recorded against the member.
-        if !request.target.starts_with(b"/") {
+        // nothing is recorded against the member. Then 1. the dispatch record, durable BEFORE the
+        // dial; when it cannot be written nothing was recorded either. Neither has anything to
+        // abandon.
+        if !request.target.starts_with(b"/") || e.journal.dispatched(&record).is_err() {
             let mut w = self.lock();
             if let Some(live) = w.live.as_mut() {
-                live.answered = true; // nothing was dispatched, so nothing to abandon
-            }
-            self.settle(&mut w);
-            return false;
-        }
-        // 1. The dispatch record, durable BEFORE the dial.
-        if e.journal.dispatched(&record).is_err() {
-            let mut w = self.lock();
-            if let Some(live) = w.live.as_mut() {
-                live.answered = true; // nothing to abandon: nothing was recorded
+                live.answered = true;
             }
             self.settle(&mut w);
             return false;

@@ -229,6 +229,24 @@ pub fn collect_client_headers(
         .collect()
 }
 
+/// Drop from the head a plane hands the kernel what [`collect_client_headers`] drops from a client's:
+/// the per-connection mechanics ([`re_derived`], a `connection` field's nominations included) and
+/// busbar's own namespace ([`CONTROL_PREFIX`]). The connection re-derives the mechanics; the rest is
+/// addressed to busbar, never upstream.
+pub fn strip_re_derived(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+    let nominated: Vec<Vec<u8>> = fields
+        .iter()
+        .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
+        .map(|(_, v)| v.clone())
+        .collect();
+    fields.retain(|(n, _)| {
+        !std::str::from_utf8(n).is_ok_and(|n| {
+            re_derived(n, nominated.iter().map(Vec::as_slice))
+                || n.to_ascii_lowercase().starts_with(CONTROL_PREFIX)
+        })
+    });
+}
+
 /// Fold previously-[`collect_client_headers`]ed headers into a freshly built egress header map. The
 /// FIRST value of a name REPLACES whatever busbar put there (the client's own `user-agent`, `accept`
 /// or `content-type` wins over busbar's native default); later values of the same name are

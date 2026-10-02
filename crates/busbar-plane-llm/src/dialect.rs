@@ -177,20 +177,6 @@ pub fn dialect(name: &str) -> Option<&'static Dialect> {
     DIALECTS.iter().find(|d| d.name == name)
 }
 
-/// Whether busbar governs the request header `name` (compared without case) for ANY dialect.
-///
-/// The union, not the arrival dialect's own row: busbar reads its caller's credential from any of
-/// these carriers whatever the dialect, so a name another dialect declares a credential is never a
-/// header to hand a far end either.
-#[must_use]
-pub fn governed(name: &str) -> bool {
-    DIALECTS.iter().any(|d| {
-        d.governed_headers
-            .iter()
-            .any(|g| name.eq_ignore_ascii_case(g))
-    })
-}
-
 /// Whether a dialect refuses a request that names no response ceiling.
 ///
 /// Read off the codec crate's own declaration rather than restated here, so the two cannot drift:
