@@ -157,9 +157,11 @@ fn der_encode(fixed: &[u8; 64]) -> Vec<u8> {
 /// (on `oauth-as` 0.9.3); §9.5 holds them identical, so a future bump that moves them fails here
 /// and is queued as a customer-visible change instead of shipping as a recompile.
 ///
-/// Driven through the plane's real `AuthorizationService` (the same `handle` `routes::forward`
-/// hands every request to, unchanged), built by the boot path's own `AsPlane::build` with an
-/// operator-supplied key, so the key coordinates are known and the whole body can be compared.
+/// Driven through `AsPlane::handle`, the one entry `routes::forward` hands every request to, built
+/// by the boot path's own `AsPlane::build` with an operator-supplied key, so the key coordinates are
+/// known and the whole body can be compared. The PLAIN posture (`fapi2` absent): the FAPI 2.0
+/// building blocks `oauth-as` is compiled with (`par`, `dpop`, `client-assertion`) must not move one
+/// byte of the document a deployment that did not ask for them serves.
 #[tokio::test]
 async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     use base64::Engine as _;
@@ -202,9 +204,9 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     .expect("the plane builds with an operator-supplied key");
 
     let get = |path: String| {
-        let service = plane.service();
+        let plane = &plane;
         async move {
-            let response = service
+            let response = plane
                 .handle(
                     http::Request::get(path)
                         .body(http_body_util::Empty::<bytes::Bytes>::new())

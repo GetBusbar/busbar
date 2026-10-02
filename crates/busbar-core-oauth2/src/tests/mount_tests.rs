@@ -208,6 +208,41 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
     );
 }
 
+/// THE FAPI 2.0 POSTURE ADDS EXACTLY ONE ROUTE, `/par`, and the inventory still equals the mount.
+///
+/// RFC 9126 PAR belongs to the profile and to nothing else, so the plain server serves no `/par`
+/// (the inventory test above, `fapi2` off, would name it as a surplus) and the posture adds that one
+/// path and removes none: every plain endpoint keeps serving under the profile.
+#[test]
+fn the_fapi2_posture_adds_exactly_the_par_endpoint() {
+    busbar_kernel::metrics::init();
+    let without = served_paths(&TestApp::new().build());
+    let plain = served_paths(&TestApp::new().oauth_as(&cfg()).build());
+
+    let mut block = cfg();
+    block.fapi2 = true;
+    let fapi2 = served_paths(&TestApp::new().oauth_as(&block).build());
+
+    let added: std::collections::BTreeSet<String> = fapi2.difference(&without).cloned().collect();
+    let expected: std::collections::BTreeSet<String> =
+        inventory(&AsIdentity::from_cfg(&block).expect("valid"))
+            .into_iter()
+            .collect();
+    assert_eq!(
+        added, expected,
+        "under `fapi2: true` the routes `oauth_as:` adds must still be exactly the inventory"
+    );
+    assert_eq!(
+        fapi2.difference(&plain).cloned().collect::<Vec<_>>(),
+        vec!["/par".to_string()],
+        "the posture adds the RFC 9126 endpoint and nothing else"
+    );
+    assert!(
+        plain.is_subset(&fapi2),
+        "the posture removes no plain endpoint"
+    );
+}
+
 /// The layer where this property actually dies. Nothing can mount a plane that was never built, so
 /// the realistic regression is not a stray `.route()` — it is a default on the config, and the
 /// config is where the block is either present or absent.
