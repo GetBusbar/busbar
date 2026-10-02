@@ -1371,14 +1371,8 @@ pub fn new_stream_translator(
 ) -> Option<Box<dyn StreamTranslator>> {
     if !is_sse {
         // A buffered (non-stream) body. Cross-protocol never reaches here (the forward path buffers
-        // and translates it before building a stream wrapper); same-protocol is a verbatim relay
-        // UNLESS the ingress dialect supplies a translator that completes its own response shape
-        // (Bedrock: the required `metrics.latencyMs` on a Converse body).
-        if ingress == egress {
-            return protocol_for(ingress)?
-                .writer()
-                .same_protocol_buffered_response_translator();
-        }
+        // and translates it before building a stream wrapper); same-protocol is a verbatim relay:
+        // the far end's bytes, untouched (DIALECT FIDELITY, owner 2026-10-02).
         return None;
     }
     let st = if ingress == egress {
