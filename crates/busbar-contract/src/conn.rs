@@ -238,27 +238,30 @@ pub trait Conns: Send + Sync {
 
 /// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
 /// lowered to a plugin). The loader declares every need an instance's signed Statement states: a
-/// need whose target the plugin names at bind, a need whose `target_from` names a config path at
-/// every `open` and `refresh`, with the target that path resolved to in the instance's settings.
-/// The host's need-admission service reads the answers back.
+/// need whose target the plugin names at bind, a need whose `target_from` or `trust_from` names a
+/// config path at every `open` and `refresh`, with what that path resolved to in the instance's
+/// settings. The host's need-admission service reads the answers back.
 pub trait DeclaredConns: Conns {
     /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
     /// states it: the whole need — direction, transport, auth, egress class, target and trust
     /// sources, details. `target` is what the need's `target_from` resolved to in the instance's
     /// settings (`None`: it resolved to nothing, or the need has no `target_from`); a need declared
-    /// with a target dials that target only. Declaring the same need again replaces its record. The
-    /// answer is kept: [`DeclaredConns::declared`] reads it back.
+    /// with a target dials that target only. `trust` is the PEM the need's `trust_from` resolved
+    /// to (`None`: it resolved to nothing, or the need has no `trust_from`): an operator CA the
+    /// host adds on top of the public roots for the need's connections. Declaring the same need
+    /// again replaces its record. The answer is kept: [`DeclaredConns::declared`] reads it back.
     ///
     /// # Errors
     ///
-    /// [`ConnError::Refused`] when the host will not carry the need as declared, and for a need
-    /// whose `target_from` resolved to nothing.
+    /// [`ConnError::Refused`] when the host will not carry the need as declared, for a need whose
+    /// `target_from` or `trust_from` resolved to nothing, and for a `trust` that does not parse.
     fn declare(
         &self,
         owner: InstanceId,
         need: NeedId,
         spec: &ReadNeed,
         target: Option<&str>,
+        trust: Option<&str>,
     ) -> Result<(), ConnError>;
 
     /// What [`DeclaredConns::declare`] answered for `owner`'s `need`; `None` = never declared.

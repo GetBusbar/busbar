@@ -159,6 +159,10 @@ struct DeclaredNeed {
     egress_class: u32,
     /// The target the need's `target_from` resolved to; `None` = the plugin names it per open.
     declared_target: Option<String>,
+    /// The need's own client config, when its `trust_from` named an operator CA: the public roots
+    /// with that CA added on top (spec section 5, the host connector: "an extra trusted root added
+    /// on top of the public roots, as in 1.5.5"); `None` = the connector's default trust.
+    tls: Option<Arc<rustls::ClientConfig>>,
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
@@ -325,7 +329,16 @@ impl Connector {
         transport: &str,
         egress_class: u32,
     ) {
-        self.record(owner, need, transport, egress_class, None);
+        self.record(
+            owner,
+            need,
+            DeclaredNeed {
+                transport: transport.to_owned(),
+                egress_class,
+                declared_target: None,
+                tls: None,
+            },
+        );
     }
 
     /// Record that `owner` declared `need` over `transport` in `egress_class`, its target named by
@@ -340,26 +353,24 @@ impl Connector {
         egress_class: u32,
         declared_target: &str,
     ) {
-        self.record(owner, need, transport, egress_class, Some(declared_target));
-    }
-
-    fn record(
-        &self,
-        owner: InstanceId,
-        need: NeedId,
-        transport: &str,
-        egress_class: u32,
-        declared_target: Option<&str>,
-    ) {
-        self.slab.declare(owner, need);
-        self.over.lock().expect("needs").insert(
-            (owner, need),
+        self.record(
+            owner,
+            need,
             DeclaredNeed {
                 transport: transport.to_owned(),
                 egress_class,
-                declared_target: declared_target.map(str::to_owned),
+                declared_target: Some(declared_target.to_owned()),
+                tls: None,
             },
         );
+    }
+
+    fn record(&self, owner: InstanceId, need: NeedId, declared: DeclaredNeed) {
+        self.slab.declare(owner, need);
+        self.over
+            .lock()
+            .expect("needs")
+            .insert((owner, need), declared);
     }
 
     /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
@@ -629,28 +640,47 @@ impl DeclaredConns for Connector {
         need: NeedId,
         spec: &ReadNeed,
         target: Option<&str>,
+        trust: Option<&str>,
     ) -> Result<(), ConnError> {
         // An outbound need is carried over the transport its claim names, its dials judged in its
         // own egress class, and pinned to the target its config names when it names one (a
         // `target_from` that resolved to nothing is refused, and so is a target carrying a
         // userinfo: a credential never rides a dial target, it travels in the request's own
-        // headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any earlier pin is dropped); an
-        // inbound need is recorded (the listener binds it).
+        // headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any earlier pin is dropped). Its
+        // connections are secured with the operator CA its `trust_from` names added on top of the
+        // public roots (ARCHITECT ruling 2026-10-02): a `trust_from` that resolved to nothing, or
+        // to a PEM that does not parse into a trust anchor, refuses the need here, at declaration.
+        // An inbound need is recorded (the listener binds it).
         let outbound = spec.direction == DIRECTION_OUTBOUND;
-        let unresolved = !spec.target_from.is_empty() && target.is_none();
+        let unresolved = (!spec.target_from.is_empty() && target.is_none())
+            || (!spec.trust_from.is_empty() && trust.is_none());
         let credentialed = target.is_some_and(carries_userinfo);
-        let answer = if outbound && (spec.transport.is_empty() || unresolved || credentialed) {
-            self.over.lock().expect("needs").remove(&(owner, need));
-            Err(ConnError::Refused)
-        } else {
-            match (outbound, target) {
-                (true, Some(t)) => {
-                    self.declare_need_to(owner, need, &spec.transport, spec.egress_class, t);
-                }
-                (true, None) => self.declare_need(owner, need, &spec.transport, spec.egress_class),
-                (false, _) => self.slab.declare(owner, need),
+        let anchored = match trust.filter(|_| outbound) {
+            None => Ok(None),
+            Some(pem) => tls::client::operator_ca_config(pem.as_bytes()).map(|c| Some(Arc::new(c))),
+        };
+        let answer = match anchored {
+            Ok(_) if !outbound => {
+                self.slab.declare(owner, need);
+                Ok(())
             }
-            Ok(())
+            Ok(tls) if !(spec.transport.is_empty() || unresolved || credentialed) => {
+                self.record(
+                    owner,
+                    need,
+                    DeclaredNeed {
+                        transport: spec.transport.clone(),
+                        egress_class: spec.egress_class,
+                        declared_target: target.map(str::to_owned),
+                        tls,
+                    },
+                );
+                Ok(())
+            }
+            _ => {
+                self.over.lock().expect("needs").remove(&(owner, need));
+                Err(ConnError::Refused)
+            }
         };
         self.declared
             .lock()
@@ -694,6 +724,7 @@ impl Conns for Connector {
             transport: scheme,
             egress_class,
             declared_target,
+            tls,
         } = self
             .over
             .lock()
@@ -715,7 +746,7 @@ impl Conns for Connector {
         };
         let dial = Dial {
             target: target.to_owned(),
-            tls: self.tls.clone(),
+            tls: tls.or_else(|| self.tls.clone()),
             alpn,
             open_timeout: if desc.timeout_ms == 0 {
                 DEFAULT_OPEN_TIMEOUT
@@ -910,6 +941,10 @@ impl PollConns for Connector {
 #[cfg(test)]
 #[path = "tests/connector_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/trust_from_tests.rs"]
+mod trust_from_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code, dead_code)]

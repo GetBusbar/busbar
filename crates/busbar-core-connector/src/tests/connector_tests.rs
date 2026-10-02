@@ -329,7 +329,7 @@ fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
         let c = literal_connector();
         let need = config_targeted_need("settings.upstream");
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved)),
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved), None),
             Ok(())
         );
         let open = |target: &str| {
@@ -351,7 +351,7 @@ fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
         c.close(OWNER, id).unwrap();
         let (_moved_listening, moved) = far_end().await;
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&moved)),
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&moved), None),
             Ok(())
         );
         assert_eq!(open(&resolved), Err(ConnError::Refused), "the old pin");
@@ -368,9 +368,9 @@ fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
         let (_listening, resolved) = far_end().await;
         let c = literal_connector();
         let need = config_targeted_need("settings.upstream");
-        let _ = DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved));
+        let _ = DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved), None);
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None),
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None, None),
             Err(ConnError::Refused)
         );
         assert_eq!(
@@ -676,7 +676,7 @@ fn a_declared_target_carrying_a_userinfo_is_refused() {
             format!("user@{resolved}"),
         ] {
             assert_eq!(
-                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed)),
+                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed), None),
                 Err(ConnError::Refused),
                 "{credentialed}"
             );
@@ -701,7 +701,8 @@ fn a_declared_target_carrying_a_userinfo_is_refused() {
                 OWNER,
                 NeedId(0),
                 &need,
-                Some(&format!("http://{resolved}/v1/traces"))
+                Some(&format!("http://{resolved}/v1/traces")),
+                None
             ),
             Ok(())
         );

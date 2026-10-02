@@ -281,8 +281,8 @@ pub(crate) struct Instance {
     /// The instance's identity on the host's connection table.
     instance: InstanceId,
     /// The needs its Statement declares, in Statement order (empty when it was handed no table).
-    /// Each whose `target_from` names a config path is declared at every `open` and `refresh`,
-    /// pinned to what that path resolves to in the settings it is handed.
+    /// Each whose `target_from` or `trust_from` names a config path is declared at every `open` and
+    /// `refresh`, with what those paths resolve to in the settings it is handed.
     needs: Box<[ReadNeed]>,
     pub(crate) kind: KindCode,
     name: String,
@@ -463,10 +463,12 @@ impl Instance {
             .is_ok()
     }
 
-    /// Declare each need whose `target_from` names a config path, pinned to what that path
-    /// resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before the
-    /// plugin sees them. A path that resolves to nothing is declared without a target, which the
-    /// table refuses; a refresh re-declares, so a changed value moves the pin.
+    /// Declare each need whose `target_from` or `trust_from` names a config path, with what that
+    /// path resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before
+    /// the plugin sees them: the target it is pinned to, and the operator CA PEM its connections
+    /// trust on top of the public roots. A path that resolves to nothing is declared without its
+    /// value, which the table refuses; a refresh re-declares, so a changed value moves the pin or
+    /// the trust.
     fn declare_targeted(&self, settings: Blob) {
         let Some((instance, table)) = self.wake.conn.get() else {
             return;
@@ -479,14 +481,14 @@ impl Instance {
         };
         let doc = serde_json::from_slice::<serde_json::Value>(bytes).ok();
         for (i, need) in self.needs.iter().enumerate() {
-            if need.target_from.is_empty() {
+            if !from_settings(need) {
                 continue;
             }
-            let target = doc
-                .as_ref()
-                .and_then(|d| resolve_target(d, &need.target_from));
+            let resolve = |path: &str| doc.as_ref().and_then(|d| resolve_setting(d, path));
+            let target = resolve(&need.target_from);
+            let trust = resolve(&need.trust_from);
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-            let _ = table.declare(*instance, id, need, target.as_deref());
+            let _ = table.declare(*instance, id, need, target.as_deref(), trust.as_deref());
         }
     }
 
@@ -935,15 +937,16 @@ impl<K: Kind> Plugin<K> {
                         .map(|r| r.needs)
                         .ok_or_else(|| LoadError::BadStatement("the needs do not render".into()))?;
                     for (i, need) in needs.iter().enumerate() {
-                        // A need whose target comes from config is declared once its settings
-                        // arrive (`open`, `refresh`); until then an open on it is undeclared.
-                        if !need.target_from.is_empty() {
+                        // A need whose target or trust comes from config is declared once its
+                        // settings arrive (`open`, `refresh`); until then an open on it is
+                        // undeclared.
+                        if from_settings(need) {
                             continue;
                         }
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
                         // The answer is the connection table's to keep; a need the host will not
                         // carry is refused at its open, not at bind.
-                        let _ = table.declare(instance, id, need, None);
+                        let _ = table.declare(instance, id, need, None, None);
                     }
                     declared_needs = needs.into_boxed_slice();
                     let _ = wake.conn.set((instance, Arc::clone(table)));
@@ -1153,9 +1156,16 @@ mod open_reason_plugins;
 #[path = "../tests/open_reason_tests.rs"]
 mod open_reason_tests;
 
-/// What a need's `target_from` names in an instance's settings: `settings.<key>[.<key>...]`, walked
-/// through the settings object to a non-empty string. Anything else resolves to nothing.
-pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option<String> {
+/// Whether a need takes a value from its instance's settings (`target_from` or `trust_from`), so it
+/// is declared at `open` and `refresh` rather than at bind.
+fn from_settings(need: &ReadNeed) -> bool {
+    !need.target_from.is_empty() || !need.trust_from.is_empty()
+}
+
+/// What a need's `target_from` or `trust_from` names in an instance's settings:
+/// `settings.<key>[.<key>...]`, walked through the settings object to a non-empty string. Anything
+/// else resolves to nothing.
+pub(crate) fn resolve_setting(settings: &serde_json::Value, path: &str) -> Option<String> {
     let rest = path.strip_prefix("settings.")?;
     rest.split('.')
         .try_fold(settings, |v, key| v.get(key))

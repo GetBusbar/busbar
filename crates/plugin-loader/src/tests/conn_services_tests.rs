@@ -29,8 +29,9 @@ use crate::dispatch::{in_head, out_head, Adopter, Bind, Frame, NoSink, Plugin, N
 use crate::dispatch_test_plugin as plug;
 use crate::dispatch_tests::TestKind;
 
-/// One declaration as it reached the table: owner, need, the need, the target it resolved to.
-type Declared = (InstanceId, NeedId, ReadNeed, Option<String>);
+/// One declaration as it reached the table: owner, need, the need, the target and the trust it
+/// resolved to.
+type Declared = (InstanceId, NeedId, ReadNeed, Option<String>, Option<String>);
 
 /// A connection table that records what reached it, ownership kept by the shared [`ConnSlab`].
 #[derive(Default)]
@@ -47,12 +48,18 @@ impl DeclaredConns for Recording {
         need: NeedId,
         spec: &ReadNeed,
         target: Option<&str>,
+        trust: Option<&str>,
     ) -> Result<(), ConnError> {
-        self.declared
-            .lock()
-            .unwrap()
-            .push((owner, need, spec.clone(), target.map(str::to_owned)));
-        if !spec.target_from.is_empty() && target.is_none() {
+        self.declared.lock().unwrap().push((
+            owner,
+            need,
+            spec.clone(),
+            target.map(str::to_owned),
+            trust.map(str::to_owned),
+        ));
+        if (!spec.target_from.is_empty() && target.is_none())
+            || (!spec.trust_from.is_empty() && trust.is_none())
+        {
             return Err(ConnError::Refused);
         }
         self.slab.declare(owner, need);
@@ -220,8 +227,8 @@ fn targets(table: &Recording, p: &Plugin<TestKind>) -> Vec<Option<String>> {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(owner, need, _, _)| (*owner, *need) == (p.instance(), NeedId(0)))
-        .map(|(_, _, _, target)| target.clone())
+        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .map(|(_, _, _, target, _)| target.clone())
         .collect()
 }
 
@@ -249,7 +256,7 @@ fn an_instance_with_a_declared_need_is_declared_and_its_establish_reaches_the_ta
     );
     let declared = table.declared.lock().unwrap().clone();
     assert_eq!(declared.len(), 1);
-    let (owner, need, spec, target) = &declared[0];
+    let (owner, need, spec, target, _) = &declared[0];
     assert_eq!((*owner, *need), (p.instance(), NeedId(0)));
     assert_eq!(spec.direction, DIRECTION_OUTBOUND);
     assert_eq!(spec.transport, "sock");
@@ -298,10 +305,54 @@ fn a_refresh_re_declares_a_config_targeted_need_at_its_new_target() {
     );
 }
 
+/// A need whose target the plugin names and whose trust anchors come from `settings.ca`.
+const TRUSTING: [Need; 1] = [Need {
+    target_from: NONE,
+    trust_from: abi_str("settings.ca"),
+    ..NEEDS[0]
+}];
+
+/// RED: a need whose `trust_from` names a config path is not declared at bind; at `open` it is
+/// declared with the PEM that path resolves to in the settings, a `refresh` that changes it
+/// re-declares it with the new PEM, and one where it resolves to nothing declares it without a
+/// trust, for the table to refuse (ARCHITECT ruling 2026-10-02; spec section 5, PB-100's fill).
+#[test]
+fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(TRUSTING)), &table);
+    assert!(
+        table.declared.lock().unwrap().is_empty(),
+        "a need whose trust comes from config waits for its settings"
+    );
+    assert_eq!(open_with(&p, br#"{"ca":"PEM-A"}"#), Outcome::Ready);
+    assert_eq!(refresh_with(&p, br#"{"ca":"PEM-B"}"#), Outcome::Ready);
+    assert_eq!(refresh_with(&p, br#"{"other":"PEM-C"}"#), Outcome::Ready);
+    let declared = table.declared.lock().unwrap().clone();
+    let seen: Vec<(Option<String>, Option<String>)> = declared
+        .iter()
+        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .map(|(_, _, spec, target, trust)| {
+            assert_eq!(
+                spec.trust_from, "settings.ca",
+                "the trust source reaches declare"
+            );
+            (target.clone(), trust.clone())
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            (None, Some("PEM-A".to_owned())),
+            (None, Some("PEM-B".to_owned())),
+            (None, None),
+        ]
+    );
+}
+
 /// `target_from` names `settings.<key>[.<key>...]`, walked to a non-empty string.
 #[test]
 fn a_target_from_path_resolves_only_to_a_non_empty_string_under_settings() {
-    use crate::dispatch::plugin::resolve_target;
+    use crate::dispatch::plugin::resolve_setting;
     let doc = serde_json::json!({
         "upstream": "db:5432",
         "nested": {"url": "h:1"},
@@ -309,11 +360,11 @@ fn a_target_from_path_resolves_only_to_a_non_empty_string_under_settings() {
         "e": "",
     });
     assert_eq!(
-        resolve_target(&doc, "settings.upstream").as_deref(),
+        resolve_setting(&doc, "settings.upstream").as_deref(),
         Some("db:5432")
     );
     assert_eq!(
-        resolve_target(&doc, "settings.nested.url").as_deref(),
+        resolve_setting(&doc, "settings.nested.url").as_deref(),
         Some("h:1")
     );
     for miss in [
@@ -323,7 +374,7 @@ fn a_target_from_path_resolves_only_to_a_non_empty_string_under_settings() {
         "upstream",
         "settings.nested",
     ] {
-        assert_eq!(resolve_target(&doc, miss), None, "{miss}");
+        assert_eq!(resolve_setting(&doc, miss), None, "{miss}");
     }
 }
 
@@ -391,6 +442,7 @@ impl DeclaredConns for Scripted {
         owner: InstanceId,
         need: NeedId,
         _: &ReadNeed,
+        _: Option<&str>,
         _: Option<&str>,
     ) -> Result<(), ConnError> {
         self.slab.declare(owner, need);
