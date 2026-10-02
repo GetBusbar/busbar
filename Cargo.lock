@@ -452,7 +452,7 @@ dependencies = [
 name = "busbar-auth-oauth"
 version = "1.6.0"
 dependencies = [
- "base64 0.23.1",
+ "base64 0.22.1",
  "busbar-contract",
  "busbar-plugin-loader",
  "http",
@@ -508,7 +508,7 @@ dependencies = [
 name = "busbar-auth-webhook-signature"
 version = "1.6.0"
 dependencies = [
- "base64 0.23.1",
+ "base64 0.22.1",
  "busbar-contract",
  "busbar-plugin-loader",
  "ring",
