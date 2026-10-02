@@ -590,17 +590,9 @@ from    = 233
 to      = 236
 because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2026-09-30 (URL-PARSE audit) SEAM puts the one URL and host reader at busbar-contract/src/net.rs (BUSBAR-1.6.0.md, the engine-folds paragraph). The three hits are the web scheme names the reader must spell: net.rs:398 (the http literal of strip_scheme, moved verbatim from busbar-kernel-egress trust::net) and net.rs:518 (the http and ws arms of UrlFamily::of, folded from the two split_ws_url copies). The pair nets down in the same commit: busbar-kernel-egress x transport 56 -> 55 and x plane 16 -> 13 (net -1). Measured by cargo xtask gate kind-isolation --report on predev 8a4b18692: 233 at the base, 236 at the tip."
 
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 29392
-to      = 29397
-because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over predev 29392, after the union drain), merge-steward delegation <= +150 (ARCHITECT 2026-10-01). Predev arms 29392."
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 29392 -> 29397 (train/cg-65) — EXPIRED AND STRUCK: its commit reached the base; struck by GRPC-DOOR Q1 above.
 
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 29392
-to      = 29397
-because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over 29392, after the union drain), merge-steward delegation <= +150. Predev arms 29392."
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 29392 -> 29397 (train/cg-65) — EXPIRED AND STRUCK: its commit reached the base; struck by GRPC-DOOR Q1 above.
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
