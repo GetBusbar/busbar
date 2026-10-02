@@ -28,7 +28,7 @@ pub use crate::codec::proto_codec::*;
 pub use crate::codec::proto_stream::*;
 pub use crate::codec::{anthropic, bedrock, cohere, gemini, openai_chat, openai_responses};
 pub use crate::codec::{
-    chat_handle, ir, ir_encode, leaf_codec, leaf_handles, openai_annotations, synth_rng, usage_tail,
+    chat_handle, ir, ir_encode, leaf_codec, leaf_handles, synth_rng, url_citation_wire, usage_tail,
 };
 
 // The dialect codec structs the suites construct bare (they were bare-imported into `crate::codec::proto`

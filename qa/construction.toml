@@ -398,12 +398,6 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 # 55691, then K-SERVE +320) — EXPIRED AND STRUCK: its commits reached the base, where kernel_ceiling reads 55789 (CONVERGER
 # cg-60: 55440 + DEST-PIN +29 + K-SERVE +320), so the entry described no raise at the base and `ceiling-rose` reported it.
 
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-file    = "qa/construction.toml"
-from    = 55599
-to      = 55614
-because = "SDK-SVC (R-KERNEL, ARCHITECT S7-TICK 2026-10-01 ruling A, approved +28): the late attach of the kernel pool, signer and demotion record in set-once slots, +15 kernel lines measured by the promote turnstile on PR #139 (55804 over predev 94b053174's 55789). Re-summed on merge of predev: predev arms 55599 + 15 = 55614."
-
 # ── THE KERNEL CEILING, RE-ARMED BY TRAIN BIG 53148 -> 54254 (E12 lowers, URL-SEAM + RESOLVE-PIN, H2) — EXPIRED
 #    AND STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above, which declares the next
 #    figure. Its itemisation: E12 measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 = +49; H2 +1260.
@@ -1559,10 +1553,7 @@ kernel_crate = "busbar-kernel"
 #    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
 # ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
 #    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
-# ── RE-ARMED 55599 -> 55614 for SDK-SVC (R-KERNEL, ARCHITECT S7-TICK 2026-10-01 ruling A, approved +28): the late attach
-#    of the pool, signer and demotion record (host_services.rs set-once slots), +15 kernel lines as measured by the
-#    promote turnstile on PR #139 (55804 over 55789), re-summed over predev's 55599 on merge.
-kernel_ceiling = 55614
+kernel_ceiling = 55537
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
