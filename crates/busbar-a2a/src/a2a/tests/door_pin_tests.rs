@@ -27,14 +27,17 @@ fn the_declaration_states_the_doors_nouns() {
     assert_eq!(d.billable_classes.len(), 1);
     assert_eq!(d.billable_classes[0].family, door::BYTES_FAMILY);
     assert_eq!(d.fee_units, [door::FEE_PER_REQUEST]);
-    // The door's kinds are the engine's, then the push config, which the door holds as a host
-    // record where the engine holds it in process memory.
+    // The door's kinds are the engine's, then the push config and the agent card, which the door
+    // holds as host records where the engine holds them in process memory.
     let held = busbar_plane_a2a::records::HELD_KINDS;
     assert_eq!(door::TAIL.record_kinds_len, held.len());
     assert_eq!(held[..d.record_kinds.len()], *d.record_kinds);
     assert_eq!(
         held[d.record_kinds.len()..],
-        [busbar_plane_a2a::records::KIND_PUSH_CONFIG]
+        [
+            busbar_plane_a2a::records::KIND_PUSH_CONFIG,
+            busbar_plane_a2a::records::KIND_CARD
+        ]
     );
     assert_eq!(
         d.trust_keys.iter().map(|k| k.key).collect::<Vec<_>>(),

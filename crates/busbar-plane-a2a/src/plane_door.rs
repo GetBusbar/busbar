@@ -100,6 +100,10 @@ pub struct Unit {
     /// what its unit answers and relays in place of the caller's body, its answers re-framed for
     /// the line ([`crate::rest::reframe`]). `None` on the JSON-RPC line.
     pub envelope: Option<Vec<u8>>,
+    /// The refresh generation it arrived under: the held cards it reads are that generation's.
+    pub generation: u64,
+    /// The skill the addressed agent's held card matched at arrival (ARCHITECT ruling B2).
+    pub skill: Option<String>,
 }
 
 /// One unit's unary hop, and the answer it is part way through writing.
@@ -204,6 +208,40 @@ pub struct A2aDoor {
     /// `<caller>/<busbar task id>` to the far end's own id for the task: plane memory, so a
     /// restart forgets it (the engine's `idmap`, its bound included).
     backends: Keyed<String, String>,
+    /// The agents' verified cards, held in plugin memory to their refresh generation.
+    pub(crate) cards: crate::cards::Cards,
+    /// The newest refresh generation published.
+    newest: Keyed<(), u64>,
+}
+
+impl A2aDoor {
+    /// The newest refresh generation published; `0` before `open`.
+    fn newest(&self) -> u64 {
+        self.newest.get(&()).unwrap_or(0)
+    }
+
+    /// `generation` is published: the newest when it is newer.
+    fn published(&self, generation: u64) {
+        self.newest.with_all(|m| {
+            if m.get(&()).is_none_or(|n| *n < generation) {
+                m.insert((), generation);
+            }
+        });
+    }
+
+    /// The fit of `agent`'s card held under `generation` to the request `envelope`: no card held,
+    /// no skill.
+    fn skill_of(
+        &self,
+        agent: &str,
+        generation: u64,
+        envelope: &serde_json::Value,
+    ) -> Result<Option<String>, crate::skill::Unfit> {
+        match self.cards.at(agent, generation) {
+            Some(card) => crate::skill::fit(&card, &crate::skill::TaskShape::of(envelope)),
+            None => Ok(None),
+        }
+    }
 }
 
 /// The most far-end task ids the instance remembers (the engine's `idmap::CAPACITY`).
@@ -316,7 +354,10 @@ slot!(
             units: Keyed::new(),
             swept: Keyed::new(),
             backends: Keyed::new(),
+            cards: crate::cards::Cards::new(),
+            newest: Keyed::new(),
         };
+        plane.published(generation);
         let spec = door::snapshot_spec(plane.public_url.as_deref());
         out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, cfg);
         instance.open(plane);
@@ -338,6 +379,7 @@ slot!(
         let spec = door::snapshot_spec(plane.public_url.as_deref());
         let generation = input.get().generation;
         out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, cfg);
+        plane.published(generation);
         Outcome::Ready
     }
 );
@@ -347,6 +389,7 @@ slot!(
     Retire, GenIn, OutHead, |instance, input, _| {
         if let Some(plane) = instance.get() {
             plane.generations.retire(input.get().generation);
+            plane.cards.retire(input.get().generation);
         }
         Outcome::Ready
     }
@@ -440,7 +483,19 @@ slot!(
             None => serde_json::from_slice(body).ok(),
             Some(_) => None,
         };
-        let hop = hop_of(&decision, agent.is_some(), request);
+        let generation = plane.newest();
+        let hop = hop_of(&decision, agent.is_some(), request.clone());
+        // A relayed request to an addressed agent: its held card decides the skill now, and a card
+        // the request does not fit refuses it, as the engine's catalogue does.
+        let skill = match (&hop, &request, &agent) {
+            (Some(_), Some(envelope), Some(agent)) => {
+                match plane.skill_of(agent, generation, envelope) {
+                    Ok(skill) => skill,
+                    Err(unfit) => return refused(&mut out, &crate::skill::refusal(&unfit)),
+                }
+            }
+            _ => None,
+        };
         let unit = Unit {
             decision,
             agent,
@@ -448,6 +503,8 @@ slot!(
             hop,
             pass: crate::task_door::Pass::default(),
             envelope,
+            generation,
+            skill,
         };
         keep(&plane.units, MAX_UNITS, given.unit, unit);
         Outcome::Ready
@@ -522,6 +579,7 @@ fn open_task(
     hop: &mut Hop,
     pass: &mut crate::task_door::Pass,
     request: (&str, &str),
+    skill: Option<String>,
     writes: &mut Vec<Write>,
 ) -> Result<Option<relay::Reply>, Outcome> {
     let (caller, member) = request;
@@ -550,7 +608,8 @@ fn open_task(
     hop.now = None;
     match opened {
         Opened::Refused(reply) => Ok(Some(reply)),
-        Opened::Hop { task, instead } => {
+        Opened::Hop { mut task, instead } => {
+            task.skill = skill;
             hop.relay.for_task(task);
             if let Some(body) = instead {
                 hop.relay.send_instead(body);
@@ -632,7 +691,17 @@ fn piece(
     if !continues {
         let mut writes = Vec::new();
         let opened = if given.from == FROM_KERNEL {
-            match open_task(reach, hop, pass, (caller, member), &mut writes) {
+            // The skill the arrival matched, or, for an agent the kernel's walk picked, its held
+            // card's fit now.
+            let skill = unit.skill.clone().or_else(|| {
+                let envelope = hop.opening.as_ref()?;
+                reach
+                    .plane
+                    .skill_of(member, unit.generation, envelope)
+                    .ok()
+                    .flatten()
+            });
+            match open_task(reach, hop, pass, (caller, member), skill, &mut writes) {
                 Err(outcome) => return (outcome, false),
                 Ok(refused) => refused,
             }
