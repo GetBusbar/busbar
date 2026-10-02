@@ -5,8 +5,8 @@
 //! correlation (the right `name` and `arguments` reached the right call) without a tool registry.
 //! Test builds only; production relays every call to the caller (`ClientRelay`).
 
-use async_trait::async_trait;
 use crate::runtime::tools::ToolExecutor;
+use async_trait::async_trait;
 
 /// Echoes the call: `{"tool":<name>,"echo":<arguments>}`.
 #[derive(Debug, Default, Clone, Copy)]
