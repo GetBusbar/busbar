@@ -41,8 +41,15 @@ pub(super) fn read_gemini_hosted_tools(
         match kind {
             Some(hosted) => {
                 if v.as_object().is_some_and(|m| !m.is_empty()) {
-                    tracing::warn!(
-                        hosted_tool = %k,
+                    let path = match k.as_str() {
+                        GEMINI_GOOGLE_SEARCH => "tools[].googleSearch",
+                        GEMINI_CODE_EXECUTION => "tools[].codeExecution",
+                        _ => "tools[].urlContext",
+                    };
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::wire(path),
+                        &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+                        [hosted_tool = %k,],
                         "gemini hosted tool config has no neutral IR member; the tool crosses the \
                          seam without it"
                     );
@@ -218,8 +225,10 @@ pub(super) fn read_gemini_response_modalities(
     for word in arr {
         match word.as_str().and_then(IrModality::parse) {
             Some(m) => out.push(m),
-            None => tracing::warn!(
-                modality = %word,
+            None => crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire("generationConfig.responseModalities[]"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [modality = %word,],
                 "gemini responseModalities entry has no IR modality; not carried"
             ),
         }

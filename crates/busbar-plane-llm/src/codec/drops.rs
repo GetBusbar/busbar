@@ -120,6 +120,7 @@ impl Dropped {
                 diag,
                 message: message.into(),
             },
+            Member::Wire(path) => Dropped::new(path, diag, message),
         }
     }
 }
@@ -146,6 +147,10 @@ pub enum Member {
     /// A content block of the IR kind (`image`, `document`, `audio`, `video`, `thinking`, `text`,
     /// `tool_use`, `tool_result`), named by the source dialect's block container.
     Block(&'static str),
+    /// A member of the SOURCE dialect's own wire at this path (notation A): what a READER drops of
+    /// the bytes it reads (the caller's on a request, the far end's on an answer) because the IR has
+    /// no place for it.
+    Wire(&'static str),
 }
 
 /// The IR member `name`, by its own rows.
@@ -164,15 +169,20 @@ pub const fn block(kind: &'static str) -> Member {
     Member::Block(kind)
 }
 
+/// A member of the reading dialect's own wire at `path` (a reader's drop).
+pub const fn wire(path: &'static str) -> Member {
+    Member::Wire(path)
+}
+
 /// Whether a TRANSLATE attempt is open on this thread.
 pub fn is_open() -> bool {
     OPEN.with(|o| o.borrow().is_some())
 }
 
-/// THE WRITER DROP: a writer's member or block that does not cross. Inside a TRANSLATE attempt it
-/// is [`note`]d (one warn per path naming the source dialect's wire path, and the audit); outside
-/// one (a same-dialect write, a direct writer call) the writer's own warn is emitted unchanged and
-/// nothing is audited. `fields` are the writer warn's own fields (each followed by a comma).
+/// THE WRITER DROP (and a reader's, by [`wire`]): a member or block that does not cross. Inside a
+/// TRANSLATE attempt it is [`note`]d (one warn per path naming the source dialect's wire path, and
+/// the audit); outside one (a same-dialect write, a direct writer call, a relay's tap) the
+/// writer's own warn is emitted unchanged and nothing is audited. `fields` are the writer warn's own fields (each followed by a comma).
 ///
 /// `writer_drop!(member("tool_choice"), &DIAG, [count = n,], "dropping ... {x}", x = 1)`
 macro_rules! writer_drop {

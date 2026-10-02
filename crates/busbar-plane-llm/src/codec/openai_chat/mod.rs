@@ -918,8 +918,10 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
             let detail = image_obj.get(keys::DETAIL).and_then(|v| v.as_str());
             let parsed = detail.and_then(crate::codec::ir::IrImageDetail::parse);
             if let (Some(word), None) = (detail, parsed) {
-                tracing::warn!(
-                    detail = word,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire("messages[].content[].image_url.detail"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [detail = word,],
                     "dropping an unknown image_url.detail word: the IR carries auto/low/high only"
                 );
             }

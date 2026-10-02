@@ -637,8 +637,10 @@ fn read_cohere_image_detail(
     let word = image_url?.get(keys::DETAIL)?.as_str()?;
     let detail = crate::codec::ir::IrImageDetail::parse(word);
     if detail.is_none() {
-        tracing::warn!(
-            detail = %word,
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::wire("messages[].content[].image_url.detail"),
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [detail = %word,],
             "cohere: dropping an unknown image_url.detail word (not auto/low/high)"
         );
     }
