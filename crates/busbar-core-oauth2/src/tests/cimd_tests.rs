@@ -333,7 +333,7 @@ async fn the_production_fetch_refuses_the_addresses_the_guard_exists_for() {
     }
 }
 
-/// POSITIVE CONTROL (call site 3/5: `busbar-oauth2/src/cimd.rs`, the CIMD document fetch).
+/// POSITIVE CONTROL (call site 3/5: `busbar-core-oauth2/src/cimd.rs`, the CIMD document fetch).
 ///
 /// The sibling above planted `metadata.google.internal` — one of the TWO names the dialing guard
 /// already knew, which is why it passed throughout the drift. These are the four it did NOT, plus
