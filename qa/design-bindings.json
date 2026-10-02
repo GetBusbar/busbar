@@ -3870,8 +3870,8 @@
     },
     {
      "kind": "test",
-     "ref": "dlopen_decide_deadline_cuts_off_a_slow_gate",
-     "proves": "the call budget cuts a slow gate off promptly, an error on_error decides",
+     "ref": "dlopen_slow_gate_hits_the_deadline",
+     "proves": "the call budget cuts a slow gate off promptly, an error on_error decides (R1: one of the two 1.5.5 timeout tests)",
      "source": "curated",
      "status": "mapped"
     },
@@ -3891,7 +3891,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one, test:dlopen_decide_deadline_cuts_off_a_slow_gate, test:a_panicking_hook_is_broken_through_the_axis_never_a_verdict, lint:xtask/src/gates/blocking_ffi.rs"
+   "verdict_detail": "test:the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one, test:dlopen_slow_gate_hits_the_deadline, test:a_panicking_hook_is_broken_through_the_axis_never_a_verdict, lint:xtask/src/gates/blocking_ffi.rs"
   },
   {
    "id": "PB-82",

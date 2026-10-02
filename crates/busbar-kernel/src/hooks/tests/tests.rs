@@ -2154,6 +2154,37 @@ async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
     );
 }
 
+/// A slow gate is cut off by the `budget` over the dlopen seam (spawn_blocking + timeout), promptly
+/// → `Err`, never a hang. The blocking sleep never stalls the runtime.
+///
+/// One of the two 1.5.5 timeout tests BUSBAR-1.6.0.md R1 (Q-LEAK) requires to pass as written: its
+/// assertions are the deleted loader test's, verbatim; only the call path is the hook axis's
+/// (`resolve_one`), where `load` and `DlopenPolicy` went.
+#[tokio::test]
+async fn dlopen_slow_gate_hits_the_deadline() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
+    let Some(env) = test_env() else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let policy =
+        resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 2000})).expect("resolve");
+    let started = std::time::Instant::now();
+    let r = policy
+        .decide(
+            &dreq("x"),
+            &[dcand(0)],
+            &dctx(),
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+    assert!(r.is_err(), "a slow gate must exceed the deadline");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "the deadline must cut off promptly"
+    );
+}
+
 /// FAIL-OPEN management reads over the dlopen seam (ported from the socket status/describe
 /// "unsupported" coverage): a hook that replies `{}` to `status`/`describe` is treated as
 /// "doesn't speak it" — `fetch_status`/`fetch_schema` return `None`, never affecting a request.
