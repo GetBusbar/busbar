@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SEAM core's own `router.rs`/`appbuild.rs` call through to reach the authorization-server
-//! plane's runtime object and mount its routes, without naming `busbar_oauth2::plane::AsPlane` —
-//! the reverse edge Cargo refuses (`busbar-oauth2` depends on `busbar-core`, never the other way).
+//! plane's runtime object and mount its routes, without naming `busbar_core_oauth2::plane::AsPlane` —
+//! the reverse edge Cargo refuses (`busbar-core-oauth2` depends on `busbar-core`, never the other way).
 //!
 //! Registered once by the composition root (`crates/busbar`'s `main`), exactly the discipline
 //! `plane::registry::install_planes` documents for the CRUD-shaped planes (MCP/A2A). `oauth_as` is
@@ -26,7 +26,7 @@ type AsPlaneBuildFn =
 
 /// The two functions core calls through this seam. Every field type here is either core-owned
 /// (`AsIdentity`, `CoreRouter`) or fully type-erased (`Arc<dyn Any + Send + Sync>`), so the seam
-/// itself names no `busbar_oauth2` item.
+/// itself names no `busbar_core_oauth2` item.
 pub struct AsPlaneSeam {
     /// Build the plane's runtime object for one config generation, from the VALIDATED identity
     /// (`busbar_kernel::oauth_as::config::AsIdentity` — stays in core; see the module doc on
@@ -51,7 +51,7 @@ static SEAM: OnceLock<AsPlaneSeam> = OnceLock::new();
 /// (`crates/busbar`'s `main`, alongside `plane::registry::install_planes`), before any config is
 /// loaded. `oauth-as` is a NORMAL (always-linked, non-optional) dependency of the shipped binary —
 /// unlike MCP/A2A/voice, `oauth_as:` carries no feature flag — so every real build registers this.
-/// Only busbar-core's OWN test binary (`cargo test -p busbar-core`) never links `busbar-oauth2`
+/// Only busbar-core's OWN test binary (`cargo test -p busbar-core`) never links `busbar-core-oauth2`
 /// (linking it would be the forbidden reverse edge) and so never calls this; that binary also never
 /// configures `oauth_as:` on any `App` it builds, so an unregistered seam and an always-`None` plane
 /// agree with each other there.
@@ -66,7 +66,7 @@ pub fn install_as_plane_seam(seam: AsPlaneSeam) {
     );
 }
 
-/// Read the registered seam, or `None` when this binary never linked `busbar-oauth2`.
+/// Read the registered seam, or `None` when this binary never linked `busbar-core-oauth2`.
 pub(crate) fn seam() -> Option<&'static AsPlaneSeam> {
     SEAM.get()
 }

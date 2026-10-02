@@ -143,7 +143,7 @@ pub fn neutral_src_roots() -> Vec<String> {
         // kind) and the remaining neutral leaves.
         "crates/busbar-core-admin/src",
         "crates/busbar-core-connector/src",
-        "crates/busbar-oauth2/src",
+        "crates/busbar-core-oauth2/src",
         // `crates/busbar-unit-transport-key/src` is STRUCK (fold F14): the crate folded into
         // `busbar-kernel-identity` (`src/transport_key/`, #36/#40), and that module is deleted in
         // turn (TRANSPORT-STACK: TLS is core's connection security, `busbar-core-connector`, listed

@@ -347,6 +347,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connector",
+ "busbar-core-oauth2",
  "busbar-export-file",
  "busbar-export-file-plugin",
  "busbar-export-otlp",
@@ -365,7 +366,6 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-llm",
  "busbar-mcp",
- "busbar-oauth2",
  "busbar-plane-decisions",
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
@@ -561,6 +561,26 @@ dependencies = [
  "tokio-util",
  "webpki-roots",
  "zeroize",
+]
+
+[[package]]
+name = "busbar-core-oauth2"
+version = "1.6.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "busbar-contract",
+ "busbar-kernel",
+ "bytes",
+ "http",
+ "http-body-util",
+ "oauth-as",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -865,26 +885,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-oauth2"
-version = "1.6.0"
-dependencies = [
- "axum",
- "base64 0.23.1",
- "busbar-contract",
- "busbar-kernel",
- "bytes",
- "http",
- "http-body-util",
- "oauth-as",
- "reqwest 0.12.28",
- "ring",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
 dependencies = [
@@ -898,6 +898,7 @@ name = "busbar-plane-decisions"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-loader",
  "serde",
  "serde_json",
 ]
