@@ -1,5 +1,7 @@
-//! The five rigs, each run as the subprocess CI ran it, and the PURE deciders that turn what a rig
-//! left behind (exit codes, its ledger, its report) into one [`Outcome`] per suite.
+//! The rigs, each run as a subprocess the way its instrument is meant to be run, and the PURE
+//! deciders that turn what a rig left behind (exit codes, its ledger, its report) into one
+//! [`Outcome`] per suite. The llm, mcp, voice and ws rigs live here; a2a, h2, tls, slsa-verifier,
+//! oidf (oidf-oauth2 + fapi2) and jev each have a module of their own beside this one.
 //!
 //! The deciders hold one rule in common: a rig that did not judge busbar — a red self-test, a red
 //! control, a leg that never finished, a report it never wrote — is `not-run`, never `pass`. A
@@ -53,6 +55,12 @@ const SCRUBBED_ENV: &[&str] = &[
     "EXPECTED_IDS",
     "JEV_RUN_ID",
     "GITHUB_SHA",
+    "A2A_SUBJECT_BUSBAR_BIN",
+    "BUSBAR_A2A_ENDPOINT",
+    "A2A_TCK_OUT",
+    "A2A_SUBJECT_TCK_LOG",
+    "BUSBAR_CONFIG",
+    "BUSBAR_PROVIDERS",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -62,6 +70,11 @@ pub enum Rig {
     Voice,
     Ws,
     Jev,
+    A2a,
+    H2,
+    Tls,
+    Slsa,
+    Oidf,
 }
 
 impl Rig {
@@ -72,11 +85,18 @@ impl Rig {
             Rig::Voice => "voice",
             Rig::Ws => "ws",
             Rig::Jev => "jev",
+            Rig::A2a => "a2a",
+            Rig::H2 => "h2",
+            Rig::Tls => "tls",
+            Rig::Slsa => "slsa-verifier",
+            Rig::Oidf => "oidf",
         }
     }
 }
 
-/// The rig that judges a registered suite, or `None` for a suite with no rig in the five dirs.
+/// The rig that judges a registered suite, or `None` for an id no rig judges. Every suite
+/// `conformance/registry.toml` carries has one: the registry IS the MUST set
+/// (`conformance_check` module docs), and a MUST with no producer can never be fresh.
 pub fn rig_for(id: &str) -> Option<Rig> {
     if let Some(d) = id.strip_prefix("llm-") {
         return LLM_DIALECTS.contains(&d).then_some(Rig::Llm);
@@ -88,6 +108,11 @@ pub fn rig_for(id: &str) -> Option<Rig> {
         "mcp" => Some(Rig::Mcp),
         "ws" => Some(Rig::Ws),
         "jev" => Some(Rig::Jev),
+        "a2a" => Some(Rig::A2a),
+        "h2" => Some(Rig::H2),
+        "tls" => Some(Rig::Tls),
+        "slsa-verifier" => Some(Rig::Slsa),
+        id if super::oidf::SUITES.iter().any(|p| p.suite == id) => Some(Rig::Oidf),
         _ => None,
     }
 }
@@ -96,7 +121,7 @@ fn llm_suite(dialect: &str) -> String {
     format!("llm-{dialect}")
 }
 
-fn rc(code: Option<i32>) -> String {
+pub(super) fn rc(code: Option<i32>) -> String {
     match code {
         Some(c) => format!("exit {c}"),
         None => "did not finish".to_string(),
@@ -104,11 +129,14 @@ fn rc(code: Option<i32>) -> String {
 }
 
 /// The same outcome for every suite in `ids`.
-fn fan<I: IntoIterator<Item = String>>(ids: I, o: &Outcome) -> BTreeMap<String, Outcome> {
+pub(super) fn fan<I: IntoIterator<Item = String>>(
+    ids: I,
+    o: &Outcome,
+) -> BTreeMap<String, Outcome> {
     ids.into_iter().map(|id| (id, o.clone())).collect()
 }
 
-fn first_few(ids: &[String]) -> String {
+pub(super) fn first_few(ids: &[String]) -> String {
     let shown: Vec<&str> = ids.iter().take(5).map(String::as_str).collect();
     if ids.len() > shown.len() {
         format!("{} (+{} more)", shown.join(", "), ids.len() - shown.len())
@@ -514,72 +542,48 @@ pub fn decide_legs(
     Outcome::pass(evidence.to_string())
 }
 
-// ── jev ──────────────────────────────────────────────────────────────────────────────────────
-
-/// The jev rig judges itself and writes its judgement to `--out`; that file's status and reason
-/// are carried, its `commit` is not (the producer stamps HEAD).
-pub fn decide_jev(
-    selftest: Option<i32>,
-    rig_exit: Option<i32>,
-    rig_verdict: Option<&str>,
-    evidence: &str,
-) -> Outcome {
-    if selftest != Some(0) {
-        return Outcome::not_run(format!(
-            "the jev rig's self-test is red ({}): its judge cannot be believed",
-            rc(selftest)
-        ));
-    }
-    if rig_exit != Some(0) {
-        return Outcome::not_run(format!("the jev rig wrote no verdict ({})", rc(rig_exit)));
-    }
-    let Some(v) = rig_verdict.and_then(|t| serde_json::from_str::<Value>(t).ok()) else {
-        return Outcome::not_run(
-            "the jev rig exited 0 but its verdict file is missing or not JSON",
-        );
-    };
-    let reason = v
-        .get("reason")
-        .and_then(Value::as_str)
-        .filter(|r| !r.is_empty());
-    if v.get("armed").and_then(Value::as_bool) != Some(true) {
-        return Outcome::not_run(reason.unwrap_or("the jev rig did not judge (armed=false)"));
-    }
-    match v.get("status").and_then(Value::as_str) {
-        Some("pass") => Outcome::pass(evidence),
-        Some("fail") => Outcome::fail(reason.unwrap_or("the jev rig judged red"), evidence),
-        other => Outcome::not_run(format!(
-            "the jev rig's verdict carries status {other:?}, not pass or fail"
-        )),
-    }
-}
-
 // ── running the rigs ─────────────────────────────────────────────────────────────────────────
 
-fn on_path(tool: &str) -> bool {
+pub(super) fn on_path(tool: &str) -> bool {
     std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).any(|d| d.join(tool).is_file()))
         .unwrap_or(false)
 }
 
-fn read_opt(p: &Path) -> Option<String> {
+pub(super) fn read_opt(p: &Path) -> Option<String> {
     std::fs::read_to_string(p).ok()
 }
 
-fn fresh_dir(p: &Path) {
+pub(super) fn fresh_dir(p: &Path) {
     let _ = std::fs::remove_dir_all(p);
     let _ = std::fs::create_dir_all(p);
 }
 
+/// What a caller hands the rigs beyond the checkout itself.
+#[derive(Debug, Clone, Default)]
+pub struct Inputs {
+    /// The oracle's candidate recording (llm).
+    pub recording: Option<PathBuf>,
+    /// The release artifact built from HEAD and its SLSA provenance (slsa-verifier).
+    pub slsa_artifact: Option<PathBuf>,
+    pub slsa_provenance: Option<PathBuf>,
+}
+
 pub struct Runner {
-    root: PathBuf,
-    work: PathBuf,
-    target: PathBuf,
+    pub(super) root: PathBuf,
+    pub(super) work: PathBuf,
+    /// Survives between runs (pinned upstream checkouts, toolchains): never a verdict input.
+    pub(super) cache: PathBuf,
+    pub(super) target: PathBuf,
     recording: Option<PathBuf>,
+    pub(super) inputs: Inputs,
+    /// The subject binary, built once per run whichever rig asks first.
+    subject: std::sync::OnceLock<Result<PathBuf, String>>,
 }
 
 impl Runner {
-    pub fn new(root: &Path, recording: Option<&Path>) -> Runner {
+    pub fn new(root: &Path, inputs: &Inputs) -> Runner {
+        let recording = inputs.recording.as_deref();
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .map(|t| if t.is_absolute() { t } else { root.join(t) })
@@ -587,9 +591,55 @@ impl Runner {
         Runner {
             root: root.to_path_buf(),
             work: target.join("conformance-record"),
+            cache: target.join("conformance-cache"),
             target,
             recording: recording.map(Path::to_path_buf),
+            inputs: inputs.clone(),
+            subject: std::sync::OnceLock::new(),
         }
+    }
+
+    /// `<target>/conformance-record/<rig>`, fresh for each run of the rig.
+    pub(super) fn work_dir(&self, rig: Rig) -> PathBuf {
+        self.work.join(rig.name())
+    }
+
+    /// What one leg wrote, read back.
+    pub(super) fn log_text(&self, rig: Rig, leg: &str) -> String {
+        read_opt(&self.work_dir(rig).join(format!("{leg}.log"))).unwrap_or_default()
+    }
+
+    /// The subject: `cargo build --bin busbar` from this checkout, once per run. A failed build
+    /// names no binary, so a stale one from an earlier build is never booted under this HEAD.
+    pub(super) fn busbar(&self) -> Result<PathBuf, String> {
+        self.subject
+            .get_or_init(|| {
+                let dir = self.work.join("subject-build");
+                fresh_dir(&dir);
+                let log = dir.join("build.log");
+                let file = std::fs::File::create(&log).map_err(|e| e.to_string())?;
+                let err = file.try_clone().map_err(|e| e.to_string())?;
+                let code = Command::new("cargo")
+                    .args(["build", "--bin", "busbar"])
+                    .current_dir(&self.root)
+                    .stdin(Stdio::null())
+                    .stdout(file)
+                    .stderr(err)
+                    .status()
+                    .ok()
+                    .and_then(|s| s.code());
+                let bin = self.target.join("debug").join("busbar");
+                if code == Some(0) && bin.is_file() {
+                    Ok(bin)
+                } else {
+                    Err(format!(
+                        "`cargo build --bin busbar` {} (log {})",
+                        rc(code),
+                        self.rel(&log)
+                    ))
+                }
+            })
+            .clone()
     }
 
     pub fn run(&self, rig: Rig) -> BTreeMap<String, Outcome> {
@@ -600,11 +650,16 @@ impl Runner {
             Rig::Mcp => BTreeMap::from([("mcp".to_string(), self.run_mcp())]),
             Rig::Ws => BTreeMap::from([("ws".to_string(), self.run_ws())]),
             Rig::Jev => BTreeMap::from([("jev".to_string(), self.run_jev())]),
+            Rig::A2a => BTreeMap::from([("a2a".to_string(), self.run_a2a())]),
+            Rig::H2 => BTreeMap::from([("h2".to_string(), self.run_h2())]),
+            Rig::Tls => BTreeMap::from([("tls".to_string(), self.run_tls())]),
+            Rig::Slsa => BTreeMap::from([("slsa-verifier".to_string(), self.run_slsa())]),
+            Rig::Oidf => self.run_oidf(),
         }
     }
 
     /// A path as the verdict's `evidence`: relative to the checkout when it lies inside it.
-    fn rel(&self, p: &Path) -> String {
+    pub(super) fn rel(&self, p: &Path) -> String {
         p.strip_prefix(&self.root)
             .unwrap_or(p)
             .to_string_lossy()
@@ -612,7 +667,7 @@ impl Runner {
     }
 
     /// `not-run` naming every tool the rig needs that is not on PATH.
-    fn missing(&self, rig: Rig, tools: &[&str]) -> Option<Outcome> {
+    pub(super) fn missing(&self, rig: Rig, tools: &[&str]) -> Option<Outcome> {
         let gone: Vec<&str> = tools.iter().copied().filter(|t| !on_path(t)).collect();
         (!gone.is_empty()).then(|| {
             Outcome::not_run(format!(
@@ -625,7 +680,7 @@ impl Runner {
 
     /// Run one leg with its output in `<work>/<rig>/<leg>.log`; its exit code, or `None` when it
     /// could not be started or was killed by a signal.
-    fn leg(
+    pub(super) fn leg(
         &self,
         rig: Rig,
         leg: &str,
@@ -830,20 +885,14 @@ impl Runner {
         ) {
             return o;
         }
-        let build = self.leg(
-            rig,
-            "build-busbar",
-            &["cargo", "build", "--bin", "busbar"],
-            None,
-            &[],
-        );
-        let bin = self.target.join("debug").join("busbar");
-        if build != Some(0) || !bin.is_file() {
-            return Outcome::not_run(format!(
-                "`cargo build --bin busbar` gave no subject ({}): nothing to arm the subject legs with",
-                rc(build)
-            ));
-        }
+        let bin = match self.busbar() {
+            Ok(b) => b,
+            Err(e) => {
+                return Outcome::not_run(format!(
+                    "no subject ({e}): nothing to arm the subject legs with"
+                ))
+            }
+        };
         // Reports from an earlier run must not stand in for this one's.
         let _ = std::fs::remove_dir_all(self.root.join("testing/mcp-conformance/reports"));
         let _ = std::fs::remove_dir_all(self.root.join(".mcp-conformance/subject"));
@@ -950,35 +999,5 @@ impl Runner {
                 .unwrap_or_default(),
             evidence: self.rel(&verdict),
         })
-    }
-
-    fn run_jev(&self) -> Outcome {
-        let rig = Rig::Jev;
-        if let Some(o) = self.missing(rig, &["bash", "cargo", "curl", "python3"]) {
-            return o;
-        }
-        let script = "testing/jev-conformance/jev-conformance.sh";
-        let selftest = self.leg(rig, "selftest", &["bash", script, "--selftest"], None, &[]);
-        let out = self.work.join(rig.name()).join("rig-verdict.json");
-        let out_s = out.to_string_lossy().into_owned();
-        let exit = if selftest == Some(0) {
-            self.leg(
-                rig,
-                "verdict",
-                &[
-                    "bash",
-                    script,
-                    "--out",
-                    &out_s,
-                    "--run-id",
-                    "xtask conformance record",
-                ],
-                None,
-                &[],
-            )
-        } else {
-            None
-        };
-        decide_jev(selftest, exit, read_opt(&out).as_deref(), &self.rel(&out))
     }
 }

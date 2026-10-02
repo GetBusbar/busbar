@@ -53,6 +53,11 @@ syn = { workspace = true }
 # product's code (#82(c), TODO 597). ring is the workspace's one crypto backend and already in
 # Cargo.lock; xtask is dev tooling and ships in no binary (ARCHITECT 2026-10-01, MC-2).
 ring = { workspace = true }
+# `cargo xtask conformance record`'s tls, h2 and oidf rigs boot busbar on a TLS listener with a
+# certificate minted per run by a throwaway CA, so a scanner grades busbar's stack and not a missing
+# public CA. rcgen on ring, already in Cargo.lock (busbar-core-connector, busbar-a2a); `pem` writes
+# the files busbar's `tls:` block reads. xtask ships in no binary.
+rcgen = { workspace = true, features = ["pem"] }
 
 [dev-dependencies]
 # Test-only: proves the verifier's small-order key table against an independent curve
