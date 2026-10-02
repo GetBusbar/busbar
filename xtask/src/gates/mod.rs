@@ -398,10 +398,10 @@ pub const MONEY_INVARIANTS_STANDING_REDS: &[&str] = &[
 /// [`QA_NAMES_STANDING_REDS`]: a red this list does not name is scored, and a name on this list that
 /// has gone green is STALE and is scored too.
 pub const CONFORMANCE_SYNC_STANDING_REDS: &[&str] = &[
-    // Item 165 (2026-09-24): freshness is judged against the checkout's own commit, so every
-    // carried-over pass is STALE on the dev line (TODO rule 7.3). Drained in Phase 5 on the release
-    // sha (TODO rule 7.4). Strike this line in the commit that turns the row green.
-    "conformance:freshness",
+    // DRAINED 2026-10-02: `conformance:freshness` stood here (item 165: freshness is judged against
+    // the checkout's own commit, so every carried-over pass was STALE). The ten hand-stamped passes
+    // left the tree (d2b588d74e: a verdict is produced at judge time), so nothing carried over is
+    // left to be stale. Struck in the train that turned it green.
 ];
 
 /// THE STRUCTURE-LINT GATE'S STANDING REDS, BY NAME. Same contract as
