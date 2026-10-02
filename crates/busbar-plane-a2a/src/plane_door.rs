@@ -20,7 +20,10 @@
 //!   dialect ([`crate::arrival::render`]);
 //! * `on_piece` drives a unit's unary hop ([`crate::relay::Relay`]): the request each ATTEMPT
 //!   sends the agent the kernel picked, the caller's body relayed verbatim, and the caller's
-//!   answer from the far end's, written into the host's buffers across `more` re-calls;
+//!   answer from the far end's, written into the host's buffers across `more` re-calls. A hop
+//!   that is about a task opens it at its first ATTEMPT and settles it on the far end's answer,
+//!   over the task store's host records ([`crate::task_hop`]); its answer leaves under busbar's
+//!   task identity ([`crate::identity`]);
 //! * `on_piece` answers the verbs the plane answers itself over the task store's host records
 //!   ([`crate::task_door`]);
 //! * `tick` wants no tick, `drive` has no session with unsolicited output, `cancel` finds nothing
@@ -33,10 +36,10 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
-    PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
-    ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED, REFUSAL_ARRIVE,
-    UNITS_REPORTED,
+    PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
+    RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED,
+    RECORD_PUT, REFUSAL_ARRIVE, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::door::statement;
@@ -45,11 +48,17 @@ use busbar_contract::abi::sdk::publish::{Generations, Keyed};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot, Services};
 
 use std::sync::Arc;
+use std::task::Poll;
+
+use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use crate::a2a::config::AgentsCfg;
 use crate::arrival::{self, Decision, Dialect};
 use crate::door::{self, Line};
-use crate::relay::{self, Answer, Relay};
+use crate::relay::{self, Answer, Relay, Settled};
+use crate::task_door::{kind_index, Via};
+use crate::task_hop::{self, Opened};
+use crate::tasks::{task_key, Halt, Write};
 
 /// The most calls the kernel keeps in flight on one instance, as the transport doors state it.
 const MAX_INFLIGHT: u32 = 64;
@@ -98,15 +107,33 @@ pub struct Unit {
 pub struct Hop {
     relay: Relay,
     outbox: Outbox,
+    /// A task hop's request, until its first ATTEMPT opens the task.
+    opening: Option<serde_json::Value>,
+    /// What the far end's answer said about the task, until its record writes are made.
+    settle: Option<Settled>,
+    /// The second the piece in flight entered, kept across its re-entries.
+    now: Option<u64>,
 }
 
 impl Hop {
-    /// A hop answering the request `id`, declaring `version`.
+    /// A task-less hop answering the request `id`, declaring `version`.
     #[must_use]
     pub fn new(id: serde_json::Value, version: &'static str) -> Self {
         Hop {
             relay: Relay::new(id, version),
             outbox: Outbox::default(),
+            opening: None,
+            settle: None,
+            now: None,
+        }
+    }
+
+    /// A hop about a task: `envelope` opens it at the first ATTEMPT.
+    #[must_use]
+    pub fn task(id: serde_json::Value, version: &'static str, envelope: serde_json::Value) -> Self {
+        Hop {
+            opening: Some(envelope),
+            ..Hop::new(id, version)
         }
     }
 }
@@ -123,6 +150,8 @@ struct Outbox {
     head: Option<Head>,
     bytes: Vec<u8>,
     at: usize,
+    /// The record writes that ride with the head.
+    writes: Vec<Write>,
 }
 
 /// The head an answer starts with.
@@ -157,12 +186,14 @@ impl Outbox {
             head,
             bytes,
             at: 0,
+            writes: Vec::new(),
         })
     }
 }
 
 /// One instance: the public base URL `open` was given, the host tables, every live generation's
-/// snapshot and section, the units in flight, and the second the task store was last swept.
+/// snapshot and section, the units in flight, the second the task store was last swept, and the
+/// far end's own id for each relayed task busbar learnt it for.
 pub struct A2aDoor {
     public_url: Option<String>,
     pub(crate) host: Option<Host>,
@@ -170,15 +201,21 @@ pub struct A2aDoor {
     generations: Generations<PlaneSnapshot, AgentsCfg>,
     pub(crate) units: Keyed<u64, Unit>,
     pub(crate) swept: Keyed<(), u64>,
+    /// `<caller>/<busbar task id>` to the far end's own id for the task: plane memory, so a
+    /// restart forgets it (the engine's `idmap`, its bound included).
+    backends: Keyed<String, String>,
 }
+
+/// The most far-end task ids the instance remembers (the engine's `idmap::CAPACITY`).
+pub const MAX_BACKEND_IDS: usize = 100_000;
 
 /// The settings blob read as the `agents:` section, or the refusal in the grammar's words.
 fn section(bytes: &[u8]) -> Result<AgentsCfg, Refusal> {
     door::read_settings(bytes).map_err(Refusal::refused)
 }
 
-/// Keep `value` under `key` in `map`, dropping the smallest (oldest) keys first past `cap`.
-fn keep<V>(map: &Keyed<u64, V>, cap: usize, key: u64, value: V) {
+/// Keep `value` under `key` in `map`, dropping the smallest keys first past `cap`.
+fn keep<K: Ord, V>(map: &Keyed<K, V>, cap: usize, key: K, value: V) {
     map.with_all(|m| {
         while m.len() >= cap && !m.contains_key(&key) {
             if m.pop_first().is_none() {
@@ -278,6 +315,7 @@ slot!(
             generations: Generations::new(),
             units: Keyed::new(),
             swept: Keyed::new(),
+            backends: Keyed::new(),
         };
         let spec = door::snapshot_spec(plane.public_url.as_deref());
         out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, cfg);
@@ -398,7 +436,11 @@ slot!(
         out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
         out.set(|o| &o.dialect, dialect);
         let agent = agent_of(target);
-        let hop = hop_of(&decision, agent.is_some());
+        let request = match &envelope {
+            None => serde_json::from_slice(body).ok(),
+            Some(_) => None,
+        };
+        let hop = hop_of(&decision, agent.is_some(), request);
         let unit = Unit {
             decision,
             agent,
@@ -412,16 +454,29 @@ slot!(
     }
 );
 
-/// The hop a unit's `on_piece` serves: the extended-card read addressed to one agent, which the
-/// engine relays task-less (`receive::unary_hop`, its `card_fetch` arm). A task-bearing verb has
-/// no hop here: its reply carries busbar's task identity and its rows, which the plane does not
-/// keep yet, so its pieces are REFUSED.
-fn hop_of(decision: &Decision, addressed: bool) -> Option<Hop> {
+/// The hop a unit's `on_piece` serves, as the engine's unary hop relays it
+/// (`receive::unary_hop`): the extended-card read addressed to one agent, task-less (its
+/// `card_fetch` arm), and every other relayed one-reply request on the JSON-RPC line, about a task
+/// (`request` is its envelope). A verb the plane answers itself, a stream, and an arrival on another
+/// line have no hop here. TRANSITIONAL: the HTTP+JSON line's relayed answers are re-framed once
+/// the relay serves that line.
+fn hop_of(decision: &Decision, addressed: bool, request: Option<serde_json::Value>) -> Option<Hop> {
+    use crate::ops::{relay_class, OP_AGENT_CARD, OP_MESSAGE_SEND};
     match decision {
+        Decision::Request { row, id, version } if row.op == OP_AGENT_CARD => {
+            addressed.then(|| Hop::new(id.clone(), version))
+        }
         Decision::Request { row, id, version }
-            if addressed && row.op == crate::ops::OP_AGENT_CARD =>
+            if !row.multi_frame && crate::local::verb_of(row.method).is_none() =>
         {
-            Some(Hop::new(id.clone(), version))
+            Some(Hop::task(id.clone(), version, request?))
+        }
+        Decision::Unlisted {
+            method,
+            id,
+            version,
+        } if relay_class(method) == OP_MESSAGE_SEND => {
+            Some(Hop::task(id.clone(), version, request?))
         }
         _ => None,
     }
@@ -436,9 +491,127 @@ fn url_of<'a>(unit: &'a Unit, member: &str) -> Option<&'a str> {
         .map(|a| a.url.as_str())
 }
 
+/// The host reach one piece's task work makes: the instance, and the piece's ticket.
+struct Reach<'p> {
+    plane: &'p A2aDoor,
+    ticket: Ticket,
+}
+
+impl Reach<'_> {
+    /// The piece's records and random bytes, counting on from the `issued` its unit's finished
+    /// pieces made; `None` when the instance was opened without host tables.
+    fn via(&self, issued: u32) -> Option<Via<'_>> {
+        let host = self.plane.host.as_ref()?;
+        Some(Via::new(host, self.plane.services, self.ticket, issued))
+    }
+
+    /// Now, in seconds, from the host's clock.
+    fn now(&self) -> Option<u64> {
+        let host = self.plane.host.as_ref()?;
+        match host.connector(self.ticket).clock_now() {
+            Poll::Ready(Ok(reading)) => Some(reading.wall_ns / 1_000_000_000),
+            _ => None,
+        }
+    }
+}
+
+/// OPEN the task `hop` is about, at its first ATTEMPT ([`task_hop::open`]): its identity on the
+/// relay and its record writes on `writes`, or the caller's whole answer when it does not go ahead.
+fn open_task(
+    reach: &Reach<'_>,
+    hop: &mut Hop,
+    pass: &mut crate::task_door::Pass,
+    request: (&str, &str),
+    writes: &mut Vec<Write>,
+) -> Result<Option<relay::Reply>, Outcome> {
+    let (caller, member) = request;
+    let Some(envelope) = hop.opening.as_ref() else {
+        return Ok(None);
+    };
+    let now = match hop.now {
+        Some(now) => now,
+        None => *hop.now.insert(reach.now().ok_or(Outcome::Failed)?),
+    };
+    let mut via = reach.via(pass.issued).ok_or(Outcome::Failed)?;
+    let backends = |id: &str| reach.plane.backends.get(&task_key(caller, id));
+    let req = task_hop::Request {
+        envelope,
+        caller,
+        member,
+        now,
+    };
+    let opened = match task_hop::open(&mut via, &req, hop.relay.id(), &backends, writes) {
+        Err(Halt::Pending) => return Err(Outcome::Pending),
+        Err(Halt::Failed(_)) => return Err(Outcome::Failed),
+        Ok(opened) => opened,
+    };
+    pass.issued = via.issued();
+    hop.opening = None;
+    hop.now = None;
+    match opened {
+        Opened::Refused(reply) => Ok(Some(reply)),
+        Opened::Hop { task, instead } => {
+            hop.relay.for_task(task);
+            if let Some(body) = instead {
+                hop.relay.send_instead(body);
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// SETTLE the task `hop` is about on what its answer said ([`task_hop::settle`]): the record writes
+/// ride with the answer, and the far end's own id for the task is remembered.
+fn settle_task(
+    reach: &Reach<'_>,
+    hop: &mut Hop,
+    pass: &mut crate::task_door::Pass,
+    caller: &str,
+) -> Result<(), Outcome> {
+    let Some(settled) = hop.settle.take() else {
+        return Ok(());
+    };
+    let Some(task) = hop.relay.task().cloned() else {
+        return Ok(());
+    };
+    let now = match hop.now {
+        Some(now) => now,
+        None => *hop.now.insert(reach.now().ok_or(Outcome::Failed)?),
+    };
+    let mut via = reach.via(pass.issued).ok_or(Outcome::Failed)?;
+    let mut writes = Vec::new();
+    match task_hop::settle(&mut via, &task, &settled, caller, now, &mut writes) {
+        Err(Halt::Pending) => {
+            hop.settle = Some(settled);
+            return Err(Outcome::Pending);
+        }
+        Err(Halt::Failed(_)) => writes.clear(),
+        Ok(()) => {}
+    }
+    pass.issued = via.issued();
+    if let Settled::Reported {
+        backend_id: Some(backend),
+        ..
+    } = settled
+    {
+        keep(
+            &reach.plane.backends,
+            MAX_BACKEND_IDS,
+            task_key(caller, &task.task_id),
+            backend,
+        );
+    }
+    hop.outbox.writes.extend(writes);
+    hop.now = None;
+    Ok(())
+}
+
 /// One piece of `unit`'s hop: applied (unless it continues or re-calls the answer still owed) and
-/// written into the host's buffers. Answers the outcome and whether the unit is done.
+/// written into the host's buffers. A task hop's first ATTEMPT opens its task first, and the far
+/// end's answer settles it before anything is written. Answers the outcome and whether the unit is
+/// done.
 fn piece(
+    reach: &Reach<'_>,
     unit: &mut Unit,
     input: Lent<'_, OnPieceIn>,
     out: &mut Out<'_, OnPieceOut>,
@@ -446,36 +619,62 @@ fn piece(
     let given = input.get();
     let bytes = input.field(|i| &i.bytes).bytes();
     let member = input.field(|i| &i.member).as_str().unwrap_or_default();
+    let caller = input.field(|i| &i.caller_ref).as_str().unwrap_or_default();
     let url = url_of(unit, member).map(str::to_string);
+    let pass = &mut unit.pass;
     let Some(hop) = unit.hop.as_mut() else {
         return (Outcome::Refused, false);
     };
-    // A re-call carries the same piece again (after a short answer) or nothing at all (after
-    // `more = 1`: no bytes, no flags, no attempt); either way it is served from what is owed.
+    // A re-call carries the same piece again (after a short or pending answer) or nothing at all
+    // (after `more = 1`: no bytes, no flags, no attempt); either way it is served from what is owed.
     let continues = hop.outbox.live
         && (hop.outbox.recall || (bytes.is_empty() && given.flags == 0 && given.attempt_no == 0));
     if !continues {
-        let from = match given.from {
-            FROM_KERNEL => relay::From::Kernel(url.as_deref()),
-            FROM_CALLER => relay::From::Caller,
-            FROM_FAR_END => relay::From::FarEnd,
-            _ => return (Outcome::Refused, false),
+        let mut writes = Vec::new();
+        let opened = if given.from == FROM_KERNEL {
+            match open_task(reach, hop, pass, (caller, member), &mut writes) {
+                Err(outcome) => return (outcome, false),
+                Ok(refused) => refused,
+            }
+        } else {
+            None
         };
-        let answer = hop.relay.on_piece(relay::Piece {
-            from,
-            bytes,
-            status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
-            last: given.flags & PIECE_LAST != 0,
-        });
+        let answer = match opened {
+            Some(reply) => Answer::ToCaller(reply),
+            None => {
+                let from = match given.from {
+                    FROM_KERNEL => relay::From::Kernel(url.as_deref()),
+                    FROM_CALLER => relay::From::Caller,
+                    FROM_FAR_END => relay::From::FarEnd,
+                    _ => return (Outcome::Refused, false),
+                };
+                hop.relay.on_piece(relay::Piece {
+                    from,
+                    bytes,
+                    status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
+                    last: given.flags & PIECE_LAST != 0,
+                })
+            }
+        };
         let Some(outbox) = Outbox::of(answer) else {
             return (Outcome::Refused, false);
         };
         hop.outbox = outbox;
+        hop.outbox.writes = writes;
+        hop.settle = hop.relay.take_settled();
+        // Until it is written, a re-call of this piece is served from what is owed.
+        hop.outbox.recall = true;
+    }
+    if hop.settle.is_some() {
+        if let Err(outcome) = settle_task(reach, hop, pass, caller) {
+            return (outcome, false);
+        }
     }
     let ob = &mut hop.outbox;
-    let (mut reply, mut fields, mut arena, mut units) = (
+    let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
         input.fields_buf(),
+        input.records_buf(),
         input.arena_buf(),
         input.units_buf(),
     );
@@ -508,12 +707,23 @@ fn piece(
         }
         None => {}
     }
-    let short = !(fields.fits() && arena.fits() && units.fits());
+    for w in &ob.writes {
+        records.push(RecordWrite {
+            kind: kind_index(w.kind),
+            op: RECORD_PUT,
+            key: arena.span(w.key.as_bytes()),
+            value: arena.span(&w.value),
+        });
+    }
+    let short = !(fields.fits() && records.fits() && arena.fits() && units.fits());
     let (fw, fnd) = fields.settle(short);
+    let (rw, rnd) = records.settle(short);
     let (aw, and) = arena.settle(short);
     let (uw, und) = units.settle(short);
     out.set(|o| &o.fields_written, fw as u32);
     out.set(|o| &o.fields_needed, fnd as u32);
+    out.set(|o| &o.records_written, rw as u32);
+    out.set(|o| &o.records_needed, rnd as u32);
     out.set(|o| &o.arena_written, aw as u64);
     out.set(|o| &o.arena_needed, and as u64);
     out.set(|o| &o.units_written, uw as u32);
@@ -525,6 +735,7 @@ fn piece(
     let n = reply.stream(&ob.bytes[ob.at..]);
     ob.at += n;
     ob.head = None;
+    ob.writes.clear();
     ob.recall = false;
     let more = ob.at < ob.bytes.len();
     ob.live = more;
@@ -561,8 +772,12 @@ slot!(
             return crate::task_door::on_piece(plane, &instance, input, out)
                 .unwrap_or(Outcome::Refused);
         }
+        let reach = Reach {
+            plane,
+            ticket: instance.ticket(),
+        };
         let (outcome, done) = plane.units.with(&unit, |u| match u {
-            Some(u) => piece(u, input, &mut out),
+            Some(u) => piece(&reach, u, input, &mut out),
             None => (Outcome::Refused, false),
         });
         if done {

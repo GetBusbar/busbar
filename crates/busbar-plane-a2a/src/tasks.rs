@@ -233,7 +233,7 @@ pub struct Step<'a> {
 }
 
 /// Win `held`'s next sequence and write the change: `row` as the task, and the event `kind` sealed
-/// over it. `false` when another writer won the sequence first.
+/// over it. The task as now held, or `None` when another writer won the sequence first.
 fn commit(
     rec: &mut dyn Records,
     at: &Step<'_>,
@@ -241,10 +241,10 @@ fn commit(
     row: TaskRow,
     kind: &str,
     out: &mut Vec<Write>,
-) -> Result<bool, Halt> {
+) -> Result<Option<Held>, Halt> {
     let key = event_key(at.caller, &row.task_id, held.next_seq);
     if !rec.claim(KIND_TASK_EVENT, &key, CLAIM_TTL_MS)? {
-        return Ok(false);
+        return Ok(None);
     }
     let ev = seal(held, &row, kind, at.request_id, at.now);
     let next = Held {
@@ -262,7 +262,7 @@ fn commit(
         key,
         value: encode(&ev)?,
     });
-    Ok(true)
+    Ok(Some(next))
 }
 
 /// SUBMIT `row` for the caller: the task, and its chain's genesis event, stamped with the row's
@@ -289,13 +289,57 @@ pub fn submit(
         now: row.created_at,
         ..*at
     };
-    if commit(rec, &at, &genesis, row.clone(), EV_SUBMITTED, out)? {
-        Ok(row)
-    } else {
-        Err(Halt::Failed(format!(
-            "task `{}` already exists",
-            row.task_id
-        )))
+    submit_held(rec, &at, &genesis, row, out).map(|held| held.row)
+}
+
+/// The genesis commit of [`submit`], answering the task as held.
+fn submit_held(
+    rec: &mut dyn Records,
+    at: &Step<'_>,
+    genesis: &Held,
+    row: TaskRow,
+    out: &mut Vec<Write>,
+) -> Result<Held, Halt> {
+    let id = row.task_id.clone();
+    commit(rec, at, genesis, row, EV_SUBMITTED, out)?
+        .ok_or_else(|| Halt::Failed(format!("task `{id}` already exists")))
+}
+
+/// OPEN a relayed task: SUBMIT `row` for the caller, then record its DISPATCH to `agent_id` on the
+/// chain the submit just started (the engine's submit then `record_dispatch`, both before the
+/// hop). Both events are written in this one answer, so the dispatch is sealed over the genesis
+/// held here rather than read back. A dispatch that cannot be recorded leaves the submitted task.
+///
+/// # Errors
+/// As [`submit`].
+pub fn open(
+    rec: &mut dyn Records,
+    at: &Step<'_>,
+    mut row: TaskRow,
+    agent_id: &str,
+    out: &mut Vec<Write>,
+) -> Result<TaskRow, Halt> {
+    if !is_caller(at.caller) {
+        return Err(Halt::Failed("no caller to hold the task under".into()));
+    }
+    row.principal = at.caller.to_string();
+    let genesis = Held {
+        row: row.clone(),
+        next_seq: 1,
+        tail_hash: String::new(),
+    };
+    let stamped = Step {
+        now: row.created_at,
+        ..*at
+    };
+    let held = submit_held(rec, &stamped, &genesis, row, out)?;
+    let mut next = held.row.clone();
+    next.agent_id = agent_id.to_string();
+    next.updated_at = at.now;
+    match commit(rec, at, &held, next, EV_DELEGATED, out) {
+        Ok(Some(dispatched)) => Ok(dispatched.row),
+        Ok(None) | Err(Halt::Failed(_)) => Ok(held.row),
+        Err(Halt::Pending) => Err(Halt::Pending),
     }
 }
 
@@ -325,7 +369,7 @@ pub fn change(
         let Some((row, kind)) = plan(&held.row).map_err(Halt::Failed)? else {
             return Ok(None);
         };
-        if commit(rec, at, &held, row.clone(), kind, out)? {
+        if commit(rec, at, &held, row.clone(), kind, out)?.is_some() {
             return Ok(Some(row));
         }
     }

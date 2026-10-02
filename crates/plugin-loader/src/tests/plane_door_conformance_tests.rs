@@ -590,9 +590,10 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
         "piece after done {}",
         piece(p, 5, FROM_FAR_END, last, 200, CARD_ANSWER, b"", 4096)
     ));
-    // A unit `on_piece` does not serve yet (a task-bearing verb) is REFUSED.
+    // A hop about a task opens its task over the host's records at its first ATTEMPT: an
+    // instance opened with no host tables cannot, so the piece FAILS and nothing is relayed.
     t.push(format!(
-        "piece unserved {}",
+        "piece task without host {}",
         piece(p, 2, FROM_KERNEL, 0, 0, b"", b"vendor", 64)
     ));
     // THE TARGET LINE: the envelope its request spells, decided as the JSON-RPC line decides it,
@@ -793,7 +794,10 @@ fn the_plane_door_answers_identically_linked_and_dropped_in() {
         "a finished unit is forgotten"
     );
     assert!(
-        relay[6].starts_with(&format!("piece unserved piece {:?}", Outcome::Refused)),
+        relay[6].starts_with(&format!(
+            "piece task without host piece {:?} flags=0 more=0",
+            Outcome::Failed
+        )),
         "{}",
         relay[6]
     );

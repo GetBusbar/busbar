@@ -25,7 +25,9 @@
 use busbar_contract::jsonrpc::{read_response, NotAnAnswerKind, Reply as RpcReply};
 use serde_json::{json, Value};
 
+use crate::a2a::task::TaskState;
 use crate::arrival::{Refusal, JSON_MEDIA_TYPE};
+use crate::identity;
 
 /// The verb every JSON-RPC hop is sent with.
 pub const VERB: &str = "POST";
@@ -243,6 +245,38 @@ pub struct Relay {
     far: Vec<u8>,
     received: u64,
     answered: bool,
+    task: Option<TaskHop>,
+    instead: Option<Vec<u8>>,
+    instead_sent: bool,
+    settled: Option<Settled>,
+}
+
+/// THE TASK A RELAYED HOP IS FOR (ARCHITECT ruling B1): busbar's identity for it, whether the
+/// request addressed a task the caller already holds, and the skill the arrival matched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskHop {
+    /// busbar's task id.
+    pub task_id: String,
+    /// busbar's `contextId`.
+    pub context_id: String,
+    /// The request named a task the caller holds: a failed hop says nothing about that task.
+    pub addressed: bool,
+    /// The skill the arrival matched, annotated on the answer.
+    pub skill: Option<String>,
+}
+
+/// WHAT A TASK HOP'S ANSWER SAYS ABOUT ITS TASK, for the door to record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Settled {
+    /// The far end answered: the state it reported, and its own id for the task.
+    Reported {
+        /// The reported state (`Working` when none could be read).
+        state: TaskState,
+        /// The far end's own task id, before the rewrite.
+        backend_id: Option<String>,
+    },
+    /// The hop failed a task it opened: the task ends `failed`.
+    Failed,
 }
 
 impl Relay {
@@ -257,7 +291,40 @@ impl Relay {
             far: Vec::new(),
             received: 0,
             answered: false,
+            task: None,
+            instead: None,
+            instead_sent: false,
+            settled: None,
         }
+    }
+
+    /// The hop is for `task`: its answer leaves under busbar's identity and its refusals name the
+    /// task.
+    pub fn for_task(&mut self, task: TaskHop) {
+        self.task = Some(task);
+    }
+
+    /// The request id the hop answers.
+    #[must_use]
+    pub const fn id(&self) -> &Value {
+        &self.id
+    }
+
+    /// The task this hop is for, once one is open.
+    #[must_use]
+    pub const fn task(&self) -> Option<&TaskHop> {
+        self.task.as_ref()
+    }
+
+    /// Every attempt sends `body` in place of the caller's bytes (a request whose task ids were
+    /// translated to the far end's).
+    pub fn send_instead(&mut self, body: Vec<u8>) {
+        self.instead = Some(body);
+    }
+
+    /// What the answer said about the task, once; `None` before the answer or for a task-less hop.
+    pub fn take_settled(&mut self) -> Option<Settled> {
+        self.settled.take()
     }
 
     /// `true` once the caller's answer has been given.
@@ -288,6 +355,7 @@ impl Relay {
                 self.status = None;
                 self.far.clear();
                 self.received = 0;
+                self.instead_sent = false;
                 match url.and_then(target_of) {
                     Some(target) => Answer::Attempt(Attempt {
                         verb: VERB,
@@ -302,11 +370,19 @@ impl Relay {
                 }
             }
             From::Caller => {
-                self.sent = self.sent.saturating_add(piece.bytes.len() as u64);
-                if piece.bytes.is_empty() {
+                let bytes = match &self.instead {
+                    Some(_) if self.instead_sent => Vec::new(),
+                    Some(instead) => {
+                        self.instead_sent = true;
+                        instead.clone()
+                    }
+                    None => piece.bytes.to_vec(),
+                };
+                self.sent = self.sent.saturating_add(bytes.len() as u64);
+                if bytes.is_empty() {
                     Answer::Nothing
                 } else {
-                    Answer::ToFarEnd(piece.bytes.to_vec())
+                    Answer::ToFarEnd(bytes)
                 }
             }
             From::FarEnd => self.far_end_piece(piece),
@@ -329,11 +405,82 @@ impl Relay {
             return Answer::Refused;
         };
         self.answered = true;
-        Answer::ToCaller(match read_answer(status, &self.far, &self.id) {
-            Ok(result) => relayed(&self.id, result),
-            Err(refusal) => refusal.reply(&self.id),
+        let answer = read_answer(status, &self.far, &self.id);
+        let Some(task) = &self.task else {
+            return Answer::ToCaller(match answer {
+                Ok(result) => relayed(&self.id, result),
+                Err(refusal) => refusal.reply(&self.id),
+            });
+        };
+        Answer::ToCaller(match answer {
+            Ok(mut result) => {
+                self.settled = Some(Settled::Reported {
+                    state: identity::reported_task_state(&result),
+                    backend_id: identity::backend_task_id(&result),
+                });
+                identity::rewrite_identity(
+                    &mut result,
+                    &task.task_id,
+                    &task.context_id,
+                    task.skill.as_deref(),
+                );
+                relayed(&self.id, result)
+            }
+            Err(refusal) => {
+                let code = (refusal == HopRefusal::BackendError)
+                    .then(|| backend_error_code(&self.far))
+                    .flatten();
+                let (reply, failed) = task_refusal(code, task, &self.id);
+                if failed {
+                    self.settled = Some(Settled::Failed);
+                }
+                reply
+            }
         })
     }
+}
+
+/// The far end's JSON-RPC error `code`, when it answered one A2A defines.
+fn backend_error_code(body: &[u8]) -> Option<i64> {
+    serde_json::from_slice::<Value>(body)
+        .ok()?
+        .pointer("/error/code")?
+        .as_i64()
+        .filter(|c| identity::status_of_code(*c).is_some())
+}
+
+/// THE CALLER'S ANSWER TO A REFUSED TASK HOP, and whether the task ends `failed` (the engine's
+/// `receive::refuse_hop`): the far end's own A2A error code travels, its prose never does, and the
+/// refusal names the task. A hop addressed to a task the caller holds fails the request, never the
+/// task.
+fn task_refusal(code: Option<i64>, task: &TaskHop, id: &Value) -> (Reply, bool) {
+    let (code, message, failed) = match (task.addressed, code) {
+        (true, code) => (
+            code.unwrap_or(CODE_INVALID_AGENT_RESPONSE),
+            "the backend agent refused this request",
+            false,
+        ),
+        (false, Some(code)) => (code, "the backend agent refused this task", true),
+        (false, None) => (
+            CODE_INVALID_AGENT_RESPONSE,
+            "the backend agent did not complete this task",
+            true,
+        ),
+    };
+    let status = identity::status_of_code(code).unwrap_or(STATUS_BAD_GATEWAY);
+    let refusal = Refusal {
+        status,
+        id: Some(id.clone()),
+        code,
+        message: message.to_string(),
+    };
+    let reply = Reply {
+        status,
+        content_type: JSON_MEDIA_TYPE,
+        body: serde_json::to_vec(&identity::about_task(&refusal, &task.task_id))
+            .unwrap_or_default(),
+    };
+    (reply, failed)
 }
 
 #[cfg(test)]

@@ -56,6 +56,7 @@ pub mod diagnostics;
 pub mod door;
 pub mod facts;
 pub mod frame;
+pub mod identity;
 pub mod jsonrpc;
 pub mod local;
 pub mod meta;
@@ -70,6 +71,7 @@ pub mod rest;
 pub mod sse;
 pub mod surface;
 pub mod task_door;
+pub mod task_hop;
 pub mod tasks;
 
 pub use frame::{rewrite, Direction, Frame, Tap, Transform};
