@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# WebSocket conformance harness driver: Autobahn|Testsuite against a real busbar ws-over-tcp
-# subject, following the same control-always + subject-armed-or-red shape as
+# WebSocket conformance harness driver: Autobahn|Testsuite against busbar's ws door, framed by the
+# connector's own listener (the ws-conformance-subject), following the same control-always + subject-armed-or-red shape as
 # `scripts/mcp-conformance.sh`.
 #
 # DOCKER-LIVE IS CI-ONLY. This script's `--selftest` mode never touches Docker: it proves the
