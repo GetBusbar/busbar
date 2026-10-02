@@ -92,11 +92,12 @@ pub(super) fn write_bedrock_citation(
     // case alone drops the url, with a warn.
     if let Some(u) = url {
         if located {
-            tracing::warn!(
-                url = %u,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::block("text"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [url = %u, ],
                 "dropping citation `url` on a bedrock egress: the Converse `CitationLocation` is a \
-                 union and this citation's `documentChar` member already fills it"
-            );
+                 union and this citation's `documentChar` member already fills it");
         } else {
             // BED-14: `domain` beside the url when the IR carries it.
             let mut web = serde_json::Map::new();

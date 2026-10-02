@@ -82,8 +82,10 @@ pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_js
             let (key, params_set) = match tool {
                 // OAI-09: Gemini has no free-text / grammar tool (N).
                 IrHostedTool::Custom(_) => {
-                    tracing::warn!(
-                        hosted_tool = tool.kind_str(),
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::member("tools"),
+                        &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+                        [hosted_tool = tool.kind_str(),],
                         "dropping an OpenAI custom tool on Gemini egress: Gemini has no free-text \
                          / grammar tool (lossy-by-target)"
                     );
@@ -106,8 +108,10 @@ pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_js
                 ),
             };
             if params_set {
-                tracing::warn!(
-                    hosted_tool = tool.kind_str(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member("tools"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [hosted_tool = tool.kind_str(),],
                     "dropping hosted-tool parameters on Gemini egress: {key} takes none of them; \
                      the tool is kept"
                 );
@@ -172,11 +176,12 @@ pub(super) fn write_gemini_labels(metadata: &[(String, String)]) -> serde_json::
         }
     }
     if dropped > 0 {
-        tracing::warn!(
-            dropped,
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::member("metadata"),
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [dropped, ],
             "dropping metadata entries on Gemini egress: labels allow at most 64 entries of \
-             lowercase letters, digits, '_' and '-' (a key starting with a letter), 63 characters each"
-        );
+             lowercase letters, digits, '_' and '-' (a key starting with a letter), 63 characters each");
     }
     serde_json::Value::Object(out)
 }

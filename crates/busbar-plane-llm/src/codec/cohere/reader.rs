@@ -1243,6 +1243,10 @@ impl ProtocolReader for CohereReader {
         super::RESPONSE_BLOCKS
     }
 
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
     fn read_response(
         &self,
         body: &serde_json::Value,

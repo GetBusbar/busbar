@@ -142,12 +142,13 @@ pub(crate) fn write_modalities(req: &IrRequest) -> Option<serde_json::Value> {
             IrModality::Text => out.push(serde_json::json!(m.as_str())),
             IrModality::Audio if has_audio_member => out.push(serde_json::json!(m.as_str())),
             IrModality::Audio | IrModality::Image => {
-                tracing::warn!(
-                    modality = m.as_str(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member("output_modalities"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [modality = m.as_str(), ],
                     "dropping an output modality on OpenAI Chat egress: Chat produces image output \
                      never, and audio output only beside its own `audio` request member, which \
-                     does not cross dialects"
-                );
+                     does not cross dialects");
             }
         }
     }
@@ -188,14 +189,19 @@ pub(crate) fn write_web_search(req: &IrRequest) -> Option<serde_json::Value> {
                 written = Some(web_search_options(search));
             }
             IrHostedTool::WebSearch(_) => {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member("tools"),
+                    &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+                    [],
                     "dropping a second hosted web search on OpenAI Chat egress: Chat has one \
                      `web_search_options` member per request"
                 );
             }
             IrHostedTool::CodeExecution | IrHostedTool::WebFetch(_) => {
-                tracing::warn!(
-                    hosted_tool = tool.kind_str(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member("tools"),
+                    &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+                    [hosted_tool = tool.kind_str(),],
                     "dropping a hosted tool on OpenAI Chat egress: Chat Completions has no \
                      built-in tool of this kind (only web search, as `web_search_options`)"
                 );
@@ -213,7 +219,10 @@ fn web_search_options(search: &IrWebSearch) -> serde_json::Value {
         || !search.allowed_domains.is_empty()
         || !search.blocked_domains.is_empty()
     {
-        tracing::warn!(
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::member("tools"),
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [],
             "dropping web search max_uses / domain filters on OpenAI Chat egress: \
              `web_search_options` has no member for them; the search itself is kept"
         );

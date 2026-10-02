@@ -61,10 +61,9 @@ pub struct Seam<'a> {
 #[derive(Clone, Debug)]
 pub struct Dropped {
     pub path: Cow<'static, str>,
-    /// Set when `path` is an IR name, not a wire path (a seam gate on an IR slot): [`note`] names
-    /// the drop by the caller's wire path for the IR names listed here ([`wire_path`]; empty: `path`
-    /// itself).
-    pub rows: Option<&'static [&'static str]>,
+    /// How [`note`] names the drop: by `path` as given, or by the source dialect's wire path for
+    /// an IR member or a content block.
+    pub at: At,
     pub diag: &'static Diagnostic,
     pub message: Cow<'static, str>,
 }
@@ -78,7 +77,7 @@ impl Dropped {
     ) -> Dropped {
         Dropped {
             path: path.into(),
-            rows: None,
+            at: At::Wire,
             diag,
             message: message.into(),
         }
@@ -93,7 +92,7 @@ impl Dropped {
     ) -> Dropped {
         Dropped {
             path: Cow::Borrowed(name),
-            rows: Some(&[]),
+            at: At::Slot(&[]),
             diag,
             message: message.into(),
         }
@@ -103,23 +102,135 @@ impl Dropped {
     /// slot's own name). The reasoning gate names an effort ask by the effort rows and a budget ask
     /// by the budget rows.
     pub fn rows(mut self, rows: &'static [&'static str]) -> Dropped {
-        self.rows = Some(rows);
+        self.at = At::Slot(rows);
         self
     }
+
+    /// A writer's drop of `member` ([`writer_drop!`]).
+    pub fn member(
+        member: Member,
+        diag: &'static Diagnostic,
+        message: impl Into<Cow<'static, str>>,
+    ) -> Dropped {
+        match member {
+            Member::Slot(name, rows) => Dropped::slot(name, diag, message).rows(rows),
+            Member::Block(kind) => Dropped {
+                path: Cow::Borrowed(kind),
+                at: At::Block,
+                diag,
+                message: message.into(),
+            },
+        }
+    }
 }
+
+/// How a [`Dropped`] is named.
+#[derive(Clone, Copy, Debug)]
+pub enum At {
+    /// `path` is the wire path.
+    Wire,
+    /// `path` is an IR member's name: on a request, the caller's wire path for it ([`wire_path`],
+    /// read from the listed IR names' rows, or `path`'s own when the list is empty).
+    Slot(&'static [&'static str]),
+    /// `path` is an IR block kind: the source dialect's content-block container
+    /// ([`Blocks::at`]), the block's kind in the source dialect's spelling as the warn's `kind`.
+    Block,
+}
+
+/// What a writer drops ([`writer_drop!`]): an IR member, or a content block of an IR kind.
+#[derive(Clone, Copy, Debug)]
+pub enum Member {
+    /// The IR member `name`, named by the first of the listed IR names the source dialect has a row
+    /// for (empty: `name` itself).
+    Slot(&'static str, &'static [&'static str]),
+    /// A content block of the IR kind (`image`, `document`, `audio`, `video`, `thinking`, `text`,
+    /// `tool_use`, `tool_result`), named by the source dialect's block container.
+    Block(&'static str),
+}
+
+/// The IR member `name`, by its own rows.
+pub const fn member(name: &'static str) -> Member {
+    Member::Slot(name, &[])
+}
+
+/// The reasoning ask: named by the caller's effort row, else its budget row.
+pub const REASONING: Member = Member::Slot(
+    "reasoning",
+    &["reasoning_effort", "reasoning", "thinking_budget"],
+);
+
+/// A content block of the IR kind `kind`.
+pub const fn block(kind: &'static str) -> Member {
+    Member::Block(kind)
+}
+
+/// Whether a TRANSLATE attempt is open on this thread.
+pub fn is_open() -> bool {
+    OPEN.with(|o| o.borrow().is_some())
+}
+
+/// THE WRITER DROP: a writer's member or block that does not cross. Inside a TRANSLATE attempt it
+/// is [`note`]d (one warn per path naming the source dialect's wire path, and the audit); outside
+/// one (a same-dialect write, a direct writer call) the writer's own warn is emitted unchanged and
+/// nothing is audited. `fields` are the writer warn's own fields (each followed by a comma).
+///
+/// `writer_drop!(member("tool_choice"), &DIAG, [count = n,], "dropping ... {x}", x = 1)`
+macro_rules! writer_drop {
+    ($member:expr, $diag:expr, [$($field:tt)*], $($msg:tt)+) => {{
+        if $crate::codec::drops::is_open() {
+            $crate::codec::drops::note($crate::codec::drops::Dropped::member(
+                $member,
+                $diag,
+                format!($($msg)+),
+            ));
+        } else {
+            tracing::warn!($($field)* $($msg)+);
+        }
+    }};
+}
+pub(crate) use writer_drop;
 
 /// THE NAME RESOLVER: the wire path (notation A, as its map file's rows spell it) at which the
 /// request dialect `dialect` carries the IR name `name` ([`crate::codec::carry::wire_path`]; the
 /// first of `rows` it has a row for, when `rows` lists any), else `name` itself. Gemini's `n` is
 /// `generationConfig.candidateCount`, OpenAI's `n` is `n`.
 pub fn wire_path(dialect: &str, name: &str, rows: &[&str]) -> String {
+    resolve(dialect, name, rows).unwrap_or_else(|| name.to_string())
+}
+
+/// [`wire_path`], `None` when `dialect` has no row for it (the drop is then named by the IR name,
+/// which the drop-names census counts).
+pub fn resolve(dialect: &str, name: &str, rows: &[&str]) -> Option<String> {
     let rows = if rows.is_empty() { &[name][..] } else { rows };
     crate::codec::proto_codec::with_reader(dialect, |r| {
         rows.iter()
             .find_map(|n| crate::codec::carry::wire_path(r.request_map(), n))
     })
     .flatten()
-    .unwrap_or_else(|| name.to_string())
+}
+
+/// A content block of the IR kind `kind` in the dialect `dialect`'s `direction` grammar: its
+/// container path (notation A) and its kind as the dialect spells it; `None` for either the
+/// dialect does not declare.
+pub fn block_path(
+    dialect: &str,
+    direction: Direction,
+    kind: &str,
+) -> (Option<String>, Option<&'static str>) {
+    crate::codec::proto_codec::with_reader(dialect, |r| {
+        let grammar = match direction {
+            Direction::Request => r.request_blocks(),
+            Direction::Response => r.response_blocks(),
+        };
+        let at = grammar.first().map(|g| g.at.join("."));
+        let spelled = r
+            .block_kinds()
+            .iter()
+            .find(|(ir, _)| *ir == kind)
+            .map(|(_, wire)| *wire);
+        (at, spelled)
+    })
+    .unwrap_or((None, None))
 }
 
 /// The CALLER's wire path for the IR name `name`, for a drop warned outside [`note`] (a writer's
@@ -195,25 +306,51 @@ pub fn note(d: Dropped) {
         let Some(open) = o.as_mut() else {
             return;
         };
-        let d = match d.rows {
-            Some(rows) if open.direction == Direction::Request => Dropped {
-                path: Cow::Owned(wire_path(&open.ingress, &d.path, rows)),
+        // The source side: the caller's bytes on a request, the far end's on an answer.
+        let source = match open.direction {
+            Direction::Request => open.ingress.as_str(),
+            Direction::Response => open.egress.as_str(),
+        };
+        let mut kind = None;
+        let d = match d.at {
+            At::Slot(rows) if open.direction == Direction::Request => Dropped {
+                path: Cow::Owned(wire_path(source, &d.path, rows)),
                 ..d
             },
+            At::Block => {
+                let (at, spelled) = block_path(source, open.direction, &d.path);
+                kind = Some(spelled.map(Cow::Borrowed).unwrap_or_else(|| d.path.clone()));
+                Dropped {
+                    path: at.map(Cow::Owned).unwrap_or_else(|| d.path.clone()),
+                    ..d
+                }
+            }
             _ => d,
         };
         if open.paths.iter().any(|p| p.as_str() == d.path.as_ref()) {
             return;
         }
-        busbar_contract::diag_warn!(
-            d.diag,
-            direction = open.direction.as_str(),
-            ingress = %open.ingress,
-            egress = %open.egress,
-            path = %d.path,
-            "{}",
-            d.message
-        );
+        match kind {
+            Some(kind) => busbar_contract::diag_warn!(
+                d.diag,
+                direction = open.direction.as_str(),
+                ingress = %open.ingress,
+                egress = %open.egress,
+                path = %d.path,
+                kind = %kind,
+                "{}",
+                d.message
+            ),
+            None => busbar_contract::diag_warn!(
+                d.diag,
+                direction = open.direction.as_str(),
+                ingress = %open.ingress,
+                egress = %open.egress,
+                path = %d.path,
+                "{}",
+                d.message
+            ),
+        }
         open.paths.push(d.path.into_owned());
     });
 }
@@ -403,3 +540,7 @@ mod names_tests;
 #[cfg(test)]
 #[path = "tests/drop_writer_tests.rs"]
 mod writer_tests;
+
+#[cfg(test)]
+#[path = "tests/drop_census_tests.rs"]
+mod census_tests;

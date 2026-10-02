@@ -94,7 +94,10 @@ pub(super) fn write_hosted_tool(
                 serde_json::json!(allowed),
             );
             if !blocked.is_empty() {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member("tools"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping hosted-tool blocked_domains on Anthropic egress: Anthropic accepts \
                      allowed_domains or blocked_domains, not both; the allow-list is kept"
                 );
@@ -124,10 +127,12 @@ pub(super) fn write_hosted_tool(
                 obj.insert(keys::USER_LOCATION.to_string(), loc.write_flat());
             }
             if search.search_context_size.is_some() {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member("tools"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping web search search_context_size on Anthropic egress: the Anthropic web \
-                     search tool has no such member; the tool is kept"
-                );
+                     search tool has no such member; the tool is kept");
             }
         }
         crate::codec::ir::IrHostedTool::WebFetch(wf) => {
@@ -153,8 +158,10 @@ pub(super) fn write_hosted_tool(
         // OAI-09: Anthropic has no free-text / grammar tool (N): dropped with a warn and reported
         // by `dropped_egress_controls`.
         crate::codec::ir::IrHostedTool::Custom(_) => {
-            tracing::warn!(
-                hosted_tool = tool.kind_str(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::member("tools"),
+                &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+                [hosted_tool = tool.kind_str(),],
                 "dropping an OpenAI custom tool on Anthropic egress: Anthropic has no free-text / \
                  grammar tool (lossy-by-target)"
             );

@@ -1441,6 +1441,10 @@ impl ProtocolReader for BedrockReader {
     fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
         super::RESPONSE_BLOCKS
     }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
 }
 
 #[cfg(test)]

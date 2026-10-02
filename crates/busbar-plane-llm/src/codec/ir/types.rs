@@ -771,6 +771,20 @@ pub enum IrBlock {
 }
 
 impl IrBlock {
+    /// The block's IR kind, as a dropped block is named (`codec::drops::Member::Block`): `text`,
+    /// `thinking`, `tool_use`, `tool_result`, `image`, or the attachment's media kind.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            IrBlock::Text { .. } => "text",
+            IrBlock::Thinking { .. } => "thinking",
+            IrBlock::ToolUse { .. } => "tool_use",
+            IrBlock::ToolResult { .. } | IrBlock::Json(_) => "tool_result",
+            IrBlock::Image { .. } => "image",
+            IrBlock::Media { kind, .. } => kind.as_str(),
+            IrBlock::HostedToolRecord { .. } => "hosted_tool",
+        }
+    }
+
     /// Is this block's content OPAQUE to busbar — carried through verbatim, never readable as
     /// plaintext, and therefore never disclosable to an operator's sidecar?
     ///

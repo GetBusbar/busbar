@@ -209,6 +209,12 @@ pub trait ProtocolReader: Send + Sync {
     fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
         &[]
     }
+
+    /// How the dialect spells each IR content-block kind (`("image", "type=image_url")`), for a
+    /// dropped block's warn.
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
 }
 
 pub trait ProtocolWriter: Send + Sync {

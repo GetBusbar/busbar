@@ -268,6 +268,18 @@ const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
 ];
 
 /// The Gemini answer content grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    ("text", "text"),
+    ("image", "inlineData"),
+    ("document", "inlineData"),
+    ("audio", "inlineData"),
+    ("video", "inlineData"),
+    ("thinking", "thought"),
+    ("tool_use", "functionCall"),
+    ("tool_result", "functionResponse"),
+];
+
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
     at: &["candidates[]", "content", "parts[]"],
     tag: None,

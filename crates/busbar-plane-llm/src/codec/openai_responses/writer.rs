@@ -256,11 +256,12 @@ impl ProtocolWriter for ResponsesWriter {
                                     .as_deref()
                                     .filter(|_| super::slots::own_signature(*signature_origin));
                                 if signature.is_some() && emit_sig.is_none() {
-                                    tracing::warn!(
-                                        origin = ?signature_origin,
+                                    crate::codec::drops::writer_drop!(
+                                        crate::codec::drops::block("thinking"),
+                                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                        [origin = ?signature_origin, ],
                                         "dropping a foreign reasoning signature on Responses egress: \
-                                         `encrypted_content` accepts only an OpenAI-minted blob"
-                                    );
+                                         `encrypted_content` accepts only an OpenAI-minted blob");
                                 }
                                 // A wholly-empty reasoning block (no text, no signature it may
                                 // send) emits no item — never a fabricated `rs_` item around nothing.
@@ -290,7 +291,10 @@ impl ProtocolWriter for ResponsesWriter {
                             // (see the foreign-vendor-image and json-tool-result arms above), so
                             // the loss is visible rather than silent.
                             crate::codec::ir::IrBlock::Thinking { redacted, .. } if !*redacted => {
-                                tracing::warn!(
+                                crate::codec::drops::writer_drop!(
+                                    crate::codec::drops::block("thinking"),
+                                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                    [],
                                     "dropping non-Assistant Thinking block on Responses egress: a \
                                      `reasoning` input item asserts it is the model's own prior \
                                      reasoning, which only an Assistant-role message can carry"
@@ -413,7 +417,10 @@ impl ProtocolWriter for ResponsesWriter {
         // Auto/Required directive beside it.
         if let Some(names) = &req.allowed_tools {
             if !has_tools {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member("tool_choice"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping allowed_tools tool_choice on Responses egress: tool_choice is only \
                      allowed when tools are specified"
                 );
@@ -425,7 +432,10 @@ impl ProtocolWriter for ResponsesWriter {
             }
         } else if let Some(tc) = &req.tool_choice {
             if !has_tools {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member("tool_choice"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping tool_choice on Responses egress: tool_choice is only allowed when \
                      tools are specified (likely because the hosted tools that carried it were \
                      stripped on the cross-protocol seam)"
@@ -443,7 +453,10 @@ impl ProtocolWriter for ResponsesWriter {
         // per-request noise on the common tool-less case.
         if let Some(parallel) = req.parallel_tool_calls {
             if !has_tools {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member("parallel_tool_calls"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping parallel_tool_calls on Responses egress: it has no accompanying \
                      tools (likely because the hosted tools that carried it were stripped on the \
                      cross-protocol seam), so the backend's default parallelism applies"
@@ -483,7 +496,10 @@ impl ProtocolWriter for ResponsesWriter {
         }
 
         if crate::codec::carry::Slot::OutputModalities.carried(req) {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::member("output_modalities"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "responses writer: /v1/responses models no output-modality ask; dropping the \
                  non-text modalities (lossy-by-target)"
             );
@@ -549,7 +565,10 @@ impl ProtocolWriter for ResponsesWriter {
                         serde_json::json!({(keys::EFFORT): keys::NONE_WORD}),
                     );
                 } else {
-                    tracing::warn!(
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::REASONING,
+                        &crate::codec::diagnostics::IR_DROP_REASONING,
+                        [],
                         "omitting reasoning OFF on Responses egress: reasoning.effort \"none\" is \
                          not accepted by every OpenAI reasoning model and this lane does not \
                          declare it"
@@ -1859,10 +1878,12 @@ fn input_image_source_part(source: &crate::codec::ir::IrImageSource) -> Option<s
         // A foreign vendor reference (a Bedrock s3Location) has no Responses analog — drop with a
         // warn rather than corrupt the block.
         crate::codec::ir::IrImageSource::Vendor { .. } => {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::block("image"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping unresolvable foreign vendor image reference on Responses egress: no \
-                 cross-vendor analog"
-            );
+                 cross-vendor analog");
             None
         }
         // A URL/base64 image reconstructs the original `image_url`.
@@ -1881,8 +1902,10 @@ fn input_file_part(
     name: Option<&str>,
 ) -> Option<serde_json::Value> {
     if kind != crate::codec::ir::IrMediaKind::Document {
-        tracing::warn!(
-            media_kind = kind.as_str(),
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::block(kind.as_str()),
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [media_kind = kind.as_str(),],
             "dropping attachment on Responses egress: the input surface has an `input_file` part \
              and no audio or video part; the block is NOT emitted"
         );
@@ -1915,11 +1938,12 @@ fn input_file_part(
             part.insert(keys::FILE_ID.to_string(), serde_json::json!(id));
         }
         crate::codec::ir::IrImageSource::Vendor { vendor, .. } => {
-            tracing::warn!(
-                vendor = %vendor,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::block("document"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [vendor = %vendor, ],
                 "dropping document attachment on Responses egress: the source is a foreign vendor \
-                 file handle this backend cannot resolve; the block is NOT emitted"
-            );
+                 file handle this backend cannot resolve; the block is NOT emitted");
             return None;
         }
     }

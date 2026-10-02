@@ -372,6 +372,16 @@ const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
 ];
 
 /// The answer content-block grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    ("text", "type=text"),
+    ("image", "type=image"),
+    ("document", "type=document"),
+    ("thinking", "type=thinking"),
+    ("tool_use", "type=tool_use"),
+    ("tool_result", "type=tool_result"),
+];
+
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
     at: &["content[]"],
     tag: Some(keys::TYPE),
@@ -1172,12 +1182,13 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                             (keys::SOURCE): { (keys::TYPE): keys::BASE64, (MEDIA_TYPE): format!("image/{subtype}"), (keys::DATA): data }
                         }),
                         None => {
-                            tracing::warn!(
-                                media_type = %media_type,
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::block("image"),
+                                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                [media_type = %media_type, ],
                                 "dropping image block on Anthropic egress: media_type is not one of \
                                  image/{{jpeg,png,gif,webp}}, the only set Anthropic accepts — \
-                                 emitting it verbatim would 400 the backend"
-                            );
+                                 emitting it verbatim would 400 the backend");
                             serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "" })
                         }
                     }
@@ -1216,8 +1227,10 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             // they get here so nothing is emitted for them; the placeholder below is defensive for a
             // direct `write_block` call.
             if *kind != crate::codec::ir::IrMediaKind::Document {
-                tracing::warn!(
-                    media_kind = kind.as_str(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::block(kind.as_str()),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [media_kind = kind.as_str(),],
                     "dropping attachment on Anthropic egress: the Messages API has a `document` \
                      content block and NO audio or video block, so this attachment has no native \
                      slot; it is NOT emitted"
@@ -1385,31 +1398,35 @@ fn attachment_is_sendable(block: &crate::codec::ir::IrBlock) -> bool {
                 if *vendor == VENDOR_NAME {
                     return true;
                 }
-                tracing::warn!(
-                    vendor = %vendor,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::block("image"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [vendor = %vendor, ],
                     "dropping unresolvable vendor-scoped image reference on Anthropic egress: a \
                      Responses input_image.file_id or a Bedrock s3Location has no cross-vendor analog; \
-                     the block is NOT emitted"
-                );
+                     the block is NOT emitted");
                 false
             }
             crate::codec::ir::IrImageSource::Base64 { media_type, .. } => {
                 if crate::codec::ir::image_subtype_if_supported(media_type).is_some() {
                     return true;
                 }
-                tracing::warn!(
-                    media_type = %media_type,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::block("image"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [media_type = %media_type, ],
                     "dropping image block from anthropic request egress: media_type is not one of \
-                     image/{{jpeg,png,gif,webp}} and anthropic 400s anything else"
-                );
+                     image/{{jpeg,png,gif,webp}} and anthropic 400s anything else");
                 false
             }
             crate::codec::ir::IrImageSource::Url(_) => true,
         },
         crate::codec::ir::IrBlock::Media { kind, source, .. } => {
             if *kind != crate::codec::ir::IrMediaKind::Document {
-                tracing::warn!(
-                    media_kind = kind.as_str(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::block(kind.as_str()),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [media_kind = kind.as_str(),],
                     "dropping attachment from anthropic request egress: the Messages API has no \
                      audio or video content block"
                 );
@@ -1419,23 +1436,25 @@ fn attachment_is_sendable(block: &crate::codec::ir::IrBlock) -> bool {
                 crate::codec::ir::IrImageSource::Vendor { vendor, .. }
                     if *vendor != VENDOR_NAME =>
                 {
-                    tracing::warn!(
-                        vendor = %vendor,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::block("document"),
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [vendor = %vendor, ],
                         "dropping document attachment from anthropic request egress: the source is \
-                         a foreign vendor file handle anthropic's backend cannot resolve"
-                    );
+                         a foreign vendor file handle anthropic's backend cannot resolve");
                     false
                 }
                 crate::codec::ir::IrImageSource::Base64 { media_type, data } => {
                     if inline_document_source(media_type, data).is_some() {
                         return true;
                     }
-                    tracing::warn!(
-                        media_type = %media_type,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::block("document"),
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [media_type = %media_type, ],
                         "dropping document attachment from anthropic request egress: anthropic has \
                          an inline document source only for application/pdf (base64) and UTF-8 \
-                         text (text source); this mime has no native slot"
-                    );
+                         text (text source); this mime has no native slot");
                     false
                 }
                 _ => true,
@@ -1521,7 +1540,10 @@ fn write_message(
                 break 'block None;
             }
             if block.is_citation_carrier() {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::block("text"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping citations with no text on Anthropic egress: an empty text block is \
                      rejected (COH-17)"
                 );
@@ -1538,8 +1560,10 @@ fn write_message(
     }
     blocks.extend(inserts.map(|(_, b)| b));
     if dropped_unsigned_thinking > 0 {
-        tracing::warn!(
-            dropped = dropped_unsigned_thinking,
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::block("thinking"),
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [dropped = dropped_unsigned_thinking,],
             "dropped assistant thinking block(s) with no Anthropic signature (none, or another \
              vendor's, IR-18) from anthropic request egress (anthropic rejects them with a 400)"
         );
@@ -1570,10 +1594,12 @@ fn write_tool(tool: &crate::codec::ir::IrTool) -> Option<serde_json::Value> {
         if anthropic_shaped {
             return Some(hosted.clone());
         }
-        tracing::warn!(
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::member("tools"),
+            &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+            [],
             "dropping a hosted tool on Anthropic egress: it is not an Anthropic-defined tool and has \
-             no Anthropic projection"
-        );
+             no Anthropic projection");
         return None;
     }
     let mut obj = serde_json::Map::new();

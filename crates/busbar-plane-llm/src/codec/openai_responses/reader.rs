@@ -1852,6 +1852,10 @@ impl ProtocolReader for ResponsesReader {
     fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
         super::RESPONSE_BLOCKS
     }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
 }
 
 /// Synthesize a deterministic, non-empty `call_…` tool-call id for a RESPONSE function-call whose

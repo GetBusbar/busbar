@@ -310,6 +310,14 @@ const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Bl
 }];
 
 /// The Cohere v2 answer content grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    ("text", "type=text"),
+    ("image", "type=image_url"),
+    ("document", "type=document"),
+    ("thinking", "type=thinking"),
+];
+
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
     at: &["message", "content[]"],
     tag: Some(keys::TYPE),
