@@ -233,16 +233,37 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
+/// Stable identifier of the identity [`read_openai_usage`] checks `usage.total_tokens` against,
+/// carried on [`crate::codec::ir::UsageIdentityNote::identity`].
+const OPENAI_USAGE_IDENTITY: &str = "openai.usage";
+
 /// An OpenAI Chat `usage` object (`None` when absent) → the IR usage, through [`USAGE`]; the
 /// serving tier (`service_tier`, a top-level member beside `usage`, OAI-03) is a word, not a count,
 /// and is set from `tier`.
+///
+/// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/openai.wire.json`) DECLARES
+/// UNDER `usage` IS EITHER LEDGERED OR A SLICE OF A LEDGERED TOTAL. Ledgered: `prompt_tokens`
+/// (input, less its cached and cache-write slices), `cached_tokens` (cache read),
+/// `cache_write_tokens` (cache write), `completion_tokens` (output). Slices, read for attribution
+/// where the IR has a slot and never ledgered twice: `prompt_tokens_details.{audio,image,text}_tokens`
+/// partition `prompt_tokens`, `completion_tokens_details.{reasoning,audio,text,accepted_prediction,
+/// rejected_prediction}_tokens` sit inside `completion_tokens` (OpenAI bills rejected predictions as
+/// completion tokens, and counts them there). `total_tokens` is OpenAI's sum, never a unit: it is
+/// cross-checked against the ledgered classes and a gap is WARN-logged and carried as the usage
+/// identity note, never ledgered.
 fn read_openai_usage(
     usage: Option<&serde_json::Value>,
     tier: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    let mut usage = crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)?;
-    usage.detail.service_tier = crate::codec::carry::read_word(map::WORDS_SERVED_TIER, tier);
-    Ok(usage)
+    let mut ir = crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)?;
+    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
+        VENDOR_NAME,
+        OPENAI_USAGE_IDENTITY,
+        usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
+        &ir,
+    );
+    ir.detail.service_tier = crate::codec::carry::read_word(map::WORDS_SERVED_TIER, tier);
+    Ok(ir)
 }
 
 /// Fallback `model` string stamped onto a cross-protocol OpenAI response when the egress backend
@@ -1540,3 +1561,7 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;

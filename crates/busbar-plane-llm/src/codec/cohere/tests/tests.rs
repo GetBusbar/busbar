@@ -482,6 +482,7 @@ fn test_write_response_preserves_parallel_tool_calls() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let writer = CohereWriter;
@@ -987,6 +988,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let writer = CohereWriter;
@@ -1237,6 +1239,7 @@ fn test_safety_finish_reason_writes_complete_non_stream() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let writer = CohereWriter;
     let body = writer.write_response(&resp);
@@ -1348,6 +1351,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let err_out = writer.write_response(&err_resp);
     assert_eq!(
@@ -1798,6 +1802,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let writer = CohereWriter;
@@ -2478,6 +2483,7 @@ fn test_write_response_event_citation_start_is_single_object() {
             end_index: Some(6),
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }]),
     };
     let (_, frame) = writer
@@ -4379,6 +4385,7 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
@@ -4418,6 +4425,7 @@ fn test_write_response_end_turn_maps_to_complete() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
@@ -5439,6 +5447,7 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = writer.write_response(&resp);
     let message = out.get("message").expect("message");
@@ -5780,6 +5789,7 @@ fn cohere_writer_emits_every_citation_in_a_multi_citation_delta() {
         end_index: Some(6),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     let writer = CohereWriter;
     let frames = writer.write_response_events(&crate::codec::ir::IrStreamEvent::BlockDelta {

@@ -882,6 +882,7 @@ fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {
         end_index: Some(11),
         encrypted_index: None,
         raw: None, // FOREIGN: no Gemini-shaped raw, so the neutral build path runs.
+        ..Default::default()
     };
     let resp = crate::codec::ir::IrResponse {
         logprobs: Vec::new(),
@@ -908,6 +909,7 @@ fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let gemini_writer = GeminiWriter;
     let out = gemini_writer.write_response(&resp);

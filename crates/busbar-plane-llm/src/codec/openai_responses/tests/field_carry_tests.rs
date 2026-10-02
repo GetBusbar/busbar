@@ -87,7 +87,7 @@ fn mk_response(
         stop_sequence: None,
         request_echo: None,
         stop_detail: None,
-    }
+    }..Default::default()
 }
 
 fn write_response(resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
@@ -1213,6 +1213,7 @@ fn responses_reset_clears_citation_and_logprob_accumulators() {
             end_index: Some(2),
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }],
     );
     w.append_logprobs(

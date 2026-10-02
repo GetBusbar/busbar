@@ -465,6 +465,7 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out1 = anthropic_writer().write_response(&make());
     let out2 = anthropic_writer().write_response(&make());
@@ -513,6 +514,7 @@ fn write_response_synthesizes_id_when_neither_id_nor_created() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     let id = out
@@ -1714,6 +1716,7 @@ fn write_response_keeps_unsigned_thinking_block() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     let content = out
@@ -1887,6 +1890,7 @@ fn write_response_emits_empty_model_when_none() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -1920,6 +1924,7 @@ fn write_response_preserves_present_model() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2044,6 +2049,7 @@ fn write_response_emits_null_stop_sequence_when_absent() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     let ss = out
@@ -2082,6 +2088,7 @@ fn write_response_emits_matched_stop_sequence_string() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2807,6 +2814,7 @@ fn test_anthropic_safety_stop_reason_maps_to_refusal() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -3306,6 +3314,7 @@ fn thinking_block_with_signature_survives_response_egress() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     let content = out
@@ -3620,6 +3629,7 @@ fn anthropic_writes_web_search_citation_from_neutral_fields() {
             end_index: Some(42),
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }],
         refusal: false,
     };

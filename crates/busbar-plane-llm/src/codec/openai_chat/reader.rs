@@ -1465,6 +1465,7 @@ impl ProtocolReader for OpenAiReader {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         })
     }
 }
