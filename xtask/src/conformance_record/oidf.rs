@@ -102,6 +102,80 @@ impl OidfClient {
     }
 }
 
+/// An RSA private key (RFC 5208 PKCS#8 DER around RFC 8017 `RSAPrivateKey`) as the RFC 7518 s6.3
+/// PS256 JWK the suite signs with, and its public half (`n`, `e` only) for the subject's config.
+pub fn rsa_jwk_from_pkcs8(der: &[u8], kid: &str) -> Result<(Value, Value), String> {
+    let bad = || "the PKCS#8 document is not an RSA private key".to_string();
+    // One DER TLV: (tag, content, rest).
+    fn tlv(b: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+        let (&tag, b) = b.split_first()?;
+        let (&first, mut b) = b.split_first()?;
+        let len = if first < 0x80 {
+            usize::from(first)
+        } else {
+            let n = usize::from(first & 0x7f);
+            if n == 0 || n > 4 || b.len() < n {
+                return None;
+            }
+            let len = b[..n]
+                .iter()
+                .fold(0usize, |a, x| (a << 8) | usize::from(*x));
+            b = &b[n..];
+            len
+        };
+        (b.len() >= len).then(|| (tag, &b[..len], &b[len..]))
+    }
+    let expect = |tag: u8, b: &[u8]| -> Result<(Vec<u8>, Vec<u8>), String> {
+        match tlv(b) {
+            Some((t, content, rest)) if t == tag => Ok((content.to_vec(), rest.to_vec())),
+            _ => Err(bad()),
+        }
+    };
+    let (info, _) = expect(0x30, der)?;
+    let (_version, rest) = expect(0x02, &info)?;
+    let (_algorithm, rest) = expect(0x30, &rest)?;
+    let (octets, _) = expect(0x04, &rest)?;
+    let (mut ints, _) = expect(0x30, &octets)?;
+    let mut members = Vec::new();
+    for _ in 0..9 {
+        let (int, rest) = expect(0x02, &ints)?;
+        let start = int.iter().position(|b| *b != 0).unwrap_or(int.len());
+        members.push(b64url(&int[start..]));
+        ints = rest;
+    }
+    // version, n, e, d, p, q, dp, dq, qi
+    let public = json!({
+        "kty": "RSA", "alg": "PS256", "use": "sig", "kid": kid,
+        "n": members[1], "e": members[2],
+    });
+    let mut private = public.clone();
+    for (i, name) in ["d", "p", "q", "dp", "dq", "qi"].iter().enumerate() {
+        private[*name] = json!(members[3 + i]);
+    }
+    Ok((private, public))
+}
+
+/// A fresh RSA-2048 key from `openssl genpkey` (`ring` cannot generate RSA), as a PS256 JWK pair.
+fn rsa_jwk(kid: &str) -> Result<(Value, Value), String> {
+    let out = std::process::Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-outform",
+            "DER",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("openssl genpkey could not run: {e}"))?;
+    if !out.status.success() {
+        return Err("openssl genpkey did not mint an RSA key".into());
+    }
+    rsa_jwk_from_pkcs8(&out.stdout, kid)
+}
+
 /// The subject's config: `base` (listeners), TLS, the authorization server in the FAPI 2.0 posture
 /// with the plan's clients provisioned, and a data chain whose only provider is the OIDC module
 /// trusting this AS (`jwks_url` over loopback, the rig's CA, the token's `scope` as its role, bound
@@ -114,6 +188,7 @@ pub fn oidf_subject_config(
     cert: &str,
     key: &str,
     ca_pem: &str,
+    plugins: &str,
     clients: &[OidfClient],
 ) -> String {
     let declared: Vec<Value> = clients
@@ -146,6 +221,13 @@ pub fn oidf_subject_config(
                 },
             },
         },
+        // The `oidc` module is a DROPPED-IN plugin (no shipped busbar links it): the rig packs it
+        // unsigned into `plugins` ([`Runner::oidc_plugin`]). Its JWKS lives on this subject's own
+        // loopback listener, declared as an allowed destination the way an operator declares one
+        // (DEST-GUARD #153, owner Q7), so the fetch is admitted by the connector's guard and not by
+        // the plugin having no guard (FAPI2.md finding).
+        "plugins": { "enabled": true, "dir": plugins, "trust": { "allow_unsigned": true } },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
         "auth": {
             "chain": [IDP],
             "admin_auth": [],
@@ -399,7 +481,10 @@ impl Runner {
     pub(super) fn run_oidf(&self) -> BTreeMap<String, Outcome> {
         let rig = Rig::Oidf;
         let ids = || SUITES.iter().map(|p| p.suite.to_string());
-        if let Some(o) = self.missing(rig, &["docker", "git", "python3", "curl", "cargo"]) {
+        if let Some(o) = self.missing(
+            rig,
+            &["docker", "git", "python3", "curl", "cargo", "openssl"],
+        ) {
             return fan(ids(), &o);
         }
         let dir = self.work_dir(rig);
@@ -625,6 +710,74 @@ impl Runner {
         out
     }
 
+    /// The dropped-in `oidc` auth module: its cdylib (GetBusbar/busbar-auth-oidc at the workspace's
+    /// pinned rev) and busbar's own `busbar-plugin-pack`, built in this checkout, then packed
+    /// UNSIGNED into `<pdir>/plugins/oidc.tar.gz`. The plugins directory, or busbar's `Err`.
+    fn oidc_plugin(&self, pdir: &Path) -> Result<std::path::PathBuf, String> {
+        let rig = Rig::Oidf;
+        let plugins = pdir.join("plugins");
+        std::fs::create_dir_all(&plugins).map_err(|e| format!("{}: {e}", plugins.display()))?;
+        let root = Some(self.root.as_path());
+        for (leg, argv) in [
+            (
+                "oidc-plugin-build",
+                &["cargo", "build", "-p", "busbar-auth-oidc-plugin"][..],
+            ),
+            (
+                "plugin-pack-build",
+                &[
+                    "cargo",
+                    "build",
+                    "-p",
+                    "busbar-plugin-loader",
+                    "--features",
+                    "pack",
+                    "--bin",
+                    "busbar-plugin-pack",
+                ][..],
+            ),
+        ] {
+            if self.leg(rig, leg, argv, root, &[]) != Some(0) {
+                return Err(format!("`{}` failed", argv.join(" ")));
+            }
+        }
+        let debug = self.target.join("debug");
+        let lib = debug.join(format!(
+            "{}busbar_auth_oidc_plugin{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        let pack = debug.join("busbar-plugin-pack");
+        let (lib, pack) = (
+            lib.to_string_lossy().into_owned(),
+            pack.to_string_lossy().into_owned(),
+        );
+        let out = plugins.join("oidc.tar.gz").to_string_lossy().into_owned();
+        let argv = [
+            pack.as_str(),
+            "pack",
+            "--lib",
+            lib.as_str(),
+            "--name",
+            "oidc",
+            "--alias",
+            "oidc",
+            "--kind",
+            "auth",
+            "--version",
+            "1.0.0",
+            "--publisher",
+            "busbar-conformance",
+            "--out",
+            out.as_str(),
+            "--allow-unsigned",
+        ];
+        if self.leg(rig, "oidc-plugin-pack", &argv, root, &[]) != Some(0) {
+            return Err("the oidc plugin could not be packed".into());
+        }
+        Ok(plugins)
+    }
+
     /// Boot the authorization-server subject with the plan's two clients provisioned, check it runs
     /// the FAPI 2.0 posture, and write the suite's plan configuration. `Err` is busbar's.
     fn oidf_subject(
@@ -641,7 +794,9 @@ impl Runner {
         let callback = format!("{SUITE_URL}test/a/{ALIAS}/callback");
         let mut clients = Vec::new();
         for n in 1..=2 {
-            let (private, public) = es256_jwk(&format!("{ALIAS}-{n}"))?;
+            // PS256 (RSA): FAPI 2.0's other algorithm, and the only client key from which the suite
+            // can build its RS256 negative (`ensure-signed-client-assertion-with-RS256-fails`).
+            let (private, public) = rsa_jwk(&format!("{ALIAS}-{n}"))?;
             clients.push(OidfClient::new(n, &callback, private, public));
         }
         // The data listener is reachable from the suite's container; the admin listener is not.
@@ -652,6 +807,7 @@ impl Runner {
             &pki.cert.display().to_string(),
             &pki.key.display().to_string(),
             &ca_pem,
+            &self.oidc_plugin(pdir)?.display().to_string(),
             &clients,
         );
         let booted = subject::boot(
