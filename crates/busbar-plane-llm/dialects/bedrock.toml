@@ -10,7 +10,7 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 [rows.structure]
 "messages" = { prim = "messages" }
 "model" = { prim = "model", off_wire = "Converse carries the model in the URL path; the arrival step writes it into the body for the codec" }
-"stream" = { prim = "stream", off_wire = "Converse streams by URL (converse-stream); the arrival step writes it into the body for the codec" }
+"stream" = { prim = "stream", off_wire = "Converse picks a streamed answer by its URL path (converse-stream); the arrival step writes it into the body for the codec" }
 "system" = { prim = "system" }
 
 # `inferenceConfig` rides `extra` raw; these rows overlay it. Thinking: Claude refuses a modified
