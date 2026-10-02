@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR, BOTH WAYS (`BUSBAR-1.6.0.md` Part 2 #2, THE DESIGN §11.4): the linked door
+//! THE DOOR, BOTH WAYS (`BUSBAR-1.6.0.md` Part 2 #2, THE DESIGN, the section on one table for compiled-in and dropped-in): the linked door
 //! (`plane_door::door`) and this crate's dropped-in image (the `llm_door` example, the same door
 //! behind `export_door!`), each admitted through the one loader, run ONE script through every plane
 //! op, each answer read back. The two transcripts must be identical, and carry what the plane's
-//! answers to the driver require (Part 3 §12).
+//! answers to the driver require (Part 3, the plane seam's driver section).
 //!
 //! RED ARM, kept: the same door with `on_piece` swapped for one that relays the far end's answer
 //! and reports no count. Its transcript differs at the far end's answer, so a door that stopped
