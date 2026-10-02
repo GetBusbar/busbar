@@ -235,9 +235,15 @@ jobs:
           # -- C2: the moving `latest` pointer resolves to it -----------------------------------
           # Users and tooling that do not pin a version follow /releases/latest. It 404s if the
           # newest Release is not flagged latest and silently serves the PREVIOUS release otherwise.
+          # A pre-release (`vX.Y.Z-dev.N`) is never latest, by design.
           loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
             "https://github.com/${REPO}/releases/latest" || true)"
-          if [ "${loc##*/releases/tag/}" = "$TAG" ]; then
+          # Where the archives are fetched from: the moving pointer, or a pre-release's own tag.
+          dl="https://github.com/${REPO}/releases/latest/download"
+          if [ "${V#*-}" != "$V" ]; then
+            dl="https://github.com/${REPO}/releases/download/${TAG}"
+            declared "C2 /releases/latest" "${TAG} is a pre-release; latest stays on the last release"
+          elif [ "${loc##*/releases/tag/}" = "$TAG" ]; then
             echo "PASS: github.com/${REPO}/releases/latest -> ${TAG}"
           else
             record "${REPO} /releases/latest" ".../releases/tag/${TAG}" "${loc:-<no redirect>}" \
@@ -289,12 +295,13 @@ jobs:
               continue
             fi
             # Through /releases/latest/download/, not the pinned tag URL: that is the version-agnostic
-            # path, so this proves the moving pointer AND the asset in one request.
-            u="https://github.com/${REPO}/releases/latest/download/${a}"
+            # path, so this proves the moving pointer AND the asset in one request (a pre-release:
+            # its own tag's URL, see C2).
+            u="${dl}/${a}"
             code="$(curl -sSL --max-time 60 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
             case "$code" in
               200|206)
-                echo "PASS: ${a} present (${sz} bytes) and downloadable through /releases/latest/download/"
+                echo "PASS: ${a} present (${sz} bytes) and downloadable through ${dl}/"
                 [ -z "$first_archive" ] && first_archive="$a"
                 ;;
               *) record "/releases/latest/download/${a}" "HTTP 200/206" "HTTP ${code}" \
@@ -310,7 +317,7 @@ jobs:
           if [ -n "$first_archive" ]; then
             work="$(mktemp -d)"
             if curl -fsSL --max-time 120 \
-                 "https://github.com/${REPO}/releases/latest/download/${first_archive}" \
+                 "${dl}/${first_archive}" \
                  -o "${work}/p.tar.gz" && tar xzf "${work}/p.tar.gz" -C "$work" 2>/dev/null; then
               if [ ! -s "${work}/manifest.json" ]; then
                 record "${first_archive} contents" "a manifest.json at the archive root" "<absent>" \
