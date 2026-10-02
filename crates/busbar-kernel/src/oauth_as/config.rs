@@ -58,6 +58,20 @@ pub struct OauthAsCfg {
     /// theft note both ask for it); a client that wants continuity refreshes.
     #[serde(default)]
     pub access_token_ttl_secs: Option<u64>,
+
+    /// The FAPI 2.0 Security Profile posture (`openid=plain_oauth`, `private_key_jwt`, DPoP). OFF
+    /// BY DEFAULT: a block that does not name it is the plain OAuth 2.1 server.
+    ///
+    /// `true` turns on the whole posture at once, because the profile is one contract and a
+    /// half-applied one passes nobody's suite: RFC 9126 PAR routed, advertised and MANDATORY (FAPI
+    /// 2.0 s5.3.2.2-3) with `redirect_uri` required in the push (s5.3.2.2-6); RFC 9449 DPoP required
+    /// on every token request (s5.3.4-2); refresh tokens reused rather than rotated (s5.3.2.1-9,
+    /// sound only because every token is sender-constrained); a client assertion's `aud` must be
+    /// the issuer as a string (s5.3.2.1-8, s5.3.3.1-5); and every JWS this server verifies limited
+    /// to ES256/PS256 (s5.4.1). The authorization code lifetime is already the profile's 60-second
+    /// ceiling (s5.3.2.1-11) in both postures.
+    #[serde(default)]
+    pub fapi2: bool,
 }
 
 /// Why an `oauth_as:` block was refused at boot. Every arm names the field and what a correct value
@@ -142,6 +156,12 @@ pub struct AsIdentity {
     pub register_path: String,
     pub jwks_path: String,
     pub consent_path: String,
+    /// The RFC 9126 pushed authorization request endpoint's path. Always DERIVED, like every path
+    /// above; mounted and advertised only under the FAPI 2.0 posture ([`AsIdentity::fapi2`]).
+    pub par_path: String,
+    /// The FAPI 2.0 Security Profile posture, resolved from `oauth_as.fapi2`. See
+    /// [`OauthAsCfg::fapi2`] for everything it turns on.
+    pub fapi2: bool,
     pub default_grant: Vec<String>,
     pub access_token_ttl: std::time::Duration,
     pub key_id: String,
@@ -199,6 +219,8 @@ impl AsIdentity {
             register_path: under("register"),
             jwks_path: under("jwks"),
             consent_path: under("consent"),
+            par_path: under("par"),
+            fapi2: cfg.fapi2,
             issuer_path,
             default_grant: cfg.default_grant.clone(),
             access_token_ttl: cfg
@@ -229,6 +251,18 @@ impl AsIdentity {
     }
     pub fn consent_path(&self) -> &str {
         &self.consent_path
+    }
+    pub fn par_path(&self) -> &str {
+        &self.par_path
+    }
+    /// The absolute RFC 9126 PAR endpoint URL the metadata advertises. Absolute for the reason
+    /// `jwks_uri` is: it is a value clients compare, derived once here.
+    pub fn par_endpoint(&self) -> String {
+        format!("{}{}", self.origin(), self.par_path)
+    }
+    /// Whether this plane runs the FAPI 2.0 Security Profile posture.
+    pub fn fapi2(&self) -> bool {
+        self.fapi2
     }
     /// The absolute URL of the consent screen, which is what the authorize endpoint redirects a
     /// browser to. Absolute because the user agent is following it from wherever it started.

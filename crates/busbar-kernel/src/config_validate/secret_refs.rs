@@ -195,7 +195,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     if let Some(identity) = oauth_as {
         let crate::oauth_as::config::AsIdentity {
             signing_key,
-            // The issuer and the eight paths derived from it. Public by construction: every one of
+            // The issuer and the nine paths derived from it. Public by construction: every one of
             // them is published in the RFC 8414 metadata document.
             issuer: _,
             issuer_path: _,
@@ -205,8 +205,10 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
             register_path: _,
             jwks_path: _,
             consent_path: _,
-            // Policy, not credential: the scope ceiling, the token lifetime, and the advisory
-            // `kid` that appears in every published JWKS entry.
+            par_path: _,
+            // Policy, not credential: the FAPI 2.0 posture switch, the scope ceiling, the token
+            // lifetime, and the advisory `kid` that appears in every published JWKS entry.
+            fapi2: _,
             default_grant: _,
             access_token_ttl: _,
             key_id: _,

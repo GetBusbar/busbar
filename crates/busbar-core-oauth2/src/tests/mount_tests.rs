@@ -56,6 +56,7 @@ fn cfg() -> OauthAsCfg {
         key_id: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
+        fapi2: false,
     }
 }
 
@@ -75,6 +76,9 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         // Mounted UNCONDITIONALLY: registration is one of the three always-on mechanisms, so the
         // single most dangerous path on this plane is inside every assertion below by construction.
         register_path,
+        // Mounted ONLY under the FAPI 2.0 posture: RFC 9126 PAR is part of that profile and of
+        // nothing else, so the plain server serves no `/par` at all.
+        par_path,
         // ── NOT PATHS: identity, policy and key material. None of these adds a route. ──
         issuer: _,
         // The path COMPONENT of the issuer, which is a prefix the six paths above already carry;
@@ -84,16 +88,22 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         access_token_ttl: _,
         key_id: _,
         signing_key: _,
+        // The posture switch: not a path, but it decides whether `par_path` is one.
+        fapi2,
     } = id;
 
-    vec![
+    let mut paths = vec![
         metadata_path.clone(),
         authorize_path.clone(),
         token_path.clone(),
         jwks_path.clone(),
         consent_path.clone(),
         register_path.clone(),
-    ]
+    ];
+    if *fapi2 {
+        paths.push(par_path.clone());
+    }
+    paths
 }
 
 /// The CORE ROUTE TABLE of the served router, built by the same function production builds it with.

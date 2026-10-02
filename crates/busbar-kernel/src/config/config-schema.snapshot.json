@@ -1193,6 +1193,10 @@
           "optional": true,
           "type": "Vec<String>"
         },
+        "fapi2": {
+          "optional": true,
+          "type": "bool"
+        },
         "issuer": {
           "optional": false,
           "type": "String"

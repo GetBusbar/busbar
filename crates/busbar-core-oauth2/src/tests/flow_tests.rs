@@ -266,6 +266,7 @@ async fn serve_with_admin_chain(
         key_id: None,
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
+        fapi2: false,
     };
     let app = TestApp::new()
         .admin_chain(admin_chain)
@@ -375,6 +376,7 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
             key_id: None,
             default_grant: Vec::new(),
             access_token_ttl_secs: None,
+            fapi2: false,
         };
         let id = AsIdentity::from_cfg(&cfg).expect("valid issuer");
         let cookies = session_cookies(&id, "deadbeef");
@@ -1003,6 +1005,7 @@ async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
         key_id: None,
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
+        fapi2: false,
     };
     let app = TestApp::new().oauth_as(&cfg).build();
 
