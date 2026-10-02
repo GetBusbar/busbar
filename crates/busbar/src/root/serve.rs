@@ -35,10 +35,19 @@ pub fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
 }
 
 /// THE COMPOSITION, once the configuration loads: the kernel's host services, judging by `dest`,
-/// are installed into the dispatcher's [`LateServices`], before any plugin is bound. A second call
-/// (a reload) installs nothing.
-pub fn compose(dest: Arc<dyn DestJudge>, late: &LateServices) {
-    if late.install(Arc::new(kernel_services(dest))).is_err() {
+/// with the host's `records.secret` read over `credentials` (`root::credentials`: the App's
+/// governance, through its swap handle once the App is built), are installed into the dispatcher's
+/// [`LateServices`], before any plugin is bound. A second call (a reload) installs nothing.
+pub fn compose(
+    dest: Arc<dyn DestJudge>,
+    late: &LateServices,
+    credentials: crate::root::credentials::AppCredentials,
+) {
+    let services = crate::root::credentials::CredentialServices::new(
+        Arc::new(kernel_services(dest)),
+        Arc::new(credentials),
+    );
+    if late.install(Arc::new(services)).is_err() {
         tracing::debug!("the kernel's host services were already installed");
     }
 }

@@ -824,7 +824,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     root::connector::install_egress_trust(dest.clone());
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
-    root::serve::compose(dest.clone(), &late_services);
+    // `records.secret` reads the App's governance through its swap handle, which exists once the App
+    // is built below; until then the read answers REFUSED (`root::credentials`).
+    let (credentials, credential_handle) = root::credentials::AppCredentials::late();
+    root::serve::compose(dest.clone(), &late_services, credentials);
     // THE EXPORT AXIS'S SINKS, opened once — before the first app is built, so the routes they
     // declare are in the boot route table (restart-to-apply, as every built-in PUSH sink is). A
     // configured sink that will not open refuses the boot.
@@ -1030,6 +1033,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    credential_handle.set(std::sync::Arc::clone(&app_handle));
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,

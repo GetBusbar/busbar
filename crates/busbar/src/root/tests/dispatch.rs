@@ -48,11 +48,28 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
         .expect("a minimal deployment");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
-    crate::root::serve::compose(crate::root::connector::dest_judge(&cfg), &late);
+    let (credentials, credential_handle) = crate::root::credentials::AppCredentials::late();
+    crate::root::serve::compose(
+        crate::root::connector::dest_judge(&cfg),
+        &late,
+        credentials,
+    );
     assert_eq!(
         judged(&dispatcher, "https://93.184.216.34/"),
         Stored::ready(svc::DEST_ALLOWED)
     );
+    // `records.secret` is the composition's too: REFUSED until the App's swap handle is set.
+    let services = dispatcher
+        .host_services()
+        .expect("the binary's dispatcher has a provider");
+    match services.records_secret("a-kind", "an-id", Box::new(|_| {})) {
+        Ran::Now(stored) => assert_eq!(
+            stored,
+            Stored::refused(crate::root::credentials::NOT_READABLE)
+        ),
+        Ran::Later => panic!("the credential read answers at once"),
+    }
+    assert!(!credential_handle.is_set());
     assert_eq!(
         judged(&dispatcher, "https://169.254.169.254/latest/meta-data/"),
         Stored::ready(svc::DEST_METADATA)
