@@ -1138,7 +1138,8 @@ fn set_preceding_block_cache_control(blocks: &mut [crate::codec::ir::IrBlock]) {
                 *cache_control = cc;
             }
             // Json is a tool-result member only; the positional stash carries the marker.
-            crate::codec::ir::IrBlock::Json(_) => {}
+            crate::codec::ir::IrBlock::Json(_)
+            | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
         }
     }
 }
@@ -1623,11 +1624,136 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
+/// Stable identifier of the identity [`read_bedrock_usage`] checks `usage.totalTokens` against,
+/// carried on [`crate::codec::ir::UsageIdentityNote::identity`].
+const BEDROCK_USAGE_IDENTITY: &str = "bedrock.usage";
+
 /// A Bedrock Converse `usage` object (`None` when absent) → the IR usage, through [`USAGE`].
+///
+/// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/bedrock.wire.json`) DECLARES
+/// UNDER `usage` IS LEDGERED OR A SLICE OF A LEDGERED COUNT: `inputTokens` (input),
+/// `outputTokens` (output), `cacheReadInputTokens` (cache read), `cacheWriteInputTokens` (cache
+/// write); `cacheDetails[].inputTokens` is the per-TTL split of the cache write, carried as the 5m
+/// and 1h attribution and ledgered inside the one cache-write class. `totalTokens` is AWS's sum of
+/// the four (cache tokens included, see the writer's `converse_total_tokens`), never a unit: it is
+/// cross-checked against the ledgered classes and a gap is WARN-logged and carried as the usage
+/// identity note, never ledgered. The guardrail policy units ride `trace`, not `usage`: see
+/// [`warn_guardrail_units`].
 fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)
+    let mut ir = crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)?;
+    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
+        VENDOR_NAME,
+        BEDROCK_USAGE_IDENTITY,
+        usage_obj.and_then(|u| u.get(TOTAL_TOKENS_CAMEL)),
+        &ir,
+    );
+    Ok(ir)
+}
+
+/// The members of a Converse `TokenUsage` object: a `usage` object naming none of them is not the
+/// turn's token usage (a guardrail's `invocationMetrics.usage` names policy units instead).
+const TOKEN_USAGE_MEMBERS: &[&str] = &[
+    INPUT_TOKENS_CAMEL,
+    OUTPUT_TOKENS_CAMEL,
+    TOTAL_TOKENS_CAMEL,
+    CACHE_READ_INPUT_TOKENS,
+    CACHE_WRITE_INPUT_TOKENS,
+];
+
+/// `trace.guardrail` members, as the Converse service model spells them.
+const GUARDRAIL: &str = "guardrail";
+const GUARDRAIL_INPUT_ASSESSMENT: &str = "inputAssessment";
+const GUARDRAIL_OUTPUT_ASSESSMENTS: &str = "outputAssessments";
+const GUARDRAIL_INVOCATION_METRICS: &str = "invocationMetrics";
+
+/// Every count of a guardrail assessment's `invocationMetrics.usage` (the service model's
+/// `GuardrailUsage`), as AWS spells it: the policy units AWS bills per policy type, the free
+/// units it reports beside them, and the automated-reasoning policy count.
+const GUARDRAIL_USAGE_COUNTS: &[&str] = &[
+    "topicPolicyUnits",
+    "contentPolicyUnits",
+    "wordPolicyUnits",
+    "sensitiveInformationPolicyUnits",
+    "sensitiveInformationPolicyFreeUnits",
+    "contextualGroundingPolicyUnits",
+    "contentPolicyImageUnits",
+    "automatedReasoningPolicyUnits",
+    "automatedReasoningPolicies",
+];
+
+/// READ EVERY GUARDRAIL POLICY-UNIT COUNT A TURN REPORTS, AND SAY THAT NONE OF IT IS LEDGERED.
+///
+/// A Converse response (or the stream's `metadata` frame) that ran a guardrail carries
+/// `trace.guardrail.inputAssessment.<id>.invocationMetrics.usage` and
+/// `trace.guardrail.outputAssessments.<id>[].invocationMetrics.usage`: the policy units AWS bills
+/// for the guardrail SEPARATELY from the model's tokens, per policy type. They are not tokens, and
+/// no meter class this plane declares holds them (input, output, cache read and cache write are
+/// token classes), so folding them into one would price a policy unit at a token rate. They are
+/// therefore a residual: each count is summed per side over every guardrail and assessment, and
+/// one WARN names them all (`inputAssessment.<count>=n`, `outputAssessments.<count>=n`), so the
+/// gap between the ledger and AWS's invoice is visible rather than silent. A present count that is
+/// not a count is named `unreadable`. Nothing is ledgered; nothing is refused.
+fn warn_guardrail_units(holder: &serde_json::Value) {
+    let Some(guardrail) = holder.get(TRACE).and_then(|t| t.get(GUARDRAIL)) else {
+        return;
+    };
+    let usage_of = |a: &serde_json::Value| {
+        a.get(GUARDRAIL_INVOCATION_METRICS)
+            .and_then(|m| m.get(keys::USAGE))
+            .cloned()
+    };
+    let input: Vec<serde_json::Value> = guardrail
+        .get(GUARDRAIL_INPUT_ASSESSMENT)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(usage_of)
+        .collect();
+    let output: Vec<serde_json::Value> = guardrail
+        .get(GUARDRAIL_OUTPUT_ASSESSMENTS)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter_map(usage_of)
+        .collect();
+    let mut named: Vec<String> = Vec::new();
+    for (side, usages) in [
+        (GUARDRAIL_INPUT_ASSESSMENT, &input),
+        (GUARDRAIL_OUTPUT_ASSESSMENTS, &output),
+    ] {
+        for count in GUARDRAIL_USAGE_COUNTS {
+            let mut sum: Option<u64> = None;
+            let mut unreadable = false;
+            for u in usages {
+                match u.get(*count).filter(|v| !v.is_null()) {
+                    None => {}
+                    Some(v) => match crate::codec::usage_count::read_count_u64(v) {
+                        Some(n) => sum = Some(sum.unwrap_or(0).saturating_add(n)),
+                        None => unreadable = true,
+                    },
+                }
+            }
+            if unreadable {
+                named.push(format!("{side}.{count}=unreadable"));
+            } else if let Some(n) = sum {
+                named.push(format!("{side}.{count}={n}"));
+            }
+        }
+    }
+    if named.is_empty() {
+        return;
+    }
+    let units = named.join(" ");
+    tracing::warn!(
+        protocol = VENDOR_NAME,
+        units = %units,
+        "bedrock guardrail policy units are billed by AWS separately from the model's tokens and \
+         land in no meter class this plane declares: they are not ledgered"
+    );
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.
@@ -2110,7 +2236,8 @@ pub fn bedrock_response_to_eventstream(
             IrBlock::ToolResult { .. }
             | IrBlock::Image { .. }
             | IrBlock::Media { .. }
-            | IrBlock::Json(_) => {}
+            | IrBlock::Json(_)
+            | IrBlock::HostedToolRecord { .. } => {}
         }
     }
 
@@ -2198,177 +2325,6 @@ pub fn ensure_metrics(value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
     }
 }
 
-/// Complete a SERIALIZED Converse response body so it carries `metrics.latencyMs`, preserving every
-/// other byte. Returns `None` when the body already carries a well-formed `metrics` (pass the
-/// upstream's through untouched) or when it is not a JSON object. When the top-level object simply
-/// lacks the member, the member is spliced in before the closing brace so key order, whitespace and
-/// number formatting of the upstream body survive; only a malformed `metrics` (present but without
-/// an integer `latencyMs`) forces a full re-serialization.
-pub fn complete_converse_body(
-    body: &[u8],
-    parsed: &serde_json::Value,
-    elapsed_ms: Option<u64>,
-) -> Option<Vec<u8>> {
-    let obj = parsed.as_object()?;
-    if has_valid_metrics(parsed) {
-        return None;
-    }
-    let latency_ms = elapsed_ms.unwrap_or(0);
-    if obj.contains_key(FIELD_METRICS) {
-        // Present but unusable: replace it. Splicing would leave two `metrics` keys.
-        let mut fixed = parsed.clone();
-        ensure_metrics(&mut fixed, Some(latency_ms));
-        return crate::codec::json::to_vec(&fixed).ok();
-    }
-    // The last significant byte must be the object's closing brace (the parse above guarantees a
-    // top-level object, so this only guards against trailing garbage a lenient parser accepted).
-    let close = body.iter().rposition(|b| !b.is_ascii_whitespace())?;
-    if body[close] != b'}' {
-        return None;
-    }
-    let prev = body[..close]
-        .iter()
-        .rposition(|b| !b.is_ascii_whitespace())?;
-    let separator = if body[prev] == b'{' { "" } else { "," };
-    let member = format!("{separator}\"{FIELD_METRICS}\":{{\"{FIELD_LATENCY_MS}\":{latency_ms}}}");
-    let mut out = Vec::with_capacity(body.len() + member.len());
-    out.extend_from_slice(&body[..close]);
-    out.extend_from_slice(member.as_bytes());
-    out.extend_from_slice(&body[close..]);
-    Some(out)
-}
-
-/// The same-protocol (Bedrock -> Bedrock) NON-stream response translator. The forward path relays a
-/// same-protocol non-stream 2xx verbatim, chunk by chunk, so nothing ever added the `metrics` member
-/// a Converse response is required to carry when the upstream left it out. This translator stands
-/// in for that relay on Bedrock ingress: it buffers the body, and at end-of-stream emits it with
-/// `metrics.latencyMs` present (the upstream's own value when it sent one, else busbar's measured
-/// latency from the moment the upstream's headers arrived to the end of its body). A body that is
-/// not a Converse response (an InvokeModel embeddings / image / rerank body) is emitted unchanged.
-///
-/// Because the forward path takes billing usage from the installed translator, this also reports
-/// the body's usage, via the same per-operation tap the relay used (`handler::same_protocol_usage`),
-/// and a rerank body's counted search units (`handler::same_protocol_open_billing`).
-///
-/// Bounded: past the translation cap the body is relayed verbatim from that point on (no member can
-/// be added to a body busbar will not hold whole), keeping only the tail so usage can still be
-/// recovered from the trailing `usage` object.
-pub struct BedrockConverseBodyTranslator {
-    started: std::time::Instant,
-    buf: Vec<u8>,
-    cap: usize,
-    /// Set once the body outgrew `cap`: everything is relayed as it arrives and `buf` holds only
-    /// the most recent `cap` bytes.
-    passthrough: bool,
-    usage: Option<busbar_contract::billing::TokenUsage>,
-    /// The non-token billing the body reported (a rerank's search units, item 134).
-    open_billing: Option<busbar_contract::billing::Billing>,
-}
-
-impl Default for BedrockConverseBodyTranslator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl BedrockConverseBodyTranslator {
-    pub fn new() -> Self {
-        Self::with_cap(crate::codec::wire_shim::max_translated_body_bytes())
-    }
-
-    pub fn with_cap(cap: usize) -> Self {
-        Self {
-            started: std::time::Instant::now(),
-            buf: Vec::new(),
-            cap,
-            passthrough: false,
-            usage: None,
-            open_billing: None,
-        }
-    }
-
-    fn elapsed_ms(&self) -> Option<u64> {
-        u64::try_from(self.started.elapsed().as_millis()).ok()
-    }
-
-    /// Drop the oldest bytes so `buf` keeps only the last `cap` (the usage object sits at the end).
-    fn keep_tail(&mut self) {
-        if self.buf.len() > self.cap {
-            let excess = self.buf.len() - self.cap;
-            self.buf.drain(..excess);
-        }
-    }
-}
-
-impl busbar_contract::protocol::StreamTranslator for BedrockConverseBodyTranslator {
-    fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
-        self.buf.extend_from_slice(chunk);
-        if self.passthrough {
-            self.keep_tail();
-            return chunk.to_vec();
-        }
-        if self.buf.len() > self.cap {
-            // Too large to complete: release everything withheld so far and relay from here on.
-            self.passthrough = true;
-            let withheld = self.buf.clone();
-            self.keep_tail();
-            return withheld;
-        }
-        Vec::new()
-    }
-
-    fn finish(&mut self) -> Vec<u8> {
-        let body = std::mem::take(&mut self.buf);
-        if self.passthrough {
-            // Only a tail fragment is held: isolate the trailing `usage` object for billing, and
-            // fall back to the same conservative floor the verbatim relay used for an over-cap body.
-            // The floor mirrors the relay's: an over-cap body demonstrably consumed tokens, so it
-            // is never metered at zero; the retained tail prices as output at the shared
-            // bytes-per-token rate (a genuine under-estimate, never an over-charge).
-            let tail_len = body.len() as u64;
-            self.usage = protocol()
-                .reader()
-                .recover_truncated_usage(&body)
-                .or_else(|| {
-                    Some(busbar_contract::billing::TokenUsage {
-                        output: (tail_len
-                            / crate::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN)
-                            .max(1),
-                        ..Default::default()
-                    })
-                });
-            return Vec::new();
-        }
-        let parsed = crate::codec::json::parse::<serde_json::Value>(&body).ok();
-        self.usage = handler::same_protocol_usage(&body, parsed.as_ref());
-        self.open_billing = handler::same_protocol_open_billing(&body, parsed.as_ref());
-        match parsed {
-            Some(v) if handler::is_converse_response(&v) => {
-                complete_converse_body(&body, &v, self.elapsed_ms()).unwrap_or(body)
-            }
-            _ => body,
-        }
-    }
-
-    fn usage(&self) -> Option<busbar_contract::billing::TokenUsage> {
-        self.usage.clone()
-    }
-
-    fn open_billing(&self) -> Option<busbar_contract::billing::Billing> {
-        self.open_billing.clone()
-    }
-
-    fn terminal_error(&self) -> Option<&str> {
-        None
-    }
-
-    fn aborted(&self) -> bool {
-        false
-    }
-
-    fn set_client_include_usage(&mut self, _include: bool) {}
-}
-
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
@@ -2384,6 +2340,10 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/usage_float_tests.rs"]
 mod usage_float_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;
 
 #[cfg(test)]
 #[path = "tests/ir_mapping_tests.rs"]

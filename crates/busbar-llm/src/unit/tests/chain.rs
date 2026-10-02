@@ -50,9 +50,11 @@ enum Fixture {
     /// An admitted streamed answer — the same loop with the accrual landing at stream end rather
     /// than at the buffered tap.
     StreamedOk,
-    /// A CLIENT THAT ASKED TO STREAM, ANSWERED BY AN UPSTREAM THAT DID NOT. The upstream ignored
-    /// `stream` and returned one JSON body, so the engine buffers it whole, translates it into the
-    /// client's own stream framing, and the BUFFERED tap fires before the response is handed back.
+    /// A CLIENT THAT ASKED TO STREAM, ANSWERED BY AN UPSTREAM OF ANOTHER DIALECT THAT DID NOT. The
+    /// upstream ignored `stream` and returned one JSON body, so the engine buffers it whole,
+    /// translates it into the client's own stream framing, and the BUFFERED tap fires before the
+    /// response is handed back. (Within one dialect the same body is relayed as the upstream sent
+    /// it — DIALECT FIDELITY — so the lane here speaks another dialect.)
     ///
     /// It is the one delivered end whose figures exist at step 6: every other admitted fixture here
     /// is a same-protocol relay whose tap fills while the CLIENT drains the body, which is after the
@@ -121,8 +123,25 @@ impl Fixture {
     }
 
     /// What the scripted upstream is told to answer.
+    /// The dialect the one lane speaks: the client's own, except where the fixture crosses.
+    fn lane_proto(self) -> &'static str {
+        match self {
+            Fixture::BufferedStreamOut => crate::proto_codec::PROTO_ANTHROPIC,
+            _ => PROTO,
+        }
+    }
+
     fn upstream(self) -> MockResponse {
         match self {
+            Fixture::BufferedStreamOut => MockResponse::Ok {
+                status: reqwest::StatusCode::OK,
+                body: serde_json::json!({
+                    "id": "msg_chain", "type": "message", "role": "assistant", "model": LANE,
+                    "content": [{"type": "text", "text": "hello"}],
+                    "stop_reason": "end_turn", "stop_sequence": null,
+                    "usage": {"input_tokens": INPUT, "output_tokens": OUTPUT}
+                }),
+            },
             Fixture::StreamedOk => MockResponse::Sse {
                 events: sse_events(),
                 abort_at_index: None,
@@ -328,7 +347,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
     gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
 
     let mut builder = TestApp::new()
-        .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
+        .lane(LaneSpec::new(LANE, fixture.lane_proto(), &server.base_url()).provider("test"))
         .pool(POOL, &[(0, 1)])
         .governance_kit(gov)
         .cost_kit(cost);

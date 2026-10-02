@@ -63,7 +63,9 @@ pub mod population;
 pub mod qa_names;
 pub mod reachability;
 pub mod response_header;
+pub mod script_allowlist;
 pub mod seal_witness;
+pub mod secret_hygiene;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
@@ -127,7 +129,7 @@ pub const REPORT_ONLY: &[Posture] = &[
         excuse: Excused::OnlyRows(StandingReds {
             rows: CONSTRUCTION_STANDING_REDS,
             list: "CONSTRUCTION_STANDING_REDS",
-            mirror: Some("land_construction_standing_reds in scripts/land.sh"),
+            mirror: None,
         }),
     },
     Posture {
@@ -273,10 +275,6 @@ pub const REPORT_ONLY: &[Posture] = &[
 /// Draining a row means striking its name here in the same commit, which is the transaction the
 /// whole gate exists to force.
 ///
-/// `land_construction_standing_reds` in scripts/land.sh subtracts the same rows so that every
-/// landing can run the gate over EVERY row instead of a caller-chosen few. The two lists are held
-/// EQUAL by `posture_tests::land_sh_subtracts_exactly_the_construction_standing_reds`: an edit to
-/// either alone reds `cargo test -p xtask`.
 pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // "hold-discipline:cancellation-before-await" — STRUCK (M1 DISPATCH, 2590f8493). The scan-set
     // floor added 2026-09-09 scored an absent subject RED instead of PASS, catching a rule claiming
@@ -294,18 +292,17 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "one-pick-site",
     // RE-DERIVED 2026-09-24 FROM A REAL RUN (P1 integration). `cargo xtask gate construction` on a
     // clean checkout of b7200b496, base pinned to origin/predev, is red on exactly the rows on this
-    // list. Three names were STALE and are struck here and in scripts/land.sh in the same commit:
+    // list. Three names were STALE and are struck here in the same commit:
     // `ports-only-tests:busbar-llm`, `request-path-fn-size` and `terminal-doors-in-audit-step` are
     // PASS on that run. `ceiling-rose` is green again because the ten expired kind-isolation raises
     // in qa/construction.toml were struck in the same commit (each cell already reads its `to` at
     // the base). The rows below were red and on no list, so `--posture` scored them NEW; each is a
     // true finding, named with what it measures and the phase that drains it.
     //
-    // MONEY — DRAIN: Phase 2.
-    // `one-pricing-site`: `busbar_kernel_ledger::cost::price` called from
-    // crates/busbar-core-admin/src/v1/service.rs, outside the reviewed homes — an admin read that
-    // prices on its own path (the BUDGET row: the enforcement path is not the invoice path).
-    "one-pricing-site",
+    // `one-pricing-site` STRUCK (ARCHITECT ruling 2026-09-30, a $ commit landed alone): the admin
+    // usage read built the ledger slice itself and priced it beside the cost unit. The row
+    // projection moved into the cost unit (`busbar_kernel_ledger::cost::MeteredRow`), so admin
+    // hands over its row and prices nothing.
     // `token-sealed` and its three named mints: the Teller's tokens, `KernelSeal::acquire_for_kernel(`,
     // the arrival-hold mint and `SecretOnce::mint(` are spelled outside their one home crate (266,
     // 136, 49 and 5 sites). Item 317: the one deliberate cross-crate hole in the capability model is
@@ -2550,6 +2547,21 @@ pub static REGISTRY: &[Registration] = &[
         summary: "docs/design holds the spec, the TODO, QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only",
     },
     Registration {
+        name: "secret-hygiene",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(secret_hygiene::SecretHygieneGate::shipped()),
+        summary: "no bare-string secret field, no .expose_secret() at a sink, no secret interpolated \
+                  into a returned message (REPORT-ONLY ledger rows; SECRET_GATE_REPORT_ONLY=0 blocks, #53)",
+    },
+    Registration {
+        name: "script-allowlist",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(script_allowlist::ScriptAllowlistGate),
+        summary: "every tracked .py/.sh/.bash is on qa/scripts-allowlist.toml with a class and a reason",
+    },
+    Registration {
         name: "design-bindings",
         batch: 2,
         tier: Tier::Fast,
@@ -3826,50 +3838,6 @@ mod posture_tests {
         let a = work_unit();
         assert!(a > std::time::Duration::ZERO);
         assert_eq!(a, work_unit());
-    }
-
-    /// The names in `land_construction_standing_reds`'s heredoc in scripts/land.sh.
-    fn land_sh_standing_reds(text: &str) -> Vec<String> {
-        let body = text
-            .split("land_construction_standing_reds() {")
-            .nth(1)
-            .expect("land.sh defines land_construction_standing_reds");
-        let heredoc = body
-            .split("<<'EOF'\n")
-            .nth(1)
-            .expect("the function reads its list from a quoted heredoc")
-            .split("\nEOF\n")
-            .next()
-            .expect("the heredoc closes");
-        heredoc
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect()
-    }
-
-    /// ITEM 206: land.sh subtracts EXACTLY the rows `--posture` excuses. They differed by four
-    /// rows, so a landing on the dev line was allowed a red `--all` and ship-ready then scored.
-    #[test]
-    fn land_sh_subtracts_exactly_the_construction_standing_reds() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let land = cx.read("scripts/land.sh").expect("scripts/land.sh reads");
-        let shell: BTreeSet<String> = land_sh_standing_reds(&land).into_iter().collect();
-        let rust: BTreeSet<String> = CONSTRUCTION_STANDING_REDS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
-        assert_eq!(
-            shell.difference(&rust).collect::<Vec<_>>(),
-            Vec::<&String>::new(),
-            "land.sh excuses rows CONSTRUCTION_STANDING_REDS does not"
-        );
-        assert_eq!(
-            rust.difference(&shell).collect::<Vec<_>>(),
-            Vec::<&String>::new(),
-            "CONSTRUCTION_STANDING_REDS excuses rows land.sh does not"
-        );
     }
 
     /// ITEMS 207, 208: prose in this file that says a row is CARRIED on a standing-red list names a
