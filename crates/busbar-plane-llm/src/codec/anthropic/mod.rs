@@ -1567,7 +1567,7 @@ fn write_message(
             }
             if let crate::codec::ir::IrBlock::HostedToolRecord { .. } = block {
                 warn_hosted_record_dropped();
-                return None;
+                break 'block None;
             }
             Some(write_block(block))
         };
