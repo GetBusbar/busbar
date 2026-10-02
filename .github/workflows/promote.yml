@@ -23,7 +23,6 @@ jobs:
   hop:
     needs: preflight
     runs-on: ${{ needs.preflight.outputs.runner }}
-    concurrency: { group: "promote-hop-${{ github.base_ref }}", cancel-in-progress: false }
     timeout-minutes: 330
     steps:
       - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v4
