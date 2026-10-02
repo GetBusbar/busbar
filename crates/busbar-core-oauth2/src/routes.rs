@@ -17,6 +17,7 @@
 //! |---|---|---|
 //! | metadata, JWKS | `None` | RFC 8414 §3 and RFC 7517: read by a client that has no credential yet. Requiring one is a discovery loop with no entrance. |
 //! | authorize | `None` | A browser endpoint. The resource owner is authenticated by the consent screen, and by nothing before it. |
+//! | par (FAPI 2.0 posture only) | `None` | RFC 9126: the client authenticates in the body (`private_key_jwt`), which `oauth-as` performs, exactly as at the token endpoint. |
 //! | token, register | `None` | These carry OAuth's OWN client authentication in the request, which `oauth-as` performs. busbar's data-plane bar knows nothing about a `client_secret_post` body and would refuse every conforming client. |
 //! | consent | `Admin` | The one route here that busbar authenticates itself, through the EXISTING admin chain. See [`super::consent`] on why the operator is the resource owner on this plane. |
 //!
@@ -55,6 +56,19 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -
         return router;
     };
     let id = plane.identity();
+    // RFC 9126 pushed authorization requests: mounted ONLY under the FAPI 2.0 posture, the same
+    // gate `plane::fapi2_posture` sets `config.par` behind, so the route table and the advertised
+    // document cannot disagree.
+    let router = if id.fapi2() {
+        router.route(
+            id.par_path().to_string(),
+            RouteMethod::Post,
+            RouteAuth::None,
+            forward,
+        )
+    } else {
+        router
+    };
     router
         .route(
             id.metadata_path().to_string(),
@@ -72,7 +86,7 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -
             id.authorize_path().to_string(),
             RouteMethod::Get,
             RouteAuth::None,
-            forward,
+            authorize,
         )
         .route(
             id.token_path().to_string(),
@@ -128,12 +142,102 @@ async fn forward(
         // refusal rather than an unwrap because this is a request path.
         return not_found();
     };
-    // Box::pin: the whole `oauth-as` dispatch future (~56 KB monomorphized), boxed at its one call
-    // site — cold relative to the data planes, and boxing keeps this handler's future small; see
-    // the walk.rs precedent.
-    Box::pin(plane.service().handle(request))
-        .await
+    into_axum(plane.handle(request).await)
+}
+
+fn into_axum(response: oauth_as::http::Response) -> Response {
+    response
         .map(|body| axum::body::Body::from(body.into_bytes()))
+        .into_response()
+}
+
+/// `GET {issuer}/authorize` — [`forward`], with the two things a BROWSER endpoint owes a browser.
+///
+/// 1. **A pushed request is decided before `oauth-as` sees it.** Under RFC 9126 the URL carries only
+///    `client_id` and `request_uri`, and `oauth-as` spends the handle on arrival. Sent to the
+///    library undecided, the request would be spent by merely loading the page, and the operator's
+///    answer would come back to a handle that no longer exists. So an undecided pushed request goes
+///    straight to the consent screen, and reaches the library only once a decision is staked for
+///    it — one-time use enforced at the point of authorization (FAPI 2.0 s5.3.2.2 NOTE 3). A
+///    `request_uri` this store does not hold, or one presented by a client that did not push it,
+///    goes to the library, which refuses it.
+/// 2. **A refusal is a page.** `oauth-as` answers a request it will not redirect (RFC 6749
+///    s4.1.2.1: never to an unvalidated `redirect_uri`) with a direct JSON error, which a browser
+///    shows as raw text. The same status and the same error code go back as HTML instead.
+async fn authorize(
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(plane) = as_plane(&app) else {
+        return not_found();
+    };
+    if let Some(undecided) = pushed_request_gate(plane, &request) {
+        return into_axum(undecided);
+    }
+    error_page(plane.handle(request).await)
+}
+
+/// The consent redirect for a pushed request nobody has answered yet, or `None` to let the request
+/// through. See [`authorize`].
+fn pushed_request_gate(
+    plane: &super::plane::AsPlane,
+    request: &axum::extract::Request,
+) -> Option<oauth_as::http::Response> {
+    let pairs = form_urlencoded_pairs(request.uri().query()?);
+    let param = |name: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    };
+    let (client_id, request_uri) = (param("client_id")?, param("request_uri")?);
+    let pushed = plane.pushed(request_uri)?;
+    if pushed.client_id != client_id {
+        return None;
+    }
+    let key = super::consent::pushed_key(client_id, request_uri);
+    let decided = super::consent::session_id(request.headers())
+        .is_some_and(|session| plane.sessions().is_staked(&session, &key));
+    if decided {
+        return None;
+    }
+    let target = request.uri().path_and_query()?.as_str();
+    Some(super::consent::login_redirect(
+        &plane.identity().consent_url(),
+        target,
+    ))
+}
+
+/// A direct 4xx JSON error from the authorization endpoint, re-rendered as an HTML page with the same
+/// status and the same RFC 6749 `error` code. Anything else passes through untouched.
+fn error_page(response: oauth_as::http::Response) -> Response {
+    let json = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"));
+    if !response.status().is_client_error() || !json {
+        return into_axum(response);
+    }
+    let (parts, body) = response.into_parts();
+    let error: serde_json::Value = serde_json::from_slice(&body.into_bytes()).unwrap_or_default();
+    let code = error["error"]
+        .as_str()
+        .map_or_else(|| format!("HTTP {}", parts.status.as_u16()), str::to_string);
+    let description = error["error_description"].as_str().unwrap_or_default();
+    let page = format!(
+        "<!doctype html><meta charset=utf-8><title>busbar — authorization error</title>\
+         <h1>Authorization error</h1>\
+         <p>error: <code>{code}</code></p>\
+         <p>{description}</p>",
+        code = escape(&code),
+        description = escape(description),
+    );
+    (
+        parts.status,
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        axum::response::Html(page),
+    )
         .into_response()
 }
 
@@ -169,7 +273,7 @@ async fn consent_screen(
         return no_entropy();
     };
     plane.sessions().open(ADMIN_SUBJECT, id.clone());
-    let page = consent_page(target);
+    let page = consent_page(target, &pending_request(plane, target));
 
     let mut response = axum::response::Html(page).into_response();
     let headers = response.headers_mut();
@@ -283,13 +387,28 @@ async fn consent_submit(
         )
             .into_response();
     };
+    // Absent is Approve: the decision the screen's only button made before it grew a second one.
+    let approve = match form.decision.as_deref() {
+        None | Some("approve") => true,
+        Some("deny") => false,
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::response::Html(PAGE_NO_REQUEST.to_string()),
+            )
+                .into_response()
+        }
+    };
     // The redirect host is rendered on the screen but deliberately NOT part of the stake key: the
     // key has to match what the authorization endpoint compares when it spends the approval, and
-    // widening it here alone would make every approval unspendable.
+    // widening it here alone would make every approval unspendable. A PUSHED request is keyed by
+    // its single-use handle instead (`consent::pushed_key`), which names its scope already.
     if let Some((client_id, scope, _redirect_host)) = client_and_scope_of(target) {
-        plane
-            .sessions()
-            .stake(&session, format!("{client_id}\u{1f}{scope}"));
+        let key = match query_value(target, "request_uri") {
+            Some(handle) => super::consent::pushed_key(&client_id, &handle),
+            None => format!("{client_id}\u{1f}{scope}"),
+        };
+        plane.sessions().stake(&session, key, approve);
     }
     (
         axum::http::StatusCode::FOUND,
@@ -312,11 +431,58 @@ struct ConsentQuery {
     return_to: Option<String>,
 }
 
-/// The consent form's two fields.
+/// The consent form's fields: the pending request, and which button was pressed.
 #[derive(serde::Deserialize)]
 struct ConsentForm {
     #[serde(rename = "return")]
     return_to: Option<String>,
+    /// `approve` or `deny`.
+    decision: Option<String>,
+}
+
+/// One query parameter of a local `/authorize?...` target, decoded.
+fn query_value(target: &str, name: &str) -> Option<String> {
+    form_urlencoded_pairs(target.split_once('?')?.1)
+        .into_iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v)
+}
+
+/// What the screen shows for the request at `target`: client, scope and redirect host, and whether
+/// it was shown before. A plain request carries all three in its URL. A PUSHED one carries only
+/// `client_id` and `request_uri`, so the three come from the store's note of what was pushed
+/// (`cimd::Pushed`), and only while the handle is live and belongs to that client.
+struct Pending {
+    client_id: String,
+    scope: String,
+    redirect_host: String,
+    /// A pushed request this screen has shown before.
+    revisit: bool,
+}
+
+fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending {
+    let (client_id, scope, redirect_host) = client_and_scope_of(target)
+        .unwrap_or_else(|| ("(unnamed)".to_string(), String::new(), String::new()));
+    let pushed = query_value(target, "request_uri").and_then(|handle| {
+        plane
+            .pushed(&handle)
+            .filter(|p| p.client_id == client_id)
+            .map(|p| (p, plane.mark_pushed_shown(&handle)))
+    });
+    match pushed {
+        Some((p, revisit)) => Pending {
+            client_id,
+            scope: p.scope,
+            redirect_host: host_of(&p.redirect_uri),
+            revisit,
+        },
+        None => Pending {
+            client_id,
+            scope,
+            redirect_host,
+            revisit: false,
+        },
+    }
 }
 
 /// Is this a path on THIS server rather than a URL somewhere else?
@@ -383,7 +549,7 @@ fn host_of(redirect_uri: &str) -> String {
 /// `a=b&c=d` with `+` and `%xx` decoded. Hand-written because the one caller reads two names out of
 /// a query this server itself produced, and a general-purpose parser here would be a dependency
 /// bought for eight lines.
-fn form_urlencoded_pairs(query: &str) -> Vec<(String, String)> {
+pub(super) fn form_urlencoded_pairs(query: &str) -> Vec<(String, String)> {
     query
         .split('&')
         .filter_map(|pair| pair.split_once('='))
@@ -501,32 +667,38 @@ const PAGE_NO_SESSION: &str = "<!doctype html><meta charset=utf-8><title>busbar<
 /// client chose and a screen that renders it is a screen that can be made to say anything. The
 /// registration policy refuses a name impersonating this deployment as well, which is defence in
 /// depth rather than an alternative.
-fn consent_page(return_to: &str) -> String {
-    let (client_id, scope, redirect_host) = client_and_scope_of(return_to)
-        .unwrap_or_else(|| ("(unnamed)".to_string(), String::new(), String::new()));
-    let scope = if scope.is_empty() {
-        "no scopes".to_string()
+fn consent_page(return_to: &str, pending: &Pending) -> String {
+    let scope = if pending.scope.is_empty() {
+        "no scopes"
     } else {
-        scope
+        &pending.scope
     };
-    let redirect_host = if redirect_host.is_empty() {
-        "(unnamed)".to_string()
+    let redirect_host = if pending.redirect_host.is_empty() {
+        "(unnamed)"
     } else {
-        redirect_host
+        &pending.redirect_host
+    };
+    // A pushed request is single use, so a second showing of the same one is worth saying: the
+    // operator either reloaded, or is being shown a request somebody else started.
+    let revisit = if pending.revisit {
+        "<p id=\"revisit\">This request was shown before.</p>"
+    } else {
+        ""
     };
     format!(
         "<!doctype html><meta charset=utf-8><title>busbar — authorize</title>\
          <h1>Authorize this client?</h1>\
          <p>Client: <code>{client}</code></p>\
          <p>Requesting: <code>{scope}</code></p>\
-         <p>Sends the credential to: <code>{host}</code></p>\
+         <p>Sends the credential to: <code>{host}</code></p>{revisit}\
          <form method=post>\
          <input type=hidden name=return value=\"{ret}\">\
-         <button type=submit>Approve</button>\
+         <button type=submit id=approve name=decision value=approve>Approve</button>\
+         <button type=submit id=deny name=decision value=deny>Deny</button>\
          </form>",
-        client = escape(&client_id),
-        scope = escape(&scope),
-        host = escape(&redirect_host),
+        client = escape(&pending.client_id),
+        scope = escape(scope),
+        host = escape(redirect_host),
         ret = escape(return_to),
     )
 }

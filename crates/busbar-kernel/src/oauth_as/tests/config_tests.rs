@@ -129,7 +129,10 @@ fn the_fapi2_posture_is_off_unless_the_block_names_it() {
             .expect("a block naming only the issuer parses");
     assert!(!written.fapi2, "an unnamed `fapi2` must parse as off");
     let id = AsIdentity::from_cfg(&written).expect("valid");
-    assert!(!id.fapi2(), "the plain block must validate to the plain posture");
+    assert!(
+        !id.fapi2(),
+        "the plain block must validate to the plain posture"
+    );
 }
 
 /// `fapi2: true` is the one line that turns the FAPI 2.0 Security Profile posture on.

@@ -263,7 +263,10 @@ fn push_form(s: &Subject, client_id: &str, key: &Key) -> Vec<(&'static str, Stri
 async fn push(s: &Subject, form: &[(&str, String)], dpop: &Key) -> String {
     let proof = dpop.proof("POST", &format!("{}/par", s.origin));
     let (status, body) = post(s, "/par", form, Some(proof)).await;
-    assert_eq!(status, 201, "RFC 9126 s2.2: an accepted push is 201: {body}");
+    assert_eq!(
+        status, 201,
+        "RFC 9126 s2.2: an accepted push is 201: {body}"
+    );
     let expires_in = body["expires_in"].as_u64().expect("expires_in");
     assert!(
         expires_in > 0 && expires_in <= 600,
@@ -300,8 +303,7 @@ fn authorize_url(s: &Subject, client_id: &str, request_uri: &str) -> String {
 /// renders, the operator answers `decision`, and the replayed `/authorize` answers. Returns where
 /// that last answer sends the browser.
 async fn consent(s: &Subject, jar: &mut Jar, authorize: &str, decision: &str) -> String {
-    let (status, headers, body) =
-        send(&s.client, jar, reqwest::Method::GET, authorize, None).await;
+    let (status, headers, body) = send(&s.client, jar, reqwest::Method::GET, authorize, None).await;
     assert_eq!(
         status, 302,
         "an undecided pushed request goes to consent: {body}"
@@ -323,7 +325,10 @@ async fn consent(s: &Subject, jar: &mut Jar, authorize: &str, decision: &str) ->
     let back = location(&headers, &s.origin);
     assert_eq!(path_of(&back), "/authorize");
     let (status, headers, body) = send(&s.client, jar, reqwest::Method::GET, &back, None).await;
-    assert_eq!(status, 302, "a decided request redirects to the client: {body}");
+    assert_eq!(
+        status, 302,
+        "a decided request redirects to the client: {body}"
+    );
     location(&headers, &s.origin)
 }
 
@@ -416,7 +421,10 @@ async fn the_metadata_advertises_the_profile() {
         .as_array()
         .expect("assertion algorithms");
     assert!(algs.contains(&json!("ES256")), "{meta}");
-    assert!(!algs.contains(&json!("RS256")), "FAPI2 s5.4.1 forbids RS256: {meta}");
+    assert!(
+        !algs.contains(&json!("RS256")),
+        "FAPI2 s5.4.1 forbids RS256: {meta}"
+    );
     assert_eq!(meta["code_challenge_methods_supported"], json!(["S256"]));
     assert_eq!(
         meta["authorization_response_iss_parameter_supported"],
@@ -443,7 +451,10 @@ async fn the_plain_posture_advertises_none_of_the_profile() {
         json!(["client_secret_basic", "client_secret_post", "none"])
     );
     let (status, _) = post(&s, "/par", &push_form(&s, CLIENT_ID, &s.key), None).await;
-    assert_ne!(status, 201, "the plain posture serves no pushed authorization endpoint");
+    assert_ne!(
+        status, 201,
+        "the plain posture serves no pushed authorization endpoint"
+    );
 }
 
 /// THE PROFILE, end to end: a `private_key_jwt` client pushes its request with a DPoP proof, the
@@ -582,7 +593,10 @@ async fn assert_refused_with_a_page(s: &Subject, url: &str, code: &str) {
         .to_string();
     let page = resp.text().await.expect("body");
     assert_eq!(status, 400, "{page}");
-    assert!(content_type.starts_with("text/html"), "{content_type}: {page}");
+    assert!(
+        content_type.starts_with("text/html"),
+        "{content_type}: {page}"
+    );
     assert!(page.contains("Authorization error"), "{page}");
     assert!(page.contains(code), "the page names `{code}`: {page}");
 }
@@ -624,32 +638,47 @@ async fn a_request_uri_is_single_use_and_bound_to_its_client() {
     assert_refused_with_a_page(&s, &authorize, "invalid_request").await;
 }
 
-/// Assert a push was refused with `status` and one of `errors`.
+/// Assert a push was refused with one of `statuses` and one of `errors`. A client authentication
+/// failure is `invalid_client` at 400 or 401 (RFC 6749 s5.2: 401 when the client authenticated by
+/// the `Authorization` header), which is the pair the OIDF suite accepts
+/// (`EnsureHttpStatusCodeIs400or401`).
 async fn assert_push_refused(
     s: &Subject,
     form: &[(&str, String)],
-    status: u16,
+    statuses: &[u16],
     errors: &[&str],
     why: &str,
 ) {
     let proof = Key::new("dpop").proof("POST", &format!("{}/par", s.origin));
     let (got, body) = post(s, "/par", form, Some(proof)).await;
-    assert_eq!(got, status, "{why}: {body}");
+    assert!(
+        statuses.contains(&got),
+        "{why}: {got} not in {statuses:?}: {body}"
+    );
     let error = body["error"].as_str().unwrap_or_default();
-    assert!(errors.contains(&error), "{why}: `{error}` not in {errors:?}: {body}");
+    assert!(
+        errors.contains(&error),
+        "{why}: `{error}` not in {errors:?}: {body}"
+    );
 }
 
 /// The pushed authorization endpoint's refusals, each one parameter away from an accepted push.
 #[tokio::test]
 async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     let s = serve(true).await;
-    let good = push_form(&s, CLIENT_ID, &s.key);
+    // A FRESH push per case: an assertion's `jti` is single use, so a shared one would make every
+    // case after the first a replay refusal rather than the refusal it is about.
+    let good = || push_form(&s, CLIENT_ID, &s.key);
     let token_endpoint = format!("{}/token", s.origin);
 
     assert_push_refused(
         &s,
-        &with(&with(&good, "client_assertion", Value::Null), "client_assertion_type", Value::Null),
-        401,
+        &with(
+            &with(&good(), "client_assertion", Value::Null),
+            "client_assertion_type",
+            Value::Null,
+        ),
+        &[400, 401],
         &["invalid_client"],
         "a confidential client that does not authenticate",
     )
@@ -657,11 +686,11 @@ async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     assert_push_refused(
         &s,
         &with(
-            &good,
+            &good(),
             "client_assertion",
             json!(s.key.assertion(CLIENT_ID, json!(token_endpoint))),
         ),
-        401,
+        &[400, 401],
         &["invalid_client"],
         "FAPI2 s5.3.2.1-8: the token endpoint URL is not the issuer",
     )
@@ -669,11 +698,13 @@ async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     assert_push_refused(
         &s,
         &with(
-            &good,
+            &good(),
             "client_assertion",
-            json!(s.key.assertion(CLIENT_ID, json!([s.origin, "https://other.example"]))),
+            json!(s
+                .key
+                .assertion(CLIENT_ID, json!([s.origin, "https://other.example"]))),
         ),
-        401,
+        &[400, 401],
         &["invalid_client"],
         "FAPI2 s5.3.3.1-5: the issuer as a string, never in an array",
     )
@@ -681,32 +712,36 @@ async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     assert_push_refused(
         &s,
         &with(
-            &good,
+            &good(),
             "client_assertion",
             json!(s.other.assertion(CLIENT_ID, json!(s.origin))),
         ),
-        401,
+        &[400, 401],
         &["invalid_client"],
         "RFC 7523 s3: an assertion signed by a key the client did not register",
     )
     .await;
     let replayed = s.key.assertion(CLIENT_ID, json!(s.origin));
-    let once = with(&good, "client_assertion", json!(replayed));
+    let once = with(&good(), "client_assertion", json!(replayed));
     let proof = Key::new("dpop").proof("POST", &format!("{}/par", s.origin));
     let (status, body) = post(&s, "/par", &once, Some(proof)).await;
     assert_eq!(status, 201, "{body}");
     assert_push_refused(
         &s,
         &once,
-        401,
+        &[400, 401],
         &["invalid_client"],
         "RFC 7523 s3 (7): an assertion's jti is single use",
     )
     .await;
     assert_push_refused(
         &s,
-        &with(&with(&good, "code_challenge", Value::Null), "code_challenge_method", Value::Null),
-        400,
+        &with(
+            &with(&good(), "code_challenge", Value::Null),
+            "code_challenge_method",
+            Value::Null,
+        ),
+        &[400],
         &["invalid_request"],
         "FAPI2 s5.3.2.2-5 / RFC 7636: PKCE is required",
     )
@@ -714,19 +749,19 @@ async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     assert_push_refused(
         &s,
         &with(
-            &with(&good, "code_challenge", json!(VERIFIER)),
+            &with(&good(), "code_challenge", json!(VERIFIER)),
             "code_challenge_method",
             json!("plain"),
         ),
-        400,
+        &[400],
         &["invalid_request"],
         "FAPI2 s5.3.2.2-5: S256 only, `plain` refused",
     )
     .await;
     assert_push_refused(
         &s,
-        &with(&good, "redirect_uri", Value::Null),
-        400,
+        &with(&good(), "redirect_uri", Value::Null),
+        &[400],
         &["invalid_request"],
         "FAPI2 s5.3.2.2-6: redirect_uri is required in a pushed request",
     )
@@ -744,7 +779,10 @@ async fn assert_token_refused(
     let (status, body) = post(s, "/token", form, proof).await;
     assert!((400..500).contains(&status), "{why}: {status} {body}");
     let error = body["error"].as_str().unwrap_or_default();
-    assert!(errors.contains(&error), "{why}: `{error}` not in {errors:?}: {body}");
+    assert!(
+        errors.contains(&error),
+        "{why}: `{error}` not in {errors:?}: {body}"
+    );
 }
 
 /// The token endpoint's refusals. Each is checked against a FRESH code, so no refusal passes

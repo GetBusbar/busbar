@@ -39,9 +39,10 @@
 //! stream: it adds the `client_id_metadata_document_supported` member to the served RFC 8414
 //! document, which `tests::signer_tests` pins. The library validates only; it does not fetch.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use oauth_as::authorization::{AuthorizationCodeRecord, AuthorizationCodeState};
 use oauth_as::client::{Client, ClientAuth, ClientId};
@@ -353,6 +354,27 @@ pub(crate) struct CimdStore {
     ceiling: ScopeSet,
     /// Swappable so the flow tests can stand in a stub document host; production never swaps it.
     fetcher: RwLock<Arc<dyn CimdFetch>>,
+    /// What the consent screen needs to show of each RFC 9126 pushed request that has not been
+    /// redeemed, keyed by `request_uri`. See [`Pushed`].
+    pushed: Mutex<HashMap<String, Pushed>>,
+}
+
+/// WHAT A PUSHED REQUEST ASKS FOR, kept for the consent screen alone.
+///
+/// Under PAR the authorization URL carries only `client_id` and `request_uri`, and `oauth-as` has
+/// one way to read a pushed record: an atomic take, which SPENDS it. The screen has to name the
+/// scope and the redirect host before anyone has decided, and FAPI 2.0 s5.3.2.2 NOTE 3 has the
+/// handle spent at the point of authorization, not of loading the page. So the store notes these
+/// three values when the record is pushed and forgets them when it is taken or expires; the record
+/// itself, and the single use the library enforces on it, are untouched.
+#[derive(Clone, Debug)]
+pub(crate) struct Pushed {
+    pub(crate) client_id: String,
+    pub(crate) scope: String,
+    pub(crate) redirect_uri: String,
+    expires_at: std::time::SystemTime,
+    /// Whether the consent screen has shown this request already.
+    shown: bool,
 }
 
 impl CimdStore {
@@ -365,7 +387,26 @@ impl CimdStore {
             inner,
             ceiling,
             fetcher: RwLock::new(fetcher),
+            pushed: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The summary of a pushed request that is still live, or `None`.
+    pub(crate) fn pushed(&self, request_uri: &str) -> Option<Pushed> {
+        let pushed = self.pushed.lock().unwrap_or_else(|p| p.into_inner());
+        pushed
+            .get(request_uri)
+            .filter(|p| p.expires_at > std::time::SystemTime::now())
+            .cloned()
+    }
+
+    /// Mark a live pushed request as shown, answering whether it already had been.
+    pub(crate) fn mark_pushed_shown(&self, request_uri: &str) -> bool {
+        let mut pushed = self.pushed.lock().unwrap_or_else(|p| p.into_inner());
+        pushed
+            .get_mut(request_uri)
+            .map(|p| std::mem::replace(&mut p.shown, true))
+            .unwrap_or(false)
     }
 
     /// Install a different fetch. Test-only: the end-to-end flow proof needs the real wire and a
@@ -612,10 +653,70 @@ impl Storage for CimdStore {
         self.inner.revoke_consent(consent_id, window)
     }
 
+    // RFC 9126 PAR and the RFC 7523 / RFC 9449 replay ledger: delegated, so the atomic single use
+    // of a `request_uri` and the compare-and-set of a replay `jti` stay the properties
+    // `MemoryStorage` holds and `storage_conformance` checks. The PAR pair also keeps the consent
+    // screen's summary ([`Pushed`]) in step with the record.
+    fn put_pushed_authorization_request(
+        &self,
+        record: oauth_as::par::PushedAuthorizationRequest,
+    ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
+        let request_uri = record.request_uri.clone();
+        let summary = Pushed {
+            client_id: record.client_id.as_str().to_string(),
+            scope: record.scope.clone().unwrap_or_default(),
+            redirect_uri: record.redirect_uri.clone().unwrap_or_default(),
+            expires_at: record.expires_at,
+            shown: false,
+        };
+        let put = self.inner.put_pushed_authorization_request(record);
+        async move {
+            let outcome = put.await?;
+            if matches!(outcome, WriteOutcome::Applied) {
+                self.pushed
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(request_uri, summary);
+            }
+            Ok(outcome)
+        }
+    }
+
+    fn take_pushed_authorization_request(
+        &self,
+        request_uri: &str,
+    ) -> impl Future<Output = Result<Option<oauth_as::par::PushedAuthorizationRequest>, StorageError>>
+           + Send {
+        let take = self.inner.take_pushed_authorization_request(request_uri);
+        let request_uri = request_uri.to_string();
+        async move {
+            let taken = take.await?;
+            if taken.is_some() {
+                self.pushed
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&request_uri);
+            }
+            Ok(taken)
+        }
+    }
+
+    fn claim_replay_id(
+        &self,
+        id: &str,
+        expires_at: std::time::SystemTime,
+    ) -> impl Future<Output = Result<bool, StorageError>> + Send {
+        self.inner.claim_replay_id(id, expires_at)
+    }
+
     fn sweep_expired(
         &self,
         now: std::time::SystemTime,
     ) -> impl Future<Output = Result<u64, StorageError>> + Send {
+        self.pushed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|_, p| p.expires_at > now);
         self.inner.sweep_expired(now)
     }
 }

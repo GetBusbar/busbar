@@ -209,11 +209,28 @@ metrics-util = { version = "0.20.4", default-features = false }
 # off: busbar signs and verifies ES256 only, over `ring`, and `jwt-rsa` would pull the `rsa` crate
 # with its RUSTSEC-2023-0071 signing advisory into a tree that has no use for it. `test-util` (the
 # signer/storage conformance harnesses, dev-dependencies only) is likewise unrenamed.
+#
+# THE FAPI 2.0 SECURITY PROFILE BUILDING BLOCKS (1.6.0, owner ruling 2026-09-19: the code is built
+# to pass the OIDF suite). Each is used only under `oauth_as.fapi2: true`; none adds a crate to the
+# graph (`par = []`, `dpop` and `client-assertion` = `["jwt"]`, already on):
+#
+#   par                RFC 9126 pushed authorization requests: the `/par` endpoint and the
+#                      `require_pushed_authorization_requests` flag FAPI 2.0 s5.3.2.2-3 mandates.
+#   dpop               RFC 9449 sender-constrained tokens (`cnf.jkt`), FAPI 2.0 s5.3.4-2. Verified
+#                      by the ES256 verifier busbar already installs over `ring`.
+#   client-assertion   RFC 7523 `private_key_jwt`, the profile's client authentication.
+#
+# The plain posture's RFC 8414 document stays the bytes it was: the plane serves it with the
+# members these three add removed (`busbar_core_oauth2::plane`), so a deployment that did not ask
+# for the profile advertises none of it.
 oauth-as = { version = "1.0.0", features = [
     "http",
     "jwt",
     "consent",
     "resource-metadata",
+    "par",
+    "dpop",
+    "client-assertion",
 ] }
 # The OpenTelemetry project's own generated OTLP types, DEV-ONLY: the root's OTLP proofs decode what
 # the `otlp` sink (GetBusbar/busbar-export-otlp) posts with the proto's publisher's types, never with the

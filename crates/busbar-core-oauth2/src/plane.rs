@@ -21,7 +21,9 @@
 
 use std::sync::Arc;
 
-use oauth_as::server::{AuthorizationServer, ServerConfig, SystemClock};
+use oauth_as::server::{
+    AssertionAudience, AuthorizationServer, RefreshRotation, ServerConfig, SystemClock,
+};
 use oauth_as::store::MemoryStorage;
 
 use busbar_kernel::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
@@ -50,6 +52,9 @@ pub(crate) struct AsPlane {
     /// screen are a busbar handler and an `oauth-as` callback, and they have to be looking at the
     /// same table.
     sessions: Arc<super::consent::Sessions>,
+    /// The RFC 8414 document the PLAIN posture serves, or `None` under the FAPI 2.0 posture, which
+    /// serves `oauth-as`'s own. See [`plain_metadata`].
+    plain_metadata: Option<bytes::Bytes>,
 }
 
 /// Why the plane could not be built. Distinct from [`super::config::AsCfgError`] because these are
@@ -150,6 +155,14 @@ impl AsPlane {
             oauth_as::jwt::JwtConfig::new(key, audience).with_jwks_uri(identity.jwks_uri()),
         ));
 
+        // THE FAPI 2.0 SECURITY PROFILE, applied only when the operator wrote `fapi2: true`. Every
+        // write below is inside this branch, so the plain posture builds the `ServerConfig` it
+        // always built. The authorization code lifetime needs no write: `oauth-as`'s default is
+        // already the profile's 60-second ceiling (s5.3.2.1-11).
+        if identity.fapi2() {
+            config = fapi2_posture(config, &identity);
+        }
+
         // The store: `MemoryStorage` behind the CIMD read. The ceiling handed to it is the SAME
         // `default_grant_scopes` the registration config above is built from, so a client arriving
         // by document and one arriving by registration land under one ceiling by construction.
@@ -160,10 +173,9 @@ impl AsPlane {
         );
         let server = Arc::new(
             AuthorizationServer::new(config, store)
-                // Installed even though nothing on this plane verifies a client signature today:
-                // `oauth-as` refuses every signed credential when no verifier is installed, and the
-                // day `dpop` or `client-assertion` is switched on, a MISSING verifier would be a
-                // silent refusal of every conforming client rather than a build error.
+                // THE ES256 VERIFIER: what checks an RFC 9449 DPoP proof and an RFC 7523
+                // `private_key_jwt` assertion. `oauth-as` refuses every signed credential whose
+                // algorithm has no verifier, and advertises exactly the algorithms that have one.
                 .with_jws_verifier(Arc::new(RingEs256Verifier))
                 .with_registration_policy(Box::new(super::policy::OpenRegistration)),
         );
@@ -177,21 +189,56 @@ impl AsPlane {
             ))
             .build()
             .map_err(AsBuildError::Service)?;
+        let plain_metadata = (!identity.fapi2()).then(|| plain_metadata(&server));
 
         Ok(Self {
             identity,
             service,
             server,
             sessions,
+            plain_metadata,
         })
+    }
+
+    /// Answer one request: the plane's whole wire surface. The plain posture's metadata document
+    /// is the one answer busbar serves itself ([`plain_metadata`]); every other request is
+    /// `oauth-as`'s, unchanged.
+    pub(crate) async fn handle<B>(&self, request: http::Request<B>) -> oauth_as::http::Response
+    where
+        B: axum::body::HttpBody,
+    {
+        if let Some(document) = &self.plain_metadata {
+            if request.method() == http::Method::GET
+                && request.uri().path() == self.identity.metadata_path()
+            {
+                let mut response =
+                    http::Response::new(oauth_as::http::Body::from(document.clone()));
+                response.headers_mut().insert(
+                    http::header::CONTENT_TYPE,
+                    http::HeaderValue::from_static("application/json;charset=UTF-8"),
+                );
+                return response;
+            }
+        }
+        // Box::pin: the whole `oauth-as` dispatch future (~56 KB monomorphized), boxed at its one
+        // call site, as `routes::forward` did before this method existed.
+        Box::pin(self.service.handle(request)).await
+    }
+
+    /// The display summary of a pushed request that has not been redeemed yet. See
+    /// [`super::cimd::Pushed`].
+    pub(crate) fn pushed(&self, request_uri: &str) -> Option<super::cimd::Pushed> {
+        self.server.store().pushed(request_uri)
+    }
+
+    /// Record that the consent screen showed this pushed request, answering whether it had been
+    /// shown before.
+    pub(crate) fn mark_pushed_shown(&self, request_uri: &str) -> bool {
+        self.server.store().mark_pushed_shown(request_uri)
     }
 
     pub(crate) fn identity(&self) -> &AsIdentity {
         &self.identity
-    }
-
-    pub(crate) fn service(&self) -> &AsService {
-        &self.service
     }
 
     pub(crate) fn server(&self) -> &Arc<AsServer> {
@@ -201,6 +248,51 @@ impl AsPlane {
     pub(crate) fn sessions(&self) -> &Arc<super::consent::Sessions> {
         &self.sessions
     }
+}
+
+/// THE FAPI 2.0 SECURITY PROFILE POSTURE, written onto a plain `ServerConfig`. The values are the
+/// upstream `fapi2_conformance_server` example's, which is the configuration `oauth-as` 1.0.0 was
+/// OpenID-certified under (FAPI2SP OP, private key + DPoP).
+fn fapi2_posture(mut config: ServerConfig, identity: &AsIdentity) -> ServerConfig {
+    // RFC 9126 PAR, MANDATORY (s5.3.2.2-3), with `redirect_uri` required in the push (s5.3.2.2-6).
+    // The endpoint is set to the path `routes::mount` mounts, so the advertised document and the
+    // served route cannot drift. The handle lifetime is `oauth-as`'s 60 s, under s5.3.2.2-12's 600.
+    let mut par = oauth_as::par::ParConfig::new();
+    par.pushed_authorization_request_endpoint = Some(identity.par_endpoint());
+    par.require_pushed_authorization_requests = true;
+    par.require_redirect_uri = true;
+    config.par = Some(Box::new(par));
+    // RFC 9449 on every token request: every token is sender-constrained (s5.3.4-2).
+    config.require_dpop = true;
+    config
+        // s5.3.2.1-9 forbids refresh token rotation. Sound only because the line above binds every
+        // token to its client's DPoP key; the plain posture keeps rotation and reuse detection.
+        .with_refresh_rotation(RefreshRotation::Reuse)
+        // s5.3.2.1-8 / s5.3.3.1-5: a client assertion's `aud` is the issuer, as a string.
+        .with_assertion_audience(AssertionAudience::IssuerOnly)
+        // s5.4.1: ES256 and PS256 only, for every JWS this server verifies or advertises.
+        .with_jws_alg_allow_list(oauth_as::jwt::AlgAllowList::fapi())
+}
+
+/// THE PLAIN POSTURE'S RFC 8414 DOCUMENT: `oauth-as`'s own, less the members the FAPI 2.0
+/// building blocks add to it at COMPILE time (`client_secret_jwt` and `private_key_jwt`, the
+/// assertion and DPoP algorithm lists). Those three cargo features cannot be switched off at
+/// runtime, and a deployment that did not ask for the profile must not advertise it: busbar's own
+/// resource half answers `Bearer` only, so a client that read `dpop_signing_alg_values_supported`
+/// and bound its token would be refused by the very plane the token is for. Serialized exactly as
+/// `oauth-as` serializes its own (`serde_json::to_vec` of the same struct), so the bytes are the
+/// document this posture always served — `signer_tests` pins them.
+fn plain_metadata(server: &AsServer) -> bytes::Bytes {
+    let mut meta = server.metadata();
+    meta.token_endpoint_auth_methods_supported.retain(|m| {
+        m != oauth_as::client_assertion::CLIENT_SECRET_JWT
+            && m != oauth_as::client_assertion::PRIVATE_KEY_JWT
+    });
+    meta.token_endpoint_auth_signing_alg_values_supported = None;
+    meta.dpop_signing_alg_values_supported = None;
+    bytes::Bytes::from(
+        serde_json::to_vec(&meta).expect("the RFC 8414 document is plain JSON and serializes"),
+    )
 }
 
 /// THE SEAM-TYPED BUILDER (`busbar_kernel::oauth_as::seam::AsPlaneSeam::build`): builds the plane AND
