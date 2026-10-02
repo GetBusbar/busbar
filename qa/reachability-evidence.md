@@ -79,7 +79,7 @@ function that folds `LINKED` for every plane whose `linked-axes` row carries `ga
 (`register_gauntlet_runner`) or `gauntlet-session` (`register_session_runner`); the self-test proves
 the fold both ways.
 
-## 2. `crates/busbar/src/root/plane_decisions.rs` — decision: NO LIVE UNIT PATH (owner-blocked, Q72(3))
+## 2. `crates/busbar/src/root/plane_decisions.rs` — decision: NO LIVE UNIT PATH (Q72(3) ruled SERVE; door path owed)
 
 The decision plane's linked entry (`[package.metadata.busbar.linked-entry]` `busbar-plane-decisions =
 "crate::root::plane_decisions"`, axes `plane`) exports `PLANE_DECLARATION` (:110) and `PLANE_HOOKS`
@@ -92,9 +92,12 @@ line in `gauntlet_install.rs` (or anywhere else) routes a `busbar_plane_decision
   declares no `impl … Units for`."
 - `root-reach:decision` — "NO UNIT PATH REACHED …"
 
-This is owner question **Q72(3)** (ruling R8): does 1.6.0 serve the decisions (jev) plane — then a
-unit path is feature work — or ship it declared-only, and how is a registered-but-unserved roster
-plane recorded? Until ruled, the rows stay RED and are NOT declared in `qa/reachability.toml`.
+Owner question **Q72(3)** is RULED: 1.6.0 SERVES the decisions (jev) plane. It is a DOOR plane, so
+its unit path is its served door (ARCHITECT Q-SO10, spec K5): its `linked-axes` row carries
+`plane-door`, exactly one function reached from `fn main()` builds its `PlaneDriver` (the root's
+one composition), and a reached line in that module drives a unit through it (the data route). Any
+one alone is red: a driver with no data route is not a unit path. The rows stay RED until SERVE-WIRE
+P2 and the DEC-SERVE serving slice land them, and are NOT declared in `qa/reachability.toml`.
 
 ## 3. Unreached root modules — the `root-module` row
 
