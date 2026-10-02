@@ -8,9 +8,8 @@
 //! `busbar_contract::export_door!`), so the two cannot answer differently. `tests/conformance.rs`
 //! loads both through the one loader and requires one transcript (Part 2 #2).
 //!
-//! Nothing routes to this door yet: the composition root has no llm row in `plane_doors`, and
-//! `busbar-llm` still serves the plane. The row lands with the flip, so one plane never has two
-//! servers.
+//! Nothing routes to this door yet: the composition root has no llm row in `plane_doors`. The row
+//! lands with the flip, so one plane never has two servers.
 //!
 //! One unit, as the plane driver serves it:
 //!
@@ -319,7 +318,7 @@ struct Pending {
 }
 
 /// What the door keeps for one unit, from its `arrive` to its end.
-struct Unit {
+struct UnitState {
     /// The generation's tables the unit arrived on.
     shaping: Arc<Shaping>,
     /// The arrival, read once at `arrive`.
@@ -342,9 +341,9 @@ struct Unit {
     pending: Option<Pending>,
 }
 
-impl Unit {
+impl UnitState {
     fn new(shaping: Arc<Shaping>) -> Self {
-        Unit {
+        UnitState {
             shaping,
             arrived: None,
             caller: Vec::new(),
@@ -371,7 +370,7 @@ impl Unit {
 pub struct LlmDoor {
     generations: Generations<PlaneSnapshot>,
     shapings: Mutex<BTreeMap<u64, Arc<Shaping>>>,
-    units: Mutex<HashMap<u64, Unit>>,
+    units: Mutex<HashMap<u64, UnitState>>,
     tickets: Mutex<HashMap<Ticket, u64>>,
     services: Option<Services>,
 }
@@ -507,7 +506,7 @@ struct PieceIn<'a> {
 }
 
 /// An ATTEMPT: the far-end request for the member the walk picked.
-fn attempt(unit: &mut Unit, piece: &PieceIn<'_>) -> Answer {
+fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     unit.member = String::from_utf8_lossy(piece.member).into_owned();
     unit.reply = None;
     unit.request = None;
@@ -545,7 +544,7 @@ fn attempt(unit: &mut Unit, piece: &PieceIn<'_>) -> Answer {
 }
 
 /// One piece of the far end's answer.
-fn far_end(unit: &mut Unit, piece: &PieceIn<'_>) -> Answer {
+fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     let Some(lane) = unit.shaping.lane(&unit.member) else {
         return Answer::hard();
     };
@@ -587,7 +586,7 @@ fn far_end(unit: &mut Unit, piece: &PieceIn<'_>) -> Answer {
 }
 
 /// The plane's answer to one piece.
-fn answer(unit: &mut Unit, from: u32, piece: &PieceIn<'_>) -> Answer {
+fn answer(unit: &mut UnitState, from: u32, piece: &PieceIn<'_>) -> Answer {
     match from {
         FROM_KERNEL => attempt(unit, piece),
         // The kernel re-pushes the caller's body on every attempt; what goes to the far end is the
@@ -632,7 +631,7 @@ fn settle(
 /// the sizes it needs, when they do not fit), then as many bytes as the reply buffer holds,
 /// `more = 1` while any are left. Answers the outcome and whether the caller's reply is complete.
 fn deliver(
-    unit: &mut Unit,
+    unit: &mut UnitState,
     input: Lent<'_, OnPieceIn>,
     out: &mut Out<'_, OnPieceOut>,
 ) -> (Outcome, bool) {
@@ -812,7 +811,7 @@ slot!(
             return Outcome::Failed;
         };
         let given = input.get();
-        let mut unit = Unit::new(shaping);
+        let mut unit = UnitState::new(shaping);
         unit.caller = input
             .fields()
             .iter()
@@ -911,7 +910,7 @@ slot!(
         let given = input.get();
         let held = guard(&door.units).remove(&given.unit);
         let rendered = match &held {
-            Some(Unit {
+            Some(UnitState {
                 declined: Some(d), ..
             }) if given.plane_code != 0 => refuse::declined(d),
             _ => {
