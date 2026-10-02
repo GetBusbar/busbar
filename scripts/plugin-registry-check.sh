@@ -49,7 +49,7 @@ if [ "$MODE" = "--selftest" ]; then
   # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
   # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
   # turns a green exit with any case unrun into RED.
-  SELFTEST_CASES=14
+  SELFTEST_CASES=15
   ran=0
   selftest_exit() {
     local st=$?
@@ -200,6 +200,15 @@ PAGES
   else
     printf '  [FAILED] %s\n' "--list dropped ${first}, which is not pending_crate"; rc=1
   fi
+  # A `lang: c` entry (a C plugin: no Cargo workspace for the suite loop) is kept out of the feed too.
+  ran=$((ran + 1))
+  awk -v r="$first" '{print} $0=="  - repo: "r {print "    lang: c"}' plugins.yaml > "$c1/plugins.yaml"
+  if c1_list | grep -qx "$first"; then
+    printf '  [FAILED] %s\n' "--list still feeds lang: c entry ${first}"; rc=1
+  else
+    printf '  [ok]     %s\n' "a lang: c entry is kept out of the --list feed"
+  fi
+  cp plugins.yaml "$c1/plugins.yaml"
 
   echo
   [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays, a comment cannot stand in for the registry loop, and a plugin repo is named busbar-<kind>-<name>"; exit 0; }
@@ -295,6 +304,10 @@ if list_mode:
     for p in plugins:
         # Registered before its crates moved in: nothing to clone, build or test yet.
         if str(p.get("pending_crate", "false")).strip().lower() == "true":
+            continue
+        # A C plugin (decision #84) has no Cargo workspace for a suite loop to `cargo test`: its proof
+        # is its own CI, plugin-ci.yml's C path at its pin.
+        if str(p.get("lang", "rust")).strip().lower() == "c":
             continue
         print("\t".join([
             p["repo"],
