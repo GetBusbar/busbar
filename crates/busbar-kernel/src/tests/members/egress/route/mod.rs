@@ -312,6 +312,33 @@ impl Node {
         drop(far);
     }
 
+    /// Take a member, send it the request, read the first piece of its answer, then poll for the
+    /// next once and drop the unit there — a CLIENT that goes away after its first byte. Answers
+    /// the first piece's bytes.
+    pub fn cancel_after_first_piece(&self, pool: &str) -> Vec<u8> {
+        let egress = self.egress();
+        let token = route_token();
+        let far: EgressFarEnd<'_> = egress.unit(self.unit_route(pool));
+        let first = self.rt.block_on(async {
+            let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {
+                panic!("a member to send to");
+            };
+            assert!(far.send(&token, request(&name, &pool, 1)).await);
+            let first = far.next(&token).await.expect("the answer's first piece");
+            assert!(!first.fail_over && !first.last, "{first:?}");
+            let waker = std::task::Waker::noop();
+            let mut cx = std::task::Context::from_waker(waker);
+            let mut next = Box::pin(far.next(&token));
+            assert!(
+                std::future::Future::poll(next.as_mut(), &mut cx).is_pending(),
+                "the far end was expected to park on the rest of the answer"
+            );
+            first.bytes
+        });
+        drop(far);
+        first
+    }
+
     /// The destination of the member named `name` in `pool`.
     fn destination_of(&self, pool: &str, name: &str) -> DestinationId {
         self.pools

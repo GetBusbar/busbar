@@ -165,6 +165,46 @@ fn a_stream_cut_after_its_first_byte_refunds_nothing() {
     );
 }
 
+/// A stream the CLIENT cancels after its first byte is a cut like any other (spec Part 2 #62 names
+/// "disconnect" among them; #77(2) "no refunds, no adjusting lines"): what streamed is billed and the
+/// budget unit its success spent stands. 1.5.5 gave the unit back here (v1.5.5
+/// `crates/busbar/src/proxy/response_body.rs:608-617`, `FirstByteBody::drop`); that difference is
+/// the owner's, registered in `testing/shadow-oracle/accepted-differences.json` and named in the
+/// CHANGELOG. A client that left is not the member's fault, so nothing is recorded against it.
+#[test]
+fn a_stream_the_client_cancels_after_its_first_byte_refunds_nothing() {
+    let mut node = two_lane_pool();
+    node.wants_stream = true;
+    node.conns.script(
+        "a",
+        Script::Drip {
+            replies: vec![
+                frame(Some(WireStatusClass::Success), "head"),
+                frame(Some(WireStatusClass::Success), "more"),
+            ],
+            step_ms: 1_000,
+            complete: true,
+        },
+    );
+
+    assert_eq!(node.cancel_after_first_piece("primary"), b"head");
+    assert_eq!(
+        node.breaker.budget_net(DestinationId::new(0)),
+        1,
+        "the unit spent on the success stands: what streamed is billed, not refunded"
+    );
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::Success],
+        "the client's leaving records nothing against the member"
+    );
+    assert_eq!(
+        node.conns.closed.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "and its connection is closed"
+    );
+}
+
 /// The other side of #62: a success whose answer is cut before ANY byte reached the caller
 /// delivered nothing, so the unit its head spent is given back, with the compensating transient
 /// (v1.5.5 `crates/busbar/src/proxy/response_body.rs:358-409`, the pre-first-byte arm;

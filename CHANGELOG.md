@@ -867,6 +867,7 @@ each dialect translates, field by field, is listed in the generated
   split of the cache-write tokens (additive: billed counts are unchanged).
 - A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
   shape the published Chat Completions schema defines.
+- 1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.
 
 ### Fixed
 
