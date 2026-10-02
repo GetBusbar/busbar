@@ -169,6 +169,9 @@ pub mod usage_tail;
 /// The OpenAI-family citation `annotations` mapping shared by the Chat and Responses codecs.
 pub mod openai_annotations;
 
+/// The rerank wire shape (`documents[]`, `results[]`) the rerank dialects read alike.
+pub mod rerank_wire;
+
 /// IR → wire encode helpers (image source, tool-result detection, strict-drop warn) shared by the
 /// dialect writers.
 pub mod ir_encode;

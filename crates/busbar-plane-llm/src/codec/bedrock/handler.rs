@@ -516,7 +516,7 @@ pub fn read_rerank_request(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let documents = super::super::cohere::handler::rerank_documents_pub(wire.get(keys::DOCUMENTS));
+    let documents = crate::codec::rerank_wire::read_documents(wire.get(keys::DOCUMENTS));
     if query.is_empty() || documents.is_empty() {
         return Err(IngressReject::BadRequest(
             "rerank request requires `query` and `documents`".into(),
@@ -549,7 +549,7 @@ pub fn read_rerank_response(
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     Ok(crate::codec::ir::rerank::RerankResp {
         id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
-        results: super::super::cohere::handler::read_rerank_results(v.get(keys::RESULTS)),
+        results: crate::codec::rerank_wire::read_results(v.get(keys::RESULTS)),
         // A Bedrock-hosted Cohere rerank model answers in Cohere's shape; the search units it billed
         // (`meta.billed_units.search_units`) are read EXACTLY, as the Cohere reader reads them. A body
         // without them stays the flat marker — nothing is estimated.
