@@ -425,6 +425,98 @@ fn a_tampered_retained_record_is_a_verify_finding() {
     );
 }
 
+/// Bind the deployment keyset over `dir`, as the boot does.
+fn bind_keyset(durability: &mut Durability, dir: &std::path::Path) {
+    crate::root::keyset::bind(
+        durability,
+        Some(dir),
+        &token(),
+        StepName::Meter,
+        1_700_000_000,
+    )
+    .expect("the keyset binds");
+}
+
+/// Strip a retained record's signature. The signature is not in the digest, so the chain stays
+/// whole: only the unsigned rule can see it.
+fn strip_signature(record: &mut AuditRecord) {
+    record.signature = None;
+    record.key_id = None;
+}
+
+/// AN UNSIGNED RECORD SEALED WHILE THE KEYSET WAS BOUND IS A `/verify` FINDING (MONEY-AUDIT E5):
+/// in the boot that sealed it, and after a restart, where the `Bootstrap` on the chain says the key
+/// was bound before it. RED arm: the walk skipped every record naming no key, so a record whose
+/// signature was stripped verified clean.
+#[test]
+fn an_unsigned_record_sealed_under_a_bound_keyset_is_a_verify_finding() {
+    let scratch = ScratchDir::new("audit-unsigned-under-key");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    {
+        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        bind_keyset(&mut durability, &scratch.path);
+        for unit in 1..=2 {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        assert!(durability.retained_audit_findings().is_empty());
+        strip_signature(&mut durability.audit_records[1]);
+        let findings = durability.retained_audit_findings();
+        assert_eq!(
+            findings,
+            vec!["record 2 is unsigned, sealed after the keyset was bound".to_string()]
+        );
+    }
+    let mut restarted = boot(&cfg, 7).expect("the journal reopens");
+    bind_keyset(&mut restarted, &scratch.path);
+    assert!(restarted.retained_audit_findings().is_empty());
+    strip_signature(&mut restarted.audit_records[0]);
+    assert_eq!(
+        restarted.retained_audit_findings(),
+        vec!["record 1 is unsigned, sealed after the keyset was bound".to_string()]
+    );
+}
+
+/// A RECORD SEALED BEFORE THE KEYSET WAS BOUND IS UNSIGNED, AND THAT IS NOT A FINDING: a chain a
+/// keyless boot began, continued by a boot that binds a key, verifies clean across both — before
+/// and after a restart.
+#[test]
+fn records_sealed_before_the_keyset_was_bound_are_not_findings() {
+    let scratch = ScratchDir::new("audit-unsigned-before-key");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    {
+        let mut keyless = boot(&cfg, 7).expect("the directory is writable");
+        for unit in 1..=2 {
+            keyless
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        assert!(keyless.retained_audit_findings().is_empty());
+    }
+    {
+        let mut keyed = boot(&cfg, 7).expect("the journal reopens");
+        bind_keyset(&mut keyed, &scratch.path);
+        let third = keyed
+            .seal_unit(audit_inputs(3), audit_pass(), &token())
+            .expect("sealed");
+        assert!(third.key_id.is_some(), "sealed under the bound key");
+        assert!(keyed.retained_audit_findings().is_empty());
+    }
+    let mut reread = boot(&cfg, 7).expect("the journal reopens");
+    bind_keyset(&mut reread, &scratch.path);
+    assert!(reread.retained_audit_findings().is_empty());
+    strip_signature(&mut reread.audit_records[2]);
+    assert_eq!(
+        reread.retained_audit_findings(),
+        vec!["record 3 is unsigned, sealed after the keyset was bound".to_string()]
+    );
+}
+
 /// A JOURNALLED RECORD NAMING A CLASS NOBODY DECLARES HERE IS A RESTART FINDING, never a record
 /// silently skipped or a line silently dropped.
 #[test]
