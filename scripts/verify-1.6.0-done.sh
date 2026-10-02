@@ -1453,13 +1453,8 @@ elif [ -x bin/oracle ]; then
       # `--strict` IS WHAT MAKES THE EXIT CODE THE VERDICT. Without it the differ prints its rows and
       # exits 0 whatever they say — including when the selection matched nothing.
       #
-      # `--allow-harness-skew` IS PASSED HERE, BY NAME, for the reason the removed ci.yml's shadow-oracle job gives
-      # beside its own: the golden is the COMMITTED 1.5.5 recording, taken with the Python harness, and
-      # the candidate was just recorded with the Rust engine, so the differ's same-revision guard would
-      # refuse the pair. This run no longer re-records its reference (TODO item 41), which is what used
-      # to keep the revisions equal. DELETE this flag with the golden re-take (TODO item 50).
       step "[$PARITY_LEG] replay: candidate vs golden (strict)" \
-        ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --allow-harness-skew --strict
+        ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --strict
       # ...and the same two facts re-derived from the report the differ wrote, so the claim does not
       # rest on one flag in one pinned engine. A green is a statement about the OWED cells only.
       step "[$PARITY_LEG] the report's own numbers: cells were compared, and none diverged" \
