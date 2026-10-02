@@ -1785,11 +1785,17 @@ fn relay_once(
     );
     // THE HOP'S PAYLOAD BYTES, both ways, the moment the exchange is known to have happened — BEFORE
     // any reading of the answer can refuse it: a backend that answered a 5xx or an oversized body was
-    // still sent this request and still sent those bytes back. A transport failure carried no
-    // exchange busbar can measure, so it counts nothing. See [`HopBytes`].
-    if let (Some(bytes), Ok(resp)) = (call.bytes, sent.as_ref()) {
+    // still sent this request and still sent those bytes back. A connection that died mid-answer
+    // carried the request and the bytes that arrived before it died, and both count — the streaming
+    // leg's rule for a cut stream. A failure before any answer arrived carried no exchange busbar
+    // can measure, so it counts nothing. See [`HopBytes`].
+    let received = match sent.as_ref() {
+        Ok(resp) => Some(resp.body.len()),
+        Err(f) => f.received,
+    };
+    if let (Some(bytes), Some(received)) = (call.bytes, received) {
         bytes.add_sent(request.body.len());
-        bytes.add_received(resp.body.len());
+        bytes.add_received(received);
     }
     let resp = sent.map_err(|f| {
         count_leg_failure(

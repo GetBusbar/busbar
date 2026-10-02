@@ -384,9 +384,12 @@ impl ReqwestTransport {
             // A mid-body transport failure is reported with the SAME fixed line the plane's own read
             // produced — built HERE from the url the plane still holds (the seam kept the cause and the
             // url separate).
-            busbar_kernel::proxy::ReadEnd::TransportError => {
-                Err(format!("`{url}`: the connection failed mid-body").into())
-            }
+            // What arrived before the failure travels with it: those bytes crossed the hop's wire and
+            // bill (Q35), exactly as the streaming leg counts the chunks it got before a cut.
+            busbar_kernel::proxy::ReadEnd::TransportError => Err(SendFailure {
+                err: format!("`{url}`: the connection failed mid-body"),
+                received: Some(buffered.body.len()),
+            }),
             // Complete or Truncated both hand the bytes back: an over-cap body arrives one byte past
             // the ceiling and the driver refuses it there, so the size decision stays in the one
             // module that owns the policy.
