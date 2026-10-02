@@ -6,7 +6,7 @@ on: pull_request
 concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
 permissions: { contents: read }
 env:
-  RELEASE_REF: 9ba9ab5c90ac6436fc5edbb450e645d1cdc45a10
+  RELEASE_REF: c35a96823468f40505a997380c8374d36b5230d0
   SHA: ${{ github.event.pull_request.head.sha }}
   TO: ${{ github.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -24,8 +24,19 @@ jobs:
     needs: preflight
     runs-on: ${{ needs.preflight.outputs.runner }}
     timeout-minutes: 330
+    # The test services the old ci.yml `check` job gave `cargo test --workspace` (the hop's --build-test),
+    # reached by container address (scripts/ci-service-endpoints.sh), never a published host port.
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env: { POSTGRES_USER: busbar, POSTGRES_PASSWORD: busbar, POSTGRES_DB: busbar_test }
+        options: --health-cmd "pg_isready -U busbar" --health-interval 10s --health-timeout 5s --health-retries 5
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        options: --health-cmd "valkey-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v4
+      - run: busbar/scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} valkey=${{ job.services.valkey.id }}
       - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v4
       - run: bash busbar-release/ci/promote/hop.sh
         env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}" }
