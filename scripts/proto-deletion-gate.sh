@@ -213,8 +213,24 @@ llm_dialects() {
   for m in $mods; do
     f="$src/$m/mod.rs"; [ -f "$f" ] || f="$src/$m.rs"
     [ -f "$f" ] || die "DECLS names module '$m' but neither $src/$m/mod.rs nor $src/$m.rs exists"
-    n="$(awk '/^pub (const|static) DECL:/ {on=1} on && match($0, /name:[[:space:]]*"[^"]+"/) {
-            v = substr($0, RSTART, RLENGTH); sub(/^name:[[:space:]]*"/, "", v); sub(/"$/, "", v); print v; exit }' "$f")"
+    # The FIRST `name:` of the DECL is the dialect's name; a later `name:` is a nested field.
+    n="$(awk '/^pub (const|static) DECL:/ {on=1} on && /name:/ {
+            if (match($0, /name:[[:space:]]*"[^"]+"/)) {
+              v = substr($0, RSTART, RLENGTH); sub(/^name:[[:space:]]*"/, "", v); sub(/"$/, "", v); print v }
+            exit }' "$f")"
+    if [ -z "$n" ]; then
+      # The dialect spells its name as a const (`name: VENDOR_NAME,`): resolve it to the string
+      # literal the const is bound to, in the dialect's own module (the file or its directory).
+      local id dir
+      id="$(awk '/^pub (const|static) DECL:/ {on=1} on && match($0, /name:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*,/) {
+              v = substr($0, RSTART, RLENGTH); sub(/^name:[[:space:]]*/, "", v); sub(/[[:space:]]*,$/, "", v); print v }
+            on && /name:/ { exit }' "$f")"
+      dir="$(dirname "$f")"; [ "$f" = "$src/$m.rs" ] && dir="$f"
+      if [ -n "$id" ]; then
+        n="$(grep -rhE --exclude-dir=tests --exclude='*_tests.rs' "^(pub(\\([a-z]+\\))? +)?const[[:space:]]+${id}:[[:space:]]*&(.static[[:space:]]+)?str[[:space:]]*=[[:space:]]*\"[^\"]+\"" "$dir" 2>/dev/null \
+             | head -1 | sed -E 's/.*= *"([^"]+)".*/\1/')"
+      fi
+    fi
     [ -n "$n" ] || die "DECLS names module '$m' but its DECL carries no name: in $f"
     out="${out:+$out }$n"
   done
