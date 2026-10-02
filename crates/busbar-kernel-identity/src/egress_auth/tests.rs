@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::caps::{Grant, KernelSeal};
-
-/// The unit's `Sign` token, minted once here for every suite in this module tree (the declared
-/// scheme's suite borrows it rather than spelling a second mint).
-pub(super) fn token() -> Grant<Sign> {
-    Grant::<Sign>::mint(&KernelSeal::acquire_for_kernel())
-}
 
 /// The request-signing scheme of AWS's published worked example (`us-east-1`, `iam`) for an access
 /// key id (`AKIDEXAMPLE` in the example), optionally with a temporary credential's session token.
