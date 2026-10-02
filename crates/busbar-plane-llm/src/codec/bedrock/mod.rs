@@ -652,6 +652,25 @@ const STREAM_CODE: &[&str] = &[
     "validationException",
 ];
 
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "output.message.content[].searchResult",
+    "output.message.content[].toolAddition",
+    "output.message.content[].toolRemoval",
+    "output.message.content[].toolResult.content[].searchResult",
+    "performanceConfig.latency",
+    "trace",
+];
+const STREAM_DROPS: &[&str] = &[
+    "metadata.performanceConfig.latency",
+    "metadata.serviceTier",
+    "metadata.trace.guardrail",
+    "metadata.trace.promptRouter",
+    "modelStreamErrorException.originalMessage",
+    "modelStreamErrorException.originalStatusCode",
+];
+
 /// Read a native Bedrock Converse `reasoningContent` content block into an IR `Thinking` block, or
 /// `None` when the block carries neither known member (forward-compatibility: a future
 /// `reasoningContent` union member is left undecoded rather than mis-mapped).

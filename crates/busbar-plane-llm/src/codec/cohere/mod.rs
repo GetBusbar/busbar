@@ -322,9 +322,20 @@ const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::B
 const PARKED: &[crate::codec::drops::Parked] = &[];
 
 /// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
-// The prompt-cache hit count is read into the usage.
-const RESPONSE_CODE: &[&str] = &["usage.cached_tokens"];
+// The prompt-cache hit count is read into the usage; the serving model is read beside the id.
+const RESPONSE_CODE: &[&str] = &["usage.cached_tokens", "model"];
 const STREAM_CODE: &[&str] = &[];
+
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "message.citations[].content_index",
+    "message.citations[].sources[].type=tool.tool_output",
+];
+const STREAM_DROPS: &[&str] = &[
+    "type=citation-start.delta.message.citations.content_index",
+    "type=citation-start.delta.message.citations.sources[].type=tool.tool_output",
+];
 
 /// The cohere wire word `texts`, spelled once.
 const TEXTS: &str = "texts";

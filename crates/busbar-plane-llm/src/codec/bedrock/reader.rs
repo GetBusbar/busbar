@@ -1446,6 +1446,7 @@ impl ProtocolReader for BedrockReader {
         Some(crate::codec::drops::Carried {
             map: super::map::RESPONSE_PATHS,
             code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
         })
     }
 
@@ -1453,6 +1454,7 @@ impl ProtocolReader for BedrockReader {
         Some(crate::codec::drops::Carried {
             map: super::map::STREAM_PATHS,
             code: super::STREAM_CODE,
+            drops: super::STREAM_DROPS,
         })
     }
 

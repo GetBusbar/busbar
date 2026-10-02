@@ -321,6 +321,45 @@ const PARKED: &[crate::codec::drops::Parked] = &[
 // The per-modality output split is read into the usage detail. A stream frame is an answer.
 const RESPONSE_CODE: &[&str] = &["usageMetadata.candidatesTokensDetails"];
 
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "candidates[].avgLogprobs",
+    "candidates[].citationMetadata.citationSources[].license",
+    "candidates[].content.parts[].audioTranscription",
+    "candidates[].content.parts[].codeExecutionResult",
+    "candidates[].content.parts[].executableCode",
+    "candidates[].content.parts[].functionResponse.scheduling",
+    "candidates[].content.parts[].functionResponse.willContinue",
+    "candidates[].content.parts[].mediaProcessing",
+    "candidates[].content.parts[].mediaResolution",
+    "candidates[].content.parts[].partMetadata",
+    "candidates[].content.parts[].speechMetadata",
+    "candidates[].content.parts[].toolCall",
+    "candidates[].content.parts[].toolResponse",
+    "candidates[].content.parts[].videoMetadata",
+    "candidates[].groundingMetadata.googleMapsWidgetContextToken",
+    "candidates[].groundingMetadata.groundingChunks[].image.imageUri",
+    "candidates[].groundingMetadata.groundingChunks[].image.sourceUri",
+    "candidates[].groundingMetadata.groundingChunks[].maps",
+    "candidates[].groundingMetadata.groundingChunks[].retrievedContext.customMetadata",
+    "candidates[].groundingMetadata.groundingChunks[].retrievedContext.fileSearchStore",
+    "candidates[].groundingMetadata.groundingChunks[].retrievedContext.mediaId",
+    "candidates[].groundingMetadata.groundingChunks[].retrievedContext.pageNumber",
+    "candidates[].groundingMetadata.groundingSupports[].confidenceScores",
+    "candidates[].groundingMetadata.groundingSupports[].renderedParts",
+    "candidates[].groundingMetadata.groundingSupports[].segment.partIndex",
+    "candidates[].groundingMetadata.imageSearchQueries",
+    "candidates[].groundingMetadata.retrievalMetadata",
+    "candidates[].groundingMetadata.searchEntryPoint",
+    "candidates[].groundingMetadata.webSearchQueries",
+    "candidates[].logprobsResult.chosenCandidates[].tokenId",
+    "candidates[].logprobsResult.logProbabilitySum",
+    "candidates[].logprobsResult.topCandidates[].candidates[].tokenId",
+    "candidates[].safetyRatings",
+    "promptFeedback.safetyRatings",
+];
+
 /// Router-internal shim key the gemini ingress route injects into the request body when the client
 /// sent a streaming `:streamGenerateContent` request WITHOUT `?alt=sse` (so the response must be the
 /// JSON-array streaming format, not SSE). It rides alongside the `model`/`stream` shims. Single
