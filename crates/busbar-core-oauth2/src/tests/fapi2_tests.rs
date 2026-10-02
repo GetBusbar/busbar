@@ -1017,7 +1017,10 @@ async fn the_resource_refuses_what_rfc_9449_forbids() {
         "s4.3 (10): iat is within the window"
     );
     let once = good();
-    assert_eq!(resource(&s, &as_dpop, &[once.clone()]).await, 200);
+    assert_eq!(
+        resource(&s, &as_dpop, std::slice::from_ref(&once)).await,
+        200
+    );
     assert_eq!(
         resource(&s, &as_dpop, &[once]).await,
         401,
