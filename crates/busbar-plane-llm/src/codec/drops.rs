@@ -174,6 +174,48 @@ pub const fn wire(path: &'static str) -> Member {
     Member::Wire(path)
 }
 
+/// The IR's content-block kinds ([`crate::codec::ir::IrBlock::kind_name`]), spelled once: the
+/// dialects' `IR_BLOCK_KINDS` tables and their writers' block drops name them from here.
+pub mod kind {
+    pub const TEXT: &str = "text";
+    pub const IMAGE: &str = "image";
+    pub const DOCUMENT: &str = "document";
+    pub const AUDIO: &str = "audio";
+    pub const VIDEO: &str = "video";
+    pub const THINKING: &str = "thinking";
+    pub const TOOL_USE: &str = "tool_use";
+    pub const TOOL_RESULT: &str = "tool_result";
+    pub const HOSTED_TOOL: &str = "hosted_tool";
+}
+
+/// A text block.
+pub const TEXT: Member = block(kind::TEXT);
+/// An image block.
+pub const IMAGE: Member = block(kind::IMAGE);
+/// A document block.
+pub const DOCUMENT: Member = block(kind::DOCUMENT);
+/// An audio block.
+pub const AUDIO: Member = block(kind::AUDIO);
+/// A video block.
+pub const VIDEO: Member = block(kind::VIDEO);
+/// A thinking (reasoning) block; the reasoning ASK is [`REASONING`].
+pub const THINKING: Member = block(kind::THINKING);
+/// A provider-run tool's record.
+pub const HOSTED_TOOL: Member = block(kind::HOSTED_TOOL);
+
+/// The IR members a writer drops by name, spelled once.
+pub const TOOLS: Member = member("tools");
+pub const TOOL_CHOICE: Member = member("tool_choice");
+pub const PARALLEL_TOOL_CALLS: Member = member("parallel_tool_calls");
+pub const RESPONSE_FORMAT: Member = member("response_format");
+pub const METADATA: Member = member("metadata");
+pub const OUTPUT_MODALITIES: Member = member("output_modalities");
+pub const TOP_LOGPROBS: Member = member("top_logprobs");
+pub const TOP_K: Member = member("top_k");
+pub const SERVICE_TIER: Member = member("service_tier");
+pub const LOGPROBS: Member = member("logprobs");
+pub const STRICT: Member = member("strict");
+
 /// Whether a TRANSLATE attempt is open on this thread.
 pub fn is_open() -> bool {
     OPEN.with(|o| o.borrow().is_some())

@@ -1061,12 +1061,15 @@ const INPUT_KINDS: &[&str] = &[
 /// The Responses answer content grammar: a message item's `content[]`.
 /// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
 const IR_BLOCK_KINDS: &[(&str, &str)] = &[
-    ("text", "type=input_text"),
-    ("image", "type=input_image"),
-    ("document", "type=input_file"),
-    ("thinking", "type=reasoning"),
-    ("tool_use", "type=function_call"),
-    ("tool_result", "type=function_call_output"),
+    (crate::codec::drops::kind::TEXT, "type=input_text"),
+    (crate::codec::drops::kind::IMAGE, "type=input_image"),
+    (crate::codec::drops::kind::DOCUMENT, "type=input_file"),
+    (crate::codec::drops::kind::THINKING, "type=reasoning"),
+    (crate::codec::drops::kind::TOOL_USE, "type=function_call"),
+    (
+        crate::codec::drops::kind::TOOL_RESULT,
+        "type=function_call_output",
+    ),
 ];
 
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {

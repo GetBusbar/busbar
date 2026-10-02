@@ -1343,7 +1343,7 @@ impl ProtocolReader for BedrockReader {
                         content.push(block);
                     } else {
                         crate::codec::drops::writer_drop!(
-                            crate::codec::drops::block(keys::THINKING),
+                            crate::codec::drops::THINKING,
                             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                             [],
                             "dropping Converse response reasoningContent block with no decodable \
@@ -1364,7 +1364,7 @@ impl ProtocolReader for BedrockReader {
                         content.push(block);
                     } else {
                         crate::codec::drops::writer_drop!(
-                            crate::codec::drops::block(keys::IMAGE),
+                            crate::codec::drops::IMAGE,
                             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                             [],
                             "dropping Converse response image block with no decodable source \

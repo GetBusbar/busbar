@@ -106,7 +106,7 @@ impl ProtocolWriter for CohereWriter {
                                 }));
                             }
                             None => crate::codec::drops::writer_drop!(
-                                crate::codec::drops::block("image"),
+                                crate::codec::drops::IMAGE,
                                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                 [],
                                 "dropping unresolvable vendor-scoped image reference on Cohere \
@@ -493,7 +493,7 @@ impl ProtocolWriter for CohereWriter {
         if let Some(tc) = &req.tool_choice {
             if tools.is_empty() {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tool_choice"),
+                    crate::codec::drops::TOOL_CHOICE,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping tool_choice on Cohere egress: tool_choice has no accompanying tools \
@@ -518,7 +518,7 @@ impl ProtocolWriter for CohereWriter {
         // this to requests that actually carried the flag (owner decision 4: no per-request noise).
         if req.parallel_tool_calls.is_some() {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("parallel_tool_calls"),
+                crate::codec::drops::PARALLEL_TOOL_CALLS,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "dropping parallel_tool_calls on Cohere egress: /v2/chat has no parallelism \
@@ -1059,7 +1059,7 @@ impl ProtocolWriter for CohereWriter {
         // observably.
         if !resp.logprobs.is_empty() {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("logprobs"),
+                crate::codec::drops::LOGPROBS,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "dropping response logprobs on Cohere egress: a Cohere logprobs item needs the token \

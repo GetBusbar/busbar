@@ -93,7 +93,7 @@ pub(super) fn write_bedrock_citation(
     if let Some(u) = url {
         if located {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::block("text"),
+                crate::codec::drops::TEXT,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [url = %u, ],
                 "dropping citation `url` on a bedrock egress: the Converse `CitationLocation` is a \

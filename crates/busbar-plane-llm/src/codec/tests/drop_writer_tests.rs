@@ -248,9 +248,8 @@ fn outside_an_attempt_the_writers_own_warn_is_said() {
         ..Default::default()
     };
     let cap = WarnCapture::default();
-    tracing::subscriber::with_default(cap.clone(), || {
-        crate::codec::gemini::GeminiWriter.write_request(&ir)
-    });
+    let writer = crate::codec::gemini::GeminiWriter;
+    tracing::subscriber::with_default(cap.clone(), || writer.write_request(&ir));
     let text = "dropping parallel_tool_calls on Gemini egress";
     assert_eq!(cap.count(text), 1, "{:?}", cap.messages());
     assert!(

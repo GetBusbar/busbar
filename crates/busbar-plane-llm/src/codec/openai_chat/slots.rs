@@ -143,7 +143,7 @@ pub(crate) fn write_modalities(req: &IrRequest) -> Option<serde_json::Value> {
             IrModality::Audio if has_audio_member => out.push(serde_json::json!(m.as_str())),
             IrModality::Audio | IrModality::Image => {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("output_modalities"),
+                    crate::codec::drops::OUTPUT_MODALITIES,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [modality = m.as_str(), ],
                     "dropping an output modality on OpenAI Chat egress: Chat produces image output \
@@ -190,7 +190,7 @@ pub(crate) fn write_web_search(req: &IrRequest) -> Option<serde_json::Value> {
             }
             IrHostedTool::WebSearch(_) => {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tools"),
+                    crate::codec::drops::TOOLS,
                     &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
                     [],
                     "dropping a second hosted web search on OpenAI Chat egress: Chat has one \
@@ -199,7 +199,7 @@ pub(crate) fn write_web_search(req: &IrRequest) -> Option<serde_json::Value> {
             }
             IrHostedTool::CodeExecution | IrHostedTool::WebFetch(_) => {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tools"),
+                    crate::codec::drops::TOOLS,
                     &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
                     [hosted_tool = tool.kind_str(),],
                     "dropping a hosted tool on OpenAI Chat egress: Chat Completions has no \
@@ -220,7 +220,7 @@ fn web_search_options(search: &IrWebSearch) -> serde_json::Value {
         || !search.blocked_domains.is_empty()
     {
         crate::codec::drops::writer_drop!(
-            crate::codec::drops::member("tools"),
+            crate::codec::drops::TOOLS,
             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
             [],
             "dropping web search max_uses / domain filters on OpenAI Chat egress: \

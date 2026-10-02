@@ -737,7 +737,7 @@ fn media_part_from_ir(
                 })),
                 None => {
                     crate::codec::drops::writer_drop!(
-                        crate::codec::drops::block("audio"),
+                        crate::codec::drops::AUDIO,
                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                         [media_kind = AUDIO, mime = media_type.as_str(),],
                         "dropping audio attachment on OpenAI Chat egress: input_audio.format is a \
@@ -825,12 +825,12 @@ const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Bl
 /// The Chat answer content-part grammar.
 /// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
 const IR_BLOCK_KINDS: &[(&str, &str)] = &[
-    ("text", "type=text"),
-    ("image", "type=image_url"),
-    ("document", "type=file"),
-    ("audio", "type=input_audio"),
-    ("tool_use", "tool_calls[]"),
-    ("tool_result", "role=tool"),
+    (crate::codec::drops::kind::TEXT, "type=text"),
+    (crate::codec::drops::kind::IMAGE, "type=image_url"),
+    (crate::codec::drops::kind::DOCUMENT, "type=file"),
+    (crate::codec::drops::kind::AUDIO, "type=input_audio"),
+    (crate::codec::drops::kind::TOOL_USE, "tool_calls[]"),
+    (crate::codec::drops::kind::TOOL_RESULT, "role=tool"),
 ];
 
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {

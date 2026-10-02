@@ -89,7 +89,7 @@ pub fn warn_dropped_tool_strict(tools: &[crate::codec::ir::IrTool], egress: &'st
         return;
     }
     crate::codec::drops::writer_drop!(
-        crate::codec::drops::member("strict"),
+        crate::codec::drops::STRICT,
         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
         [egress = %egress, tools = %named.join(","),],
         "dropping `tools[].strict` on this egress: the target protocol has no per-tool strict-schema \

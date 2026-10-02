@@ -1332,7 +1332,7 @@ impl ProtocolReader for OpenAiReader {
                     // dropped image part in a model's array-content response is visible in logs.
                     if matches!(block, crate::codec::ir::IrBlock::Image { .. }) {
                         crate::codec::drops::writer_drop!(
-                            crate::codec::drops::block(keys::IMAGE),
+                            crate::codec::drops::IMAGE,
                             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                             [],
                             "dropping an image content part from an OpenAI Chat response message: the \

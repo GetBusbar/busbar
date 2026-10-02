@@ -304,7 +304,7 @@ impl ProtocolWriter for BedrockWriter {
                         // and an empty `{}` would be a malformed frame. Drop it, but say so.
                         None => {
                             crate::codec::drops::writer_drop!(
-                                crate::codec::drops::block("text"),
+                                crate::codec::drops::TEXT,
                                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                 [],
                                 "dropping a streamed citation on a bedrock egress: it carried no \
@@ -493,7 +493,7 @@ impl ProtocolWriter for BedrockWriter {
                     if cits.is_empty() {
                         if !citations.is_empty() {
                             crate::codec::drops::writer_drop!(
-                                crate::codec::drops::block("text"),
+                                crate::codec::drops::TEXT,
                                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                 [dropped = citations.len(), ],
                                 "dropping citation(s) on a bedrock response egress: none carried a \
@@ -877,7 +877,7 @@ impl BedrockWriter {
                     // text, so the carrier is omitted.
                     b @ crate::codec::ir::IrBlock::Text { .. } if b.is_citation_carrier() => {
                         crate::codec::drops::writer_drop!(
-                            crate::codec::drops::block("text"),
+                            crate::codec::drops::TEXT,
                             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                             [],
                             "dropping citations with no text on Bedrock egress: blank text is \
@@ -966,7 +966,7 @@ impl BedrockWriter {
                                 // emitting a misleading placeholder block.
                                 crate::codec::ir::IrBlock::Thinking { .. } => {
                                     crate::codec::drops::writer_drop!(
-                                        crate::codec::drops::block("thinking"),
+                                        crate::codec::drops::THINKING,
                                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                         [],
                                         "dropping non-representable Thinking block inside a Bedrock toolResult");
@@ -974,7 +974,7 @@ impl BedrockWriter {
                                 // A provider-run tool's record has no Converse tool-result form.
                                 crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                                     crate::codec::drops::writer_drop!(
-                                        crate::codec::drops::block("hosted_tool"),
+                                        crate::codec::drops::HOSTED_TOOL,
                                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                         [],
                                         "dropping a hosted tool record inside a Bedrock toolResult: \
@@ -1043,7 +1043,7 @@ impl BedrockWriter {
                         );
                         if foreign && signature.is_some() {
                             crate::codec::drops::writer_drop!(
-                                crate::codec::drops::block("thinking"),
+                                crate::codec::drops::THINKING,
                                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                 [origin = ?signature_origin, ],
                                 "dropping a reasoning signature on Bedrock egress: another model \
@@ -1332,7 +1332,7 @@ impl BedrockWriter {
                 }
                 Some(_) => {
                     crate::codec::drops::writer_drop!(
-                        crate::codec::drops::member("response_format"),
+                        crate::codec::drops::RESPONSE_FORMAT,
                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                         [parameter = keys::RESPONSE_FORMAT,],
                         "dropping response_format on Bedrock egress: the lane does not declare \
@@ -1342,7 +1342,7 @@ impl BedrockWriter {
                 }
                 None => {
                     crate::codec::drops::writer_drop!(
-                        crate::codec::drops::member("response_format"),
+                        crate::codec::drops::RESPONSE_FORMAT,
                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                         [parameter = keys::RESPONSE_FORMAT,],
                         "dropping response_format on Bedrock egress: Converse's \
@@ -1457,7 +1457,7 @@ impl BedrockWriter {
                             ) =>
                     {
                         crate::codec::drops::writer_drop!(
-                            crate::codec::drops::member("tool_choice"),
+                            crate::codec::drops::TOOL_CHOICE,
                             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                             [],
                             "downgrading forced/targeted toolChoice to auto on Bedrock egress: not \
@@ -1475,7 +1475,7 @@ impl BedrockWriter {
                     // which may still call a tool). Previously SILENT; warn so it is observable.
                     None => {
                         crate::codec::drops::writer_drop!(
-                            crate::codec::drops::member("tool_choice"),
+                            crate::codec::drops::TOOL_CHOICE,
                             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                             [],
                             "dropping tool_choice=None: Bedrock Converse has no 'do not call a tool' \
@@ -1485,7 +1485,7 @@ impl BedrockWriter {
             }
         } else if req.tool_choice.is_some() {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("tool_choice"),
+                crate::codec::drops::TOOL_CHOICE,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "dropping tool_choice with no accompanying tools: Bedrock Converse rejects a \
@@ -1505,7 +1505,7 @@ impl BedrockWriter {
         // to requests that actually carried the flag (owner decision 4: no per-request noise).
         if req.parallel_tool_calls.is_some() {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("parallel_tool_calls"),
+                crate::codec::drops::PARALLEL_TOOL_CALLS,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "dropping parallel_tool_calls on Bedrock egress: Converse has no parallelism \
@@ -1548,7 +1548,7 @@ impl BedrockWriter {
         if let Some(top_k) = req.top_k.filter(|_| {
             if thinking_emitted {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("top_k"),
+                    crate::codec::drops::TOP_K,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "omitting top_k on Bedrock egress: not compatible with thinking"
