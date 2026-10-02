@@ -57,6 +57,7 @@ fn cfg() -> OauthAsCfg {
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
         fapi2: false,
+        clients: Vec::new(),
     }
 }
 
@@ -90,6 +91,8 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         signing_key: _,
         // The posture switch: not a path, but it decides whether `par_path` is one.
         fapi2,
+        // Operator-provisioned clients: data the store answers lookups from, never a route.
+        clients: _,
     } = id;
 
     let mut paths = vec![

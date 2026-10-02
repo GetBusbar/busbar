@@ -177,6 +177,7 @@ async fn serve(fapi2: bool) -> Subject {
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
         fapi2,
+        clients: Vec::new(),
     };
     // The open admin posture, as in `flow_tests::serve`: the consent screen's `RouteAuth::Admin`
     // is not the property under test here.

@@ -32,6 +32,7 @@ fn plane(grant: &[&str]) -> AsPlane {
         default_grant: grant.iter().map(|s| (*s).to_string()).collect(),
         access_token_ttl_secs: None,
         fapi2: false,
+        clients: Vec::new(),
     };
     let identity = AsIdentity::from_cfg(&cfg).expect("a valid oauth_as block");
     AsPlane::build(
@@ -168,6 +169,7 @@ async fn registration_is_on_whenever_the_plane_is() {
         default_grant: vec!["tools:read".to_string()],
         access_token_ttl_secs: None,
         fapi2: false,
+        clients: Vec::new(),
     };
     let identity = AsIdentity::from_cfg(&cfg).expect("valid");
     assert_eq!(
