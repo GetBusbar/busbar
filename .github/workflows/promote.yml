@@ -4,9 +4,9 @@ name: promote
 # and run them. BOARD (fast-forward of the base) runs only when vars.PROMOTE_BOARD is "true".
 on: pull_request
 concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
-permissions: { contents: read }
+permissions: { contents: read, issues: write, pull-requests: write }
 env:
-  RELEASE_REF: 6b3cb066714418d5ee64a99f4f9b0de13ed5fa80
+  RELEASE_REF: ea800da13549f856734daccd5670a9b73d7b0a20
   SHA: ${{ github.event.pull_request.head.sha }}
   TO: ${{ github.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -41,6 +41,24 @@ jobs:
       - run: bash busbar-release/ci/promote/hop.sh
         env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}" }
       - { if: always(), uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02, with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/turnstile-*.json", if-no-files-found: warn } } # v4
+      # The durable verdict hop.sh writes pass or fail (failures.json with each failing test and its first
+      # panic line, junit.xml, raw.log): the artifact, the sticky PR comment and the branch's health issue.
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: "verdict-${{ env.SHA }}"
+          path: |
+            verdict/failures.json
+            verdict/junit.xml
+            verdict/raw.log
+            verdict/summary.md
+            verdict/comment.md
+            verdict/history.json
+          retention-days: 90
+          if-no-files-found: warn
+      - if: always()
+        run: bash busbar-release/ci/promote/publish.sh
+        env: { GH_TOKEN: "${{ github.token }}" }
       - if: vars.PROMOTE_BOARD == 'true'
         run: bash busbar-release/ci/promote/board.sh
         env: { GITHUB_TOKEN: "${{ secrets.BUSBAR_TRAIN_TOKEN }}" }
