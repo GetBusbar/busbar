@@ -77,6 +77,7 @@ pub mod provider;
 pub mod register;
 pub mod session;
 pub mod session_params;
+pub mod session_pump;
 pub mod session_row;
 pub mod tools;
 pub mod twilio;
