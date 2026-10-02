@@ -18,11 +18,11 @@ schema = 1
 # ── Plugin-only crates ────────────────────────────────────────────────────────────────────────────
 # Rendered as `name = { version, default-features, features }`; `repos` and `reason` are for review.
 [plugin-deps.ldap3]
-version = "0.11"
+version = "0.12"
 default-features = false
 features = ["sync"]
 repos = ["busbar-auth-ldap"]
-reason = "the LDAP client of the ldap auth module. Its tls-rustls feature is a plugin-side TLS stack and is net-banned; ldap3 0.12 drops the rustls 0.21 / ring 0.16 second majors (DEPS-AUDIT cut #7)."
+reason = "the LDAP client of the ldap auth module. 0.12 is on rustls 0.23 / ring 0.17 (DEPS-AUDIT cut #7, busbar-auth-ldap#7). Its TLS features are a plugin-side TLS stack and are net-banned."
 
 [plugin-deps.mysql]
 version = "26"
@@ -59,7 +59,7 @@ reason = "sortable ids for the mysql store's rows."
 # every plugin's deny.toml; `cargo deny check` runs on it in the harness. These apply to the whole
 # graph, dev-dependencies included.
 [bans]
-multiple-versions = "warn"
+multiple-versions = "deny"
 deny = [
     { crate = "openssl", reason = "TLS is rustls (core-only); no OpenSSL anywhere in the fleet" },
     { crate = "openssl-sys", reason = "TLS is rustls (core-only); no OpenSSL anywhere in the fleet" },
@@ -69,9 +69,11 @@ deny = [
     { crate = "ring:<0.17", reason = "one ring major (0.17) fleet-wide" },
     { crate = "serde_yaml", reason = "unmaintained; busbar uses serde_yaml_ng" },
 ]
-# Duplicate versions the fleet accepts. Empty while multiple-versions is "warn"; when it moves to
-# "deny", the accepted pairs (DEPS-AUDIT §3: getrandom 0.2 via ring, syn 2/3 at compile time, ...) are
-# listed here as `{ crate = "name:<req>", reason = "..." }`.
+# Duplicate versions the fleet accepts beyond busbar's own. multiple-versions is "deny" (OWNER
+# 2026-10-02: no plugin may drag in a second version of anything busbar already uses); busbar-release's
+# render adds a skip for every duplicate busbar's own Cargo.lock holds at the pin and bans every version
+# of a shared crate outside the line busbar resolves it to, so this list stays for a reviewed exception:
+# `{ crate = "name@<version>", reason = "..." }`.
 skip = []
 
 # ── The socket/TLS ban (enforced by the harness, not cargo-deny) ─────────────────────────────────────

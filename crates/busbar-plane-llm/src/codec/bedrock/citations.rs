@@ -196,6 +196,7 @@ pub(super) fn read_bedrock_citation(c: &serde_json::Value) -> crate::codec::ir::
         end_index,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     }
 }
 
