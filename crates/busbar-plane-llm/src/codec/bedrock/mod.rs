@@ -660,7 +660,7 @@ const RESPONSE_DROPS: &[&str] = &[
     "output.message.content[].toolRemoval",
     "output.message.content[].toolResult.content[].searchResult",
     "performanceConfig.latency",
-    "trace",
+    TRACE,
 ];
 const STREAM_DROPS: &[&str] = &[
     "metadata.performanceConfig.latency",
