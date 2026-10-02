@@ -1912,7 +1912,7 @@ impl TestApp {
             base_group_names: self.base_group_names,
             identity_providers: self.identity_providers.clone(),
             export_defs: self.export_defs,
-            versions: std::sync::Arc::new(crate::admin::versions::VersionLog::new()),
+            admin: std::sync::Arc::new(crate::admin::seam::AdminSlot::default()),
             mutation_limiter: std::sync::Arc::new(crate::ratelimit::MutationLimiter::new()),
             idempotency_cache: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
@@ -2001,8 +2001,7 @@ impl TestApp {
             boot_route_paths,
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
-        app.versions
-            .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
+        crate::admin::seam::record_boot(&app);
         // Mirror main's durable-MCP-trust boot block: attach the plane sinks BEFORE the app is handed
         // to a caller.
         if let Some(durable) = plane_durable_store {

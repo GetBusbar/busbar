@@ -14,8 +14,9 @@
 //!
 //! What STAYED in busbar-core: `admin::v1::contract` (the frozen `AdminError`/`PATH_*` surface),
 //! `admin::v1::json` (the `err_json`/`ok_json`/`err_json_cond` envelope primitives),
-//! `admin::planeverbs` (`CorePlaneAdminEnvelope`), and `admin::versions` (the `VersionLog` state).
+//! and `admin::planeverbs` (`CorePlaneAdminEnvelope`). The config version history (`versions`) lives here, on `App` behind the seam's slot.
 
+pub mod admin_state;
 pub mod keys;
 pub mod restart;
 pub mod transport;
@@ -54,7 +55,9 @@ pub mod rate;
 pub mod refusal;
 pub mod verb;
 pub mod verbs;
+pub mod versions;
 
+pub use admin_state::{AdminState, AppAdmin};
 pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 pub use idempotency::ReplayEncoder;
 pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
@@ -78,8 +81,18 @@ pub use v1::service::mark_start;
 /// composition root; it is always mounted.
 pub fn install() {
     busbar_kernel::admin::seam::install_admin_mount_seam(
-        busbar_kernel::admin::seam::AdminMountSeam { mount: seam_mount },
+        busbar_kernel::admin::seam::AdminMountSeam {
+            mount: seam_mount,
+            record_boot: seam_record_boot,
+        },
     );
+}
+
+/// The boot-floor record the seam calls: this app's snapshot as version 0, so the history always has a
+/// rollback floor (the pre-any-mutation state).
+fn seam_record_boot(app: &busbar_kernel::state::App) {
+    use AppAdmin as _;
+    app.record_version_at(0, "system", "boot");
 }
 
 /// The mount the seam calls: nest the JSON v1 admin surface onto `router` at `/api/v1/admin`.

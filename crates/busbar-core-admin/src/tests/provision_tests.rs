@@ -6,6 +6,7 @@
 //! "compensate" but "the provision is committed, and it is RECORDED at commit time" — which is what
 //! these tests pin, on the branch where the config half commits and the store half then fails.
 
+use crate::admin_state::AppAdmin as _;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -168,7 +169,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let handle = Arc::new(AppHandle::new(app));
     let versions_before = handle
         .load()
-        .versions
+        .versions()
         .list(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX)
         .len();
 
@@ -205,7 +206,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         "the committed provision is in the audit trail"
     );
     let versions = live
-        .versions
+        .versions()
         .list(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
     assert!(
         versions.len() > versions_before,

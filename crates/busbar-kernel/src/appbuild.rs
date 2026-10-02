@@ -1879,9 +1879,9 @@ pub fn build_app_from_config(
         // plane's `build` (through its own carried-gates field, off `BuildCtx::prior`), so `App`
         // carries no dedicated field for them either.
         // History + rate windows are Arc-shared across applies (process-lifetime state).
-        versions: prior.map_or_else(
-            || Arc::new(admin::versions::VersionLog::new()),
-            |p| p.versions.clone(),
+        admin: prior.map_or_else(
+            || Arc::new(admin::seam::AdminSlot::default()),
+            |p| p.admin.clone(),
         ),
         mutation_limiter: prior.map_or_else(
             || Arc::new(ratelimit::MutationLimiter::new()),
@@ -1995,7 +1995,7 @@ pub fn build_app_from_config(
         mint_policy: std::sync::Arc::new(governance::mint_policy::MintPolicy::from_auth(
             cfg.auth.as_ref(),
         )),
-        // Arc-shared like `versions`/`mutation_limiter`: a REBUILD carries the SAME counter forward
+        // Arc-shared like `admin`/`mutation_limiter`: a REBUILD carries the SAME counter forward
         // (ids stay monotonic across a config reload) while a fresh boot seeds it once from OS
         // entropy (see `state::seed_request_id_counter`) so restarts don't restamp `0, 1, 2, …`.
         request_id_counter: prior.map_or_else(
