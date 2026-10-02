@@ -2597,6 +2597,34 @@ fn fixture_cell(
 
 /// [`prove_rows_red`](crate::gates::prove_rows_red) over a one-substitution plant into the real
 /// ledger, with the substitution given as the `(anchor, replacement)` the caller worked out.
+/// The transport crate the plane-in-a-wire cases plant into, spelled once ([`WIRE_PLANT`]).
+macro_rules! wire_plant_name {
+    () => {
+        "busbar-transport-planted"
+    };
+}
+
+/// The transport crate the plane-in-a-wire cases plant into. It is planted WITH its manifest: the
+/// transports leave this tree for their own repos one by one, and a case aimed at a wire the census
+/// no longer holds is refused by [`plant`] before it proves anything.
+const WIRE_PLANT: &str = wire_plant_name!();
+
+/// `body` at `tail` under the planted wire [`WIRE_PLANT`], its manifest planted first. A `tail` of
+/// `Cargo.toml` is that manifest, with `body` as its package fields.
+fn wire_plant(cx: &Ctx, tail: &str, body: &str) -> crate::ctx::Overlay {
+    let manifest = format!("crates/{WIRE_PLANT}/Cargo.toml");
+    let fields = if tail == "Cargo.toml" { body } else { "" };
+    let mut ov = plant(
+        cx,
+        &manifest,
+        &format!("[package]\n{fields}name = \"{WIRE_PLANT}\"\nversion = \"0.0.0\"\n"),
+    );
+    if tail != "Cargo.toml" {
+        ov.set(format!("crates/{WIRE_PLANT}/{tail}"), body.to_string());
+    }
+    ov
+}
+
 fn plant_ledger<'a>(
     cx: &'a Ctx,
     gate: &'a dyn crate::gates::Gate,
@@ -2685,12 +2713,12 @@ pub fn selftest<'a>(
             gate,
             "at the ship ceiling of zero, a plane named inside a transport is a NEW cell",
             &[ROW_MATRIX],
-            plant(
+            wire_plant(
                 cx,
-                "crates/busbar-transport-tcp/src/leak.rs",
+                "src/leak.rs",
                 "//! The llm plane's frames arrive here first.\n",
             ),
-            &["ship-ceiling 0", "busbar-transport-tcp × plane"],
+            &["ship-ceiling 0", concat!(wire_plant_name!(), " × plane")],
         ));
         instances::selftest(cx, gate, true, report);
         return;
@@ -2874,14 +2902,14 @@ pub fn selftest<'a>(
     report.push(prove_rows_red(
         cx,
         gate,
-        "a plane named inside a transport (`busbar-transport-tcp` says `llm`)",
+        "a plane named inside a transport (the planted wire says `llm`)",
         &[ROW_MATRIX],
-        plant(
+        wire_plant(
             cx,
-            "crates/busbar-transport-tcp/src/leak.rs",
+            "src/leak.rs",
             "//! The llm plane's frames arrive here first.\n",
         ),
-        &["busbar-transport-tcp", "plane"],
+        &[WIRE_PLANT, "plane"],
     ));
 
     // THE SAME NAME, IN THE TRANSPORT'S OWN TESTS. Tests are not excluded, and this is the case
@@ -2891,12 +2919,12 @@ pub fn selftest<'a>(
         gate,
         "a plane named inside a transport's own tests — tests are not excluded",
         &[ROW_MATRIX],
-        plant(
+        wire_plant(
             cx,
-            "crates/busbar-transport-tcp/src/tests/leak.rs",
+            "src/tests/leak.rs",
             "#[test]\nfn mcp_frames_round_trip() {}\n",
         ),
-        &["busbar-transport-tcp", "plane"],
+        &[WIRE_PLANT, "plane"],
     ));
 
     // A TRANSPORT NAMED INSIDE A PLANE — the same fusion, the other way up.
@@ -3433,12 +3461,16 @@ pub fn selftest<'a>(
         gate,
         "a plane named in a transport's own README -- a crate ships its prose too",
         &[ROW_MATRIX],
-        plant(
+        wire_plant(
             cx,
-            "crates/busbar-transport-tcp/README.md",
-            "# busbar-transport-tcp\n\nUsed by the llm plane over this wire.\n",
+            "README.md",
+            concat!(
+                "# ",
+                wire_plant_name!(),
+                "\n\nUsed by the llm plane over this wire.\n"
+            ),
         ),
-        &["busbar-transport-tcp", "plane"],
+        &[WIRE_PLANT, "plane"],
     ));
 
     // A JSON FIXTURE, COMPILED IN. `include_str!` makes it the crate's own bytes; the extension is
@@ -3448,12 +3480,12 @@ pub fn selftest<'a>(
         gate,
         "a plane routing table in a `.json` fixture under the crate is the crate's text",
         &[ROW_MATRIX],
-        plant(
+        wire_plant(
             cx,
-            "crates/busbar-transport-tcp/src/fixtures/leak.json",
+            "src/fixtures/leak.json",
             "{\"planes\": [\"busbar-plane-llm\", \"busbar-plane-mcp\"]}\n",
         ),
-        &["busbar-transport-tcp", "plane"],
+        &[WIRE_PLANT, "plane"],
     ));
 
     // THE SAME FIXTURE IN THE OTHER SERIALISATION. Two extensions was a list; a list is what the
@@ -3463,12 +3495,8 @@ pub fn selftest<'a>(
         gate,
         "the same table in `.yaml` -- the scan set is not an extension list",
         &[ROW_MATRIX],
-        plant(
-            cx,
-            "crates/busbar-transport-tcp/src/fixtures/leak.yaml",
-            "plane: busbar-plane-voice\n",
-        ),
-        &["busbar-transport-tcp", "plane"],
+        wire_plant(cx, "src/fixtures/leak.yaml", "plane: busbar-plane-voice\n"),
+        &[WIRE_PLANT, "plane"],
     ));
 
     // AN `include!` OF A NON-`.rs` FILE IS REAL COMPILED CODE. The compiled-set rule resolves the
@@ -3478,12 +3506,12 @@ pub fn selftest<'a>(
         gate,
         "generated Rust in a `.inc` file -- compiled code the old scan set never opened",
         &[ROW_MATRIX],
-        plant(
+        wire_plant(
             cx,
-            "crates/busbar-transport-tcp/src/gen/names.inc",
+            "src/gen/names.inc",
             "pub const GEN: &str = \"busbar-plane-voice\";\n",
         ),
-        &["busbar-transport-tcp", "plane"],
+        &[WIRE_PLANT, "plane"],
     ));
 
     // A FILE WITH NO EXTENSION AT ALL IS TEXT. The default must be to read, never to skip: a skip
@@ -3493,12 +3521,12 @@ pub fn selftest<'a>(
         gate,
         "a file with no extension under a crate is scanned -- the default is text, not skip",
         &[ROW_MATRIX],
-        plant(
+        wire_plant(
             cx,
-            "crates/busbar-transport-tcp/src/NOTES",
+            "src/NOTES",
             "the a2a plane and the mcp plane both arrive here\n",
         ),
-        &["busbar-transport-tcp", "plane"],
+        &[WIRE_PLANT, "plane"],
     ));
 
     // THE CARGO PROSE FIELDS. `description`, `keywords` and `readme` are shipped to the registry
@@ -3508,19 +3536,12 @@ pub fn selftest<'a>(
         gate,
         "a plane named in a transport's Cargo `description`/`keywords` -- shipped prose is scanned",
         &[ROW_MATRIX],
-        {
-            let rel = "crates/busbar-transport-tcp/Cargo.toml";
-            let text = cx.read(rel).unwrap_or_default();
-            plant(cx,
-                rel,
-                &text.replacen(
-                    "[package]\n",
-                    "[package]\ndescription = \"the wire the llm plane rides\"\nkeywords = [\"mcp\"]\n",
-                    1,
-                ),
-            )
-        },
-        &["busbar-transport-tcp", "plane"],
+        wire_plant(
+            cx,
+            "Cargo.toml",
+            "description = \"the wire the llm plane rides\"\nkeywords = [\"mcp\"]\n",
+        ),
+        &[WIRE_PLANT, "plane"],
     ));
 
     // -- THE SPELLING THE COMPILER READS AND THE SCANNER DID NOT --------------------------------
@@ -3532,12 +3553,8 @@ pub fn selftest<'a>(
         gate,
         "an escape-encoded plane name in a transport -- the compiler reads `\\x6dcp` as `mcp`",
         &[ROW_MATRIX],
-        plant(
-            cx,
-            "crates/busbar-transport-tcp/src/leak.rs",
-            "pub const HX: &str = \"\\x6dcp\";\n",
-        ),
-        &["busbar-transport-tcp", "plane"],
+        wire_plant(cx, "src/leak.rs", "pub const HX: &str = \"\\x6dcp\";\n"),
+        &[WIRE_PLANT, "plane"],
     ));
 
     report.push(prove_rows_red(
@@ -3545,12 +3562,12 @@ pub fn selftest<'a>(
         gate,
         "the `\\u{…}` spelling of the same name is the same name",
         &[ROW_MATRIX],
-        plant(
+        wire_plant(
             cx,
-            "crates/busbar-transport-tcp/src/leak.rs",
+            "src/leak.rs",
             "pub const UN: &str = \"\\u{6c}\\u{6c}m\";\n",
         ),
-        &["busbar-transport-tcp", "plane"],
+        &[WIRE_PLANT, "plane"],
     ));
 
     // A NAME SPLIT ACROSS TWO ADJACENT LITERALS IS ONE NAME.
@@ -3559,12 +3576,12 @@ pub fn selftest<'a>(
         gate,
         "a plane name split across a `concat!` of two literals is one name",
         &[ROW_MATRIX],
-        plant(
+        wire_plant(
             cx,
-            "crates/busbar-transport-tcp/src/leak.rs",
+            "src/leak.rs",
             "pub const CS: &str = concat!(\"m\", \"cp\");\n",
         ),
-        &["busbar-transport-tcp", "plane"],
+        &[WIRE_PLANT, "plane"],
     ));
 
     // A HOMOGLYPH. The `o` below is U+043E, Cyrillic. It reads as `voice` to every human being who
@@ -3574,12 +3591,8 @@ pub fn selftest<'a>(
         gate,
         "a Cyrillic homoglyph inside a plane name is refused as a confusable, at a ceiling of zero",
         &[ROW_MATRIX],
-        plant(
-            cx,
-            "crates/busbar-transport-tcp/src/leak.rs",
-            "pub const UC: &str = \"v\u{43e}ice\";\n",
-        ),
-        &["confusable", "busbar-transport-tcp"],
+        wire_plant(cx, "src/leak.rs", "pub const UC: &str = \"v\u{43e}ice\";\n"),
+        &["confusable", WIRE_PLANT],
     ));
 
     // -- THE VENDOR NAME IN A NEUTRAL CRATE — THE RED TEAM'S PLANT, RED AGAIN (item 203) --------
