@@ -239,81 +239,134 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
 };
 
-/// One door a live session is opened through.
+/// The inbound auth style of the metadata door: none, it is read without a credential.
+pub const NO_AUTH: &str = "none";
+
+/// One door a live session is opened through: one line of this plane on a listener's guest list
+/// (`BUSBAR-1.6.0.md` section 6, "Auth points and guest lists", step 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Route {
-    /// The verb.
+    /// The method set: every door takes one method.
     pub verb: &'static str,
-    /// The target; `{…}` is one path segment.
+    /// The path: exact, or a pattern where `{…}` is one path segment. No door is a prefix, and none
+    /// carries a field-presence predicate: no two doors share a path.
     pub target: &'static str,
-    /// The transport claim it arrives over.
+    /// The transport the line's bytes are read by.
     pub carrier: &'static str,
+    /// `true` for an upgrade line: the listener's transport runs the line's auth at `Head` on the
+    /// upgrade request, then the connection is handed to [`Route::carrier`].
+    pub upgrade: bool,
+    /// The default inbound auth style: applied only where the operator's config gives the line no
+    /// auth.
+    pub auth: &'static str,
+    /// The dialect the line's units speak, by its index in the tail's dialects.
+    pub dialect: u32,
+    /// The dialect a refusal on this line is rendered in, by the same index.
+    pub refusal_dialect: u32,
+}
+
+impl Route {
     /// Read without a credential.
-    pub open: bool,
+    #[must_use]
+    pub const fn open(&self) -> bool {
+        let a = self.auth.as_bytes();
+        let n = NO_AUTH.as_bytes();
+        if a.len() != n.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < a.len() {
+            if a[i] != n[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// `true` for an exact path, `false` for a pattern.
+    #[must_use]
+    pub const fn exact(&self) -> bool {
+        let b = self.target.as_bytes();
+        let mut j = 0;
+        while j < b.len() {
+            if b[j] == b'{' {
+                return false;
+            }
+            j += 1;
+        }
+        true
+    }
 }
 
 /// The doors, in the order a snapshot claims them: the ephemeral-secret mint and the SDP offer (one
 /// request each), the browser's sideband socket, the Gemini Live socket, the telephony socket, and
 /// the protected-resource metadata document a refused caller is pointed at (read without a
-/// credential).
+/// credential). The three sockets are upgrade lines.
 pub const ROUTES: &[Route] = &[
     Route {
         verb: "POST",
         target: "/v1/realtime/client_secrets",
         carrier: HTTP_TRANSPORT,
-        open: false,
+        upgrade: false,
+        auth: KEY_AUTH,
+        dialect: 0,
+        refusal_dialect: 0,
     },
     Route {
         verb: "POST",
         target: "/v1/realtime/calls",
         carrier: HTTP_TRANSPORT,
-        open: false,
+        upgrade: false,
+        auth: KEY_AUTH,
+        dialect: 0,
+        refusal_dialect: 0,
     },
     Route {
         verb: "GET",
         target: "/v1/realtime/sideband/{call_id}",
         carrier: WS_TRANSPORT,
-        open: false,
+        upgrade: true,
+        auth: KEY_AUTH,
+        dialect: 0,
+        refusal_dialect: 0,
     },
     Route {
         verb: "GET",
         target: "/v1/realtime/gemini/{call_id}",
         carrier: WS_TRANSPORT,
-        open: false,
+        upgrade: true,
+        auth: KEY_AUTH,
+        dialect: 1,
+        refusal_dialect: 1,
     },
     Route {
         verb: "GET",
         target: "/twilio/{call_id}",
         carrier: WS_TRANSPORT,
-        open: false,
+        upgrade: true,
+        auth: SIGNATURE_AUTH,
+        dialect: 2,
+        refusal_dialect: 2,
     },
     Route {
         verb: "GET",
         target: METADATA_PATH,
         carrier: HTTP_TRANSPORT,
-        open: true,
+        upgrade: false,
+        auth: NO_AUTH,
+        dialect: 0,
+        refusal_dialect: 0,
     },
 ];
 
 const fn claim(i: usize) -> Claim {
     let r = ROUTES[i];
-    let exact = {
-        let b = r.target.as_bytes();
-        let mut j = 0;
-        let mut templated = false;
-        while j < b.len() {
-            if b[j] == b'{' {
-                templated = true;
-            }
-            j += 1;
-        }
-        !templated
-    };
     Claim {
         verb: abi_str(r.verb),
         target: abi_str(r.target),
         carrier: abi_str(r.carrier),
-        flags: if exact { CLAIM_EXACT } else { 0 } | if r.open { CLAIM_OPEN } else { 0 },
+        flags: if r.exact() { CLAIM_EXACT } else { 0 } | if r.open() { CLAIM_OPEN } else { 0 },
         _reserved: 0,
     }
 }
@@ -597,3 +650,7 @@ busbar_contract::plugin_door! {
         hydrate: Safe<Hydrate>, start: Safe<Start>, project: Safe<Project>,
     },
 }
+
+#[cfg(test)]
+#[path = "tests/ladder_tests.rs"]
+mod ladder_tests;
