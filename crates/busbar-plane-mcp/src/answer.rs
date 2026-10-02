@@ -2,10 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ANSWERS THE PLANE GIVES FROM WHAT IT HOLDS: every request whose answer is the generation's
-//! catalogue, the section's own content, or the session's own state, and that reaches no far end.
-//! Pure: the arrival's [`Decision`], the generation's [`Catalogue`], the caller's `admit` predicate
-//! and the session's state in; the status and the answer's bytes out, or [`Answer::Far`] for a
-//! request that is not answered here.
+//! catalogue or the section's own content, and that reaches no far end. Pure: the arrival's
+//! [`Decision`], the generation's [`Catalogue`] and the caller's `admit` predicate in; the status
+//! and the answer's bytes out, or [`Answer::Far`] for a request that is not answered here.
 //!
 //! The answers are the served engine's, byte for byte, including its refusals: a local answer that
 //! refuses answers its own refusal body with its own status.
@@ -16,7 +15,6 @@ use crate::arrival::{Decision, Refusal};
 use crate::catalogue::{complete, Catalogue, CACHE_SCOPE, CACHE_TTL_MS};
 use crate::checks::SUPPORTED_PROTOCOL_VERSIONS;
 use crate::codec::{IMPLEMENTED_METHODS, PROTOCOL_VERSION};
-use crate::local::{self, Subscriptions};
 use crate::ops::{
     OP_COMPLETION, OP_DISCOVER, OP_PROMPTS_LIST, OP_PROMPT_GET, OP_RESOURCES_LIST,
     OP_RESOURCE_READ, OP_RESOURCE_TEMPLATES_LIST, OP_TOOLS_LIST,
@@ -67,15 +65,6 @@ impl Answer {
             Err(refusal) => Answer::refused(&refusal),
         }
     }
-}
-
-/// One session's own state on the child-process carrier: its logging floor and its subscriptions.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Session {
-    /// The level `logging/setLevel` last set.
-    pub level: Option<String>,
-    /// The resources it watches.
-    pub subscriptions: Subscriptions,
 }
 
 /// `server/discover`: the capabilities, and the catalogue this caller reaches, counted.
@@ -137,32 +126,12 @@ pub fn answer(
     catalogue: &Catalogue,
     admit: &impl Fn(&str, &str) -> bool,
     quarantined: impl Fn(&crate::catalogue::ToolEntry) -> bool,
-    session: &mut Session,
 ) -> Answer {
     match decision {
         Decision::Refused(refusal) => Answer::refused(refusal),
         Decision::Notice { .. } => Answer::Here {
             status: STATUS_ACCEPTED,
             body: Vec::new(),
-        },
-        Decision::Session { method, id, .. } => match method.as_str() {
-            "initialize" => Answer::ok(local::initialize(id)),
-            "ping" => Answer::ok(local::ping(id)),
-            "logging/setLevel" => match local::set_level(id, params) {
-                Ok(level) => {
-                    session.level = Some(level);
-                    Answer::ok(local::ping(id))
-                }
-                Err(refusal) => Answer::refused(&refusal),
-            },
-            "resources/subscribe" | "resources/unsubscribe" => {
-                let subscribe = method == "resources/subscribe";
-                match session.subscriptions.apply(id, subscribe, params, |_| None) {
-                    Ok(()) => Answer::ok(local::ping(id)),
-                    Err(refusal) => Answer::refused(&refusal),
-                }
-            }
-            _ => Answer::Far,
         },
         Decision::Request { row, id, .. } => {
             let op = row.op;

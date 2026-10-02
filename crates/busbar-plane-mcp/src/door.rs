@@ -23,13 +23,13 @@ use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
 use busbar_contract::abi::plane::{
     AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_ROOT,
-    SHAPE_PIECEWISE, TRUST_PIN, TRUST_REVERIFY_TTL,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_ROOT, SHAPE_PIECEWISE, TRUST_PIN,
+    TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
 
-use crate::claims::{CARRIER_HTTP, CARRIER_SSE, CARRIER_STDIO, DEFAULT_METADATA, DEFAULT_MOUNT};
+use crate::claims::{CARRIER_HTTP, CARRIER_SSE, DEFAULT_METADATA, DEFAULT_MOUNT};
 use crate::config::{ToolsCfg, DEFAULT_MCP_VERIFY_TTL, SECTION, SUBJECT_NOUN};
 
 /// The grant kind that admits traffic on this plane: one registered server.
@@ -142,12 +142,6 @@ const TRUST_KEYS: &[TrustKey] = &[
     },
 ];
 
-/// The operation class of the child-process carrier's session verbs, which no method row carries.
-pub const OP_SESSION: &str = "session";
-
-/// The index of [`OP_SESSION`] in the tail's operation classes: after every method row's class.
-pub const OP_CLASS_SESSION: u32 = crate::ops::OP_CLASSES.len() as u32;
-
 const fn op_class(i: usize) -> OpClass {
     OpClass {
         op: abi_str(crate::ops::OP_CLASSES[i].as_str()),
@@ -155,7 +149,7 @@ const fn op_class(i: usize) -> OpClass {
     }
 }
 
-/// The operation classes, in [`crate::ops::OP_CLASSES`] order, then [`OP_SESSION`].
+/// The operation classes, in [`crate::ops::OP_CLASSES`] order.
 const OP_CLASS_TABLE: &[OpClass] = &[
     op_class(0),
     op_class(1),
@@ -174,20 +168,15 @@ const OP_CLASS_TABLE: &[OpClass] = &[
     op_class(14),
     op_class(15),
     op_class(16),
-    OpClass {
-        op: abi_str(OP_SESSION),
-        name: abi_str(OP_SESSION),
-    },
 ];
 
-/// The tail index of an operation class; a class the table does not hold reads as the session
-/// class.
+/// The tail index of an operation class, where the table holds it.
 #[must_use]
-pub fn op_class_index(op: busbar_contract::ids::OpClassId) -> u32 {
+pub fn op_class_index(op: busbar_contract::ids::OpClassId) -> Option<u32> {
     crate::ops::OP_CLASSES
         .iter()
         .position(|c| *c == op)
-        .map_or(OP_CLASS_SESSION, |i| i as u32)
+        .map(|i| i as u32)
 }
 
 /// The status of a verb the endpoint does not serve.
@@ -211,7 +200,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
         _reserved: 0,
     },
     flags: 0,
-    ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM | INGRESS_DUPLEX_SESSION,
+    ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM,
     dispatch_shape: SHAPE_PIECEWISE,
     _reserved: 0,
     scope: abi_str(SCOPE),
@@ -254,7 +243,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
 pub struct Route {
     /// The verb.
     pub verb: &'static str,
-    /// The target path, or the named stream a child-process carrier arrives on.
+    /// The target path.
     pub target: &'static str,
     /// The transport claim it arrives over.
     pub carrier: &'static str,
@@ -263,8 +252,7 @@ pub struct Route {
 }
 
 /// EVERY ROUTE THE PLANE SERVES, in the order the engine mounts them: the discovery document, the
-/// endpoint's three verbs, the event-framed answer on the same path, and the named stream a
-/// locally launched session arrives on.
+/// endpoint's three verbs, and the event-framed answer on the same path.
 pub const ROUTES: &[Route] = &[
     Route {
         verb: "GET",
@@ -294,12 +282,6 @@ pub const ROUTES: &[Route] = &[
         verb: "POST",
         target: DEFAULT_MOUNT,
         carrier: CARRIER_SSE,
-        open: false,
-    },
-    Route {
-        verb: "POST",
-        target: crate::claims::STDIO_STREAM,
-        carrier: CARRIER_STDIO,
         open: false,
     },
 ];

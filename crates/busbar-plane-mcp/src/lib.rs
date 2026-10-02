@@ -56,7 +56,6 @@ pub mod door;
 pub mod facts;
 pub mod identity;
 pub mod jsonrpc;
-pub mod local;
 pub mod meta;
 pub mod ops;
 pub mod outputschema;

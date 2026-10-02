@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! One arrival decided as the served engine decides it, over both carriers.
+//! One arrival decided as the served engine decides it.
 
 use serde_json::json;
 
 use super::*;
-use crate::codec::{META_CLIENT_CAPABILITIES, PROTOCOL_VERSION};
+use crate::codec::{
+    H_MCP_METHOD, H_PROTOCOL_VERSION, META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION,
+    PROTOCOL_VERSION,
+};
 
 fn meta() -> serde_json::Value {
     json!({ META_PROTOCOL_VERSION: PROTOCOL_VERSION, META_CLIENT_CAPABILITIES: {} })
@@ -36,7 +39,7 @@ fn no_fields(_: &str) -> Option<&'static str> {
 
 #[test]
 fn a_body_that_is_not_json_is_a_parse_error_with_a_null_id() {
-    match decide(false, b"{not json", no_fields) {
+    match decide(b"{not json", no_fields) {
         Decision::Refused(r) => {
             assert_eq!((r.status, r.code, r.id), (400, -32700, None));
             assert_eq!(r.message, NOT_JSON);
@@ -47,29 +50,21 @@ fn a_body_that_is_not_json_is_a_parse_error_with_a_null_id() {
 
 #[test]
 fn a_batch_is_refused_by_the_contracts_reader() {
-    match decide(false, b"[]", no_fields) {
+    match decide(b"[]", no_fields) {
         Decision::Refused(r) => assert_eq!((r.status, r.code), (400, -32600)),
         other => panic!("{other:?}"),
     }
 }
 
 #[test]
-fn a_well_formed_stateless_request_is_its_row_with_no_correlation() {
+fn a_well_formed_stateless_request_is_its_row() {
     let b = body(
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": meta()}}),
     );
-    match decide(false, &b, fields("tools/list")) {
-        Decision::Request {
-            row,
-            id,
-            correlation,
-        } => {
+    match decide(&b, fields("tools/list")) {
+        Decision::Request { row, id } => {
             assert_eq!(row.method, "tools/list");
             assert_eq!(id, json!(1));
-            assert_eq!(
-                correlation, 0,
-                "the stateless carrier does not cancel by name"
-            );
         }
         other => panic!("{other:?}"),
     }
@@ -81,7 +76,7 @@ fn an_uncarried_method_is_404_method_not_found() {
     for method in ["tools/nope", "sampling/createMessage"] {
         let b =
             body(json!({"jsonrpc": "2.0", "id": 5, "method": method, "params": {"_meta": meta()}}));
-        match decide(false, &b, fields(method)) {
+        match decide(&b, fields(method)) {
             Decision::Refused(r) => {
                 assert_eq!((r.status, r.code, r.id), (404, -32601, Some(json!(5))));
                 assert_eq!(
@@ -98,80 +93,23 @@ fn an_uncarried_method_is_404_method_not_found() {
 #[test]
 fn the_envelope_checks_precede_the_vocabulary() {
     let b = body(json!({"jsonrpc": "2.0", "id": 5, "method": "tools/nope", "params": {}}));
-    match decide(false, &b, fields("tools/nope")) {
+    match decide(&b, fields("tools/nope")) {
         Decision::Refused(r) => assert_eq!((r.status, r.code), (400, -32602)),
         other => panic!("{other:?}"),
     }
 }
 
-/// A stateless notification is acknowledged and cancels nothing, even a cancel.
+/// A notification is acknowledged and never answered, a cancel included.
 #[test]
-fn a_stateless_notification_cancels_nothing() {
-    let b = body(json!({"jsonrpc": "2.0", "method": METHOD_CANCELLED, "params": {"requestId": 7}}));
+fn a_notification_is_acknowledged() {
+    let cancel = "notifications/cancelled";
+    let b = body(json!({"jsonrpc": "2.0", "method": cancel, "params": {"requestId": 7}}));
     assert_eq!(
-        decide(false, &b, no_fields),
+        decide(&b, no_fields),
         Decision::Notice {
-            method: METHOD_CANCELLED.to_string(),
-            cancels: 0
+            method: cancel.to_string()
         }
     );
-}
-
-/// On the child-process carrier a cancel names the request by the key its arrival carried.
-#[test]
-fn a_child_process_cancel_names_the_request_it_cancels() {
-    let req = body(
-        json!({"jsonrpc": "2.0", "id": 7, "method": "tools/list", "params": {"_meta": meta()}}),
-    );
-    let Decision::Request { correlation, .. } = decide(true, &req, no_fields) else {
-        panic!("the request decodes");
-    };
-    assert_ne!(correlation, 0);
-    let cancel =
-        body(json!({"jsonrpc": "2.0", "method": METHOD_CANCELLED, "params": {"requestId": 7}}));
-    assert_eq!(
-        decide(true, &cancel, no_fields),
-        Decision::Notice {
-            method: METHOD_CANCELLED.to_string(),
-            cancels: correlation
-        }
-    );
-    // The string "7" is a different request.
-    assert_ne!(correlation_of(&json!("7")), correlation);
-}
-
-/// The child-process carrier answers its session verbs before the envelope checks: a legacy
-/// `initialize` with no `_meta` is a session verb, not a `-32602`.
-#[test]
-fn a_child_process_session_verb_precedes_the_envelope_checks() {
-    for method in SESSION_VERBS {
-        let b = body(json!({"jsonrpc": "2.0", "id": "i", "method": method}));
-        match decide(true, &b, no_fields) {
-            Decision::Session { method: m, id, .. } => {
-                assert_eq!((m.as_str(), id), (*method, json!("i")));
-            }
-            other => panic!("{method}: {other:?}"),
-        }
-        // On the stateless carrier the same message is an envelope defect.
-        match decide(false, &b, no_fields) {
-            Decision::Refused(r) => assert_eq!(r.code, -32602, "{method}"),
-            other => panic!("{method}: {other:?}"),
-        }
-    }
-}
-
-/// On the child-process carrier the mirror is the body's own, so a well-formed request passes
-/// with no head fields at all.
-#[test]
-fn a_child_process_request_mirrors_its_own_body() {
-    let b = body(json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"_meta": meta(), "name": "fs_read_file"}
-    }));
-    assert!(matches!(
-        decide(true, &b, no_fields),
-        Decision::Request { .. }
-    ));
 }
 
 #[test]

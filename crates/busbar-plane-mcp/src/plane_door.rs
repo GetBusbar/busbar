@@ -36,7 +36,7 @@ use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 
 use std::sync::Arc;
 
-use crate::answer::{Answer, Session};
+use crate::answer::Answer;
 use crate::arrival::Decision;
 use crate::catalogue::Catalogue;
 use crate::door;
@@ -62,7 +62,6 @@ pub struct McpDoor {
     public_url: Option<String>,
     generations: Generations<PlaneSnapshot, Catalogue>,
     units: Keyed<u64, Unit>,
-    sessions: Keyed<u64, Session>,
 }
 
 impl McpDoor {
@@ -125,7 +124,6 @@ slot!(
             public_url: public_url(input.field(|i| &i.public_url).bytes()),
             generations: Generations::new(),
             units: Keyed::new(),
-            sessions: Keyed::new(),
         };
         let spec = door::snapshot_spec(plane.public_url.as_deref());
         let catalogue = Catalogue::build(generation, &cfg);
@@ -209,9 +207,6 @@ slot!(
 /// The most units the instance keeps state for at once; past it, the oldest is dropped first.
 pub const MAX_UNITS: usize = 4096;
 
-/// The most sessions the instance keeps state for at once; past it, the oldest is dropped first.
-pub const MAX_SESSIONS: usize = 1024;
-
 /// One unit's state, from its arrival to its end.
 struct Unit {
     /// The generation it arrived under.
@@ -238,12 +233,13 @@ fn keep<V>(map: &Keyed<u64, V>, cap: usize, key: u64, value: V) {
     });
 }
 
-/// The operation class a decision is counted under: its row's, or the plane's own two.
-fn op_class(decision: &Decision) -> u32 {
+/// The operation class a decision is counted under: its row's, or the notification class. A
+/// refused arrival is counted under none.
+fn op_class(decision: &Decision) -> Option<u32> {
     match decision {
         Decision::Request { row, .. } => door::op_class_index(row.op),
         Decision::Notice { .. } => door::op_class_index(crate::ops::OP_NOTIFICATION),
-        Decision::Session { .. } | Decision::Refused(_) => door::OP_CLASS_SESSION,
+        Decision::Refused(_) => None,
     }
 }
 
@@ -317,7 +313,6 @@ slot!(
             return Outcome::Failed;
         };
         let claim = door::ROUTES.get(input.get().claim as usize);
-        let stdio = claim.is_some_and(|r| r.carrier == crate::claims::CARRIER_STDIO);
         let body = input.field(|i| &i.body).bytes();
         let fields = input.fields();
         if claim.is_some_and(|r| r.open) {
@@ -333,7 +328,7 @@ slot!(
                 NOT_ALLOWED_TEXT.to_string(),
             );
         }
-        let decision = crate::arrival::decide(stdio, body, |name| {
+        let decision = crate::arrival::decide(body, |name| {
             fields
                 .iter()
                 .find(|f| {
@@ -346,18 +341,12 @@ slot!(
         if let Decision::Refused(refusal) = &decision {
             return refused(&mut out, refusal.status, refusal_text(refusal));
         }
-        let (correlation, cancels) = match &decision {
-            Decision::Request { correlation, .. } | Decision::Session { correlation, .. } => {
-                (*correlation, 0)
-            }
-            Decision::Notice { cancels, .. } => (0, *cancels),
-            Decision::Refused(_) => (0, 0),
+        let Some(op_class) = op_class(&decision) else {
+            return Outcome::Failed;
         };
-        out.set(|o| &o.op_class, op_class(&decision));
+        out.set(|o| &o.op_class, op_class);
         out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
         out.set(|o| &o.dialect, 0);
-        out.set(|o| &o.correlation, correlation);
-        out.set(|o| &o.cancels, cancels);
         let params = serde_json::from_slice::<serde_json::Value>(body)
             .ok()
             .and_then(|v| v.get("params").cloned());
@@ -398,7 +387,6 @@ slot!(
             return Outcome::Refused;
         }
         let key = piece.unit;
-        let stream_key = piece.stream;
         let mut reply = input.reply_buf();
         let mut first = false;
         let ticket = piece.head.ticket;
@@ -410,7 +398,6 @@ slot!(
                     return Some(None);
                 }
                 let catalogue = unit.catalogue.clone()?;
-                let mut session = plane.sessions.get(&stream_key).unwrap_or_default();
                 // Nothing is visible until the kernel's entitlement answer is bound here.
                 let admit = |_: &str, _: &str| false;
                 let answer = crate::answer::answer(
@@ -419,11 +406,7 @@ slot!(
                     &catalogue,
                     &admit,
                     |_| false,
-                    &mut session,
                 );
-                if stream_key != 0 {
-                    keep(&plane.sessions, MAX_SESSIONS, stream_key, session);
-                }
                 match answer {
                     Answer::Here { status, body } => {
                         unit.pending = Some((status, body, 0));

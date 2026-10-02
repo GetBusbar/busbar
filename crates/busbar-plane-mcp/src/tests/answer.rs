@@ -47,7 +47,7 @@ fn request(method: &str, params: Value) -> (Decision, Value) {
         .and_then(Value::as_str)
         .map(str::to_string);
     let method_owned = method.to_string();
-    let d = decide(false, &bytes, |f| match f {
+    let d = decide(&bytes, |f| match f {
         "mcp-protocol-version" => Some(PROTOCOL_VERSION),
         "mcp-method" => Some(method_owned.as_str()),
         "mcp-name" => name.as_deref(),
@@ -58,14 +58,7 @@ fn request(method: &str, params: Value) -> (Decision, Value) {
 
 fn run(method: &str, params: Value) -> Answer {
     let (d, params) = request(method, params);
-    answer(
-        &d,
-        Some(&params),
-        &catalogue(),
-        &everyone,
-        |_| false,
-        &mut Session::default(),
-    )
+    answer(&d, Some(&params), &catalogue(), &everyone, |_| false)
 }
 
 fn body(a: &Answer) -> Value {
@@ -122,7 +115,6 @@ fn discover_counts_what_the_caller_reaches_and_names_the_revisions() {
         &catalogue(),
         &|_: &str, _: &str| false,
         |_| false,
-        &mut Session::default(),
     );
     assert_eq!(body(&none)["result"]["servers"], json!([]));
 }
@@ -154,19 +146,8 @@ fn a_local_refusal_answers_its_own_status() {
 /// A notification is acknowledged with no body; a refused arrival answers its refusal.
 #[test]
 fn a_notice_is_acknowledged_and_a_refusal_answered() {
-    let d = decide(
-        false,
-        br#"{"jsonrpc":"2.0","method":"notifications/x"}"#,
-        |_| None,
-    );
-    let a = answer(
-        &d,
-        None,
-        &catalogue(),
-        &everyone,
-        |_| false,
-        &mut Session::default(),
-    );
+    let d = decide(br#"{"jsonrpc":"2.0","method":"notifications/x"}"#, |_| None);
+    let a = answer(&d, None, &catalogue(), &everyone, |_| false);
     assert_eq!(
         a,
         Answer::Here {
@@ -174,53 +155,8 @@ fn a_notice_is_acknowledged_and_a_refusal_answered() {
             body: Vec::new()
         }
     );
-    let d = decide(false, b"not json", |_| None);
-    let a = answer(
-        &d,
-        None,
-        &catalogue(),
-        &everyone,
-        |_| false,
-        &mut Session::default(),
-    );
+    let d = decide(b"not json", |_| None);
+    let a = answer(&d, None, &catalogue(), &everyone, |_| false);
     assert!(matches!(a, Answer::Here { status: 400, .. }));
     assert_eq!(body(&a)["error"]["code"], -32700);
-}
-
-/// On the child-process carrier the session verbs keep the session's own state.
-#[test]
-fn the_session_verbs_keep_the_sessions_state() {
-    let mut session = Session::default();
-    let verb = |method: &str, params: Value, session: &mut Session| {
-        let body = serde_json::to_vec(
-            &json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}),
-        )
-        .expect("bytes");
-        let d = decide(true, &body, |_| None);
-        answer(
-            &d,
-            Some(&params),
-            &catalogue(),
-            &everyone,
-            |_| false,
-            session,
-        )
-    };
-    let a = verb("logging/setLevel", json!({"level": "debug"}), &mut session);
-    assert!(matches!(a, Answer::Here { status: 200, .. }));
-    assert_eq!(session.level.as_deref(), Some("debug"));
-    verb(
-        "resources/subscribe",
-        json!({"uri": "file:///readme"}),
-        &mut session,
-    );
-    assert_eq!(session.subscriptions.entries().len(), 1);
-    verb(
-        "resources/unsubscribe",
-        json!({"uri": "file:///readme"}),
-        &mut session,
-    );
-    assert!(session.subscriptions.entries().is_empty());
-    let init = verb("initialize", json!({}), &mut session);
-    assert_eq!(body(&init)["result"]["protocolVersion"], PROTOCOL_VERSION);
 }
