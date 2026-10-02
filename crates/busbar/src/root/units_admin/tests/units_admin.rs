@@ -4234,7 +4234,7 @@ fn amend_rate_history_moves_no_ledger_cell() {
 
     let mut book = LedgerSnapshot::new();
     book.insert(
-        RowKey::new("team-a", A_DAY, "gpt", "openai"),
+        RowKey::new("team-a", A_DAY, "gpt", "provider-a"),
         LedgerRow {
             priced_nanos: 42,
             fee_count: 1,
