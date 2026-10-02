@@ -49,6 +49,7 @@ pub mod gitp;
 pub mod json_lite;
 pub mod ledger;
 pub mod loc;
+pub mod loom;
 pub mod manifest;
 pub mod parity;
 pub mod perf_ab;

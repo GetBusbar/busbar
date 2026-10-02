@@ -177,11 +177,6 @@ class = "port"
 reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"
 
 [[script]]
-path = "scripts/loom.sh"
-class = "port"
-reason = "the loom model run for the config swap: becomes `cargo xtask loom`"
-
-[[script]]
 path = "scripts/mcp-conformance.sh"
 class = "port"
 reason = "the MCP conformance rig the oracle drives (rigs.rs): moves into busbar-release-oracle, identical verdicts proven first"

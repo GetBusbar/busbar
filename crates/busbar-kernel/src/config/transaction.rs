@@ -361,7 +361,7 @@ where
 mod txn_fence;
 
 // The targeted loom model of the swap lost-update invariant. Behind the OPTIONAL `loom-model`
-// feature, so it is compiled ONLY by `scripts/loom.sh`, never by a normal build or CI test run.
+// feature, so it is compiled ONLY by `cargo xtask loom`, never by a normal build or CI test run.
 #[cfg(all(test, feature = "loom-model"))]
 #[path = "tests/txn_loom.rs"]
 mod txn_loom;
