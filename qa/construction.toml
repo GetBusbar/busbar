@@ -397,8 +397,8 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
 from    = 55537
-to      = 55543
-because = "REARM FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02: kernel +6 approved as explained): busbar-kernel measured 55611 at the lane tip on predev aabb4d8ac (lane-fold-a2a gates7) against today's ceiling 55605 = predev's measurement: +6 (re-summed on predev e6b44624e, kernel 55599 after train/cg-65: 55599 + 6 = 55605; re-summed again on predev d3b42d2ad after D3 #191 lowered it to 55537: 55537 + 6 = 55543, the hop's measurement) = the Origin rule leaving ingress/protocol.rs for its one home in the contract (about -37) and plane/config.rs judging the plane's stated caller-credential refusal (C1, about +45). Repaid at the a2a flip (C2c slice 8)."
+to      = 55545
+because = "REARM FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02: kernel +6 approved as explained): busbar-kernel measured 55611 at the lane tip on predev aabb4d8ac (lane-fold-a2a gates7) against today's ceiling 55605 = predev's measurement: +6 (re-summed on predev e6b44624e, kernel 55599 after train/cg-65: 55599 + 6 = 55605; re-summed again on predev d3b42d2ad after D3 #191 lowered it to 55537: 55537 + 6 = 55543, the hop's measurement) = the Origin rule leaving ingress/protocol.rs for its one home in the contract (about -37) and plane/config.rs judging the plane's stated caller-credential refusal (C1, about +45). Repaid at the a2a flip (C2c slice 8). THEN B7 (ARCHITECT B1-B10 rulings 2026-10-02, kernel delta self-approved): the route pump treats a no-member body-piece answer with nothing for the far end as local, whatever its windows: +2 at the measurement (lane-fold-a2a b7-2: 55611 -> 55613; re-summed 55543 -> 55545)."
 
 # [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 54254 -> 55817 (the P1 core unit over BIG, S3S4-KERNEL-67 at
 # 55691, then K-SERVE +320) — EXPIRED AND STRUCK: its commits reached the base, where kernel_ceiling reads 55789 (CONVERGER
@@ -1568,7 +1568,8 @@ kernel_crate = "busbar-kernel"
 #    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
 # ── LOWERED 55599 -> 55537 by D3 (#191) at the measurement (egress/interface.rs and ingress/path_ingress.rs deleted).
 # ── RE-ARMED 55537 -> 55543 by FOLD-A2A (PR #141, ARCHITECT-approved +6), declared above.
-kernel_ceiling = 55543
+# ── RE-ARMED 55543 -> 55545 by FOLD-A2A B7 (route pump local answer, +2, self-approved), declared above.
+kernel_ceiling = 55545
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
