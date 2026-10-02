@@ -161,6 +161,11 @@ impl Walk {
         &self.ctx
     }
 
+    /// The walk ends here, before its pool's terminal: every step from now answers `shed`.
+    pub fn refuse(&mut self, shed: Shed) {
+        self.phase = Phase::Shed(shed);
+    }
+
     /// A refusal for size from `failed` of `pool`: every ADMISSIBLE member whose window is at or
     /// below the one that refused would refuse too, so the walk excludes them.
     pub fn refused_for_size(&mut self, ports: &WalkPorts<'_>, pool: &str, failed: &Member) {

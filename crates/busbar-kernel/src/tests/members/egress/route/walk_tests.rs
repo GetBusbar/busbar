@@ -430,7 +430,27 @@ fn a_dispatch_that_cannot_be_recorded_sends_nothing() {
     *node.journal.fail.lock().unwrap() = true;
 
     let outcome = node.route("primary");
-    assert!(outcome.shed().is_some(), "a refusal: {outcome:?}");
+    // 1.5.5 had no dispatch record; its internal failures before a dispatch answered 500 with the
+    // internal words at once, the probe given back, no other member tried (v1.5.5
+    // `crates/busbar/src/proxy/engine/mod.rs:1514-1526`, `:1621-1631`).
+    assert_eq!(
+        outcome.shed(),
+        Some(&super::Refusal {
+            status: u32::from(busbar_kernel_egress::wire::STATUS_INTERNAL_ERROR),
+            retry_after: None,
+        }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        node.journal.abandoned.lock().unwrap().len(),
+        0,
+        "nothing was recorded, so nothing is abandoned"
+    );
+    assert_eq!(
+        node.breaker.pick_order(),
+        vec![DestinationId::new(0)],
+        "and no other member is taken"
+    );
     assert!(
         node.conns.dialled().is_empty(),
         "the record is durable BEFORE the dial, so a failed record means no dial at all"

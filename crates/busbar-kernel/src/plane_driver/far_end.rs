@@ -552,12 +552,21 @@ impl EgressFarEnd<'_> {
         // nothing is recorded against the member. Then 1. the dispatch record, durable BEFORE the
         // dial; when it cannot be written nothing was recorded either. Neither has anything to
         // abandon.
-        if !request.target.starts_with(b"/") || e.journal.dispatched(&record).is_err() {
+        let path = request.target.starts_with(b"/");
+        let unrecorded = path && e.journal.dispatched(&record).is_err();
+        if !path || unrecorded {
             let mut w = self.lock();
             if let Some(live) = w.live.as_mut() {
                 live.answered = true;
             }
             self.settle(&mut w);
+            if unrecorded {
+                // A dispatch this node cannot prove it recorded must not happen, on this member
+                // or any other: the unit is refused at once with the internal error, as 1.5.5
+                // refused every internal failure before a dispatch (v1.5.5
+                // `crates/busbar/src/proxy/engine/mod.rs:1514-1526`, `:1621-1631`).
+                w.walk.refuse(Shed::internal());
+            }
             return false;
         }
         let url = join(&route.base_url, &request.target);
