@@ -669,18 +669,6 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
         why: "a media format's channel count, not a metered quantity",
     },
     Allow {
-        file: "crates/busbar-plane-streaming/src/twilio.rs",
-        needle: "get(\"sampleRate\")",
-        class: AllowClass::NotACount,
-        why: "a media format's sample rate, not a metered quantity",
-    },
-    Allow {
-        file: "crates/busbar-plane-streaming/src/twilio.rs",
-        needle: "get(\"channels\")",
-        class: AllowClass::NotACount,
-        why: "a media format's channel count, not a metered quantity",
-    },
-    Allow {
         file: "crates/busbar-kernel/src/config/migrate.rs",
         needle: "price_per_1k_tokens_cents",
         class: AllowClass::NotACount,

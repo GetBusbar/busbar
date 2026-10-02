@@ -2,7 +2,6 @@
 //! and style checks the crate doc comments promise elsewhere (`lib.rs`'s [`crate::StreamingPlane`] doc
 //! comment cites [`purity`] by name).
 
-
 /// What a request path matches, decided the same way the boot's overlap check decides it.
 mod selectors {
     use crate::claims::matches_selector;

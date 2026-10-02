@@ -53,7 +53,10 @@ fn a_mint_answer_that_is_not_an_ephemeral_secret_is_refused() {
         Err("client-secret response value is not an ek_ ephemeral secret".to_string())
     );
     let err = read_minted(b"not json").expect_err("refused");
-    assert!(err.starts_with("client-secret response did not parse: "), "{err}");
+    assert!(
+        err.starts_with("client-secret response did not parse: "),
+        "{err}"
+    );
 }
 
 #[test]
@@ -63,7 +66,10 @@ fn the_browser_is_answered_the_secret_and_its_expiry_only() {
         expires_at_unix: 5,
     });
     let read: serde_json::Value = serde_json::from_slice(&body).expect("json");
-    assert_eq!(read, serde_json::json!({"value": "ek_1", "expires_at_unix": 5}));
+    assert_eq!(
+        read,
+        serde_json::json!({"value": "ek_1", "expires_at_unix": 5})
+    );
 }
 
 #[test]

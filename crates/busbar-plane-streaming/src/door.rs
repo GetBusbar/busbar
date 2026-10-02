@@ -35,11 +35,11 @@ use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, BillableClass, Claim, DialectAuth, OpClass, OnPieceIn, OnPieceOut, PlaneDriveIn,
-    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RefusalIn, RefusalOut, Section, ServeIn, ServeOut, CANCEL_FAILED, CLAIM_EXACT,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, SECTION_DECLARING,
-    SECTION_REQUIRED, SHAPE_PIECEWISE, CLAIM_OPEN,
+    ArriveIn, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceIn, OnPieceOut, OpClass,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
+    PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, Section, ServeIn, ServeOut, UnitCount,
+    CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
+    SECTION_DECLARING, SECTION_REQUIRED, SHAPE_PIECEWISE, UNITS_ESTIMATED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::{Instance, Lent, Published, Safe, SafeSlot};
@@ -172,9 +172,24 @@ const fn need(direction: u32, transport: &'static str, auth: AbiStr, target: Abi
 const NEEDS: &[Need] = &[
     need(DIRECTION_INBOUND, WS_TRANSPORT, abi_str(KEY_AUTH), NONE),
     need(DIRECTION_INBOUND, HTTP_TRANSPORT, abi_str(KEY_AUTH), NONE),
-    need(DIRECTION_INBOUND, WS_TRANSPORT, abi_str(SIGNATURE_AUTH), NONE),
-    need(DIRECTION_OUTBOUND, WS_TRANSPORT, NONE, abi_str(EGRESS_TARGET)),
-    need(DIRECTION_OUTBOUND, HTTP_TRANSPORT, NONE, abi_str(EGRESS_TARGET)),
+    need(
+        DIRECTION_INBOUND,
+        WS_TRANSPORT,
+        abi_str(SIGNATURE_AUTH),
+        NONE,
+    ),
+    need(
+        DIRECTION_OUTBOUND,
+        WS_TRANSPORT,
+        NONE,
+        abi_str(EGRESS_TARGET),
+    ),
+    need(
+        DIRECTION_OUTBOUND,
+        HTTP_TRANSPORT,
+        NONE,
+        abi_str(EGRESS_TARGET),
+    ),
 ];
 
 /// THE STATEMENT TAIL.
@@ -339,9 +354,8 @@ impl Generation {
     /// The generation `generation` of a plane whose deployment states `public_url`.
     #[must_use]
     pub fn build(generation: u64, public_url: Option<&str>) -> Box<Self> {
-        let admitted = public_url.and_then(|p| {
-            Some((absolute(p, MOUNT_PATH)?, absolute(p, METADATA_PATH)?))
-        });
+        let admitted =
+            public_url.and_then(|p| Some((absolute(p, MOUNT_PATH)?, absolute(p, METADATA_PATH)?)));
         let (audience, resource_metadata, claims) = match admitted {
             Some((a, m)) => (a, m, CLAIMS),
             None => (String::new(), String::new(), &[][..]),
@@ -526,23 +540,35 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     let Some(a) = crate::driven::arrive(input.claim) else {
         return Outcome::Refused;
     };
+    let mut units = input.units_buf();
+    for (class, amount) in crate::driven::admit(a.door) {
+        units.push(UnitCount {
+            class,
+            source: UNITS_ESTIMATED,
+            amount,
+        });
+    }
+    if !units.fits() {
+        out.units_needed = units.needed() as u32;
+        return Outcome::Failed;
+    }
+    out.units_written = units.written() as u32;
     out.op_class = a.op_class;
     out.dialect = a.dialect;
-    out.principal_need = if a.door.is_open() {
-        PRINCIPAL_NONE
-    } else {
-        PRINCIPAL_REQUIRED
-    };
-    out.units_written = 0;
+    out.principal_need = crate::driven::authenticate(a.door);
     Outcome::Ready
 });
 
 // The door serves no unit's pieces yet: every piece, refusal render, admin serve and projection is
 // declined, and a declined unit is charged nothing.
 
-slot!(OnPiece, OnPieceIn, OnPieceOut, |_, _, _| { Outcome::Refused });
+slot!(OnPiece, OnPieceIn, OnPieceOut, |_, _, _| {
+    Outcome::Refused
+});
 
-slot!(Refusal, RefusalIn, RefusalOut, |_, _, _| { Outcome::Refused });
+slot!(Refusal, RefusalIn, RefusalOut, |_, _, _| {
+    Outcome::Refused
+});
 
 slot!(Serve, ServeIn, ServeOut, |_, _, _| { Outcome::Refused });
 
@@ -550,7 +576,9 @@ slot!(Hydrate, GenIn, OutHead, |_, _, _| { Outcome::Ready });
 
 slot!(Start, GenIn, OutHead, |_, _, _| { Outcome::Ready });
 
-slot!(Project, ProjectIn, ProjectOut, |_, _, _| { Outcome::Refused });
+slot!(Project, ProjectIn, ProjectOut, |_, _, _| {
+    Outcome::Refused
+});
 
 busbar_contract::plugin_door! {
     ops: busbar_contract::abi::plane::Ops,

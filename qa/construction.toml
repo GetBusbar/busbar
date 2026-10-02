@@ -2204,7 +2204,6 @@ max_sites = 0
 # under the rule immediately, which is what the ratchet is for. The seal debt that remains is the
 # nine below, each still forging today.
 known_sites = [
-  "crates/busbar-plane-streaming/src/tests/harness.rs",
   "crates/busbar-transport-http/src/grpc/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",

@@ -102,7 +102,8 @@ impl TwilioBridge {
                 stream_sid,
                 payload,
             }) => {
-                if stream_sid.is_empty() || self.stream_sid.as_deref() != Some(stream_sid.as_str()) {
+                if stream_sid.is_empty() || self.stream_sid.as_deref() != Some(stream_sid.as_str())
+                {
                     return CallerStep::Nothing;
                 }
                 let append = serde_json::json!({

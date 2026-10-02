@@ -20,8 +20,10 @@ fn text(frames: &[Vec<u8>]) -> String {
 }
 
 fn start(encoding: &str) -> Vec<u8> {
-    json(serde_json::json!({"event":"start","start":{"streamSid":"MZ1","callSid":"CA1",
-        "mediaFormat":{"encoding":encoding,"sampleRate":8000,"channels":1}}}))
+    json(
+        serde_json::json!({"event":"start","start":{"streamSid":"MZ1","callSid":"CA1",
+        "mediaFormat":{"encoding":encoding,"sampleRate":8000,"channels":1}}}),
+    )
 }
 
 fn media(sid: &str, bytes: &[u8]) -> Vec<u8> {
@@ -77,9 +79,14 @@ fn model_audio_and_a_barge_in_reach_the_caller_in_the_carriers_envelope() {
         "item_id":"it1","output_index":0,"content_index":0}));
     let plan = s.from_far_end(&delta, 0);
     let down = text(&plan.to_caller);
-    assert!(down.contains("\"event\":\"media\"") && down.contains("MZ1"), "{down}");
-    let barge = json(serde_json::json!({"type":"input_audio_buffer.speech_started",
-        "audio_start_ms":0,"item_id":"it1"}));
+    assert!(
+        down.contains("\"event\":\"media\"") && down.contains("MZ1"),
+        "{down}"
+    );
+    let barge = json(
+        serde_json::json!({"type":"input_audio_buffer.speech_started",
+        "audio_start_ms":0,"item_id":"it1"}),
+    );
     let plan = s.from_far_end(&barge, 0);
     assert!(text(&plan.to_caller).contains("\"event\":\"clear\""));
     assert!(text(&plan.to_far_end).contains("response.cancel"));
@@ -92,7 +99,10 @@ fn a_stop_settles_the_open_turns_counters_once() {
     // Two seconds of 8 kHz mu-law: 8 bytes a millisecond.
     let _ = s.from_caller(&media("MZ1", &[0; 16_000]));
     assert_eq!(s.units(), CumulativeUnits::default(), "no turn closed yet");
-    assert!(s.from_caller(&json(serde_json::json!({"event":"stop"}))).end);
+    assert!(
+        s.from_caller(&json(serde_json::json!({"event":"stop"})))
+            .end
+    );
     let seconds = CLASSES
         .iter()
         .position(|c| *c == meta::CLASS_AUDIO_SECONDS_IN)
@@ -104,13 +114,25 @@ fn a_stop_settles_the_open_turns_counters_once() {
 
 #[test]
 fn usage_reports_accumulate_across_turns() {
-    let mut s = SessionUnit::open(OpenAiRealtimeCodec, SessionConfig::default(), false, 0, None);
-    let done = json(serde_json::json!({"type":"response.done","response":{"usage":{
+    let mut s = SessionUnit::open(
+        OpenAiRealtimeCodec,
+        SessionConfig::default(),
+        false,
+        0,
+        None,
+    );
+    let done = json(
+        serde_json::json!({"type":"response.done","response":{"usage":{
         "input_token_details":{"audio_tokens":10,"text_tokens":3,"cached_tokens":2},
-        "output_token_details":{"audio_tokens":20,"text_tokens":4}}}}));
+        "output_token_details":{"audio_tokens":20,"text_tokens":4}}}}),
+    );
     let _ = s.from_far_end(&done, 0);
     let _ = s.from_far_end(&done, 0);
-    assert_eq!(s.units().0, [20, 40, 6, 8, 0, 0], "cached tokens are attribution, never billed");
+    assert_eq!(
+        s.units().0,
+        [20, 40, 6, 8, 0, 0],
+        "cached tokens are attribution, never billed"
+    );
 }
 
 #[test]
@@ -143,7 +165,12 @@ fn the_sessions_record_is_written_at_open_on_its_call_id_and_at_its_end() {
     let opened = s.take_writes();
     assert_eq!(opened.len(), 1);
     assert_eq!(
-        (opened[0].id.as_str(), opened[0].owner.as_str(), opened[0].updated_at, opened[0].terminal),
+        (
+            opened[0].id.as_str(),
+            opened[0].owner.as_str(),
+            opened[0].updated_at,
+            opened[0].terminal
+        ),
         ("call-1", "ref-abc", 5, false)
     );
     s.set_rtc_call_id("rtc_9", 6);
@@ -172,13 +199,22 @@ fn a_stop_settles_the_open_turns_tool_calls_too() {
     let open = json(serde_json::json!({"type":"response.output_item.added",
         "item":{"type":"function_call","call_id":"c1","name":"lookup"}}));
     let _ = s.from_far_end(&open, 0);
-    assert!(s.from_caller(&json(serde_json::json!({"event":"stop"}))).end);
+    assert!(
+        s.from_caller(&json(serde_json::json!({"event":"stop"})))
+            .end
+    );
     assert_eq!(s.units().0, [0, 0, 0, 0, 1, 1]);
 }
 
 #[test]
 fn one_full_turn_reports_the_six_classes_the_served_plane_metered() {
-    let mut s = SessionUnit::open(OpenAiRealtimeCodec, SessionConfig::default(), false, 0, None);
+    let mut s = SessionUnit::open(
+        OpenAiRealtimeCodec,
+        SessionConfig::default(),
+        false,
+        0,
+        None,
+    );
     let pcm = busbar_contract::media::base64_encode(&vec![0u8; 48_000]);
     let _ = s.from_caller(&json(
         serde_json::json!({"type":"input_audio_buffer.append","audio":pcm}),
@@ -186,9 +222,11 @@ fn one_full_turn_reports_the_six_classes_the_served_plane_metered() {
     let open = json(serde_json::json!({"type":"response.output_item.added",
         "item":{"type":"function_call","call_id":"c1","name":"lookup"}}));
     let _ = s.from_far_end(&open, 0);
-    let done = json(serde_json::json!({"type":"response.done","response":{"usage":{
+    let done = json(
+        serde_json::json!({"type":"response.done","response":{"usage":{
         "input_token_details":{"audio_tokens":10,"text_tokens":3,"cached_tokens":1},
-        "output_token_details":{"audio_tokens":20,"text_tokens":4}}}}));
+        "output_token_details":{"audio_tokens":20,"text_tokens":4}}}}),
+    );
     let _ = s.from_far_end(&done, 0);
     assert_eq!(s.units().0, [10, 20, 3, 4, 1, 1]);
 }
@@ -196,8 +234,10 @@ fn one_full_turn_reports_the_six_classes_the_served_plane_metered() {
 #[test]
 fn a_start_with_no_stream_id_refuses_the_call() {
     let mut s = telephony();
-    let empty = json(serde_json::json!({"event":"start","start":{"streamSid":"","callSid":"CA1",
-        "mediaFormat":{"encoding":"audio/x-mulaw","sampleRate":8000,"channels":1}}}));
+    let empty = json(
+        serde_json::json!({"event":"start","start":{"streamSid":"","callSid":"CA1",
+        "mediaFormat":{"encoding":"audio/x-mulaw","sampleRate":8000,"channels":1}}}),
+    );
     assert!(s.from_caller(&empty).end);
     assert!(s.ended());
     assert_eq!(

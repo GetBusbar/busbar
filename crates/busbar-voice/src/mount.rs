@@ -46,17 +46,17 @@ use crate::topology::{
 };
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::egress::engine::{send_bounded, EngineClient};
-use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::ingress::duplex_ws::{
     accept_gauntlet, install_ws_arrivals, WsAcceptFuture, WsArrival, WsArrivalSpec,
 };
+use busbar_kernel::ingress::{byte_duplex::serve_messages, protocol};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::observe::Counted;
 use busbar_kernel::plane::registry::{BuildCtx, PlaneBootCtx};
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, GateOutcome, TransformVerdict};
 use busbar_kernel::plane_host::{GauntletPlane, GauntletRequest};
-use busbar_kernel::plane_routes::PlaneRouteSpec;
+use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
 use busbar_kernel::{door::UnitKeyMint, net_guard::GuardPolicy};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -547,11 +547,8 @@ pub fn voice_build(ctx: &BuildCtx) -> Option<Arc<dyn Any + Send + Sync>> {
 /// rather than the plane's dev defaults. Every route binds the live host onto it (see
 /// [`VoiceMount::runtime`]).
 fn dispatch_runtime() -> VoiceRuntime {
-    VoiceRuntime::new(
-        Arc::new(DurableHandleEngine::new()),
-        Arc::new(ClientRelay),
-    )
-    .with_streams(&crate::config::configured())
+    VoiceRuntime::new(Arc::new(DurableHandleEngine::new()), Arc::new(ClientRelay))
+        .with_streams(&crate::config::configured())
 }
 
 /// [`PlaneDecl::claims`] — the ONE audience-checked region the voice plane answers on, spoken in its
@@ -592,8 +589,8 @@ pub fn voice_admission(slot: &dyn Any) -> Option<PlaneAdmission> {
 /// receiving side (no dispatch slot), so a deployment that fronts nothing mounts nothing.
 #[must_use]
 pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-    use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture};
+use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_kernel::plane_routes::PlaneRouteFuture;
 
     if slot.downcast_ref::<VoiceMount>().is_none() {
         return Vec::new();
@@ -627,14 +624,14 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
 /// The protected-resource metadata document: the audience a token at this plane's doors must carry,
 /// as one reading of the public URL. No authorization server is named: the plane is configured with
 /// none.
-async fn metadata_route(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> axum::response::Response {
+async fn metadata_route(ctx: PlaneReqCtx) -> axum::response::Response {
     let Some(mount) = ctx.slot.downcast_ref::<VoiceMount>() else {
         return refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "streaming route reached without its dispatch slot",
         );
     };
-    busbar_kernel::ingress::protocol::metadata(&busbar_kernel::ingress::protocol::Metadata {
+    protocol::metadata(&protocol::Metadata {
         resource: std::borrow::Cow::Borrowed(mount.audience.as_str()),
         authorization_servers: &[],
         scopes_supported: &[],
