@@ -359,7 +359,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
- "busbar-kernel-budget",
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
@@ -771,14 +770,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-kernel-budget"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-kernel-ledger",
-]
-
-[[package]]
 name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
@@ -806,7 +797,6 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-kernel-budget",
  "serde",
  "sha2 0.11.0",
 ]

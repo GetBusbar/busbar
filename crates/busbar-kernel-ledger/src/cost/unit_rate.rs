@@ -32,11 +32,6 @@ pub struct UnitRate(u64);
 const NANOS_PER_MICRO_UNIT: u64 = super::NANOS_PER_MICRO as u64;
 
 impl UnitRate {
-    /// A rate already in the card's representation.
-    pub const fn from_nanos(nanos_per_unit: u64) -> UnitRate {
-        UnitRate(nanos_per_unit)
-    }
-
     /// The rate in the card's representation: integer nano-units per unit.
     pub const fn nanos_per_unit(self) -> u64 {
         self.0

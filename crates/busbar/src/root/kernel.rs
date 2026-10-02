@@ -63,7 +63,6 @@ use busbar_contract::caps::{
 use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{Evidence, UnitCtx, Units};
-use busbar_kernel_budget::{Door, InMemoryCells};
 use busbar_kernel_egress::trust::Trust;
 use busbar_kernel_egress::EgressUnit;
 use busbar_kernel_identity::{Auth, AuthChain};
@@ -1136,14 +1135,14 @@ pub fn install_card_repricer() {
 /// The kernel's in-flight table takes a `&dyn ArrivalDoor` and, until this existed, the only
 /// implementor in the tree was a test double — which made "a hold cannot exist without the unit's
 /// own token" true everywhere except in the one place that mattered. The binding is a delegation
-/// and nothing else: the admission unit already exports the constructor, and a root that computed
+/// and nothing else: the kernel's door exports the constructor, and a root that computed
 /// anything here would be a root deciding what a unit is for.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AdmissionDoor;
 
 impl ArrivalDoor for AdmissionDoor {
     fn arrival_hold(&self, principal: PrincipalId, token: &Grant<Admittance>) -> Hold {
-        busbar_kernel_budget::arrival_hold(principal, token)
+        busbar_kernel::door::arrival_hold(principal, token)
     }
 }
 
@@ -1200,15 +1199,7 @@ impl busbar_contract::verb_store::Store for RefusingStore {
 /// Only the units with state across requests are fields. The other eight are facades — free
 /// functions or unit structs the step calls with the facts it was handed — and holding an empty
 /// value for each of them would be furniture rather than structure.
-///
-/// The cell store is deliberately the reference in-memory one at this step. Production wants
-/// sharded, canonical-order locking rather than the single lock this takes, and the admission unit
-/// says so in its own documentation; the store is a type parameter on the door precisely so
-/// swapping it is a composition change and not a unit change.
 pub struct ProductionUnits {
-    /// The admission unit's long-lived door. Its ledger cells are hydrated once, at boot, and are
-    /// never re-read on the request path.
-    pub door: Door<InMemoryCells>,
     /// The egress unit's rotation memory. The walk itself is a per-request value.
     pub egress: EgressUnit,
     /// Every `(pool, destination)` breaker cell and every destination's lifetime budget, behind the
@@ -1329,7 +1320,6 @@ impl ProductionUnits {
     ) -> Self {
         #[cfg_attr(not(feature = "root-admin"), allow(unused_mut))]
         let mut units = ProductionUnits {
-            door: Door::new(InMemoryCells::new()),
             breaker: crate::root::adapters::BreakerAdapter::with_policy(breaker_policy),
             egress: EgressUnit::new(),
             auth: Auth::new(auth_chain),

@@ -115,14 +115,6 @@ fn kernel_cost_model(
     busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), per_request_fee, &BTreeMap::new())
 }
 
-/// A `busbar-kernel-budget` pricer — the BUDGET door's — holding the card the ledger built.
-fn budget_pricer(
-    rates: Option<&[(&str, Rates4)]>,
-    per_request_fee: i64,
-) -> busbar_kernel_budget::Pricer {
-    busbar_kernel_budget::Pricer::from_card(ledger_card(rates, per_request_fee))
-}
-
 /// The ledger crate's card over lanes' four reserved classes — the card the one function prices.
 fn ledger_card(rates: Option<&[(&str, Rates4)]>, fee: i64) -> RateCard {
     RateCard::from_config(
@@ -231,7 +223,6 @@ impl Case {
         let card = ledger_card(self.rates, self.fee);
         let history = History::opening(card.clone(), 0);
         let kernel = kernel_cost_model(self.rates, self.fee);
-        let door = budget_pricer(self.rates, self.fee);
         let lines = usage_lines(self.counts);
         let units = enforcement_units(self.counts);
 
@@ -290,11 +281,6 @@ impl Case {
                 "kernel  CostModel::derive_spend_cents (the request door)",
                 kernel
                     .derive_spend_cents([(self.lane, &units)].into_iter(), self.fee_count, true)
-                    .map(i128::from),
-            ),
-            (
-                "budget  Pricer::derive_spend_cents (the budget door)",
-                door.derive_spend_cents([(self.lane, &units)].into_iter(), self.fee_count, true)
                     .map(i128::from),
             ),
         ];
@@ -402,7 +388,7 @@ fn e_every_former_copy_answers_the_one_functions_figure() {
 /// D4 / items 124, 25, 31 — A PRESENT CARD SILENT ABOUT THE LANE. The copies used to answer three
 /// ways: the kernel door and every read the flat fee alone (FREE — 19 million micro-units of
 /// consumption dropped), the budget door `i64::MAX`, the one function a refusal. Now every copy
-/// refuses: BOTH admission doors block, every read fails.
+/// refuses: the kernel door blocks, every read fails.
 #[test]
 fn d4_an_unpriced_lane_refuses_at_both_doors_and_on_every_read() {
     let a = Case {
@@ -690,7 +676,7 @@ fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
 }
 
 /// D2 — ITEM 123, INVERTED FROM ITS BASELINE TO THE CONVERGENCE. This case used to MEASURE the
-/// residue: the enforcement side (the kernel's cost model and the budget door) projected its unit
+/// residue: the enforcement side (the kernel's cost model and the door) projected its unit
 /// map onto the RESERVED FOUR before handing the row to the one function, so an open meter class
 /// (a2a `hops`, a rerank's `search_units`) priced there as nothing — 200 micro-units against the
 /// one function's 5,200, and 0 at the door. Item 123 converged it: every class reaches the one
@@ -727,12 +713,12 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
     let kernel =
         busbar_kernel::cost::CostModel::resolve_parts(Some(&config_card), 0, &BTreeMap::new());
     let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), 0, true);
-    let door = busbar_kernel_budget::Pricer::from_card(card.clone());
-    let door_cents = door.derive_spend_cents([(LANE, &units)].into_iter(), 0, true);
+    // THE LIVE DOOR: the kernel's `derive_spend_cents`, the figure `try_admit` caps on.
+    let door_cents = kernel.derive_spend_cents([(LANE, &units)].into_iter(), 0, true);
     row("ONE function                 [micro]", one.micros());
     row("ledger derive (every class)  [micro]", &ledger_micros);
     row("kernel derive (every class)  [micro]", &kernel_micros);
-    row("budget door   (every class)  [minor]", &door_cents);
+    row("kernel door   (every class)  [minor]", &door_cents);
     assert_eq!(one.micros(), 5_200_000, "100,000×2 + 1,000,000×5");
     assert_eq!(ledger_micros.map(i128::from), Ok(one.micros()));
     assert_eq!(
@@ -748,12 +734,11 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
 
     // A card that prices the lane but is silent about `hops`: both sides REFUSE (#42).
     let silent = kernel_cost_model(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
-    let silent_door = budget_pricer(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
     for refusal in [
         silent
             .derive_spend_micros([(LANE, &units)].into_iter(), 0, true)
             .map(i128::from),
-        silent_door
+        silent
             .derive_spend_cents([(LANE, &units)].into_iter(), 0, true)
             .map(i128::from),
     ] {
@@ -952,8 +937,8 @@ fn is_derivation_name(name: &str) -> bool {
 ///   or `price_in_view` / `price_ledger`. A derivation that does its own arithmetic is a copy.
 /// - **R2** — the tier rule (`checked_apply_tier` / `apply_tier` / `apply_tier_signed`) is CALLED
 ///   only inside the one function (`cost/view.rs`) and its own definition file (`cost/posting.rs`).
-/// - **R3** — the multiply-and-sum fold (`nanos_sum`) is called only by its definition file and by
-///   the budget HOLD estimate (`estimate.rs`), which sizes a reservation and is not a spend figure.
+/// - **R3** — the multiply-and-sum fold (`nanos_sum`) is called only by its definition file: it
+///   sizes a reservation and is not a spend figure.
 /// - **R4** — the one function's accumulator is constructed only by the callers the collapse
 ///   registered. A new `Tally` user is a new route onto the one function, which is fine — but it
 ///   must be seen, so the list is exact.
@@ -962,16 +947,12 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
         "crates/busbar-kernel-ledger/src/cost/view.rs",
         "crates/busbar-kernel-ledger/src/cost/posting.rs",
     ];
-    const FOLD_HOMES: &[&str] = &[
-        "crates/busbar-kernel-ledger/src/cost/rate.rs",
-        "crates/busbar-kernel-budget/src/estimate.rs",
-    ];
+    const FOLD_HOMES: &[&str] = &["crates/busbar-kernel-ledger/src/cost/rate.rs"];
     const TALLY_ROUTES: &[&str] = &[
         "crates/busbar-kernel-ledger/src/cost/view.rs",
         "crates/busbar-kernel-ledger/src/cost/project.rs",
         "crates/busbar-kernel-ledger/src/cost/posting.rs",
         "crates/busbar-kernel/src/cost.rs",
-        "crates/busbar-kernel-budget/src/price.rs",
         // The DATED budget ledger (OWNER RULING Q14): each era of a budget cell at the card its era
         // resolves to — behind `/keys` and `/groups` usage, the `/metrics` spend gauges, the hook
         // seam's `budget_state` and the live LLM gate `try_admit`.
@@ -1087,10 +1068,6 @@ fn census_every_former_copy_routes_to_the_one_function() {
         ),
         ("crates/busbar-kernel/src/cost.rs", "derive_spend_cents"),
         ("crates/busbar-kernel/src/cost.rs", "price_usage_nanos"),
-        (
-            "crates/busbar-kernel-budget/src/price.rs",
-            "derive_spend_cents",
-        ),
         (
             "crates/busbar-core-admin/src/v1/service.rs",
             "derive_spend_micros_row",

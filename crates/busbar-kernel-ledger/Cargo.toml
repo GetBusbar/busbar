@@ -39,9 +39,3 @@ sha2 = { workspace = true }
 # #83/#84, so no durable record is serialized here — the book states what money MEANS; it does not
 # define what money LOOKS LIKE on a disk.
 serde = { workspace = true }
-
-[dev-dependencies]
-# The folded `cost` module's rate-conversion agreement test cross-checks against the budget crate's
-# `RateNanos` (former busbar-unit-cost dev-dep on busbar-unit-admission, #36). Dev-only, so the
-# budget -> ledger production edge is not made cyclic.
-busbar-kernel-budget = { path = "../busbar-kernel-budget" }

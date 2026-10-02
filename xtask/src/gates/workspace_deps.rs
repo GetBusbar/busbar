@@ -1195,6 +1195,10 @@ mod tests {
     /// RE-MEASURED after the kernel's operator credential moved out: `crates/busbar-kernel/data/operator_credential.toml`
     /// left the kernel for the root legacy table, so the real walk holds 33 `.toml` files, and the
     /// sample set moves down with it, one for one (still clear of the floor of 30).
+    ///
+    /// RE-MEASURED after `busbar-kernel-budget` was deleted whole (ARCHITECT ruling 2026-09-30): the
+    /// real walk holds 31 `Cargo.toml` (38 `.toml`). The fixture keeps at most `n` manifests, so
+    /// every healthy sample keeps 31 and passes the floor of 30; the set is unchanged.
     #[test]
     fn the_crates_walk_floor_admits_the_fold_end_state_and_rejects_a_collapse() {
         for n in [33, 32, 31] {

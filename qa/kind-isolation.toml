@@ -513,11 +513,6 @@ kind = "transport"
 count = "134"
 
 [[cell]]
-crate = "busbar-kernel-budget"
-kind = "kernel"
-count = "14"
-
-[[cell]]
 crate = "busbar-kernel-egress"
 kind = "kernel"
 count = "22"
@@ -1505,16 +1500,6 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the N
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-kernel-budget"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes; that is what a root IS (ARCHITECTURE_ALLOWED root -> kernel)."
-why     = "busbar names busbar-kernel-budget: declared shipped, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
 to      = "busbar-kernel-egress"
 half    = "shipped"
 count   = "1"
@@ -1582,26 +1567,6 @@ verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §9 (crate graph, bounded types) — contract is the neutral face a kernel crate is written against; naming it is what being of that kind means (ARCHITECTURE_ALLOWED kernel -> contract)."
 why     = "busbar-kernel-breaker names busbar-contract: declared shipped, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "none: BUSBAR-1.6.0.md grants the kernel -> contract class. What this row holds is the NUMBER."
-
-[[dep]]
-from    = "busbar-kernel-budget"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §9 (crate graph, bounded types) — contract is the neutral face a kernel crate is written against; naming it is what being of that kind means (ARCHITECTURE_ALLOWED kernel -> contract)."
-why     = "busbar-kernel-budget names busbar-contract: declared shipped, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none: BUSBAR-1.6.0.md grants the kernel -> contract class. What this row holds is the NUMBER."
-
-[[dep]]
-from    = "busbar-kernel-budget"
-to      = "busbar-kernel-ledger"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §9 (crate graph, bounded types) — kernel is the neutral face a kernel crate is written against; naming it is what being of that kind means (ARCHITECTURE_ALLOWED kernel -> kernel)."
-why     = "busbar-kernel-budget names busbar-kernel-ledger: declared shipped, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this row holds is the NUMBER."
 
 [[dep]]
 from    = "busbar-kernel-egress"
@@ -1691,16 +1656,6 @@ count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md — kernel workflow crates form the loop; #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). The breaker seam is bound by a trait in library code and reached directly only in this crate's tests."
 why     = "busbar-kernel-egress names busbar-kernel-breaker: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this row holds is the NUMBER."
-
-[[dep]]
-from    = "busbar-kernel-ledger"
-to      = "busbar-kernel-budget"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md — kernel workflow crates form the loop; #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). The folded cost module's rate-conversion test cross-checks the budget crate's RateNanos."
-why     = "busbar-kernel-ledger names busbar-kernel-budget: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this row holds is the NUMBER."
 
 [[dep]]
