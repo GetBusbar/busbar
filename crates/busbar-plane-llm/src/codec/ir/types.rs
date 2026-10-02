@@ -454,7 +454,6 @@ impl Default for IrResponse {
             stop_detail: None,
             safety: Vec::new(),
             audio: None,
-            ..Default::default()
         }
     }
 }
