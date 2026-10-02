@@ -1,5 +1,0 @@
-# RENDERED by `cargo xtask fleet render` from GetBusbar/busbar's plugins.yaml (the entry's
-# `gitignore:` lines follow the fleet's own) and .github/fleet/gitignore.
-/target
-/mutants.out*
-@@gitignore@@

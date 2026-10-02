@@ -263,8 +263,39 @@ fn read_openai_usage(
         &ir,
     );
     ir.detail.service_tier = crate::codec::carry::read_word(map::WORDS_SERVED_TIER, tier);
+    ir.detail.by_modality = usage.and_then(read_by_modality);
     Ok(ir)
 }
+
+/// `{prompt,completion}_tokens_details.{text,image,audio}_tokens` -> the IR's by-modality split
+/// (DF-MAP item 4; presentation only, never billed). `None` when neither side reports a text or
+/// image slice (the audio slices alone keep riding `input_audio_tokens` / `output_audio_tokens`).
+fn read_by_modality(usage: &serde_json::Value) -> Option<crate::codec::ir::IrUsageByModality> {
+    let side = |details: &str| {
+        let d = usage.get(details);
+        let n = |k: &str| d.and_then(|d| d.get(k)).and_then(|v| v.as_u64());
+        crate::codec::ir::IrModalityCounts {
+            text: n(TEXT_TOKENS),
+            image: n(IMAGE_TOKENS),
+            audio: n(AUDIO_TOKENS),
+            video: None,
+        }
+    };
+    let input = side(PROMPT_TOKENS_DETAILS);
+    let output = side(COMPLETION_TOKENS_DETAILS);
+    (input.text.is_some() || input.image.is_some() || output.text.is_some()).then(|| {
+        crate::codec::ir::IrUsageByModality {
+            input,
+            output,
+            ..Default::default()
+        }
+    })
+}
+
+/// The text slice of a `*_tokens_details` object.
+const TEXT_TOKENS: &str = "text_tokens";
+/// The image slice of `prompt_tokens_details`.
+const IMAGE_TOKENS: &str = "image_tokens";
 
 /// Fallback `model` string stamped onto a cross-protocol OpenAI response when the egress backend
 /// supplied none. The native OpenAI `chat.completion` / `chat.completion.chunk` schemas define
@@ -1508,3 +1539,58 @@ mod ir_round3_tests;
 #[cfg(test)]
 #[path = "tests/usage_census_tests.rs"]
 mod usage_census_tests;
+
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;
+
+/// A Chat completion's `moderation.{input,output}` results -> the IR's safety verdicts (DF-MAP item
+/// 1): one verdict per category a result flags (`categories.<name> = true`), `blocked` = false (a
+/// moderation result reports, it does not block). Scores do not cross. An `error` arm yields none.
+fn read_moderation(
+    moderation: Option<&serde_json::Value>,
+) -> Vec<crate::codec::ir::IrSafetyVerdict> {
+    let mut out = Vec::new();
+    for side in [MODERATION_INPUT, MODERATION_OUTPUT] {
+        let results = moderation
+            .and_then(|m| m.get(side))
+            .and_then(|s| s.get(MODERATION_RESULTS))
+            .and_then(|r| r.as_array());
+        for r in results.into_iter().flatten() {
+            let categories = r.get(MODERATION_CATEGORIES).and_then(|c| c.as_object());
+            for (category, on) in categories.into_iter().flatten() {
+                if on.as_bool() == Some(true) {
+                    out.push(crate::codec::ir::IrSafetyVerdict {
+                        category: category.clone(),
+                        flagged: true,
+                        blocked: false,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+const MODERATION_INPUT: &str = "input";
+const MODERATION_OUTPUT: &str = "output";
+const MODERATION_RESULTS: &str = "results";
+const MODERATION_CATEGORIES: &str = "categories";
+
+/// A Chat `message.audio` -> the IR's audio output (DF-MAP item 3): its base64 `data` and its
+/// `transcript`. The audio `id` and `expires_at` are OpenAI's own handle and do not cross.
+fn read_message_audio(
+    audio: Option<&serde_json::Value>,
+) -> Option<crate::codec::ir::IrAudioOutput> {
+    let audio = audio?.as_object()?;
+    let text = |k: &str| audio.get(k).and_then(|v| v.as_str()).map(String::from);
+    let out = crate::codec::ir::IrAudioOutput {
+        data: text(keys::DATA),
+        format: None,
+        transcript: text(TRANSCRIPT),
+    };
+    (out.data.is_some() || out.transcript.is_some()).then_some(out)
+}
+
+/// The spoken text of a Chat `message.audio`.
+const TRANSCRIPT: &str = "transcript";
