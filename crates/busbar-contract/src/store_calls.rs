@@ -23,6 +23,11 @@ use crate::abi::store::OpId;
 use crate::kinds::{Head, RecordBytes};
 use crate::records::{AuditRecord, MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 
+/// THE NODE'S ONE `op_id` ALLOCATOR, as a store handle is handed it: every `op_id` a handle mints
+/// for itself (the synchronous bridge's additive writes) comes from the kernel's one allocator, so no
+/// handle owns a counter and no two handles, reloads or boots mint the same id.
+pub type OpIdMint = fn() -> OpId;
+
 /// One store call in flight.
 pub type StoreCall<'a, T> = Pin<Box<dyn Future<Output = Result<T, StoreFailure>> + Send + 'a>>;
 
