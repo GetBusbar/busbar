@@ -278,6 +278,10 @@ pub(crate) fn dial_bound_for(pin: Option<&PinnedDest>) -> usize {
     }
 }
 
+/// The ALPN offers of 1.5.5's client: `http/1.1` alone under `http1_only`, else `h2` then `http/1.1`.
+const OFFER_H1: &[&[u8]] = &[b"http/1.1"];
+const OFFER_H2_H1: &[&[u8]] = &[b"h2", b"http/1.1"];
+
 /// Build ONE engine client per the spec's posture. Fallible by SIGNATURE for the postures the
 /// migration adds (a private extra root or client identity that does not parse must fail the
 /// build loudly); the pooled posture has no failing arm, which is what lets core's infallible
@@ -328,11 +332,12 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // 1.5.5's hello (reqwest) offered `http/1.1` under http1-only, `h2, http/1.1` otherwise. The
     // builder's http1-only path leaves ALPN empty, so the offer is stated here and the connector
     // is made from the config directly (`https_or_http`, the builder's own result).
-    tls.alpn_protocols = if spec.http1_only {
-        vec![b"http/1.1".to_vec()]
+    let offer = if spec.http1_only {
+        OFFER_H1
     } else {
-        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        OFFER_H2_H1
     };
+    tls.alpn_protocols = offer.iter().map(|id| id.to_vec()).collect();
     let https = hyper_rustls::HttpsConnector::from((http, tls));
     // One wall-clock bound over the WHOLE connect — TCP + tunnel + TLS handshake (see
     // `deadline`; reqwest's connect_timeout parity on the pinned postures, a strict tightening
