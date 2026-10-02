@@ -201,14 +201,6 @@ pub enum CountSlot {
 
 const SLOTS: usize = 17;
 
-/// The slots a turn is billed on, the ones a provider's stated total ([`CountRead::Total`]) sums.
-const BILLED: [CountSlot; 4] = [
-    CountSlot::Input,
-    CountSlot::CacheRead,
-    CountSlot::CacheWrite,
-    CountSlot::Output,
-];
-
 /// How one count is read off the usage object and folded into its slot. A path names the member
 /// from the usage object down; every member before the last is a parent object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,11 +231,6 @@ pub enum CountRead {
         /// The entry's count member.
         count: &'static str,
     },
-    /// The provider's own stated TOTAL of the billed slots (input, cache read, cache write,
-    /// output): when it exceeds what those slots already count, the remainder is ADDED to this
-    /// slot, so the turn bills the total the provider charges even for tokens no other counter
-    /// names. Absent or `null` adds nothing; unreadable REFUSES. Read after every billed slot.
-    Total(&'static [&'static str]),
     /// `count` of the FIRST entry of the list at `list` whose `key` member is `value`, as an
     /// attribution slice: unreadable is `None` (a per-modality list).
     ListFirst {
@@ -331,18 +318,6 @@ pub fn read_usage(
                 let n = opt(usage, path).map_err(refuse)?.unwrap_or(0);
                 *s = Some(s.unwrap_or(0).saturating_add(n));
             }
-            CountRead::Total(path) => {
-                if let Some(total) = opt(usage, path).map_err(refuse)? {
-                    let counted = BILLED
-                        .iter()
-                        .map(|b| slots[*b as usize].unwrap_or(0))
-                        .fold(0u64, u64::saturating_add);
-                    if total > counted {
-                        let s = &mut slots[slot as usize];
-                        *s = Some(s.unwrap_or(0).saturating_add(total - counted));
-                    }
-                }
-            }
             CountRead::ListSum {
                 list,
                 key,
@@ -403,6 +378,54 @@ pub fn read_usage(
             rejected_prediction_tokens: get(CountSlot::RejectedPrediction),
             ..Default::default()
         },
+    })
+}
+
+/// THE STATED-TOTAL CROSS-CHECK: the total a provider states beside its itemized counts, against
+/// what the dialect's usage table LEDGERS from those counts (the four meter classes: uncached
+/// input, cache read, cache write, output). A provider's total is its own sum of the counts it
+/// itemizes, never a unit: nothing is ledgered from it, and nothing is zeroed, clamped or
+/// back-filled to make the two agree.
+///
+/// `None` in the ordinary case — no total on the usage object (absent, `null`, or not a count: a
+/// total is checked, never billed, so an unreadable one is not a refusal), or a total equal to the
+/// ledgered sum. Otherwise the gap is WARN-logged with both figures and returned as the note the IR
+/// carries beside the counts: a POSITIVE `unaccounted` is units the provider counted that land in
+/// no meter class (a counter the table does not read, e.g. an OpenAI-compatible backend reporting
+/// reasoning outside `completion_tokens`), a negative one is a total below its own terms.
+///
+/// `protocol` names the dialect on the log line, `identity` the usage object checked (stable, for
+/// a caller to branch on), `total` the provider's stated total member.
+#[must_use]
+pub fn stated_total_note(
+    protocol: &'static str,
+    identity: &'static str,
+    total: Option<&serde_json::Value>,
+    ledgered: &crate::codec::ir::IrUsage,
+) -> Option<crate::codec::ir::UsageIdentityNote> {
+    let reported_total = total.and_then(read_count_u64)?;
+    let summed_total = ledgered.billable_tokens();
+    if summed_total == reported_total {
+        return None;
+    }
+    let unaccounted = i64::try_from(reported_total).unwrap_or(i64::MAX)
+        - i64::try_from(summed_total).unwrap_or(i64::MAX);
+    tracing::warn!(
+        protocol,
+        identity,
+        reported_total,
+        summed_total,
+        unaccounted,
+        "usage does not reconcile: the provider's stated total disagrees with the sum of the \
+         meter classes its itemized counts ledger (input, cache read, cache write, output). The \
+         ledger holds the itemized counts only; the gap is not ledgered. A positive gap is a \
+         count the provider reports that this dialect's usage table does not read."
+    );
+    Some(crate::codec::ir::UsageIdentityNote {
+        reported_total,
+        summed_total,
+        unaccounted,
+        identity,
     })
 }
 
