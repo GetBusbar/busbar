@@ -362,3 +362,41 @@ fn the_manifest_links_a_plane_through_its_door() {
         "no build of this manifest links a plane door: plane_doors = [{doors}"
     );
 }
+
+/// THE LLM FOLD'S SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): the development-only
+/// `llm-on-driver` feature links the llm plane's memory-ABI door on the `plane-door` axis, and the
+/// default build links no llm door, so the shipped binary serves llm as it did until the flip.
+#[test]
+fn the_llm_switch_links_the_llm_door_and_the_default_build_does_not() {
+    let manifest = read("Cargo.toml");
+    let default: Vec<String> = manifest
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("default = ["))
+        .expect("the manifest states a default feature set")
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect();
+    assert!(
+        !default.iter().any(|f| f == "llm-on-driver"),
+        "the development-only switch is in `default`: {default:?}"
+    );
+    let doors_of = |on: &dyn Fn(&str) -> bool| {
+        let (src, _) = linked_source(&manifest, on);
+        src.lines()
+            .find_map(|l| l.trim().strip_prefix("plane_doors: &[").map(str::to_string))
+            .unwrap_or_else(|| panic!("no plane_doors table generated:\n{src}"))
+    };
+    let llm_door = "busbar_plane_llm::plane_door::door, ";
+    let switched = doors_of(&|f: &str| f == "llm-on-driver" || default.iter().any(|d| d == f));
+    assert!(
+        switched.contains(llm_door),
+        "`llm-on-driver` links no llm door: plane_doors = [{switched}"
+    );
+    let shipped = doors_of(&|f: &str| default.iter().any(|d| d == f));
+    assert!(
+        !shipped.contains(llm_door),
+        "the default build links the llm door: plane_doors = [{shipped}"
+    );
+}

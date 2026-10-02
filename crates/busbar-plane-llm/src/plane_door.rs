@@ -8,8 +8,11 @@
 //! `busbar_contract::export_door!`), so the two cannot answer differently. `tests/conformance.rs`
 //! loads both through the one loader and requires one transcript (Part 2 #2).
 //!
-//! Nothing routes to this door yet: the composition root has no llm row in `plane_doors`. The row
-//! lands with the flip, so one plane never has two servers.
+//! The composition root links [`door`] on its `plane-door` axis under the llm fold's
+//! development-only switch `llm-on-driver` (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch") and
+//! binds it through the loader's one load beside the dropped-in plane doors. The default build links
+//! no llm door, and with the switch on the root's existing llm row still answers every arrival until
+//! the serve path hands this door the arrivals it takes, so one arrival never has two servers.
 //!
 //! One unit, as the plane driver serves it:
 //!
