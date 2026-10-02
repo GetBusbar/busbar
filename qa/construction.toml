@@ -1867,10 +1867,6 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # OS sockets, TLS, ALPN and pools (busbar-core-connector; BUSBAR-1.6.0.md THE DESIGN, §5) regardless
 # of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
-busbar-transport-http = [
-  "tokio-util", "memchr", "futures", "tokio", "rustls", "hyper", "hyper-util",
-  "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
-]
 busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
@@ -2205,8 +2201,6 @@ max_sites = 0
 # nine below, each still forging today.
 known_sites = [
   "crates/busbar-plane-streaming/src/tests/harness.rs",
-  "crates/busbar-transport-http/src/grpc/tests/battery.rs",
-  "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
@@ -3228,7 +3222,7 @@ auth = 0
 secret = 0
 store = 1
 export = 0
-transport = 4
+transport = 3
 loader = 1
 abi = 1
 
