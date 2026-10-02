@@ -23,8 +23,8 @@ use busbar_kernel::store::LaneRuntime;
 //
 // `set_data_workers`, `set_worker_id` and `UpstreamClients` are no longer re-exported: the
 // composition root's boot publish now targets `busbar_kernel::topology::…` directly, which left
-// the three `busbar_kernel::state::…` spellings with no caller at all bar one `engine_facade`
-// re-export line, itself repointed here. Nothing outside core names them.
+// the three `busbar_kernel::state::…` spellings with no caller at all. Nothing outside core names
+// them.
 pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 
 /// Re-export the neutral companion-slot key DERIVER: a plane's ALWAYS-PRESENT per-generation runtime

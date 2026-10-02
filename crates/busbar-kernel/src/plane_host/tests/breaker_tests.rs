@@ -161,7 +161,7 @@ fn settle_records_success_and_is_gone_on_replay() {
 /// through the same host seam over that durable arena, recovering it to Closed.
 #[test]
 fn task_admit_bears_the_probe_in_the_durable_scope_and_settles() {
-    use crate::plane_host::{DurableHostDispatch, DurableScope, HostState};
+    use crate::plane_host::{DurableScope, HostState};
     let app = std::sync::Arc::new(crate::test_support::TestApp::new().build());
     app.plane_breakers.force_open(POOL_STR, 0, 1);
 
@@ -201,10 +201,9 @@ fn task_admit_bears_the_probe_in_the_durable_scope_and_settles() {
     );
 
     // The detached runner settles through the vtable over the DURABLE arena.
-    let route = DurableHostDispatch::new(std::sync::Arc::clone(&app), durable, id);
     let ok = signal(StatusClass::Ok);
-    let class = route.with_host(|host, vt| {
-        (vt.breaker_settle.unwrap())(host, route.admission(), &ok as *const Signal)
+    let class = crate::plane_host::with_borrowed_host(&app, durable.arena(), |host, vt| {
+        (vt.breaker_settle.unwrap())(host, id, &ok as *const Signal)
     });
     assert_eq!(
         class,
