@@ -693,7 +693,7 @@ impl HookRows {
             }
             candidates.push(c);
         }
-        let hook = busbar_contract::abi::cold::kind::HOOK;
+        let hook = busbar_contract::plugin::Kind::Hook.to_string();
         for p in registry
             .map_or(&[][..], PluginRegistry::loadable)
             .iter()
