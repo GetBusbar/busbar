@@ -199,10 +199,18 @@
 # The vendored corpus it checks this cells.json against is 2506 cells: the SWITCH-OVER move above (43 hooks cells ->
 # `@hooks-webrequest`), the DF-WIRE ruling-3 cell `hooks|hooked-pool|unmodelled-block@hooks-webrequest`, and the
 # billing retirement (`billing|key-usage|after-upstream-down` -> `upstream-down-refunded` + `upstream-healthy-billed`).
-# Feature branch head; re-pin to the merge commit of busbar-release #53 when it lands.
+# #53 landed on dev as 305477e.
+#
+# 2026-10-02 (lane ORACLE-FINISH): moved eff9c67 -> 2815f7a (busbar-release dev; it carries #53 and #77). #77: the
+# normalizer's boot.pair-order rule no longer records itself in `applied` when it swaps the pair, because the swap is
+# 1.5.5's per-process HashMap seed. That had moved golden/1.5.5 boot.refusal|BOOT-100|validate in oracle-rerecord run
+# 36967636979. The only other engine change since eff9c67 is doc deletion. Re-record run 36970480705 (this engine,
+# busbar ref lane-oracle-pin) reproduced every committed cell byte for byte on both recordings, and golden-add
+# recorded the 46 owed new cells committed beside this pin. Its other 69 additions are the 1.6.0-only cells that
+# accepted-gaps.json says the 1.5.5 golden cannot owe, so they are not committed.
 #
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=eff9c674b0a8bad0a087247ecc80ca69d7540bb1
+release_ref=2815f7aba5f623ba5ecb6846a1da70f47e2e4360
 crate=busbar-release-oracle
 bin=busbar-oracle

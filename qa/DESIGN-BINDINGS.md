@@ -17,10 +17,10 @@ The three words are not interchangeable:
 ## Summary
 
 - bindings: **104**  (PB-0 master rule + 103 table rows)
-- mapped (proven): **102**
-- unproven (cited, but nothing compared): **2**
+- mapped (proven): **104**
+- unproven (cited, but nothing compared): **0**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 9, lint 5, oracle-cell 60, oracle-family 5, test 443
+- checks by kind (mapped bindings only): gate 9, lint 5, oracle-cell 65, oracle-family 5, test 458
 
 ## Bindings
 
@@ -69,7 +69,7 @@ The three words are not interchangeable:
 | PB-40 | unknown-key refusal | mapped | PASS |  | gate: `xtask/src/gates/config_schema/mod.rs`<br>test: `test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fields` |
 | PB-41 | 1.6.0 warnings on 1.5.5 configs | mapped | PASS |  | oracle-cell: `ops.scrape\|metrics\|no-ledger-series`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir` |
 | PB-42 | boot store probe | mapped | PASS |  | test: `hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one` |
-| PB-43 | operational routes | unproven | FAIL | partly proven; a referenced check settles nothing: oracle-cell:hooks\|metrics-hooks@hooks-webrequest (in cells.json, but the golden never recorded it) | oracle-cell: `hooks\|metrics-hooks@hooks-webrequest`<br>oracle-cell: `ops.scrape\|metricshooks\|key`<br>oracle-cell: `ops.scrape\|metrics\|key`<br>oracle-cell: `ops.scrape\|stats\|key`<br>test: `test_is_ready_any_cell_false_when_every_cell_open`<br>test: `test_is_ready_any_cell_true_when_a_pool_cell_is_ready`<br>test: `test_is_ready_is_side_effect_free`<br>test: `healthz_returns_a_real_response_not_the_default`<br>test: `thread_per_core_boots_and_serves_healthz`<br>test: `counter_renders_with_hook_label_and_verbatim_name`<br>test: `histogram_renders_as_summary`<br>test: `busbar_prefix_is_reserved`<br>test: `type_conflict_for_shared_name_is_dropped`<br>test: `test_stats_reports_at_capacity_when_lane_saturated`<br>test: `test_stats_limit_is_numeric_alias_of_max_concurrent`<br>test: `test_recovery_hint_ms` |
+| PB-43 | operational routes | mapped | PASS |  | oracle-cell: `hooks\|metrics-hooks@hooks-webrequest`<br>oracle-cell: `ops.scrape\|metricshooks\|key`<br>oracle-cell: `ops.scrape\|metrics\|key`<br>oracle-cell: `ops.scrape\|stats\|key`<br>test: `test_is_ready_any_cell_false_when_every_cell_open`<br>test: `test_is_ready_any_cell_true_when_a_pool_cell_is_ready`<br>test: `test_is_ready_is_side_effect_free`<br>test: `healthz_returns_a_real_response_not_the_default`<br>test: `thread_per_core_boots_and_serves_healthz`<br>test: `counter_renders_with_hook_label_and_verbatim_name`<br>test: `histogram_renders_as_summary`<br>test: `busbar_prefix_is_reserved`<br>test: `type_conflict_for_shared_name_is_dropped`<br>test: `test_stats_reports_at_capacity_when_lane_saturated`<br>test: `test_stats_limit_is_numeric_alias_of_max_concurrent`<br>test: `test_recovery_hint_ms` |
 | PB-44 | `in_flight_reserve` | mapped | PASS |  | test: `a_full_table_refuses_every_counted_unit_at_the_cap_and_holds_no_slot_back`<br>test: `the_administrative_listener_and_the_heartbeat_are_outside_the_cap`<br>test: `the_cap_holds_when_everything_arrives_at_once` |
 | PB-45 | revoke / rotate | mapped | PASS |  | test: `a_failed_read_does_not_close_the_staleness_window`<br>test: `a_successful_read_unions_and_closes_the_window`<br>test: `a_hung_store_does_not_park_the_reactor`<br>test: `test_key_state_distinguishes_disable_revoke_and_tombstone`<br>test: `local_revoke_rejects_the_very_next_auth_attempt` |
 | PB-46 | migrated hook seats | mapped | PASS |  | test: `migrated_request_hook_seats_after_admit_before_candidate`<br>test: `candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once` |
@@ -110,7 +110,7 @@ The three words are not interchangeable:
 | PB-81 | plugin call deadlines | mapped | PASS |  | test: `hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline`<br>test: `dlopen_slow_gate_hits_the_deadline`<br>test: `dlopen_plugin_panic_is_fail_closed_err`<br>lint: `xtask/src/gates/blocking_ffi.rs` |
 | PB-82 | usage extraction | mapped | PASS |  | test: `read_response_subtracts_cached_prefix_from_prompt_tokens`<br>test: `read_response_subtracts_cached_prefix_from_input_tokens`<br>test: `test_cached_content_token_count_reads_into_cache_read`<br>test: `test_gemini_usage_counts_thinking_tokens_as_output`<br>test: `adds_include_usage_when_absent`<br>test: `test_streaming_openai_egress_without_client_opt_in_still_gets_include_usage_injected`<br>test: `strip_same_proto_usage_fires_without_object_field` |
 | PB-83 | breaker scope | mapped | PASS |  | oracle-cell: `route.failover\|fb\|member-401`<br>test: `test_pool_breaker_isolation`<br>test: `test_record_hard_down_all_cells_trips_default_and_every_pool`<br>test: `test_budget_is_lane_global_across_pools`<br>test: `test_unbounded_lane_skips_the_semaphore_bounded_still_enforces` |
-| PB-84 | response-stage taps | unproven | FAIL | partly proven; a referenced check settles nothing: oracle-cell:hooks\|hooked-pool\|unauth@hooks-webrequest (in cells.json, but the golden never recorded it) | test: `completion_tap_reports_ok_outcome`<br>test: `completion_tap_fires_synthetic_rejected_by_gate`<br>test: `completion_tap_fires_synthetic_rejected_by_auth`<br>oracle-cell: `hooks\|hooked-pool\|unauth@hooks-webrequest` |
+| PB-84 | response-stage taps | mapped | PASS |  | test: `completion_tap_reports_ok_outcome`<br>test: `completion_tap_fires_synthetic_rejected_by_gate`<br>test: `completion_tap_fires_synthetic_rejected_by_auth`<br>oracle-cell: `hooks\|hooked-pool\|unauth@hooks-webrequest` |
 | PB-85 | `max_tokens` injection | mapped | PASS |  | test: `per_model_then_global_then_4096`<br>test: `test_requires_max_tokens_per_protocol`<br>test: `test_openai_explicit_max_tokens_preserved_over_lane_default`<br>test: `test_openai_omits_max_tokens_injects_fallback_for_anthropic` |
 | PB-86 | usage locators are plane-normalized | mapped | PASS |  | lint: `xtask/src/gates/kernel_token_wire_purity.rs`<br>gate: `xtask/src/gates/construction.rs` |
 | PB-87 | non-chat billing classes | mapped | PASS |  | test: `rerank_resp_billing_is_flat`<br>test: `rerank_resp_billing_counts_search_units_as_an_open_class`<br>test: `a_reranks_search_units_reach_the_price` |
@@ -130,15 +130,6 @@ The three words are not interchangeable:
 | PB-101 | inbound auth details | mapped | PASS |  | test: `test_verify_sigv4_ingress_credential_unsigned_payload_rejected`<br>test: `test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits`<br>test: `test_verify_sigv4_ingress_credential_tampered_body_rejected`<br>test: `test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch`<br>test: `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`<br>test: `a_fast_large_upload_is_not_killed_by_the_throughput_floor`<br>test: `total_deadline_trips_on_a_body_that_stays_above_the_floor_forever`<br>test: `body_read_timeout_trips_on_stalled_body`<br>test: `mtls_valid_client_cert_gets_200`<br>test: `mtls_rejects_bad_client_then_serves_valid` |
 | PB-102 | alarms and the disputes report | mapped | PASS |  | test: `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` |
 | PB-103 | the dated rate-card history, and the `/usage` read path that does not consult it | mapped | PASS |  | oracle-cell: `billing\|rate-card\|history-mid-window`<br>oracle-cell: `config\|rate-card\|append-not-replace`<br>oracle-cell: `ledger\|amend\|adjusting-entries`<br>oracle-cell: `ledger\|amend\|refused-unsigned`<br>oracle-cell: `ledger\|currency\|minor-unit-rounding`<br>oracle-cell: `ledger\|currency\|native`<br>oracle-cell: `ledger\|rate-history\|as-of` |
-
-## The unproven bindings: cited, but nothing was compared
-
-Each of these names one or more checks and is still proof of nothing. A binding here is
-red under `cargo xtask gate design-bindings`; it is fixed by making the citation real,
-or it is demoted to a named gap. It is never waived.
-
-- **PB-43** (operational routes): partly proven; a referenced check settles nothing: oracle-cell:hooks\|metrics-hooks@hooks-webrequest (in cells.json, but the golden never recorded it)
-- **PB-84** (response-stage taps): partly proven; a referenced check settles nothing: oracle-cell:hooks\|hooked-pool\|unauth@hooks-webrequest (in cells.json, but the golden never recorded it)
 
 ## Findings: bindings in conflict with the tree
 
