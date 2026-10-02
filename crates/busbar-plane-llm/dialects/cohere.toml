@@ -1,10 +1,12 @@
 # crates/busbar-plane-llm/dialects/cohere.toml: the HAND-WRITTEN wire <> IR mapping of the Cohere
-# v2 /chat dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+# v2 /chat dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
 wire = "cohere"  # the wire lock: dialects/cohere.wire.json (notation A paths)
 label = "Cohere"
-request = ["structure", "sampling", "penalties"]
+request = ["structure", "sampling", "penalties", "blocks"]
+response = ["response"]
+stream = ["stream"]
 drop_warn = "dropping a request control on Cohere egress: Cohere v2 /chat has no form for it"
 
 # Members the dialect's own code models (`prim`).
@@ -33,6 +35,62 @@ drop_warn = "dropping a request control on Cohere egress: Cohere v2 /chat has no
 "frequency_penalty" = { ir = "frequency_penalty" }
 "presence_penalty" = { ir = "presence_penalty" }
 "seed" = { ir = "seed" }
+
+# The request members inside the message, tool and config structure that the dialect's own code
+# reads and writes (`prim`: structure is code; the walker does not walk these rows).
+[rows.blocks]
+"messages[].role=tool.content[].type=document.document.id" = { prim = "id" }
+"messages[].role=tool.content[].type=document.document.data" = { prim = "data" }
+"messages[].role=tool.tool_call_id" = { prim = "tool_call_id" }
+"messages[].role=assistant.tool_calls" = { prim = "tool_calls" }
+"messages[].role=assistant" = { prim = "assistant" }
+"messages[].role=tool" = { prim = "tool" }
+"messages[].role=user" = { prim = "user" }
+"messages[].role=tool.content" = { prim = "content" }
+"messages[].role=user.content" = { prim = "content" }
+"messages[].role=system.content" = { prim = "content" }
+"messages[].role=assistant.content" = { prim = "content" }
+"messages[].role=assistant.tool_plan" = { prim = "tool_plan" }
+"messages[].role=assistant.citations" = { prim = "citations" }
+"messages[].role=tool.content[].type=text.text" = { prim = "text" }
+"messages[].role=user.content[].type=text.text" = { prim = "text" }
+"messages[].role=system.content[].type=text.text" = { prim = "text" }
+"messages[].role=assistant.content[].type=text.text" = { prim = "text" }
+"messages[].role=user.content[].type=image_url.image_url.url" = { prim = "url" }
+"messages[].role=assistant.content[].type=thinking.thinking" = { prim = "thinking" }
+"messages[].role=assistant.tool_calls[].function.name" = { prim = "name" }
+"tools[].function.name" = { prim = "name" }
+
+# The answer members the dialect's reader and writer carry (`prim`: code carries them).
+[rows.response]
+"message.tool_plan" = { prim = "tool_plan" }
+"message.role" = { prim = "role" }
+"message.content" = { prim = "content" }
+"usage.billed_units.search_units" = { prim = "search_units" }
+"usage.tokens.input_tokens" = { prim = "input_tokens" }
+"usage.tokens.output_tokens" = { prim = "output_tokens" }
+"message.citations" = { prim = "citations" }
+"id" = { prim = "id" }
+"finish_reason" = { prim = "finish_reason" }
+"message.tool_calls" = { prim = "tool_calls" }
+"logprobs" = { prim = "logprobs" }
+"usage.billed_units.input_tokens" = { prim = "input_tokens" }
+"usage.billed_units.output_tokens" = { prim = "output_tokens" }
+"usage.billed_units.classifications" = { prim = "classifications" }
+
+# The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
+[rows.stream]
+"type=tool-plan-delta" = { prim = "tool_plan_delta" }
+"type=citation-start" = { prim = "citation_start" }
+"type=message-start" = { prim = "message_start" }
+"type=content-start" = { prim = "content_start" }
+"type=content-delta" = { prim = "content_delta" }
+"type=content-end" = { prim = "content_end" }
+"type=tool-call-start" = { prim = "tool_call_start" }
+"type=tool-call-delta" = { prim = "tool_call_delta" }
+"type=tool-call-end" = { prim = "tool_call_end" }
+"type=citation-end" = { prim = "citation_end" }
+"type=message-end" = { prim = "message_end" }
 
 # Controls beyond the rows. /v2/chat has no candidate count: 1.5.5 omitted `n` with no warn and no
 # audit (1.5.5: crates/busbar/src/proto/cohere/reader.rs:489). Every hosted tool kind, custom included, is reported by the
