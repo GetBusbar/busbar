@@ -47,6 +47,11 @@ const ADDITIONAL_MODEL_REQUEST_FIELDS: &str = "additionalModelRequestFields";
 const ADDITIONAL_MODEL_RESPONSE_FIELDS: &str = "additionalModelResponseFields";
 const CACHE_DETAILS: &str = "cacheDetails";
 const CACHE_POINT: &str = "cachePoint";
+/// The Converse answer's (and the stream `metadata` frame's) served-tier member: `{"type": <tier>}`.
+const SERVICE_TIER_CAMEL: &str = "serviceTier";
+/// A Converse `searchResult` content block: a retrieved passage (source, title, text content) the
+/// caller supplies for the model to answer from and cite.
+const SEARCH_RESULT: &str = "searchResult";
 const CACHE_READ_INPUT_TOKENS: &str = "cacheReadInputTokens";
 const CACHE_WRITE_INPUT_TOKENS: &str = "cacheWriteInputTokens";
 const CFG_SCALE: &str = "cfgScale";
@@ -1628,6 +1633,83 @@ fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)
+}
+
+/// A Converse `searchResult` block read into the IR's slot for a retrieved passage: a `Text` block
+/// carrying the passage (a header naming its title and source, then its text parts) and one
+/// `search_result_location` citation naming them — the same slot the other dialects with a search
+/// result block map it to, so it translates instead of vanishing.
+fn read_search_result_block(block: &serde_json::Value) -> crate::codec::ir::IrBlock {
+    let source = block
+        .get(keys::SOURCE)
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let title = block
+        .get(keys::TITLE)
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let body = block
+        .get(keys::CONTENT)
+        .and_then(|v| v.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get(keys::TEXT).and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let header = [title, source]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" — ");
+    let text = match (header.is_empty(), body.is_empty()) {
+        (true, _) => body,
+        (false, true) => header,
+        (false, false) => format!("{header}\n{body}"),
+    };
+    let citations = if source.is_empty() && title.is_empty() {
+        Vec::new()
+    } else {
+        vec![crate::codec::ir::IrCitation {
+            domain: None,
+            kind: Some(keys::SEARCH_RESULT_LOCATION.to_string()),
+            cited_text: None,
+            title: (!title.is_empty()).then(|| title.to_string()),
+            url: (!source.is_empty()).then(|| source.to_string()),
+            document_index: None,
+            start_index: None,
+            end_index: None,
+            encrypted_index: None,
+            raw: None,
+        }]
+    };
+    crate::codec::ir::IrBlock::Text {
+        text,
+        cache_control: None,
+        citations,
+        refusal: false,
+    }
+}
+
+/// The tier that SERVED a Converse answer (`serviceTier.type`), in the IR's words: the usage
+/// attribution every dialect with a served tier carries (`IrUsageDetail::service_tier`).
+fn read_served_tier(answer: &serde_json::Value) -> Option<String> {
+    crate::codec::carry::read_word(
+        map::WORDS_SERVICE_TIER,
+        answer
+            .get(SERVICE_TIER_CAMEL)
+            .and_then(|t| t.get(keys::TYPE)),
+    )
+}
+
+/// The `serviceTier` member a Converse answer carries for `usage`'s served tier, when the dialect
+/// has a word for it.
+fn served_tier_member(usage: &crate::codec::ir::IrUsage) -> Option<serde_json::Value> {
+    let tier = usage.detail.service_tier.as_deref()?;
+    let word = crate::codec::carry::word_out(map::WORDS_SERVICE_TIER, tier)?;
+    Some(serde_json::json!({ (keys::TYPE): word }))
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.

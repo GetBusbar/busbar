@@ -79,8 +79,8 @@ fn head_parse_rejects_iff_dom_parse_rejects() {
     assert!(LazyBody::parse(&Bytes::from(deep.into_bytes())).is_err());
 }
 
-/// Within one dialect a hop's body is the caller's bytes with the governed splices only (LLM
-/// DIALECT FIDELITY): an alias model is replaced where it stands, busbar's own router key is
+/// Within one dialect a hop's body is the caller's bytes with the governed splices only (DIALECT
+/// FIDELITY): an alias model is replaced where it stands, busbar's own router key is
 /// removed, a path-model arrival's spliced `model`/`stream` come back out, and nothing else moves —
 /// key order, spacing, number spelling and unknown members stay the caller's. A re-serialize (the
 /// RED arm) would sort `z` after `a` and print `1.50` as `1.5`.

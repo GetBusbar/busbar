@@ -209,7 +209,7 @@ fn needs_no_splice(lane: FarShape<'_>, hop_bytes: &[u8]) -> bool {
 }
 
 /// THE RELAY of one same-dialect body: the caller's bytes with the governed splices only, each a
-/// byte-level member edit (`json_splice`), never a re-serialization (LLM DIALECT FIDELITY, owner
+/// byte-level member edit (`json_splice`), never a re-serialization (DIALECT FIDELITY, owner
 /// 2026-10-02; DIALECT-FIDELITY-DESIGN F2). The governed members: busbar's own router keys (never a
 /// far end's); for a path-model far end the `model` and `stream` the arrival spliced in (both ride
 /// the URL); for a body-model far end the mapped `model`, and a `path_base` far end's reshape.

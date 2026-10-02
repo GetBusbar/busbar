@@ -567,7 +567,7 @@ fn bedrock_arrival(
 /// THE PATH-MODEL CARRY: the URL's facts (the `model`, the `stream` flag and, when asked, the
 /// array-stream shim key) spliced into the caller's object as byte-level member edits. Every byte of
 /// the caller's own stays where it was, so the relay's governed removals of the same members give
-/// the far end the caller's bytes back (LLM DIALECT FIDELITY). `None` when the body is not an object.
+/// the far end the caller's bytes back (DIALECT FIDELITY). `None` when the body is not an object.
 #[must_use]
 pub fn splice_path_facts(
     body: &[u8],

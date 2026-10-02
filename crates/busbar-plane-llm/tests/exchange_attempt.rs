@@ -335,7 +335,7 @@ fn the_usage_ask_is_a_splice_after_the_opening_brace_or_in_place() {
 
 /// A path-model same-dialect relay sends the caller's bytes: the `model` and `stream` the arrival
 /// carried for routing come back out by byte splices, so key order, spacing and a member busbar has
-/// never heard of all reach the far end as the caller wrote them (LLM DIALECT FIDELITY).
+/// never heard of all reach the far end as the caller wrote them (DIALECT FIDELITY).
 #[test]
 fn a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it() {
     let h = head(&[("content-type", "application/json")]);

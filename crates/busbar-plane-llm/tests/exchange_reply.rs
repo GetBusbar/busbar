@@ -502,7 +502,7 @@ fn with_unknown_member(json: &[u8]) -> Vec<u8> {
     out
 }
 
-/// SAME-DIALECT IDENTITY, the answer side (LLM DIALECT FIDELITY; DIALECT-FIDELITY-DESIGN F4): in
+/// SAME-DIALECT IDENTITY, the answer side (DIALECT FIDELITY; DIALECT-FIDELITY-DESIGN F4): in
 /// every dialect a buffered answer and a stream that carry a member busbar has never heard of reach
 /// the caller byte-identical, and are still metered. The RED arm is any reserialize or rebuild on
 /// the relay (a parse-and-write drops the member, sorts the keys, prints `1.50` as `1.5`).

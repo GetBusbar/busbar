@@ -1543,8 +1543,8 @@ mod unreadable_count_refusal_tests;
 
 /// A tool call of a type the IR does not model (a `custom` tool call, or a type OpenAI adds later):
 /// its `type` names something other than `function`. The reader is a TAP: it skips such a call
-/// rather than refuse the request, so a same-dialect relay carries it byte for byte (LLM DIALECT
-/// FIDELITY; DIALECT-FIDELITY-DESIGN F2 reader tolerance). A call that claims `function` (or names
+/// rather than refuse the request, so a same-dialect relay carries it byte for byte (DIALECT FIDELITY;
+/// DIALECT-FIDELITY-DESIGN F2 reader tolerance). A call that claims `function` (or names
 /// no type) and carries none is still malformed in its own dialect.
 fn unmodeled_tool_call(tc_val: &serde_json::Value) -> bool {
     tc_val

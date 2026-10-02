@@ -6699,3 +6699,70 @@ fn status_word_golden() {
         assert_eq!(message, word, "an absent signal falls back to the name");
     }
 }
+
+/// DF-MAP gap 1: a Converse `searchResult` content block maps onto the IR's search-result slot (a
+/// cited Text block) instead of vanishing from a translation. RED arm: the reader had no arm for it
+/// and the block was silently dropped.
+#[test]
+fn a_search_result_block_maps_onto_the_search_result_slot() {
+    let body = serde_json::json!({
+        "messages": [{"role": "user", "content": [
+            {"searchResult": {"source": "https://kb.example/a", "title": "Doc A",
+                "content": [{"text": "first"}, {"text": "second"}],
+                "citations": {"enabled": true}}},
+            {"text": "answer from it"}
+        ]}]
+    });
+    let ir = BedrockReader.read_request(&body).expect("reads");
+    let blocks = &ir.messages[0].content;
+    assert_eq!(blocks.len(), 2, "{blocks:?}");
+    match &blocks[0] {
+        crate::codec::ir::IrBlock::Text {
+            text, citations, ..
+        } => {
+            assert_eq!(text, "Doc A — https://kb.example/a\nfirst\nsecond");
+            assert_eq!(citations.len(), 1);
+            assert_eq!(
+                citations[0].kind.as_deref(),
+                Some(crate::codec::keys::SEARCH_RESULT_LOCATION)
+            );
+            assert_eq!(citations[0].title.as_deref(), Some("Doc A"));
+            assert_eq!(citations[0].url.as_deref(), Some("https://kb.example/a"));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// DF-MAP gap 2: the tier that SERVED a Converse answer (`serviceTier.type`) is read into the usage
+/// attribution, buffered and streamed, and written back on a Converse answer. RED arm: the reader
+/// never read it, so the served tier was lost.
+#[test]
+fn the_served_tier_is_read_and_written() {
+    let answer = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 3, "outputTokens": 1, "totalTokens": 4},
+        "serviceTier": {"type": "priority"}
+    });
+    let resp = BedrockReader.read_response(&answer).expect("reads");
+    assert_eq!(resp.usage.detail.service_tier.as_deref(), Some("priority"));
+    let written = BedrockWriter.write_response(&resp);
+    assert_eq!(written["serviceTier"]["type"], "priority");
+
+    let mut state = crate::codec::ir::StreamDecodeState::default();
+    let events: Vec<_> = [
+        serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
+        serde_json::json!({"type": "metadata", "usage": {"inputTokens": 3, "outputTokens": 1},
+            "serviceTier": {"type": "flex"}}),
+    ]
+    .into_iter()
+    .flat_map(|data| BedrockReader.read_response_events("", &data, &mut state))
+    .collect();
+    let tier = events.iter().find_map(|e| match e {
+        crate::codec::ir::IrStreamEvent::MessageDelta { usage, .. } => {
+            usage.detail.service_tier.clone()
+        }
+        _ => None,
+    });
+    assert_eq!(tier.as_deref(), Some("flex"));
+}

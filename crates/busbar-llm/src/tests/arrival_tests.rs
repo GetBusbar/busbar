@@ -333,7 +333,7 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
         }
         // The live arm carries the same three members, spliced into the caller's bytes (never a
         // re-serialization): the same document, and the caller's own bytes where it named neither.
-        let live = busbar_plane_llm::exchange::arrive::splice_path_facts(
+        let live = crate::engine::xchg::arrive::splice_path_facts(
             &body,
             &f.model,
             f.stream,

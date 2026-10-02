@@ -374,10 +374,13 @@ impl ProtocolWriter for BedrockWriter {
                         converse_total_tokens(usage).into(),
                     );
                     write_cache_usage(&mut usage_obj, usage);
-                    Some((
-                        ET_METADATA.to_string(),
-                        serde_json::json!({ (keys::USAGE): usage_obj }),
-                    ))
+                    let mut metadata = serde_json::json!({ (keys::USAGE): usage_obj });
+                    if let (Some(tier), Some(obj)) =
+                        (super::served_tier_member(usage), metadata.as_object_mut())
+                    {
+                        obj.insert(super::SERVICE_TIER_CAMEL.to_string(), tier);
+                    }
+                    Some((ET_METADATA.to_string(), metadata))
                 }
             },
 
@@ -602,7 +605,7 @@ impl ProtocolWriter for BedrockWriter {
         );
         write_cache_usage(&mut usage_obj, &resp.usage);
 
-        serde_json::json!({
+        let mut answer = serde_json::json!({
             (keys::OUTPUT): {
                 (keys::MESSAGE): {
                     (keys::ROLE): keys::ASSISTANT,
@@ -611,7 +614,14 @@ impl ProtocolWriter for BedrockWriter {
             },
             (super::STOP_REASON): reverse_reason,
             (keys::USAGE): usage_obj
-        })
+        });
+        if let (Some(tier), Some(obj)) = (
+            super::served_tier_member(&resp.usage),
+            answer.as_object_mut(),
+        ) {
+            obj.insert(super::SERVICE_TIER_CAMEL.to_string(), tier);
+        }
+        answer
     }
 
     /// Native AWS Bedrock Converse error envelope. The Converse error model (REST-JSON protocol)

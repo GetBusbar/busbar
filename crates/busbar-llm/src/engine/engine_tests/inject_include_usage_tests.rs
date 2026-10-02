@@ -194,7 +194,7 @@ fn keeps_existing_true() {
     );
 }
 
-/// A caller's own `stream_options` is edited IN PLACE (LLM DIALECT FIDELITY): the flag is set where
+/// A caller's own `stream_options` is edited IN PLACE (DIALECT FIDELITY): the flag is set where
 /// it stands, its siblings and every other byte (key order, spacing) stay the caller's. A DOM
 /// re-serialize would sort the keys and drop the spacing.
 #[test]

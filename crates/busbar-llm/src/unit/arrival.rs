@@ -300,7 +300,7 @@ pub fn arrival_path_model(
         .then(|| busbar_kernel::proto::array_stream_shim_key_for(proto))
         .flatten();
     let injected: Bytes =
-        match busbar_plane_llm::exchange::arrive::splice_path_facts(body, model, stream, shim) {
+        match crate::engine::xchg::arrive::splice_path_facts(body, model, stream, shim) {
             Some(b) => b.into(),
             None => {
                 tracing::debug!("injected request body splice failed");

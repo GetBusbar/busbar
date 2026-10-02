@@ -141,7 +141,7 @@ fn the_body_step_projects_what_the_live_parse_projects() {
 
 /// IDENTITY, path-model. For every recorded request, the step's injected bytes read as the document
 /// the live splice builds — and they are the caller's own bytes with the members spliced in at the
-/// byte level (LLM DIALECT FIDELITY): a request that names neither member keeps every byte after its
+/// byte level (DIALECT FIDELITY): a request that names neither member keeps every byte after its
 /// opening brace, in order (a re-serialization, the RED arm, would sort and respace them).
 #[test]
 fn the_path_model_step_injects_the_members_into_the_callers_bytes() {

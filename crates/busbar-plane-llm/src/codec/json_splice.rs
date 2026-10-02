@@ -8,7 +8,7 @@
 //! over the caller's bytes: a member's value is replaced where it stands, a member is removed with
 //! exactly one adjacent comma, a missing member is inserted right after the opening brace. Every
 //! other byte (key order, whitespace, number spelling, escapes) stays the caller's. Nothing is
-//! parsed into a tree and nothing is re-serialized (LLM DIALECT FIDELITY, owner 2026-10-02;
+//! parsed into a tree and nothing is re-serialized (DIALECT FIDELITY, owner 2026-10-02;
 //! DIALECT-FIDELITY-DESIGN F2).
 //!
 //! The scanner locates; it does not validate. A body it cannot read as an object is left alone and
