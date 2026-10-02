@@ -312,3 +312,53 @@ host = "unit"
         assert!(refused.is_err(), "must be refused:\n{broken}");
     }
 }
+
+/// THE PLANE DOOR AXIS (#2, THE DESIGN §11.4): a `plane-door` row fills `plane_doors` with its
+/// entry's `door`, the table the root hands the loader beside every dropped-in plane door; with its
+/// feature off the table is empty.
+#[test]
+fn the_generator_folds_the_plane_door_axis() {
+    let manifest = r#"
+[dependencies]
+busbar-plane-door = { path = "../busbar-plane-door", optional = true }
+
+[features]
+door = ["dep:busbar-plane-door"]
+
+[package.metadata.busbar.linked]
+door = "busbar-plane-door"
+
+[package.metadata.busbar.linked-axes]
+door = "plane-door"
+
+[package.metadata.busbar.linked-entry]
+door = "busbar_plane_door::plane_door"
+
+[package.metadata.busbar.root-units]
+door = "unit"
+"#;
+    let (on, _) = linked_source(manifest, &|f: &str| f == "door");
+    assert!(
+        on.contains("plane_doors: &[busbar_plane_door::plane_door::door, ],"),
+        "{on}"
+    );
+    let (off, _) = linked_source(manifest, &|_: &str| false);
+    assert!(off.contains("plane_doors: &[],"), "{off}");
+}
+
+/// A PLANE IS SERVED THROUGH ITS DOOR (#2, #30; BUSBAR-1.6.0.md Part 3 §12 "The switch"): this
+/// manifest has a build that links a plane's memory-ABI door on the `plane-door` axis, so the
+/// compiled-in plane is bound through the loader's one load, the same table its dropped-in build is.
+#[test]
+fn the_manifest_links_a_plane_through_its_door() {
+    let manifest = read("Cargo.toml");
+    let (all, _) = linked_source(&manifest, &|_: &str| true);
+    let doors = all
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("plane_doors: &["))
+        .unwrap_or_else(|| panic!("no plane_doors table generated:\n{all}"));
+    assert!(
+        doors.contains("::door, "),
+        "no build of this manifest links a plane door: plane_doors = [{doors}"
+    );
+}
