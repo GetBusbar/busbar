@@ -167,7 +167,8 @@ fn a_need_dials_a_hostname_through_the_one_guard() {
 }
 
 /// The system resolver, through the same path: `localhost` resolves, is judged, and is dialled at
-/// the address it answered first.
+/// the address it answered first. The guard refuses the `localhost` name itself under
+/// `block_private_addresses` unless the allowlist names it (RFC 6761), so this deployment names it.
 #[test]
 fn a_need_dials_localhost_through_the_system_resolver() {
     use std::net::ToSocketAddrs;
@@ -179,7 +180,11 @@ fn a_need_dials_localhost_through_the_system_resolver() {
         .ip();
     worker().block_on(async {
         let port = echo(first).await;
-        let c = connector(Arc::new(SystemResolver), Arc::default());
+        let c = connector_over(
+            &["localhost", "127.0.0.0/8", "::1"],
+            Arc::new(SystemResolver),
+            Arc::default(),
+        );
         let host = host(&c);
         let t = table(&host);
         let target = format!("localhost:{port}");
