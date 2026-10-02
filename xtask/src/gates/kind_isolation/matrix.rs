@@ -2201,7 +2201,11 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     for ((krate, kind), cell) in &matrix {
         let src = kind_of.get(krate.as_str()).copied().unwrap_or("?");
         let edge = (src.to_string(), (*kind).to_string());
-        if !listed.edges.contains_key(&edge) {
+        // A CLASS PART 0 ALLOWS IN SOURCE IS LISTED BY THE SPEC ([`super::spec_allows_source`]):
+        // neither a missing `[[edge]]` nor a missing `[[cell]]` is a finding. A row that exists is
+        // still compared below.
+        let spec_allowed = super::spec_allows_source(src, kind);
+        if !spec_allowed && !listed.edges.contains_key(&edge) {
             offenders.push(format!(
                 "unlisted-edge\t{src} -> {kind}\t{krate} names {kind} vocabulary {} time(s) and \
                  there is no `[[edge]] from = \"{src}\", to = \"{kind}\"` in {LEDGER}. An edge \
@@ -2213,6 +2217,9 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
 
         let key = (krate.clone(), (*kind).to_string());
         let Some(&listed_count) = listed.cells.get(&key) else {
+            if spec_allowed {
+                continue;
+            }
             offenders.push(format!(
                 "unlisted-cell\t{krate} × {kind} = {}\tno `[[cell]] crate = \"{krate}\", kind = \
                  \"{kind}\"` in {LEDGER}. Every cell above zero carries its own number: add `count \
@@ -3401,6 +3408,22 @@ pub fn selftest<'a>(
             "from = \"root\"\nto = \"plane-was-struck\"\n".to_string(),
         )),
         &["unlisted-edge", "root -> plane"],
+    ));
+
+    // A CLASS PART 0 DOES NOT ALLOW IS STILL REFUSED (ARCHITECT 2026-10-02, KI-ZERO Q1). The spec
+    // lists `cleanliness -> kernel` without a row; it does not list `cleanliness -> plane`, so a
+    // cleanliness crate naming a plane with no `[[cell]]` row is a new cross-kind edge, refused.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a cleanliness crate naming a plane is refused: only the Part 0 classes are listed by the spec",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/busbar-core-oauth2/src/leak.rs",
+            "// busbar_plane_mcp is not this crate's to name.\n",
+        ),
+        &["unlisted-cell", "busbar-core-oauth2 \u{d7} plane"],
     ));
 
     // TWO ROWS FOR ONE CELL. The maps would keep the last, so which ceiling binds would be decided
