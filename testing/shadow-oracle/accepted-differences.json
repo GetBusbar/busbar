@@ -692,13 +692,13 @@
       "kind": "improvement",
       "changelog": "A chat completion's `logprobs` object carries `refusal`.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
-      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$|^(money\\.reserved-tier\\|absent\\|anthropic-cache|usage\\.gemini\\|(cached-content\\|subtractive|tool-use\\|total-billed|tool-use\\|total-not-a-sum))$",
-      "expected_cells": 14,
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$|^(money\\.reserved-tier\\|absent\\|anthropic-cache|usage\\.gemini\\|cached-content\\|subtractive)$",
+      "expected_cells": 12,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "choices[].logprobs and message.refusal are required by the published chat schema; null when the backend carried none. WIDENED 2026-10-02 (owner R1, ORACLE batch, escalate.q 04:20Z): four owner-review cells recorded from the published 1.5.5 join the scope -- money.reserved-tier|absent|anthropic-cache (X-235), usage.gemini|cached-content|subtractive (605b), usage.gemini|tool-use|total-billed and total-not-a-sum (576). On each the candidate's openai-chat answer adds exactly choices[0].logprobs:null and choices[0].message.refusal:null, the two members the published schema requires; usage and spend are unchanged on the first two (the 576 cells' usage and spend move under R5, not here). Scope count 10 -> 14.",
+      "rationale": "choices[].logprobs and message.refusal are required by the published chat schema; null when the backend carried none. WIDENED 2026-10-02 (owner R1, ORACLE batch, escalate.q 04:20Z): four owner-review cells recorded from the published 1.5.5 join the scope -- money.reserved-tier|absent|anthropic-cache (X-235), usage.gemini|cached-content|subtractive (605b), usage.gemini|tool-use|total-billed and total-not-a-sum (576). On each the candidate's openai-chat answer adds exactly choices[0].logprobs:null and choices[0].message.refusal:null, the two members the published schema requires; usage and spend are unchanged on the first two (the 576 cells' usage and spend move under R5, not here). Scope count 10 -> 14. NARROWED 2026-10-02 (ARCHITECT ruling on the ORACLE-COMMIT findings): the two usage.gemini|tool-use cells (576) are NOT in S-5's scope: this entry is signed for the logprobs/refusal nulls and must never mask a money red; R5 alone covers the 576 cells. Scope count 14 -> 12.",
       "premise": {
         "all": [
           {
