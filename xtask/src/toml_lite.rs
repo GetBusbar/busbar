@@ -176,7 +176,12 @@ pub fn parse_text(raw: &str) -> Document {
             continue;
         }
 
-        if let Some((key, value)) = trimmed.split_once('=') {
+        // The key ends at the first `=` outside a quoted key: a dialect mapping row's quoted wire
+        // path may itself hold `=` (a union arm, `messages[].content[].type=text.text`).
+        let key_len = split_top(trimmed, '=').first().map_or(0, |k| k.len());
+        if let Some((key, value)) =
+            (key_len < trimmed.len()).then(|| (&trimmed[..key_len], &trimmed[key_len + 1..]))
+        {
             let key = key.trim().to_string();
             let value = value.trim();
             if let Some(rest) = value.strip_prefix('[') {
