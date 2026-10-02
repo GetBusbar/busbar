@@ -362,3 +362,61 @@ fn the_manifest_links_a_plane_through_its_door() {
         "no build of this manifest links a plane door: plane_doors = [{doors}"
     );
 }
+
+/// EVERY PLANE'S DEVELOPMENT-ONLY SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): each `plane-door`
+/// row whose feature is not in `default` links its plane's memory-ABI door when that feature is on,
+/// and the default build links none of those doors, so the shipped binary serves each plane as it
+/// did until that plane's flip. The streaming fold's `streaming-on-driver` is one such row.
+#[test]
+fn every_plane_switch_links_its_door_and_the_default_build_does_not() {
+    let manifest = read("Cargo.toml");
+    let default: Vec<String> = manifest
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("default = ["))
+        .expect("the manifest states a default feature set")
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect();
+    let entries = metadata_map(&manifest, "package.metadata.busbar.linked-entry");
+    let switches: Vec<(String, String)> =
+        metadata_map(&manifest, "package.metadata.busbar.linked-axes")
+            .into_iter()
+            .filter(|(feature, axes)| {
+                axes.split_whitespace().any(|a| a == "plane-door") && !default.contains(feature)
+            })
+            .map(|(feature, _)| {
+                let entry = entries
+                    .iter()
+                    .find(|(row, _)| *row == feature)
+                    .map(|(_, entry)| entry.clone())
+                    .unwrap_or_else(|| panic!("the `{feature}` door row names no entry module"));
+                (feature, format!("{entry}::door, "))
+            })
+            .collect();
+    assert!(
+        switches
+            .iter()
+            .any(|(feature, _)| feature == "streaming-on-driver"),
+        "the streaming fold's switch is not a plane-door row: {switches:?}"
+    );
+    let doors_of = |on: &dyn Fn(&str) -> bool| {
+        let (src, _) = linked_source(&manifest, on);
+        src.lines()
+            .find_map(|l| l.trim().strip_prefix("plane_doors: &[").map(str::to_string))
+            .unwrap_or_else(|| panic!("no plane_doors table generated:\n{src}"))
+    };
+    let shipped = doors_of(&|f: &str| default.iter().any(|d| d == f));
+    for (switch, door) in &switches {
+        let on = doors_of(&|f: &str| f == switch.as_str() || default.iter().any(|d| d == f));
+        assert!(
+            on.contains(door.as_str()),
+            "`{switch}` links no `{door}`: plane_doors = [{on}"
+        );
+        assert!(
+            !shipped.contains(door.as_str()),
+            "the default build links `{switch}`'s door: plane_doors = [{shipped}"
+        );
+    }
+}
