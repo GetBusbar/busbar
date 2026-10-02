@@ -6,26 +6,6 @@
 
 [[finding]]
 rule = "linked-dropped-features:unified-deps"
-file = "crates/busbar-transport-http/Cargo.toml"
-item = "tokio/io-std"
-
-[[finding]]
-rule = "linked-dropped-features:unified-deps"
-file = "crates/busbar-transport-http/Cargo.toml"
-item = "tokio/process"
-
-[[finding]]
-rule = "linked-dropped-features:unified-deps"
-file = "crates/busbar-transport-http/Cargo.toml"
-item = "tokio/rt-multi-thread"
-
-[[finding]]
-rule = "linked-dropped-features:unified-deps"
-file = "crates/busbar-transport-http/Cargo.toml"
-item = "tokio/signal"
-
-[[finding]]
-rule = "linked-dropped-features:unified-deps"
 file = "crates/busbar-transport-stdio/Cargo.toml"
 item = "tokio/net"
 

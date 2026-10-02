@@ -1859,10 +1859,6 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # OS sockets, TLS, ALPN and pools (busbar-core-connector; BUSBAR-1.6.0.md THE DESIGN, §5) regardless
 # of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
-busbar-transport-http = [
-  "tokio-util", "memchr", "futures", "tokio", "rustls", "hyper", "hyper-util",
-  "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
-]
 busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
@@ -2196,8 +2192,6 @@ max_sites = 0
 # nine below, each still forging today.
 known_sites = [
   "crates/busbar-plane-streaming/src/tests/harness.rs",
-  "crates/busbar-transport-http/src/grpc/tests/battery.rs",
-  "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-kernel-egress/src/tests/harness.rs",
 ]
@@ -3210,8 +3204,9 @@ plane_crates = 4
 # rows `export`, `export-webhook`, `export-scrape`, `export-otlp`. Neither export glob matches a
 # directory in this repo any more: the kind's documented zero.
 #
-# transport -1 (EXTRACT-15, TODO PATH TO DEV-GREEN P5 "EXTRACTION TO 15 CRATES", item ws): the ws
-# transport crate MOVED OUT with its history to GetBusbar/busbar-transport-ws and busbar pulls it at one pinned rev
+# transport -1 each (EXTRACT-15, TODO PATH TO DEV-GREEN P5 "EXTRACTION TO 15 CRATES", items http and ws): the
+# http and ws transport crates MOVED OUT with their history to GetBusbar/busbar-transport-http and
+# GetBusbar/busbar-transport-ws, and busbar pulls each at one pinned rev
 # (root Cargo.toml). Its gates run in that repo's plugin CI.
 [gate.census.plugin_kinds]
 plane = 5
@@ -3220,7 +3215,7 @@ auth = 0
 secret = 0
 store = 1
 export = 0
-transport = 3
+transport = 2
 loader = 1
 abi = 1
 

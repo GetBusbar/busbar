@@ -37,10 +37,8 @@ usage:
   cargo xtask conformance check --selftest
   cargo xtask dialect wire [--write | --diff] <dialect|all>
   cargo xtask dialect wire --diff-files <old.wire.json> <new.wire.json>
-  cargo xtask fleet render <repo> [--out <dir>]
-  cargo xtask fleet check [--repo <repo>]...
-  cargo xtask fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]
   cargo xtask dialect compile
+  cargo xtask [--root <worktree>] ship \"<PR title>\" [--body <file>]   (lane-* only: merge predev, pre-flight, push, PR, auto-merge)
   cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
@@ -59,11 +57,11 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "audit-verify",
     "conformance",
     "loc",
-    "fleet",
     "root",
     "perf-ab",
     "perf-ab-mock",
     "dialect",
+    "ship",
 ];
 
 pub fn main(args: &[String]) -> i32 {
@@ -113,12 +111,6 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::loc::main(&cx, &args[1..]),
             Err(code) => code,
         },
-        // THE PLUGIN FLEET. Not a gate: it renders and checks OTHER repos (plugins.yaml's), and its
-        // RED is the nightly the removed `sched-fleet-check.yml` run, not a row in this tree's ledger.
-        Some("fleet") => match open_ctx() {
-            Ok(cx) => crate::fleet::main(&cx, &args[1..]),
-            Err(code) => code,
-        },
         // THE SAME-MACHINE A/B, a report-only trend line. Not a gate and never one (the pass/fail
         // A/B is a separate, later release check): it RUNS two binaries and measures them, so it
         // owns no row set. `perf-ab-mock` is the upstream
@@ -127,6 +119,9 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::perf_ab::main(cx.root(), &args[1..]),
             Err(code) => code,
         },
+        // THE LANE'S SHIP (BUSBAR-1.6.0.md Part 6, the PR flow). Not a gate: it pushes a branch and
+        // opens its PR into predev; CI on that PR is the proof.
+        Some("ship") => crate::ship::main(&args[1..]),
         Some("perf-ab-mock") => crate::perf_ab::mock_main(&args[1..]),
         // THE DIALECT MAPPING COMPILER (`dialect compile`). Not a gate: it WRITES the table files;
         // the gate that refuses their drift is `dialect-map`. THE WIRE LOCKS (`dialect wire`). Not a
