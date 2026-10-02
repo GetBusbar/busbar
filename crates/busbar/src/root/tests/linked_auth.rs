@@ -32,6 +32,15 @@ fn link() {
     }
 }
 
+/// The operator credential's provider key, read AFTER the root's words are handed in. Before the
+/// first [`link`] the kernel answers with its test-build stand-in words, so a key read first and
+/// linked second names a provider no row answers, and every verdict below would judge the wrong
+/// chain.
+fn op() -> &'static str {
+    link();
+    config::operator_provider()
+}
+
 /// An app whose governance holds the operator token, with `chain` as its admin chain, and `extra`
 /// external admin modules beside it.
 fn app(chain: &[&str], extra: Vec<(&str, Box<dyn AuthModule>)>) -> Arc<busbar_kernel::state::App> {
@@ -146,7 +155,7 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
 #[tokio::test]
 async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
     busbar_kernel::metrics::init();
-    let op = config::operator_provider();
+    let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let cases: [(Option<&str>, Option<&str>, u16); 9] = [
         (None, None, 401),
@@ -175,7 +184,7 @@ async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
 #[tokio::test]
 async fn the_chain_reaches_the_arm_behind_the_operator_credential_only_on_a_foreign_grammar() {
     busbar_kernel::metrics::init();
-    let op = config::operator_provider();
+    let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let chain = [op, "any-credential"];
     let with_idp = || app(&chain, vec![("any-credential", Box::new(AnyCredential))]);
@@ -205,7 +214,7 @@ async fn the_chain_reaches_the_arm_behind_the_operator_credential_only_on_a_fore
 #[tokio::test]
 async fn without_the_root_row_the_operator_token_is_refused() {
     busbar_kernel::metrics::init();
-    let op = config::operator_provider();
+    let op = op();
     let with_row = app(&[op], Vec::new());
     // What `busbar_kernel::auth::open_operator` answers when the registry holds no row under the operator
     // credential's key (the kernel's own tests pin that `open` over an empty registry yields it).
@@ -610,7 +619,7 @@ async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_creden
 #[tokio::test]
 async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module() {
     busbar_kernel::metrics::init();
-    let op = config::operator_provider();
+    let op = op();
     // `admin_auth: [<op>]` with `<op>: { module: any-credential }`, as the build resolves it: the
     // provider is recorded as backed by that module, and the module is opened under its name.
     let named_op = || {
@@ -731,7 +740,7 @@ fn an_empty_admin_chain_is_the_open_posture_on_the_loop() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
-    let op = config::operator_provider();
+    let op = op();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(&[op], Vec::new())));
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let cases: [(Option<&str>, Option<&str>, u16); 9] = [
@@ -760,7 +769,7 @@ fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_external_admin_module_is_consulted_by_the_loop() {
-    let op = config::operator_provider();
+    let op = op();
     let chain = [op, "any-credential"];
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(
         &chain,

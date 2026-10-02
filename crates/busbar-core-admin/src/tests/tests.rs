@@ -1697,12 +1697,15 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
+    // The test app first: it hands this binary's operator words in, so the provider key read next
+    // is the one the linked row answers (read before, it is the kernel's test-build stand-in).
+    let test_app = crate::new_test_app();
     let ops: busbar_kernel::config::IdentityProviderCfg = serde_yaml::from_str(&format!(
         "module: {}",
         busbar_kernel::config::operator_provider()
     ))
     .expect("a provider definition");
-    let app = crate::new_test_app()
+    let app = test_app
         .governance(gov)
         .identity_provider("ops", ops)
         .build();
