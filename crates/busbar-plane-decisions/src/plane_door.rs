@@ -47,7 +47,7 @@ use busbar_contract::abi::plane::{
     ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, CLAIM_EXACT,
     EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
     PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_OPTIONAL, PRINCIPAL_REQUIRED,
-    SHAPE_WHOLE, UNITS_REPORTED,
+    ROUTE_DIRECT, SHAPE_WHOLE, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
@@ -245,6 +245,29 @@ struct Unit {
 pub struct DecisionsDoor {
     generations: Generations<PlaneSnapshot>,
     units: Keyed<u64, Unit>,
+    /// The entry a claimed arrival routes over, directly: the one configured model of the latest
+    /// generation (none held when the section configures other than one, and nothing is claimed).
+    routed: Keyed<(), String>,
+}
+
+impl DecisionsDoor {
+    /// Route claimed arrivals over `section`'s one model, or none.
+    fn route_over(&self, section: &DecisionsSection) {
+        match routed_model(section) {
+            Some(model) => self.routed.insert((), model),
+            None => self.routed.remove(&()),
+        };
+    }
+}
+
+/// The entry a claimed arrival routes over under `section`: its one model, when it configures
+/// exactly one ([`driven::served_claims`]' rule); `None` otherwise.
+fn routed_model(section: &DecisionsSection) -> Option<String> {
+    let mut models = section.models.keys();
+    match (models.next(), models.next()) {
+        (Some(one), None) => Some(one.clone()),
+        _ => None,
+    }
 }
 
 /// One slot body on the SDK's safe surface, over this plane's [`DecisionsDoor`].
@@ -285,7 +308,9 @@ slot!(
         let plane = DecisionsDoor {
             generations: Generations::new(),
             units: Keyed::new(),
+            routed: Keyed::new(),
         };
+        plane.route_over(&section);
         let spec = snapshot_spec(section.models.len());
         out.publish(|o| &o.snapshot, &plane.generations, open.generation, &spec);
         instance.open(plane);
@@ -304,6 +329,7 @@ slot!(
             Err(words) => return out.fail(Refusal::refused(words)),
         };
         let spec = snapshot_spec(section.models.len());
+        plane.route_over(&section);
         out.publish(|o| &o.snapshot, &plane.generations, input.generation, &spec);
         Outcome::Ready
     }
@@ -351,9 +377,9 @@ slot!(
 );
 
 slot!(
-    /// `arrive`: a claimed request's op class, principal need and dialect; an unclaimed one is
-    /// refused at 404.
-    Arrive, ArriveIn, ArriveOut, |_, input, mut out| {
+    /// `arrive`: a claimed request's op class, principal need, dialect and route (its one model,
+    /// directly: ARCHITECT Q-SW6/Q-FL3); an unclaimed one is refused at 404.
+    Arrive, ArriveIn, ArriveOut, |instance, input, mut out| {
         let verb = input.field(|i| &i.method).as_str().unwrap_or_default();
         let target = input.field(|i| &i.target).as_str().unwrap_or_default();
         let Some(arrived) = driven::arrive(verb, target) else {
@@ -371,6 +397,9 @@ slot!(
                 PrincipalNeed::Optional => PRINCIPAL_OPTIONAL,
             },
         );
+        if let Some(model) = instance.get().and_then(|plane| plane.routed.get(&())) {
+            out.route(ROUTE_DIRECT, &model);
+        }
         Outcome::Ready
     }
 );
