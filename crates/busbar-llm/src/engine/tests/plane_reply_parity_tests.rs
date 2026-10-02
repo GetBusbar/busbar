@@ -291,6 +291,8 @@ fn lane(egress: &'static str) -> Lane {
         dialect: egress,
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         upstream_model: None,
         default_max_tokens: None,
         context_max: None,

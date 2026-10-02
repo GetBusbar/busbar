@@ -313,3 +313,34 @@ fn the_pristine_ask_splices_after_the_opening_brace_and_falls_back_to_a_parse() 
     assert_eq!(out, b"[1]");
     assert!(try_inject_stream_include_usage(br#"{"stream_options":"x"}"#.to_vec()).is_err());
 }
+
+/// TENANT SELECTORS COME FROM BUSBAR'S CONFIG: a provider's `organization` / `project` ride every
+/// far request under the headers its dialect declares, and a caller's own never do.
+#[test]
+fn the_providers_tenant_goes_out_and_the_callers_does_not() {
+    let shaping = Shaping::from_settings(&json!({
+        "providers": {
+            "oai": {
+                "protocol": "openai",
+                "base_url": "https://api.example",
+                "organization": "org-cfg",
+                "project": "proj-cfg"
+            }
+        },
+        "models": { "gpt": { "provider": "oai" } },
+        "pools": { "p": { "members": ["gpt"] } }
+    }))
+    .expect("reads");
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("openai-organization", "org-caller"),
+    ]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt","messages":[]}"#,
+    );
+    let r = build(&a, &h, &shaping, "p", "gpt").expect("built");
+    assert_eq!(field(&r, "openai-organization"), [b"org-cfg".as_slice()]);
+    assert_eq!(field(&r, "openai-project"), [b"proj-cfg".as_slice()]);
+}

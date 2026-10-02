@@ -131,6 +131,11 @@ pub(super) async fn build(
     if hop.ingress_protocol == hop.egress_name {
         busbar_kernel::proxy::apply_client_headers(&mut egress_headers, hop.client_fwd);
     }
+    // The provider's tenant selectors, from busbar's config: set on every upstream request, never
+    // the caller's (theirs are governed and were not collected).
+    for (name, value) in &hop.lane_row().tenant_headers {
+        egress_headers.insert(name.clone(), value.clone());
+    }
     let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
     drop(_cb_reqwest);
     Ok(hreq)

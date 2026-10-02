@@ -227,6 +227,8 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
             error_map: _,
             path: _,
             path_base: _,
+            organization: _,
+            project: _,
             token_url: _,
             scope: _,
             subject: _,

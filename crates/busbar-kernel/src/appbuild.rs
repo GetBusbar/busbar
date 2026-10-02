@@ -845,6 +845,8 @@ pub fn build_app_from_config(
             base_url,
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
+            organization: provider_cfg.organization.clone(),
+            project: provider_cfg.project.clone(),
             upstream_model: ld.upstream_model.clone(),
             api_key: busbar_contract::redacted::Redacted::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),

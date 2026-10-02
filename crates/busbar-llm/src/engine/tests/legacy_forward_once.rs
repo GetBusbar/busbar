@@ -299,6 +299,10 @@ pub(super) async fn forward_once(
     }
     // The precomputed egress `http::Uri` (mirrors the main forward path): hand-assembled request,
     // no builder machinery, no per-request compose + WHATWG parse.
+    // The provider's tenant selectors (mirrors the main forward path).
+    for (name, value) in &EngineTables::new(rt).lanes()[i].tenant_headers {
+        egress_headers.insert(name.clone(), value.clone());
+    }
     let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
     // TIMEOUT RE-PROVISION (mirrors the main forward path EXACTLY — the re-audit caught this
     // path keeping the pre-fix shape, the F1 hole's second home): ONE deadline per attempt.

@@ -54,6 +54,9 @@ pub struct Dialect {
     /// never pass, because busbar's upstream credential and configuration replace them (OWNER HARD
     /// RULE 2026-10-02, "BUSBAR IS INVISIBLE TO UPSTREAMS", governed fields (1) and (2)).
     pub governed_headers: &'static [&'static str],
+    /// The tenant selectors this dialect's far end reads, as `(config key, header)`: busbar sets
+    /// each from the provider's config (`organization`, `project`) on every upstream request.
+    pub tenant_headers: &'static [(&'static str, &'static str)],
 }
 
 /// The top-level member the four body-carrying dialects name the model under.
@@ -70,6 +73,12 @@ const MODEL_IN_PATH: Location = Location::Arrival(ArrivalLocation::PathSegment(0
 
 /// What the two dialects of one vendor govern: its credential headers (a bearer, and the key header
 /// a re-hosted deployment of it reads) and its two tenant selectors.
+/// The tenant selectors of the two dialects of one vendor, by provider config key.
+const OPENAI_TENANT: &[(&str, &str)] = &[
+    ("organization", "openai-organization"),
+    ("project", "openai-project"),
+];
+
 const OPENAI_GOVERNED: &[&str] = &[
     "authorization",
     "api-key",
@@ -91,6 +100,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "api-key",
         egress_scheme: "bearer",
         governed_headers: &["authorization", "x-api-key"],
+        tenant_headers: &[],
     },
     Dialect {
         name: "openai",
@@ -108,6 +118,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         governed_headers: OPENAI_GOVERNED,
+        tenant_headers: OPENAI_TENANT,
     },
     Dialect {
         name: "gemini",
@@ -122,6 +133,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "api-key",
         egress_scheme: "bearer",
         governed_headers: &["authorization", "x-goog-api-key", "x-goog-user-project"],
+        tenant_headers: &[],
     },
     Dialect {
         name: "bedrock",
@@ -141,6 +153,7 @@ pub const DIALECTS: &[Dialect] = &[
             "x-amz-content-sha256",
             "x-amz-security-token",
         ],
+        tenant_headers: &[],
     },
     Dialect {
         name: "responses",
@@ -154,6 +167,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         governed_headers: OPENAI_GOVERNED,
+        tenant_headers: OPENAI_TENANT,
     },
     Dialect {
         name: "cohere",
@@ -168,6 +182,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         governed_headers: &["authorization"],
+        tenant_headers: &[],
     },
 ];
 

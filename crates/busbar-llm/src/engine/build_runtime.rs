@@ -60,6 +60,11 @@ pub(crate) fn resolve_provider(def: &ProviderDef, deploy: &ProviderDeploy) -> Pr
         error_map,
         path: deploy.path.clone().or_else(|| def.path.clone()),
         path_base: deploy.path_base.clone().or_else(|| def.path_base.clone()),
+        organization: deploy
+            .organization
+            .clone()
+            .or_else(|| def.organization.clone()),
+        project: deploy.project.clone().or_else(|| def.project.clone()),
         token_url: deploy.token_url.clone().or_else(|| def.token_url.clone()),
         scope: deploy.scope.clone().or_else(|| def.scope.clone()),
         subject: deploy.subject.clone().or_else(|| def.subject.clone()),
@@ -240,6 +245,21 @@ pub(crate) fn build_runtime(
             context_max: li.context_max,
             path: li.path.clone(),
             path_base: li.path_base.clone(),
+            // The provider's configured tenant, under the headers this lane's dialect declares,
+            // built once here (a value that cannot ride a header is not sent).
+            tenant_headers: crate::engine::xchg::attempt::tenant_fields(
+                protocol,
+                li.organization.as_deref(),
+                li.project.as_deref(),
+            )
+            .into_iter()
+            .filter_map(|(name, value)| {
+                Some((
+                    axum::http::HeaderName::from_static(name),
+                    axum::http::HeaderValue::from_str(value).ok()?,
+                ))
+            })
+            .collect(),
             health: li.health.clone(),
             attempt_timeout_ms: li.attempt_timeout_ms,
             reasoning: li.reasoning,
