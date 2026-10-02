@@ -305,8 +305,13 @@ impl Clock for Wall {
 }
 
 struct Quiet;
-impl Journal for Quiet {
-    fn dispatched(&self, _: &Dispatched) -> Result<(), DurabilityUnavailable> {
+
+/// The write-ahead records the walk made, in order.
+#[derive(Default)]
+struct Kept(Mutex<Vec<Dispatched>>);
+impl Journal for Kept {
+    fn dispatched(&self, record: &Dispatched) -> Result<(), DurabilityUnavailable> {
+        self.0.lock().unwrap().push(record.clone());
         Ok(())
     }
     fn abandoned(&self, _: &Dispatched) {}
@@ -397,6 +402,7 @@ struct Rig {
     table: Arc<Table>,
     book: Arc<Book>,
     auth: Arc<Bearer>,
+    journal: Arc<Kept>,
     egress: Egress,
 }
 
@@ -412,6 +418,7 @@ fn rig(
     });
     let book = Arc::new(Book::default());
     let auth = Arc::new(Bearer::default());
+    let journal = Arc::new(Kept::default());
     let members: Vec<Member> = hosts
         .iter()
         .enumerate()
@@ -467,7 +474,7 @@ fn rig(
         breaker: book.clone(),
         capacity: Arc::new(Free),
         clock: Arc::new(Wall),
-        journal: Arc::new(Quiet),
+        journal: Arc::clone(&journal) as Arc<dyn Journal>,
         telemetry: Arc::new(Quiet),
         floor: WeightedFloor::new(),
         pools: HashMap::from([(POOL.to_string(), pool)]),
@@ -479,6 +486,7 @@ fn rig(
         table,
         book,
         auth,
+        journal,
         egress,
     }
 }
@@ -1112,4 +1120,26 @@ async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
         !w.ctx.is_excluded(DestinationId::new(3)),
         "a larger window stays in the walk"
     );
+}
+
+/// THE DISPATCH RECORD NAMES ITS UNIT (ARCHITECT P3 (c), 2026-10-02): the write-ahead record the walk
+/// makes before each dial carries the unit the walk serves, so the root writes it under that unit's
+/// facts on the book.
+#[tokio::test]
+async fn every_dispatch_is_recorded_under_its_unit() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        unit: busbar_contract::UnitKey::new(77),
+        ..route()
+    });
+    let _member = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let kept = r.journal.0.lock().unwrap().clone();
+    assert_eq!(kept.len(), 1, "one record, before the dial");
+    assert_eq!(kept[0].unit, busbar_contract::UnitKey::new(77));
 }

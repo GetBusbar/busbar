@@ -457,6 +457,10 @@ fn every_attempt_is_recorded_before_its_dial() {
     assert_eq!(dispatched[0].attempt, 1);
     assert_eq!(dispatched[1].destination, DestinationId::new(1));
     assert_eq!(dispatched[1].attempt, 2);
+    assert!(
+        dispatched.iter().all(|d| d.unit == node.unit),
+        "every record names the unit the walk serves"
+    );
     assert_eq!(
         node.journal.abandoned.lock().unwrap().len(),
         1,
