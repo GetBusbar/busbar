@@ -30,13 +30,28 @@ pub trait Harness {
     fn advance_ms(&self, ms: u64);
 }
 
-/// The cases' own `op_id`s: one counter, a node half no store mints under.
-fn op() -> OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    OpId::from_parts(
-        0x7e57_ca5e,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
+/// The cases' own `op_id`s. The node half is one no store mints under, distinct per case, so cases
+/// run over ONE durable state never repeat an id; the counter is the case's own (the contract
+/// holds no state: contract-stateless).
+struct Ops {
+    node: u64,
+    next: std::cell::Cell<u64>,
+}
+
+impl Ops {
+    /// The ids of case number `case`.
+    fn case(case: u64) -> Self {
+        Ops {
+            node: 0x7e57_ca50 + case,
+            next: std::cell::Cell::new(0),
+        }
+    }
+
+    fn op(&self) -> OpId {
+        let n = self.next.get() + 1;
+        self.next.set(n);
+        OpId::from_parts(self.node, n)
+    }
 }
 
 fn key(bucket: &str) -> CellKey<'_> {
@@ -49,16 +64,17 @@ fn key(bucket: &str) -> CellKey<'_> {
 }
 
 /// Cap `bucket` at `cap`.
-fn capped<S: StoreSlots>(s: &S, bucket: &str, cap: u64) {
+fn capped<S: StoreSlots>(ops: &Ops, s: &S, bucket: &str, cap: u64) {
     let caps = [Cap {
         key: key(bucket),
         cap,
         config_gen: 1,
     }];
-    ready(s.window_caps(&mut Op::detached(), op(), &caps)).expect("the cap is pushed");
+    ready(s.window_caps(&mut Op::detached(), ops.op(), &caps)).expect("the cap is pushed");
 }
 
 fn draw<S: StoreSlots>(
+    ops: &Ops,
     s: &S,
     bucket: &str,
     amount: u64,
@@ -71,7 +87,7 @@ fn draw<S: StoreSlots>(
     let mut grants = Vec::new();
     ready(s.reserve(
         &mut Op::detached(),
-        op(),
+        ops.op(),
         epoch,
         cells.iter().copied(),
         &mut grants,
@@ -80,61 +96,70 @@ fn draw<S: StoreSlots>(
 }
 
 /// Release `unspent` of `slice` under `epoch`: the amount the store took back.
-fn release<S: StoreSlots>(s: &S, epoch: u64, slice: u64, unspent: u64) -> Result<u64, String> {
+fn release<S: StoreSlots>(
+    ops: &Ops,
+    s: &S,
+    epoch: u64,
+    slice: u64,
+    unspent: u64,
+) -> Result<u64, String> {
     let mut back = Vec::new();
     let items = [(slice, unspent)].into_iter();
-    ready(s.slice_release(&mut Op::detached(), op(), epoch, items, &mut back))
+    ready(s.slice_release(&mut Op::detached(), ops.op(), epoch, items, &mut back))
         .map_err(|e| format!("{e:?}"))?;
     Ok(back.into_iter().next().expect("one amount per item"))
 }
 
 /// A reserve under an epoch below the stored one is StaleEpoch and applies nothing.
 pub fn stale_epoch_refused<H: Harness>(h: &H) {
+    let ops = Ops::case(0);
     let s = h.open();
-    capped(&s, "stale", 10);
-    draw(&s, "stale", 1, 2).expect("epoch 2 draws");
+    capped(&ops, &s, "stale", 10);
+    draw(&ops, &s, "stale", 1, 2).expect("epoch 2 draws");
     assert_eq!(
-        draw(&s, "stale", 1, 1),
+        draw(&ops, &s, "stale", 1, 1),
         Err(ReserveRefused::StaleEpoch),
         "a reserve under an epoch below the stored one is StaleEpoch"
     );
     // Nothing was applied: the remaining headroom is exactly 9.
-    draw(&s, "stale", 9, 2).expect("the stale reserve applied nothing");
+    draw(&ops, &s, "stale", 9, 2).expect("the stale reserve applied nothing");
     assert_eq!(
-        draw(&s, "stale", 1, 2),
+        draw(&ops, &s, "stale", 1, 2),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
 }
 
 /// A grant's validity is bounded by SLICE_TTL_MS, and an expired slice's unspent is drawable again.
 pub fn valid_until_bounded<H: Harness>(h: &H) {
+    let ops = Ops::case(1);
     let s = h.open();
-    capped(&s, "ttl", 5);
+    capped(&ops, &s, "ttl", 5);
     let now = h.now_ms();
-    let g = draw(&s, "ttl", 5, 2).expect("draws the whole window");
+    let g = draw(&ops, &s, "ttl", 5, 2).expect("draws the whole window");
     assert!(
         g.valid_until_ms <= now.saturating_add(SLICE_TTL_MS),
         "valid_until_ms {} is past now {now} + SLICE_TTL_MS",
         g.valid_until_ms
     );
     assert_eq!(
-        draw(&s, "ttl", 1, 2),
+        draw(&ops, &s, "ttl", 1, 2),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
     h.advance_ms(SLICE_TTL_MS + 1);
-    draw(&s, "ttl", 5, 2).expect("an expired slice's unspent returned to the window");
+    draw(&ops, &s, "ttl", 5, 2).expect("an expired slice's unspent returned to the window");
 }
 
 /// The stored epoch survives a restart.
 pub fn epoch_survives_restart<H: Harness>(h: &H) {
+    let ops = Ops::case(2);
     {
         let s = h.open();
-        capped(&s, "restart", 10);
-        draw(&s, "restart", 1, 3).expect("epoch 3 draws");
+        capped(&ops, &s, "restart", 10);
+        draw(&ops, &s, "restart", 1, 3).expect("epoch 3 draws");
     }
     let s = h.open();
     assert_eq!(
-        draw(&s, "restart", 1, 2),
+        draw(&ops, &s, "restart", 1, 2),
         Err(ReserveRefused::StaleEpoch),
         "the epoch was lost on restart"
     );
@@ -143,23 +168,24 @@ pub fn epoch_survives_restart<H: Harness>(h: &H) {
 /// A release of all a slice's unspent under a stale epoch applies once, a repeat returns 0, and the
 /// slice's expiry after the release returns nothing more.
 pub fn stale_release_exactly_once<H: Harness>(h: &H) {
+    let ops = Ops::case(3);
     let s = h.open();
-    capped(&s, "release", 10);
-    capped(&s, "release-fence", 1);
-    let g = draw(&s, "release", 4, 5).expect("epoch 5 draws");
+    capped(&ops, &s, "release", 10);
+    capped(&ops, &s, "release-fence", 1);
+    let g = draw(&ops, &s, "release", 4, 5).expect("epoch 5 draws");
     // The fleet moves on to epoch 6 (a draw elsewhere advances the store's epoch).
-    draw(&s, "release-fence", 1, 6).expect("epoch 6 draws");
-    let back = release(&s, 5, g.slice_id, 4).expect("a release is never refused");
+    draw(&ops, &s, "release-fence", 1, 6).expect("epoch 6 draws");
+    let back = release(&ops, &s, 5, g.slice_id, 4).expect("a release is never refused");
     assert_eq!(back, 4, "the release applies, whatever the epoch");
-    let again = release(&s, 6, g.slice_id, 4).expect("a repeat is answered");
+    let again = release(&ops, &s, 6, g.slice_id, 4).expect("a repeat is answered");
     assert_eq!(again, 0, "a slice with nothing left returns nothing");
     if g.valid_until_ms != u64::MAX {
         h.advance_ms(SLICE_TTL_MS + 1);
     }
     // Drawn 4, returned 4: all 10 of the headroom, and expiry added nothing to that.
-    draw(&s, "release", 10, 6).expect("the returned 4 are drawable");
+    draw(&ops, &s, "release", 10, 6).expect("the returned 4 are drawable");
     assert_eq!(
-        draw(&s, "release", 1, 6),
+        draw(&ops, &s, "release", 1, 6),
         Err(ReserveRefused::Exhausted { cell: 0 }),
         "expiry returned the released slice again"
     );
@@ -178,14 +204,15 @@ pub fn fleet_store<H: Harness>(h: &H) {
 /// A node-local store's single-node rule (one constant epoch, slices that never expire) and the
 /// release rule every store follows.
 pub fn single_node_store<H: Harness>(h: &H) {
+    let ops = Ops::case(4);
     let s = h.open();
-    capped(&s, "local", 10);
-    let g = draw(&s, "local", 1, 2).expect("draws");
+    capped(&ops, &s, "local", 10);
+    let g = draw(&ops, &s, "local", 1, 2).expect("draws");
     assert_eq!(
         g.valid_until_ms,
         u64::MAX,
         "a single-node slice never expires"
     );
-    draw(&s, "local", 1, 1).expect("a single-node store never answers StaleEpoch");
+    draw(&ops, &s, "local", 1, 1).expect("a single-node store never answers StaleEpoch");
     stale_release_exactly_once(h);
 }
