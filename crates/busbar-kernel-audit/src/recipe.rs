@@ -296,11 +296,11 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
 /// Hash one field list under the record chain's framing.
 ///
 /// The other half of "there is one recipe": this is the only function that turns fields into a
-/// digest, so a caller cannot accidentally hash them under the legacy bar-joined framing and get an
+/// digest, so a caller cannot accidentally hash them under a bar-joined framing and get an
 /// answer that looks plausible.
 #[must_use]
 pub fn digest_over(fields: &[DigestField]) -> String {
-    let mut d = crate::legacy::Digest::new(crate::legacy::Framing::LengthPrefixed);
+    let mut d = crate::digest::Digest::new(crate::digest::Framing::LengthPrefixed);
     for field in fields {
         match &field.value {
             DigestValue::Text(s) => {

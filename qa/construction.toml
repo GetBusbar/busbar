@@ -2463,10 +2463,8 @@ measure a test."""
 scope_globs = ["crates/busbar-kernel-*/src/*"]
 # The clock reads a unit crate may not perform.
 forbidden = ["SystemTime::now", "Instant::now"]
-# A helper that exists FOR the root, in a unit crate's directory, that nothing in the crate calls.
-# Each entry is a whole file, exempt because it is the root's reading living next to the unit rather
-# than a decision inside one. Adding to this list needs the same argument.
-exempt_files = ["crates/busbar-kernel-breaker/src/clock.rs"]
+# No file is exempt: the one helper that was (breaker clock.rs) is deleted.
+exempt_files = []
 max_hits = 0
 
 # ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────

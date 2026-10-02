@@ -927,14 +927,14 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::hash_chain_links_and_verifies",
+     "ref": "crates/busbar-kernel/src/tests/audit_ring_tests.rs::hash_chain_links_and_verifies",
      "proves": "genesis prev_hash is empty; tamper breaks verify",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::export_load_roundtrip_resumes_chain",
+     "ref": "crates/busbar-kernel/src/tests/audit_ring_tests.rs::export_load_roundtrip_resumes_chain",
      "proves": "restore resumes the sequence",
      "source": "curated",
      "status": "mapped"
@@ -955,7 +955,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification, test:crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::hash_chain_links_and_verifies, test:crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::export_load_roundtrip_resumes_chain, test:admin_audit_chain_boot_verifies_from_frozen_bytes, oracle-cell:admin.ops|GetAudit|ok"
+   "verdict_detail": "test:a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification, test:crates/busbar-kernel/src/tests/audit_ring_tests.rs::hash_chain_links_and_verifies, test:crates/busbar-kernel/src/tests/audit_ring_tests.rs::export_load_roundtrip_resumes_chain, test:admin_audit_chain_boot_verifies_from_frozen_bytes, oracle-cell:admin.ops|GetAudit|ok"
   },
   {
    "id": "PB-21",

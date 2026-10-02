@@ -503,11 +503,6 @@ kind = "transport"
 count = "4"
 
 [[cell]]
-crate = "busbar-kernel-audit"
-kind = "plane"
-count = "6"
-
-[[cell]]
 crate = "busbar-kernel-breaker"
 kind = "plane"
 count = "2"

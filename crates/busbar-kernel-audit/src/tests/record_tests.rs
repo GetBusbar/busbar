@@ -356,7 +356,7 @@ fn the_correlation_label_is_hashed_and_the_label_itself_is_gone() {
     let hash = record.correlation_hash.clone().unwrap();
     assert_eq!(
         hash,
-        crate::legacy::sha256_hex(b"customer-order-99"),
+        crate::digest::sha256_hex(b"customer-order-99"),
         "the record carries the digest of the label"
     );
     // And the label is nowhere in the record. Checked over the whole rendered record rather than

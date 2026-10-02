@@ -18,7 +18,7 @@ fn token() -> Pass<AuditStep> {
     Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
-/// The two constructors are pinned against each other, as the previous release's chain already pins
+/// The two constructors are pinned against each other, as the retired admin chain already pins
 /// its own: a DERIVED default gives a next position of zero, which is not a position a chain has —
 /// the first entry is one — and the position is DIGESTED, so a chain that quietly started at zero
 /// would seal entries a verifier walking from one rejects.
