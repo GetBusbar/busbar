@@ -143,45 +143,6 @@ fn row_set(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
 
 // ── metering: the plane's counts, the kernel's verdict ──────────────────────────────────────────
 
-#[test]
-fn usage_folds_five_classes_onto_the_four_reserved_keys() {
-    // The codec's own 5→4 fold (no longer the voice billing path, which ledgers the plane's classes —
-    // see `a_served_turn_ledgers_the_planes_counts_per_class`), kept honest while it exists.
-    let u = IrDuplexUsage {
-        audio_in: 20,
-        audio_out: 3,
-        text_in: 5,
-        text_out: 7,
-        cached: 11,
-    };
-    let usage = u.to_billing_usage();
-    assert_eq!(
-        usage
-            .usage_units
-            .get(busbar_contract::records::UNIT_INPUT)
-            .copied(),
-        Some(20 + 5 - 11)
-    );
-    assert_eq!(
-        usage
-            .usage_units
-            .get(busbar_contract::records::UNIT_OUTPUT)
-            .copied(),
-        Some(3 + 7)
-    );
-    assert_eq!(
-        usage
-            .usage_units
-            .get(busbar_contract::records::UNIT_CACHE_READ)
-            .copied(),
-        Some(11)
-    );
-    assert!(IrDuplexUsage::default()
-        .to_billing_usage()
-        .usage_units
-        .is_empty());
-}
-
 /// Q21b EXIT TEST — a served voice session writes the streaming plane's count rows. One turn: a
 /// second of uplink audio, one tool call opened, a usage report naming all five token classes. The
 /// ledger holds exactly the plane's SIX billable classes, under the voice lane, at the counts the
