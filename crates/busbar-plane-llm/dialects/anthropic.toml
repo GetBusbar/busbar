@@ -1,9 +1,11 @@
 # crates/busbar-plane-llm/dialects/anthropic.toml: the HAND-WRITTEN wire <> IR mapping of the
-# Anthropic Messages dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+# Anthropic Messages dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
 wire = "anthropic"  # the wire lock: dialects/anthropic.wire.json (notation A paths)
-request = ["structure", "sampling", "tier"]
+request = ["structure", "sampling", "tier", "blocks"]
+response = ["response"]
+stream = ["stream"]
 drop_warn = "dropping {slot} on Anthropic egress: the Messages API has no such request                      member (lossy-by-target)"
 drop_field = "parameter"
 
@@ -38,6 +40,108 @@ drop_field = "parameter"
 "auto" = { wire = "auto" }
 "default" = { wire = "standard_only" }
 "priority" = { wire = "auto", dir = "write" }
+
+# The request members inside the message, tool and config structure that the dialect's own code
+# reads and writes (`prim`: structure is code; the walker does not walk these rows).
+[rows.blocks]
+"messages[].role" = { prim = "role" }
+"messages[].content" = { prim = "content" }
+"messages[].content[].type=text.text" = { prim = "text" }
+"messages[].content[].type=image.source.type=base64" = { prim = "base64" }
+"messages[].content[].type=image.source.type=file" = { prim = "file" }
+"messages[].content[].type=image.source.type=url" = { prim = "url" }
+"messages[].content[].type=image.source.type=base64.media_type" = { prim = "media_type" }
+"messages[].content[].type=image.source.type=base64.data" = { prim = "data" }
+"messages[].content[].type=document.source.type=base64" = { prim = "base64" }
+"messages[].content[].type=document.source.type=content" = { prim = "content" }
+"messages[].content[].type=document.source.type=file" = { prim = "file" }
+"messages[].content[].type=document.source.type=text" = { prim = "text" }
+"messages[].content[].type=document.source.type=url" = { prim = "url" }
+"messages[].content[].type=document.source.type=text.media_type" = { prim = "media_type" }
+"messages[].content[].type=document.source.type=base64.media_type" = { prim = "media_type" }
+"messages[].content[].type=document.source.type=text.data" = { prim = "data" }
+"messages[].content[].type=document.source.type=base64.data" = { prim = "data" }
+"messages[].content[].type=document.title" = { prim = "title" }
+"messages[].content[].type=tool_use.id" = { prim = "id" }
+"messages[].content[].type=tool_use.name" = { prim = "name" }
+"messages[].content[].type=tool_result.tool_use_id" = { prim = "tool_use_id" }
+"messages[].content[].type=tool_result.content" = { prim = "content" }
+"messages[].content[].type=document.source.type=file.file_id" = { prim = "file_id" }
+"messages[].content[].type=document.source.type=content.content" = { prim = "content" }
+"messages[].content[].type=redacted_thinking.data" = { prim = "data" }
+"messages[].content[].type=text.cache_control" = { prim = "cache_control" }
+"messages[].content[].type=text.citations" = { prim = "citations" }
+"messages[].content[].type=image.source.type=url.url" = { prim = "url" }
+"messages[].content[].type=image.cache_control" = { prim = "cache_control" }
+"messages[].content[].type=tool_use.cache_control" = { prim = "cache_control" }
+"messages[].content[].type=tool_result.is_error" = { prim = "is_error" }
+"messages[].content[].type=tool_result.cache_control" = { prim = "cache_control" }
+"messages[].content[].type=thinking.thinking" = { prim = "thinking" }
+"messages[].content[].type=thinking.signature" = { prim = "signature" }
+"messages[].content[].type=document.source.type=url.url" = { prim = "url" }
+"messages[].content[].type=document.context" = { prim = "context" }
+"messages[].content[].type=document.citations" = { prim = "citations" }
+"messages[].content[].type=document.cache_control" = { prim = "cache_control" }
+"messages[].content[].type=search_result.source" = { prim = "source" }
+"messages[].content[].type=search_result.title" = { prim = "title" }
+"messages[].content[].type=search_result.content" = { prim = "content" }
+"messages[].content[].type=image.source.type=file.file_id" = { prim = "file_id" }
+"messages[].content[].type=search_result.content[].text" = { prim = "text" }
+"messages[].content[].type=tool_result.content[].type=document.citations" = { prim = "citations" }
+"messages[].content[].type=tool_result.content[].type=document.context" = { prim = "context" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=file.file_id" = { prim = "file_id" }
+"messages[].content[].type=tool_result.content[].type=image.source.type=file.file_id" = { prim = "file_id" }
+"messages[].content[].type=tool_result.content[].type=search_result.content[].text" = { prim = "text" }
+"messages[].content[].type=tool_result.content[].type=text.text" = { prim = "text" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=content" = { prim = "content" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=text" = { prim = "text" }
+
+# The answer members the dialect's reader and writer carry (`prim`: code carries them).
+[rows.response]
+"id" = { prim = "id" }
+"type" = { prim = "type" }
+"role" = { prim = "role" }
+"model" = { prim = "model" }
+"content" = { prim = "content" }
+"stop_reason" = { prim = "finish_reason" }
+"stop_sequence" = { prim = "stop_sequence" }
+"usage.input_tokens" = { prim = "input_tokens" }
+"usage.output_tokens" = { prim = "output_tokens" }
+"usage.cache_creation_input_tokens" = { prim = "cache_write_tokens" }
+"usage.cache_read_input_tokens" = { prim = "cache_read_tokens" }
+"usage.cache_creation.ephemeral_5m_input_tokens" = { prim = "ephemeral_5m_input_tokens" }
+"usage.cache_creation.ephemeral_1h_input_tokens" = { prim = "ephemeral_1h_input_tokens" }
+"usage.server_tool_use.web_search_requests" = { prim = "web_search_requests" }
+"usage.service_tier" = { prim = "served_tier" }
+
+# The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
+[rows.stream]
+"type=message_start" = { prim = "message_start" }
+"type=content_block_start" = { prim = "content_block_start" }
+"type=content_block_delta.delta.type=text_delta" = { prim = "text_delta" }
+"type=content_block_delta.delta.type=input_json_delta" = { prim = "input_json_delta" }
+"type=content_block_delta.delta.type=thinking_delta" = { prim = "thinking_delta" }
+"type=content_block_delta.delta.type=signature_delta" = { prim = "signature_delta" }
+"type=content_block_delta.delta.type=citations_delta" = { prim = "citations_delta" }
+"type=content_block_stop" = { prim = "content_block_stop" }
+"type=message_delta" = { prim = "message_delta" }
+"type=message_stop" = { prim = "message_stop" }
+
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
+[unmapped.request]
+"messages[].content[].type=document.source.type=content.content[].type=image.source.type=file.file_id" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=document.source.type=content.content[].type=text" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=document.source.type=content.content[].type=text.text" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=content.content[].type=image.source.type=file.file_id" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=content.content[].type=text" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=content.content[].type=text.text" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=content.content[].type=image.source.type=file.file_id" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=content.content[].type=text" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=content.content[].type=text.text" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=file.file_id" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=content" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=text" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
 
 # Controls beyond the rows: the Messages API models no penalties, seed or candidate count; each
 # drop is warned in these words, naming the value, and audited.
