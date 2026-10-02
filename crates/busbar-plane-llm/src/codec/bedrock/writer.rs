@@ -973,13 +973,6 @@ impl BedrockWriter {
                                         [],
                                         "dropping non-representable Thinking block inside a Bedrock toolResult");
                                 }
-                                // A provider-run tool's record has no Converse tool-result form.
-                                crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
-                                    tracing::warn!(
-                                        "dropping a hosted tool record inside a Bedrock toolResult: \
-                                         Converse has no form for it"
-                                    );
-                                }
                                 // Converse's `ToolResultContentBlock` union is
                                 // {json, text, image, document, video} — the SAME document/video
                                 // members the top-level content block has, so an attachment returned
