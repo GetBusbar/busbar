@@ -33,8 +33,8 @@ use std::sync::{Arc, Mutex, Weak};
 use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in, may_pend,
     op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, RandomFillIn,
-    RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut,
-    SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn, SERVICES,
+    RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead,
+    ServiceOut, SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;

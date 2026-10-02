@@ -488,8 +488,7 @@ mod readers {
     const SIGV4: &[AbiStr] = &[abi_str("sigv4")];
     const BEARER: &[AbiStr] = &[abi_str("bearer")];
     const SIGV4_TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), SIGV4);
-    const BEARER_TAIL: &AuthTail =
-        &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), BEARER);
+    const BEARER_TAIL: &AuthTail = &with_credential_kinds(verify_tail(0, AuthPoints::HEAD), BEARER);
 
     pub(super) mod a {
         use super::*;

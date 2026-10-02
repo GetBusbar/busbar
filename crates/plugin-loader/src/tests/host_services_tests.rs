@@ -140,10 +140,7 @@ impl HostServices for Provider {
 
     /// The credential double: `<kind>:<id>` live, its secret `s3cr3t`, answered at once.
     fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
-        self.secrets
-            .lock()
-            .unwrap()
-            .push(format!("{kind}:{id}"));
+        self.secrets.lock().unwrap().push(format!("{kind}:{id}"));
         let mut stored = Stored::ready(svc::SECRET_LIVE);
         stored.bytes = b"s3cr3t".to_vec();
         stored.spans = vec![ItemSpan {
@@ -939,7 +936,12 @@ fn a_recycled_ticket_drops_its_stored_service_results() {
     );
 }
 
-fn secret_in(kind: &'static str, id: &'static str, buf: &mut [u8], spans: &mut [ItemSpan]) -> RecordsSecretIn {
+fn secret_in(
+    kind: &'static str,
+    id: &'static str,
+    buf: &mut [u8],
+    spans: &mut [ItemSpan],
+) -> RecordsSecretIn {
     RecordsSecretIn {
         head: head(op::RECORDS_SECRET, TICKET, 0, size_of::<RecordsSecretIn>()),
         kind: text(kind),
@@ -962,10 +964,13 @@ fn call_secret(ctx: HostCtx, i: &RecordsSecretIn) -> (RawOutcome, ServiceOut) {
 #[test]
 fn records_secret_serves_only_a_declared_kind() {
     let d = double();
-    let (mut buf, mut spans) = ([0u8; 16], [ItemSpan {
-        key: Span { offset: 0, len: 0 },
-        value: Span { offset: 0, len: 0 },
-    }; 1]);
+    let (mut buf, mut spans) = (
+        [0u8; 16],
+        [ItemSpan {
+            key: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 0 },
+        }; 1],
+    );
     // A caller that declares no credential kind.
     let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
     let (ret, o) = call_secret(d.ctx, &i);
