@@ -1315,7 +1315,7 @@ pub fn response_to_ir_events(
             IrBlock::Image { .. } | IrBlock::Media { .. } => {}
             // No streamed analog: skipped without spending an index. Enumerated explicitly so a new
             // block kind is a compile error here rather than silent data loss.
-            IrBlock::ToolResult { .. } | IrBlock::Json(_) => {}
+            IrBlock::ToolResult { .. } | IrBlock::Json(_) | IrBlock::HostedToolRecord { .. } => {}
         }
     }
     // IR-21: a GENERATED image / audio part (a Bedrock response `image`, a
@@ -1549,6 +1549,7 @@ fn merge_trailing_usage_detail(
         usage_identity_note,
         traffic_type,
         create_time,
+        by_modality,
     } = trailing;
 
     if reasoning_tokens.is_some() {
@@ -1571,6 +1572,10 @@ fn merge_trailing_usage_detail(
     }
     if service_tier.is_some() {
         acc.service_tier = service_tier.clone();
+    }
+    // The by-modality split (presentation only, DF-MAP item 4) rides the same Some-wins rule.
+    if by_modality.is_some() {
+        acc.by_modality = by_modality.clone();
     }
     // The four OpenAI-family slices arrive on the trailing `include_usage` chunk — the only frame of
     // an OpenAI stream that carries a usage object at all — so folding only the four totals reported
