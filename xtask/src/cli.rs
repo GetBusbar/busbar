@@ -420,6 +420,7 @@ fn gate(args: &[String]) -> i32 {
                 | "plugin-closure-deps"
                 | "c1-literals"
                 | "door-only"
+                | "plane-secret-blindness"
                 | "linked-dropped-features"
         ) {
             let verdict = gates::execute(gate.as_ref(), &cx);

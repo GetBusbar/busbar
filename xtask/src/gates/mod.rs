@@ -56,6 +56,7 @@ pub mod package_selectors;
 pub mod plane_abi_neutrality;
 pub mod plane_pricing_blindness;
 pub mod plane_purity;
+pub mod plane_secret_blindness;
 pub mod plane_transport_neutrality;
 pub mod plugin_closure_deps;
 pub mod population;
@@ -2734,6 +2735,14 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(door_only::DoorOnlyGate),
         summary: "the binary closure reaches a plugin only through its door and installs no static \
                   fn-pointer seam but oauth2's and admin's (report-only ledger)",
+    },
+    Registration {
+        name: "plane-secret-blindness",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(plane_secret_blindness::PlaneSecretBlindnessGate),
+        summary: "no plane crate names a secret-resolving surface; the owed sites are a drain-only \
+                  ledger (THE DESIGN §6)",
     },
     Registration {
         name: "linked-dropped-features",
