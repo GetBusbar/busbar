@@ -134,6 +134,8 @@ pub struct Hop<'a> {
     /// on the default cell the previous release labelled by the member's own name so the series
     /// correlated with the request counter.
     pub metric_pool: &'a str,
+    /// The unit the walk serves, which its dispatch records name.
+    pub unit_key: busbar_contract::UnitKey,
     /// Which leg of the route plan this is.
     pub leg: u8,
     /// Which attempt of the walk this is, counted from one.
@@ -333,6 +335,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         pool: hop.pool.to_string(),
         destination: hop.destination,
         lane: hop.dest.lane(),
+        unit: hop.unit_key,
     };
     if hop.journal.dispatched(&record).is_err() {
         drop(permit);

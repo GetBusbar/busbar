@@ -148,6 +148,7 @@ async fn dispatch_degraded<'a>(
             pool: &pool.name,
             metric_pool,
             leg: request.leg,
+            unit_key: request.unit_key,
             attempt_no: u32::MAX,
             attempt_timeout_ms: member.attempt_timeout_ms,
             wants_stream: request.wants_stream,

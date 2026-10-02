@@ -143,8 +143,11 @@ pub struct Egress {
 }
 
 /// What one unit's walk is told at its start.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct UnitRoute {
+    /// The unit the walk serves: every dispatch record it writes names it (ARCHITECT P3 (c),
+    /// 2026-10-02).
+    pub unit: busbar_contract::UnitKey,
     /// The pool the unit routes over.
     pub pool: String,
     /// The sticky-routing key, if any.
@@ -156,6 +159,20 @@ pub struct UnitRoute {
     /// The caller's verified credential, as the identity step read it, for a member configured for
     /// passthrough. Zeroised on drop; never logged, stored or handed to the plane.
     pub caller_credential: Option<Redacted<Vec<u8>>>,
+}
+
+impl Default for UnitRoute {
+    /// A route over no pool for unit `0` (the key no minted unit has).
+    fn default() -> Self {
+        UnitRoute {
+            unit: busbar_contract::UnitKey::new(0),
+            pool: String::new(),
+            affinity: None,
+            wants_stream: false,
+            leg: 0,
+            caller_credential: None,
+        }
+    }
 }
 
 impl Egress {
@@ -395,6 +412,7 @@ impl EgressFarEnd<'_> {
             pool: pool.to_string(),
             destination: member.destination,
             lane: member.lane,
+            unit: self.route.unit,
         };
         let name = member.name.clone();
         let route = self.egress.routes.get(&member.destination);

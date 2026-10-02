@@ -66,6 +66,8 @@ pub struct RouteRequest<'a> {
     pub verified: &'a [VerifiedDestination],
     /// Every pool this node has, for the spill terminal.
     pub pools: &'a PoolTable,
+    /// The unit the walk serves, which every dispatch record names.
+    pub unit_key: busbar_contract::UnitKey,
     /// Which pool this route walks.
     pub pool: &'a str,
     /// The unit, as the plane reads it.
@@ -190,6 +192,7 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
                 pool: &pool.name,
                 metric_pool,
                 leg: request.leg,
+                unit_key: request.unit_key,
                 attempt_no: u32::try_from(attempt_no.saturating_add(1)).unwrap_or(u32::MAX),
                 attempt_timeout_ms: member.attempt_timeout_ms,
                 wants_stream: request.wants_stream,

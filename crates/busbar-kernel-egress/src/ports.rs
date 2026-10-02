@@ -366,6 +366,9 @@ pub struct Dispatched {
     pub destination: DestinationId,
     /// The lane the destination was sealed on.
     pub lane: Option<busbar_contract::LaneId>,
+    /// The unit the walk serves: the record is written under that unit's facts (ARCHITECT P3 (c),
+    /// 2026-10-02).
+    pub unit: busbar_contract::UnitKey,
 }
 
 /// `// contract:` the write-ahead journal, as the attempt needs it.

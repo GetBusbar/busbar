@@ -53,6 +53,8 @@ pub(crate) struct Node {
     /// The envelope field the lane name is carried in, for the lane cross-check. `None` by
     /// default: most tests have no lane field to check and the cross-check is a no-op for them.
     pub lane_field: Option<&'static str>,
+    /// The unit the walk serves.
+    pub unit: busbar_contract::UnitKey,
 }
 
 impl Node {
@@ -76,6 +78,7 @@ impl Node {
             preference: None,
             wants_stream: false,
             lane_field: None,
+            unit: busbar_contract::UnitKey::new(1),
         }
     }
 
@@ -169,6 +172,7 @@ impl Node {
             verified: &self.verified,
             pools: &self.pools,
             pool,
+            unit_key: self.unit,
             unit: &unit,
             ctx: &context,
             affinity: self.affinity,
