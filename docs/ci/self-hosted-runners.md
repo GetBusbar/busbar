@@ -49,14 +49,9 @@ finish together.
 had run alone. Each agent's `.env` pins `CARGO_BUILD_JOBS=32/AGENTS`. That single pin is what makes
 four agents per box a throughput win rather than a wash.
 
-One consequence of "the ceiling is concurrency" was measured after this was written: `gate-mutants`
-fans **24 shards** per push, and it used to trigger on `keep-*` as well as the integration line. With
-~15 live slot branches that is 15 × 24 shard claims on 32 slots, and the per-branch
-`cancel-in-progress` cannot relieve it (it cancels a branch's own superseded run, not its
-neighbours'). The integration tip's own proof queued behind it. So `keep-*` no longer triggers a
-mutation run: a slot that touches the mutation scope runs
-`scripts/gate-mutants.sh --shard 1/1` locally and says so in its hand-back, and the 24-shard run
-happens at landing on the integration branch (`docs/ci/gate-integrity.md`, *Sharding*).
+The same arithmetic is why no per-push job fans many shards across the fleet: with ~15 live slot
+branches every shard claim lands on the same 32 slots, and per-branch `cancel-in-progress` cannot
+relieve it.
 
 Those 32 slots are the **spot** capacity. The on-demand floor adds `CI_RUNNER_ONDEMAND_FLOOR × 4`
 on top of it (§3, §4) — currently 8 more slots, and the only 8 that cannot be reclaimed.
@@ -322,7 +317,7 @@ public half travels, over SSM.
 ./scripts/prove-remote.sh --setup              # prepare every box (idempotent)
 ```
 
-It runs the legs `keep-proof.yml` used to run (that workflow is deleted), in the same order, scoped by
+It runs the legs the removed `keep-proof.yml` used to run (that workflow is deleted), in the same order, scoped by
 **the same `.keep-proof.toml`** read off the branch root: workspace build, rustfmt,
 `clippy -D warnings`, the named test packages (or the whole suite when the branch names none),
 `cargo xtask gate --all`, `cargo xtask selftest`, and the shadow oracle over `families` against the

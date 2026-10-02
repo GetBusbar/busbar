@@ -7,7 +7,7 @@
 // eventually traced mostly to a BUILD-CONFIG mismatch — a binary built WITHOUT PGO (or without the
 // release profile) masquerading as a code regression. A binary that says `pgo=false` / `profile=debug`
 // out loud makes that class of mistake impossible to misdiagnose, and a CI assertion over these
-// values (see scripts/profile-lock.sh + the build-provenance gate in ci.yml) makes it impossible to
+// values (see scripts/profile-lock.sh + the build-provenance gate in the removed ci.yml) makes it impossible to
 // SHIP a mis-built binary green.
 //
 // WHAT CARGO ACTUALLY EXPOSES to a build script (the honest surface):

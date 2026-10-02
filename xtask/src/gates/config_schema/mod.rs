@@ -76,7 +76,7 @@ pub const OWED: &[&str] = &[
 /// commit under test. The additive check then compared the fresh render against the snapshot
 /// committed in that same tree — and the drift row above has already proven those two byte-equal,
 /// so the delta was **empty by construction, on every run, forever**. The gate reported green
-/// because it had measured nothing, and `.github/workflows/ci.yml` said so in its own comment:
+/// because it had measured nothing, and the removed `ci.yml` said so in its own comment:
 /// *"On a push, HEAD is the baseline (no-op delta)."* The PR arm was no better over a long-lived
 /// branch: the base branch already contains everything the branch has merged, so **a chain of
 /// per-PR additive checks cannot prove the cumulative diff is additive — each step's baseline is

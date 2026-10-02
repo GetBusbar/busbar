@@ -1,5 +1,5 @@
 # cargo-deny policy for busbar. Run locally with `cargo deny check`, and in CI
-# via .github/workflows/security.yml. This file mechanically enforces the
+# via the removed security.yml. This file mechanically enforces the
 # supply-chain discipline that Cargo.toml already applies by hand (single TLS/HTTP
 # stack, no unmaintained/unsafe deps, license hygiene) so a future PR cannot
 # silently regress it.

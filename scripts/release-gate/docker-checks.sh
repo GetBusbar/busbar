@@ -6,7 +6,7 @@
 # so they establish that the four published names AGREE and can never establish what they agree ON.
 # An image built from the wrong ref, or pushed by a workflow on a branch, or retagged by hand after
 # the release, satisfies all of them. `docker:staged-digest` and `docker:staged-armv8-digest` diff
-# the published tags against the manifest digests release-stage.yml recorded on qa before any
+# the published tags against the manifest digests the removed release-stage.yml recorded on qa before any
 # user-facing name existed; the promote is a manifest retag of exactly those digests, so a
 # difference means something outside the release path moved the tag. Those two rows are owed only
 # when a staged record was supplied (see expected-ids.sh and release-fleet.yml's `resolve`), and the
@@ -128,8 +128,8 @@ fi
 # :latest == :X.Y.Z, ghcr == hub, and so on: all true of any set of tags that were pushed together,
 # and all equally true of an image built from the wrong ref, or pushed by a workflow on a branch, or
 # retagged by hand after the release. They prove the four names AGREE; they cannot prove what the
-# names agree ON. The one external fact that can is the digest release-stage.yml recorded on qa,
-# before any user-facing name existed, and which release.yml's promote merely RETAGS — the promote
+# names agree ON. The one external fact that can is the digest the removed release-stage.yml recorded on qa,
+# before any user-facing name existed, and which the removed release.yml's promote merely RETAGS — the promote
 # touches no compiler and builds no image, so "the published X.Y.Z is the staged digest" is a
 # property the design guarantees and therefore one worth checking, because if it is false something
 # outside the design moved the tag.

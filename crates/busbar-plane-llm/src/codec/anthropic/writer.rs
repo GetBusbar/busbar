@@ -2,6 +2,11 @@ use super::*;
 use crate::codec::keys;
 
 impl ProtocolWriter for AnthropicWriter {
+    /// No image-fidelity slot: an image's `detail` is dropped, with the seam's warn.
+    fn carries_image_detail(&self) -> bool {
+        false
+    }
+
     fn probe_request(&self) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
         // through its own write_request, so the probe body matches a real request on this wire.

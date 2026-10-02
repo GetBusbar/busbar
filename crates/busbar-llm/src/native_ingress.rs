@@ -166,8 +166,9 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
             .unwrap_or("");
         // Session affinity: the pool's configured affinity header, read generically for EVERY
         // operation (sticky routing is an engine capability, not a chat feature).
+        let affinity_header = affinity_header_for(&rt, model);
         let affinity_key: Option<String> = headers
-            .get(affinity_header_for(&rt, model))
+            .get(affinity_header)
             .and_then(|h| h.to_str().ok())
             .map(str::to_string);
         let resp = crate::engine::forward_with_pool_parsed(
@@ -201,14 +202,12 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
                 op_handler,
             ),
             usage_sink(host, req.gov, pool_name, req.charged_at, admit),
-            // CLIENT-HEADER FIDELITY: capture the allowlisted client beta/version headers the caller
-            // ACTUALLY SENT (opt-in — empty unless one is present), via the neutral collector fed the
-            // plane's forwardable-name set. Dialect scoping to the matching egress lane is applied
-            // later, at the egress assembly site.
-            busbar_kernel::proxy::collect_client_headers(
-                headers,
-                &crate::engine::forwardable_client_header_names(),
-            ),
+            // Busbar is invisible to upstreams: every client header but the per-connection mechanics,
+            // the ones the dialects govern and busbar's own (the pool's affinity header), forwarded
+            // later by a same-dialect egress only.
+            busbar_kernel::proxy::collect_client_headers(headers, |n| {
+                crate::engine::governed(n) || n.eq_ignore_ascii_case(affinity_header)
+            }),
         )
         .await;
 

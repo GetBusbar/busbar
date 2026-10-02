@@ -16,7 +16,7 @@
 # `Cross.toml` in this repo to extend the allowlist, so the `BUSBAR_RELEASE_PUBKEY` on the step's
 # `env:` block never reached the compiler. Three releases, five builds a release, always green.
 #
-# #52's own fix (a native ARM runner, see .github/workflows/release.yml) repairs THAT leg. THIS
+# #52's own fix (a native ARM runner, see the removed release.yml) repairs THAT leg. THIS
 # script is what makes the CLASS of defect unrepeatable, and it matters more than the one fix,
 # because it holds for a target that has not been invented yet.
 #
@@ -55,7 +55,7 @@ key_is_valid() {
 #
 # platform-checks' `pubkey:<target>` row runs `assert-embedded` against every published archive and
 # reports the verdict as its own — deliberately, so the build-time and publish-time halves are one
-# assertion and not two copies of it. release-stage.yml calls `require` before a compiler starts.
+# assertion and not two copies of it. the removed release-stage.yml calls `require` before a compiler starts.
 # So a guard that had quietly stopped discriminating would take BOTH of those green with it, and
 # the failure it exists to catch is invisible by construction: a missing key produces a binary that
 # compiles, links, tests and ships.

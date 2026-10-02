@@ -14,6 +14,11 @@ fn model_part_frame(part: serde_json::Value) -> (String, serde_json::Value) {
 }
 
 impl ProtocolWriter for GeminiWriter {
+    /// No image-fidelity slot: an image's `detail` is dropped, with the seam's warn.
+    fn carries_image_detail(&self) -> bool {
+        false
+    }
+
     /// The controls Gemini has no form for, derived from the mapping file; `write_request` drops
     /// each with a warn and the seam audits it from here.
     fn dropped_egress_controls(&self, req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {

@@ -13,7 +13,7 @@
 #      counters SURVIVED — persistence is the entire job, so the restart is the entire test
 #
 # This is scripts/release-check.sh's run_store_backend_e2e, lifted out of the ~2h release gate into
-# a standalone probe so it can (a) run in the reusable plugin-functional.yml against ANY busbar and
+# a standalone probe so it can (a) run in the reusable the removed plugin-functional.yml against ANY busbar and
 # (b) be dry-run on a laptop against the real published artifacts. It was validated exactly that
 # way against busbar 1.5.4 + store-sqlite 1.0.4 before being trusted.
 #
@@ -60,9 +60,7 @@ for p in "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT"; do
 done
 
 # The mock upstream busbar will forward chat traffic to.
-python3 mock-upstream.py "$MOCK_PORT" "$MARKER" >/dev/null 2>&1 &
-track_pid $!
-wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 5 || true   # no GET route; just settle
+start_oracle_mock "$MOCK_PORT" "$MARKER" || fail_here "the oracle mock upstream did not come up" "port ${MOCK_PORT}; bin/oracle could not obtain the pinned engine."
 
 cat >"${WORK}/providers.yaml" <<EOF
 mock:

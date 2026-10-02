@@ -146,7 +146,7 @@ with **closed** objects (a field the provider's proto does not name is one the p
 
 ## Proposed CI job (FAST tier)
 
-Not applied to `.github/workflows/ci.yml` here. It depends on the `shadow-oracle` job's
+Not applied to the removed `ci.yml` here. It depends on the `shadow-oracle` job's
 `candidate` recording (uploaded as an artifact there, or run in the same job after `record.sh`);
 the block below assumes the same-job form, appended after the candidate recording step. Specs
 are cached by the digest file's own hash, so a re-pin is the only thing that invalidates it.

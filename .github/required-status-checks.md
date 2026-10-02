@@ -12,7 +12,7 @@ Use the exact **check-run name** (the job's `name:`), not the workflow name:
 | Required status (context name) | Workflow | What it covers |
 | --- | --- | --- |
 | `preflight` | `promote.yml` | The checks that need no build of the product, on a free runner: formatting, `Cargo.lock` current, the generated C header current. A red here costs a minute, not a gate battery. |
-| `promote` | `promote.yml` | The hop itself: the turnstile admits the candidate (every registered `cargo xtask gate`, plus the oracle and conformance where the rung's ladder entry asks for them) and, on a green rung, the base branch is fast-forwarded to the tested SHA. |
+| `hop` | `promote.yml` | The hop itself (job id `hop`, no `name:`, so the context reads `hop`): the turnstile admits the candidate (every registered `cargo xtask gate`, plus the oracle and conformance where the rung's ladder entry asks for them) and, on a green rung, the base branch is fast-forwarded to the tested SHA. |
 
 `scripts/ci-branch-protection.sh` is the enforcement point: it unions these two contexts into whatever
 branch protection already has, strips the contexts of the deleted workflows (`ci umbrella`,

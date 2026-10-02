@@ -14,7 +14,12 @@ use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 /// (Google's own `totalTokenCount` is prompt + candidates + thoughts), so it is added to
 /// `output_tokens` — what `output_tokens` means for every other provider — and recorded as the
 /// reasoning sub-bucket; the Gemini writer splits the two back apart (GEM-13). The AUDIO entries of
-/// the per-modality lists are attribution slices (GEM-12). The streaming frames, the buffered
+/// the per-modality lists are attribution slices (GEM-12). GOOGLE'S TOTAL BILLS (Q91, answered
+/// 2026-09-27, option A; ARCHITECT ruling C8/576): `totalTokenCount` can exceed the sum of every
+/// counter it names (a recording states 64 against 18 + 7 + 32 = 57, the rest tokens no field
+/// itemizes), and the turn bills Google's total. Every input-side term is itemized (the prompt,
+/// its cached slice and the tool-use prompt), so the unitemized remainder is output-side, billed as
+/// output like `thoughtsTokenCount`. The streaming frames, the buffered
 /// response and a truncated-body recovery all read this one table, so a truncated or streamed turn
 /// counts the same as a complete one.
 pub(super) const USAGE: &[UsageCount] = &[
@@ -49,6 +54,10 @@ pub(super) const USAGE: &[UsageCount] = &[
     (
         CountSlot::ToolUsePrompt,
         CountRead::Opt(&[FIELD_TOOL_USE_PROMPT_TOKEN_COUNT]),
+    ),
+    (
+        CountSlot::Output,
+        CountRead::Total(&[FIELD_TOTAL_TOKEN_COUNT]),
     ),
     (
         CountSlot::InputAudio,
