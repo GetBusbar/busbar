@@ -22,7 +22,12 @@ jobs:
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar } } # v7
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
-      - { id: pre, run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/preflight.sh" }
+      # The pre-flight is busbar-release's Rust CLI (preflight.json is the one list): it sizes the hop
+      # (runner= to $GITHUB_OUTPUT) and runs every pre-flight check against the candidate. Built with no
+      # default features (no GitHub client), as the CLI documents for this job.
+      - id: pre
+        working-directory: busbar-release
+        run: cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release -- ci preflight
   # The release artifact the slsa-verifier conformance rig judges, built ONCE, in the merge group: the
   # commit it judges is the commit the queue lands, and the ladder fast-forwards that sha to dev, where
   # the turnstile fetches what this run stored for it (ARCHITECT 2026-10-02). Its SLSA provenance is
