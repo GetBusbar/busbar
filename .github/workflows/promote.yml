@@ -6,7 +6,7 @@ on: pull_request
 concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
 permissions: { contents: read }
 env:
-  RELEASE_REF: bcdcc5f0950ec3ded197eb117febc8b8a345b668
+  RELEASE_REF: 4cfe9a72f7798cf9d768ef39dccbe9b870be3dbf
   SHA: ${{ github.event.pull_request.head.sha }}
   TO: ${{ github.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
