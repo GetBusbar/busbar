@@ -416,22 +416,16 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 /// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` and `export`
 /// are pending because their instances live OUTSIDE this repo: the owner deleted the in-tree
 /// fixtures ("FIXTURES", docs/design/1.6.0-QUESTIONS.md) and each kind is proven by its real plugin
-/// repos. `auth` is pending on the same terms: its last in-tree crate, the built-in admin-tokens
-/// module, moved to its own repo and is pulled at a pinned rev.
+/// repos. `auth` is no longer pending (AUTH-SPLIT): busbar-auth-header, busbar-auth-sigv4,
+/// busbar-auth-oauth and busbar-auth-webhook-signature are in-tree, staged auth-kind plugin crates
+/// (ARCHITECT ruling 2026-09-28, placement (B); each extracts to its own repo at KERNEL<>PLUGINS
+/// step 40), so the dead-kind rule watches them like every other kind.
 const PENDING_KINDS: &[(&str, &str)] = &[
     (
         "secret",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
          secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/busbar-secret-vault \
          through crates/plugin-loader/src/tests/plugin_proof_tests.rs",
-    ),
-    (
-        "auth",
-        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         auth fixture is deleted (\"FIXTURES\") and the built-in admin-tokens module moved to \
-         GetBusbar/busbar-auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
-         rev; the kind is proven both ways by crates/plugin-loader/src/tests/auth_conformance_tests.rs \
-         and auth_verify_conformance_tests.rs over the pinned real plugins",
     ),
     (
         "export",
@@ -604,11 +598,13 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // 2026-09-25 "K5d residue"). `plane`, `store` and `transport` were granted as the first crate
     // of each landed; `export` (the built-in sinks, #3 / item 141) and `hooks` (the ranking hooks
     // K5d moved onto the root's linked tables) were left out, so the root doing its job was scored
-    // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` and `secret` are absent because
-    // the root links no crate of either kind; a grant with no edge under it is a sentence about a
-    // tree that does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
+    // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` is granted for the root's rows on
+    // the auth axis (ARCHITECT INTEGRATION U17, 2026-09-30). `secret` is absent because the root
+    // links no crate of that kind; a grant with no edge under it is a sentence about a tree that
+    // does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
     // root's shipped edges and refuses a plugin kind the root links without a grant here. The
     // grant is the ROOT's: a non-root crate reaching a plugin crate is still refused (selftest).
+    ("root", "auth"),
     ("root", "cleanliness"),
     ("root", "contract"),
     ("root", "export"),

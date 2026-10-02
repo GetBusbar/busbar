@@ -803,6 +803,12 @@ crate = "busbar-export-prometheus"
 kind = "plane"
 count = "2"
 
+# FIRST CELL of a new crate (OWNER GRANT (1) extended to a newly measured column, ARCHITECT ruling 2026-09-29).
+[[disagreement]]
+crate = "busbar-auth-sigv4"
+kind = "transport"
+note = "segment scanner 1, window scanner 0; scored 1. The `ws` in crates/busbar-auth-sigv4/src/tests/sigv4_tests.rs:193 is a word collision inside a test fixture value that only the segment scanner reads. The scored count is the UNION of the two hit sets, never either one alone, and it falls to zero with the hit."
+
 # L5-INTERIM, ruling-backed (K9b same shape / K9d; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
 [[disagreement]]
 crate = "busbar"
@@ -1800,6 +1806,52 @@ cite = "BUSBAR-1.6.0.md — the kernel workflow crates form the loop; a kernel c
 why = "crates of kind kernel naming kernel vocabulary: kernel package names in any spelling and the kind-qualified id (kernel-<id>). Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "none: the #36 kernel group is intra-tier by design. What the paired [[cell]] holds is the NUMBER."
 
+# FIRST CELLS of the new busbar-auth-* crates (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.)
+[[edge]]
+from = "auth"
+to = "auth"
+cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes: a crate of kind auth has no clause that lets it name auth vocabulary. Hits are the three mechanism crates naming each other and the helper they share (auth-sigv4/auth-oauth/busbar-auth-* in doc comments and tests): 16."
+why = "crates of kind auth naming auth vocabulary: auth package names in any spelling, the kind-qualified id, and the bare instance id where auth has an instance vocabulary. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the auth name from the auth crates: an auth plugin reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+# FIRST CELLS of the new busbar-auth-* crates (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.)
+[[edge]]
+from = "auth"
+to = "transport"
+cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes: a crate of kind auth has no clause that lets it name transport vocabulary. Hits are word collisions and doc mentions (http x6, ws x1) in the mechanism crates: 7."
+why = "crates of kind auth naming transport vocabulary: transport package names in any spelling, the kind-qualified id, and the bare instance id where transport has an instance vocabulary. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the auth crates: an auth plugin reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+# FIRST CELL of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.) Needles: auth-sigv4 x4, busbar-auth-sigv4 x4, auth-oauth x3, busbar-auth-oauth x3.
+[[cell]]
+crate = "busbar-auth-header"
+kind = "auth"
+count = "14"
+
+# FIRST CELL of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.) Needles: http x2.
+[[cell]]
+crate = "busbar-auth-header"
+kind = "transport"
+count = "2"
+
+# FIRST CELL of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.) Needles: auth-sigv4 x1, busbar-auth-sigv4 x1.
+[[cell]]
+crate = "busbar-auth-oauth"
+kind = "auth"
+count = "2"
+
+# FIRST CELL of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.) Needles: http x4.
+[[cell]]
+crate = "busbar-auth-oauth"
+kind = "transport"
+count = "4"
+
+# FIRST CELL of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.) Needles: ws x1.
+[[cell]]
+crate = "busbar-auth-sigv4"
+kind = "transport"
+count = "1"
+
 # ------------------------------------------------------------------------------------------------
 # [[instance]] — THE FIVE PLUGIN-INSTANCE AXES C1 WAS NEVER MEASURED OVER (item 118 / C1-KIND)
 # ------------------------------------------------------------------------------------------------
@@ -1912,6 +1964,18 @@ count = "1"
 crate = "busbar-plugin-loader"
 kind = "secret"
 count = "4"
+
+# FIRST INSTANCE ROW of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.)
+[[instance]]
+crate = "busbar-auth-header"
+kind = "auth"
+count = "2"
+
+# FIRST INSTANCE ROW of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.)
+[[instance]]
+crate = "busbar-auth-oauth"
+kind = "auth"
+count = "1"
 
 # THE ONE REDIRECT: busbar's own crates, as a pulled plugin repo names them. A default plugin lives in
 # its own repo and names busbar-contract (#40: contract only; the SDK is busbar_contract::abi::sdk,

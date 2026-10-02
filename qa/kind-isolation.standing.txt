@@ -14,6 +14,18 @@ kind-isolation:matrix	instance-ratchet	busbar × auth	12
 kind-isolation:matrix	instance-ratchet	busbar × secret	7
 kind-isolation:matrix	instance-ratchet	busbar-contract × secret	28
 kind-isolation:matrix	instance-ratchet	busbar-core-admin × auth	18
+# KIND-ARRIVAL BASELINE busbar-kernel × auth (Q77-PENDING "a kind arriving"; ARCHITECT RULING 2026-09-30
+# "kernel × auth instance-ratchet +14 (binding)"). The census learned `sigv4` from busbar-auth-sigv4; these
+# six pre-existing kernel literals (the kernel's own inbound SigV4 verify + its persisted credential kind)
+# are first counted. EXPIRY: the AUTH-DOOR Q2 train, which moves inbound SigV4 into busbar-auth-sigv4 and
+# deletes the kernel copy in the same train (BUSBAR-1.6.0.md :822, :838-840). KERNEL-AUTH-ZERO drains the rest.
+#   sigv4	crates/busbar-kernel/src/auth/mod.rs:2097
+#   sigv4	crates/busbar-kernel/src/auth/mod.rs:2103
+#   sigv4	crates/busbar-kernel/src/governance/state.rs:381
+#   sigv4	crates/busbar-kernel/src/governance/state.rs:997
+#   sigv4	crates/busbar-kernel/src/governance/state.rs:2136
+#   sigv4	crates/busbar-kernel/src/egress_auth/tests/prebuilt_auth_tests.rs:329
+kind-isolation:matrix	instance-ratchet	busbar-kernel × auth	49
 kind-isolation:matrix	instance-ratchet	busbar-kernel × export	55
 kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	6
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	3
@@ -28,6 +40,13 @@ kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
 # (the doc of its dial-class rules), :111 (DEFAULT_CLASS), :119 (tls::client::build_client_config).
 # EXPIRES: never as a class (the root composing cleanliness is granted); the figure only goes down.
 kind-isolation:matrix	ratchet	busbar × cleanliness	211
+kind-isolation:matrix	minted-row	[[cell]] busbar-auth-header × transport	1
+kind-isolation:matrix	minted-row	[[cell]] busbar-auth-oauth × transport	1
+kind-isolation:matrix	minted-row	[[cell]] busbar-auth-sigv4 × transport	1
+kind-isolation:matrix	minted-row	[[disagreement]] busbar-auth-sigv4 × transport	1
+kind-isolation:matrix	minted-row	[[edge]] auth × transport	1
+kind-isolation:matrix	minted-row	[[instance]] busbar-auth-header × auth	1
+kind-isolation:matrix	minted-row	[[instance]] busbar-auth-oauth × auth	1
 kind-isolation:matrix	ratchet	busbar × hooks	13
 kind-isolation:matrix	ratchet	busbar × kernel	1295
 kind-isolation:matrix	ratchet	busbar × store	7
@@ -52,6 +71,7 @@ kind-isolation:matrix	ratchet	busbar-store-memory × plane	6
 kind-isolation:matrix	ratchet	busbar-voice × contract	122
 kind-isolation:matrix	ratchet	busbar-voice × plane	872
 kind-isolation:matrix	unlisted-cell	busbar × legacy	89
+kind-isolation:matrix	unlisted-cell	busbar-a2a × auth	2
 kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
 # Q77-PENDING (a) (ARCHITECT ruling 2026-10-01): R2 re-spelling: ABI route shapes named from their one
 # home, busbar_contract::abi (BUSBAR-1.6.0.md §11: every ABI shape lives in ONE place,
@@ -62,10 +82,12 @@ kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
 # busbar-a2a × contract 345 -> 348: a2a/receive.rs:3785, a2a/rest.rs:620, a2a/tests/ingress_tests.rs:13.
 kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	350
 kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	33
+kind-isolation:matrix	unlisted-cell	busbar-contract × auth	5
 kind-isolation:matrix	unlisted-cell	busbar-contract × cleanliness	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × kernel	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × plugin-tooling	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × store	1
+kind-isolation:matrix	unlisted-cell	busbar-core-admin × auth	5
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × hooks	11
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × kernel	74
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × legacy	19
@@ -77,6 +99,7 @@ kind-isolation:matrix	unlisted-cell	busbar-core-connector × cleanliness	2
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × legacy	1
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	47
 kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	4
+kind-isolation:matrix	unlisted-cell	busbar-kernel × auth	48
 kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	47
 kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	34
 kind-isolation:matrix	unlisted-cell	busbar-kernel × kernel	191
@@ -86,13 +109,16 @@ kind-isolation:matrix	unlisted-cell	busbar-kernel × store	31
 kind-isolation:matrix	unlisted-cell	busbar-kernel-audit × kernel	1
 kind-isolation:matrix	unlisted-cell	busbar-kernel-budget × plane	25
 kind-isolation:matrix	unlisted-cell	busbar-kernel-egress × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-kernel-identity × auth	16
 kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × cleanliness	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × plane	14
+kind-isolation:matrix	unlisted-cell	busbar-llm × auth	13
 kind-isolation:matrix	unlisted-cell	busbar-llm × kernel	16
 kind-isolation:matrix	unlisted-cell	busbar-llm × legacy	10
 # Q77-PENDING (a), as busbar-a2a × contract above. busbar-mcp × contract 308 -> 310: mcp/mod.rs:688,
 # mcp/tests/roots_changed_tests.rs:154. EXPIRES with FOLD-MCP (step 36b P1).
 kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	310
+kind-isolation:matrix	unlisted-cell	busbar-mcp × auth	4
 kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	25
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × kernel	5
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × legacy	2
@@ -102,9 +128,14 @@ kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × transport	25
 kind-isolation:matrix	unlisted-cell	busbar-plane-llm × legacy	40
 kind-isolation:matrix	unlisted-cell	busbar-plane-streaming × legacy	32
 kind-isolation:matrix	unlisted-cell	busbar-plugin-example-plane × plane	2
+kind-isolation:matrix	unlisted-cell	busbar-transport-http × auth	1
 kind-isolation:matrix	unlisted-cell	busbar-transport-http × legacy	8
+# KIND-ARRIVAL (ARCHITECT RULING 2026-09-30, WIRE-AUTH residual 1): busbar-voice is a legacy crate; this cell expires with the fold that deletes it.
+kind-isolation:matrix	unlisted-cell	busbar-voice × auth	5
 kind-isolation:matrix	unlisted-cell	busbar-voice × kernel	9
 kind-isolation:matrix	unlisted-cell	busbar-voice × legacy	9
+# KIND-ARRIVAL (ARCHITECT RULING 2026-09-30, WIRE-AUTH residual 2): the kind-level edges X -> auth aggregate the ruled × auth arrival cells.
+kind-isolation:matrix	unlisted-edge	cleanliness -> auth	5
 kind-isolation:matrix	unlisted-edge	cleanliness -> cleanliness	2
 kind-isolation:matrix	unlisted-edge	cleanliness -> hooks	11
 kind-isolation:matrix	unlisted-edge	cleanliness -> kernel	79
@@ -113,11 +144,13 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> plane	93
 kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	95
 kind-isolation:matrix	unlisted-edge	cleanliness -> store	7
 kind-isolation:matrix	unlisted-edge	cleanliness -> transport	78
+kind-isolation:matrix	unlisted-edge	contract -> auth	5
 kind-isolation:matrix	unlisted-edge	contract -> cleanliness	1
 kind-isolation:matrix	unlisted-edge	contract -> kernel	1
 kind-isolation:matrix	unlisted-edge	contract -> plugin-tooling	1
 kind-isolation:matrix	unlisted-edge	contract -> store	1
 kind-isolation:matrix	unlisted-edge	hooks -> plane	4
+kind-isolation:matrix	unlisted-edge	kernel -> auth	64
 kind-isolation:matrix	unlisted-edge	kernel -> cleanliness	51
 kind-isolation:matrix	unlisted-edge	kernel -> hooks	34
 kind-isolation:matrix	unlisted-edge	kernel -> legacy	181
@@ -126,7 +159,11 @@ kind-isolation:matrix	unlisted-edge	kernel -> store	31
 kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	9
 # Q77-PENDING (a), as busbar × cleanliness above (the same six lines).
 kind-isolation:matrix	unlisted-edge	root -> cleanliness	211
+kind-isolation:matrix	unlisted-edge	legacy -> auth	24
+kind-isolation:matrix	unlisted-edge	transport -> auth	1
 kind-isolation:matrix	unlisted-instance	busbar × export	8
+# KIND-ARRIVAL (ARCHITECT RULING 2026-09-30, WIRE-AUTH residual 3): "sigv4" at crates/busbar-contract/src/abi/cold/mod.rs:368, the dead cold lane; expires at M6-COLD-DELETE.
+kind-isolation:matrix	unlisted-instance	busbar-contract × auth	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/benches/hook_path.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/src/root/units_admin/tests/units_admin.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/boot_lines_neutrality.rs	1
