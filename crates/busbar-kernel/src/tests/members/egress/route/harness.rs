@@ -758,6 +758,8 @@ pub struct TestConns {
     scripts: Mutex<HashMap<String, Script>>,
     /// Every open, in order: the lane it reached and the attempt cap it was handed, ms.
     pub opened: Mutex<Vec<(String, u64)>>,
+    /// Where the body each open was handed lies: the same address is the same allocation.
+    pub bodies_at: Mutex<Vec<usize>>,
     live: Mutex<HashMap<u64, Answer>>,
     next: AtomicU64,
     pub closed: AtomicU64,
@@ -806,6 +808,10 @@ impl Conns for TestConns {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((lane.clone(), d.timeout_ms));
+        self.bodies_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(d.body.as_ptr() as usize);
         let script = self
             .scripts
             .lock()

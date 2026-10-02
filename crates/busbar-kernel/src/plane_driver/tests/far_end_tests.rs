@@ -327,6 +327,8 @@ struct Bearer {
     callers: Mutex<Vec<Option<Vec<u8>>>>,
     /// Never answers on the spot, and its submitted call never answers at all.
     stall: std::sync::atomic::AtomicBool,
+    /// Refuses to field the attempt.
+    refuse: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
 }
 struct Done(Fields);
@@ -362,6 +364,9 @@ impl OutboundAuth for Bearer {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.stall.load(Ordering::SeqCst) {
             return None;
+        }
+        if self.refuse.load(Ordering::SeqCst) {
+            return Some(Fields::Refused);
         }
         self.callers.lock().unwrap().push(
             r.caller_credential
@@ -895,6 +900,29 @@ async fn a_stalled_auth_call_is_bounded_by_the_attempt_cap() {
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert!(r.book.observed.lock().unwrap().is_empty());
+}
+
+/// A request whose auth fields cannot be assembled is never sent and records nothing against the
+/// member: the binding's refusal is not the destination's fault (the push attempt's
+/// could-not-be-assembled case, on the far end's one assembly step).
+#[tokio::test]
+async fn an_attempt_whose_auth_refuses_records_nothing_against_the_member() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.auth.refuse.store(true, Ordering::SeqCst);
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(!far.send(&t, request()).await);
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 1, "the one auth call");
+    assert!(r.table.opened.lock().unwrap().is_empty(), "nothing dialled");
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "nothing recorded against the member"
+    );
 }
 
 /// The head the framer encodes carries the auth values: it wipes them when it drops.

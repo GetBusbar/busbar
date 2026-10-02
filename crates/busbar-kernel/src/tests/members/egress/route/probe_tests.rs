@@ -165,6 +165,8 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
     // Unconditionally, not behind an `if let`: an attempt that won the probe and recorded nothing
     // would leave the cell half-open — the member excluded from every pick after it — and skipping
     // the assertion for the absence would report that as a pass.
+    // v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1764-1781`: a transport failure records its
+    // transient (which resolves the probe in the breaker) and releases nothing itself.
     let observed = observed.expect("a failed attempt tells the breaker what happened");
     assert!(
         released.is_none_or(|released| observed < released),

@@ -22,9 +22,10 @@ mod pick_order_tests;
 mod probe_tests;
 mod relay_tests;
 mod walk_tests;
+mod zero_copy_tests;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{InstanceId, NeedId};
@@ -65,6 +66,8 @@ pub(crate) struct Node {
     /// A ranking hook's preference, for the pick-level cases (`Node::pick`); the walk names none.
     pub preference: Option<Vec<DestinationId>>,
     pub wants_stream: bool,
+    /// Where the body of every request the route handed the far end lies.
+    pub sent_at: Mutex<Vec<usize>>,
     rt: tokio::runtime::Runtime,
 }
 
@@ -129,6 +132,7 @@ impl Node {
             affinity: None,
             preference: None,
             wants_stream: false,
+            sent_at: Mutex::new(Vec::new()),
             rt,
         }
     }
@@ -249,7 +253,12 @@ impl Node {
                     }
                 };
                 let destination = self.destination_of(&pool, &member);
-                if !far.send(&token, request(&member, &pool, attempt_no)).await {
+                let bound = request(&member, &pool, attempt_no);
+                self.sent_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(bound.body.as_ptr() as usize);
+                if !far.send(&token, bound).await {
                     // Not sent, so nothing reached the caller: fail over, as the pump does.
                     continue 'attempt;
                 }
