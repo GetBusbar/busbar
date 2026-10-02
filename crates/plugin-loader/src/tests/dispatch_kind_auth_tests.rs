@@ -692,6 +692,7 @@ fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
             },
             styles: std::ptr::null(),
             styles_len: 0,
+            operator_principal: busbar_contract::abi::sdk::door::abi_str(""),
         }));
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind_tail: std::ptr::from_ref(tail).cast(),
@@ -749,6 +750,7 @@ fn a_tail_with_a_broken_point_set_refuses() {
             inbound_points,
             styles: styles.as_ptr(),
             styles_len: styles.len(),
+            operator_principal: abi_str(""),
         }));
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind_tail: std::ptr::from_ref(tail).cast(),
@@ -827,6 +829,7 @@ fn the_carriers_are_the_statements_carrier_marks() {
         inbound_points: POINT_HEAD,
         styles: std::ptr::null(),
         styles_len: 0,
+        operator_principal: abi_str(""),
     };
     let tail: &'static AuthTail = Box::leak(Box::new(TAIL));
     let carriers = |words: &'static [MarkWord]| {
@@ -857,5 +860,74 @@ fn the_carriers_are_the_statements_carrier_marks() {
     assert!(
         carriers(many).is_err(),
         "more carriers than the host's bound"
+    );
+}
+
+/// THE OPERATOR FACT and THE KIND TAIL GROWTH RULE on the auth tail. `FACT_OPERATOR` needs
+/// `CAP_INBOUND` and a non-empty principal, and a principal needs the fact; each half alone refuses
+/// the load, and the agreeing tail reads its principal back. A tail of the FROZEN size (40 bytes,
+/// built before `operator_principal` was appended) still loads, its appended bytes never read: the
+/// principal reads absent even when the memory past its size holds one. A tail below the frozen
+/// size refuses. RED: the strict "smaller than this host's" rule refused the 40-byte tail.
+#[test]
+fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
+    use busbar_contract::abi::auth::{
+        AuthTail, AUTH_TAIL_FROZEN, CAP_INBOUND, CAP_OUTBOUND, FACT_OPERATOR, LOGIN_KIND_NONE,
+    };
+    use busbar_contract::abi::mechanism::door::KindTailHead;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    let bind = |size: usize, caps: u32, facts: u32, principal: &'static str| {
+        let tail = Box::leak(Box::new(AuthTail {
+            head: KindTailHead {
+                size: size as u32,
+                _reserved: 0,
+            },
+            caps,
+            facts,
+            login_kind: LOGIN_KIND_NONE,
+            inbound_points: if caps & CAP_INBOUND != 0 {
+                POINT_HEAD
+            } else {
+                0
+            },
+            styles: std::ptr::null(),
+            styles_len: 0,
+            operator_principal: abi_str(principal),
+        }));
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            ..statement("t", "1", 0)
+        };
+        <Auth as Kind>::context(&st).map(|c| {
+            c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
+                .map(|f| f.operator_principal)
+        })
+    };
+    let host = size_of::<AuthTail>();
+    assert_eq!(
+        bind(host, CAP_INBOUND, FACT_OPERATOR, "admin"),
+        Ok(Some(Some("admin".to_string())))
+    );
+    assert_eq!(bind(host, CAP_INBOUND, 0, ""), Ok(Some(None)));
+    assert!(
+        bind(host, CAP_INBOUND, FACT_OPERATOR, "").is_err(),
+        "the fact without a principal"
+    );
+    assert!(
+        bind(host, CAP_INBOUND, 0, "admin").is_err(),
+        "a principal without the fact"
+    );
+    assert!(
+        bind(host, CAP_OUTBOUND, FACT_OPERATOR, "admin").is_err(),
+        "the operator fact on a plugin that does not verify"
+    );
+    assert_eq!(
+        bind(AUTH_TAIL_FROZEN, CAP_INBOUND, 0, "admin"),
+        Ok(Some(None)),
+        "a frozen-size tail loads; its appended principal is never read"
+    );
+    assert!(
+        bind(AUTH_TAIL_FROZEN - 8, CAP_INBOUND, 0, "").is_err(),
+        "below the frozen size"
     );
 }

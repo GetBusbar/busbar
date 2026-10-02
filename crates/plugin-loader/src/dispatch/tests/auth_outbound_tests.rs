@@ -186,6 +186,7 @@ mod plugin {
         inbound_points: POINT_HEAD,
         styles: STYLES.as_ptr(),
         styles_len: STYLES.len(),
+        operator_principal: busbar_contract::abi::sdk::door::abi_str(""),
     };
 
     use busbar_contract::abi::sdk::auth_door as a;

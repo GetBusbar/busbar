@@ -497,6 +497,18 @@ pub const fn verify_tail(facts: u32, points: AuthPoints) -> AuthTail {
         inbound_points: points.bits(),
         styles: ptr::null(),
         styles_len: 0,
+        operator_principal: crate::abi::sdk::door::abi_str(""),
+    }
+}
+
+/// `tail` as THE OPERATOR CREDENTIAL's: it states [`FACT_OPERATOR`](crate::abi::auth::FACT_OPERATOR)
+/// and `principal`, the principal id its `verify` identifies.
+#[must_use]
+pub const fn with_operator(tail: AuthTail, principal: &'static str) -> AuthTail {
+    AuthTail {
+        facts: tail.facts | crate::abi::auth::FACT_OPERATOR,
+        operator_principal: crate::abi::sdk::door::abi_str(principal),
+        ..tail
     }
 }
 

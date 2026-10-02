@@ -74,3 +74,25 @@ fn the_host_zeroes_every_out_before_every_call() {
     assert!(CALL.contains("THE HOST ZEROES THE WHOLE `out` BEFORE EVERY"));
     assert!(CALL.contains("(no template)"));
 }
+
+/// THE KIND TAIL GROWTH RULE: append-only. A tail at the host's size reads whole; an OLDER tail (at
+/// least the kind's frozen size, smaller than the host's) reads its own bytes and the host
+/// zero-fills the rest; a NEWER tail reads only the host's bytes; a tail smaller than the frozen
+/// size is refused. RED: the strict "smaller than this host's" rule refused the older tail.
+#[test]
+fn a_kind_tail_grows_append_only() {
+    use busbar_contract::abi::mechanism::door::tail_read_len;
+    assert_eq!(tail_read_len(56, 40, 56), Some(56), "the host's own size");
+    assert_eq!(
+        tail_read_len(40, 40, 56),
+        Some(40),
+        "an older tail: its own bytes"
+    );
+    assert_eq!(
+        tail_read_len(72, 40, 56),
+        Some(56),
+        "a newer tail: the host's bytes"
+    );
+    assert_eq!(tail_read_len(32, 40, 56), None, "below the frozen size");
+    assert!(DOOR.contains("THE KIND TAIL GROWTH RULE"));
+}

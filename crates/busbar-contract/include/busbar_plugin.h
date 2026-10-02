@@ -189,12 +189,14 @@ extern "C" {
 #define BB_AUTH_FACT_CACHEABLE UINT32_C(1) /* [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators): */
 #define BB_AUTH_FACT_INBOUND_NEEDS_BODY_HASH UINT32_C(2) /* [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as */
 #define BB_AUTH_FACT_INBOUND_ALL_HEADERS UINT32_C(4) /* [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's */
+#define BB_AUTH_FACT_OPERATOR UINT32_C(8) /* [`AuthTail::facts`]: this plugin's `verify` judges THE OPERATOR CREDENTIAL, the one admin */
 #define BB_AUTH_METRIC_CACHE_FLUSHED "busbar_auth_cache_flushed_total" /* THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a */
 #define BB_AUTH_LOGIN_KIND_NONE UINT32_C(0) /* [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared). */
 #define BB_AUTH_LOGIN_KIND_REDIRECT UINT32_C(1) /* [`AuthTail::login_kind`]: a redirect to an IdP. */
 #define BB_AUTH_LOGIN_KIND_CREDENTIAL UINT32_C(2) /* [`AuthTail::login_kind`]: a credential form the core renders. */
 #define BB_AUTH_STYLE_NEEDS_HEADERS UINT32_C(2) /* [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style. */
 #define BB_AUTH_STYLE_CALLER_CREDENTIAL UINT32_C(4) /* [`StyleDecl::flags`]: this style serves [`MODE_PASSTHROUGH`] as well as [`MODE_OWN`] — the */
+#define BB_AUTH_AUTH_TAIL_FROZEN ((size_t)40) /* The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the */
 #define BB_AUTH_CANCEL_ABANDONED UINT32_C(1) /* [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned, */
 #define BB_AUTH_CANCEL_CONTINUES UINT32_C(2) /* [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: the call is */
 #define BB_AUTH_VERDICT_IDENTITY UINT32_C(1) /* [`IdentifyOut::verdict`] for `verify`: identified; [`IdentifyOut::identity`] holds who. */
@@ -1868,6 +1870,7 @@ struct bb_auth_AuthTail {
     uint32_t inbound_points;
     const bb_auth_StyleDecl *styles;
     size_t styles_len;
+    bb_mech_AbiStr operator_principal;
 };
 
 /* `open_outbound`'s `in`. */
@@ -4161,7 +4164,7 @@ BB_ASSERT(BB_ALIGNOF(bb_auth_StyleDecl) == 8, "bb_auth_StyleDecl: alignment");
 BB_ASSERT(offsetof(bb_auth_StyleDecl, name) == 0, "bb_auth_StyleDecl.name: offset");
 BB_ASSERT(offsetof(bb_auth_StyleDecl, flags) == 16, "bb_auth_StyleDecl.flags: offset");
 BB_ASSERT(offsetof(bb_auth_StyleDecl, points) == 20, "bb_auth_StyleDecl.points: offset");
-BB_ASSERT(sizeof(bb_auth_AuthTail) == 40, "bb_auth_AuthTail: size");
+BB_ASSERT(sizeof(bb_auth_AuthTail) == 56, "bb_auth_AuthTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_AuthTail) == 8, "bb_auth_AuthTail: alignment");
 BB_ASSERT(offsetof(bb_auth_AuthTail, head) == 0, "bb_auth_AuthTail.head: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, caps) == 8, "bb_auth_AuthTail.caps: offset");
@@ -4170,6 +4173,7 @@ BB_ASSERT(offsetof(bb_auth_AuthTail, login_kind) == 16, "bb_auth_AuthTail.login_
 BB_ASSERT(offsetof(bb_auth_AuthTail, inbound_points) == 20, "bb_auth_AuthTail.inbound_points: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, styles) == 24, "bb_auth_AuthTail.styles: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, styles_len) == 32, "bb_auth_AuthTail.styles_len: offset");
+BB_ASSERT(offsetof(bb_auth_AuthTail, operator_principal) == 40, "bb_auth_AuthTail.operator_principal: offset");
 BB_ASSERT(sizeof(bb_auth_OpenOutboundIn) == 152, "bb_auth_OpenOutboundIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_OpenOutboundIn) == 8, "bb_auth_OpenOutboundIn: alignment");
 BB_ASSERT(offsetof(bb_auth_OpenOutboundIn, head) == 0, "bb_auth_OpenOutboundIn.head: offset");

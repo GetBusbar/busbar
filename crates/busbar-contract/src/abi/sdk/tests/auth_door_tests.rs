@@ -656,3 +656,27 @@ fn the_view_reads_the_point_the_conn_the_unit_and_the_body() {
         assert_eq!((o, out.verdict), (Outcome::Ready, VERDICT_REJECT));
     }
 }
+
+/// THE OPERATOR CREDENTIAL'S TAIL: `with_operator` adds `FACT_OPERATOR` to the facts the tail already
+/// states and names the principal; `verify_tail` alone states neither (an empty principal).
+#[test]
+fn with_operator_states_the_fact_and_the_principal() {
+    use crate::abi::auth::{AuthPoints, FACT_CACHEABLE, FACT_OPERATOR};
+    use crate::abi::sdk::auth_door::{verify_tail, with_operator};
+    const PLAIN: AuthTail = verify_tail(FACT_CACHEABLE, AuthPoints::HEAD);
+    const OPERATOR: AuthTail = with_operator(PLAIN, "admin");
+    assert_eq!(
+        (PLAIN.facts, PLAIN.operator_principal.len),
+        (FACT_CACHEABLE, 0)
+    );
+    assert_eq!(OPERATOR.facts, FACT_CACHEABLE | FACT_OPERATOR);
+    // SAFETY: a `'static` str's pointer and length.
+    let principal = unsafe {
+        std::slice::from_raw_parts(
+            OPERATOR.operator_principal.ptr,
+            OPERATOR.operator_principal.len,
+        )
+    };
+    assert_eq!(principal, b"admin");
+    assert_eq!(OPERATOR.head.size as usize, size_of::<AuthTail>());
+}

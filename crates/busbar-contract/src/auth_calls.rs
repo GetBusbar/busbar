@@ -332,6 +332,11 @@ pub trait AuthAxis: Send + Sync {
     /// Whether `module` names a row this build LINKS.
     fn linked(&self, module: &str) -> bool;
 
+    /// THE OPERATOR CREDENTIAL'S ROW: the auth row whose Statement states
+    /// [`FACT_OPERATOR`](crate::abi::auth::FACT_OPERATOR), as its module key and the principal id it
+    /// names; linked rows first. `None` when no row states it.
+    fn operator(&self) -> Option<(String, String)>;
+
     /// OPEN one instance of `module` over `settings` (the provider's settings, one JSON document,
     /// its secret-refs already resolved), under the host's instance `label` (unique per opened
     /// instance: the name every host service keys its caller by).

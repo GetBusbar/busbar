@@ -1284,7 +1284,8 @@ fn compute_layout() -> String {
             login_kind,
             inbound_points,
             styles,
-            styles_len
+            styles_len,
+            operator_principal
         ]
     );
     record!(s, AuthNamedValue, [name, value]);

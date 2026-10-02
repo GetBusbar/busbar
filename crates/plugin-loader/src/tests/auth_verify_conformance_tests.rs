@@ -128,14 +128,20 @@ fn doors(third_party: bool) -> Option<[PluginRegistry; 2]> {
     Some([linked, dropped])
 }
 
-/// What one door does, as one comparable transcript: the opened instance's name and facts, and its
-/// answer for every case on the spot and submitted.
+/// What one door does, as one comparable transcript: the opened instance's name and facts, the
+/// operator credential's row the axis finds by its Statement, and its answer for every case on the
+/// spot and submitted.
 async fn transcript(registry: PluginRegistry, digest: &str) -> String {
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
     let opened = rows
         .open("the-auth", "the-auth", &serde_json::json!(digest))
         .expect("the plugin opens through its alias over a digest");
-    let mut out = vec![format!("name={} facts={}", opened.name(), opened.facts())];
+    let mut out = vec![format!(
+        "name={} facts={} operator={:?}",
+        opened.name(),
+        opened.facts(),
+        rows.operator()
+    )];
     for (bearer, other) in CASES {
         let now = opened
             .verify_now(&request(bearer, other))
@@ -178,6 +184,10 @@ async fn a_linked_and_a_dropped_in_auth_door_answer_byte_identically() {
     let linked = transcript(linked, &digest).await;
     let dropped = transcript(dropped, &digest).await;
     assert_every_verdict(&linked);
+    assert!(
+        linked.contains(r#"operator=Some(("the-auth", "admin"))"#),
+        "the axis finds the operator credential's row by its Statement: {linked}"
+    );
     assert_eq!(linked, dropped, "the two doors must answer as one plugin");
 }
 
