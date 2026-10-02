@@ -332,7 +332,7 @@ pub struct PluginSchemaView {
 }
 
 /// The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings
-/// (KEY NAMES only, see [`HookView::settings_keys`]) and their version.
+/// (KEY NAMES only, see [`super::HookView::settings_keys`]) and their version.
 #[derive(Serialize, JsonSchema)]
 pub struct HookDesiredStatus {
     /// Sorted KEY NAMES of the desired settings bag, never its values.
