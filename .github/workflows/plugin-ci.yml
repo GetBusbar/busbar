@@ -1,8 +1,11 @@
-# plugin-ci — THE CI of every first-party plugin repo, in one place. Each plugin repo's own
-# `.github/workflows/ci.yml` is a thin caller rendered by `cargo xtask fleet render <repo>` from
-# plugins.yaml, and it takes this file AT THE BUSBAR COMMIT THE REPO PINS (`@<.busbar-ref field 1>`):
-# the CI logic and the contract a plugin compiles against move together, and a change here reaches a
-# plugin repo only when its pin moves (`cargo xtask fleet sync`). Before this file every repo carried
+# plugin-ci — THE CI of every first-party plugin repo, in one place: how a plugin tests ITSELF against
+# busbar. Each plugin repo's own `.github/workflows/ci.yml` is a thin caller rendered by
+# `busbar-release plugin sync` (GetBusbar/busbar-release template/) from plugins.yaml, and it takes this
+# file AT THE BUSBAR COMMIT THE REPO PINS (`@<.busbar-ref field 1>`): the CI logic, the gates
+# (scripts/fleet/plugin-gates.py), the dependency policy (.github/fleet/deps.toml) and the contract a
+# plugin compiles against move together, and a change here reaches a plugin repo only when its pin
+# moves (OWNER 2026-10-02: the reusable plugin workflows stay in busbar, called by path at the pin).
+# The plugin repo owns its tests; this file owns the harness. Before this file every repo carried
 # its own copy of these jobs, and the copies drifted (four different pins, five different shapes of
 # the same pin check, a macOS leg on some repos and not others).
 #
@@ -18,14 +21,22 @@
 #   linux      fmt, clippy -D warnings, build, the whole test suite against the real backend service
 #              the plugin declares (never a mock), then the both-ways conformance on its own: the
 #              plugin's `conformance` test (linked row AND dropped-in signed tarball, one transcript)
-#              must RUN at least one test, so a renamed or emptied target is red, not a silent pass.
+#              must RUN its both-ways arm (`the_linked_and_the_dropped_in_*`) AND keep a RED arm beside it.
+#              Then, every one of them run even after an earlier red (one board, not the first red):
+#              cargo deny on the rendered deny.toml; the dep-wall (the shipped closure is busbar-contract
+#              plus third-party); the socket/TLS ban (no rustls/native-tls/openssl/socket2/tokio-net in
+#              the shipped closure, and no socket or TLS import in the post-LTO cdylib; BUSBAR-1.6.0.md
+#              line 3980); the C-dependency allow-list; Cargo.lock parity with busbar's lock at the pin
+#              (RED); declares.json's contract_abi against the loader at the pin. A repo with no crates
+#              yet (plugins.yaml pending_crate) runs the pin job only. Plugin tests read busbar's golden
+#              cells from BUSBAR_GOLDEN_DIR (busbar's testing/shadow-oracle/golden at the pin), never a copy.
 #   macos      build and the macOS test command (the plugin's own choice of what runs without a
 #              Linux service container; postgres and valkey are provisioned from Homebrew).
 #   coverage   informational only (llvm-cov; uploaded when CODECOV_TOKEN is present).
 #
 # The moving leg (a plugin's `dev` against busbar's own tree) is busbar's side: the release engine
 # in busbar-release runs it when it admits a busbar candidate.
-name: plugin-ci
+name: "Plugins: CI"
 
 on:
   workflow_call:
@@ -175,6 +186,33 @@ jobs:
           repository: GetBusbar/busbar
           ref: ${{ needs.pin.outputs.sha }}
           path: busbar
+      - name: busbar's policy, lock, loader and golden at the pin (read-only, for the gates)
+        if: ${{ !(inputs.busbar_checkout || env.SIGNING_GATE == 'true') }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ needs.pin.outputs.sha }}
+          path: busbar
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /Cargo.lock
+            /.github/fleet/
+            /scripts/fleet/
+            /crates/plugin-loader/src/registry.rs
+            /crates/busbar-contract/src/
+            /testing/shadow-oracle/golden/
+      - name: does the repo have its crates yet
+        id: crates
+        working-directory: plugin
+        run: |
+          if [ -f Cargo.toml ] && cargo metadata --format-version 1 --no-deps >/dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no crates yet (plugins.yaml pending_crate): the pin job is this repo's whole proof"
+          fi
+      - name: the gates' own selftest (every gate RED on its planted defect before any verdict counts)
+        run: python3 busbar/scripts/fleet/plugin-gates.py selftest
       - name: the test environment (only the variables that apply are SET; an empty one reads as set)
         env:
           SERVICE: ${{ inputs.service }}
@@ -193,6 +231,7 @@ jobs:
               openldap) echo "BUSBAR_TEST_LDAP_URL=ldap://127.0.0.1:389" ;;
               *) echo "::error::unknown service '$SERVICE'" >&2; exit 1 ;;
             esac
+            echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
             if [ "$CHECKOUT" = true ]; then
               echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
               echo "BUSBAR_TARGET_DIR=$GITHUB_WORKSPACE/busbar/target"
@@ -209,12 +248,15 @@ jobs:
           workspaces: ${{ (inputs.busbar_checkout || env.SIGNING_GATE == 'true') && fromJSON('"plugin\nbusbar"') || 'plugin' }}
           key: busbar-${{ needs.pin.outputs.sha }}
       - name: fmt
+        if: steps.crates.outputs.present == 'true'
         working-directory: plugin
         run: cargo fmt --all -- --check
       - name: clippy (-D warnings)
+        if: steps.crates.outputs.present == 'true'
         working-directory: plugin
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: build (the rlib a busbar build links, and the cdylib a signed tarball carries)
+        if: steps.crates.outputs.present == 'true'
         working-directory: plugin
         run: cargo build --workspace --locked
       - name: signing gate — signed loads; unsigned / wrong-key / tampered are refused (PB-11)
@@ -222,7 +264,7 @@ jobs:
         # here with an ephemeral (never the release) embedded key: positive (correctly signed
         # passes) and four negatives (unsigned, wrong key, tampered lib bytes, tampered manifest),
         # each asserted on the exact refusal message. Runs only for the kinds the script covers.
-        if: env.SIGNING_GATE == 'true'
+        if: env.SIGNING_GATE == 'true' && steps.crates.outputs.present == 'true'
         working-directory: plugin
         env:
           CRATE: ${{ inputs.plugin_crate }}
@@ -236,22 +278,79 @@ jobs:
         if: inputs.service == 'mysql'
         run: mysql -h 127.0.0.1 -uroot -pbusbar -e "SET GLOBAL sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION';"
       - name: test (the plugin's whole suite, live backend included)
+        if: steps.crates.outputs.present == 'true'
         working-directory: plugin
         run: cargo test --workspace --locked
       - name: extra test command
-        if: inputs.extra_test != ''
+        if: inputs.extra_test != '' && steps.crates.outputs.present == 'true'
         working-directory: plugin
         env:
           EXTRA: ${{ inputs.extra_test }}
         run: bash -c "$EXTRA"
-      - name: both-ways conformance (linked row + dropped-in signed tarball; must RUN, not just compile)
+      - name: both-ways conformance (linked door vs built cdylib, one transcript, a RED arm beside it; both must RUN)
+        if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         working-directory: plugin
         run: |
           set -euo pipefail
+          cargo test --workspace --locked --test conformance -- --list > "$RUNNER_TEMP/conformance.list" \
+            || { echo "::error::no conformance target (<plugin crate>/tests/conformance.rs)"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/busbar/scripts/fleet/plugin-gates.py" bothways "$RUNNER_TEMP/conformance.list"
           out="$(cargo test --workspace --locked --test conformance 2>&1 | tee /dev/stderr)"
           passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
-          [ "$passed" -ge 1 ] || { echo "::error::the conformance target ran 0 tests; a filter that matches nothing proves nothing"; exit 1; }
+          [ "$passed" -ge 2 ] || { echo "::error::the conformance target ran $passed test(s); both arms must RUN"; exit 1; }
           echo "conformance: $passed test(s) passed"
+      - name: cargo deny (the rendered deny.toml; busbar's .github/fleet/deps.toml at the pin)
+        if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          v=0.20.2; sum=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/deny.tgz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/$v/cargo-deny-$v-x86_64-unknown-linux-musl.tar.gz"
+          echo "$sum  $RUNNER_TEMP/deny.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/deny.tgz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/cargo-deny-$v-x86_64-unknown-linux-musl/cargo-deny" --locked check
+      - name: the shipped closure (cargo metadata, linux target)
+        id: meta
+        if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
+        working-directory: plugin
+        run: cargo metadata --format-version 1 --locked --filter-platform x86_64-unknown-linux-gnu > "$RUNNER_TEMP/meta.json"
+      - name: dep-wall (busbar-contract plus third-party; no kernel/core crate, no other plugin; Part 2 #40)
+        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
+        run: python3 busbar/scripts/fleet/plugin-gates.py depwall "$RUNNER_TEMP/meta.json" "${{ github.event.repository.name }}"
+      - name: socket/TLS ban (BUSBAR-1.6.0.md line 3980; the shipped closure, then the post-LTO import scan)
+        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          set -uo pipefail
+          rc=0
+          python3 busbar/scripts/fleet/plugin-gates.py netban "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml "$REPO" || rc=1
+          (cd plugin && CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+            cargo build --release --locked -p "$CRATE" --lib) || exit 1
+          lib="plugin/target/release/lib${CRATE//-/_}.so"
+          [ -f "$lib" ] || { echo "::error::no cdylib at $lib"; exit 1; }
+          nm -D --undefined-only "$lib" | awk '{print $NF}' > "$RUNNER_TEMP/undef.txt"
+          readelf -d "$lib" | sed -nE 's/.*\(NEEDED\).*\[(.*)\].*/\1/p' > "$RUNNER_TEMP/needed.txt"
+          python3 busbar/scripts/fleet/plugin-gates.py imports "$RUNNER_TEMP/undef.txt" "$RUNNER_TEMP/needed.txt" busbar/.github/fleet/deps.toml "$REPO" || rc=1
+          rm -rf plugin/target/release
+          exit $rc
+      - name: C-dependency allow-list (bundled + pinned; .github/fleet/deps.toml [c-deps])
+        if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
+        run: python3 busbar/scripts/fleet/plugin-gates.py cdeps "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml
+      - name: Cargo.lock parity with busbar's lock at the pin (RED)
+        if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
+        run: python3 busbar/scripts/fleet/plugin-gates.py parity plugin/Cargo.lock busbar/Cargo.lock
+      - name: declares.json states the kind's contract ABI at the pin
+        if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
+        env:
+          KIND: ${{ inputs.plugin_kind }}
+        run: |
+          set -euo pipefail
+          f="$(cd plugin && git ls-files | grep -E '(^|/)declares\.json$' | head -n1)"
+          [ -n "$f" ] || { echo "::error::no declares.json in the repo"; exit 1; }
+          python3 busbar/scripts/fleet/plugin-gates.py declares busbar "$KIND" "plugin/$f"
 
   macos:
     name: build, test [macos]
@@ -305,10 +404,21 @@ jobs:
         with:
           workspaces: ${{ inputs.busbar_checkout && fromJSON('"plugin\nbusbar"') || 'plugin' }}
           key: busbar-${{ needs.pin.outputs.sha }}
+      - name: does the repo have its crates yet
+        id: crates
+        working-directory: plugin
+        run: |
+          if [ -f Cargo.toml ] && cargo metadata --format-version 1 --no-deps >/dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: build
+        if: steps.crates.outputs.present == 'true'
         working-directory: plugin
         run: cargo build --workspace --locked
       - name: test
+        if: steps.crates.outputs.present == 'true'
         working-directory: plugin
         env:
           MACOS_TEST: ${{ inputs.macos_test }}
