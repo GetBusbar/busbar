@@ -402,7 +402,7 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
         Some([
             ("gpt", tiers(2.0, 8.0)),
             ("claude", tiers(3.0, 15.0)),
-            ("mcp\u{1f}search", tiers(5.0, 6.0)),
+            ("plane-b\u{1f}search", tiers(5.0, 6.0)),
         ]),
         3,
     );
@@ -418,17 +418,17 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
     assert_eq!(nanos(&corrected, "gpt", "input"), Some(1_000));
     assert_eq!(nanos(&corrected, "gpt", "output"), Some(8_000));
     assert_eq!(nanos(&corrected, "claude", "output"), Some(15_000));
-    assert_eq!(nanos(&corrected, "mcp\u{1f}search", "input"), Some(5_000));
+    assert_eq!(nanos(&corrected, "plane-b\u{1f}search", "input"), Some(5_000));
     assert_eq!(corrected.fee(), 3, "a fee it does not name is kept");
 
     let corrected = card
         .corrected(
-            [(LaneClass::new("mcp\u{1f}search", "input"), 9_000)],
+            [(LaneClass::new("plane-b\u{1f}search", "input"), 9_000)],
             Some(7),
         )
-        .expect("the mcp card is present");
-    assert_eq!(nanos(&corrected, "mcp\u{1f}search", "input"), Some(9_000));
-    assert_eq!(nanos(&corrected, "mcp\u{1f}search", "output"), Some(6_000));
+        .expect("plane-b's card is present");
+    assert_eq!(nanos(&corrected, "plane-b\u{1f}search", "input"), Some(9_000));
+    assert_eq!(nanos(&corrected, "plane-b\u{1f}search", "output"), Some(6_000));
     assert_eq!(
         nanos(&corrected, "gpt", "input"),
         Some(2_000),
@@ -437,7 +437,7 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
     assert_eq!(corrected.fee(), 7, "a named fee replaces the fee");
 
     assert!(
-        card.corrected([(LaneClass::new("a2a\u{1f}agent", "bytes"), 1)], None)
+        card.corrected([(LaneClass::new("plane-c\u{1f}hop", "bytes"), 1)], None)
             .is_none(),
         "a plane with no card of its own has billing off; a correction cannot switch it on"
     );
@@ -448,7 +448,7 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
         "an absent flat card has nowhere for a cell to land"
     );
     assert!(
-        card.corrected([(LaneClass::new("mcp\u{1f}", "input"), 1)], None)
+        card.corrected([(LaneClass::new("plane-b\u{1f}", "input"), 1)], None)
             .is_none(),
         "a cell naming no lane"
     );
