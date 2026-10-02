@@ -221,7 +221,13 @@ pub fn linked_transport(
 /// test names no transport. A door composing over a layer (the http door example, where a workspace
 /// build emits it) is not a dropped-in wire.
 pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
+    // The neutral frame door claims no linked key and no layer composes over it; the proofs that
+    // need it name it ([`neutral_frame_door`]).
+    let neutral = plugin_library_filename("neutral_frame_door");
     libraries().into_iter().find_map(|p| {
+        if p.file_name().is_some_and(|n| n == neutral.as_str()) {
+            return None;
+        }
         let (plugin, key) = transport_door(&p)?;
         if !plugin.context::<TransportFacts>()?.composes_over.is_empty() {
             return None;
@@ -263,21 +269,14 @@ pub fn render_snapshot(lib: &[u8], name: &str, exposition: &str) -> (String, Str
         .expect("the sink renders")
 }
 
-/// The in-tree transport door `cdylib`s beside the test binary, admitted once for the process, one
-/// per key.
-pub fn transport_doors() -> &'static [(Plugin<Transport>, &'static str)] {
-    static DOORS: std::sync::OnceLock<Vec<(Plugin<Transport>, &'static str)>> =
-        std::sync::OnceLock::new();
-    DOORS.get_or_init(|| {
-        let mut doors: Vec<(Plugin<Transport>, &'static str)> = Vec::new();
-        for p in libraries() {
-            let Some((plugin, key)) = transport_door(&p) else {
-                continue;
-            };
-            if !doors.iter().any(|(_, k)| *k == key) {
-                doors.push((plugin, key));
-            }
-        }
-        doors
-    })
+/// THE NEUTRAL FRAME DOOR (the plugin loader's `neutral_frame_door` example): a transport door that
+/// frames the host's socket under a neutral claim and names no transport, admitted through the one
+/// dispatcher's door validation, and the key its tail states. `None` when it is not built beside the
+/// test binary.
+pub fn neutral_frame_door() -> Option<(Plugin<Transport>, &'static str)> {
+    let file = plugin_library_filename("neutral_frame_door");
+    libraries()
+        .into_iter()
+        .filter(|p| p.file_name().is_some_and(|n| n == file.as_str()))
+        .find_map(|p| transport_door(&p))
 }
