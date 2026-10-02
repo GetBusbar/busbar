@@ -59,11 +59,14 @@ fn judged(
     Ok(ResolvedAddrs::Listed(addrs.into_iter()))
 }
 
+/// The judge and the name lookup a pooled client dials by; `None` = the process's own.
+type PooledDial = (Option<Arc<dyn DestJudge>>, Option<Arc<dyn ResolveNames>>);
+
 /// The dial posture a pooled client is built with: the installed guard (`None`, read through the
 /// egress-trust seam at each dial) over the system resolver. A test scopes its own judge and names over the
 /// clients built inside `egress::fixtures::with_scoped_dial`, so a plane's runtime built in that
 /// scope judges by the test's judge without touching the process's.
-pub(crate) fn pooled_dial() -> (Option<Arc<dyn DestJudge>>, Option<Arc<dyn ResolveNames>>) {
+pub(crate) fn pooled_dial() -> PooledDial {
     #[cfg(any(test, feature = "test-support"))]
     if let Some((judge, names)) = crate::egress::fixtures::scoped_dial() {
         return (Some(judge), Some(names));
