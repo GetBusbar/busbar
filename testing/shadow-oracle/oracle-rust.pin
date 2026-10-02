@@ -182,6 +182,6 @@
 #
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=d2cbfe561a1657db1a68b5724c5476bcfa004fb0
+release_ref=799f0a6a48f39af6f5c986aa3af1cc2c9ad48894
 crate=busbar-release-oracle
 bin=busbar-oracle
