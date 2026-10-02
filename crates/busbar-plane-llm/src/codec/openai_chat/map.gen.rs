@@ -7,6 +7,48 @@
 
 use crate::codec::carry::{Dir, Field, Handled, Hook, Slot, Table, ValueCodec, Word, row};
 
+/// Row group `blocks`.
+pub(crate) const ROWS_BLOCKS: &[Field] = &[
+    row(&["messages[]", "role=assistant"], Slot::Structure, ValueCodec::Prim("assistant")),
+    row(&["messages[]", "role=developer"], Slot::Structure, ValueCodec::Prim("developer")),
+    row(&["messages[]", "role=function"], Slot::Structure, ValueCodec::Prim("function")),
+    row(&["messages[]", "role=tool"], Slot::Structure, ValueCodec::Prim("tool")),
+    row(&["messages[]", "role=user"], Slot::Structure, ValueCodec::Prim("user")),
+    row(&["messages[]", "role=tool", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=user", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=system", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=function", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=assistant", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=developer", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=user", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=assistant", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=user", "content[]", "type=input_audio", "input_audio", "data"], Slot::Structure, ValueCodec::Prim("data")),
+    row(&["messages[]", "role=user", "content[]", "type=input_audio", "input_audio", "format"], Slot::Structure, ValueCodec::Prim("format")),
+    row(&["messages[]", "role=user", "content[]", "type=file", "file", "file_data"], Slot::Structure, ValueCodec::Prim("file_data")),
+    row(&["messages[]", "role=user", "content[]", "type=file", "file", "filename"], Slot::Structure, ValueCodec::Prim("filename")),
+    row(&["messages[]", "role=user", "content[]", "type=file", "file", "file_id"], Slot::Structure, ValueCodec::Prim("file_id")),
+    row(&["messages[]", "role=user", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "role=system", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "role=function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "role=assistant", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "role=developer", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "role=assistant", "tool_calls"], Slot::Structure, ValueCodec::Prim("tool_calls")),
+    row(&["messages[]", "role=tool", "tool_call_id"], Slot::Structure, ValueCodec::Prim("tool_call_id")),
+    row(&["messages[]", "role=assistant", "refusal"], Slot::Structure, ValueCodec::Prim("refusal")),
+    row(&["messages[]", "role=assistant", "audio"], Slot::Structure, ValueCodec::Prim("audio")),
+    row(&["messages[]", "role=assistant", "function_call"], Slot::Structure, ValueCodec::Prim("function_call")),
+    row(&["messages[]", "role=user", "content[]", "type=image_url", "image_url", "url"], Slot::Structure, ValueCodec::Prim("url")),
+    row(&["messages[]", "role=assistant", "content[]", "type=refusal", "refusal"], Slot::Structure, ValueCodec::Prim("refusal")),
+    row(&["function_call", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "role=assistant", "function_call", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "role=developer", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=system", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=tool", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=assistant", "tool_calls[]", "type=function", "function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["tool_choice", "type=function", "function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["tools[]", "type=function", "function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+];
+
 /// Row group `chat`.
 pub(crate) const ROWS_CHAT: &[Field] = &[
     row(&["verbosity"], Slot::Verbosity, ValueCodec::Plain).park(),
@@ -24,6 +66,10 @@ pub(crate) const ROWS_CHAT_SAMPLING: &[Field] = &[
 pub(crate) const ROWS_CHAT_STRUCTURE: &[Field] = &[
     row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     row(&["messages"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["messages[]", "role=system"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["messages[]", "role=assistant", "tool_calls[]", "type=function", "function", "arguments"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
+    row(&["messages[]", "role=assistant", "function_call", "arguments"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
+    row(&["tool_choice", "type=allowed_tools", "allowed_tools", "tools"], Slot::Structure, ValueCodec::Prim("tool_choice_subset")),
     row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
     row(&["max_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
     row(&["max_completion_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
@@ -60,7 +106,7 @@ pub(crate) const ROWS_OPENAI_SAMPLING: &[Field] = &[
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_CHAT_STRUCTURE, ROWS_OPENAI_SAMPLING, ROWS_OPENAI_PENALTIES, ROWS_CHAT_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_CHAT];
+pub(crate) const REQUEST: Table = &[ROWS_CHAT_STRUCTURE, ROWS_OPENAI_SAMPLING, ROWS_OPENAI_PENALTIES, ROWS_CHAT_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_CHAT, ROWS_BLOCKS];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
@@ -68,22 +114,11 @@ pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
     (Slot::CustomTool, Handled::Code("chat_custom_tools")),
 ];
 
-/// Word table `openai_served_tier`: (wire word, IR word, direction).
-pub(crate) const WORDS_OPENAI_SERVED_TIER: &[Word] = &[
-    ("default", "standard", Dir::Both),
-    ("default", "default", Dir::Write),
-    ("priority", "priority", Dir::Both),
-    ("flex", "flex", Dir::Write),
-    ("scale", "scale", Dir::Write),
-];
-
 /// Word table `served_tier`: (wire word, IR word, direction).
 pub(crate) const WORDS_SERVED_TIER: &[Word] = &[
     ("default", "standard", Dir::Both),
     ("default", "default", Dir::Write),
     ("priority", "priority", Dir::Both),
-    ("flex", "flex", Dir::Write),
-    ("scale", "scale", Dir::Write),
-    ("flex", "flex", Dir::Read),
-    ("scale", "scale", Dir::Read),
+    ("flex", "flex", Dir::Both),
+    ("scale", "scale", Dir::Both),
 ];

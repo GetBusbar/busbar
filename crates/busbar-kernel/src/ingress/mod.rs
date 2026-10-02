@@ -22,7 +22,7 @@ use crate::state::App;
 // (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| busbar_llm::BODY_INGRESS)`, idempotent,
 // first-wins) from an integration-test target, exactly the posture an external `test-support`
 // consumer already used — so this neutral source names no dialect crate under any build surface.
-pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
+pub(crate) use busbar_kernel::ingress::arrival::{body_ingress_for, path_ingress_for};
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
@@ -697,14 +697,6 @@ pub(crate) use dispatch::protocol_dispatch;
 /// seam a path-model dialect crate (one that parses its model out of the URL, living outside core)
 /// calls back through. Core owns the resolution/forward/error-shaping; the dialect owns its URL parsing.
 pub mod arrival_host;
-/// THE PATH-MODEL ARRIVAL SIDE-REGISTRATION — the protocol-name-keyed table the composition root
-/// installs a URL-model dialect's arrival through. RELOCATED to the neutral `busbar-substrate`
-/// (`busbar_kernel::ingress::arrival`) so the dialect crate names the registration-pair type
-/// without reaching into `busbar-core`; this module is a thin core-test seeding veneer + re-exports.
-pub mod path_ingress;
-// The registration-pair fn-pointer type, re-exported at `busbar_kernel::ingress::PathIngress` so the
-// composition root names it without the `path_ingress::` qualifier.
-pub use path_ingress::PathIngress;
 
 /// Build the human-readable message for a model/pool-miss 404. `model_not_found_message` is a
 /// dialect's PRE-SHAPED body in its own native vocabulary — built by the arrival that owns the request

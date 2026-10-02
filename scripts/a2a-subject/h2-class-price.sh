@@ -80,8 +80,8 @@ key_spend="$(h2_usage_field "$kid" spend_cents)"
 # ── (1) THE CARD MUST BE ABLE TO NAME THE CLASS ───────────────────────────────────────────────────
 # Asked of the binary, not of a script's opinion of the grammar: `--validate` runs the exact
 # load → resolve → validate that boot runs.
-card_verdict="$(h2_validate_card 'rate_card:
-  bytes: { input_utok: 2 }')"
+card_verdict="$(h2_validate_card '  rate_card:
+    agent:probe: { units: { bytes: 2 } }')"
 if [ "$card_verdict" != "ok" ]; then
   failures=$((failures+1))
   detail="${detail}(1) a rate card naming this plane's ONE declared class 'bytes' does not resolve: ${card_verdict}; "
