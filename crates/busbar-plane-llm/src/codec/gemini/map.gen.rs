@@ -24,6 +24,10 @@ pub(crate) const ROWS_STRUCTURE: &[Field] = &[
     row(&["contents"], Slot::Structure, ValueCodec::Prim("messages")),
     row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
     row(&["systemInstruction"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["generationConfig", "maxOutputTokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["generationConfig", "responseLogprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),
+    row(&["generationConfig", "logprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),
+    row(&["tools[]", "googleSearch"], Slot::Structure, ValueCodec::Prim("web_search")),
     row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     row(&["__busbar_gemini_json_array"], Slot::Structure, ValueCodec::Prim("json_array_shim")),
 ];

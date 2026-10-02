@@ -17,6 +17,9 @@ drop_field = "parameter"
 "system" = { prim = "system" }
 "tool_choice" = { prim = "tool_choice" }
 "tools" = { prim = "tools" }
+"metadata.user_id" = { prim = "user" }
+"output_config.effort" = { prim = "reasoning" }
+"messages[].content[].type=tool_use.input" = { prim = "tool_arguments" }
 
 # Thinking: Anthropic refuses a modified sampling knob beside a thinking ask; the ask wins and the
 # knob is omitted, observably. The temperature clamp is to Anthropic's [0.0, 1.0] (it 422s above).
@@ -44,3 +47,7 @@ drop_field = "parameter"
 "seed" = { warn = "dropping seed on Anthropic egress: the Messages API models no deterministic-sampling seed (lossy-by-target)", value = true }
 "n" = { warn = "dropping n on Anthropic egress: the Messages API returns a single completion and models no candidate-count parameter (lossy-by-target)", value = true }
 "service_tier" = { warn = "dropping service_tier on Anthropic egress: Anthropic offers only auto /                      standard_only capacity (lossy-by-target)", value = true }
+
+# Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
+[unmapped.request]
+"messages[].content[].type=server_tool_use.input" = { no-equivalent = "the input of an Anthropic server-tool call replayed in history (Anthropic's own hosted execution record); no IR block carries it. The name matches Responses' `input` message list" }

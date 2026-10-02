@@ -12,6 +12,10 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 "model" = { prim = "model", off_wire = "Converse carries the model in the URL path; the arrival step writes it into the body for the codec" }
 "stream" = { prim = "stream", off_wire = "Converse picks a streamed answer by its URL path (converse-stream); the arrival step writes it into the body for the codec" }
 "system" = { prim = "system" }
+"inferenceConfig.maxTokens" = { prim = "max_output" }
+"toolConfig.tools" = { prim = "tools" }
+"toolConfig.toolChoice" = { prim = "tool_choice" }
+"messages[].content[].toolUse.input" = { prim = "tool_arguments" }
 
 # `inferenceConfig` rides `extra` raw; these rows overlay it. Thinking: Claude refuses a modified
 # sampling knob beside a thinking ask; the ask wins, observably. Temperature is clamped to

@@ -13,6 +13,10 @@ drop_warn = "dropping a request control on Gemini egress: generateContent has no
 "contents" = { prim = "messages" }
 "tools" = { prim = "tools" }
 "systemInstruction" = { prim = "system" }
+"generationConfig.maxOutputTokens" = { prim = "max_output" }
+"generationConfig.responseLogprobs" = { prim = "logprobs" }
+"generationConfig.logprobs" = { prim = "logprobs" }
+"tools[].googleSearch" = { prim = "web_search" }
 "model" = { prim = "model" }
 "__busbar_gemini_json_array" = { prim = "json_array_shim", off_wire = "busbar's own marker for a caller that asked for the JSON-array stream; stripped before egress" }
 
@@ -46,3 +50,9 @@ park = true
 [controls]
 "metadata" = { code = "gemini_labels" }
 "output_modalities" = { code = "gemini_response_modalities" }
+
+# Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
+[unmapped.request]
+"generationConfig.responseFormat" = { no-equivalent = "Gemini's output-media format object (audio, image, text mime type and schema); the dialect reads structured output from responseMimeType / responseSchema, and no other dialect has the audio and image delivery settings" }
+"tools[].fileSearch.topK" = { no-equivalent = "the file-search tool's retrieval count, not the sampling top_k; the IR has no file-search tool" }
+"tools[].googleSearch.searchTypes.webSearch" = { no-equivalent = "googleSearch's corpus selector; the IR web search has no corpus choice (the tool itself is carried, its sub-config dropped with a warn)" }

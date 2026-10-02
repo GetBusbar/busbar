@@ -25,6 +25,10 @@ pub(crate) const ROWS_STRUCTURE: &[Field] = &[
     row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     row(&["stream"], Slot::Structure, ValueCodec::Prim("stream")),
     row(&["system"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["inferenceConfig", "maxTokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["toolConfig", "tools"], Slot::Structure, ValueCodec::Prim("tools")),
+    row(&["toolConfig", "toolChoice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
+    row(&["messages[]", "content[]", "toolUse", "input"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
 ];
 
 /// Row group `tier`.

@@ -85,7 +85,12 @@ fn responses_parked_members_cross_as_their_slots_or_drop() {
     assert_eq!(out.get("labels"), Some(&json!({"a": "1"})), "{out}");
     assert_eq!(out.get("serviceTier"), Some(&json!("flex")), "{out}");
     assert_eq!(out.get("store"), Some(&json!(false)), "{out}");
-    for k in ["metadata", "service_tier", "safety_identifier", "prompt_cache_key"] {
+    for k in [
+        "metadata",
+        "service_tier",
+        "safety_identifier",
+        "prompt_cache_key",
+    ] {
         assert!(out.get(k).is_none(), "gemini {k}: {out}");
     }
     // Bedrock: metadata as `requestMetadata`, the tier as `serviceTier.type`, the rest dropped.
@@ -148,10 +153,18 @@ fn gemini_service_tier_and_store_cross_both_ways() {
         json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
                "serviceTier": tier, "store": true})
     };
-    for (tier, openai) in [("standard", "default"), ("flex", "flex"), ("priority", "priority")] {
+    for (tier, openai) in [
+        ("standard", "default"),
+        ("flex", "flex"),
+        ("priority", "priority"),
+    ] {
         for egress in ["openai", "responses"] {
             let out = cross("gemini", egress, &gemini(tier));
-            assert_eq!(out.get("service_tier"), Some(&json!(openai)), "{tier} {egress}: {out}");
+            assert_eq!(
+                out.get("service_tier"),
+                Some(&json!(openai)),
+                "{tier} {egress}: {out}"
+            );
             assert_eq!(out.get("store"), Some(&json!(true)), "{egress}: {out}");
         }
     }

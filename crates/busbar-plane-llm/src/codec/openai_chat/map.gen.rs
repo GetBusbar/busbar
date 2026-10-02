@@ -24,6 +24,10 @@ pub(crate) const ROWS_CHAT_SAMPLING: &[Field] = &[
 pub(crate) const ROWS_CHAT_STRUCTURE: &[Field] = &[
     row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     row(&["messages"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["messages[]", "role=system"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["messages[]", "role=assistant", "tool_calls[]", "type=function", "function", "arguments"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
+    row(&["messages[]", "role=assistant", "function_call", "arguments"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
+    row(&["tool_choice", "type=allowed_tools", "allowed_tools", "tools"], Slot::Structure, ValueCodec::Prim("allowed_tools")),
     row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
     row(&["max_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
     row(&["max_completion_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),

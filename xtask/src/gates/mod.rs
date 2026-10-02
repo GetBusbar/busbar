@@ -2944,6 +2944,14 @@ pub static REGISTRY: &[Registration] = &[
                   dialect's wire lock",
     },
     Registration {
+        name: "dialect-candidates",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(dialect_coverage::DialectCandidatesGate),
+        summary: "every wire path naming a field another LLM dialect maps is mapped or marked \
+                  no-equivalent in its own dialect's mapping file",
+    },
+    Registration {
         name: "no-tracked-ignored",
         batch: 1,
         tier: Tier::Fast,

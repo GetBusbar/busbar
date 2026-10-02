@@ -26,6 +26,8 @@ pub(crate) const ROWS_SAMPLING: &[Field] = &[
 pub(crate) const ROWS_STRUCTURE: &[Field] = &[
     row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     row(&["messages"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["messages[]", "role=system"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["messages[]", "role=assistant", "tool_calls[]", "function", "arguments"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
     row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
     row(&["tool_choice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
     row(&["max_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
