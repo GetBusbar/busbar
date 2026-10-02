@@ -3221,6 +3221,11 @@ plane_crates = 4
 # root's pinned rev (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp) — the loader's both-ways
 # rows `export`, `export-webhook`, `export-scrape`, `export-otlp`. Neither export glob matches a
 # directory in this repo any more: the kind's documented zero.
+#
+# transport 4 -> 3 (EXTRACT-15, TODO PATH TO DEV-GREEN P5 "EXTRACTION TO 15 CRATES", item tcp): the
+# tcp transport crate MOVED OUT with its history to GetBusbar/busbar-transport-tcp and busbar pulls the
+# logic crate and its -plugin cdylib crate at one pinned rev (root Cargo.toml). Its gates run in that
+# repo's plugin CI. `crates/busbar-transport-*` now matches three: http, stdio and ws.
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
