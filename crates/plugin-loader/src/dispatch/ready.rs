@@ -80,7 +80,7 @@ impl<K: Kind> Plugin<K> {
 /// The ready witnesses, compiled in (`tests/fixtures/ready_plugins.rs`).
 #[cfg(test)]
 #[path = "../../tests/fixtures/ready_plugins.rs"]
-mod ready_plugins;
+pub(crate) mod ready_plugins;
 
 #[cfg(test)]
 #[path = "../tests/ready_tests.rs"]

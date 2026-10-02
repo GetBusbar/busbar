@@ -309,6 +309,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         dispatcher: Adopter::unwatched(),
         conns: None,
         max_inflight_cap: 8,
+        opening: None,
     })
     .expect("every selected instance binds");
     assert_eq!(loaded.bound.len(), selected.len());
@@ -353,6 +354,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
         dispatcher: Adopter::unwatched(),
         conns: None,
         max_inflight_cap: 8,
+        opening: None,
     })
     .unwrap_err();
     assert!(err.starts_with("door: ") && err.contains("repack"), "{err}");
@@ -762,4 +764,59 @@ fn a_candidate_carries_its_statements_needs() {
         c.needs,
         vec![need(DIRECTION_INBOUND, "scheme-a", "ingress")]
     );
+}
+
+/// DISCOVERY AT BOOT (ARCHITECT 2026-10-02): the one load OPENS every auth instance it binds and
+/// awaits its `ready` before it answers, so before any listener binds. RED: an auth door whose
+/// `ready` errs refuses the boot with the plugin's own text, named by its instance (1.5.5 refused
+/// the boot when discovery failed). The GREEN twin boots.
+#[test]
+fn red_an_auth_door_whose_ready_errs_refuses_the_boot_with_its_text() {
+    use crate::dispatch::ready::ready_plugins::auth;
+    use crate::dispatch::{DispatchConfig, Dispatcher};
+
+    let boot = |settings: &str| {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let c = Candidate::linked(auth::door).expect("the auth witness states itself");
+        assert_eq!(c.kind, KindCode::Auth);
+        let root = kind_of(KindCode::Auth)
+            .root_key()
+            .expect("auth has a root key");
+        let plan = doc(&format!(
+            r#"{{"{root}": {{"oidc": {{"module": "{}", "settings": "{settings}"}}}}}}"#,
+            auth::NAME
+        ));
+        let cands = [c];
+        let selected = select(&Uses::of(&plan), &cands);
+        assert_eq!(selected.len(), 1, "the auth entry selects the witness");
+        let logs =
+            PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
+        load(&LoadRequest {
+            candidates: &cands,
+            selected: &selected,
+            logs: &logs,
+            metrics: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: None,
+            max_inflight_cap: 8,
+            opening: Some(Opening {
+                doc: &plan,
+                dispatcher: &d,
+            }),
+        })
+        .map(|l| l.bound.len())
+    };
+    assert_eq!(
+        boot("err:discovery: the issuer answered 503"),
+        Err(
+            "oidc: plugin 'ready-auth-witness' ready failed: discovery: the issuer answered 503"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        boot("pend"),
+        Ok(1),
+        "a ready that pends boots after its wake"
+    );
+    assert_eq!(boot("ok"), Ok(1), "the GREEN twin boots");
 }

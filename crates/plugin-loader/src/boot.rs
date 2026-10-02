@@ -446,6 +446,7 @@ pub fn load_planes(
         dispatcher,
         max_inflight_cap,
         conns,
+        opening: None,
     })?;
     loaded
         .bound
@@ -661,6 +662,21 @@ pub struct LoadRequest<'a> {
     pub max_inflight_cap: u32,
     /// The host's one connection table ([`Bind::conns`]).
     pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    /// What OPENS each auth instance the load binds, and awaits its `ready`; `None` = bind only.
+    pub opening: Option<Opening<'a>>,
+}
+
+/// THE AUTH OPEN AND READY at the one load (ARCHITECT 2026-10-02, discovery at boot): every bound
+/// auth instance is opened with its settings block from `doc`, then its `ready` is awaited on
+/// `dispatcher` (the one that adopts it) before the load answers, so before any listener binds. An
+/// instance that will not open or will not be ready refuses the boot with the plugin's own text,
+/// as 1.5.5 refused a boot whose discovery failed.
+#[derive(Clone, Copy)]
+pub struct Opening<'a> {
+    /// The plan's document, where each instance's settings block lives.
+    pub doc: &'a serde_json::Value,
+    /// The dispatcher every instance is adopted by ([`LoadRequest::dispatcher`] is its adopter).
+    pub dispatcher: &'a crate::dispatch::Dispatcher,
 }
 
 /// What [`load`] bound: `(instance, bound)`, in selection order.
@@ -696,9 +712,42 @@ pub fn load(req: &LoadRequest<'_>) -> Result<Loaded, String> {
             conns: req.conns.clone(),
         };
         let bound = bind_one(c, bind).map_err(|e| format!("{}: {e}", s.instance))?;
+        if let (Some(opening), Bound::Auth(plugin)) = (req.opening, &bound) {
+            open_ready(plugin, opening, &s.instance).map_err(|e| format!("{}: {e}", s.instance))?;
+        }
         loaded.bound.push((s.instance.clone(), bound));
     }
     Ok(loaded)
+}
+
+/// Open `plugin` (the instance `instance`) with its settings block in `opening.doc`, then await its
+/// `ready` on `opening.dispatcher`.
+fn open_ready<K: crate::dispatch::Kind>(
+    plugin: &Plugin<K>,
+    opening: Opening<'_>,
+    instance: &str,
+) -> Result<(), String> {
+    use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_JSON};
+    use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
+    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+
+    let settings = instance_settings(opening.doc, K::CODE, instance)
+        .map(|(v, _)| serde_json::to_vec(v).unwrap_or_default())
+        .unwrap_or_default();
+    let mut i: OpenIn = blank_in();
+    i.settings = Blob {
+        ptr: settings.as_ptr(),
+        len: settings.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    i.generation = 1;
+    let mut f = crate::dispatch::Frame::new(i, blank_out::<OpenOut>());
+    let opened = plugin.call(slot::OPEN, &mut f);
+    if opened.outcome != Outcome::Ready {
+        return Err(opened.open_failure(plugin.name()));
+    }
+    plugin.ready(opening.dispatcher, crate::dispatch::ready::READY_DEADLINE)
 }
 
 fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {
