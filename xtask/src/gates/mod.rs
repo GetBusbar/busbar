@@ -410,7 +410,8 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     // other 33. DRAIN: Phase 4 — the plane owners dedupe each plane-local copy or sign its ledger
     // row, prune the stale ledger rows, take the axis identity questions out of the agnostic core
     // and collapse each second spelling. Strike each line in the commit that turns its row green.
-    "structure-lint:axis:purity",
+    // `structure-lint:axis:purity` STRUCK 2026-10-02 (GATE-GREEN, ee06655df0): the contract asks no
+    // claim its transport and the ABI handshake has one home, so the row is green.
     "structure-lint:plane-dup:unledgered",
 ];
 
