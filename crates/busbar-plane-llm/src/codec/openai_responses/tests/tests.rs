@@ -751,6 +751,7 @@ fn test_write_response_function_call_item_has_native_id() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
@@ -900,6 +901,7 @@ fn test_write_response_preserves_text_after_tool_order() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
@@ -1083,6 +1085,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let out1 = writer.write_response(&make_ir());
@@ -2377,6 +2380,7 @@ fn test_unknown_stop_reason_maps_to_completed() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -5122,6 +5126,7 @@ fn test_write_response_emits_model_fallback() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     // Cross-protocol: no model in the IR → DEFAULT_MODEL, never an absent key.
@@ -5247,6 +5252,7 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let writer = ResponsesWriter;
 
@@ -6552,6 +6558,7 @@ fn write_response_reconstructs_input_tokens_total_with_cached_details() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
@@ -7066,6 +7073,7 @@ fn responses_spec_required_members_present_on_every_response_shape() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     });
     assert_required(&body, "non-stream body");
     assert_eq!(body["incomplete_details"], serde_json::Value::Null);
@@ -7085,6 +7093,7 @@ fn responses_spec_required_members_present_on_every_response_shape() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     });
     assert_required(&truncated, "non-stream incomplete body");
     assert_eq!(
@@ -7233,6 +7242,7 @@ fn write_response_emits_url_citations_without_inventing_fields() {
         end_index: end,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
 
     let text = "The tide turns at dawn. Nothing else is known.";
@@ -7299,6 +7309,7 @@ fn write_response_emits_url_citations_without_inventing_fields() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let writer = ResponsesWriter;
@@ -7354,6 +7365,7 @@ fn streamed_citations_reach_the_assembled_output_item() {
             end_index: None,
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }]),
     });
     let close_frames =
@@ -7841,6 +7853,7 @@ fn writer_accumulators_are_bounded_in_entry_count() {
         end_index: None,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     for index in 0..(MAX_OPEN_TOOLS + 50) {
         writer.append_tool_arguments(index, "{}");
@@ -7958,6 +7971,7 @@ fn responses_url_citation_survives_a_responses_round_trip() {
                 end_index: Some(10),
                 encrypted_index: None,
                 raw: None,
+                ..Default::default()
             }],
             refusal: false,
         }],
@@ -7973,6 +7987,7 @@ fn responses_url_citation_survives_a_responses_round_trip() {
         system_fingerprint: None,
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let writer = ResponsesWriter;

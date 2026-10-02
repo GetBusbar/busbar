@@ -26,7 +26,7 @@ fn refusal_answer() -> IrResponse {
             ..Default::default()
         },
         ..Default::default()
-    }
+    }..Default::default()
 }
 
 /// IR-02: a refusal message synthesized into a stream opens a refusal text block.

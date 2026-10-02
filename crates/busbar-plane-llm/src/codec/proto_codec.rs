@@ -1316,7 +1316,8 @@ impl ToolIdRemap {
             | crate::codec::ir::IrBlock::Thinking { .. }
             | crate::codec::ir::IrBlock::Image { .. }
             | crate::codec::ir::IrBlock::Media { .. }
-            | crate::codec::ir::IrBlock::Json(_) => {}
+            | crate::codec::ir::IrBlock::Json(_)
+            | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
         }
     }
 }
@@ -1394,7 +1395,8 @@ pub fn decode_request_tool_ids(
             | crate::codec::ir::IrBlock::Thinking { .. }
             | crate::codec::ir::IrBlock::Image { .. }
             | crate::codec::ir::IrBlock::Media { .. }
-            | crate::codec::ir::IrBlock::Json(_) => {}
+            | crate::codec::ir::IrBlock::Json(_)
+            | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
         }
     }
     for msg in messages {

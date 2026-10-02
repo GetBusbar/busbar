@@ -1267,7 +1267,7 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             }
             doc
         }
-        crate::codec::ir::IrBlock::Json(_) => {
+        crate::codec::ir::IrBlock::Json(_) | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
             // A structured-json tool-result block has no top-level Anthropic content shape; it is
             // dropped before reaching write_block (see the json-tool-result filter in the ToolResult
             // arm). Defensive empty placeholder for the unreachable case.
