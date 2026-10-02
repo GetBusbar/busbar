@@ -994,7 +994,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         root::linked::door_planes(),
         &root::dispatch::dispatcher(),
         &late_services,
-        &deploy.plane_raw,
+        &deploy.door_sections(),
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
