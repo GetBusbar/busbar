@@ -869,6 +869,12 @@ each dialect translates, field by field, is listed in the generated
 - A request translated between LLM dialects no longer carries an empty text block in place of a
   content block the target dialect cannot represent, and an answer translated back no longer
   delivers one; the block is dropped with a warning and an audit row naming its wire path.
+- A request translated between LLM dialects no longer has a value substituted for one the target
+  dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead
+  of relabelled `png`, and a Gemini `thinkingBudget: -1` ("the model decides") is dropped on a
+  target with no such setting instead of sent as the `medium` effort; each drop is warned and
+  audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
+  answered with the caller's own 400 error instead of being translated.
 
 ### Fixed
 
