@@ -10,7 +10,7 @@
 //!   `random.fill`; its `contextId` is the caller's, or the id when the caller named none.
 //! * A request naming a task the caller holds reuses that task's identity ([`named_tasks`]).
 //! * The far end's answer leaves under busbar's identity ([`rewrite_identity`]); the far end's own
-//!   id is read first ([`backend_task_id`]) so a later request naming busbar's id is sent on under
+//!   id is read first ([`backend_task_id`]) so a following request naming busbar's id is sent on under
 //!   the far end's ([`translate_request`]).
 //! * A refused hop that opened or names a task answers with that task as a `ResourceInfo`
 //!   ([`about_task`]).
