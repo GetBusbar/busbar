@@ -352,7 +352,6 @@ pub const UNITS_FLOOR: u32 = 2;
 /// THE ONE BILLING RULE ON A COUNT'S SOURCE: [`UNITS_REPORTED`] and [`UNITS_FLOOR`] bill;
 /// [`UNITS_ESTIMATED`] (and any other value) never does. Every kernel site that ledgers, meters or
 /// reads a fee unit from a plane's counts asks this, never a source compare of its own.
-#[must_use]
 pub const fn units_bill(source: u32) -> bool {
     matches!(source, UNITS_REPORTED | UNITS_FLOOR)
 }

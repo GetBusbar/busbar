@@ -304,7 +304,7 @@ fn named(
 
 /// The counts that bill ([`units_bill`]: reported or floor, never an estimate), as `(class, amount)`:
 /// what a bill ledgers.
-fn reported(units: &[UnitCount]) -> Vec<(u32, u64)> {
+pub(super) fn reported(units: &[UnitCount]) -> Vec<(u32, u64)> {
     units
         .iter()
         .filter(|u| units_bill(u.source))

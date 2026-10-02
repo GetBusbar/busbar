@@ -118,10 +118,10 @@ fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
         // ONE CUMULATIVE COUNT per class and source, and ONE BILLING COUNT per class: a second is a
         // contradiction (two running totals of one thing), never a sum the host would have to add
         // and never a choice it would have to make between a reported count and a floor.
-        let bills = units_bill(u.source);
-        if counts[..i].iter().any(|p| {
-            p.class == u.class && (p.source == u.source || (bills && units_bill(p.source)))
-        }) {
+        if counts[..i]
+            .iter()
+            .any(|p| p.class == u.class && units_bill(p.source) == units_bill(u.source))
+        {
             return Err(fault(Rule::Contradiction, "unit.class"));
         }
     }
