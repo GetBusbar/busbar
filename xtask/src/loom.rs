@@ -34,26 +34,12 @@ pub fn ran_count(output: &str) -> u64 {
         .sum()
 }
 
+/// The run, as one cargo command string (so `gate package-selectors` checks its selectors).
+pub const RUN: &str = "cargo test --release -p busbar -p busbar-kernel --bins --lib --features loom-model txn_loom -- --nocapture";
+
 /// The cargo arguments of the run; `extra` follows `--nocapture`, as the script's `"$@"` did.
 pub fn cargo_args(extra: &[String]) -> Vec<String> {
-    let mut a: Vec<String> = [
-        "test",
-        "--release",
-        "-p",
-        "busbar",
-        "-p",
-        "busbar-kernel",
-        "--bins",
-        "--lib",
-        "--features",
-        "loom-model",
-        "txn_loom",
-        "--",
-        "--nocapture",
-    ]
-    .iter()
-    .map(|s| (*s).to_string())
-    .collect();
+    let mut a: Vec<String> = RUN.split_whitespace().skip(1).map(str::to_string).collect();
     a.extend(extra.iter().cloned());
     a
 }

@@ -28,6 +28,9 @@ pub const PACKAGE: &str = "busbar-kernel";
 /// The rustc cfg that compiles the fence.
 pub const CFG: &str = "txn_fence_red";
 
+/// The build, as one cargo command string (so `gate package-selectors` checks its selector).
+pub const RUN: &str = "cargo rustc -p busbar-kernel --lib -- --cfg txn_fence_red";
+
 /// The three refusals the fence exists to produce. A failure without all three failed for some
 /// other reason (a drifted file, a missing package) and proves nothing.
 pub const EXPECTED: [&str; 3] = [
@@ -81,7 +84,7 @@ pub fn main(args: &[String]) -> i32 {
     };
     println!("== txn compile fence (this build MUST fail) ==");
     let out = match Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args(["rustc", "-p", PACKAGE, "--lib", "--", "--cfg", CFG])
+        .args(RUN.split_whitespace().skip(1))
         .current_dir(&root)
         .output()
     {
@@ -119,6 +122,12 @@ mod tests {
             .iter()
             .map(|e| format!("error[E0000]: {e}\n"))
             .collect()
+    }
+
+    #[test]
+    fn the_build_names_the_fence_crate_and_cfg() {
+        assert!(super::RUN.contains(&format!("-p {} ", super::PACKAGE)));
+        assert!(super::RUN.ends_with(&format!("--cfg {}", super::CFG)));
     }
 
     #[test]
