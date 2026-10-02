@@ -7,6 +7,7 @@
 //! The CI every plugin repo runs is this tree's reusable `.github/workflows/plugin-ci.yml`, taken at
 //! the repo's pin (OWNER 2026-10-02).
 
+pub mod plugin_gates;
 pub mod registry;
 
 #[cfg(test)]
