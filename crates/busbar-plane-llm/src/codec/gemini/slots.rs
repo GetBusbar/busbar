@@ -83,7 +83,7 @@ pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_js
                 // OAI-09: Gemini has no free-text / grammar tool (N).
                 IrHostedTool::Custom(_) => {
                     crate::codec::drops::writer_drop!(
-                        crate::codec::drops::member("tools"),
+                        crate::codec::drops::TOOLS,
                         &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
                         [hosted_tool = tool.kind_str(),],
                         "dropping an OpenAI custom tool on Gemini egress: Gemini has no free-text \
@@ -109,7 +109,7 @@ pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_js
             };
             if params_set {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tools"),
+                    crate::codec::drops::TOOLS,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [hosted_tool = tool.kind_str(),],
                     "dropping hosted-tool parameters on Gemini egress: {key} takes none of them; \
@@ -177,7 +177,7 @@ pub(super) fn write_gemini_labels(metadata: &[(String, String)]) -> serde_json::
     }
     if dropped > 0 {
         crate::codec::drops::writer_drop!(
-            crate::codec::drops::member("metadata"),
+            crate::codec::drops::METADATA,
             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
             [dropped, ],
             "dropping metadata entries on Gemini egress: labels allow at most 64 entries of \

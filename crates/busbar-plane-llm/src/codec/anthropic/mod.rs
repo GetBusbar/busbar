@@ -375,12 +375,12 @@ const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
 /// The answer content-block grammar.
 /// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
 const IR_BLOCK_KINDS: &[(&str, &str)] = &[
-    ("text", "type=text"),
-    ("image", "type=image"),
-    ("document", "type=document"),
-    ("thinking", "type=thinking"),
-    ("tool_use", "type=tool_use"),
-    ("tool_result", "type=tool_result"),
+    (crate::codec::drops::kind::TEXT, "type=text"),
+    (crate::codec::drops::kind::IMAGE, "type=image"),
+    (crate::codec::drops::kind::DOCUMENT, "type=document"),
+    (crate::codec::drops::kind::THINKING, "type=thinking"),
+    (crate::codec::drops::kind::TOOL_USE, "type=tool_use"),
+    (crate::codec::drops::kind::TOOL_RESULT, "type=tool_result"),
 ];
 
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
@@ -1194,7 +1194,7 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                         }),
                         None => {
                             crate::codec::drops::writer_drop!(
-                                crate::codec::drops::block("image"),
+                                crate::codec::drops::IMAGE,
                                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                 [media_type = %media_type, ],
                                 "dropping image block on Anthropic egress: media_type is not one of \
@@ -1410,7 +1410,7 @@ fn attachment_is_sendable(block: &crate::codec::ir::IrBlock) -> bool {
                     return true;
                 }
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::block("image"),
+                    crate::codec::drops::IMAGE,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [vendor = %vendor, ],
                     "dropping unresolvable vendor-scoped image reference on Anthropic egress: a \
@@ -1423,7 +1423,7 @@ fn attachment_is_sendable(block: &crate::codec::ir::IrBlock) -> bool {
                     return true;
                 }
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::block("image"),
+                    crate::codec::drops::IMAGE,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [media_type = %media_type, ],
                     "dropping image block from anthropic request egress: media_type is not one of \
@@ -1448,7 +1448,7 @@ fn attachment_is_sendable(block: &crate::codec::ir::IrBlock) -> bool {
                     if *vendor != VENDOR_NAME =>
                 {
                     crate::codec::drops::writer_drop!(
-                        crate::codec::drops::block("document"),
+                        crate::codec::drops::DOCUMENT,
                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                         [vendor = %vendor, ],
                         "dropping document attachment from anthropic request egress: the source is \
@@ -1460,7 +1460,7 @@ fn attachment_is_sendable(block: &crate::codec::ir::IrBlock) -> bool {
                         return true;
                     }
                     crate::codec::drops::writer_drop!(
-                        crate::codec::drops::block("document"),
+                        crate::codec::drops::DOCUMENT,
                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                         [media_type = %media_type, ],
                         "dropping document attachment from anthropic request egress: anthropic has \
@@ -1552,7 +1552,7 @@ fn write_message(
             }
             if block.is_citation_carrier() {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::block("text"),
+                    crate::codec::drops::TEXT,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping citations with no text on Anthropic egress: an empty text block is \
@@ -1576,7 +1576,7 @@ fn write_message(
     blocks.extend(inserts.map(|(_, b)| b));
     if dropped_unsigned_thinking > 0 {
         crate::codec::drops::writer_drop!(
-            crate::codec::drops::block("thinking"),
+            crate::codec::drops::THINKING,
             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
             [dropped = dropped_unsigned_thinking,],
             "dropped assistant thinking block(s) with no Anthropic signature (none, or another \
@@ -1610,7 +1610,7 @@ fn write_tool(tool: &crate::codec::ir::IrTool) -> Option<serde_json::Value> {
             return Some(hosted.clone());
         }
         crate::codec::drops::writer_drop!(
-            crate::codec::drops::member("tools"),
+            crate::codec::drops::TOOLS,
             &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
             [],
             "dropping a hosted tool on Anthropic egress: it is not an Anthropic-defined tool and has \

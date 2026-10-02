@@ -178,7 +178,7 @@ pub(super) fn anthropic_served_tier(tier: Option<&str>) -> Option<&'static str> 
     };
     if mapped.is_none() {
         crate::codec::drops::writer_drop!(
-            crate::codec::drops::member("service_tier"),
+            crate::codec::drops::SERVICE_TIER,
             &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
             [service_tier = word,],
             "dropping usage.service_tier on Anthropic response egress: Anthropic names only \

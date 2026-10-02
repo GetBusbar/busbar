@@ -359,7 +359,7 @@ impl ProtocolWriter for GeminiWriter {
                         // projection — emitting it would corrupt the part. Drop with a warn.
                         crate::codec::ir::IrImageSource::Vendor { .. } => {
                             crate::codec::drops::writer_drop!(
-                                crate::codec::drops::block("image"),
+                                crate::codec::drops::IMAGE,
                                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                 [],
                                 "dropping unresolvable vendor-scoped image reference on Gemini \
@@ -421,7 +421,7 @@ impl ProtocolWriter for GeminiWriter {
                                 part.insert(FIELD_THOUGHT_SIGNATURE.to_string(), serde_json::json!(sig));
                             }
                             (Some(_), Some(origin)) => crate::codec::drops::writer_drop!(
-                                crate::codec::drops::block("thinking"),
+                                crate::codec::drops::THINKING,
                                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                 [?origin, ],
                                 "dropping a foreign reasoning signature on Gemini egress: only a \
@@ -532,7 +532,7 @@ impl ProtocolWriter for GeminiWriter {
             // rather than emitting a directive over an empty tool set.
             if func_tools.is_empty() {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tool_choice"),
+                    crate::codec::drops::TOOL_CHOICE,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping tool_choice on Gemini egress: a functionCallingConfig with no \
@@ -561,7 +561,7 @@ impl ProtocolWriter for GeminiWriter {
         // `is_some()` gate means this can only fire on a request that actually carried the flag.
         if req.parallel_tool_calls.is_some() {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("parallel_tool_calls"),
+                crate::codec::drops::PARALLEL_TOOL_CALLS,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "dropping parallel_tool_calls on Gemini egress: generateContent has no parallelism \
@@ -626,7 +626,7 @@ impl ProtocolWriter for GeminiWriter {
             let clamped = top_logprobs.min(GEMINI_MAX_TOP_LOGPROBS);
             if clamped != top_logprobs {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("top_logprobs"),
+                    crate::codec::drops::TOP_LOGPROBS,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [requested = top_logprobs, clamped,],
                     "clamping top_logprobs to Gemini's max (5)"

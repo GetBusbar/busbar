@@ -95,7 +95,7 @@ pub(super) fn write_hosted_tool(
             );
             if !blocked.is_empty() {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tools"),
+                    crate::codec::drops::TOOLS,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping hosted-tool blocked_domains on Anthropic egress: Anthropic accepts \
@@ -128,7 +128,7 @@ pub(super) fn write_hosted_tool(
             }
             if search.search_context_size.is_some() {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tools"),
+                    crate::codec::drops::TOOLS,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping web search search_context_size on Anthropic egress: the Anthropic web \
@@ -159,7 +159,7 @@ pub(super) fn write_hosted_tool(
         // by `dropped_egress_controls`.
         crate::codec::ir::IrHostedTool::Custom(_) => {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("tools"),
+                crate::codec::drops::TOOLS,
                 &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
                 [hosted_tool = tool.kind_str(),],
                 "dropping an OpenAI custom tool on Anthropic egress: Anthropic has no free-text / \

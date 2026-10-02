@@ -257,7 +257,7 @@ impl ProtocolWriter for ResponsesWriter {
                                     .filter(|_| super::slots::own_signature(*signature_origin));
                                 if signature.is_some() && emit_sig.is_none() {
                                     crate::codec::drops::writer_drop!(
-                                        crate::codec::drops::block("thinking"),
+                                        crate::codec::drops::THINKING,
                                         &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                         [origin = ?signature_origin, ],
                                         "dropping a foreign reasoning signature on Responses egress: \
@@ -292,7 +292,7 @@ impl ProtocolWriter for ResponsesWriter {
                             // the loss is visible rather than silent.
                             crate::codec::ir::IrBlock::Thinking { redacted, .. } if !*redacted => {
                                 crate::codec::drops::writer_drop!(
-                                    crate::codec::drops::block("thinking"),
+                                    crate::codec::drops::THINKING,
                                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                                     [],
                                     "dropping non-Assistant Thinking block on Responses egress: a \
@@ -418,7 +418,7 @@ impl ProtocolWriter for ResponsesWriter {
         if let Some(names) = &req.allowed_tools {
             if !has_tools {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tool_choice"),
+                    crate::codec::drops::TOOL_CHOICE,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping allowed_tools tool_choice on Responses egress: tool_choice is only \
@@ -433,7 +433,7 @@ impl ProtocolWriter for ResponsesWriter {
         } else if let Some(tc) = &req.tool_choice {
             if !has_tools {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("tool_choice"),
+                    crate::codec::drops::TOOL_CHOICE,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping tool_choice on Responses egress: tool_choice is only allowed when \
@@ -454,7 +454,7 @@ impl ProtocolWriter for ResponsesWriter {
         if let Some(parallel) = req.parallel_tool_calls {
             if !has_tools {
                 crate::codec::drops::writer_drop!(
-                    crate::codec::drops::member("parallel_tool_calls"),
+                    crate::codec::drops::PARALLEL_TOOL_CALLS,
                     &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                     [],
                     "dropping parallel_tool_calls on Responses egress: it has no accompanying \
@@ -497,7 +497,7 @@ impl ProtocolWriter for ResponsesWriter {
 
         if crate::codec::carry::Slot::OutputModalities.carried(req) {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::member("output_modalities"),
+                crate::codec::drops::OUTPUT_MODALITIES,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "responses writer: /v1/responses models no output-modality ask; dropping the \
@@ -1892,7 +1892,7 @@ fn input_image_source_part(source: &crate::codec::ir::IrImageSource) -> Option<s
         // warn rather than corrupt the block.
         crate::codec::ir::IrImageSource::Vendor { .. } => {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::block("image"),
+                crate::codec::drops::IMAGE,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "dropping unresolvable foreign vendor image reference on Responses egress: no \
@@ -1952,7 +1952,7 @@ fn input_file_part(
         }
         crate::codec::ir::IrImageSource::Vendor { vendor, .. } => {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::block("document"),
+                crate::codec::drops::DOCUMENT,
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [vendor = %vendor, ],
                 "dropping document attachment on Responses egress: the source is a foreign vendor \
