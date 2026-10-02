@@ -163,12 +163,12 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
         .iter()
         .position(|e| matches!(e, super::harness::Recorded::ProbeReleased(..)));
     // Unconditionally, not behind an `if let`: an attempt that won the probe and recorded nothing
-    // would leave the cell half-open — the member excluded from every later pick — and skipping
+    // would leave the cell half-open — the member excluded from every pick after it — and skipping
     // the assertion for the absence would report that as a pass.
     let observed = observed.expect("a failed attempt tells the breaker what happened");
     assert!(
         released.is_none_or(|released| observed < released),
-        "the outcome is recorded first, which is what makes any later release a safe no-op: \
+        "the outcome is recorded first, which is what makes any release after it a safe no-op: \
          {log:?}"
     );
 }

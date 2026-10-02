@@ -70,11 +70,11 @@ enum Phase {
     Terminal(String),
     /// A spill into this pool (degraded).
     Spill(String),
-    /// Every path is spent: every later step answers this shed.
+    /// Every path is spent: every step from here answers this shed.
     Shed(Shed),
 }
 
-/// A member the walk took for the next attempt. It is excluded from every later pick of the unit,
+/// A member the walk took for the next attempt. It is excluded from every pick of the unit after it,
 /// and the caller owns its permit and the probe it may have won until the attempt records an
 /// outcome.
 #[derive(Debug)]
@@ -289,7 +289,7 @@ impl Walk {
         Some(self.take(&pool.name, member, picked.permit, probe, !primary))
     }
 
-    /// Take `member` of `pool` for the next attempt: excluded from every later pick of the unit.
+    /// Take `member` of `pool` for the next attempt: excluded from every pick of the unit after it.
     fn take(
         &mut self,
         pool: &str,
@@ -340,7 +340,7 @@ impl Walk {
         })
     }
 
-    /// The wait is over: a member it won is taken (degraded), and from here every later step
+    /// The wait is over: a member it won is taken (degraded), and from here every step
     /// answers the pool's shed. `Err` is that shed, when the wait won nothing.
     ///
     /// # Errors
