@@ -685,7 +685,7 @@ impl EgressFarEnd<'_> {
             }
             // After the first answer a failure or a spent deadline ends the answer here: the
             // caller has what arrived, and there is nothing to fail over to.
-            Err(_) | Ok(Err(_)) => return Some(self.end(false)),
+            Err(_) | Ok(Err(_)) => return Some(self.cut(token)),
             Ok(Ok(piece)) => piece,
         };
         match piece.kind {
@@ -717,6 +717,33 @@ impl EgressFarEnd<'_> {
             self.settle(&mut w);
         }
         piece
+    }
+
+    /// THE ANSWER WAS CUT after its first piece: the connection failed or the send's deadline
+    /// passed before it completed. A success's head was recorded as a success, but the answer never
+    /// arrived intact, so a COMPENSATING transient failure is recorded against the member, and the
+    /// budget unit its success spent is given back — 1.5.5's mid-body transfer failure (v1.5.5
+    /// `crates/busbar/src/proxy/engine/mod.rs:329-353`, buffered; `crates/busbar/src/proxy/
+    /// response_body.rs:358-409`, streamed). A relayed failure's body that is cut recorded its own
+    /// outcome on its head and is not compensated.
+    fn cut(&self, token: &Pass<Route>) -> FarPiece {
+        let e = self.egress;
+        {
+            let w = self.lock();
+            if let Some(live) = w.live.as_ref().filter(|l| l.error_left.is_none()) {
+                let pool = Self::metric_pool(&live.pool, &live.member).to_string();
+                if e.breaker.observe(
+                    &live.pool,
+                    live.member.destination,
+                    Outcome::Transient { retry_after: None },
+                    e.clock.now_secs(),
+                    token,
+                ) {
+                    e.telemetry.breaker_trip(&pool, live.member.destination);
+                }
+            }
+        }
+        self.end(false)
     }
 
     /// The answer ended: `clean` keeps the budget unit its success spent.

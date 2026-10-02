@@ -280,10 +280,15 @@ fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
         delivered.pieces, 4,
         "only the pieces that fit inside the ceiling are relayed"
     );
+    // A cut answer is a partial one: 1.5.5 recorded the compensating transient on a stream the
+    // ceiling ended (v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-299`).
     assert_eq!(
-        node.breaker.budget_net(DestinationId::new(0)),
-        0,
-        "a cut answer is a partial one: its budget unit is given back"
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![
+            busbar_kernel_egress::ports::Outcome::Success,
+            busbar_kernel_egress::ports::Outcome::Transient { retry_after: None }
+        ],
+        "a cut answer is a partial one: the transfer is recorded as failed"
     );
 }
 

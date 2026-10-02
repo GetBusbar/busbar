@@ -153,10 +153,14 @@ fn a_truncated_answer_gives_the_request_budget_unit_back() {
         0,
         "the unit spent on the success is given back when the body does not arrive whole"
     );
+    // v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:329-353` (buffered) and
+    // `crates/busbar/src/proxy/response_body.rs:358-409` (streamed): the headers recorded a
+    // success, the body never arrived intact, so a compensating transient is recorded AND the
+    // budget unit is refunded.
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
-        vec![Outcome::Success],
-        "the success was recorded on the first piece, before the answer was cut"
+        vec![Outcome::Success, Outcome::Transient { retry_after: None }],
+        "and the failed transfer is recorded as a compensating transient"
     );
 }
 
