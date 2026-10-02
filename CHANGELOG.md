@@ -540,6 +540,10 @@ than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the
 overlay at boot; the accepted-then-ignored `persist:` field on `PUT /api/v1/admin/config/settings`
 is now a `400` naming the field; and the always-`null` `at` field on the hook view is joined by
 `fires_at`, which carries the resolved stages (`at` itself is still served, as in 1.5.5). Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
+- A hook with `on_error: reject` whose transform fails answers 503 (fail closed, as the docs always
+  said); 1.5.5 passed the request through.
+- 1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a
+  message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).
 
 ### Deprecated env vars still honoured
 
@@ -845,6 +849,20 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   carries the citations the buffered one carries, in every client protocol with a citation member:
   Anthropic, Bedrock, Gemini, Responses and Cohere. **Migration:** none; a streaming client that
   does not read citation events is unaffected.
+- busbar is invisible to upstreams. On a same-dialect route every client header and body field
+  passes through unchanged, except the fields busbar governs: credential headers (each dialect
+  declares its own, e.g. Authorization, x-api-key, api-key, x-goog-api-key), replaced by busbar's
+  upstream credential; tenant selectors (e.g. OpenAI-Organization, OpenAI-Project), set from
+  busbar's config and never from the caller; the model, which is mapped; hook rewrites; and the
+  HTTP hop-by-hop headers plus Host and Content-Length, re-derived for the upstream connection. On
+  a translated route busbar translates what maps and drops the rest. There are no feature
+  allowlists; beta and version headers are ordinary fields. 1.5.5 forwarded no client header.
+- A `prompt: ro|rw` hook sees tool-call arguments and tool results (the prompt projection walks
+  ToolUse input and ToolResult content); 1.5.5 showed only text blocks.
+- A Bedrock response served from an Anthropic upstream carries `usage.cacheDetails`, the per-TTL
+  split of the cache-write tokens (additive: billed counts are unchanged).
+- A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
+  shape the published Chat Completions schema defines.
 
 ### Fixed
 
