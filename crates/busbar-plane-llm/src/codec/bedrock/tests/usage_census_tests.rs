@@ -234,7 +234,8 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
         let (moved, gap) = match class {
             Class::Ledgered(di, dc, dw, dout) => {
                 let name = field.strip_prefix("usage.").expect("usage field");
-                usage[name] = serde_json::json!(7);
+                // 7 MORE than the base states (the base carries input and output already).
+                usage[name] = serde_json::json!(base[name].as_u64().unwrap_or(0) + 7);
                 // The stated total moves by what the count adds, so the identity still closes.
                 let adds = u64::try_from(di + dc + dw + dout).expect("non-negative");
                 usage["totalTokens"] = serde_json::json!(1100 + 7 * adds);
