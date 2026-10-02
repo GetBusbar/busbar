@@ -63,7 +63,9 @@ pub mod population;
 pub mod qa_names;
 pub mod reachability;
 pub mod response_header;
+pub mod script_allowlist;
 pub mod seal_witness;
+pub mod secret_hygiene;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
@@ -2544,6 +2546,21 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(design_docs_allowlist::DesignDocsAllowlistGate),
         summary: "docs/design holds the spec, the TODO, QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only",
+    },
+    Registration {
+        name: "secret-hygiene",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(secret_hygiene::SecretHygieneGate::shipped()),
+        summary: "no bare-string secret field, no .expose_secret() at a sink, no secret interpolated \
+                  into a returned message (REPORT-ONLY ledger rows; SECRET_GATE_REPORT_ONLY=0 blocks, #53)",
+    },
+    Registration {
+        name: "script-allowlist",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(script_allowlist::ScriptAllowlistGate),
+        summary: "every tracked .py/.sh/.bash is on qa/scripts-allowlist.toml with a class and a reason",
     },
     Registration {
         name: "design-bindings",
