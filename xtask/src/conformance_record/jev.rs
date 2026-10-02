@@ -19,12 +19,13 @@
 //!   | `relay.response` | the caller receives the far end's status and body byte for byte | plane.rs `encode_response`; driven.rs `FarEndReading::piece` |
 //!   | `relay.error` | a far-end 422 reaches the caller as the far end's own 422 bytes | the same passthrough, on the error arm |
 //!   | `refusal.unauthenticated` | no credential: refused before any far-end hop, `401`, body exactly `{"error":{"code":"invalid_request","message":<text>}}` | driven.rs `refusal_body`; plane.rs `authenticate` (no anonymous surface) |
-//!   | `usage.billable-success-only` | the success posts one fee on the jev lane and the 422 posts none | meta.rs `CLASS_DECISION` + plane.rs `meter` (signed design C-3); read off `GET /api/v1/admin/ledger/totals` |
+//!   | `usage.billable-success-only` | the success posts one fee on the jev lane carrying the 42 units the far end reported, and the 422 posts nothing | meta.rs `CLASS_DECISION` + plane.rs `meter` (signed design C-3); ARCHITECT ruling 2026-10-02 (CONFORMANCE-RIGS Q4) |
 //!
-//!   `usage.billable-success-only`'s READ SURFACE is a proposal to the ARCHITECT (handoff
-//!   CONFORMANCE-RIGS.md): the plane rules the quantity, nothing yet names the admin read that shows
-//!   it, and `ledger/totals`' `fee_count` ("one per billable client request on this row") is the
-//!   existing read whose words match.
+//!   `usage.billable-success-only` is read off `GET /api/v1/admin/ledger/totals` (ARCHITECT ruling
+//!   2026-10-02): on the jev lane `fee_count` must be exactly 1 AND the reported units must show.
+//!   The subject's own card prices the `decision` class at 1 micro-unit per unit
+//!   (`decisions.rate_card.<model>.units.decision: 1`, in the rig's generated config only), so the
+//!   lane's `priced_micros` IS the unit count: 42.
 //!
 //! The rules, in order: battery red or empty ⇒ `fail`; no subject binary ⇒ `not-run` (nothing was
 //! booted); a subject that does not boot ⇒ `fail`; `POST /v1/systemone` answering the absence code
@@ -201,22 +202,53 @@ pub fn is_jev_refusal(body: &[u8], code: &str) -> Result<(), String> {
     }
 }
 
-/// The fee count `GET /api/v1/admin/ledger/totals` reports on the jev lane.
-pub fn jev_fee_count(totals: &[u8]) -> Result<u64, String> {
+/// The units the far end reports on the success (`SUCCESS`'s `/usage/units`).
+pub const REPORTED_UNITS: u64 = 42;
+
+/// THE BILLING JUDGEMENT over `GET /api/v1/admin/ledger/totals` after one success and one 422: on
+/// the jev lane exactly one fee, priced at exactly [`REPORTED_UNITS`] micro-units (the card prices
+/// one unit at one micro-unit). Every other row is another lane's and is not read.
+pub fn judge_jev_ledger(totals: &[u8]) -> Result<(), String> {
     let v: Value =
         serde_json::from_slice(totals).map_err(|e| format!("ledger/totals is not JSON ({e})"))?;
     let rows = v
         .get("rows")
         .and_then(Value::as_array)
         .ok_or("ledger/totals has no `rows`")?;
-    Ok(rows
+    let mine: Vec<&Value> = rows
         .iter()
         .filter(|r| {
             r.get("lane").and_then(Value::as_str) == Some(MODEL)
                 && r.get("provider").and_then(Value::as_str) == Some(PROVIDER)
         })
+        .collect();
+    let fees: u64 = mine
+        .iter()
         .filter_map(|r| r.get("fee_count").and_then(Value::as_u64))
-        .sum())
+        .sum();
+    let mut micros: u128 = 0;
+    for r in &mine {
+        let text = r
+            .get("priced_micros")
+            .and_then(Value::as_str)
+            .ok_or("a jev ledger row carries no priced_micros text")?;
+        micros += text
+            .parse::<u128>()
+            .map_err(|_| format!("priced_micros `{text}` is not a non-negative integer"))?;
+    }
+    if fees != 1 {
+        return Err(format!(
+            "ledger/totals counts {fees} fee(s) on lane {MODEL}/{PROVIDER} after one success and \
+             one 422; billable-success-only is exactly 1"
+        ));
+    }
+    if micros != u128::from(REPORTED_UNITS) {
+        return Err(format!(
+            "the jev lane is priced at {micros} micro-unit(s); the far end reported \
+             {REPORTED_UNITS} units at 1 micro-unit each, so the ledger must show {REPORTED_UNITS}"
+        ));
+    }
+    Ok(())
 }
 
 fn check(ok: bool, finding: impl FnOnce() -> String) -> Result<(), String> {
@@ -307,7 +339,8 @@ impl Runner {
              models: {{}}\n\
              identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
              auth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: {{ file: {} }}\n\
-             decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n",
+             decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
+             \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1 }} }}\n",
             key_file.display()
         );
         let providers = format!(
@@ -492,7 +525,7 @@ impl Runner {
             },
         ));
 
-        // 4. One billable success, one 422: one fee on the jev lane.
+        // 4. One billable success, one 422: one fee on the jev lane, carrying the 42 units.
         let admin_bearer = format!("Bearer {admin_token}");
         run.checks.push((
             "usage.billable-success-only".into(),
@@ -508,15 +541,7 @@ impl Runner {
                 if r.status != 200 {
                     return Err(format!("ledger/totals answered {}", r.status));
                 }
-                jev_fee_count(&r.body)
-            })
-            .and_then(|n| {
-                check(n == 1, || {
-                    format!(
-                        "ledger/totals counts {n} fee(s) on lane {MODEL}/{PROVIDER} after one \
-                         success and one 422; billable-success-only is exactly 1"
-                    )
-                })
+                judge_jev_ledger(&r.body)
             }),
         ));
         drop(booted);

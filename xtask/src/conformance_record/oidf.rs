@@ -24,10 +24,15 @@
 //! to publish its metadata or to register the plan's clients ⇒ `fail`. A run that produced no
 //! module result at all ⇒ `not-run`.
 //!
-//! SEAMS THE ARCHITECT RULES (proposed here, listed in handoff CONFORMANCE-RIGS.md): the plan and
-//! variant each suite id names ([`SUITES`]); that the consent screen is reached with an EMPTY admin
-//! chain on this loopback subject so the suite's browser can approve; and the resource URL the
-//! suite calls with the issued token ([`RESOURCE_PATH`]).
+//! ARCHITECT RULINGS 2026-10-02 (handoff CONFORMANCE-RIGS.md). `oidf-oauth2` is the plan under
+//! `openid=plain_oauth` (the registry's words); `fapi2` is the FAPI2 Security Profile plan under the
+//! variant the FAPI2 design note (aba9904696, `oauth_as` FAPI knobs) names for busbar's claimed
+//! profile: `plain_oauth` + `private_key_jwt` + `dpop` + `plain_fapi`. The two are identical, so the
+//! plan runs ONCE and both verdicts are written from that run ([`SUITES`]; [`Runner::run_oidf`]
+//! deduplicates on the plan argument). The empty admin chain (so the suite's browser can approve on
+//! the consent screen) and the `0.0.0.0` data listener (so the suite's container reaches the
+//! subject) live ONLY in this rig's generated subject config and change no product default; the
+//! suite tests the issued token against a served route ([`RESOURCE_PATH`]).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -56,7 +61,7 @@ const SUBJECT_HOST: &str = "host.docker.internal";
 const ALIAS: &str = "busbar-conformance";
 /// The scope the plan asks for, and the subject grants self-registered clients.
 const SCOPE: &str = "conformance";
-/// The subject path the suite calls with an issued access token (proposed; see the module docs).
+/// The served subject route the suite calls with an issued access token (see the module docs).
 pub const RESOURCE_PATH: &str = "/mcp";
 
 /// One suite id: the plan it runs and the variant it runs under.

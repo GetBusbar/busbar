@@ -47,7 +47,7 @@ use crate::gitp;
 
 pub use a2a::{discriminates, governance_observed, NEGATIVE_PAIRS};
 pub use h2::{decide_h2, junit_cases, Case, CaseResult, H2Run};
-pub use jev::{decide_jev, is_jev_refusal, jev_fee_count, tests_passed, JevRun};
+pub use jev::{decide_jev, is_jev_refusal, judge_jev_ledger, tests_passed, JevRun, REPORTED_UNITS};
 pub use oidf::{decide_oidf, es256_jwk, module_results, OidfRun, SUITES as OIDF_SUITES};
 pub use rigs::{
     decide_legs, decide_llm, decide_voice, decide_ws, rig_for, Inputs, LlmRun, VoiceRun, WsRun,
