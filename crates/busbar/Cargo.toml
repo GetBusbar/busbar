@@ -409,7 +409,7 @@ proto-llm = "plane_node"
 
 [dev-dependencies]
 # root_listeners_are_the_connectors.rs: the TLS data door's certificate, generated per run.
-rcgen = { workspace = true }
+rcgen = { workspace = true, features = ["pem"] }
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
 # `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
 # is `#[async_trait]`, so its test impl needs the macro.

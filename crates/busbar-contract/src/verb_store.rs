@@ -4,10 +4,10 @@
 //! The kernel-verb store face and the idempotency replay window.
 //!
 //! This is the ABI face the admin verb-execution unit (which owns the verb *semantics*) and a
-//! loaded store's adapter in `busbar-plugin-loader` both bind to. It lives on the contract — the
-//! ONE ABI crate, DECISIONS #38 — so the two sides reach one face here rather than naming each
-//! other's crate (DECISIONS #40): the execution unit implements the verb over a `dyn Store`, the
-//! plugin-loader adapter answers it, and neither depends on the other.
+//! loaded store's adapter both bind to. It lives on the contract — the ONE ABI crate, DECISIONS
+//! #38 — so the two sides reach one face here rather than naming each other's crate (DECISIONS
+//! #40): the execution unit implements the verb over a `dyn Store`, the loaded store's adapter
+//! answers it, and neither depends on the other.
 //!
 //! The store seam here is the disaster-recovery primitives named in the architecture document's
 //! irreducible set (`chain_break`, `store_restore`, `reseal_epoch_floor`), plus the store-backed
