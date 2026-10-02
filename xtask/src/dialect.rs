@@ -25,6 +25,8 @@
 //!   `cap = <n>`; `drop_if = "thinking"` with `drop_warn = "<text>"` and
 //!   `drop_warn_value = true|false` (default true); `off_wire = "<reason>"` (a member busbar itself
 //!   reads or writes that is not in the published protocol, so not in the wire lock);
+//! * a `response` / `stream` row's `ir` names an ANSWER slot (`codec::carry::AnswerSlot`, read from
+//!   [`CARRY`]); any other name does not compile;
 //! * a `prim = "<name>"` row is a member the dialect's named structural code models: the walker
 //!   only counts it among the modelled keys (`ir` is optional);
 //! * `[controls]`: how a control slot beyond the rows is handled, one per line, `"<slot>" =
@@ -241,7 +243,28 @@ fn dialect_label(doc: &toml_lite::Document) -> Option<String> {
 }
 
 /// Compile one dialect's table file text.
-fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
+/// Where the plane's slot registries live.
+pub const CARRY: &str = "crates/busbar-plane-llm/src/codec/carry.rs";
+
+/// The answer-side slot names `carry.rs` registers (`AnswerSlot::X => "<name>"` in `AnswerSlot::name`):
+/// the only `ir` names a `response` / `stream` row may cite.
+fn answer_slots(cx: &Ctx) -> Result<BTreeSet<String>, String> {
+    let text = cx.read(CARRY)?;
+    let names: BTreeSet<String> = text
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("AnswerSlot::"))
+        .filter_map(|l| l.split_once("=> \"").map(|(_, r)| r))
+        .filter_map(|r| r.split_once('"').map(|(n, _)| n.to_string()))
+        .collect();
+    if names.is_empty() {
+        return Err(format!(
+            "{CARRY}: no AnswerSlot names (`AnswerSlot::X => \"<name>\"`)"
+        ));
+    }
+    Ok(names)
+}
+
+fn compile_one(all: &[Dialect], d: &Dialect, answer: &BTreeSet<String>) -> Result<String, String> {
     let source = format!("{DIALECT_DIR}/{}.toml", d.name);
     let mut uses: BTreeSet<&str> = BTreeSet::new();
     let mut body = String::new();
@@ -286,6 +309,13 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                     return Err(format!("{source}: [{path}] \"{key}\" names no ir slot"))
                 }
             };
+            if !emitted && prim.is_none() && !answer.contains(&slot) {
+                return Err(format!(
+                    "{source}: [{path}] \"{key}\": `{slot}` is not an answer slot (codec::carry::AnswerSlot \
+                     registers {}); a code-carried answer member is a `prim` row",
+                    answer.iter().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
             if emitted && prim.is_none() && segs.iter().any(|s| !matches!(s, Seg::Key(_))) {
                 return Err(format!(
                     "{source}: [{path}] \"{key}\": the {dir} walker carries object members only; \
@@ -532,13 +562,14 @@ fn read_all(cx: &Ctx) -> Result<Vec<Dialect>, String> {
 /// Compile every mapping file under [`DIALECT_DIR`].
 pub fn compile_all(cx: &Ctx) -> Result<Vec<Compiled>, String> {
     let all = read_all(cx)?;
+    let answer = answer_slots(cx)?;
     let mut out = all
         .iter()
         .map(|d| {
             Ok(Compiled {
                 source: format!("{DIALECT_DIR}/{}.toml", d.name),
                 target: gen_path(&d.name),
-                text: compile_one(&all, d)?,
+                text: compile_one(&all, d, &answer)?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -657,8 +688,9 @@ pub struct MapFile {
 /// compile is an `Err` naming it.
 pub fn load_maps(cx: &Ctx) -> Result<Vec<MapFile>, String> {
     let all = read_all(cx)?;
+    let answer = answer_slots(cx)?;
     for d in &all {
-        compile_one(&all, d)?;
+        compile_one(&all, d, &answer)?;
     }
     maps_of(&all)
 }
