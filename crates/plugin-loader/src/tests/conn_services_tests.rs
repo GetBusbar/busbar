@@ -924,3 +924,50 @@ fn establish_within_reaches_the_connect_raw_and_framed() {
     }
     assert!(refused.opened.lock().unwrap().is_empty(), "nothing opened");
 }
+
+/// `need.admit` for `need`, under `p`'s context.
+fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
+    use busbar_contract::abi::host::service::{op, NeedAdmitIn};
+    let i = NeedAdmitIn {
+        head: ServiceHead {
+            size: std::mem::size_of::<NeedAdmitIn>() as u32,
+            op: op::NEED_ADMIT,
+            handle: CompletionHandle {
+                ticket: Ticket::NONE,
+                seq: 0,
+                _reserved: 0,
+            },
+        },
+        need,
+        _reserved: 0,
+    };
+    // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
+    let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    let slot = crate::dispatch::services::HOST_SLOTS
+        .need_admit
+        .expect("need.admit is served");
+    let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
+    out.outcome.outcome()
+}
+
+/// `need.admit` answers the connection table's verdict on the need as it was declared: REFUSED
+/// before it is declared (and for a need the Statement does not have), REFUSED when the table
+/// refused it (a target source that resolved to nothing), READY once the table admitted it. RED:
+/// the host answered every ask REFUSED ("unimplemented"), so a sink that asks was never admitted.
+#[test]
+fn need_admit_answers_the_tables_verdict_on_the_declared_need() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(NEEDS)), &table);
+    assert_eq!(admit(&p, 0), Outcome::Refused, "not yet declared");
+    assert_eq!(
+        open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#),
+        Outcome::Ready
+    );
+    assert_eq!(admit(&p, 0), Outcome::Ready, "declared and admitted");
+    assert_eq!(admit(&p, 1), Outcome::Refused, "no such need");
+
+    let refused = Arc::new(Recording::default());
+    let q = bound(Box::leak(Box::new(NEEDS)), &refused);
+    assert_eq!(open_with(&q, b"{}"), Outcome::Ready);
+    assert_eq!(admit(&q, 0), Outcome::Refused, "the table refused it");
+}

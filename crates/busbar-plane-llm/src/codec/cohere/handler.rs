@@ -11,6 +11,7 @@ use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use crate::codec::keys;
+use crate::codec::leaf_codec::LeafCodec;
 use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::operation::OpVerb;
@@ -221,26 +222,6 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
 /// bare strings or `{text}` objects; both normalize to strings.
 struct CohereRerank;
 
-pub fn rerank_documents_pub(v: Option<&Value>) -> Vec<String> {
-    rerank_documents(v)
-}
-
-fn rerank_documents(v: Option<&Value>) -> Vec<String> {
-    v.and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|d| {
-                    d.as_str().map(str::to_string).or_else(|| {
-                        d.get(keys::TEXT)
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 leaf_op! {
     CohereRerank: super::VENDOR_NAME,
     RerankReqHandle = read_rerank_request,
@@ -300,32 +281,6 @@ pub fn write_rerank_response(r: &crate::codec::ir::rerank::RerankResp) -> WireBo
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
     ))
-}
-
-/// `results[] -> [{index, relevance_score}]` — shared by the Cohere and Bedrock rerank readers
-/// (the two wires use the same result shape).
-pub fn read_rerank_results(v: Option<&Value>) -> Vec<crate::codec::ir::rerank::RerankResult> {
-    v.and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| {
-                    Some(crate::codec::ir::rerank::RerankResult {
-                        index: x.get(keys::INDEX).and_then(Value::as_u64)? as usize,
-                        relevance_score: x.get(keys::RELEVANCE_SCORE).and_then(Value::as_f64)?,
-                        // `return_documents` echoes the ranked text. Cohere returns it as a
-                        // `{text}` object, Bedrock as a bare string — accept both, else None.
-                        document: x.get(keys::DOCUMENT).and_then(|d| {
-                            d.as_str().map(str::to_string).or_else(|| {
-                                d.get(keys::TEXT)
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string)
-                            })
-                        }),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -478,7 +433,7 @@ pub fn read_rerank_request(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let documents = rerank_documents(wire.get(keys::DOCUMENTS));
+    let documents = crate::codec::rerank_wire::read_documents(wire.get(keys::DOCUMENTS));
     if query.is_empty() || documents.is_empty() {
         return Err(IngressReject::BadRequest(
             "rerank request requires `query` and `documents`".into(),
@@ -515,7 +470,7 @@ pub fn read_rerank_response(
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     Ok(crate::codec::ir::rerank::RerankResp {
         id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
-        results: read_rerank_results(v.get(keys::RESULTS)),
+        results: crate::codec::rerank_wire::read_results(v.get(keys::RESULTS)),
         // The PRICED quantity (item 134, `RerankResp::billing`). Absent or `null` stays `None` (the
         // flat marker); a present-but-UNREADABLE count REFUSES (item 133) — the lenient read made
         // it `None`, so `"search_units":"3"` billed the flat marker instead of 3 counted units.
@@ -527,3 +482,21 @@ pub fn read_rerank_response(
         ..Default::default()
     })
 }
+
+/// This dialect's row of the leaf-op `(operation, protocol)` dispatch, carried on `super::ENTRY`.
+pub(crate) const LEAF: crate::codec::leaf_codec::LeafCodecs =
+    crate::codec::leaf_codec::LeafCodecs {
+        embeddings: Some(LeafCodec {
+            write_request: write_embeddings_request,
+            write_response: write_embeddings_response,
+            read_request: read_embeddings_request,
+            read_response: read_embeddings_response,
+        }),
+        rerank: Some(LeafCodec {
+            write_request: write_rerank_request,
+            write_response: write_rerank_response,
+            read_request: read_rerank_request,
+            read_response: read_rerank_response,
+        }),
+        ..crate::codec::leaf_codec::LeafCodecs::NONE
+    };

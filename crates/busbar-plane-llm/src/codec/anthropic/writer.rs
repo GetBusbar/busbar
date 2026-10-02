@@ -26,6 +26,28 @@ impl ProtocolWriter for AnthropicWriter {
         origin == crate::codec::ir::IrSignatureOrigin::Anthropic
     }
 
+    /// The native envelope carries a minted top-level `request_id`. The writer drew one; replace ONLY
+    /// that member, and only where the writer put one, with the id the caller's entropy produces, so
+    /// the envelope is the writer's in every other byte and the same bytes give the same envelope.
+    fn write_error_from_entropy(
+        &self,
+        status: u16,
+        kind: &str,
+        message: &str,
+        entropy: &[u8],
+    ) -> serde_json::Value {
+        let mut envelope = self.write_error(status, kind, message);
+        if let Some(obj) = envelope.as_object_mut() {
+            if obj.contains_key(super::REQUEST_ID) {
+                obj.insert(
+                    super::REQUEST_ID.to_string(),
+                    serde_json::Value::String(super::request_id_from_entropy(entropy)),
+                );
+            }
+        }
+        envelope
+    }
+
     fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
         // Native Anthropic error envelope: `{"type":"error","error":{"type":<kind>,"message":<msg>}}`
         // (see the Anthropic SDK / API error shape — the `anthropic.APIStatusError` family decodes

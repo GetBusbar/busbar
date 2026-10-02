@@ -618,6 +618,18 @@ impl Connector {
     }
 }
 
+/// Whether a dial target carries a userinfo (`user:pass@`): a URL by the contract's one reader, a
+/// bare `host:port` by its authority.
+fn carries_userinfo(target: &str) -> bool {
+    match busbar_contract::net::parse_url(target) {
+        Ok(parts) => parts.userinfo,
+        Err(_) => target
+            .split(['/', '?', '#'])
+            .next()
+            .is_some_and(|authority| authority.contains('@')),
+    }
+}
+
 impl DeclaredConns for Connector {
     fn declare(
         &self,
@@ -628,11 +640,14 @@ impl DeclaredConns for Connector {
     ) -> Result<(), ConnError> {
         // An outbound need is carried over the transport its claim names, its dials judged in its
         // own egress class, and pinned to the target its config names when it names one (a
-        // `target_from` that resolved to nothing is refused, and any earlier pin is dropped); an
+        // `target_from` that resolved to nothing is refused, and so is a target carrying a
+        // userinfo: a credential never rides a dial target, it travels in the request's own
+        // headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any earlier pin is dropped); an
         // inbound need is recorded (the listener binds it).
         let outbound = spec.direction == DIRECTION_OUTBOUND;
         let unresolved = !spec.target_from.is_empty() && target.is_none();
-        let answer = if outbound && (spec.transport.is_empty() || unresolved) {
+        let credentialed = target.is_some_and(carries_userinfo);
+        let answer = if outbound && (spec.transport.is_empty() || unresolved || credentialed) {
             self.over.lock().expect("needs").remove(&(owner, need));
             Err(ConnError::Refused)
         } else {
