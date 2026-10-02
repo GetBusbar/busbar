@@ -581,8 +581,10 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
         EmbInput::Text(v) if v.len() == 1 => json!(v[0]),
         EmbInput::Text(v) => json!(v),
         other => {
-            tracing::warn!(
-                dropped = 1,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::member(keys::INPUT),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [dropped = 1,],
                 "openai embeddings input is text-only here; dropping a non-text embeddings \
                  input ({other:?} kind) with no analog"
             );

@@ -973,7 +973,10 @@ impl BedrockWriter {
                                 }
                                 // A provider-run tool's record has no Converse tool-result form.
                                 crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
-                                    tracing::warn!(
+                                    crate::codec::drops::writer_drop!(
+                                        crate::codec::drops::block("hosted_tool"),
+                                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                        [],
                                         "dropping a hosted tool record inside a Bedrock toolResult: \
                                          Converse has no form for it"
                                     );

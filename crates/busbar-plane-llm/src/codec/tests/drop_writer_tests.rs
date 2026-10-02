@@ -471,3 +471,158 @@ fn a_wrong_typed_gemini_budget_is_the_callers_error() {
         refused_natively("gemini", "openai", &gemini_budget(bad));
     }
 }
+
+// ───────────────────────────── a reader's drops (DF-SITES) ─────────────────────────────
+//
+// What a READER cannot put in the IR is a drop like a writer's: inside a translate attempt it is
+// warned once on the drop path, named by the reader's own wire path, and audited (red: a plain
+// warn, nothing audited).
+
+#[test]
+fn a_request_readers_unknown_detail_word_is_on_the_drop_path() {
+    let (audited, cap) = translate(
+        "openai",
+        "gemini",
+        &json!({"model": "m", "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hi"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QQ==", "detail": "ultra"}}
+        ]}]}),
+    );
+    on_the_drop_path(
+        &audited,
+        &cap,
+        "messages[].content[].image_url.detail",
+        "BUSBAR-7085",
+        "dropping an unknown image_url.detail word",
+    );
+}
+
+#[test]
+fn a_request_readers_unknown_effort_word_is_on_the_drop_path() {
+    let (audited, cap) = translate(
+        "openai",
+        "anthropic",
+        &json!({"model": "m", "reasoning_effort": "turbo",
+            "messages": [{"role": "user", "content": "hi"}]}),
+    );
+    on_the_drop_path(
+        &audited,
+        &cap,
+        "reasoning_effort",
+        "BUSBAR-7079",
+        "reasoning_effort value has no IR word",
+    );
+}
+
+#[test]
+fn a_request_readers_unmodelled_tool_choice_is_on_the_drop_path() {
+    let (audited, cap) = translate(
+        "responses",
+        "anthropic",
+        &json!({"model": "m", "input": "hi", "tool_choice": {"type": "web_search_preview"}}),
+    );
+    on_the_drop_path(
+        &audited,
+        &cap,
+        "tool_choice",
+        "BUSBAR-7085",
+        "dropping Responses tool_choice on ir parse",
+    );
+}
+
+#[test]
+fn a_request_readers_unknown_modality_is_on_the_drop_path() {
+    let (audited, cap) = translate(
+        "gemini",
+        "openai",
+        &json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {"responseModalities": ["TEXT", "SMELL"]}}),
+    );
+    on_the_drop_path(
+        &audited,
+        &cap,
+        "generationConfig.responseModalities[]",
+        "BUSBAR-7085",
+        "gemini responseModalities entry has no IR modality",
+    );
+}
+
+#[test]
+fn an_answer_readers_extra_choices_are_on_the_drop_path() {
+    let (audited, cap) = answer(
+        "openai",
+        "anthropic",
+        &json!({"id": "c", "object": "chat.completion", "created": 1, "model": "m",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "a"}, "finish_reason": "stop"},
+                {"index": 1, "message": {"role": "assistant", "content": "b"}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}),
+    );
+    on_the_drop_path(
+        &audited,
+        &cap,
+        "choices[]",
+        "BUSBAR-7085",
+        "openai response carried multiple choices",
+    );
+}
+
+#[test]
+fn an_answer_readers_extra_candidates_are_on_the_drop_path() {
+    let (audited, cap) = answer(
+        "gemini",
+        "openai",
+        &json!({"candidates": [
+                {"content": {"role": "model", "parts": [{"text": "a"}]}, "finishReason": "STOP", "index": 0},
+                {"content": {"role": "model", "parts": [{"text": "b"}]}, "finishReason": "STOP", "index": 1}
+            ],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}}),
+    );
+    on_the_drop_path(
+        &audited,
+        &cap,
+        "candidates[]",
+        "BUSBAR-7085",
+        "gemini response carried multiple candidates",
+    );
+}
+
+#[test]
+fn an_answer_readers_bedrock_only_member_is_on_the_drop_path() {
+    let (audited, cap) = answer(
+        "bedrock",
+        "openai",
+        &json!({"output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+            "trace": {"guardrail": {"modelOutput": []}}}),
+    );
+    on_the_drop_path(
+        &audited,
+        &cap,
+        "trace",
+        "BUSBAR-7085",
+        "dropping Bedrock-only Converse response member `trace`",
+    );
+}
+
+#[test]
+fn an_answer_readers_request_echo_is_on_the_drop_path() {
+    let (audited, cap) = answer(
+        "responses",
+        "openai",
+        &json!({"id": "resp_1", "object": "response", "created_at": 1, "model": "m",
+            "status": "completed", "instructions": "be brief",
+            "output": [{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+                "content": [{"type": "output_text", "text": "hi", "annotations": []}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}),
+    );
+    on_the_drop_path(
+        &audited,
+        &cap,
+        "instructions",
+        "BUSBAR-7085",
+        "dropping response `instructions` echo",
+    );
+}

@@ -829,11 +829,17 @@ fn stream_error_type(err: &IrError) -> &'static str {
 /// must carry each result's `encrypted_content`, which only Anthropic mints (DF-MAP item 2). The
 /// record is dropped, observably; its citations still ride the text blocks.
 fn warn_hosted_record_dropped() {
-    tracing::warn!(
+    crate::codec::drops::writer_drop!(
+        crate::codec::drops::block(HOSTED_TOOL),
+        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+        [],
         "dropping a hosted web-search record on Anthropic egress: a web_search_tool_result needs \
          the encrypted_content only Anthropic mints (lossy-by-target)"
     );
 }
+
+/// The IR kind of a provider-run tool's record ([`crate::codec::ir::IrBlock::kind_name`]).
+const HOSTED_TOOL: &str = "hosted_tool";
 
 fn write_response_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
     let mut val = write_block(block);
