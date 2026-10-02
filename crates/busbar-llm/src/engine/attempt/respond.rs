@@ -17,7 +17,7 @@ use crate::engine::*;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn deliver<'a>(
     hop: &'a Hop<'a>,
-    r: http::Response<hyper::body::Incoming>,
+    mut r: http::Response<hyper::body::Incoming>,
     status: StatusCode,
     read_deadline: tokio::time::Instant,
     permit: Permit,
@@ -96,16 +96,23 @@ pub(super) fn deliver<'a>(
             .then(|| busbar_plane_llm::codec::json::parse::<Value>(hop.body).ok())
             .flatten();
 
+        // Busbar is invisible on a same-dialect answer: the upstream head is taken off the response
+        // here (nothing downstream reads it again) and relayed onto the answer once it is built.
+        let upstream_head = if hop.ingress_protocol == hop.egress_name {
+            std::mem::take(r.headers_mut())
+        } else {
+            axum::http::HeaderMap::new()
+        };
         // A non-stream cross-protocol response is buffered whole and translated egress → IR → ingress.
         // A same-protocol answer is relayed as the upstream sent it, a stream-asked, body-answered
         // reply included (LLM DIALECT FIDELITY). Boxed: this arm is cold and its future is large
         // relative to the pinned hot path.
-        if crate::engine::xchg::reply::relay::takes_whole(
+        let mut resp = if crate::engine::xchg::reply::relay::takes_whole(
             hop.ingress_protocol,
             hop.egress_name,
             is_sse,
         ) {
-            return deliver_buffered(
+            deliver_buffered(
                 hop,
                 host,
                 rt,
@@ -121,30 +128,34 @@ pub(super) fn deliver<'a>(
                 ingress_request_body,
                 tap,
             )
-            .await;
-        }
-
-        deliver_stream(
-            hop,
-            host,
-            rt,
-            i,
-            pool,
-            r,
-            status,
-            read_deadline,
-            permit,
-            budget_guard,
-            budget_spent,
-            usage_sink,
-            ingress_request_body,
-            ct,
-            is_sse,
-            upstream_relay_id,
-            tap,
-            _rb_pre,
-        )
-        .await
+            .await
+        } else {
+            deliver_stream(
+                hop,
+                host,
+                rt,
+                i,
+                pool,
+                r,
+                status,
+                read_deadline,
+                permit,
+                budget_guard,
+                budget_spent,
+                usage_sink,
+                ingress_request_body,
+                ct,
+                is_sse,
+                upstream_relay_id,
+                tap,
+                _rb_pre,
+            )
+            .await
+        };
+        add_relayed_headers(resp.headers_mut(), &upstream_head, |n| {
+            crate::engine::xchg::reply::wire::governed_response(hop.ingress_protocol, n)
+        });
+        resp
     }
 }
 

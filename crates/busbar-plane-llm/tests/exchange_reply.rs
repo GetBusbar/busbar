@@ -221,7 +221,50 @@ fn a_verbatim_relay_carries_the_native_head_fields() {
         Some(b"req_1".as_slice())
     );
     let openai = relay_verbatim("openai", &far);
-    assert_eq!(openai.fields.len(), 1, "{:?}", openai.fields);
+    assert_eq!(
+        openai.fields.len(),
+        4,
+        "every far field: {:?}",
+        openai.fields
+    );
+}
+
+/// BUSBAR IS INVISIBLE ON A SAME-DIALECT ANSWER: every far head field reaches the caller in order,
+/// except what busbar governs (the far end's echo of the operator's tenant); nothing is invented.
+#[test]
+fn a_verbatim_relay_carries_every_far_field_but_the_governed_ones() {
+    let head: &[(&[u8], &[u8])] = &[
+        (b"content-type", b"application/json"),
+        (b"x-ratelimit-remaining-tokens", b"99"),
+        (b"Retry-After", b"3"),
+        (b"openai-organization", b"org-operator"),
+        (b"openai-project", b"proj-operator"),
+    ];
+    let far = FarError {
+        status: 429,
+        head,
+        body: b"{}",
+    };
+    let openai = relay_verbatim("openai", &far);
+    let names: Vec<&str> = openai.fields.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "content-type",
+            "x-ratelimit-remaining-tokens",
+            "retry-after"
+        ]
+    );
+    let anthropic = relay_verbatim("anthropic", &far);
+    assert!(
+        !anthropic.fields.iter().any(|(n, _)| n == "request-id"),
+        "a plane never invents a head field: {:?}",
+        anthropic.fields
+    );
+    assert!(anthropic
+        .fields
+        .iter()
+        .any(|(n, _)| n == "openai-organization"));
 }
 
 // ── a whole answer ──────────────────────────────────────────────────────────────────────────────
