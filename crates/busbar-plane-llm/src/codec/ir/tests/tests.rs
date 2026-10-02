@@ -9,11 +9,8 @@ fn reasoning_effort_parse_round_trips_and_rejects_unknown() {
     assert!(IrReasoningEffort::parse("verylow").is_none());
     assert!(IrReasoningEffort::parse("").is_none());
     // OpenAI-safe projection folds the o-series-invalid `minimal` to `low`.
-    assert_eq!(
-        IrReasoningEffort::Minimal.as_openai_reasoning_effort(),
-        "low"
-    );
-    assert_eq!(IrReasoningEffort::High.as_openai_reasoning_effort(), "high");
+    assert_eq!(IrReasoningEffort::Minimal.as_three_word_str(), "low");
+    assert_eq!(IrReasoningEffort::High.as_three_word_str(), "high");
 }
 
 #[test]
@@ -438,8 +435,8 @@ fn ir09_reasoning_off_and_effort_above_high() {
     assert_eq!(IrReasoningEffort::parse_extended("high"), Some(High));
     assert_eq!(XHigh.as_str(), "xhigh");
     assert_eq!(Max.as_str(), "max");
-    assert_eq!(XHigh.as_openai_reasoning_effort(), "high");
-    assert_eq!(Max.as_openai_reasoning_effort(), "high");
+    assert_eq!(XHigh.as_three_word_str(), "high");
+    assert_eq!(Max.as_three_word_str(), "high");
     assert_eq!(Effort(XHigh).to_budget(table), 16000);
     assert_eq!(Effort(Max).to_budget(table), 16000);
     assert_eq!(Off.to_budget(table), 0);
