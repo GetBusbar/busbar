@@ -2,11 +2,14 @@ name: promote
 # Every same-repo PR is one hop up the branch ladder. The hop is GetBusbar/busbar-release's
 # ci/promote scripts at RELEASE_REF (private, so no `uses:`); these jobs only check out both repos
 # and run them. BOARD (fast-forward of the base) runs only when vars.PROMOTE_BOARD is "true".
+# `verdict` posts the ONE sticky PR comment (<!-- busbar-verdict -->) the keeper routes red PRs by:
+# publish.sh from the hop's verdict/, or fallback.sh when the hop wrote none (runner lost, timeout).
+# It runs on a hosted runner with the only write token, never in the job that builds the candidate.
 on: pull_request
 concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
 permissions: { contents: read }
 env:
-  RELEASE_REF: 9ba9ab5c90ac6436fc5edbb450e645d1cdc45a10
+  RELEASE_REF: 5a30350e72f0813a7b4de3da44f73b3f94d7c3aa
   SHA: ${{ github.event.pull_request.head.sha }}
   TO: ${{ github.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -30,6 +33,18 @@ jobs:
       - run: bash busbar-release/ci/promote/hop.sh
         env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/turnstile-*.json", if-no-files-found: warn } } # v7.0.1
+      - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "verdict-${{ env.SHA }}", path: verdict/, retention-days: 90, if-no-files-found: warn } } # v7.0.1
       - if: vars.PROMOTE_BOARD == 'true'
         run: bash busbar-release/ci/promote/board.sh
         env: { GITHUB_TOKEN: "${{ secrets.BUSBAR_TRAIN_TOKEN }}" }
+  verdict:
+    needs: [preflight, hop]
+    if: always() && needs.preflight.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: { contents: read, actions: read, issues: write, pull-requests: write }
+    steps:
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
+      - { if: needs.hop.result != 'skipped', continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { name: "verdict-${{ env.SHA }}", path: verdict } } # v8.0.1
+      - run: if [ -s verdict/failures.json ]; then bash busbar-release/ci/promote/publish.sh; else bash busbar-release/ci/promote/fallback.sh; fi
+        env: { GH_TOKEN: "${{ github.token }}", PREFLIGHT_RESULT: "${{ needs.preflight.result }}", HOP_RESULT: "${{ needs.hop.result }}" }

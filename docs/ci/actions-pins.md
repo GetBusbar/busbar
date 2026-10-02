@@ -23,6 +23,7 @@ Resolved 2026-09-11 from `https://github.com/<owner>/<repo>` (git ls-remote, liv
 |---|---|---|---|---|
 | actions/attest-build-provenance | v4 | `4d101475d8b20a2381f78447822ac1eab6504dd8` | 2026-09-11 | `git ls-remote` (tag, peeled) |
 | actions/checkout | v7 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | 2026-09-11 | `git ls-remote` (tag) |
+| actions/download-artifact | v8.0.1 | `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` | 2026-10-02 | `git ls-remote` (tag) |
 | actions/upload-artifact | v7.0.1 | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | 2026-10-01 | `git ls-remote` (tag) |
 | codecov/codecov-action | v7.1.1 | `303a32d7a59b442fa8d48b6a1cc6825c09c847a5` | 2026-09-21 | `git ls-remote` (tag, peeled) |
 | dtolnay/rust-toolchain | stable (comment: `1.98.0`) | `62ae3a85dbdd2bedbb5819da8ce45635129289a1` | 2026-09-11 | `git ls-remote` (branch, historical — see note) |
