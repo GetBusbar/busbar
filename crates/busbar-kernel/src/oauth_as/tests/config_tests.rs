@@ -192,7 +192,10 @@ fn no_static_client_is_declared_unless_the_block_lists_one() {
         serde_json::from_value(serde_json::json!({ "issuer": "https://gw.example.com" }))
             .expect("parses");
     assert!(written.clients.is_empty());
-    assert!(AsIdentity::from_cfg(&written).expect("valid").clients.is_empty());
+    assert!(AsIdentity::from_cfg(&written)
+        .expect("valid")
+        .clients
+        .is_empty());
 }
 
 /// A confidential `private_key_jwt` client the operator provisions out of band: its id, its exact
@@ -203,7 +206,10 @@ fn a_static_private_key_jwt_client_with_a_public_jwk_validates() {
     let clients: &[StaticClientCfg] = &id.clients;
     assert_eq!(clients.len(), 1);
     assert_eq!(clients[0].client_id, "fapi-client");
-    assert_eq!(clients[0].jwks.keys[0].x, public_jwk()["x"].as_str().unwrap());
+    assert_eq!(
+        clients[0].jwks.keys[0].x,
+        public_jwk()["x"].as_str().unwrap()
+    );
 }
 
 /// THE REFUSALS, each at boot and each naming the client: a private key (`d`), a key that is not
@@ -249,7 +255,10 @@ fn a_malformed_static_client_is_refused_at_boot() {
     }))
     .expect("parses");
     assert!(
-        matches!(AsIdentity::from_cfg(&twice), Err(AsCfgError::StaticClient { .. })),
+        matches!(
+            AsIdentity::from_cfg(&twice),
+            Err(AsCfgError::StaticClient { .. })
+        ),
         "two clients with one id is refused"
     );
 }

@@ -209,6 +209,8 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
             // Policy, not credential: the FAPI 2.0 posture switch, the scope ceiling, the token
             // lifetime, and the advisory `kid` that appears in every published JWKS entry.
             fapi2: _,
+            // Operator-provisioned clients: PUBLIC keys only (a configured `d` is a boot refusal).
+            clients: _,
             default_grant: _,
             access_token_ttl: _,
             key_id: _,

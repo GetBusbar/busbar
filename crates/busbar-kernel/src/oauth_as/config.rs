@@ -72,6 +72,50 @@ pub struct OauthAsCfg {
     /// ceiling (s5.3.2.1-11) in both postures.
     #[serde(default)]
     pub fapi2: bool,
+
+    /// OPERATOR-PROVISIONED CLIENTS: confidential `private_key_jwt` (RFC 7523) clients declared
+    /// here rather than registered over the wire. EMPTY BY DEFAULT. RFC 7591 registration cannot
+    /// carry a key (`oauth-as` models no `jwks` there), so this is how a `private_key_jwt` client —
+    /// the FAPI 2.0 profile's client — gets a `client_id`. Each holds only the PUBLIC half of its
+    /// key, and may ask for no more than [`OauthAsCfg::default_grant`].
+    #[serde(default)]
+    pub clients: Vec<StaticClientCfg>,
+}
+
+/// One `oauth_as.clients:` entry.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StaticClientCfg {
+    /// The `client_id` the client authenticates as (its assertion's `iss` and `sub`).
+    pub client_id: String,
+    /// The redirect URIs, matched EXACTLY at the authorization endpoint (OAuth 2.1 s4.1.3).
+    pub redirect_uris: Vec<String>,
+    /// The client's public keys, as RFC 7591 s2 `jwks` spells them.
+    pub jwks: StaticClientJwks,
+}
+
+/// An RFC 7517 JWK Set: `{"keys": [...]}`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StaticClientJwks {
+    pub keys: Vec<StaticClientJwk>,
+}
+
+/// One PUBLIC ES256 key. Not `deny_unknown_fields`: RFC 7517 s4 has a reader ignore members it does
+/// not understand (`use`, `key_ops`, `x5c`, ...), and a JWK pasted from a client's own tooling
+/// carries them. `d` is named so it can be REFUSED: a private key has no business in a config file.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct StaticClientJwk {
+    pub kty: String,
+    pub crv: String,
+    pub x: String,
+    pub y: String,
+    #[serde(default)]
+    pub kid: Option<String>,
+    #[serde(default)]
+    pub alg: Option<String>,
+    #[serde(default)]
+    pub d: Option<String>,
 }
 
 /// Why an `oauth_as:` block was refused at boot. Every arm names the field and what a correct value
@@ -91,6 +135,11 @@ pub enum AsCfgError {
     IssuerHasTrailingSlash(String),
     /// `default_grant` names a scope that is not a legal RFC 6749 §3.3 scope token.
     ScopeNotAToken(String),
+    /// An `oauth_as.clients:` entry is malformed; `why` says how.
+    StaticClient {
+        client_id: String,
+        why: &'static str,
+    },
 }
 
 impl std::fmt::Display for AsCfgError {
@@ -118,6 +167,9 @@ impl std::fmt::Display for AsCfgError {
                  so a trailing slash produces `//name` — a different path from the one clients ask \
                  for. Write it without the slash."
             ),
+            AsCfgError::StaticClient { client_id, why } => {
+                write!(f, "oauth_as.clients entry `{client_id}`: {why}")
+            }
             AsCfgError::ScopeNotAToken(v) => write!(
                 f,
                 "oauth_as.default_grant entry `{v}` is not a scope token. RFC 6749 section 3.3 \
@@ -162,6 +214,8 @@ pub struct AsIdentity {
     /// The FAPI 2.0 Security Profile posture, resolved from `oauth_as.fapi2`. See
     /// [`OauthAsCfg::fapi2`] for everything it turns on.
     pub fapi2: bool,
+    /// The validated `oauth_as.clients:`. Public keys only: nothing here is a secret.
+    pub clients: Vec<StaticClientCfg>,
     pub default_grant: Vec<String>,
     pub access_token_ttl: std::time::Duration,
     pub key_id: String,
@@ -205,6 +259,7 @@ impl AsIdentity {
                 return Err(AsCfgError::ScopeNotAToken(scope.clone()));
             }
         }
+        validate_clients(&cfg.clients)?;
 
         let issuer_path = path.trim_end_matches('/').to_string();
         let under = |name: &str| format!("{issuer_path}/{name}");
@@ -221,6 +276,7 @@ impl AsIdentity {
             consent_path: under("consent"),
             par_path: under("par"),
             fapi2: cfg.fapi2,
+            clients: cfg.clients.clone(),
             issuer_path,
             default_grant: cfg.default_grant.clone(),
             access_token_ttl: cfg
@@ -288,6 +344,67 @@ impl AsIdentity {
     pub fn signing_key(&self) -> Option<&SecretRef> {
         self.signing_key.as_ref()
     }
+}
+
+/// Every `oauth_as.clients:` refusal, at boot, naming the client.
+fn validate_clients(clients: &[StaticClientCfg]) -> Result<(), AsCfgError> {
+    let mut seen = std::collections::HashSet::new();
+    for client in clients {
+        let refuse = |why| AsCfgError::StaticClient {
+            client_id: client.client_id.clone(),
+            why,
+        };
+        if client.client_id.is_empty() {
+            return Err(refuse("client_id is empty"));
+        }
+        if !seen.insert(client.client_id.as_str()) {
+            return Err(refuse("the client_id is declared twice"));
+        }
+        if client.redirect_uris.is_empty() {
+            return Err(refuse(
+                "redirect_uris is empty; the authorization code has nowhere to go",
+            ));
+        }
+        // OAuth 2.1 s4.1.3 / RFC 6749 s3.1.2: absolute, no fragment, matched exactly.
+        if client
+            .redirect_uris
+            .iter()
+            .any(|u| split_absolute(u).is_none() || u.contains('#'))
+        {
+            return Err(refuse(
+                "every redirect_uri must be an absolute http(s) URL with no fragment",
+            ));
+        }
+        if client.jwks.keys.is_empty() {
+            return Err(refuse(
+                "jwks.keys is empty; a private_key_jwt client needs a key",
+            ));
+        }
+        for key in &client.jwks.keys {
+            if key.d.is_some() {
+                return Err(refuse(
+                    "a jwks key carries `d`, a PRIVATE key. Configure the public half only; the \
+                     private key stays with the client",
+                ));
+            }
+            if key.kty != "EC" || key.crv != "P-256" {
+                return Err(refuse("only EC P-256 keys (ES256) are accepted"));
+            }
+            if key.alg.as_deref().is_some_and(|alg| alg != "ES256") {
+                return Err(refuse("a key's `alg`, when given, must be ES256"));
+            }
+            let coordinate = |c: &str| {
+                base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, c)
+                    .is_ok_and(|b| b.len() == 32)
+            };
+            if !coordinate(&key.x) || !coordinate(&key.y) {
+                return Err(refuse(
+                    "a P-256 coordinate (`x`, `y`) is 32 bytes of unpadded base64url",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Split an absolute `http(s)` URL into `(origin, path)`, or `None` when it is not one.

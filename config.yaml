@@ -84,6 +84,15 @@ listen: "0.0.0.0:8080"
 #   # refresh tokens rather than rotating them, accepts a client assertion only with aud = the
 #   # issuer as a string, and verifies ES256/PS256 only. Every client must then speak all of it.
 #   fapi2: false
+#
+#   # Confidential private_key_jwt (RFC 7523) clients you provision yourself; none by default.
+#   # Registration over the wire cannot carry a key, so this is how a FAPI 2.0 client gets a
+#   # client_id. The PUBLIC half of an EC P-256 (ES256) key only - a key carrying `d` is refused.
+#   # Each client may ask for no more than default_grant.
+#   clients:
+#     - client_id: payments-app
+#       redirect_uris: ["https://app.example.com/cb"]
+#       jwks: { keys: [ { kty: EC, crv: P-256, kid: k1, x: "<base64url>", y: "<base64url>" } ] }
 
 # ── Client authentication ────────────────────────────────────────────────────────────────────────
 # identity-providers - DEFINE each identity provider ONCE (name -> {module, settings,
