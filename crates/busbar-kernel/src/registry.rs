@@ -316,7 +316,9 @@ pub struct SealedClaims {
 /// overlap at EQUAL precedence is a genuine ambiguity: nothing in the order distinguishes them, so
 /// which plane owns the request would fall to the accident of declaration order, and that is the
 /// refusal. Claims whose scheme sets are disjoint never overlap at all, because one request carries
-/// one credential — the contract's [`Claim::overlaps`] holds that half.
+/// one credential. Whether two claims could match the same bytes at all is [`claims_overlap`]'s
+/// one answer (binding, schemes, then the contract's selector rule); the contract carries the
+/// declaration and its [`Selector::overlaps`], never a decision over two claims' bindings.
 #[must_use]
 pub fn seal_claims(claims: &[PlaneClaim]) -> SealedClaims {
     let mut sealed = SealedClaims {
