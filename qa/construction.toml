@@ -2742,6 +2742,19 @@ scope_note = "production code only; a test may price whatever it likes to prove 
 entry_verbs = ["cost_price_usage"]
 # The cost unit's own pricing entry points, named as paths.
 entry_path_patterns = ['busbar_kernel_ledger::cost::[A-Za-z0-9_:]*price', 'busbar_kernel_ledger::cost::apply_tier']
+# THE ONE FUNCTION UNDER ANOTHER NAME (ARCHITECT ruling 2026-09-30). The patterns above see a
+# NAME, and a one-line wrapper in the cost unit whose name lacks `price` (`fn f(entries: &[LedgerEntry],
+# view) { price_in_view(entries, view)?.micros_i64() }`) would let a reader price beside the cost
+# unit unseen. So the cost unit `wrapper_home` is read for SHAPE as well: a function
+# there whose signature names one of `wrapper_inputs` (the one function's own input, the ledger
+# slice) and whose body reaches a pricing entry (a call matching a pattern above, one of
+# `wrapper_reaches`, or a wrapper already found) IS a pricing entry, whatever its name, and a call
+# to it outside the homes is counted here. What a reader may call is a cost-unit read that takes
+# the reader's OWN row and builds the slice itself, because then the projection (lane, fee lane,
+# classes) and the price both live in the cost unit.
+wrapper_home = "cost-unit"
+wrapper_inputs = ["LedgerEntry"]
+wrapper_reaches = ['(?<![A-Za-z0-9_])Tally::']
 max_extra_sites = 0
 # The fee fields, and the two crates that may read them. `per_request_fee` is the card's OWN
 # spelling since the cost unit re-labelled `per_request_fee_cents` to it (the fee is carried in the

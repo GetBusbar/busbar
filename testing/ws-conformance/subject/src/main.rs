@@ -1,27 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTOBAHN|TESTSUITE SUBJECT: `WsTransport` over the `tcp` door, echoing on loopback.
+//! THE AUTOBAHN|TESTSUITE SUBJECT: busbar's `ws` door, framed by the connector's own listener,
+//! echoing on loopback.
 //!
-//! `busbar-transport-ws` opens no socket by design (see that crate's `lib.rs`); it is a pure
-//! adapter composed over a lower transport. Autobahn's `fuzzingclient` needs a real listening
-//! WebSocket peer to drive its case suite against, so this binary composes the SAME chain the
-//! root folds -- the `tcp` door served over the host's sockets by the connector
-//! (`crates/busbar/src/root/doors.rs`, mounted here), with `WsTransport` over it -- binds it on
-//! loopback, and echoes every inbound message back unmodified. That is the whole of an Autobahn
-//! echo peer: the fuzzingclient sends every case's frames and grades the echo it gets back.
+//! Every inbound socket busbar serves is the connector's (`busbar_core_connector::listen`, the one
+//! listener source since INBOUND-LISTEN H5), framed through a transport door admitted by the one
+//! dispatcher. This binary takes exactly that path for the `ws` door — the door
+//! (`busbar_transport_ws::door::door`) admitted and opened by the root's own doors module
+//! (`crates/busbar/src/root/doors.rs`, mounted here), bound with `Listening::bind`, each connection
+//! taken with `poll_accept` — and echoes every message back on the stream it came on. The
+//! fuzzingclient sends each case's frames and grades the echo, the handshake, the pings and the
+//! close the framer answers with, so what Autobahn grades is busbar's own RFC 6455 framer.
 //!
-//! Prints `WS_SUBJECT_PORT=<port>` on its own line to stdout once bound, then serves forever.
-//! No plane, no protocol meaning -- this is a testkit binary, not a build of `busbar`.
+//! Prints `WS_SUBJECT_PORT=<port>` on its own line once bound, then serves until killed. No plane
+//! and no protocol meaning: a testkit binary, not a build of `busbar`, and no product surface.
 
+use std::future::poll_fn;
 use std::sync::Arc;
+use std::task::Poll;
 
-use busbar_contract::transport::wire::Listener;
-use busbar_contract::{
-    ConfigView, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
-};
-use busbar_transport_ws::WsTransport;
-use futures::StreamExt;
+use busbar_core_connector::compose::{Connection, Failure};
+use busbar_core_connector::framer::FramerDoor;
+use busbar_core_connector::listen::{AcceptLimits, Listening};
 
 #[allow(dead_code)]
 #[path = "../../../../crates/busbar/src/root/doors.rs"]
@@ -33,70 +34,85 @@ mod loader {
     pub use busbar_plugin_loader::*;
 }
 
-struct SubjectCfg;
-
-impl ConfigView for SubjectCfg {
-    fn get_str(&self, _key: &str) -> Option<&str> {
-        None
-    }
-    fn get_int(&self, _key: &str) -> Option<i64> {
-        None
-    }
-    fn get_bool(&self, _key: &str) -> Option<bool> {
-        None
-    }
+/// The `ws` door, admitted through the one dispatcher under its row's name and opened.
+fn ws_door() -> Arc<dyn FramerDoor> {
+    use loader::dispatch::{kinds::transport::Transport as TransportKind, load_linked, LinkedRow};
+    let key = busbar_transport_ws::linked::KEY;
+    let plugin = LinkedRow::of(busbar_transport_ws::door::door)
+        .and_then(|row| load_linked::<TransportKind>(&row, doors::row_bind(key)))
+        .unwrap_or_else(|e| panic!("ws-conformance-subject: the ws door is refused: {e}"));
+    Arc::new(
+        doors::Dispatched::open(plugin)
+            .unwrap_or_else(|e| panic!("ws-conformance-subject: the ws door would not open: {e}")),
+    )
 }
 
-impl TransportConfigView for SubjectCfg {
-    fn bind(&self) -> Option<&str> {
-        Some("127.0.0.1:0")
-    }
-}
-
-#[tokio::main]
-async fn main() {
-    let tcp: Arc<dyn Transport> = doors::build(
-        busbar_transport_tcp::linked::KEY,
-        busbar_transport_tcp::linked::door,
-        None,
-        &busbar_contract::transport::TransportSettings::default(),
-    );
-    let ws = Arc::new(WsTransport::over(tcp));
-    // No key material: this subject echoes on loopback and the upgrade reads no key of its own.
-    let key = TransportKeyHandle::keyless();
-
-    let listener: Listener = ws
-        .listen(&SubjectCfg, &key)
-        .await
-        .expect("ws-conformance-subject: bind failed");
-    let addr = listener.local_addr();
-    let port = addr.rsplit(':').next().unwrap_or("0");
-    println!("WS_SUBJECT_PORT={port}");
-    use std::io::Write;
-    std::io::stdout().flush().ok();
-
-    loop {
-        let conn = match ws.accept(&listener).await {
-            Ok(conn) => conn,
-            Err(e) => {
-                eprintln!("ws-conformance-subject: accept error: {e:?}");
-                continue;
-            }
+/// Offer one whole message on `stream`, waiting for the socket to take what the write buffer
+/// cannot hold yet.
+async fn send(conn: &mut Connection, stream: u64, bytes: &[u8]) -> Result<(), Failure> {
+    let mut off = 0;
+    poll_fn(|cx| loop {
+        let took = match conn.emit(stream, &bytes[off..], true, cx) {
+            Ok(n) => n,
+            Err(f) => return Poll::Ready(Err(f)),
         };
-        let ws = ws.clone();
-        tokio::spawn(async move {
-            let mut frames = ws.frames(conn.clone());
-            while let Some(item) = frames.next().await {
-                match item {
-                    Ok((_stream, frame)) => {
-                        let bytes = ScratchBytes::new(frame.bytes.as_slice());
-                        if ws.write(&conn, StreamId(0), bytes).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
+        off += took;
+        if off == bytes.len() {
+            return Poll::Ready(Ok(()));
+        }
+        if took == 0 {
+            return Poll::Pending;
+        }
+    })
+    .await
+}
+
+/// Echo every message on `conn`, whole, on the stream it came on.
+async fn echo(mut conn: Connection) {
+    let mut message: Vec<u8> = Vec::new();
+    while let Ok(Some(piece)) = poll_fn(|cx| conn.poll_piece(cx)).await {
+        // A field block (a head) is the handshake's, not a message.
+        if piece.fields {
+            continue;
+        }
+        message.extend_from_slice(&piece.bytes);
+        if !piece.end_of_frame {
+            continue;
+        }
+        let whole = std::mem::take(&mut message);
+        if send(&mut conn, piece.stream, &whole).await.is_err() {
+            break;
+        }
     }
+    conn.close();
+}
+
+fn main() {
+    // One worker: the connector registers every socket on the calling worker's reactor.
+    let worker = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("ws-conformance-subject: no runtime");
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&worker, async {
+        let mut listener = Listening::bind(
+            ws_door(),
+            "127.0.0.1:0",
+            None,
+            Vec::new(),
+            AcceptLimits::default(),
+        )
+        .expect("ws-conformance-subject: bind failed");
+        println!("WS_SUBJECT_PORT={}", listener.local_addr().port());
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        loop {
+            match poll_fn(|cx| listener.poll_accept(cx)).await {
+                Ok(accepted) => {
+                    tokio::task::spawn_local(echo(accepted.conn));
+                }
+                Err(e) => eprintln!("ws-conformance-subject: accept error: {e:?}"),
+            }
+        }
+    });
 }
