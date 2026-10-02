@@ -155,7 +155,7 @@ pub(super) fn deliver<'a>(
             )
             .await
         };
-        busbar_kernel::proxy::add_relayed_headers(resp.headers_mut(), &upstream_head, |n| {
+        add_relayed_headers(resp.headers_mut(), &upstream_head, |n| {
             crate::engine::xchg::reply::wire::governed_response(hop.ingress_protocol, n)
         });
         resp

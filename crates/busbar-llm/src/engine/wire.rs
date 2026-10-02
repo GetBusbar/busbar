@@ -151,7 +151,7 @@ pub(crate) fn rendered_response_via(
     let mut rb = Response::builder().status(status);
     // A relayed far-end answer's per-connection fields are this answer's to re-derive.
     let mut fields = r.fields;
-    busbar_kernel::proxy::strip_answer_mechanics(&mut fields);
+    strip_answer_mechanics(&mut fields);
     for (name, value) in fields {
         rb = rb.header(name, value);
     }

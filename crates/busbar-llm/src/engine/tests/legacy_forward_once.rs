@@ -385,13 +385,9 @@ pub(super) async fn forward_once(
             let upstream_head = r.headers().clone();
             let relay = |resp: &mut Response| {
                 if ingress_protocol == egress_name {
-                    busbar_kernel::proxy::add_relayed_headers(
-                        resp.headers_mut(),
-                        &upstream_head,
-                        |n| {
-                            crate::engine::xchg::reply::wire::governed_response(ingress_protocol, n)
-                        },
-                    );
+                    crate::engine::add_relayed_headers(resp.headers_mut(), &upstream_head, |n| {
+                        crate::engine::xchg::reply::wire::governed_response(ingress_protocol, n)
+                    });
                 }
             };
             let ct = r.headers().get(CONTENT_TYPE).cloned();
