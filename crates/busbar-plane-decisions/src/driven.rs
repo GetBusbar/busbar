@@ -66,6 +66,15 @@ pub mod tail {
     /// The resource granularity a grant names: a configured decision provider.
     pub const SCOPE_KINDS: &[&str] = &["decision_provider"];
 
+    /// What one registration on this plane is called.
+    pub const SUBJECT_NOUN: &str = "decision provider";
+
+    /// The singular noun for one registration in admin responses.
+    pub const ADMIN_NOUN: &str = "decision-provider";
+
+    /// The record resource kind a registration is audited under: the scope kind.
+    pub const AUDIT_KIND: &str = SCOPE_KINDS[0];
+
     /// The op classes this plane serves, in index order. `systemone` alone (see the module doc).
     pub const OP_CLASSES: &[OpClassId] = &[ops::OP_SYSTEMONE];
 
