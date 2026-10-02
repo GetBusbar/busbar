@@ -237,6 +237,21 @@ fn dep_entries(doc: &toml_lite::Document) -> Vec<(String, String, DepSpec)> {
 /// never collide on a scratch file name.
 static STAGE_SEQ: AtomicUsize = AtomicUsize::new(0);
 
+/// Is `name` pinned in the root manifest `root_manifest` as a git dependency at an exact `rev`
+/// (`[workspace.dependencies] name = { git = "…", rev = "…" }`)? That is how a plugin crate that
+/// MOVED OUT of this repo (TODO PATH TO DEV-GREEN P5, the extraction recipe) is pulled back: one
+/// git dependency at one commit. A branch, a tag or a path is not a pin.
+pub(crate) fn pinned_git_dep(root_manifest: &str, name: &str) -> bool {
+    toml_lite::parse_text(root_manifest)
+        .table("workspace.dependencies")
+        .get_one(name)
+        .map(parse_spec)
+        .is_some_and(|spec| match spec {
+            DepSpec::Table(t) => t.contains_key("git") && t.contains_key("rev"),
+            DepSpec::Version(_) => false,
+        })
+}
+
 /// Read a manifest THROUGH the context, then parse it with the shared `toml_lite` reader.
 ///
 /// `toml_lite::parse` takes a path because every other caller reads a file that is really on disk.

@@ -446,7 +446,7 @@ case "$sub" in
         echo "== predev fence: $(basename "$f") (recorded from a predev build; NOT 1.5.5 evidence) =="
         set +e
         "$RUST_BIN" diff --golden "$f" --candidate "$cand" --out "${out:-$(mktemp -d)}/fence-$(basename "$f")" \
-          --cells "$DATA/cells.json" --id-filter "$ids" --allow-harness-skew --strict
+          --cells "$DATA/cells.json" --id-filter "$ids" --strict
         frc=$?; set -e
         [ "$frc" -le "$worst" ] || worst="$frc"
       done
@@ -460,7 +460,6 @@ case "$sub" in
     # (named, not green, not red); here each is judged against its own baseline by NAME
     # (`--baseline-version`, which refuses a baseline that does not exist), --strict, under its own
     # heading. A divergence is red. The replay's exit is the worst of every section.
-    # `--allow-harness-skew` as for the fences: the baseline was recorded at its own pin.
     family_baseline_rows() {  # -> "family<TAB>version" per row
       [ -f "$DATA/family-baselines.tsv" ] || return 0
       grep -vE '^[[:space:]]*(#|$)' "$DATA/family-baselines.tsv" || true
@@ -497,26 +496,17 @@ PY
         "$RUST_BIN" diff --baseline-version "$ver" --candidate "$cand" \
           --out "${out:-$(mktemp -d)}/baseline-$ver-$fam" --cells "$DATA/cells.json" \
           ${acc:+--accepted "$acc"} --family "^$(printf '%s' "$fam" | sed 's/[.]/\\./g')\$" \
-          ${idf:+--id-filter "$idf"} --allow-harness-skew --strict || frc=$?
+          ${idf:+--id-filter "$idf"} --strict || frc=$?
         [ "$frc" -le "$worst" ] || worst="$frc"
       done < <(family_baseline_rows)
       return "$worst"
     }
     # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).
     #
-    # `--allow-harness-skew` IS NO LONGER INJECTED HERE, AND THAT IS THE POINT. It used to be
-    # appended to EVERY `./bin/oracle replay`, which meant the differ's same-revision guard — the
-    # one thing standing between "these two recordings are comparable" and "these two recordings
-    # are not" — could not fire on any run this shim served, including every DONE run. A guard the
-    # wrapper disables invisibly is a guard nobody can be shown failing.
-    #
-    # It is OPT-IN now: a caller that genuinely compares across a harness change passes the flag
-    # itself, at the call site, where a reader can see it and ask why. The two that do are the
-    # workflows diffing a Rust-recorded candidate against the COMMITTED, Python-recorded 1.5.5
-    # golden (the removed ci.yml and the removed oracle-proof.yml); they now say so in their own lines. The DONE oracle
-    # records BOTH sides with this engine, so its revisions agree and it needs no flag — which is
-    # exactly the run the guard should have been armed on all along. Re-recording the committed
-    # golden with the Rust engine (oracle-rerecord workflow) retires the two explicit uses too.
+    # NO HARNESS-REVISION FLAG EXISTS ANY MORE (ORACLE-STABLE). The differ judges cell by cell; the
+    # whole-tree harness_rev refusal and `--allow-harness-skew` are gone from the engine. The 1.5.5
+    # golden is immutable and add-only (the promote hop's golden-guard), and the engine's own CI
+    # replays the published 1.5.5 binary over it, twice, byte-for-byte.
     # A FILTERED REPLAY: widen --id-filter to the premise cells, and refuse (by name) any selected
     # forgiveness the engine still withholds for an unevaluable premise.
     IDF="" args=()

@@ -1553,7 +1553,7 @@ kernel_crate = "busbar-kernel"
 #    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
 # ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
 #    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
-kernel_ceiling = 55537
+kernel_ceiling = 55534
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
@@ -1867,10 +1867,6 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # OS sockets, TLS, ALPN and pools (busbar-core-connector; BUSBAR-1.6.0.md THE DESIGN, §5) regardless
 # of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
-busbar-transport-http = [
-  "tokio-util", "memchr", "futures", "tokio", "rustls", "hyper", "hyper-util",
-  "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
-]
 busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
@@ -2205,8 +2201,6 @@ max_sites = 0
 # nine below, each still forging today.
 known_sites = [
   "crates/busbar-plane-streaming/src/tests/harness.rs",
-  "crates/busbar-transport-http/src/grpc/tests/battery.rs",
-  "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
@@ -3221,6 +3215,14 @@ plane_crates = 4
 # root's pinned rev (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp) — the loader's both-ways
 # rows `export`, `export-webhook`, `export-scrape`, `export-otlp`. Neither export glob matches a
 # directory in this repo any more: the kind's documented zero.
+#
+# transport -1 (EXTRACT-15, TODO PATH TO DEV-GREEN P5 "EXTRACTION TO 15 CRATES", item http): the http
+# transport crate MOVED OUT with its history to GetBusbar/busbar-transport-http and busbar pulls it at one pinned rev
+# (root Cargo.toml). Its gates run in that repo's plugin CI.
+# transport 3 -> 2 (EXTRACT-15, item tcp): the tcp transport crate MOVED OUT with its history to
+# GetBusbar/busbar-transport-tcp and busbar pulls the logic crate and its -plugin cdylib crate at one pinned
+# rev (root Cargo.toml). Its gates run in that repo's plugin CI. `crates/busbar-transport-*` now matches
+# two: stdio and ws.
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
@@ -3228,7 +3230,7 @@ auth = 0
 secret = 0
 store = 1
 export = 0
-transport = 4
+transport = 2
 loader = 1
 abi = 1
 
