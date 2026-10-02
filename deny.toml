@@ -79,6 +79,19 @@ deny = [
     { crate = "rustls@0.22", reason = "TLS is rustls 0.23" },
     { crate = "ring@0.16", reason = "the crypto backend is ring 0.17" },
     { crate = "serde_yaml", reason = "unmaintained; YAML is serde_yaml_ng" },
+    # ONE Ed25519 = ed25519-dalek 2 (ARCHITECT ruling 2026-10-02, DEPS-AUDIT cut #9 REFUSED). Plugin
+    # signatures, the audit-chain seal, token and card signing and the operator signature verify
+    # through dalek's `verify_strict`, which refuses small-order keys and signatures. ring has no
+    # such check, and ring plus a hand-written weak-key blocklist would be home-made crypto in a
+    # security-critical verifier; five crates do not pay for that, nor for churning the
+    # plugin-facing `busbar_plugin_loader::sign::{SigningKey, VerifyingKey}`. So dalek stays, at ONE
+    # version (2.x; `multiple-versions = "deny"` refuses a second), busbar code never calls
+    # ring's Ed25519, and no other Ed25519 crate may enter.
+    { crate = "ed25519-dalek@1", reason = "ONE Ed25519: ed25519-dalek 2" },
+    { crate = "ed25519-dalek@0", reason = "ONE Ed25519: ed25519-dalek 2" },
+    { crate = "ed25519-compact", reason = "ONE Ed25519: ed25519-dalek 2" },
+    { crate = "ed25519-zebra", reason = "ONE Ed25519: ed25519-dalek 2" },
+    { crate = "ed25519-consensus", reason = "ONE Ed25519: ed25519-dalek 2" },
 ]
 # THE ACCEPTED DUPLICATES: each version here is one a parent forces and busbar cannot collapse.
 skip = [
