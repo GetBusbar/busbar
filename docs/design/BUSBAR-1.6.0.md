@@ -4898,9 +4898,10 @@ Other rulings:
 - 2026-10-02 ARCHITECT Q-FL1 (how the llm door is reached): no catch-all special case. The llm plane
   states its inbound paths as claims like every plane, and whatever 1.5.5 served as llm's fallback is a
   prefix claim at the lowest precedence, ordered by CG-62 (most specific wins); the router has no
-  llm-shaped branch. Implementing commit: pending. The claim grammar cannot yet express the 1.5.5
-  fallback for a path more than one segment deep (cells `http.crosscut|unknown-path|bare`,
-  `|openai-suffix`), so this ruling is open on that point.
+  llm-shaped branch. A prefix claim is its target's whole subtree at any depth (settled with
+  SERVE-WIRE), so the 1.5.5 fallback (cells `http.crosscut|unknown-path|bare`, `|openai-suffix`) is
+  a prefix claim on `/` per verb, and each dialect's own paths are claims wearing their dialect
+  (44ca63ad53).
 - 2026-10-02 ARCHITECT Q-FL2 (a safe plane naming its pool): the same field as Q-SW6
   (`ArriveOut.pool: AbiStr`); SERVE-WIRE adds the SDK setter with the field and the llm door consumes
   it. Implementing commit (llm side): pending.
