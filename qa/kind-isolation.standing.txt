@@ -104,7 +104,6 @@ kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	9
 kind-isolation:matrix	unlisted-edge	root -> cleanliness	205
 kind-isolation:matrix	unlisted-instance	busbar × export	8
 kind-isolation:matrix	vendor-name	busbar crates/busbar/benches/hook_path.rs	1
-kind-isolation:matrix	vendor-name	busbar crates/busbar/src/root/units_admin/tests/units_admin.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/boot_lines_neutrality.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/boot_tls_refusal_once.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/cli_validate.rs	7
@@ -116,14 +115,11 @@ kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/ledger_identity.rs	
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/linked_export_sinks_boot_as_their_own_kind.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/mcp_stdio_serve.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/metrics_scrape_boot_window.rs	1
-kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/net_guard_one_judge.rs	5
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/no_data_dir_neutrality.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/no_state_persist.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/scrape_shape_1_5_5.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/thread_per_core_serves.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/transport_dropped_in_serves.rs	1
-kind-isolation:matrix	vendor-name	busbar-hooks-ranking crates/hooks-ranking/src/tests/lib_tests.rs	1
-kind-isolation:matrix	vendor-name	busbar-hooks-ranking crates/hooks-ranking/tests/determinism.rs	1
 kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> kernel	1
 kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> legacy	3
 kind-isolation:test-deps	unlisted-dep-edge	kernel -> contract	1
