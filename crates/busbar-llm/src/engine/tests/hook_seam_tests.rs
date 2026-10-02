@@ -2452,3 +2452,87 @@ async fn request_id_is_recorded_as_native_u64_tracing_field() {
     );
     lane.shutdown().await;
 }
+
+/// THE 1.5.5 HOOK SEAM, RESTORED: a valid-JSON request carrying content the reader does not model
+/// (a role and a block type it has never heard of) reaches a content gate, which sees the turns
+/// busbar CAN read, and is forwarded to the upstream byte for byte. Unreadable content contributes
+/// nothing; it never refuses the request (DIALECT-FIDELITY-DESIGN F2: the reader is a tap). RED arm:
+/// 1.6.0 before this answered the request with a 400 ("request body could not be read as a valid
+/// request for this endpoint"), a regression against 1.5.5's raw-body projection.
+#[tokio::test]
+async fn unreadable_content_reaches_the_gate_and_is_forwarded() {
+    crate::testkit::install_test_seams();
+    let state = Arc::new(crate::test_support::MockServerState::new());
+    state.push(crate::test_support::MockResponse::Ok {
+        status: StatusCode::OK,
+        body: serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "model": "m0",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        }),
+    });
+    let server = crate::test_support::MockServer::new(state.clone()).await;
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            &server.base_url(),
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    let seen = Arc::new(StdMutex::new(None));
+    let gate = ResolvedPolicy::Policy {
+        policy: Arc::new(CapturingPolicy {
+            seen: seen.clone(),
+            reject: None,
+        }),
+        on_error: busbar_kernel::config::PolicyOnError::default(),
+        on_error_chain: Vec::new(),
+        timeout: std::time::Duration::from_millis(500),
+        send_prompt: true,
+        send_user: false,
+        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+    };
+    Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
+    let body = r#"{"model":"m0","max_tokens":10,"messages":[{"role":"wizard","content":"cast"},{"role":"user","content":[{"type":"text","text":"READABLE"},{"type":"never_heard_of","x":1}]}]}"#;
+    let resp = forward_with_pool(
+        &app,
+        lanes(1),
+        bytes::Bytes::from_static(body.as_bytes()),
+        None,
+        "p",
+        None,
+        "anthropic",
+        crate::test_support::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "never refused for content it cannot read"
+    );
+    let upstream = state
+        .get_last_request_body()
+        .expect("the upstream received the request");
+    assert_eq!(
+        String::from_utf8_lossy(&upstream),
+        body,
+        "forwarded byte for byte"
+    );
+    let captured = seen.lock().unwrap().clone().expect("the gate ran");
+    let (_, turns) = captured.prompt.expect("the gate was handed the prompt");
+    assert!(
+        turns
+            .iter()
+            .any(|(r, t)| r == "user" && t.contains("READABLE")),
+        "the gate sees what busbar can read: {turns:?}"
+    );
+    assert!(
+        turns.iter().all(|(r, _)| r != "wizard" && !r.is_empty()),
+        "an unreadable turn contributes nothing: {turns:?}"
+    );
+    server.shutdown().await;
+}

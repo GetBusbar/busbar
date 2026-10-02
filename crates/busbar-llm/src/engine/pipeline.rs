@@ -479,18 +479,15 @@ fn fire_global_taps(
         // (decide_policy_order), not a tap payload.
         budget: &[],
     };
-    // THE ONE READ for this seam, done once and shared by both projections. A body the reader
-    // refuses yields the zeroed shape here rather than failing anything: request-stage taps are
-    // fire-and-forget observation, and the gate/rewrite seams — which read the same IR — are where
-    // an unreadable request is actually rejected.
+    // THE ONE READ for this seam, done once and shared by both projections, over the content the
+    // reader can read; request-stage taps are fire-and-forget observation.
     let facts = crate::engine::hooks::read_hook_facts(
         body,
         raw_body,
         content_type,
         ingress_protocol,
         Some(operation),
-    )
-    .unwrap_or(crate::engine::hooks::HookFacts::Absent);
+    );
     let build_proj = |with_prompt: bool| {
         let req = build_rewrite_request(
             &facts,
