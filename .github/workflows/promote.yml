@@ -33,8 +33,11 @@ jobs:
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0, persist-credentials: false } } # v7
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
+      # No debuginfo in the dev/test builds: build_test's all-features, feature-matrix and test builds plus
+      # the oracle's release build filled the runner's ~41 GiB free disk with debuginfo (ENOSPC, no log).
+      # Base and candidate build alike, so the no-worse-than-base verdict is unchanged.
       - run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/hop.sh"
-        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}" }
+        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/turnstile-*.json", if-no-files-found: warn } } # v7.0.1
       # The durable verdict hop.sh writes pass or fail (verdict/): idempotent rerun for a hop killed before its trap, then the artifact publish reads.
       - { if: always(), run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/verdict.sh" }
