@@ -46,8 +46,7 @@ for p in "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" "$IDP_PORT"; do
   assert_port_free "$p" || fail_here "port ${p} already in use before the probe starts" "refusing a possibly-false PASS."
 done
 
-python3 mock-upstream.py "$MOCK_PORT" "$MARKER" >/dev/null 2>&1 &
-track_pid $!
+start_oracle_mock "$MOCK_PORT" "$MARKER" || fail_here "the oracle mock upstream did not come up" "port ${MOCK_PORT}; bin/oracle could not obtain the pinned engine."
 python3 stub-idp.py "$IDP_PORT" "https://127.0.0.1:${IDP_PORT}" "$ISSUER" "$AUDIENCE" "$SUB" groups "$GROUP_VALUE" "$IDP_CERT" >/dev/null 2>&1 &
 track_pid $!
 idp_up() { for _ in 1 2 3 4 5 6 7 8; do curl -fsSk -m 3 -o /dev/null "https://127.0.0.1:${IDP_PORT}/jwks" 2>/dev/null && return 0; sleep 1; done; return 1; }

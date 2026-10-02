@@ -6,7 +6,8 @@ name: release
 
 on:
   push:
-    tags: ["v*", "!v*-*"]
+    # `vX.Y.Z-dev.N` is a signed PRE-RELEASE from dev (never main/qa); other suffixed tags start nothing.
+    tags: ["v*", "!v*-*", "v*-dev.*"]
   # A tag pushed with GITHUB_TOKEN starts no workflow, so a workflow that tags dispatches this on
   # the tag ref (`gh workflow run release.yml --ref <tag>`).
   workflow_dispatch: {}

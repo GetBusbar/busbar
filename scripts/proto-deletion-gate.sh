@@ -157,7 +157,7 @@ require_scan_dir() { # $1 = directory this gate scans or path-pins inside; $2 = 
 #     place the kind boundaries are drawn (manifest-allowlist, source-denylist and forbid-unsafe read
 #     the same table), so a plane or transport crate is a needle the moment it is in its kind;
 #   * the #34 naming-law families `busbar-plane-*` and `busbar-*-codec`, which were already here.
-# NOT needles, and why: `busbar-contract`/`busbar-plugin` are the ABI core is built on; `busbar-oauth2`
+# NOT needles, and why: `busbar-contract`/`busbar-plugin` are the ABI core is built on; `busbar-core-oauth2`
 # and `busbar-core-*` are compiled-in cleanliness crates that plane-keys.sh's `neutral_src_roots`
 # lists as NEUTRAL (they depend on the kernel, not the reverse).
 # $1 = tree root (default: this repo). Dies -- never an empty or narrowed list -- if a source is unreadable.
@@ -323,7 +323,7 @@ if [ "${1:-}" = "--selftest" ]; then
     st_fail=1; note "SELF-TEST NEEDLE case FAILED: core naming busbar_transport_http was not flagged (needles: $(printf '%s' "$needles" | tr '\n' ' '))"
   fi
   rm -f "$st_tmp/core/transport_leak.rs"
-  for st_n in busbar_contract busbar_plugin busbar_oauth2 busbar_kernel; do
+  for st_n in busbar_contract busbar_plugin busbar_core_oauth2 busbar_kernel; do
     if printf '%s\n' "$needles" | grep -qx "$st_n"; then
       st_fail=1; note "SELF-TEST NEEDLE case FAILED: $st_n (ABI / neutral) is a needle -- level 1 would red on core's own foundations"
     fi
