@@ -259,3 +259,24 @@ fn a_media_payload_resuming_after_padding_is_refused_and_never_billed() {
         assert_eq!(s.units(), CumulativeUnits::default(), "nothing is billed");
     }
 }
+
+#[test]
+fn every_emitted_frame_is_a_text_message_and_either_opcode_is_read() {
+    const { assert!(FRAMES_ARE_TEXT) };
+    // Gemini Live's server frames arrive binary: the bytes are read as they are.
+    let mut s = SessionUnit::open(
+        crate::codec::ir::codec::gemini::GeminiLiveCodec,
+        SessionConfig::default(),
+        false,
+        0,
+        None,
+    );
+    let setup = json(serde_json::json!({"setupComplete": {}}));
+    let plan = s.from_far_end(&setup, 0);
+    for frame in plan.to_caller.iter().chain(plan.to_far_end.iter()) {
+        assert!(
+            std::str::from_utf8(frame).is_ok(),
+            "an emitted frame is text"
+        );
+    }
+}
