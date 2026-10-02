@@ -798,8 +798,10 @@ fn read_responses_tool_choice_directive(
                 // choice have no IR carrier (`allowed_tools` does — IR-10, read above); the
                 // directive is not carried and the target applies its default. Say so rather than
                 // drop it silently.
-                tracing::warn!(
-                    tool_choice_type = o.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or(""),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire(keys::TOOL_CHOICE),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [tool_choice_type = o.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or(""),],
                     "dropping Responses tool_choice on ir parse: this tool_choice form has no IR \
                      carrier; the backend's default tool choice applies"
                 );

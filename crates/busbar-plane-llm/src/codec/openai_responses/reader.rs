@@ -395,9 +395,11 @@ impl ProtocolReader for ResponsesReader {
                                 .and_then(|i| i.as_str())
                                 .is_some_and(|i| !i.is_empty())
                             {
-                                tracing::warn!(
-                                    reasoning_id =
-                                        item.get(keys::ID).and_then(|i| i.as_str()).unwrap_or(""),
+                                crate::codec::drops::writer_drop!(
+                                    crate::codec::drops::wire("input[].id"),
+                                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                    [reasoning_id =
+                                        item.get(keys::ID).and_then(|i| i.as_str()).unwrap_or(""),],
                                     "dropping reasoning input item `id` on Responses ir parse: the \
                                      IR Thinking block models no reasoning-item id; the reasoning \
                                      text/encrypted_content survive, the specific id is re-minted"
@@ -1767,7 +1769,10 @@ impl ProtocolReader for ResponsesReader {
             .get(keys::INSTRUCTIONS)
             .is_some_and(|v| !v.is_null() && v != &serde_json::json!(""))
         {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire(keys::INSTRUCTIONS),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping response `instructions` echo on Responses ir parse: IrResponse models no \
                  request-echo slot; the request-side instructions are carried on the request hop"
             );
@@ -1777,7 +1782,10 @@ impl ProtocolReader for ResponsesReader {
             .and_then(|m| m.as_object())
             .is_some_and(|m| !m.is_empty())
         {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire(keys::METADATA),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping response `metadata` echo on Responses ir parse: IrResponse models no \
                  request-echo slot; the request-side metadata is carried on the request hop"
             );
@@ -1794,14 +1802,20 @@ impl ProtocolReader for ResponsesReader {
             .get(PREVIOUS_RESPONSE_ID)
             .is_some_and(|v| !v.is_null() && v != &serde_json::json!(""))
         {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire(PREVIOUS_RESPONSE_ID),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping response `previous_response_id` echo on Responses ir parse: IrResponse \
                  models no request-echo slot; the stateful linkage rides `response.id` (carried) \
                  and the request-side `previous_response_id` is carried on the request hop"
             );
         }
         if obj.get(FIELD_STORE).is_some_and(|v| !v.is_null()) {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire(FIELD_STORE),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping response `store` echo on Responses ir parse: IrResponse models no \
                  request-echo slot; the request-side `store` flag is carried on the request hop"
             );

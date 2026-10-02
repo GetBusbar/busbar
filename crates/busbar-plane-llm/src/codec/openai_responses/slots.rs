@@ -16,8 +16,10 @@ pub(super) fn read_image_detail(
     let word = item.get(keys::DETAIL).and_then(|d| d.as_str())?;
     let detail = crate::codec::ir::IrImageDetail::parse(word);
     if detail.is_none() {
-        tracing::warn!(
-            detail = word,
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::wire("input[].content[].detail"),
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [detail = word,],
             "dropping unknown input_image.detail on Responses ir parse: the word is not one of \
              auto/low/high; the image survives, its detail hint does not"
         );
@@ -103,8 +105,10 @@ pub(super) fn read_allowed_tools(
             t.get(keys::NAME).and_then(|v| v.as_str()),
         ) {
             (Some(keys::FUNCTION), Some(name)) => names.push(name.to_string()),
-            (kind, _) => tracing::warn!(
-                tool_type = kind.unwrap_or(""),
+            (kind, _) => crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire("tool_choice.tools[]"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [tool_type = kind.unwrap_or(""),],
                 "dropping a non-function entry from a Responses allowed_tools tool_choice on ir \
                  parse: the IR subset names function tools only"
             ),
