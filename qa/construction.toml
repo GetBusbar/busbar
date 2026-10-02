@@ -970,7 +970,7 @@ busbar-llm = 226
 # LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
 # contract's JSON-RPC reader, not the kernel's. Downward only.
 # LOWERED 282 -> 281 at the measure on the MCP-COMPAT train (T12, lk cli-5acd1cc0). Downward only.
-busbar-mcp = 281
+busbar-mcp = 280
 # busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
 # instead of per signature.
 busbar-a2a = 232
@@ -1754,7 +1754,7 @@ ceiling = 450
 label = "in-flight/sessions"
 patterns = ["inflight.rs"]
 # RE-BASELINED 2026-09-22: 575 -> 572, the measurement.
-ceiling = 552
+ceiling = 540
 
 [rules.loc-ceilings.kernel_files.recovery]
 label = "recovery"
@@ -1776,7 +1776,7 @@ patterns = ["registry.rs"]
 # RE-BASELINED 2026-09-22: 887 -> 724, the measurement. The pattern still matches three files by
 # basename — `registry.rs` 314, `plane/registry.rs` 389, `proto/registry.rs` 21 — and all three
 # have drained since the ceiling was last pinned.
-ceiling = 681
+ceiling = 675
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
@@ -1794,7 +1794,7 @@ ceiling = 61
 # item 130 took the sweep's named-grant line out (the take now mints its grant in the argument).
 label = "tick: node tick and the drain sweep"
 patterns = ["tick.rs"]
-ceiling = 191
+ceiling = 137
 
 # ── REPOINTED 2026-09-22, the same repair `ticks` above already had. ───────────────────────────
 # Neither `arena.rs` nor `masking.rs` exists anywhere in the tree, so this row measured the empty
