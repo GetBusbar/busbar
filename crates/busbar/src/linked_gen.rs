@@ -71,6 +71,12 @@ const TRANSPORT_AXIS: &str = "transport";
 /// the host's sockets by the connector.
 pub(crate) const DOOR_AXIS: &str = "transport-door";
 
+/// The plane door axis (#2, THE DESIGN §11.4): the row's entry exports its plane kind's memory-ABI
+/// `door`, and the root hands it to the loader beside every dropped-in plane door
+/// (`crate::root::linked::dropped_planes_of`), so a compiled-in plane is bound through the same table
+/// as a dropped-in one. It needs no `plane` beside it: the door states the plane.
+pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
+
 /// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
 /// the claims it declares (`CLAIMS`); rides on `plane`.
 const CLAIMS_AXIS: &str = "claims";
@@ -241,6 +247,7 @@ pub(crate) fn linked_source(
                     || axis == "hot-plane"
                     || axis == TRANSPORT_AXIS
                     || axis == DOOR_AXIS
+                    || axis == PLANE_DOOR_AXIS
                     || axis == AUTH_AXIS
                     || axis == CLAIMS_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
@@ -319,7 +326,7 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
     out.push_str("    plane_doors: &[");
-    for e in on_axis("plane-door") {
+    for e in on_axis(PLANE_DOOR_AXIS) {
         out.push_str(&format!("{e}::door, "));
     }
     out.push_str("],\n");

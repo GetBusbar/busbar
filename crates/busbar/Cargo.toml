@@ -152,7 +152,7 @@ busbar-export-otlp = { workspace = true, optional = true }
 # The transports. Composition is an edge that does not exist as a Cargo dependency — a transport may
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+busbar-transport-tcp = { workspace = true }
 busbar-transport-http = { workspace = true }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
@@ -262,6 +262,15 @@ transport-tcp = []
 # differently either way — which is what keeps the neutrality cells answering the same on both
 # legs, and is why this ships on rather than waiting for a golden it could never move.
 plane-decisions = ["dep:busbar-plane-decisions"]
+# THE DECISIONS PLANE THROUGH ITS DOOR, the plane's development-only switch (BUSBAR-1.6.0.md Part 3
+# section 12, "The switch": a development-only cargo feature flips a plane onto the driver during its
+# fold and is deleted when the fold completes). Never in `default`. On, the plane's memory-ABI door
+# (`busbar_plane_decisions::plane_door::door`) is a `plane-door` row: the root hands it to the loader
+# beside every dropped-in plane door and binds it through the one load on the one dispatcher, so the
+# compiled-in plane is called through the same table as its dropped-in cdylib (#2, #30; THE DESIGN
+# section 11.4). It carries `plane-decisions`, which keeps the crate edge and the `decisions:` key's
+# owner.
+plane-decisions-door = ["plane-decisions"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-file = ["dep:busbar-export-file"]
@@ -343,6 +352,9 @@ transport-sse = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
 transport-grpc = "busbar-transport-http"
 transport-stdio = "busbar-transport-stdio"
+# THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
+# loader's one load beside the dropped-in plane doors.
+plane-decisions-door = "busbar-plane-decisions"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
@@ -355,6 +367,7 @@ transport-stdio = "busbar-transport-stdio"
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
 # `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
 # `auths`: a `kind: auth` plugin's SDK boundary (`BUSBAR_COLD_ENTRY`), under its `linked-name` key.
+# `plane-door`: a plane's memory-ABI `door`, bound through the loader's one load (`root::linked`).
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
@@ -374,6 +387,7 @@ transport-sse = "transport"
 transport-ws = "transport"
 transport-grpc = "transport"
 transport-stdio = "transport"
+plane-decisions-door = "plane-door"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
@@ -385,6 +399,8 @@ transport-sse = "busbar_transport_http::linked::sse"
 transport-grpc = "busbar_transport_http::linked::grpc"
 # An auth plugin's boundary is the SDK's, at its crate root.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
+# A plane door row's entry is the module that exports its `door`.
+plane-decisions-door = "busbar_plane_decisions::plane_door"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]
@@ -456,6 +472,11 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # above, dropped into `plugins/` as the library a tarball of the sink carries. The sink's own
 # both-doors conformance lives in its repo (GetBusbar/busbar-export-file, `tests/conformance.rs`).
 busbar-export-file-plugin = { workspace = true }
+# The dropped-in transport proofs (`tests/transport_dropped_in_serves.rs`, the tcp-less boot in
+# `tests/linked_export_sinks_boot_as_their_own_kind.rs`): the tcp transport repo's cdylib crate at the
+# SAME pinned rev as the linked `busbar-transport-tcp` edge above, found in this target dir under
+# `deps/` (hashed) by the door it loads as. The wire's own both-doors conformance lives in its repo.
+busbar-transport-tcp-plugin = { workspace = true }
 # The scrape role's first-party proof (`tests/export_scrape_is_first_party.rs`): the scrape sink's
 # repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-prometheus` edge above —
 # the library a tarball of the sink carries, found in this target dir by what it loads as. The
