@@ -645,11 +645,11 @@ const PARKED: &[crate::codec::drops::Parked] = &[
 // The per-TTL cache split is read into the usage detail; a stream exception is the terminal error.
 const RESPONSE_CODE: &[&str] = &["usage.cacheDetails"];
 const STREAM_CODE: &[&str] = &[
-    "internalServerException",
-    "modelStreamErrorException",
-    "serviceUnavailableException",
-    "throttlingException",
-    "validationException",
+    INTERNAL_SERVER_EXCEPTION,
+    MODEL_STREAM_ERROR_EXCEPTION,
+    SERVICE_UNAVAILABLE_EXCEPTION,
+    THROTTLING_EXCEPTION,
+    VALIDATION_EXCEPTION,
 ];
 
 /// Read a native Bedrock Converse `reasoningContent` content block into an IR `Thinking` block, or

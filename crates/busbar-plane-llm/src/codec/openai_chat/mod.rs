@@ -866,7 +866,7 @@ const RESPONSE_CODE: &[&str] = &[];
 const STREAM_CODE: &[&str] = &[
     "id",
     "model",
-    "created",
+    CREATED,
     "object",
     "choices[].index",
     "choices[].finish_reason",
