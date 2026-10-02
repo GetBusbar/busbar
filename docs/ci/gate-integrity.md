@@ -18,12 +18,9 @@ This document is what replaced it.
 
 Two halves, and they are enforced by two different mechanisms.
 
-*Nothing new arrives unheld* is `scripts/gate-mutants.sh`, run on demand (no workflow carries it any
-more). The gate code a change touches is mutated, and a stub that survives the gates' own self-proof
-is a line of new gate code that nothing holds down. It is scoped to the diff, so its cost is
-proportional to the change. A change that touches the mutation scope runs
-`scripts/gate-mutants.sh --shard 1/1` locally and says so in its hand-back; the 24-shard run is a
-deliberate campaign. See *Sharding* below for why.
+*Nothing new arrives unheld* is every gate's own `--selftest`: each owed row has a planted case that
+must go RED, and `cargo xtask selftest` refuses a gate with an unproven row. A manual mutation run is
+described under *The mutation job* below.
 
 *Nothing already held stops being held* is the ratchets that were already here: the ceilings in
 `qa/construction.toml` and `qa/kind-isolation.toml`, held exactly (not approximately) by
@@ -43,7 +40,7 @@ branch.
 | check | what it is | required on |
 | --- | --- | --- |
 | `preflight` | formatting, `Cargo.lock` current, the generated C header current, on a free runner | qa, main |
-| `promote` | the turnstile admits the candidate: EVERY registered `cargo xtask gate`, plus the oracle and conformance where the rung asks, then the fast-forward of the base | qa, main |
+| `hop` | the turnstile admits the candidate: EVERY registered `cargo xtask gate`, plus the oracle and conformance where the rung asks, then the fast-forward of the base | qa, main |
 
 `ship-ready` is a registered gate like the rest: it runs on every hop, with `XTASK_SHIP_TARGET` set to
 the hop's base branch, so it is strict for `qa` and `main` and carries the dev line's standing reds
@@ -72,7 +69,7 @@ compares nothing, so the binding is reported unproven rather than waved through.
 
 The required-check list is not maintained by hand in a settings page. It is
 [`scripts/ci-branch-protection.sh`](../../scripts/ci-branch-protection.sh): idempotent, `gh api`,
-read-modify-write (it adds a floor of two contexts, `preflight` and `promote`, to whatever a branch already requires, and never removes a
+read-modify-write (it adds a floor of two contexts, `preflight` and `hop`, to whatever a branch already requires, and never removes a
 context somebody added for a reason this script does not know about). It also sets
 `allow_force_pushes: false`, `allow_deletions: false` and `enforce_admins: true` — the last of which
 is the point. A required check an administrator can click past is a required check that gets clicked
@@ -84,167 +81,13 @@ anything the checks do not already prove.
 
 ## The mutation job
 
-`scripts/gate-mutants.sh` runs `cargo-mutants` (pinned by version, cached) over the Rust this branch
-changed in the gate sources, with a test command that is **not** `cargo test`:
-
-```
-cargo xtask gate kind-isolation      --selftest
-cargo xtask gate kind-isolation-ship --selftest
-cargo xtask gate construction        --selftest
-cargo xtask gate design-bindings     --selftest
-cargo test -p xtask --lib
-```
-
-The distinction matters more than it looks. `cargo test -p xtask --lib` proves the readers, the
-parsers and the helpers. It does not prove that `construction`'s `one-pick-site` row still goes red
-on a second pick site — only `cargo xtask gate construction --selftest` does, because only it plants
-one. Mutating gate code and asking `cargo test` about it measures the wrong suite and reports a
-comfortable number.
-
-`cargo-mutants` can only drive `cargo test`, so `xtask/tests/gate_mutation_proof.rs` is the bridge:
-one integration test that shells out to the four gates' own self-proof. Under the mutation harness
-the binary it builds is the mutated one, so a stub no self-test case holds down leaves all four green
-and the mutant SURVIVES.
-
-**Scope.** `xtask/src/gates/**`, `xtask/src/manifest.rs`, `xtask/src/scan.rs`, `xtask/src/ctx.rs`,
-`qa/construction.toml`, `qa/kind-isolation.toml`, `scripts/land.sh`, `scripts/gate-mutants.sh`,
-`.github/workflows/**`. The two `.toml` files produce no mutants and are in the list anyway: a push
-that only moves a ceiling still has to prove the rule reading it is held, because moving a number is
-exactly how a rule stops biting.
-
-**Sharding.** The mutants are fanned across 24 shards of the `busbar-xl` fleet (`--shard k/n`,
-round-robin). Wall clock is one baseline plus however many mutants land on the busiest shard; a
-landing-sized diff puts about one on each.
-
-### The wall clock, measured
-
-Everything about this job's cost is one number repeated: **the test command**, which a shard pays
-once for its baseline and once for every mutant it holds. Measured on this tree
-(`XTASK_GATE_CEILING_SECS=3600`, one gate at a time, nothing else running):
-
-| leg of the test command | cases | measured |
-| --- | --- | --- |
-| `cargo xtask gate kind-isolation --selftest` | 107 | **975s** (16m15) |
-| `cargo xtask gate kind-isolation-ship --selftest` | 86 | **975s** (16m15) |
-| `cargo xtask gate construction --selftest` | 35 | **367s** (6m07) |
-| `cargo xtask gate design-bindings --selftest` | 10 | **13s** |
-| `cargo test -p xtask --lib` | 176 | **53s** |
-| all four gates + the lib suite | | **2383s (39m43)** |
-
-So a shard running the unnarrowed command over a diff that lands one mutant on it costs
-`build + 39m43 + build + 39m43` — **over eighty minutes for one mutant**, and the job's original
-55-minute shard timeout could not have held it. That is not a fan-out problem; twenty-four shards
-do not make a single shard's baseline cheaper.
-
-**The lever that works is not running proofs the stub could not fail.** `kind-isolation --selftest`
-executes no line of `gates/construction/`, so against a construction mutant it is 16 minutes spent
-establishing that the mutant is not somewhere it could not be. `scripts/gate-mutants.sh --gates`
-computes the list from the diff and `XTASK_GATE_MUTATION_GATES` carries it into the harness; the
-baseline job reads the same flag, because a baseline proving a wider command than the shards run is
-a baseline about a different command.
-
-| the diff touches | test command | one shard, one mutant |
-| --- | --- | --- |
-| `gates/design_bindings/**` only | 13s + 53s = **66s** | ~2m + builds |
-| `gates/construction/**` only | 6m07 + 53s = **7m00** | **~14m** + builds |
-| `gates/kind_isolation/**` only | 16m15 + 16m15 + 53s = **33m23** | **~67m** + builds |
-| anything shared (`mod.rs`, `manifest.rs`, `scan.rs`, `ctx.rs`, an unmapped path) | **39m43** | ~80m + builds |
-
-**Two of those four fit the 40-minute target and two do not, and pretending otherwise would be the
-same kind of comfortable number this whole document exists to refuse.** A construction- or
-design-bindings-scoped push now finishes well inside it. A kind-isolation-scoped push does not: its
-two self-proofs are 32 minutes between them and the shard pays that twice. The shard timeout is
-raised to 120 minutes so that case reports a verdict instead of a timeout — a timeout is red, but it
-is red about the clock rather than about the tree, which is the least useful red there is.
-
-**Levers considered and not taken.**
-
-*A baseline cache keyed on the tree hash, shared inside the run.* The 24 shards start together, so
-there is no first finisher for the others to wait on; a cache written by shard 3 at minute 40 is
-read by nobody. Making them wait serialises the fan-out, which costs more than it saves.
-
-*Hoisting the baseline out of the shards again.* Refused, and see the section above for what it cost
-the last time — the baseline is the only observation of the environment a mutant is actually tested
-in.
-
-*More shards.* Wall clock is `baseline + (mutants on the busiest shard) x (test command)`. At a
-landing-sized diff the busiest shard already holds one mutant, so the second term is already minimal
-and every extra shard adds another whole baseline to the fleet's bill for nothing.
-
-*A bare `cargo test -p xtask` as the command.* `xtask/tests/cli.rs` carries a case —
-`selftest_runs_every_registered_gates_red_proof` — that re-runs **every** registered gate's
-self-proof, 45 minutes of it. Naming `--lib` and `--test gate_mutation_proof` explicitly is what
-keeps that out of every baseline and every mutant. Adding a test target here adds its cost to every
-mutant in the campaign.
-
-
-That fan-out is why the trigger stops at `integration/**`, `dev`, `qa`, `main` and pull requests, and
-no longer includes `keep-*`. The workflow's `concurrency:` cancels a branch's *own* superseded run,
-which is no help when the load is ~15 distinct hand-back branches each claiming 24 of the fleet's 32
-spot slots at once: the integration tip's proof queued behind slot work it had nothing to do with
-([self-hosted-runners.md §1-2](self-hosted-runners.md#1-why-a-fleet-at-all) predicts exactly this).
-So for a slot branch the 24-shard proof runs in two places instead: **locally**, as
-`scripts/gate-mutants.sh --shard 1/1` (one shard, every mutant, same script and same test command),
-by any slot whose diff enters the mutation scope, stated in the hand-back; and **at landing**, on
-the integration branch. The job is manual-only and optional per owner ruling — it tests the tests,
-it does not gate a release — so nothing owes or reads its verdict as a required check.
-
-**Two things the job refuses to treat as green.**
-
-*A shard that did not run.* No output directory is not "no survivors found"; it is red.
-
-*A skipped baseline.* The first version of this job ran the unmutated command once, in its own job,
-and told the shards to skip theirs — the baseline being a property of the commit, and paying for it
-24 times being the whole wall clock. Skipping it is still refused, but **the reason first written
-down here was wrong and is corrected below**, because a wrong reason for a right rule is how the
-rule gets argued away later.
-
-### The BASELINE RED that was blamed on the scratch copy
-
-Every shard of the first two runs reported BASELINE RED. The diagnosis recorded at the time was that
-`cargo test -p xtask --lib` passes on the checkout and fails inside `cargo-mutants`' scratch copy —
-two `audit_ledger` cases going red there — and therefore that the copy is a different environment
-only a shard can see. **The scratch copy is innocent.**
-
-`audit-ledger`'s `audited-at-reachable` row asks whether every commit the register names can still
-be produced: an ancestor of `HEAD`, or of an audit pin. Pins are written locally under
-`refs/audit-pins/*` and mirrored to `refs/backup/audit-pins/*`, and neither `git clone` nor
-`actions/checkout` carries anything outside `refs/heads/*` and `refs/tags/*`. This workflow fetched
-the branch's merge-base ref and nothing else, so on the runner the pin set was **empty**, thirteen of
-the register's commits read as unreachable, and exactly two `audit_ledger` cases went red — on the
-checkout *and* in the copy, because `--copy-vcs true` copies the refs it was given and an empty pin
-set copies faithfully. Any runner that runs the audit-ledger gate must fetch
-`+refs/backup/audit-pins/*:refs/audit-pins/*` first.
-
-Proven three ways rather than argued:
-
-| condition | result |
-| --- | --- |
-| a clone carrying no pins | those two cases, and only those two, red |
-| the same clone after `+refs/backup/audit-pins/*:refs/audit-pins/*` | `cargo test -p xtask --lib` green |
-| `cargo-mutants` over that clone, `--copy-vcs true` | `ok Unmutated baseline in 9s build + 44s test` |
-
-The third row is the scratch-copy condition, and it is green: the copy is not a different
-environment, it is the same environment copied.
-
-The two cases now **name the input they depend on**. Their assertions are unchanged and still fail;
-what is added is the sentence saying the checkout carries no pins, that this is an environment fault
-and not a register fault, and where the fetch is spelled. A test that depends on the environment has
-to say so. What it must never do is quietly stop testing when the dependency is absent, so nothing
-there is skipped, weakened or made conditional — and `--lib` is never dropped from the command.
-
-The per-shard baseline stays anyway, for the reason that survives the correction: it is the only
-thing that can observe the environment a mutant is actually tested in, and a campaign whose baseline
-is assumed rather than measured scores every mutant CAUGHT the moment the assumption breaks. That is
-exactly what happened, and the cost of finding out was two full runs.
-
-**Why the check is not path-filtered.** A status that a `paths:` filter can decline to report is one
-that, were it ever made required, would block every unrelated pull request forever — which is how
-required checks come to be removed. `gate-mutants` is manual-only and optional per owner ruling (it
-tests the tests, it does not gate a release), so it is not a required check; but when it does run,
-the workflow always runs and `gate-mutants` always reports, and the *work* is what the scope decides.
-A push with no gate Rust in it goes green in about a minute, honestly, having measured that there was
-nothing to measure.
+There is none. `scripts/gate-mutants.sh` and the workflow that ran it are deleted, and no required
+check reads a mutation verdict. `xtask/tests/gate_mutation_proof.rs` stays as the bridge a manual
+`cargo-mutants` run over `xtask/src/gates/**` drives (`XTASK_GATE_MUTATION_PROOF=1`): under mutation
+the binary it builds is the mutated one, so a stub no self-test case holds down leaves every gate
+green and the mutant SURVIVES. Naming `--lib` and `--test gate_mutation_proof` as the test command,
+and never a bare `cargo test -p xtask` (whose `cli.rs` re-runs every gate's self-proof, 45 minutes of
+it), keeps that cost out of every mutant.
 
 ## The ship-ready row
 

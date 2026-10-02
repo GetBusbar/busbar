@@ -1,7 +1,7 @@
 # Where the published proof manifests live
 
 The Build Proof Dashboard manifest is collated by `scripts/proof-manifest.py`. The `proof-manifest`
-job that ran it (in `ci.yml`, on a push to `dev`, `qa` or `main`) is deleted with the rest of busbar's
+job that ran it (in the removed `ci.yml`, on a push to `dev`, `qa` or `main`) is deleted with the rest of busbar's
 workflows: `promote.yml` does not publish a manifest, so nothing refreshes the published copies until
 the collator is wired into the release engine in busbar-release. The last published manifests are on
 the `proof-manifests` branch.

@@ -3,8 +3,8 @@
 # release, plus the release object itself, plus the gate's own self-consistency.
 #
 # WHAT COUNTS AS A CHANNEL, AND WHY THE LIST IS NOT A JUDGEMENT CALL.
-# It is derived from .github/release-notify-targets.txt (the repos release.yml repository_dispatches
-# `upstream-release` to) split by the mixed-model rule that .github/workflows/verify-deploy.yml
+# It is derived from .github/release-notify-targets.txt (the repos the removed release.yml repository_dispatches
+# `upstream-release` to) split by the mixed-model rule that the removed verify-deploy.yml
 # already documents:
 #
 #   TRACKS BUSBAR'S VERSION — must EQUAL the tag: the container registries (docker-checks.sh), the
@@ -404,13 +404,13 @@ fi
 # produced. `--signer-workflow` requires the attestation to have been minted by the ONE workflow
 # that actually builds and attests the archives.
 #
-# THAT WORKFLOW IS `build-artifact.yml`, NOT release.yml or release-stage.yml, and it is a fact
+# THAT WORKFLOW IS the removed `build-artifact.yml`, NOT the removed release.yml or the removed release-stage.yml, and it is a fact
 # about how GitHub issues these certificates rather than a preference. `gh attestation verify --help`:
 # "if your attestation was generated via a reusable workflow then that reusable workflow is the
 # signer whose identity needs to be validated." The Fulcio certificate's SAN is the
 # `job_workflow_ref` — the file holding the job that requested the OIDC token — not the
 # `workflow_ref` of whatever called it. `actions/attest-build-provenance` runs inside
-# build-artifact.yml for the release archives (docker.yml is the image half's signer; release.yml's
+# the removed build-artifact.yml for the release archives (the removed docker.yml is the image half's signer; the removed release.yml's
 # resolve-staged names that one). Naming a CALLER here would fail every verify and make this row a
 # permanent red about a healthy release.
 probe_asset="busbar-x86_64-unknown-linux-gnu.tar.gz"

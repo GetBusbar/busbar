@@ -17,7 +17,7 @@ A hop has two jobs, both in `promote.yml`:
 
 * **`preflight`**, on a free runner: `cargo fmt --all -- --check`, `cargo metadata --locked`, and the
   generated C header is current (`cargo xtask gate abi-header --write` leaves no diff).
-* **`promote`**, on a Latchkey runner sized by the rung: the engine plans the hop, the turnstile
+* **`hop`**, on a Latchkey runner sized by the rung: the engine plans the hop, the turnstile
   admits the candidate sha, and the verdict is uploaded as the `turnstile-report-<sha>` artifact. When
   the rung needs no consent and the repository variable `PROMOTE_BOARD` is `true`, the engine
   fast-forwards the base branch to the exact sha it tested. Both promotions are **fast-forward
@@ -53,12 +53,12 @@ request against `dev` and let the hop run.
 ## Moving a version up the ladder
 
 Open a pull request whose base is the next rung (`dev` into `qa`, `qa` into `main`; a lane branch into `predev`). `promote.yml`
-runs the hop on the PR; the run's check names are `preflight` and `promote`. A red hop is fixed
+runs the hop on the PR; the run's check names are `preflight` and `hop`. A red hop is fixed
 forward on the lower branch and the pull request re-run: every push re-runs the hop on the new sha.
 
 ## Branch protection this assumes
 
-`qa` and `main` require the two contexts `preflight` and `promote` (plus the org ruleset's owner
+`qa` and `main` require the two contexts `preflight` and `hop` (plus the org ruleset's owner
 consent).
 
 `scripts/ci-branch-protection.sh` writes the floor (and strips the contexts of the deleted workflows).

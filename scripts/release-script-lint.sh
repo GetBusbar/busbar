@@ -47,7 +47,7 @@
 #      directly and left non-executable. Sourced libraries (e.g. scripts/ci-runners-lib.sh, dot-sourced by
 #      scripts/ci-runners-up.sh) are correctly exempt: the interpreter, not the file's own bit, runs them.
 #
-# Runs in CI (see .github/workflows/ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX
+# Runs in CI (see the removed ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX
 # awk (macOS/Linux). `--selftest` proves the scanner still catches the real antipattern before its
 # verdict on the tree is trusted (same discipline as cargo xtask gate structure-lint --selftest).
 set -euo pipefail

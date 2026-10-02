@@ -13,7 +13,7 @@
 #      counters SURVIVED — persistence is the entire job, so the restart is the entire test
 #
 # This is scripts/release-check.sh's run_store_backend_e2e, lifted out of the ~2h release gate into
-# a standalone probe so it can (a) run in the reusable plugin-functional.yml against ANY busbar and
+# a standalone probe so it can (a) run in the reusable the removed plugin-functional.yml against ANY busbar and
 # (b) be dry-run on a laptop against the real published artifacts. It was validated exactly that
 # way against busbar 1.5.4 + store-sqlite 1.0.4 before being trusted.
 #

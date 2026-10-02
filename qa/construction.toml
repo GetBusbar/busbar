@@ -3148,7 +3148,7 @@ plane_crates = 4
 #   * `secret` 1 -> 0. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES":
 #     "these are trash … real plugins are the examples"): `crates/secret-example-plugin` was
 #     deleted, and the secret kind is proven by the real plugin repo GetBusbar/busbar-secret-vault
-#     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, ci.yml `plugin-proofs`).
+#     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, the removed ci.yml `plugin-proofs`).
 #     `crates/secret-*` now matches no directory: the kind's documented zero in this repo.
 #
 # ── RE-PINNED 2026-09-26: `auth` 2 -> 1 ─────────────────────────────────────────────────────────────────────
@@ -3157,7 +3157,7 @@ plane_crates = 4
 #     plugins are the examples"; ARCHITECT R-FIX2): `crates/auth-static-plugin` was deleted. The auth
 #     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/busbar-auth-oidc (pinned by
 #     git: busbar-kernel `auth/tests/plugin_chain_tests.rs`, `crates/busbar/tests/mcp_stdio_serve.rs`,
-#     busbar-plugin-loader `auth_conformance_tests`), and ci.yml `plugin-proofs` proves
+#     busbar-plugin-loader `auth_conformance_tests`), and the removed ci.yml `plugin-proofs` proves
 #     GetBusbar/busbar-auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
 #
 # ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────

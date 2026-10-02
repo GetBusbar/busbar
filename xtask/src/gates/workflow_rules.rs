@@ -37,9 +37,11 @@ use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 const WORKFLOWS: &str = ".github/workflows";
+/// Composite-action manifests. R14 (below) reads `uses:` out of these too, not just workflows: a
 /// composite action's `runs.steps` has exactly the same `uses:` shape and the same third-party-code
 /// exposure, and a repo that grows one is a repo where "every `uses:` in the tree is a sha" would
 /// otherwise quietly stop being true the day the first `action.yml` lands.
+// qa-names: .github/actions -- xtask/src/gates/workflow_rules.rs -- no composite action exists today; the scan root is kept so the day one lands R14 already reads it, and the selftest plants one by overlay to prove that
 const ACTIONS_DIR: &str = ".github/actions";
 
 /// The floor under the workflow discovery. A scan that finds nothing satisfies every ban, and a

@@ -36,7 +36,7 @@
 # Actions job that reports the check, not the workflow file name and not the
 # step name. Both are the literal job names of .github/workflows/promote.yml,
 # busbar's one pipeline workflow: `preflight` (the free-runner checks: fmt,
-# Cargo.lock, the C header) and `promote` (the hop: the turnstile admits the
+# Cargo.lock, the C header) and `hop` (the turnstile admits the
 # candidate, and on a green rung the base is fast-forwarded to the tested sha).
 # Every other workflow in this repo is a `workflow_call` reusable for the
 # plugin repos, whose status bubbles into the CALLER's job, so none is a
@@ -120,7 +120,7 @@ PROTECTION_GIT_DIR="${CI_PROTECTION_GIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 # verification notes on each one.
 REQUIRED_CONTEXTS_JSON='[
   "preflight",
-  "promote"
+  "hop"
 ]'
 
 # Contexts this script ACTIVELY STRIPS from a branch's required-status-checks,
@@ -433,7 +433,7 @@ cmd_selftest() {
 
   # Fixture: a realistic "current protection" object for an already-protected
   # branch. It deliberately: (1) is missing required contexts (e.g. the
-  # "preflight" and "promote" checks) from its contexts, so the
+  # "preflight" and "hop" checks) from its contexts, so the
   # compliance check must catch that; (2) has strict=true, which this
   # script must flip to false; (3) carries an unrelated, unrequested setting
   # (required_conversation_resolution.enabled = true) that must survive the
@@ -588,16 +588,16 @@ print('ok' if 'gate-mutants' not in contexts else 'FAIL')
     mkdir -p .github/workflows
     printf 'on: pull_request\njobs:\n# a column-0 comment inside jobs: must not end the job list\n  preflight:\n    name: preflight\n    runs-on: x\n' > .github/workflows/promote.yml
     git add -A; git commit -q --no-verify -m stale; git update-ref refs/remotes/origin/dev HEAD
-    printf '  hop:\n    name: promote\n    runs-on: x\n' >> .github/workflows/promote.yml
+    printf '  hop:\n    runs-on: x\n' >> .github/workflows/promote.yml
     git commit -q --no-verify -am fresh; git update-ref refs/remotes/origin/qa HEAD
   ) >/dev/null 2>&1 || true
   local i_out i_rc=0
   i_out="$(FEEDERS="qa=dev main=qa" PROTECTION_GIT_DIR="$st_repo" preflight_branch qa 2>&1)" || i_rc=$?
-  if [ "$i_rc" -ne 0 ] && printf '%s' "$i_out" | grep -q '^    promote$' && ! printf '%s' "$i_out" | grep -q '^    preflight$'; then i_result="ok"; fi
-  echo "selftest (i) a required context the feeder cannot report (promote at origin/dev) is REFUSED, by name: ${i_result}"
+  if [ "$i_rc" -ne 0 ] && printf '%s' "$i_out" | grep -q '^    hop$' && ! printf '%s' "$i_out" | grep -q '^    preflight$'; then i_result="ok"; fi
+  echo "selftest (i) a required context the feeder cannot report (hop at origin/dev) is REFUSED, by name: ${i_result}"
   [ "$i_result" = "ok" ] || failures=$((failures + 1))
   if FEEDERS="qa=dev main=qa" PROTECTION_GIT_DIR="$st_repo" preflight_branch main >/dev/null 2>&1; then j_result="ok"; fi
-  echo "selftest (j) both contexts reportable at the feeder (promote by job name, hop by id) passes preflight: ${j_result}"
+  echo "selftest (j) both contexts reportable at the feeder (hop, which has no name, by its job id) passes preflight: ${j_result}"
   [ "$j_result" = "ok" ] || failures=$((failures + 1))
   if ! FEEDERS="qa=nosuchbranch" PROTECTION_GIT_DIR="$st_repo" preflight_branch qa >/dev/null 2>&1; then k_result="ok"; fi
   echo "selftest (k) an unreadable feeder ref is REFUSED, not waved through: ${k_result}"

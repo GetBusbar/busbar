@@ -17,7 +17,7 @@
 #   * ZERO ROWS IS RED. A functional gate that passes because it exercised nothing is the exact
 #     "green-having-run-nothing" failure the audit named; verdict.sh checks for it by name.
 #
-# WHY THE LOGIC LIVES HERE AND NOT INLINE IN plugin-functional.yml. Same reason as the release
+# WHY THE LOGIC LIVES HERE AND NOT INLINE IN the removed plugin-functional.yml. Same reason as the release
 # gate: a check nobody can run on a laptop is a check nobody exercises against a real artifact
 # before trusting it. Every probe below is runnable directly —
 #
