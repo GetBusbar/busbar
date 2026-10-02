@@ -33,7 +33,7 @@ use busbar_contract::abi::host::hook::{DecideFrame, NotifyFrame};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON,
 };
-use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn,
 };
@@ -644,6 +644,15 @@ impl<T: Copy> Held<T> {
     }
 }
 
+/// Whether `c`'s Statement claims the hook word `word` (one of its `MARK_WORD_HOOK` marks).
+fn claims(c: &Candidate, word: &str) -> bool {
+    busbar_contract::abi::mechanism::rendering::read(&c.stated).is_ok_and(|r| {
+        r.mark_words
+            .iter()
+            .any(|(class, w)| *class == MARK_WORD_HOOK && w == word)
+    })
+}
+
 // ── THE HOOK ROWS: the axis the composition root installs ─────────────────────────────────────
 
 /// THE PROCESS'S HOOK PLUGINS, by Statement name and alias: the compiled-in doors and the
@@ -750,11 +759,13 @@ impl HookRows {
         self
     }
 
-    /// The row config names `module` by: its Statement name or an alias, a linked row first.
+    /// The row config names `module` by: its Statement name, an alias, or one of the hook words
+    /// its Statement claims (`MARK_WORD_HOOK`: a pool strategy word names the ranking row), a
+    /// linked row first.
     fn find(&self, module: &str) -> Option<&Candidate> {
-        self.candidates
-            .iter()
-            .find(|c| c.name == module || c.aliases.iter().any(|a| a == module))
+        self.candidates.iter().find(|c| {
+            c.name == module || c.aliases.iter().any(|a| a == module) || claims(c, module)
+        })
     }
 
     /// Bind `c` under `label`: an instance only probed binds with no log sink and no connection
@@ -835,6 +846,10 @@ impl HookAxis for HookRows {
     fn linked(&self, module: &str) -> bool {
         self.find(module)
             .is_some_and(|c| matches!(c.origin, Origin::Linked(_)))
+    }
+
+    fn call_budget(&self) -> Duration {
+        self.dispatcher.budgets().call
     }
 
     fn first_party(&self, module: &str) -> bool {

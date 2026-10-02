@@ -1160,6 +1160,12 @@ impl Dispatcher {
         self.pool.slots.len() as u32
     }
 
+    /// The watchdog's budgets this dispatcher runs on.
+    #[must_use]
+    pub fn budgets(&self) -> Budgets {
+        self.pool.env.budgets
+    }
+
     /// What the dispatcher counted.
     pub fn stats(&self) -> DispatchStats {
         let s = &self.pool.env.stats;

@@ -707,9 +707,9 @@ dependencies = [
 name = "busbar-hooks-ranking"
 version = "1.6.0"
 dependencies = [
- "async-trait",
  "busbar-contract",
- "tokio",
+ "busbar-plugin-loader",
+ "serde_json",
 ]
 
 [[package]]

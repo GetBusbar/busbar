@@ -263,8 +263,3 @@ item = "webhook"
 rule = "c1-literals:literal"
 file = "crates/plugin-loader/src/plane.rs"
 item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/registry.rs"
-item = "ranking"

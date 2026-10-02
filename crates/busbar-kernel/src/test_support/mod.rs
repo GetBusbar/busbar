@@ -2125,7 +2125,7 @@ pub fn hook_axis_stand_in(
     let dispatcher =
         DISPATCHER.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
     let rows = busbar_plugin_loader::hook_door::HookRows::new(
-        &[],
+        crate::preflight::STAND_IN_HOOK_DOORS,
         Some(registry.as_ref()),
         dispatcher.clone(),
     )?;

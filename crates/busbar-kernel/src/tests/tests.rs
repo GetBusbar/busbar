@@ -1016,60 +1016,189 @@ fn the_built_in_secret_modules_are_linked_rows_of_the_secret_axis() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// K5b (3c) exit test: the built-in ranking strategies are ALIASES of ONE linked `hooks-ranking` row
-/// on the hook axis — each frozen spelling (`least_busy` too, which the package-name rule would
-/// refuse as a name) resolves through the alias table to that `kind: hook` row, and opens as the
-/// strategy it spells. `weighted` stays the inline floor (no row). A frozen spelling is the weakest
-/// claim on the table: a dropped-in plugin aliased `cheapest` keeps answering to it.
-/// RED by planting the door bypass: `linked_rows()` registering no ranking row leaves every
-/// strategy spelling unresolved ("a built-in ranking strategy is a row of the hook axis").
+/// K5b (3c) exit test, on the hook door: the built-in ranking strategies are the HOOK WORDS of ONE
+/// linked `hooks-ranking` door on the hook axis — each strategy word names that row, and opens (with
+/// `{"policy": "<word>"}`) as the strategy it spells. `weighted` stays the inline floor (no row).
+/// The words are the door's Statement marks, never registry aliases: no registry row spells them.
+/// RED by planting the door bypass: an axis with no linked ranking door leaves every strategy word
+/// unknown.
 #[cfg(feature = "hooks-ranking")]
 #[test]
-fn the_built_in_ranking_strategies_are_aliases_of_one_linked_row_of_the_hook_axis() {
-    let preflight = |cfg: &crate::config::PluginsCfg| {
-        crate::plugins_preflight(
-            None,
-            None,
-            &Default::default(),
-            &Default::default(),
-            cfg,
-            &Default::default(),
-        )
-    };
-    let reg = preflight(&Default::default()).expect("the default boot registers its linked rows");
+fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook_axis() {
     for name in crate::config::RESERVED_HOOK_NAMES
         .iter()
         .filter(|n| crate::config::parse_strategy(n) != crate::config::PoolPolicy::Weighted)
     {
-        let row = reg
-            .resolve(name)
-            .expect("a built-in ranking strategy is a row of the hook axis");
-        assert_eq!(
-            (row.manifest.kind.as_str(), row.manifest.name.as_str()),
-            ("hook", "hooks-ranking")
+        assert!(
+            crate::preflight::builtin_ranking_known(name),
+            "a built-in ranking strategy is a hook word of the linked ranking door: {name}"
         );
-        assert!(row.in_process() && row.manifest.alias == "hooks-ranking");
-        assert_eq!(reg.open_ranking(name).expect("the row opens").name(), *name);
+        let (policy, _) = crate::preflight::builtin_ranking(name).expect("the strategy opens");
+        assert_eq!(policy.name(), *name);
     }
-    assert!(reg.resolve(crate::config::ON_ERROR_WEIGHTED).is_none());
-    assert!(reg.open_ranking("hooks-ranking").is_err());
+    assert!(!crate::preflight::builtin_ranking_known(
+        crate::config::ON_ERROR_WEIGHTED
+    ));
+    let reg = crate::preflight::linked().expect("the linked rows register");
+    assert!(
+        reg.resolve("cheapest").is_none(),
+        "a strategy word is the door's mark, not a registry alias"
+    );
+}
 
-    let dir = tmp_plugin_dir("linked-ranking");
-    let tarball = unsigned_tarball(plugin_manifest("acme-rank", "cheapest", "acme"), b"lib");
-    std::fs::write(dir.join("acme-rank.tar.gz"), tarball).unwrap();
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    let reg = preflight(&cfg).expect("the directory scans");
-    let row = reg.resolve("cheapest").expect("the alias still resolves");
-    assert_eq!(
-        row.manifest.name, "acme-rank",
-        "a row's own alias outranks a frozen spelling"
-    );
-    assert_eq!(
-        reg.resolve("least_busy").unwrap().manifest.name,
-        "hooks-ranking"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+/// RANKING PARITY THROUGH THE DOOR (ARCHITECT Q-SO9): each of the four strategy words, opened
+/// through the hook axis and called through the hook seam, answers exactly the decision 1.5.5's
+/// in-process native answered on the ranking parity cases (the 1.5.5 natives' own cases: the same
+/// candidates, the same expected order or abstain). Every answer is `Ok`: the call never fails,
+/// times out or reaches `on_error`. Its deadline is the dispatcher's Call class budget, never the
+/// 1 ms gate default.
+#[cfg(feature = "hooks-ranking")]
+#[tokio::test]
+async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error() {
+    use crate::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
+    /// `(idx, cost, latency, concurrency, rate headroom)`.
+    type Row = (usize, Option<f64>, Option<f64>, usize, Option<f64>);
+    let cand = |&(idx, cost, lat, conc, rate): &Row| Candidate {
+        idx,
+        model: "m",
+        provider: "p",
+        weight: 1,
+        context_max: None,
+        tier: None,
+        cost_per_mtok: cost,
+        tags: &[],
+        latency_ms: lat,
+        available_concurrency: conc,
+        budget_remaining: None,
+        rate_headroom: rate,
+        signals: Default::default(),
+    };
+    let req = RoutingRequest {
+        request_id: 1,
+        pool: "p",
+        ingress_protocol: "wire-a",
+        requested_model: None,
+        message_count: 1,
+        tool_count: 0,
+        has_tools: false,
+        total_chars: 10,
+        system_chars: 0,
+        max_tokens: None,
+        stream: false,
+        prompt: None,
+        identity: None,
+        signals: Default::default(),
+    };
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let prefer = |o: &[usize]| RoutingDecision::Prefer(o.to_vec());
+    // The 1.5.5 natives' cases (crates/hooks-ranking lib_tests before the door): word, candidates,
+    // the decision 1.5.5 answered.
+    let cases: Vec<(&str, Vec<Row>, RoutingDecision)> = vec![
+        (
+            "cheapest",
+            vec![
+                (0, Some(15.0), None, 1, None),
+                (1, Some(3.0), None, 1, None),
+                (2, None, None, 1, None),
+            ],
+            prefer(&[1, 0, 2]),
+        ),
+        (
+            "cheapest",
+            vec![(0, None, None, 1, None), (1, None, None, 1, None)],
+            RoutingDecision::Abstain,
+        ),
+        (
+            "cheapest",
+            vec![(0, Some(5.0), None, 1, None)],
+            prefer(&[0]),
+        ),
+        (
+            "fastest",
+            vec![
+                (0, None, Some(120.0), 1, None),
+                (1, None, Some(40.0), 1, None),
+                (2, None, Some(80.0), 1, None),
+            ],
+            prefer(&[1, 2, 0]),
+        ),
+        (
+            "fastest",
+            vec![(0, None, None, 1, None), (1, None, None, 1, None)],
+            RoutingDecision::Abstain,
+        ),
+        (
+            "fastest",
+            vec![(0, None, Some(30.0), 1, None)],
+            prefer(&[0]),
+        ),
+        (
+            "least_busy",
+            vec![
+                (0, None, None, 2, None),
+                (1, None, None, 9, None),
+                (2, None, None, 5, None),
+            ],
+            prefer(&[1, 2, 0]),
+        ),
+        (
+            "least_busy",
+            vec![
+                (0, None, None, 0, None),
+                (1, None, None, 0, None),
+                (2, None, None, 0, None),
+            ],
+            prefer(&[0, 1, 2]),
+        ),
+        ("least_busy", vec![(0, None, None, 3, None)], prefer(&[0])),
+        (
+            "usage",
+            vec![
+                (0, None, None, 1, Some(0.10)),
+                (1, None, None, 1, Some(0.90)),
+                (2, None, None, 1, None),
+                (3, None, None, 1, Some(0.50)),
+            ],
+            prefer(&[1, 3, 0, 2]),
+        ),
+        (
+            "usage",
+            vec![
+                (0, None, None, 1, None),
+                (1, None, None, 1, None),
+                (2, None, None, 1, None),
+            ],
+            RoutingDecision::Abstain,
+        ),
+        (
+            "usage",
+            vec![(0, None, None, 1, Some(0.0)), (1, None, None, 1, Some(0.0))],
+            prefer(&[0, 1]),
+        ),
+        ("cheapest", Vec::new(), RoutingDecision::Abstain),
+        ("fastest", Vec::new(), RoutingDecision::Abstain),
+        ("least_busy", Vec::new(), RoutingDecision::Abstain),
+        ("usage", Vec::new(), RoutingDecision::Abstain),
+    ];
+    let gate_default = std::time::Duration::from_millis(crate::config::DEFAULT_POLICY_TIMEOUT_MS);
+    for (word, rows, want) in cases {
+        let (policy, budget) =
+            crate::preflight::builtin_ranking(word).expect("the strategy opens through the door");
+        assert!(
+            budget > gate_default,
+            "`{word}`'s deadline is the dispatcher's Call class budget, not the gate default"
+        );
+        let cands: Vec<Candidate<'_>> = rows.iter().map(cand).collect();
+        let got = policy.decide(&req, &cands, &ctx, budget).await;
+        match got {
+            Ok(decision) => assert_eq!(decision, want, "`{word}` over {rows:?}"),
+            Err(e) => panic!("`{word}` reached on_error ({e}); 1.5.5's ranking never did"),
+        }
+    }
 }
 
 /// SECURITY: if the CONFIGURED governance store resolves to a plugin that is UNTRUSTED and NOT
