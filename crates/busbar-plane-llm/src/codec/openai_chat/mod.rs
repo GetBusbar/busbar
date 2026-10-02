@@ -1558,7 +1558,7 @@ fn read_moderation(
             .and_then(|r| r.as_array());
         for r in results.into_iter().flatten() {
             out.extend(crate::codec::ir::IrSafetyVerdict::flagged_categories(
-                r.get(MODERATION_CATEGORIES),
+                r.get(CATEGORIES),
             ));
         }
     }
@@ -1568,7 +1568,6 @@ fn read_moderation(
 const MODERATION_INPUT: &str = "input";
 const MODERATION_OUTPUT: &str = "output";
 const MODERATION_RESULTS: &str = "results";
-const MODERATION_CATEGORIES: &str = "categories";
 
 /// A Chat `message.audio` -> the IR's audio output (DF-MAP item 3): its base64 `data` and its
 /// `transcript`. The audio `id` and `expires_at` are OpenAI's own handle and do not cross.
