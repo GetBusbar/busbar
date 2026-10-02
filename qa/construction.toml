@@ -398,7 +398,7 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 # 55691, then K-SERVE +320) — EXPIRED AND STRUCK: its commits reached the base, where kernel_ceiling reads 55789 (CONVERGER
 # cg-60: 55440 + DEST-PIN +29 + K-SERVE +320), so the entry described no raise at the base and `ceiling-rose` reported it.
 
-# ── THE KERNEL CEILING, RE-ARMED BY TRAIN BIG 53148 -> 54254 (E12 lowers, URL-SEAM + RESOLVE-PIN, H2) — EXPIRED
+# ── THE KERNEL CEILING, RE-ARMED BY TRAIN BIG 53148 -> 54254 (E12 lowers, URL-SEAM + RESOLVE-PIN, host services) — EXPIRED
 #    AND STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above, which declares the next
 #    figure. Its itemisation: E12 measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 = +49; H2 +1260.
 
@@ -1541,7 +1541,7 @@ kernel_crate = "busbar-kernel"
 # ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55582 + (54707 - 54702) = 55587; the measurement at the segment tip re-arms it.
 # ── RE-ARMED 54707 -> 54726, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): A line refuses a class no plane declared (the refusal, its diagnostic, the posting flag): kernel +19, contract +1.
 # ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55587 + (54726 - 54707) = 55606; the measurement at the segment tip re-arms it.
-# ── RE-ARMED 55624 -> 55691 at the measurement of the S3+S4 chunk (83743044b), ARCHITECT S3S4-KERNEL-67 2026-10-01:
+# ── RE-ARMED 55624 -> 55691 at the measurement of the S3+S4 chunk, ARCHITECT S3S4-KERNEL-67 2026-10-01:
 #    the reservation of 73 is consumed by this excess; the unruled lines are a debt the owning lanes repay at the fold flips.
 # ── RE-ARMED 55691 -> 55760 at the measurement, R-KERNEL exception, ARCHITECT C2c S5 K-SERVE 2026-10-01 (escalate.q 17:29:52Z Q1-Q6: serve layer + admin mount; 17:31:11Z Q4: the abi/plane append):
 #    the plane serve driver (plane_driver/serve.rs) +320 over predev 8fc5e67e2's 55440; repaid at the a2a flip (C2c S8).
