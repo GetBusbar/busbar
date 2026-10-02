@@ -44,9 +44,9 @@ fn address_of(mock: &MockServer) -> SocketAddr {
         .expect("the mock's address")
 }
 
-/// The primary lane's URL: a NAME the test's resolver answers with `addr`.
-fn named_primary(addr: SocketAddr) -> String {
-    format!("http://primary.localhost:{}", addr.port())
+/// The primary lane's URL on `port`: a NAME the test's resolver answers.
+fn named_primary(port: u16) -> String {
+    format!("http://primary.localhost:{port}")
 }
 
 fn lanes(n: usize) -> Vec<WeightedLane> {
@@ -137,7 +137,7 @@ async fn a_refused_primary_fails_over_to_the_next_lane() {
 
     let primary_addr = address_of(&primary);
     let names = names_answering(primary_addr);
-    let primary_url = named_primary(primary_addr);
+    let primary_url = named_primary(primary_addr.port());
     let app = with_scoped_dial(blocking_loopback(), names.clone(), || {
         let app = TestApp::new()
             .lane(LaneSpec::new(
@@ -186,7 +186,7 @@ async fn an_allowlisted_primary_dials_and_answers() {
     let primary = MockServer::new(primary_state.clone()).await;
     let primary_addr = address_of(&primary);
     let names = names_answering(primary_addr);
-    let primary_url = named_primary(primary_addr);
+    let primary_url = named_primary(primary_addr.port());
     let app = with_scoped_dial(
         private_refusing(&["primary.localhost"]),
         names.clone(),
