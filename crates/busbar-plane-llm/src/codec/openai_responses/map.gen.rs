@@ -7,6 +7,34 @@
 
 use crate::codec::carry::{Dir, Field, Handled, Slot, Table, ValueCodec, Word, row};
 
+/// Row group `blocks`.
+pub(crate) const ROWS_BLOCKS: &[Field] = &[
+    row(&["input[]", "type=message", "content[]", "type=input_file", "file_data"], Slot::Structure, ValueCodec::Prim("file_data")),
+    row(&["input[]", "type=message", "content[]", "type=input_file", "filename"], Slot::Structure, ValueCodec::Prim("filename")),
+    row(&["input[]", "type=message", "content[]", "type=input_file", "file_url"], Slot::Structure, ValueCodec::Prim("file_url")),
+    row(&["input[]", "type=message", "content[]", "type=input_file", "file_id"], Slot::Structure, ValueCodec::Prim("file_id")),
+    row(&["input[]", "type=message", "content[]", "type=input_text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["text", "format"], Slot::Structure, ValueCodec::Prim("format")),
+    row(&["reasoning", "summary"], Slot::Structure, ValueCodec::Prim("summary")),
+    row(&["input[]", "type=message", "content[]", "type=output_text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["input[]", "type=message", "content[]", "type=output_text", "annotations"], Slot::Structure, ValueCodec::Prim("annotations")),
+    row(&["input[]", "type=message", "content[]", "type=input_image", "image_url"], Slot::Structure, ValueCodec::Prim("image_url")),
+    row(&["input[]", "type=message", "content[]", "type=input_image", "file_id"], Slot::Structure, ValueCodec::Prim("file_id")),
+    row(&["input[]", "type=message", "content[]", "type=input_image", "detail"], Slot::Structure, ValueCodec::Prim("detail")),
+    row(&["input[]", "type=function_call", "call_id"], Slot::Structure, ValueCodec::Prim("call_id")),
+    row(&["input[]", "type=function_call", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["input[]", "type=function_call_output", "call_id"], Slot::Structure, ValueCodec::Prim("call_id")),
+    row(&["input[]", "type=function_call_output", "output"], Slot::Structure, ValueCodec::Prim("output")),
+    row(&["input[]", "type=reasoning", "summary"], Slot::Structure, ValueCodec::Prim("summary")),
+    row(&["input[]", "type=reasoning", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["input[]", "type=reasoning", "encrypted_content"], Slot::Structure, ValueCodec::Prim("encrypted_content")),
+    row(&["input[]", "type=reasoning", "id"], Slot::Structure, ValueCodec::Prim("id")),
+    row(&["input[]", "type=message", "content[]", "type=refusal", "refusal"], Slot::Structure, ValueCodec::Prim("refusal")),
+    row(&["input[]", "type=reasoning", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["tool_choice", "type=function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["tools[]", "type=function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+];
+
 /// Row group `openai_family`.
 pub(crate) const ROWS_OPENAI_FAMILY: &[Field] = &[
     row(&["metadata"], Slot::Metadata, ValueCodec::Plain).park(),
@@ -46,7 +74,7 @@ pub(crate) const ROWS_SAMPLING: &[Field] = &[
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_RESPONSES_STRUCTURE, ROWS_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_RESPONSES];
+pub(crate) const REQUEST: Table = &[ROWS_RESPONSES_STRUCTURE, ROWS_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_RESPONSES, ROWS_BLOCKS];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[

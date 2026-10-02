@@ -3,7 +3,7 @@
 
 //! FIELD-COVERAGE CARRY TESTS for the Gemini (generateContent) dialect.
 //!
-//! Each test here is the named instrument behind a `carried` line in `qa/field-coverage.status`:
+//! Each test here watches fields of `dialects/gemini.toml`:
 //! it FAILS if the field it names stops surviving. Two carriage mechanisms, matching the owner's
 //! classification:
 //!

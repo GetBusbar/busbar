@@ -13,46 +13,226 @@ it; `-` means the dialect has no form for it.
 
 | dialect | direction | mapped paths | no-equivalent marks |
 | --- | --- | ---: | ---: |
-| anthropic | request | 15 | 0 |
-| bedrock | request | 13 | 0 |
-| cohere | request | 17 | 0 |
-| gemini | request | 19 | 1 |
-| openai_chat | request | 32 | 2 |
-| openai_responses | request | 22 | 1 |
+| anthropic | request | 66 | 12 |
+| anthropic | response | 15 | 0 |
+| anthropic | stream | 10 | 0 |
+| bedrock | request | 50 | 8 |
+| bedrock | response | 13 | 1 |
+| bedrock | stream | 6 | 0 |
+| cohere | request | 38 | 0 |
+| cohere | response | 14 | 0 |
+| cohere | stream | 11 | 0 |
+| gemini | request | 41 | 1 |
+| gemini | response | 21 | 1 |
+| openai_chat | request | 70 | 1 |
+| openai_chat | response | 27 | 1 |
+| openai_chat | stream | 4 | 0 |
+| openai_responses | request | 46 | 5 |
+| openai_responses | response | 28 | 3 |
+| openai_responses | stream | 13 | 0 |
 
 ## request
 
 | concept | anthropic | bedrock | cohere | gemini | openai_chat | openai_responses |
 | --- | --- | --- | --- | --- | --- | --- |
+| annotations | - | - | - | - | - | `input[].type=message.content[].type=output_text.annotations` |
+| args | - | - | - | `contents[].parts[].functionCall.args` | - | - |
+| assistant | - | - | `messages[].role=assistant` | - | `messages[].role=assistant` | - |
+| audio | - | - | - | - | `messages[].role=assistant.audio` | - |
+| base64 | `messages[].content[].type=image.source.type=base64`<br>`messages[].content[].type=document.source.type=base64` | - | - | - | - | - |
+| bytes | - | `messages[].content[].image.source.bytes`<br>`messages[].content[].document.source.bytes`<br>`messages[].content[].video.source.bytes` | - | - | - | - |
+| cache_control | `messages[].content[].type=text.cache_control`<br>`messages[].content[].type=image.cache_control`<br>`messages[].content[].type=tool_use.cache_control`<br>`messages[].content[].type=tool_result.cache_control`<br>`messages[].content[].type=document.cache_control` | - | - | - | - | - |
+| call_id | - | - | - | - | - | `input[].type=function_call.call_id`<br>`input[].type=function_call_output.call_id` |
+| citations | `messages[].content[].type=text.citations`<br>`messages[].content[].type=document.citations`<br>`messages[].content[].type=tool_result.content[].type=document.citations` | `messages[].content[].document.citations`<br>`messages[].content[].toolResult.content[].document.citations` | `messages[].role=assistant.citations` | - | - | - |
+| code_execution_result | - | - | - | `contents[].parts[].codeExecutionResult` | - | - |
+| content | `messages[].content`<br>`messages[].content[].type=document.source.type=content`<br>`messages[].content[].type=tool_result.content`<br>`messages[].content[].type=document.source.type=content.content`<br>`messages[].content[].type=search_result.content`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=content` | `messages[].content`<br>`messages[].content[].toolResult.content`<br>`messages[].content[].document.source.content`<br>`messages[].content[].toolResult.content[].document.source.content` | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=assistant.content` | - | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=function.content`<br>`messages[].role=assistant.content`<br>`messages[].role=developer.content` | `input[].type=reasoning.content` |
+| context | `messages[].content[].type=document.context`<br>`messages[].content[].type=tool_result.content[].type=document.context` | `messages[].content[].document.context`<br>`messages[].content[].toolResult.content[].document.context` | - | - | - | - |
+| data | `messages[].content[].type=image.source.type=base64.data`<br>`messages[].content[].type=document.source.type=text.data`<br>`messages[].content[].type=document.source.type=base64.data`<br>`messages[].content[].type=redacted_thinking.data` | - | `messages[].role=tool.content[].type=document.document.data` | `contents[].parts[].inlineData.data` | `messages[].role=user.content[].type=input_audio.input_audio.data` | - |
+| detail | - | - | - | - | - | `input[].type=message.content[].type=input_image.detail` |
+| developer | - | - | - | - | `messages[].role=developer` | - |
+| encrypted_content | - | - | - | - | - | `input[].type=reasoning.encrypted_content` |
+| executable_code | - | - | - | `contents[].parts[].executableCode` | - | - |
+| file | `messages[].content[].type=image.source.type=file`<br>`messages[].content[].type=document.source.type=file` | - | - | - | - | - |
+| file_data | - | - | - | - | `messages[].role=user.content[].type=file.file.file_data` | `input[].type=message.content[].type=input_file.file_data` |
+| file_id | `messages[].content[].type=document.source.type=file.file_id`<br>`messages[].content[].type=image.source.type=file.file_id`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=file.file_id`<br>`messages[].content[].type=tool_result.content[].type=image.source.type=file.file_id` | - | - | - | `messages[].role=user.content[].type=file.file.file_id` | `input[].type=message.content[].type=input_file.file_id`<br>`input[].type=message.content[].type=input_image.file_id` |
+| file_uri | - | - | - | `contents[].parts[].fileData.fileUri` | - | - |
+| file_url | - | - | - | - | - | `input[].type=message.content[].type=input_file.file_url` |
+| filename | - | - | - | - | `messages[].role=user.content[].type=file.file.filename` | `input[].type=message.content[].type=input_file.filename` |
+| format | - | `messages[].content[].image.format`<br>`messages[].content[].document.format`<br>`messages[].content[].video.format` | - | - | `messages[].role=user.content[].type=input_audio.input_audio.format` | `text.format` |
 | frequency_penalty | - | - | `frequency_penalty` | `generationConfig.frequencyPenalty` | `frequency_penalty` | - |
+| function | - | - | - | - | `messages[].role=function` | - |
+| function_call | - | - | - | - | `messages[].role=assistant.function_call` | - |
+| guard_content | - | `messages[].content[].guardContent` | - | - | - | - |
+| id | `messages[].content[].type=tool_use.id` | - | `messages[].role=tool.content[].type=document.document.id` | - | - | `input[].type=reasoning.id` |
+| image_url | - | - | - | - | - | `input[].type=message.content[].type=input_image.image_url` |
+| include_thoughts | - | - | - | `generationConfig.thinkingConfig.includeThoughts` | - | - |
+| is_error | `messages[].content[].type=tool_result.is_error` | - | - | - | - | - |
 | json_array_shim | - | - | - | `__busbar_gemini_json_array` (busbar's own) | - | - |
 | logprobs | - | - | `logprobs` | `generationConfig.responseLogprobs`<br>`generationConfig.logprobs` | `logprobs`<br>`top_logprobs` | `top_logprobs` |
 | max_output | `max_tokens` | `inferenceConfig.maxTokens` | `max_tokens` | `generationConfig.maxOutputTokens` | `max_tokens`<br>`max_completion_tokens` | `max_output_tokens` |
+| media_resolution | - | - | - | `generationConfig.mediaResolution` | - | - |
+| media_type | `messages[].content[].type=image.source.type=base64.media_type`<br>`messages[].content[].type=document.source.type=text.media_type`<br>`messages[].content[].type=document.source.type=base64.media_type` | - | - | - | - | - |
 | messages | `messages` | `messages` | `messages` | `contents` | `messages` | `input` |
 | metadata | - | code `bedrock_request_metadata` | - | code `gemini_labels` | `metadata` | `metadata` |
+| mime_type | - | - | - | `contents[].parts[].inlineData.mimeType`<br>`contents[].parts[].fileData.mimeType` | - | - |
 | model | `model` | `model` (busbar's own) | `model` | `model` | `model` | `model` |
 | n | - | - | - | `generationConfig.candidateCount` | `n` | - |
+| name | `messages[].content[].type=tool_use.name` | `messages[].content[].document.name`<br>`messages[].content[].toolUse.name` | `messages[].role=assistant.tool_calls[].function.name`<br>`tools[].function.name` | `contents[].parts[].functionCall.name`<br>`contents[].parts[].functionResponse.name` | `messages[].role=user.name`<br>`messages[].role=system.name`<br>`messages[].role=function.name`<br>`messages[].role=assistant.name`<br>`messages[].role=developer.name`<br>`function_call.name`<br>`messages[].role=assistant.function_call.name`<br>`messages[].role=assistant.tool_calls[].type=function.function.name`<br>`tool_choice.type=function.function.name`<br>`tools[].type=function.function.name` | `input[].type=function_call.name`<br>`tool_choice.type=function.name`<br>`tools[].type=function.name` |
+| output | - | - | - | - | - | `input[].type=function_call_output.output` |
 | output_modalities | - | - | - | code `gemini_response_modalities` | `modalities` | code `responses_modalities` |
 | parallel_tool_calls | - | - | - | - | `parallel_tool_calls` | `parallel_tool_calls` |
+| parts | - | - | - | `contents[].parts` | - | - |
 | presence_penalty | - | - | `presence_penalty` | `generationConfig.presencePenalty` | `presence_penalty` | - |
 | prompt_cache_key | - | - | - | - | `prompt_cache_key` | `prompt_cache_key` |
 | reasoning | `output_config.effort` | - | - | - | `reasoning_effort` | `input[].type=reasoning`<br>`reasoning.effort` |
 | reasoning_effort | - | `outputConfig.effort` | - | - | - | - |
+| redacted_content | - | `messages[].content[].reasoningContent.redactedContent` | - | - | - | - |
+| refusal | - | - | - | - | `messages[].role=assistant.refusal`<br>`messages[].role=assistant.content[].type=refusal.refusal` | `input[].type=message.content[].type=refusal.refusal` |
+| response | - | - | - | `contents[].parts[].functionResponse.response` | - | - |
 | response_format | - | - | `response_format` | - | `response_format` | - |
+| response_mime_type | - | - | - | `generationConfig.responseMimeType` | - | - |
+| response_modalities | - | - | - | `generationConfig.responseModalities` | - | - |
+| response_schema | - | - | - | `generationConfig.responseSchema` | - | - |
+| role | `messages[].role` | `messages[].role` | - | `contents[].role` | - | - |
+| s3_location | - | `messages[].content[].image.source.s3Location`<br>`messages[].content[].document.source.s3Location`<br>`messages[].content[].video.source.s3Location` | - | - | - | - |
 | safety_identifier | - | - | - | - | `safety_identifier` | `safety_identifier` |
 | seed | - | - | `seed` | `generationConfig.seed` | `seed` | - |
 | service_tier | `service_tier` | `serviceTier.type` | - | `serviceTier` | `service_tier` | `service_tier` |
+| signature | `messages[].content[].type=thinking.signature` | `messages[].content[].reasoningContent.reasoningText.signature` | - | - | - | - |
+| source | `messages[].content[].type=search_result.source` | - | - | - | - | - |
+| speech_config | - | - | - | `generationConfig.speechConfig` | - | - |
+| status | - | `messages[].content[].toolResult.status` | - | - | - | - |
 | stop | `stop_sequences` | `inferenceConfig.stopSequences` | `stop_sequences` | `generationConfig.stopSequences` | `stop` | - |
 | store | - | - | - | `store` | `store` | `store` |
 | stream | `stream` | `stream` (busbar's own) | `stream` | - | `stream` | `stream` |
+| summary | - | - | - | - | - | `reasoning.summary`<br>`input[].type=reasoning.summary` |
 | system | `system` | `system` | `messages[].role=system` | `systemInstruction` | `messages[].role=system` | `instructions` |
 | temperature | `temperature` | `inferenceConfig.temperature` | `temperature` | `generationConfig.temperature` | `temperature` | `temperature` |
+| text | `messages[].content[].type=text.text`<br>`messages[].content[].type=document.source.type=text`<br>`messages[].content[].type=search_result.content[].text`<br>`messages[].content[].type=tool_result.content[].type=search_result.content[].text`<br>`messages[].content[].type=tool_result.content[].type=text.text`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=text` | `messages[].content[].text`<br>`messages[].content[].reasoningContent.reasoningText.text`<br>`messages[].content[].document.source.text`<br>`messages[].content[].guardContent.text.text`<br>`messages[].content[].toolResult.content[].document.source.text`<br>`system[].guardContent.text.text`<br>`messages[].content[].citationsContent.content[].text`<br>`messages[].content[].document.source.content[].text`<br>`messages[].content[].toolResult.content[].document.source.content[].text`<br>`messages[].content[].toolResult.content[].text` | `messages[].role=tool.content[].type=text.text`<br>`messages[].role=user.content[].type=text.text`<br>`messages[].role=system.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text` | `contents[].parts[].text` | `messages[].role=user.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text`<br>`messages[].role=developer.content[].text`<br>`messages[].role=system.content[].text`<br>`messages[].role=tool.content[].text` | `input[].type=message.content[].type=input_text.text`<br>`input[].type=message.content[].type=output_text.text`<br>`input[].type=reasoning.content[].text` |
+| thinking | `messages[].content[].type=thinking.thinking` | - | `messages[].role=assistant.content[].type=thinking.thinking` | - | - | - |
+| thinking_budget | - | - | - | `generationConfig.thinkingConfig.thinkingBudget` | - | - |
+| thought | - | - | - | `contents[].parts[].thought` | - | - |
+| thought_signature | - | - | - | `contents[].parts[].thoughtSignature` | - | - |
+| title | `messages[].content[].type=document.title`<br>`messages[].content[].type=search_result.title` | - | - | - | - | - |
+| tool | - | - | `messages[].role=tool` | - | `messages[].role=tool` | - |
 | tool_arguments | `messages[].content[].type=tool_use.input` | `messages[].content[].toolUse.input` | `messages[].role=assistant.tool_calls[].function.arguments` | - | `messages[].role=assistant.tool_calls[].type=function.function.arguments`<br>`messages[].role=assistant.function_call.arguments` | `input[].type=function_call.arguments` |
+| tool_call_id | - | - | `messages[].role=tool.tool_call_id` | - | `messages[].role=tool.tool_call_id` | - |
+| tool_calls | - | - | `messages[].role=assistant.tool_calls` | - | `messages[].role=assistant.tool_calls` | - |
 | tool_choice | `tool_choice` | `toolConfig.toolChoice` | `tool_choice` | - | `tool_choice` | `tool_choice` |
 | tool_choice_subset | - | - | - | - | `tool_choice.type=allowed_tools.allowed_tools.tools` | `tool_choice.type=allowed_tools.tools` |
+| tool_plan | - | - | `messages[].role=assistant.tool_plan` | - | - | - |
+| tool_use_id | `messages[].content[].type=tool_result.tool_use_id` | `messages[].content[].toolUse.toolUseId`<br>`messages[].content[].toolResult.toolUseId` | - | - | - | - |
 | tools | `tools` | `toolConfig.tools` | `tools` | `tools` | `tools` | `tools` |
 | top_k | `top_k` | code `bedrock_top_k` | `k` | `generationConfig.topK` | - | - |
 | top_p | `top_p` | `inferenceConfig.topP` | `p` | `generationConfig.topP` | `top_p` | `top_p` |
-| user | `metadata.user_id` | - | - | - | `user` | `user` |
+| type | - | `messages[].content[].cachePoint.type` | - | - | - | - |
+| url | `messages[].content[].type=image.source.type=url`<br>`messages[].content[].type=document.source.type=url`<br>`messages[].content[].type=image.source.type=url.url`<br>`messages[].content[].type=document.source.type=url.url` | - | `messages[].role=user.content[].type=image_url.image_url.url` | - | `messages[].role=user.content[].type=image_url.image_url.url` | - |
+| user | `metadata.user_id` | - | `messages[].role=user` | - | `user`<br>`messages[].role=user` | `user` |
 | verbosity | - | - | - | - | `verbosity` | `text.verbosity` |
 | web_search | - | - | - | `tools[].googleSearch` | `web_search_options` | - |
+
+## response
+
+| concept | anthropic | bedrock | cohere | gemini | openai_chat | openai_responses |
+| --- | --- | --- | --- | --- | --- | --- |
+| accepted_prediction_tokens | - | - | - | - | `usage.completion_tokens_details.accepted_prediction_tokens` | - |
+| additional_model_response_fields | - | `additionalModelResponseFields` | - | - | - | - |
+| annotations | - | - | - | - | `choices[].message.annotations` | - |
+| arguments | - | - | - | - | - | `output[].type=function_call.arguments` |
+| audio | - | - | - | - | `choices[].message.audio` | - |
+| audio_tokens | - | - | - | - | `usage.prompt_tokens_details.audio_tokens`<br>`usage.completion_tokens_details.audio_tokens` | - |
+| avg_logprobs | - | - | - | `candidates[].avgLogprobs` | - | - |
+| block_reason | - | - | - | `promptFeedback.blockReason` | - | - |
+| cache_read_tokens | `usage.cache_read_input_tokens` | `usage.cacheReadInputTokens` | - | `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` | `usage.input_tokens_details.cached_tokens` |
+| cache_write_tokens | `usage.cache_creation_input_tokens` | `usage.cacheWriteInputTokens` | - | - | `usage.prompt_tokens_details.cache_write_tokens` | `usage.input_tokens_details.cache_write_tokens` |
+| call_id | - | - | - | - | - | `output[].type=function_call.call_id` |
+| citation_metadata | - | - | - | `candidates[].citationMetadata` | - | - |
+| citations | - | - | `message.citations` | - | - | - |
+| classifications | - | - | `usage.billed_units.classifications` | - | - | - |
+| content | `content` | `output.message.content` | `message.content` | `candidates[].content` | `choices[].message.content` | `output[].type=message.content` |
+| created | - | - | - | - | `created` | - |
+| created_at | - | - | - | - | - | `created_at` |
+| encrypted_content | - | - | - | - | - | `output[].type=reasoning.encrypted_content` |
+| ephemeral_1h_input_tokens | `usage.cache_creation.ephemeral_1h_input_tokens` | - | - | - | - | - |
+| ephemeral_5m_input_tokens | `usage.cache_creation.ephemeral_5m_input_tokens` | - | - | - | - | - |
+| error | - | - | - | - | - | `error` |
+| finish_reason | `stop_reason` | `stopReason` | `finish_reason` | `candidates[].finishReason` | `choices[].finish_reason` | - |
+| grounding_metadata | - | - | - | `candidates[].groundingMetadata` | - | - |
+| guardrail | - | `trace.guardrail` | - | - | - | - |
+| id | `id` | - | `id` | - | `id` | `id`<br>`output[].type=message.id`<br>`output[].type=web_search_call.id` |
+| incomplete_details | - | - | - | - | - | `incomplete_details` |
+| index | - | - | - | `candidates[].index` | `choices[].index` | - |
+| input_tokens | `usage.input_tokens` | `usage.inputTokens` | `usage.tokens.input_tokens`<br>`usage.billed_units.input_tokens` | `usageMetadata.promptTokenCount` | `usage.prompt_tokens` | `usage.input_tokens` |
+| instructions | - | - | - | - | - | `instructions` |
+| latency_ms | - | `metrics.latencyMs` | - | - | - | - |
+| logprobs | - | - | `logprobs` | - | `choices[].logprobs` | - |
+| logprobs_result | - | - | - | `candidates[].logprobsResult` | - | - |
+| metadata | - | code `bedrock_request_metadata` | - | code `gemini_labels` | - | `metadata` |
+| model | `model` | - | - | `modelVersion` | `model` | `model` |
+| name | - | - | - | `candidates[].content.parts[].functionCall.name` | `choices[].message.function_call.name` | `output[].type=function_call.name` |
+| object | - | - | - | - | `object` | `object` |
+| output | - | - | - | - | - | `output` |
+| output_text | - | - | - | - | - | `output_text` |
+| output_tokens | `usage.output_tokens` | `usage.outputTokens` | `usage.tokens.output_tokens`<br>`usage.billed_units.output_tokens` | `usageMetadata.candidatesTokenCount` | `usage.completion_tokens` | `usage.output_tokens` |
+| performance_config | - | `performanceConfig` | - | - | - | - |
+| prompt_router | - | `trace.promptRouter` | - | - | - | - |
+| prompt_tokens_details | - | - | - | `usageMetadata.promptTokensDetails` | - | - |
+| reasoning_tokens | - | - | - | `usageMetadata.thoughtsTokenCount` | `usage.completion_tokens_details.reasoning_tokens` | `usage.output_tokens_details.reasoning_tokens` |
+| refusal | - | - | - | - | `choices[].message.refusal` | - |
+| rejected_prediction_tokens | - | - | - | - | `usage.completion_tokens_details.rejected_prediction_tokens` | - |
+| response_id | - | - | - | `responseId` | - | - |
+| role | `role` | `output.message.role` | `message.role` | - | `choices[].message.role` | - |
+| safety_ratings | - | - | - | `candidates[].safetyRatings`<br>`promptFeedback.safetyRatings` | - | - |
+| search_units | - | - | `usage.billed_units.search_units` | - | - | - |
+| served_tier | `usage.service_tier` | - | - | - | `service_tier` | `service_tier` |
+| status | - | - | - | - | - | `status`<br>`output[].type=message.status`<br>`output[].type=web_search_call.status` |
+| stop_sequence | `stop_sequence` | - | - | - | - | - |
+| summary | - | - | - | - | - | `output[].type=reasoning.summary` |
+| system_fingerprint | - | - | - | - | `system_fingerprint` | - |
+| token_count | - | - | - | `candidates[].tokenCount` | - | - |
+| tool_arguments | - | - | - | - | `choices[].message.function_call.arguments` | - |
+| tool_calls | - | - | `message.tool_calls` | - | `choices[].message.tool_calls` | - |
+| tool_plan | - | - | `message.tool_plan` | - | - | - |
+| tool_use_prompt_token_count | - | - | - | `usageMetadata.toolUsePromptTokenCount` | - | - |
+| total_tokens | - | `usage.totalTokens` | - | `usageMetadata.totalTokenCount` | `usage.total_tokens` | `usage.total_tokens` |
+| type | `type` | - | - | - | - | - |
+| web_search_requests | `usage.server_tool_use.web_search_requests` | - | - | - | - | - |
+
+## stream
+
+| concept | anthropic | bedrock | cohere | gemini | openai_chat | openai_responses |
+| --- | --- | --- | --- | --- | --- | --- |
+| added | - | - | - | - | - | `type=response.output_item.added`<br>`type=response.content_part.added` |
+| citation_end | - | - | `type=citation-end` | - | - | - |
+| citation_start | - | - | `type=citation-start` | - | - | - |
+| citations_delta | `type=content_block_delta.delta.type=citations_delta` | - | - | - | - | - |
+| completed | - | - | - | - | - | `type=response.completed` |
+| content | - | - | - | - | `choices[].delta.content` | - |
+| content_block_delta | - | `contentBlockDelta` | - | - | - | - |
+| content_block_start | `type=content_block_start` | `contentBlockStart` | - | - | - | - |
+| content_block_stop | `type=content_block_stop` | `contentBlockStop` | - | - | - | - |
+| content_delta | - | - | `type=content-delta` | - | - | - |
+| content_end | - | - | `type=content-end` | - | - | - |
+| content_start | - | - | `type=content-start` | - | - | - |
+| created | - | - | - | - | - | `type=response.created` |
+| delta | - | - | - | - | - | `type=response.output_text.delta`<br>`type=response.function_call_arguments.delta`<br>`type=response.reasoning_summary_text.delta` |
+| done | - | - | - | - | - | `type=response.output_item.done`<br>`type=response.content_part.done`<br>`type=response.output_text.done` |
+| failed | - | - | - | - | - | `type=response.failed` |
+| in_progress | - | - | - | - | - | `type=response.in_progress` |
+| incomplete | - | - | - | - | - | `type=response.incomplete` |
+| input_json_delta | `type=content_block_delta.delta.type=input_json_delta` | - | - | - | - | - |
+| message_delta | `type=message_delta` | - | - | - | - | - |
+| message_end | - | - | `type=message-end` | - | - | - |
+| message_start | `type=message_start` | `messageStart` | `type=message-start` | - | - | - |
+| message_stop | `type=message_stop` | `messageStop` | - | - | - | - |
+| metadata | - | `metadata` | - | code `gemini_labels` | - | - |
+| refusal | - | - | - | - | `choices[].delta.refusal` | - |
+| role | - | - | - | - | `choices[].delta.role` | - |
+| signature_delta | `type=content_block_delta.delta.type=signature_delta` | - | - | - | - | - |
+| text_delta | `type=content_block_delta.delta.type=text_delta` | - | - | - | - | - |
+| thinking_delta | `type=content_block_delta.delta.type=thinking_delta` | - | - | - | - | - |
+| tool_call_delta | - | - | `type=tool-call-delta` | - | - | - |
+| tool_call_end | - | - | `type=tool-call-end` | - | - | - |
+| tool_call_start | - | - | `type=tool-call-start` | - | - | - |
+| tool_calls | - | - | - | - | `choices[].delta.tool_calls` | - |
+| tool_plan_delta | - | - | `type=tool-plan-delta` | - | - | - |

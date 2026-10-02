@@ -78,6 +78,8 @@ kind-isolation:matrix	unlisted-cell	busbar-core-admin × transport	12
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × cleanliness	2
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × legacy	1
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	7
+kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × kernel	5
+kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × legacy	2
 kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel × auth	48
 kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	40
@@ -98,8 +100,6 @@ kind-isolation:matrix	unlisted-cell	busbar-llm × legacy	10
 kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	310
 kind-isolation:matrix	unlisted-cell	busbar-mcp × auth	4
 kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	25
-kind-isolation:matrix	unlisted-cell	busbar-oauth2 × kernel	5
-kind-isolation:matrix	unlisted-cell	busbar-oauth2 × legacy	2
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × legacy	3
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × plane	44
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × transport	25
