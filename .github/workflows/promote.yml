@@ -54,10 +54,14 @@ jobs:
           sha256sum busbar > busbar.sha256
           echo "base64-subjects=$(base64 -w0 busbar.sha256)" >> "$GITHUB_OUTPUT"
       - { uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "slsa-artifact-${{ env.SHA }}", path: "slsa/", retention-days: 7, if-no-files-found: error } } # v7.0.1
-  # hop builds and runs the candidate's code, so it holds NO write token (ARCHITECT security ruling
-  # 2026-10-02): contents read only and no persisted credentials. Its verdict leaves as an artifact.
-  # It waits for slsa-build in a merge group; on a pull request slsa-build is skipped and hop runs.
-  hop:
+  # The hop is SHARDED (ARCHITECT 2026-10-02): four runners each judge one part (`--shard K/4`:
+  # test:workspace's hash partition K, plus the unsplit steps dealt to K; the gates in shard 1, the
+  # oracle and conformance in shard 4). Each builds and runs the candidate's code, so it holds NO write
+  # token (contents read only, no persisted credentials); its report leaves as an artifact. It waits for
+  # slsa-build in a merge group; on a pull request slsa-build is skipped and the shards run.
+  hop-shard:
+    name: "hop shard ${{ matrix.shard }}"
+    strategy: { fail-fast: false, matrix: { shard: [1, 2, 3, 4] } }
     needs: [preflight, slsa-build]
     if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.slsa-build.result == 'success' || needs.slsa-build.result == 'skipped') }}
     permissions: { contents: read }
@@ -78,9 +82,32 @@ jobs:
       # the oracle's release build filled the runner's ~41 GiB free disk with debuginfo (ENOSPC, no log).
       # Base and candidate build alike, so the no-worse-than-base verdict is unchanged.
       - run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/hop.sh"
-        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0" }
-      - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/turnstile-*.json", if-no-files-found: warn } } # v7.0.1
-      # The durable verdict hop.sh writes pass or fail (verdict/): idempotent rerun for a hop killed before its trap, then the artifact publish reads.
+        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", SHARD: "${{ matrix.shard }}/4" }
+      - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}-shard${{ matrix.shard }}", path: "artifacts/", if-no-files-found: warn } } # v7.0.1
+  # `hop` (the required check) folds the shards into the hop's ONE verdict: BOARD only when every shard
+  # reported and boarded; a shard that is missing, timed out or INFRA makes it INFRA, never green.
+  hop:
+    needs: [preflight, hop-shard]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' }}
+    permissions: { contents: read }
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
+      - { continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { pattern: "turnstile-report-${{ env.SHA }}-shard*", path: shards } } # v8.0.1
+      - name: Fold the shards
+        run: |
+          mkdir -p merge artifacts
+          for k in 1 2 3 4; do
+            d="shards/turnstile-report-$SHA-shard$k"
+            mkdir -p "merge/shard-$k" "artifacts/shard-$k"
+            [ -f "$d/turnstile-report.json" ] && cp "$d/turnstile-report.json" "merge/shard-$k/"
+            [ -d "$d" ] && cp -r "$d/." "artifacts/shard-$k/"
+          done
+          cd busbar-release
+          cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release -- \
+            ci turnstile merge --sha "$SHA" --shards 4 --dir "$GITHUB_WORKSPACE/merge" --out "$GITHUB_WORKSPACE/artifacts/turnstile-report.json"
+      # The durable verdict (verdict/), from the folded report and every shard's step logs: the artifact publish reads.
       - { if: always(), run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/verdict.sh" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "verdict-${{ env.SHA }}", path: "verdict/", retention-days: 90, if-no-files-found: warn } } # v7.0.1
   # The only job with a write token. It never checks out the candidate: busbar-release at RELEASE_REF,
