@@ -64,7 +64,7 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 | `automated_test_suite` + `test` + `test_invocation` | Met | 2,000+ unit tests, offline acceptance harness; `cargo test`. Every pull request runs `promote.yml`, whose turnstile runs every registered `cargo xtask gate`. |
 | `test_most` — tests cover most of the code | Unmet | The test-effectiveness gate and the workflow that uploaded coverage to Codecov were deleted (2026-10-01); no job here measures coverage or test effectiveness today. |
 | `test_policy` + `tests_are_added` + `tests_documented_added` | Met | Repo discipline: a bug becomes a regression test **and**, where the class allows, a CI gate — documented in `docs/security/1.6.0-security-posture.md` §4.2 and enforced by the xtask gate battery (`xtask/src/gates/`). |
-| `warnings` + `warnings_fixed` + `warnings_strict` | Unmet | `promote.yml`'s preflight enforces `cargo fmt --check`, a current `Cargo.lock` and a current C header; `cargo clippy -- -D warnings` is run by `scripts/preflight.sh` and the lander, not by a pipeline job. |
+| `warnings` + `warnings_fixed` + `warnings_strict` | Unmet | `promote.yml`'s preflight enforces `cargo fmt --check`, a current `Cargo.lock` and a current C header; `cargo clippy -- -D warnings` runs in the hop's build-test (`build:clippy`), judged no-worse-than-base, so a warning already red at the base is not blocking. |
 
 ## Security
 
