@@ -43,7 +43,6 @@ kind-isolation:matrix	unlisted-cell	busbar × legacy	85
 kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
 kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	350
 kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	33
-kind-isolation:matrix	unlisted-cell	busbar-contract × cleanliness	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × kernel	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × plugin-tooling	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × store	1
@@ -80,7 +79,6 @@ kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × transport	25
 kind-isolation:matrix	unlisted-cell	busbar-plane-llm × legacy	40
 kind-isolation:matrix	unlisted-cell	busbar-plane-streaming × legacy	32
 kind-isolation:matrix	unlisted-cell	busbar-plugin-example-plane × plane	2
-kind-isolation:matrix	unlisted-cell	busbar-transport-http × legacy	8
 kind-isolation:matrix	unlisted-cell	busbar-voice × kernel	9
 kind-isolation:matrix	unlisted-cell	busbar-voice × legacy	9
 kind-isolation:matrix	unlisted-edge	cleanliness -> cleanliness	2
@@ -90,7 +88,6 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> legacy	22
 kind-isolation:matrix	unlisted-edge	cleanliness -> plane	93
 kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	92
 kind-isolation:matrix	unlisted-edge	cleanliness -> transport	26
-kind-isolation:matrix	unlisted-edge	contract -> cleanliness	1
 kind-isolation:matrix	unlisted-edge	contract -> kernel	1
 kind-isolation:matrix	unlisted-edge	contract -> plugin-tooling	1
 kind-isolation:matrix	unlisted-edge	contract -> store	1
