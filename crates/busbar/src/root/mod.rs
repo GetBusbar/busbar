@@ -109,11 +109,6 @@ pub mod units_admin;
 #[path = "tests/percall_meter_shadow.rs"]
 mod percall_meter_shadow;
 
-/// The a2a plane's door, both ways: linked and dropped in (the `a2a_plane_door_cdylib` example).
-#[cfg(test)]
-#[path = "tests/a2a_plane_door.rs"]
-mod a2a_plane_door;
-
 // The crate's one plugin fixture (`tests/common/plugins.rs`), shared with the integration tests:
 // how a unit test packs a plugin, drops it in and reads what the boot's scan makes of it.
 #[cfg(test)]

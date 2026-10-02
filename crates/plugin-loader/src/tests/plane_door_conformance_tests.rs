@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE A2A PLANE'S DOOR, BOTH WAYS, at the composition root, which links the plane.
-//! `busbar_plane_a2a::plane_door::door` is loaded LINKED (through `load_linked`) and DROPPED (the
-//! `a2a_plane_door_cdylib` example, through `load_dropped`), and ONE script drives the door's
+//! A PLANE'S DOOR, BOTH WAYS (BUSBAR-1.6.0.md Part 2 #2 steps (4) and (5)): the `plane-door` row of
+//! `[package.metadata.busbar.both-ways]` names the fixture, reached here by KIND
+//! ([`fixture`]). Its `plane_door::door` is loaded LINKED (through `load_linked`) and DROPPED (the
+//! `plane_door_fixture` example, through `load_dropped`), and ONE script drives the door's
 //! lifecycle through the loader's plane kind:
 //!
 //! * `validate` refuses a bad registration in the grammar's own sentence and accepts a good one;
@@ -26,6 +27,7 @@
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 
+use crate::both_ways::plane_door_fixture as fixture;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut,
@@ -38,17 +40,19 @@ use busbar_contract::abi::plane::{
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, REFUSAL_ARRIVE,
     REFUSAL_GATE, REFUSAL_KERNEL,
 };
-use busbar_plane_a2a::door::{DIALECT_DOCUMENT, DIALECT_FRAMED, DIALECT_TARGET, ROUTES};
+use fixture::arrival::H_VERSION;
+use fixture::door::{DIALECT_DOCUMENT, DIALECT_FRAMED, DIALECT_TARGET, ROUTES};
+use fixture::MOUNT_PATH as MOUNT;
 
-use crate::root::loader::dispatch::kinds::plane::{OwnedSnapshot, Plane};
-use crate::root::loader::dispatch::{
+use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
+use crate::dispatch::{
     in_head, load_dropped, load_linked, out_head, rendering_of, Bind, DispatchConfig, Dispatcher,
     Frame, LinkedRow, NoSink, Plugin,
 };
 
 /// The settings the script opens with: one fronted agent.
 const GOOD: &[u8] =
-    br#"{"vendor": {"url": "https://vendor.example/a2a", "pin": {"mechanism": "unpinned"}}}"#;
+    br#"{"vendor": {"url": "https://vendor.example/agent", "pin": {"mechanism": "unpinned"}}}"#;
 /// A registration the grammar refuses.
 const BAD: &[u8] =
     br#"{"vendor": {"url": "ftp://vendor.example", "pin": {"mechanism": "unpinned"}}}"#;
@@ -66,7 +70,7 @@ fn dispatcher() -> &'static Dispatcher {
 
 fn bind() -> Bind {
     Bind {
-        instance: Arc::from("a2a"),
+        instance: Arc::from("plane-door"),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher().adopter(),
@@ -81,6 +85,11 @@ fn json(b: &'static [u8]) -> Blob {
         fmt: BLOB_JSON,
         flags: 0,
     }
+}
+
+/// The bytes of `path` under the plane's mount, held for the test binary's life.
+fn at(path: &str) -> &'static [u8] {
+    Box::leak(format!("{MOUNT}{path}").into_boxed_str()).as_bytes()
 }
 
 fn text(b: &'static [u8]) -> AbiStr {
@@ -118,25 +127,25 @@ fn snapshot(s: Option<OwnedSnapshot>) -> String {
 }
 
 fn linked() -> Plugin<Plane> {
-    let row = LinkedRow::of(busbar_plane_a2a::plane_door::door).expect("the a2a door states");
-    load_linked::<Plane>(&row, bind()).expect("the linked a2a door loads")
+    let row = LinkedRow::of(fixture::plane_door::door).expect("the door states");
+    load_linked::<Plane>(&row, bind()).expect("the linked door loads")
 }
 
 /// The example `cdylib` in this target dir. Under CI a missing artifact is a failure, never a skip.
 fn dropped() -> Option<Plugin<Plane>> {
     let exe = std::env::current_exe().ok()?;
     let path = exe.parent()?.parent()?.join("examples").join(format!(
-        "{}a2a_plane_door_cdylib{}",
+        "{}plane_door_fixture{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     ));
     assert!(
         path.exists() || std::env::var_os("CI").is_none(),
-        "the a2a_plane_door_cdylib example is not built under CI; a both-ways proof must not skip"
+        "the plane_door_fixture example is not built under CI; a both-ways proof must not skip"
     );
-    let stated = rendering_of(busbar_plane_a2a::plane_door::door).expect("the a2a door renders");
+    let stated = rendering_of(fixture::plane_door::door).expect("the door renders");
     path.exists()
-        .then(|| load_dropped::<Plane>(&path, &stated, bind()).expect("the dropped a2a door loads"))
+        .then(|| load_dropped::<Plane>(&path, &stated, bind()).expect("the dropped door loads"))
 }
 
 fn gen_frame(generation: u64) -> Frame<GenIn, busbar_contract::abi::mechanism::call::OutHead> {
@@ -480,7 +489,7 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
             unit: 1,
             claim: 0,
             _reserved: 0,
-            target: text(b"/a2a"),
+            target: text(at("")),
             fields: null(),
             fields_len: 0,
             body: json(b"{}"),
@@ -507,7 +516,7 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
     // The JSON-RPC line: a request is classed, spoken in the line's dialect, and needs a principal.
     let line = ROUTES
         .iter()
-        .position(|r| r.verb == "POST" && r.target == "/a2a")
+        .position(|r| r.verb == "POST" && r.target == MOUNT)
         .expect("the JSON-RPC endpoint");
     a.input.claim = u32::try_from(line).expect("an index");
     a.input.unit = 2;
@@ -564,11 +573,11 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
     // THE UNARY RELAY: the extended card of the agent the caller addressed.
     let line = ROUTES
         .iter()
-        .position(|r| r.verb == "POST" && r.target == "/a2a/agents/{agent_id}")
+        .position(|r| r.verb == "POST" && r.target == format!("{MOUNT}/agents/{{agent_id}}"))
         .expect("the per-agent JSON-RPC endpoint");
     a.input.claim = u32::try_from(line).expect("an index");
     a.input.unit = 5;
-    a.input.target = text(b"/a2a/agents/vendor");
+    a.input.target = text(at("/agents/vendor"));
     a.input.body = json(CARD_ASK);
     let c = p.call(slot::ARRIVE, &mut a);
     t.push(format!("arrive card {:?}", c.outcome));
@@ -595,18 +604,18 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
             .expect("an HTTP+JSON route");
         u32::try_from(at).expect("an index")
     };
-    a.input.claim = rest_line("GET", "/a2a/tasks");
+    a.input.claim = rest_line("GET", &format!("{MOUNT}/tasks"));
     a.input.unit = 6;
-    a.input.target = text(b"/a2a/tasks?pageSize=5&status=working");
+    a.input.target = text(at("/tasks?pageSize=5&status=working"));
     a.input.body = json(b"");
     let c = p.call(slot::ARRIVE, &mut a);
     t.push(format!(
         "arrive rest {:?} op={} dialect={}",
         c.outcome, a.out.op_class, a.out.dialect
     ));
-    a.input.claim = rest_line("POST", "/a2a/tasks/{id}");
+    a.input.claim = rest_line("POST", &format!("{MOUNT}/tasks/{{id}}"));
     a.input.unit = 7;
-    a.input.target = text(b"/a2a/tasks/t-1:bogus");
+    a.input.target = text(at("/tasks/t-1:bogus"));
     let c = p.call(slot::ARRIVE, &mut a);
     t.push(format!(
         "arrive rest refused {:?} {}",
@@ -620,7 +629,7 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
 }
 
 #[test]
-fn the_a2a_door_answers_identically_linked_and_dropped_in() {
+fn the_plane_door_answers_identically_linked_and_dropped_in() {
     let linked = script(&linked());
     assert_eq!(
         linked[0],
@@ -629,7 +638,7 @@ fn the_a2a_door_answers_identically_linked_and_dropped_in() {
     );
     assert!(
         linked[2].starts_with(&format!(
-            "open {:?} gen=1 audience=https://gw.example/a2a",
+            "open {:?} gen=1 audience=https://gw.example{MOUNT}",
             Outcome::Ready
         )),
         "{}",
@@ -655,7 +664,7 @@ fn the_a2a_door_answers_identically_linked_and_dropped_in() {
         ),
         "SendMessage is the message_send class, on the JSON-RPC dialect, with a principal"
     );
-    let list = busbar_plane_a2a::door::op_class_index(busbar_plane_a2a::ops::OP_TASK_LIST)
+    let list = fixture::door::op_class_index(fixture::ops::OP_TASK_LIST)
         .expect("ListTasks is a declared class");
     assert_eq!(
         line("arrive rest "),
@@ -663,7 +672,7 @@ fn the_a2a_door_answers_identically_linked_and_dropped_in() {
             "arrive rest {:?} op={list} dialect={DIALECT_TARGET}",
             Outcome::Ready
         ),
-        "GET /a2a/tasks arrives as ListTasks on the HTTP+JSON dialect"
+        "GET {MOUNT}/tasks arrives as ListTasks on the HTTP+JSON dialect"
     );
     assert!(
         line("arrive rest refused").starts_with(&format!(
@@ -736,8 +745,8 @@ fn the_a2a_door_answers_identically_linked_and_dropped_in() {
     assert_eq!(
         relay[1],
         &format!(
-            "piece {ready} flags=1 more=0 status=0 POST /a2a [content-type: application/json, \
-             accept: application/json, a2a-version: 0.3] units=[] "
+            "piece {ready} flags=1 more=0 status=0 POST /agent [content-type: application/json, \
+             accept: application/json, {H_VERSION}: 0.3] units=[] "
         ),
         "the ATTEMPT posts to the agent's own path with the engine's three fields"
     );

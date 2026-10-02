@@ -1775,16 +1775,6 @@ drain   = "delete the dev-dependency once the tests reach the sink through the l
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-plane-a2a"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2: the composition root links every plane. The a2a plane's door is proven both ways where it is linked: src/root/tests/a2a_plane_door.rs loads busbar_plane_a2a::plane_door::door linked and the a2a_plane_door_cdylib example dropped in."
-why     = "busbar names busbar-plane-a2a: declared dev in the test graph so src/root/tests/a2a_plane_door.rs can link the plane's door and the example cdylib can export it, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT."
-drain   = "none: the flip makes it the root's shipped edge to the plane, as it already is for busbar-plane-decisions and busbar-plane-streaming."
-
-[[dep]]
-from    = "busbar"
 to      = "busbar-plugin-example-plane"
 half    = "test"
 count   = "1"
@@ -1792,6 +1782,16 @@ verdict = "allowed"
 cite    = "ARCHITECT 2026-09-25 (K4 residue, decisions.md, L5 intake): \"busbar -> busbar-plugin-example-plane test edge [[dep]] row\"; BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes (`root -> plugin-tooling` is granted)."
 why     = "busbar names busbar-plugin-example-plane: declared dev in the test graph so the root's tests load the example plane plugin through the plugin path, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-plane-a2a"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links it and dlopens its cdylib (step 5). ARCHITECT ruling on PR #141 option (c), 2026-10-02: a door-ABI plane's witness is the `plane-door` row of [package.metadata.busbar.both-ways], the plugin-tooling -> plane test class the loader already carries for its plane fixture (busbar-plugin-example-plane, plane_conformance_tests). The row records the edge the ruling orders, it does not grant a class."
+why     = "busbar-plugin-loader names busbar-plane-a2a: declared dev in the test graph so plane_door_conformance_tests can link the `plane-door` fixture's door function (LINKED) and dlopen the plane_door_fixture example built from it (DROPPED), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4)."
 
 [[dep]]
 from    = "busbar-plugin-loader"

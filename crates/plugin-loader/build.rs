@@ -39,6 +39,8 @@ fn main() {
          pub(crate) static HOT_FIXTURES: &[(&str, &str)] = &[\n",
     );
     let mut in_table = false;
+    // The `plane-door` row's export line, for the `plane_door_fixture` example (its DROPPED half).
+    let mut plane_door_export = String::new();
     for line in manifest.lines() {
         let code = line.split('#').next().unwrap_or("").trim();
         if code.starts_with('[') {
@@ -48,7 +50,11 @@ fn main() {
         if let (true, Some((kind, krate))) = (in_table, code.split_once('=')) {
             let kind = kind.trim().trim_matches('"');
             let snake = krate.trim().trim_matches('"').replace('-', "_");
-            if HOT_KINDS.contains(&kind) {
+            if kind == "plane-door" {
+                // A door-ABI plane: no cold entry and no HOT decl, its door function is the row.
+                plane_door_export =
+                    format!("busbar_contract::export_door!(::{snake}::plane_door::door);\n");
+            } else if HOT_KINDS.contains(&kind) {
                 hot.push_str(&format!("    (\"{kind}\", \"{snake}\"),\n"));
             } else {
                 out.push_str(&format!(
@@ -68,6 +74,8 @@ fn main() {
     hot.push_str("];\n");
     out.push_str(&hot);
     out.push_str(&crates);
-    let path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("both_ways.rs");
-    std::fs::write(path, out).expect("write both_ways.rs");
+    let dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(dir.join("both_ways.rs"), out).expect("write both_ways.rs");
+    std::fs::write(dir.join("plane_door_export.rs"), plane_door_export)
+        .expect("write plane_door_export.rs");
 }
