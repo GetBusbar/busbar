@@ -344,11 +344,20 @@ jobs:
         id: meta
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         working-directory: plugin
-        run: cargo metadata --format-version 1 --locked --filter-platform x86_64-unknown-linux-gnu > "$RUNNER_TEMP/meta.json"
+        run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 --locked --filter-platform x86_64-unknown-linux-gnu > "$RUNNER_TEMP/meta.json"
+          # The gates read the SHIPPED closure: `cargo metadata`'s resolve unifies features across
+          # dev-dependencies and lists optional deps a dev-dependency switches on, `cargo tree` with
+          # the dev edges left out does not. One tree per workspace member.
+          : > "$RUNNER_TEMP/tree.txt"
+          for pkg in $(cargo metadata --format-version 1 --locked --no-deps | jq -r '.packages[].name'); do
+            cargo tree --locked --package "$pkg" --edges normal,build --target all --prefix none --format '{p}|{f}' >> "$RUNNER_TEMP/tree.txt"
+          done
       - name: dep-wall (busbar-contract plus third-party; no kernel/core crate, no other plugin; Part 2 #40)
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
         run: |
-          "$PLUGIN_GATES" plugin-gates depwall "$RUNNER_TEMP/meta.json" "${{ github.event.repository.name }}"
+          "$PLUGIN_GATES" plugin-gates depwall "$RUNNER_TEMP/meta.json" "${{ github.event.repository.name }}" --tree "$RUNNER_TEMP/tree.txt"
       - name: socket/TLS ban (BUSBAR-1.6.0.md line 3980; the shipped closure, then the post-LTO import scan)
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
         env:
@@ -357,7 +366,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          "$PLUGIN_GATES" plugin-gates netban "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml "$REPO" || rc=1
+          "$PLUGIN_GATES" plugin-gates netban "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml "$REPO" --tree "$RUNNER_TEMP/tree.txt" || rc=1
           (cd plugin && CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
             cargo build --release --locked -p "$CRATE" --lib) || exit 1
           lib="plugin/target/release/lib${CRATE//-/_}.so"
@@ -370,7 +379,7 @@ jobs:
       - name: C-dependency allow-list (bundled + pinned; .github/fleet/deps.toml [c-deps])
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
         run: |
-          "$PLUGIN_GATES" plugin-gates cdeps "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml
+          "$PLUGIN_GATES" plugin-gates cdeps "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml --tree "$RUNNER_TEMP/tree.txt"
       - name: Cargo.lock parity with busbar's lock at the pin (RED)
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         run: |

@@ -37,9 +37,11 @@ const BOTH_WAYS: &str = "the_linked_and_the_dropped_in_";
 
 const USAGE: &str = "\
 usage:
-  cargo xtask plugin-gates depwall <metadata.json> <repo>
-  cargo xtask plugin-gates netban <metadata.json> <deps.toml> <repo>
-  cargo xtask plugin-gates cdeps <metadata.json> <deps.toml>
+  cargo xtask plugin-gates depwall <metadata.json> <repo> [--tree <shipped-tree.txt>]
+  cargo xtask plugin-gates netban <metadata.json> <deps.toml> <repo> [--tree <shipped-tree.txt>]
+  cargo xtask plugin-gates cdeps <metadata.json> <deps.toml> [--tree <shipped-tree.txt>]
+  (--tree: `cargo tree -e normal,build --target all --prefix none -f '{p}|{f}'` per workspace member,
+   concatenated; the closure and features are then the shipped build's, not the dev-unified resolve's)
   cargo xtask plugin-gates imports <undefined-symbols.txt> <needed-libs.txt> <deps.toml> <repo>
   cargo xtask plugin-gates parity <plugin Cargo.lock> <busbar Cargo.lock>
   cargo xtask plugin-gates bothways <conformance --list output>
@@ -144,14 +146,82 @@ fn is_word(c: char) -> bool {
 
 // -- the shipped closure -------------------------------------------------------------------------
 
+/// The packages (and their enabled features) of the true shipped closure, read from
+/// `cargo tree -e normal,build --target all --prefix none -f '{p}|{f}'` run per workspace member.
+/// `cargo metadata`'s `resolve` cannot say this: its `features` are unified across
+/// dev-dependencies (a dev-dep that turns on `tokio/net` shows there), and it lists optional deps
+/// that only a dev-dep's feature switches on. `cargo tree` with the dev edges left out resolves
+/// features as the shipped build does.
+#[derive(Default)]
+pub struct Shipped(HashMap<(String, String), BTreeSet<String>>);
+
+impl Shipped {
+    /// Parse `cargo tree --prefix none --format '{p}|{f}'` output (several members' trees may be
+    /// concatenated): one `name vX.Y.Z [(source)] [(*)]|feature,feature` line per crate. Features
+    /// of one crate on several lines are unioned.
+    pub fn parse(tree: &str) -> Shipped {
+        let mut m: HashMap<(String, String), BTreeSet<String>> = HashMap::new();
+        for line in tree.lines() {
+            let (package, features) = line.split_once('|').unwrap_or((line, ""));
+            let mut it = package.split_whitespace();
+            let (Some(name), Some(ver)) = (it.next(), it.next()) else {
+                continue;
+            };
+            let e = m
+                .entry((name.to_string(), ver.trim_start_matches('v').to_string()))
+                .or_default();
+            e.extend(
+                features
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|f| !f.is_empty())
+                    .map(String::from),
+            );
+        }
+        Shipped(m)
+    }
+
+    fn get(&self, p: &Value) -> Option<&BTreeSet<String>> {
+        self.0.get(&(
+            p["name"].as_str().unwrap_or("").to_string(),
+            p["version"].as_str().unwrap_or("").to_string(),
+        ))
+    }
+}
+
 struct Closure<'a> {
     /// Reachable package ids, members excluded.
     ids: Vec<String>,
     nodes: HashMap<String, &'a Value>,
     pkgs: HashMap<String, &'a Value>,
+    shipped: Option<&'a Shipped>,
 }
 
 impl Closure<'_> {
+    /// The features enabled on package `id` in the shipped build: `cargo tree`'s when a shipped
+    /// view is given, else the metadata resolve's.
+    fn features(&self, id: &str) -> BTreeSet<String> {
+        if let Some(sh) = self.shipped {
+            return self
+                .pkgs
+                .get(id)
+                .and_then(|p| sh.get(p))
+                .cloned()
+                .unwrap_or_default();
+        }
+        self.nodes
+            .get(id)
+            .map(|n| {
+                n["features"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| f.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn pkg(&self, id: &str) -> Res<&Value> {
         self.pkgs
             .get(id)
@@ -175,8 +245,9 @@ impl Closure<'_> {
 }
 
 /// Package ids reachable from the workspace members over NORMAL and BUILD edges (a dev-dependency
-/// is a test's, not the shipped image's), members excluded.
-fn closure(meta: &Value) -> Res<Closure<'_>> {
+/// is a test's, not the shipped image's), members excluded. With `shipped_view`, only packages
+/// `cargo tree` lists for the shipped build, and their features from it.
+fn closure<'a>(meta: &'a Value, shipped_view: Option<&'a Shipped>) -> Res<Closure<'a>> {
     let nodes_arr = meta["resolve"]["nodes"]
         .as_array()
         .ok_or("plugin-gates: metadata has no resolve.nodes")?;
@@ -215,7 +286,14 @@ fn closure(meta: &Value) -> Res<Closure<'_>> {
                     _ => false,
                 });
             let pkg = req_str(d, "pkg")?;
-            if shipped && !seen.contains(pkg) {
+            // With a shipped view, a package `cargo tree` (dev edges left out) does not list is not
+            // shipped, whatever the resolve's normal-kind edge says: an optional dep that only a
+            // dev-dependency's feature activates is such an edge.
+            let listed = match (shipped_view, pkgs.get(pkg)) {
+                (Some(sh), Some(p)) => sh.get(p).is_some(),
+                _ => true,
+            };
+            if shipped && listed && !seen.contains(pkg) {
                 seen.insert(pkg.to_string());
                 queue.push(pkg.to_string());
             }
@@ -225,6 +303,7 @@ fn closure(meta: &Value) -> Res<Closure<'_>> {
         ids: seen.difference(&members).cloned().collect(),
         nodes,
         pkgs,
+        shipped: shipped_view,
     })
 }
 
@@ -257,8 +336,8 @@ fn is_core(name: &str) -> bool {
 
 /// Part 2 #40 (a): a plugin's busbar closure is busbar-contract and nothing else; no kernel or core
 /// crate, and no other plugin.
-pub fn depwall(meta: &Value, repo: &str) -> Res<Vec<String>> {
-    let cl = closure(meta)?;
+pub fn depwall(meta: &Value, shipped: Option<&Shipped>, repo: &str) -> Res<Vec<String>> {
+    let cl = closure(meta, shipped)?;
     let mut members = BTreeSet::new();
     for m in meta["workspace_members"].as_array().into_iter().flatten() {
         if let Some(id) = m.as_str() {
@@ -307,9 +386,14 @@ fn net_ban(deps: &Json) -> Res<&Json> {
 }
 
 /// BUSBAR-1.6.0.md line 3980: no plugin opens its own socket, dials, binds or does TLS.
-pub fn netban(meta: &Value, deps: &Json, repo: &str) -> Res<Vec<String>> {
+pub fn netban(
+    meta: &Value,
+    shipped: Option<&Shipped>,
+    deps: &Json,
+    repo: &str,
+) -> Res<Vec<String>> {
     let net = net_ban(deps)?;
-    let cl = closure(meta)?;
+    let cl = closure(meta, shipped)?;
     let carrier = str_list(net.get("carriers")).iter().any(|c| c == repo);
     let socket_only = ["socket2", "tokio/net", "mio/net"];
     let crates = str_list(net.get("crates"));
@@ -323,16 +407,7 @@ pub fn netban(meta: &Value, deps: &Json, repo: &str) -> Res<Vec<String>> {
                 "NETBAN {name} {version} is in the shipped closure ({spec})"
             ));
         }
-        let node = cl
-            .nodes
-            .get(&id)
-            .ok_or_else(|| format!("plugin-gates: no resolve node for `{id}`"))?;
-        let feats: BTreeSet<&str> = node["features"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect();
+        let feats = cl.features(&id);
         for f in &features {
             let (krate, feat) = f
                 .split_once('/')
@@ -389,7 +464,7 @@ pub fn req_ok(version: &str, req: &str) -> Res<bool> {
 
 /// Ruling 3d: a native library in the shipped closure is on the allow-list, at its version, with its
 /// bundling features on.
-pub fn cdeps(meta: &Value, deps: &Json) -> Res<Vec<String>> {
+pub fn cdeps(meta: &Value, shipped: Option<&Shipped>, deps: &Json) -> Res<Vec<String>> {
     let mut allow: HashMap<String, &Json> = HashMap::new();
     for e in deps.get("c-deps").get("allow").as_array().unwrap_or(&[]) {
         let name = e
@@ -398,7 +473,7 @@ pub fn cdeps(meta: &Value, deps: &Json) -> Res<Vec<String>> {
             .ok_or("plugin-gates: c-deps allow entry has no `crate`")?;
         allow.insert(name.to_string(), e);
     }
-    let cl = closure(meta)?;
+    let cl = closure(meta, shipped)?;
     let mut out = Vec::new();
     for (id, p) in cl.sorted()? {
         let links = match p.get("links").and_then(Value::as_str) {
@@ -421,18 +496,7 @@ pub fn cdeps(meta: &Value, deps: &Json) -> Res<Vec<String>> {
                 "CDEP {name} {version} is not the allowed version {want}"
             ));
         }
-        let have: BTreeSet<String> = cl
-            .nodes
-            .get(&id)
-            .map(|n| {
-                n["features"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|f| f.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let have = cl.features(&id);
         let missing: Vec<String> = str_list(e.get("features"))
             .into_iter()
             .collect::<BTreeSet<_>>()
@@ -1152,43 +1216,89 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
             "depwall green",
             depwall(
                 &meta(&[m, c, l], &[("m", "c", None), ("m", "l", Some("dev"))]),
+                None,
                 "busbar-store-x",
             ),
             false,
         ),
         (
             "depwall kernel",
-            depwall(&meta(&[m, k], &[("m", "k", None)]), "busbar-store-x"),
+            depwall(&meta(&[m, k], &[("m", "k", None)]), None, "busbar-store-x"),
             true,
         ),
         (
             "netban dev-only",
-            netban(&meta(&[m, r], &[("m", "r", Some("dev"))]), &policy, "r"),
+            netban(
+                &meta(&[m, r], &[("m", "r", Some("dev"))]),
+                None,
+                &policy,
+                "r",
+            ),
             false,
         ),
         (
             "netban rustls",
-            netban(&meta(&[m, r], &[("m", "r", None)]), &policy, "r"),
+            netban(&meta(&[m, r], &[("m", "r", None)]), None, &policy, "r"),
             true,
         ),
         (
             "netban tokio/net",
-            netban(&meta(&[m, t], &[("m", "t", None)]), &policy, "r"),
+            netban(&meta(&[m, t], &[("m", "t", None)]), None, &policy, "r"),
+            true,
+        ),
+        (
+            "netban dev-enabled tokio/net",
+            netban(
+                &meta(&[m, t], &[("m", "t", None)]),
+                Some(&Shipped::parse("tokio v1.0.0 (*)|default,rt\n")),
+                &policy,
+                "r",
+            ),
+            false,
+        ),
+        (
+            "netban shipped tokio/net",
+            netban(
+                &meta(&[m, t], &[("m", "t", None)]),
+                Some(&Shipped::parse("tokio v1.0.0|default,net,rt\n")),
+                &policy,
+                "r",
+            ),
+            true,
+        ),
+        (
+            "netban dev-activated optional rustls",
+            netban(
+                &meta(&[m, r], &[("m", "r", None)]),
+                Some(&Shipped::parse("busbar-store-x v1.0.0 (/w)|\n")),
+                &policy,
+                "r",
+            ),
+            false,
+        ),
+        (
+            "netban shipped rustls",
+            netban(
+                &meta(&[m, r], &[("m", "r", None)]),
+                Some(&Shipped::parse("rustls v0.23.1|std\n")),
+                &policy,
+                "r",
+            ),
             true,
         ),
         (
             "cdeps bundled",
-            cdeps(&meta(&[m, s_on], &[("m", "s", None)]), &policy),
+            cdeps(&meta(&[m, s_on], &[("m", "s", None)]), None, &policy),
             false,
         ),
         (
             "cdeps unbundled",
-            cdeps(&meta(&[m, s_off], &[("m", "s", None)]), &policy),
+            cdeps(&meta(&[m, s_off], &[("m", "s", None)]), None, &policy),
             true,
         ),
         (
             "cdeps unlisted",
-            cdeps(&meta(&[m, z], &[("m", "z", Some("build"))]), &policy),
+            cdeps(&meta(&[m, z], &[("m", "z", Some("build"))]), None, &policy),
             true,
         ),
         (
@@ -1287,6 +1397,22 @@ fn selftest() -> i32 {
 // -- entry ---------------------------------------------------------------------------------------
 
 fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
+    // `--tree <file>` anywhere after the gate name: the shipped closure as `cargo tree` resolves it.
+    let mut rest: Vec<String> = Vec::new();
+    let mut shipped: Option<Shipped> = None;
+    let mut it = args.iter();
+    while let Some(x) = it.next() {
+        if x == "--tree" {
+            let f = it
+                .next()
+                .ok_or_else(|| format!("plugin-gates: `--tree` needs a file\n{USAGE}"))?;
+            shipped = Some(Shipped::parse(&read(f)?));
+        } else {
+            rest.push(x.clone());
+        }
+    }
+    let args = &rest[..];
+    let sh = shipped.as_ref();
     let a = |i: usize| -> Res<&str> {
         args.get(i).map(String::as_str).ok_or_else(|| {
             format!(
@@ -1296,9 +1422,9 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
         })
     };
     match cmd {
-        "depwall" => depwall(&load_json(a(0)?)?, a(1)?),
-        "netban" => netban(&load_json(a(0)?)?, &load_toml(a(1)?)?, a(2)?),
-        "cdeps" => cdeps(&load_json(a(0)?)?, &load_toml(a(1)?)?),
+        "depwall" => depwall(&load_json(a(0)?)?, sh, a(1)?),
+        "netban" => netban(&load_json(a(0)?)?, sh, &load_toml(a(1)?)?, a(2)?),
+        "cdeps" => cdeps(&load_json(a(0)?)?, sh, &load_toml(a(1)?)?),
         "imports" => {
             let (u, n) = (read(a(0)?)?, read(a(1)?)?);
             imports(&splitlines(&u), &splitlines(&n), &load_toml(a(2)?)?, a(3)?)
@@ -1402,6 +1528,7 @@ mod tests {
         let other: Pk = ("o", "busbar-auth-y", "3", Some(CRATES), None, &[]);
         let out = depwall(
             &meta(&[m, core, other], &[("m", "k", None), ("m", "o", None)]),
+            None,
             "busbar-store-x",
         )
         .unwrap();
@@ -1447,7 +1574,7 @@ mod tests {
         let m: Pk = ("m", "busbar-store-x", "1.0.0", None, None, &[]);
         let x: Pk = ("x", "x-sys", "1.2.0", Some(CRATES), Some("x"), &[]);
         assert_eq!(
-            cdeps(&meta(&[m, x], &[("m", "x", None)]), &policy).unwrap(),
+            cdeps(&meta(&[m, x], &[("m", "x", None)]), None, &policy).unwrap(),
             ["CDEP x-sys is not bundled: features ['bundled', 'x'] are off"]
         );
     }
