@@ -169,6 +169,10 @@ pub mod usage_tail;
 /// The OpenAI-family citation `annotations` mapping shared by the Chat and Responses codecs.
 pub mod openai_annotations;
 
+/// The per-token logprob wire object (`{content: [{token, logprob, bytes, top_logprobs}]}`) the
+/// Chat and Responses dialects read and write alike.
+pub mod logprob_wire;
+
 /// The rerank wire shape (`documents[]`, `results[]`) the rerank dialects read alike.
 pub mod rerank_wire;
 

@@ -889,7 +889,9 @@ impl ProtocolReader for OpenAiReader {
         let lp_entries = if state.text_block_closed {
             Vec::new()
         } else {
-            read_openai_logprobs(choice0.and_then(|c| c.get(keys::LOGPROBS)))
+            crate::codec::logprob_wire::read_token_logprobs(
+                choice0.and_then(|c| c.get(keys::LOGPROBS)),
+            )
         };
         if !lp_entries.is_empty() {
             if !state.text_block_open {
@@ -1423,7 +1425,8 @@ impl ProtocolReader for OpenAiReader {
 
         // Per-token logprobs from the first choice, carried neutrally so a foreign-dialect caller
         // (e.g. Gemini) receives them in its own shape.
-        let logprobs = read_openai_logprobs(choices[0].get(keys::LOGPROBS));
+        let logprobs =
+            crate::codec::logprob_wire::read_token_logprobs(choices[0].get(keys::LOGPROBS));
 
         Ok(crate::codec::ir::IrResponse {
             logprobs,

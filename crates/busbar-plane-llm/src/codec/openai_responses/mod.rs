@@ -599,13 +599,13 @@ fn fill_required_response_members(
 
 /// Neutral IR logprobs in the Responses `LogProb` shape carried on an `output_text` content part
 /// (`token`, `logprob`, `bytes`, `top_logprobs[{token, logprob, bytes}]`). This is the same
-/// per-token entry the Chat Completions writer emits, so the Chat encoder builds it and the
-/// `content` array is lifted out. Empty input yields `[]`, the spec-required present-but-empty form.
+/// per-token entry the shared logprob wire object carries (`crate::codec::logprob_wire`), so that
+/// encoder builds it and the `content` array is lifted out. Empty input yields `[]`, the spec-required present-but-empty form.
 fn write_responses_part_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> serde_json::Value {
     if lps.is_empty() {
         return serde_json::json!([]);
     }
-    super::openai_chat::write_openai_logprobs(lps)
+    crate::codec::logprob_wire::write_token_logprobs(lps)
         .get_mut(keys::CONTENT)
         .map(serde_json::Value::take)
         .unwrap_or_else(|| serde_json::json!([]))
@@ -635,13 +635,13 @@ fn write_responses_event_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> s
 
 /// A Responses `logprobs` ARRAY — the `LogProb` entries on an `output_text` part, or the
 /// `ResponseLogProb` entries on an `output_text.delta` (the same entry minus `bytes`) — into the
-/// neutral IR entries. The entry is the Chat Completions entry, so the Chat decoder reads it; this
-/// only supplies the `{content: [...]}` envelope Chat wraps the array in. Absent, `null` or not an
+/// neutral IR entries. The entry is the shared logprob wire entry, so `crate::codec::logprob_wire`
+/// reads it; this only supplies the `{content: [...]}` envelope that object wraps the array in. Absent, `null` or not an
 /// array yields no entries (the caller asked for none).
 fn read_responses_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::codec::ir::IrTokenLogprob> {
     match v {
         Some(arr @ serde_json::Value::Array(entries)) if !entries.is_empty() => {
-            super::openai_chat::read_openai_logprobs(Some(
+            crate::codec::logprob_wire::read_token_logprobs(Some(
                 &serde_json::json!({ (keys::CONTENT): arr }),
             ))
         }

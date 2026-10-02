@@ -761,7 +761,7 @@ impl ProtocolWriter for OpenAiWriter {
                             (CHOICES): [{
                                 (keys::INDEX): 0,
                                 (keys::DELTA): {},
-                                (keys::LOGPROBS): write_openai_logprobs(lps),
+                                (keys::LOGPROBS): crate::codec::logprob_wire::write_token_logprobs(lps),
                                 (keys::FINISH_REASON): null
                             }]
                         });
@@ -1177,7 +1177,7 @@ impl ProtocolWriter for OpenAiWriter {
             if resp.logprobs.is_empty() {
                 serde_json::Value::Null
             } else {
-                write_openai_logprobs(&resp.logprobs)
+                crate::codec::logprob_wire::write_token_logprobs(&resp.logprobs)
             },
         );
         choice_obj.insert(keys::FINISH_REASON.to_string(), finish_reason);
