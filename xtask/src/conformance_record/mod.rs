@@ -5,7 +5,12 @@
 //! the committed verdicts were hand-stamped. This command is that producer. It runs each rig under
 //! `testing/{llm,mcp,voice,ws,jev}-conformance` as the subprocess CI ran it, reads the rig's OWN
 //! judgement (its exit codes and its report), and writes one `busbar.conformance.verdict/1` file per
-//! registered suite that rig judges.
+//! registered suite that rig judges. Every suite the registry carries has a rig — the registry IS
+//! the MUST set — so `--all` produces every verdict: llm x6, mcp, voice x2 and ws drive the rigs
+//! under `testing/`; a2a drives its two instruments and its subject; h2 (h2spec), tls (testssl),
+//! slsa-verifier and oidf-oauth2 + fapi2 (the self-hosted OIDF suite) drive the upstream tools
+//! against a busbar built from this checkout; jev judges the decisions plane's battery and its
+//! served bytes in Rust.
 //!
 //! THE THREE RULES THIS FILE EXISTS TO HOLD.
 //!
@@ -20,10 +25,18 @@
 //!   the reason, never a pass.
 //! * A `fail` verdict is DATA, not an error: exit 0 means every targeted verdict was written,
 //!   whatever its status. Exit 3 means at least one could not be written (no HEAD, an unreadable
-//!   registry, an unwritable file, an incoherent outcome). Exit 2 is an argument error. These are
-//!   the codes `cli.rs` documents for every xtask command.
+//!   registry, an unwritable file, an incoherent outcome, a manifest the reconcile could not write).
+//!   Exit 2 is an argument error. These are the codes `cli.rs` documents for every xtask command.
 
+mod a2a;
+mod h2;
+mod jev;
+mod oidf;
 mod rigs;
+mod slsa;
+mod subject;
+mod tls;
+mod upstream;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,23 +45,38 @@ use crate::ctx::Ctx;
 use crate::gates::conformance_sync::render::{self, Suite};
 use crate::gitp;
 
+pub use a2a::{discriminates, governance_observed, NEGATIVE_PAIRS};
+pub use h2::{decide_h2, junit_cases, Case, CaseResult, H2Run};
+pub use jev::{decide_jev, is_jev_refusal, judge_jev_ledger, tests_passed, JevRun, REPORTED_UNITS};
+pub use oidf::{
+    as_signing_key, base64_std, decide_oidf, es256_jwk, idp_reply, module_results,
+    oidf_plan_config, oidf_subject_config, rsa_jwk_from_pkcs8, suite_client_key, OidfClient,
+    OidfRun, OidfSubject, AS_KEY_ID, RESOURCE_PATH as OIDF_RESOURCE_PATH, SUITES as OIDF_SUITES,
+};
 pub use rigs::{
-    decide_jev, decide_legs, decide_llm, decide_voice, decide_ws, LlmRun, VoiceRun, WsRun,
+    decide_legs, decide_llm, decide_voice, decide_ws, rig_for, Inputs, LlmRun, VoiceRun, WsRun,
     LLM_DIALECTS,
 };
+pub use slsa::{decide_slsa, provenance_commit, SlsaRun};
+pub use subject::b64url;
+pub use tls::{decide_tls, TlsRun};
 
 /// The schema id every verdict carries (`conformance/verdicts/verdict.schema.json`, `title`).
 pub const SCHEMA_ID: &str = "busbar.conformance.verdict/1";
 
 const USAGE: &str = "\
 usage:
-  cargo xtask conformance record --suite <id> [--recording <dir>] [--out <dir>]
-  cargo xtask conformance record --all        [--recording <dir>] [--out <dir>]
+  cargo xtask conformance record --suite <id> [--recording <dir>] [--slsa-artifact <file>
+                                             --slsa-provenance <file>] [--out <dir>]
+  cargo xtask conformance record --all        [the same flags]
     --recording  the oracle's candidate recording the llm rig judges (testing/shadow-oracle record
                  output); without it every llm-* verdict is not-run
+    --slsa-artifact, --slsa-provenance
+                 a busbar artifact built from HEAD and its SLSA provenance, minted by a trusted CI
+                 builder; without both the slsa-verifier verdict is not-run
     --out        where <id>.json is written (default conformance/verdicts; relative to the checkout)
   exit: 0 every targeted verdict written (pass, fail or not-run), 2 bad arguments,
-        3 a verdict could not be written";
+        3 a verdict or conformance/manifest.json could not be written";
 
 /// A verdict's status, the schema's `status` enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,7 +289,14 @@ fn tracked_drift(root: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
 }
 
 pub fn main(cx: &Ctx, args: &[String]) -> i32 {
-    const KNOWN: &[&str] = &["--suite", "--all", "--recording", "--out"];
+    const KNOWN: &[&str] = &[
+        "--suite",
+        "--all",
+        "--recording",
+        "--slsa-artifact",
+        "--slsa-provenance",
+        "--out",
+    ];
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -308,15 +343,9 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
                 ));
             }
             Some(s) if rigs::rig_for(&s.id).is_none() => {
-                let no_rig: Vec<&str> = suites
-                    .iter()
-                    .filter(|s| rigs::rig_for(&s.id).is_none())
-                    .map(|s| s.id.as_str())
-                    .collect();
                 return usage_error(&format!(
-                    "`{id}` has no rig under testing/{{llm,mcp,voice,ws,jev}}-conformance; this \
-                     command produces no verdict for it (no rig: {})",
-                    no_rig.join(", ")
+                    "`{id}` is registered but no rig judges it; a registered suite is a MUST and \
+                     needs one"
                 ));
             }
             Some(s) => vec![s],
@@ -327,7 +356,11 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
         &root,
         &flag(args, "--out").unwrap_or_else(|| render::VERDICT_DIR.to_string()),
     );
-    let recording = flag(args, "--recording").map(|r| absolute(&root, &r));
+    let inputs = rigs::Inputs {
+        recording: flag(args, "--recording").map(|r| absolute(&root, &r)),
+        slsa_artifact: flag(args, "--slsa-artifact").map(|r| absolute(&root, &r)),
+        slsa_provenance: flag(args, "--slsa-provenance").map(|r| absolute(&root, &r)),
+    };
 
     let start_head = match head_commit(&root) {
         Ok(h) => h,
@@ -356,7 +389,7 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
             by_rig.entry(r).or_default().push(s);
         }
     }
-    let runner = rigs::Runner::new(&root, recording.as_deref());
+    let runner = rigs::Runner::new(&root, &inputs);
     // The rigs run IN PARALLEL (ARCHITECT 2026-10-02): each is a separate toolchain
     // (python, node, Docker, cargo) and most of the hop's conformance time is waiting
     // on one of them; one thread per rig, each in its own work dir.
