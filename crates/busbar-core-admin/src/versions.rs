@@ -13,7 +13,6 @@
 //! so v1 versioning covers exactly what v1 apply can mutate.
 
 use serde::Serialize;
-use std::collections::HashMap;
 
 /// One recorded config version: the metadata the versions LIST shows, plus the full hook-surface
 /// snapshot rollback restores. Never contains a secret (hook definitions are operator config:
@@ -29,9 +28,10 @@ pub struct ConfigVersion {
     pub principal: String,
     /// Human summary of the mutation that produced this version (e.g. `hook.register hook:x`).
     pub summary: String,
-    /// The hook registry at this version (the rollback payload).
+    /// The hook registry at this version (the rollback payload), as the serialized snapshot
+    /// (`serde_json` object keyed by hook name), so this store names no kernel config type.
     #[serde(skip)]
-    pub hook_registry: HashMap<String, crate::config::HookCfg>,
+    pub hook_registry: serde_json::Value,
     /// The global wiring at this version.
     #[serde(skip)]
     pub global_hooks: Vec<String>,
@@ -41,12 +41,13 @@ pub struct ConfigVersion {
 /// oldest; a rollback to a pruned version is a clear error, never a guess.
 const MAX_VERSIONS: usize = 100;
 
+#[derive(Default)]
 pub struct VersionLog {
     entries: std::sync::Mutex<std::collections::VecDeque<ConfigVersion>>,
 }
 
 impl VersionLog {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             entries: std::sync::Mutex::new(std::collections::VecDeque::new()),
         }
@@ -59,7 +60,7 @@ impl VersionLog {
         version: u64,
         principal: &str,
         summary: &str,
-        hook_registry: &HashMap<String, crate::config::HookCfg>,
+        hook_registry: serde_json::Value,
         global_hooks: &[String],
     ) {
         let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
@@ -74,7 +75,7 @@ impl VersionLog {
             ts: busbar_kernel::store::now(),
             principal: principal.to_string(),
             summary: summary.to_string(),
-            hook_registry: hook_registry.clone(),
+            hook_registry,
             global_hooks: global_hooks.to_vec(),
         });
     }

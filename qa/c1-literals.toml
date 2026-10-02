@@ -71,11 +71,6 @@ item = "prometheus"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/admin/versions.rs"
-item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/api.rs"
 item = "openapi"
 

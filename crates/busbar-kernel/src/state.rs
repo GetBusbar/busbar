@@ -312,10 +312,9 @@ pub struct App {
     pub idempotency_cache: Arc<
         std::sync::Mutex<std::collections::HashMap<(String, String), (u64, serde_json::Value)>>,
     >,
-    /// Config VERSION HISTORY — every successful config-plane mutation records its snapshot here.
-    /// Arc-shared across apply snapshots (survives every swap); bounded ring (see
-    /// `admin::versions`).
-    pub versions: Arc<crate::admin::versions::VersionLog>,
+    /// The admin side's state (the config VERSION HISTORY, typed and filled by the admin service),
+    /// behind the admin seam's one slot. Arc-shared across apply snapshots (survives every swap).
+    pub admin: Arc<crate::admin::seam::AdminSlot>,
     /// The ADMIN auth chain (`admin_auth:` module names, default: the operator credential) — executed by
     /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
     pub admin_chain: Vec<String>,
@@ -480,7 +479,7 @@ pub struct App {
     /// Lives on `App` (not a bare `static AtomicU64`) so it is Arc-shared like `store`/
     /// `probe_schedule`: a config apply's `(*current).clone()` and a REBUILD's carry-over from
     /// `prior` (`build_app_from_config`) both keep the SAME counter instance, so ids stay monotonic
-    /// across a config reload the way `versions`/`mutation_limiter` already do — and it is
+    /// across a config reload the way `admin`/`mutation_limiter` already do — and it is
     /// constructible per-test (no hidden global), matching this file's existing "no global mutable
     /// state" convention for live per-process counters (see `QueuedDepth`, `VersionLog`).
     pub request_id_counter: Arc<std::sync::atomic::AtomicU64>,

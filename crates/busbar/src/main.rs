@@ -965,8 +965,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
 
     // Record the BOOT snapshot as version 0 so the version history always has a rollback floor
     // (the pre-any-mutation state).
-    app.versions
-        .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
+    busbar_kernel::admin::seam::record_boot(&app);
 
     // DURABLE STATE HYDRATION — the audit ring, the A2A task table, the MCP per-call log and
     // the MCP demotion/spent-approval records, restored from the configured governance store
@@ -982,7 +981,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // business, and nothing about it is restored from disk here. The durable config that makes "fix
     // the config and restart" the recovery path lives in the config-overlay persistence, not in a
     // health snapshot. The config version-history ring is likewise RAM-only, re-seeded here
-    // at its boot floor (see `app.versions.record(0, …)` above); durable cross-restart rollback would
+    // at its boot floor (see `admin::seam::record_boot` above); durable cross-restart rollback would
     // need a store seam, which does not exist over the plugin wire ABI today (see the 1.5.3 report).
     tracing::info!(
         "reliability state (breakers, cooldowns, latency, hard-down) starts fresh on boot and is \

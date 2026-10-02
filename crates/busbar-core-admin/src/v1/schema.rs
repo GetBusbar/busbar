@@ -452,7 +452,7 @@ pub struct AuditPageView {
 /// `GET /config/versions`: the cursor-paginated version-history envelope (`{items, next_cursor}`).
 #[derive(Serialize, JsonSchema)]
 pub struct ConfigVersionPageView {
-    pub items: Vec<busbar_kernel::admin::versions::ConfigVersion>,
+    pub items: Vec<crate::versions::ConfigVersion>,
     pub next_cursor: Option<String>,
 }
 
