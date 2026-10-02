@@ -1659,14 +1659,17 @@ impl ProtocolReader for ResponsesReader {
                     // never silently: a hosted-tool run that vanished with no log is exactly the
                     // invisible floor-drop this work exists to eliminate. The assistant's actual
                     // message/tool-call/reasoning output is still carried by the arms above.
+                    // On a translate attempt it goes through the one drop path (WARN + audit
+                    // row naming `output[].type=<item>`); a same-dialect relay's tap says nothing.
                     other => {
-                        tracing::warn!(
-                            item_type = other,
-                            "dropping unmodeled Responses output item on ir parse: a hosted-tool \
-                             invocation record (e.g. web_search_call) has no neutral IR form and no \
-                             cross-protocol analog; the assistant message/function_call/reasoning \
-                             output is unaffected"
-                        );
+                        crate::codec::drops::note(crate::codec::drops::Dropped::new(
+                            format!("output[].type={other}"),
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            "dropping an unmodeled Responses output item on the cross-protocol \
+                             seam: a hosted-tool invocation record (e.g. web_search_call) has no \
+                             neutral IR form and no cross-protocol analog; the assistant \
+                             message/function_call/reasoning output is unaffected",
+                        ));
                     }
                 }
             }

@@ -362,7 +362,7 @@ fn responses_request_drops_name_the_wire_path() {
 
 /// Translate the far end's `body` (`egress`) for a caller of `ingress`: the caller's body and the
 /// warns.
-fn answer(egress: &str, ingress: &str, body: &Value) -> (String, WarnCapture) {
+fn answer(egress: &str, ingress: &str, body: &Value) -> (String, Vec<String>, WarnCapture) {
     let _ = protocol_for(egress);
     let ctx = crate::exchange::reply::whole::WholeCtx {
         ingress,
@@ -385,14 +385,23 @@ fn answer(egress: &str, ingress: &str, body: &Value) -> (String, WarnCapture) {
         crate::exchange::reply::whole::WholeEnd::Delivered,
         "{egress} -> {ingress}: the answer must translate"
     );
-    (String::from_utf8(whole.answer.body).unwrap(), cap)
+    (
+        String::from_utf8(whole.answer.body).unwrap(),
+        whole.dropped,
+        cap,
+    )
 }
 
 /// The answer's drop is warned under `paths`; the RED arm — the answer with only what maps —
 /// drops nothing; no empty text block stands in for a dropped one.
 fn response_drops(egress: &str, ingress: &str, with: Value, without: Value, paths: &[&str]) {
-    let (body, cap) = answer(egress, ingress, &with);
+    let (body, audited, cap) = answer(egress, ingress, &with);
     for path in paths {
+        assert_eq!(
+            audited.iter().filter(|a| a == path).count(),
+            1,
+            "{egress} -> {ingress}: one audit row names `{path}`: {audited:?}"
+        );
         assert_eq!(
             cap.count(&format!("path={path}")),
             1,
@@ -405,7 +414,11 @@ fn response_drops(egress: &str, ingress: &str, with: Value, without: Value, path
         !body.contains(r#""text":"""#),
         "{egress} -> {ingress}: nothing is substituted for a dropped block: {body}"
     );
-    let (_, cap) = answer(egress, ingress, &without);
+    let (_, audited, cap) = answer(egress, ingress, &without);
+    assert!(
+        audited.is_empty(),
+        "{egress} -> {ingress}: RED arm: {audited:?}"
+    );
     assert!(
         !cap.contains("path="),
         "{egress} -> {ingress}: RED arm — an answer of mapped members drops nothing: {:?}",
@@ -462,6 +475,33 @@ fn responses_answer_drops_name_the_wire_path() {
         ])),
         answer(json!([{"type": "output_text", "text": "hi", "annotations": []}])),
         &["output[].content[].type=x_future"],
+    );
+}
+
+/// DF-MAP-IR-GAPS section E: a Responses answer carrying a hosted-tool item (`web_search_call`)
+/// translated to another dialect gives one drop WARN and one audit row naming the wire path. RED
+/// before: the reader warned outside the drop path (no path, no audit row).
+#[test]
+fn responses_hosted_tool_item_is_dropped_on_the_drop_path() {
+    let answer = |hosted: bool| {
+        let mut output = vec![json!({"type": "message", "id": "m1", "role": "assistant",
+            "content": [{"type": "output_text", "text": "hi", "annotations": []}]})];
+        if hosted {
+            output.insert(
+                0,
+                json!({"type": "web_search_call", "id": "ws_1", "status": "completed"}),
+            );
+        }
+        json!({"id": "resp_1", "object": "response", "created_at": 1, "model": "m",
+            "status": "completed", "output": output,
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}})
+    };
+    response_drops(
+        "responses",
+        "openai",
+        answer(true),
+        answer(false),
+        &["output[].type=web_search_call"],
     );
 }
 
