@@ -19,10 +19,10 @@ use std::task::Poll;
 
 use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
-    check_dest_judge, check_entitlement_check, check_random_fill, check_random_fill_in,
-    check_trust_due, check_trust_sight, op, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan,
-    RandomFillIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, TrustDueIn, TrustSightIn,
-    DEST_RESOLVE, ENTITLED,
+    check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
+    check_random_fill_in, check_trust_due, check_trust_sight, op, ClockNowIn, ClockReading,
+    DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, ServiceBufs, ServiceFn,
+    ServiceHead, ServiceOut, TrustDueIn, TrustSightIn, DEST_RESOLVE, ENTITLED,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
@@ -131,6 +131,33 @@ impl Services {
             ctx: tables.ctx,
             table: tables.services,
         })
+    }
+
+    /// `clock.now`: the kernel's one clock, wall and monotonic, so a plugin reads no clock of its
+    /// own and a test or the oracle controls its time. `handle` is the op's own completion handle.
+    /// Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: the host serves no `clock.now`, declined it, or broke its rules.
+    pub fn clock_now(&self, handle: CompletionHandle) -> Result<ClockReading, ServiceError> {
+        let mut reading = ClockReading {
+            size: size_of::<ClockReading>() as u32,
+            _reserved: 0,
+            wall_ns: 0,
+            mono_ns: 0,
+        };
+        let input = ClockNowIn {
+            head: head::<ClockNowIn>(op::CLOCK_NOW, handle),
+            reading: std::ptr::from_mut(&mut reading),
+        };
+        match self
+            .cross(op::CLOCK_NOW, |t| t.clock_now, &input, check_clock_now)?
+            .0
+        {
+            Outcome::Ready => Ok(reading),
+            other => Err(ServiceError::Declined(other)),
+        }
     }
 
     /// `entitlement.check`: whether the unit the calling op serves is entitled to `target`,

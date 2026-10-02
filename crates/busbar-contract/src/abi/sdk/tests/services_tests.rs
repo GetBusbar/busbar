@@ -547,3 +547,48 @@ fn trust_due_views_the_names_in_the_callers_buffers_and_reports_a_short_one() {
         Err(ServiceError::Unserved)
     );
 }
+
+/// A host whose clock reads wall 7 s and monotonic 9 ms.
+extern "C" fn reads_the_clock(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    // SAFETY: the wrapper hands a `ClockNowIn` naming its live reading, and a live `out`.
+    unsafe {
+        let i = input.cast::<ClockNowIn>().read_unaligned();
+        (*i.reading).wall_ns = 7_000_000_000;
+        (*i.reading).mono_ns = 9_000_000;
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+#[test]
+fn clock_now_answers_the_hosts_reading_and_every_failure_is_an_error() {
+    let t = HostSlots {
+        clock_now: Some(reads_the_clock),
+        ..table(None)
+    };
+    let reading = services(&t)
+        .clock_now(handle())
+        .expect("the host reads its clock");
+    assert_eq!(
+        (reading.wall_ns, reading.mono_ns),
+        (7_000_000_000, 9_000_000)
+    );
+    assert_eq!(reading.size as usize, size_of::<ClockReading>());
+    let none = table(None);
+    assert!(matches!(
+        services(&none).clock_now(handle()),
+        Err(ServiceError::Unserved)
+    ));
+    let failing = HostSlots {
+        clock_now: Some(fails),
+        ..table(None)
+    };
+    assert!(matches!(
+        services(&failing).clock_now(handle()),
+        Err(ServiceError::Declined(Outcome::Failed))
+    ));
+}
