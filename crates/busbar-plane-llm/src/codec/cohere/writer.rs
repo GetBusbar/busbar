@@ -1029,7 +1029,8 @@ impl ProtocolWriter for CohereWriter {
                 crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. }
                 | crate::codec::ir::IrBlock::ToolResult { .. }
-                | crate::codec::ir::IrBlock::Json(_) => {}
+                | crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
             }
         }
 
