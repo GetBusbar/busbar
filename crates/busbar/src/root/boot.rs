@@ -459,7 +459,7 @@ pub fn compose_book(
 /// STAGE 4, BOOK (`BUSBAR-1.6.0.md` §3, the stage table: "open the store, replay the WAL, seal the
 /// opening, bind the keyset — at boot only"): THE PROCESS'S ONE BOOK, opened over the deployment's
 /// configured store with its balances sealed. Boot calls it once. Reload runs stages 1–3 and 5 and
-/// never Book (§3; ARCHITECT round-2 ruling "Book stage and store are BOOT-ONLY"): a rebuilt
+/// never Book (`BUSBAR-1.6.0.md` §3, and its round-2 ruling "Book stage and store are BOOT-ONLY"): a rebuilt
 /// generation carries the store it was handed, so a reload neither reopens the store nor seals a
 /// second opening.
 ///
