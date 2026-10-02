@@ -45,6 +45,8 @@ const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const SCOPE: &str = "read";
 const CLIENT_ID: &str = "fapi-client";
 const OTHER_CLIENT_ID: &str = "fapi-client-2";
+/// A client provisioned with an RSA key: PS256, the profile's other algorithm.
+const RSA_CLIENT_ID: &str = "fapi-client-ps256";
 /// RFC 7523 s2.2.
 const ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 
@@ -94,9 +96,11 @@ impl Key {
         let (x, y) = self.coordinates();
         StaticClientJwk {
             kty: "EC".to_string(),
-            crv: "P-256".to_string(),
-            x,
-            y,
+            crv: Some("P-256".to_string()),
+            x: Some(x),
+            y: Some(y),
+            n: None,
+            e: None,
             kid: Some(self.kid.to_string()),
             alg: Some("ES256".to_string()),
             d: None,
@@ -167,6 +171,125 @@ impl Key {
     }
 }
 
+/// TEST-ONLY RSA-2048 private key (PKCS#8 DER, base64), minted once with `openssl genpkey` for
+/// this file: `ring` signs RSA but cannot generate a key. It authenticates nothing outside these
+/// tests; the AS under test only ever holds its public half.
+const RSA_TEST_KEY_PKCS8: &str = concat!(
+    "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7yYGm5BUFWye7k6VKJySWzoRSnDf+Juv4e/YF7jesW86L",
+    "pqpQ7KLhBF4oWMYtKPK9aifQN03G/zv9OdQ2cuMLthbVp3pE5M2hQvknd6+IJFohCBsaXEKo8cPoq/0IMlQI6/pL6pQB6U6V",
+    "GCsQPE5EbNRR68i+4H13UTd3Snvis1nqdtIkcEvE/vVBBhUeFq6UmkzB/vcxbxy5/9rjB/wGjK+yh1puoY1OXbzPspacY+iT",
+    "HZ0lLtfdkIRuK3BcF2dowFm6kUVeHe8RkwtJRaVGt17RDt2BjAShzjTxPgEHI2PCZNF8A63W4M34K7cJPgFU/WVsEKmD24OG",
+    "ZQOv8AZtAgMBAAECggEAVSuDnkn8Lr21O6IvaX5vXea0pTMtQhwtEjpGz1HH9mh9OWGSBboN9biha/M3juvvjHFFNW6f3A2P",
+    "C77avQdGat1fZe/byLtteCKEFp52Am1aY3jlsgL+SNm+XR0EWl9ZNeKxVxVBo8xJU93uSiLP7MDfW3hxSAFRZnhzi6tAnQSr",
+    "LzpazSFwhUhM93HU5yp2tuGLDD+yimmqjZ8lkZHrxX2qsBdHMgje0a+BwtPZTLBlxL282KucDzgl3Xyz15ldLaBHyC5eJMdZ",
+    "KI5aq+jDR9gV8D/EXdWztjoLkZC7tv7uAlvfZLybb85q9CLqC5bENVvEAXtqbE8cnQwCSczQkQKBgQD1dF+pLBYSvVtCBwzM",
+    "SsPF2YY/pSiuXNuo8LdEeX/fwkH8lJNs8aP5f21f20/FE97l33xovu/ClwUBNWSfYNMTBNQICNPdzBsQY7fP0G4ZNwTaDZyd",
+    "tQcoBH7tN/IsUhL5FylxgX8e5ZTaReo0iDkyfb1CPmQ4UARobBMHLV81ewKBgQDD2uDzyIiLTuAkFndEIbQlYtlU0puF0toI",
+    "V4xtV2F66B/608yF0Oks6vYe/jDC2lMJVz0CddBjWZgcrwW2Ce6t+EDh5jBp/T34RskMmaS9bF/A8flSzTmBda0+vFNC2N6g",
+    "m15cfm2LSYrVmWaygZAgawIL2Ea+7Li/Sp07Q0nLNwKBgDv5JEqEkBwiEkMuz8y20+DqxmeUpjz8SVuc/VqIyVrV7yOU9fSf",
+    "ki4rGYFbZ8FCmqrWEWLSjGiiV8G01xIuKUSzYE9aQNInxdEaXFY1mkEk9VWGD+dkzQvVFWJG0jBMGYCtTR4Dwxi8hcNTY+dU",
+    "BY21tWGTNw+fVYRiK8AMMQAzAoGBAIJp4baSxlE00U1WZE5KvwDSBHNV1ddTYnmBinFYaQGFRZ4ooBxO0qVlQ0O58NAevoIO",
+    "xAI6Xut4wi//XycrD/JpxxJky8IXrcb/o2oveKHlYxFATsuS+gK5UAXhMvPlIsEBE+E1Ek5YRwkaH2cnnMfpWTB38Au75v0B",
+    "exb2JFIbAoGAOZReW1zypnML0VMgDpHmuVVPyw/OnzhLzzcbjW4FzUxNLopEaRsS0ivKig8s82jxDh0fAArSQunHD3voaTtO",
+    "HRBoliBzaqJOZhTG+2OSQ8VvI4b+/Z0lGlb4QSeZv1a7FC4nvmth3G4lO1WcnAmlUao4SZ9idGlNj5imrqqIOys=",
+);
+
+/// The PS256 client's RSA key: PS256 for what the profile admits, RS256 for what it must refuse.
+struct RsaKey {
+    pair: ring::signature::RsaKeyPair,
+    kid: &'static str,
+}
+
+impl RsaKey {
+    fn new(kid: &'static str) -> Self {
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(RSA_TEST_KEY_PKCS8)
+            .expect("the fixture is base64");
+        let pair = ring::signature::RsaKeyPair::from_pkcs8(&der).expect("the fixture is PKCS#8");
+        Self { pair, kid }
+    }
+
+    fn components(&self) -> (String, String) {
+        let c = ring::signature::RsaPublicKeyComponents::<Vec<u8>>::from(self.pair.public());
+        (B64.encode(&c.n), B64.encode(&c.e))
+    }
+
+    fn static_jwk(&self) -> StaticClientJwk {
+        let (n, e) = self.components();
+        StaticClientJwk {
+            kty: "RSA".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: Some(n),
+            e: Some(e),
+            kid: Some(self.kid.to_string()),
+            alg: Some("PS256".to_string()),
+            d: None,
+        }
+    }
+
+    fn public_json(&self) -> Value {
+        let (n, e) = self.components();
+        json!({ "kty": "RSA", "n": n, "e": e })
+    }
+
+    /// RFC 7638 over `e`, `kty`, `n`.
+    fn thumbprint(&self) -> String {
+        let (n, e) = self.components();
+        let canonical = format!(r#"{{"e":"{e}","kty":"RSA","n":"{n}"}}"#);
+        B64.encode(ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes()).as_ref())
+    }
+
+    /// RFC 7515 compact, `alg` PS256 or RS256.
+    fn sign(&self, alg: &str, header: &Value, claims: &Value) -> String {
+        let mut header = header.clone();
+        header["alg"] = json!(alg);
+        let input = format!(
+            "{}.{}",
+            B64.encode(header.to_string()),
+            B64.encode(claims.to_string())
+        );
+        let padding: &'static dyn ring::signature::RsaEncoding = match alg {
+            "PS256" => &ring::signature::RSA_PSS_SHA256,
+            _ => &ring::signature::RSA_PKCS1_SHA256,
+        };
+        let mut sig = vec![0u8; self.pair.public().modulus_len()];
+        self.pair
+            .sign(
+                padding,
+                &ring::rand::SystemRandom::new(),
+                input.as_bytes(),
+                &mut sig,
+            )
+            .expect("sign");
+        format!("{input}.{}", B64.encode(&sig))
+    }
+
+    fn assertion(&self, alg: &str, client_id: &str, aud: Value) -> String {
+        self.sign(
+            alg,
+            &json!({ "kid": self.kid }),
+            &json!({
+                "iss": client_id, "sub": client_id, "aud": aud,
+                "jti": jti(), "iat": now(), "exp": now() + 60,
+            }),
+        )
+    }
+
+    fn proof(&self, htm: &str, htu: &str, ath: Option<&str>) -> String {
+        let mut claims = json!({ "jti": jti(), "htm": htm, "htu": htu, "iat": now() });
+        if let Some(ath) = ath {
+            claims["ath"] = json!(ath);
+        }
+        self.sign(
+            "PS256",
+            &json!({ "typ": "dpop+jwt", "jwk": self.public_json() }),
+            &claims,
+        )
+    }
+}
+
 // ── the subject ──────────────────────────────────────────────────────────────────────────────────
 
 /// A served `fapi2: true` deployment with two `private_key_jwt` clients, each with its own key,
@@ -179,6 +302,8 @@ struct Subject {
     key: Key,
     /// `OTHER_CLIENT_ID`'s registered key.
     other: Key,
+    /// `RSA_CLIENT_ID`'s registered key.
+    rsa: RsaKey,
 }
 
 async fn serve(fapi2: bool) -> Subject {
@@ -188,12 +313,11 @@ async fn serve(fapi2: bool) -> Subject {
         .expect("bind");
     let origin = format!("http://{}", listener.local_addr().expect("addr"));
     let (key, other) = (Key::new("fapi-client-key"), Key::new("fapi-client-2-key"));
-    let declared = |client_id: &str, key: &Key| StaticClientCfg {
+    let rsa = RsaKey::new("fapi-client-ps256-key");
+    let declared = |client_id: &str, jwk: StaticClientJwk| StaticClientCfg {
         client_id: client_id.to_string(),
         redirect_uris: vec![REDIRECT_URI.to_string()],
-        jwks: StaticClientJwks {
-            keys: vec![key.static_jwk()],
-        },
+        jwks: StaticClientJwks { keys: vec![jwk] },
     };
     let cfg = OauthAsCfg {
         issuer: origin.clone(),
@@ -202,7 +326,11 @@ async fn serve(fapi2: bool) -> Subject {
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
         fapi2,
-        clients: vec![declared(CLIENT_ID, &key), declared(OTHER_CLIENT_ID, &other)],
+        clients: vec![
+            declared(CLIENT_ID, key.static_jwk()),
+            declared(OTHER_CLIENT_ID, other.static_jwk()),
+            declared(RSA_CLIENT_ID, rsa.static_jwk()),
+        ],
     };
     // The open admin posture, as in `flow_tests::serve`: the consent screen's `RouteAuth::Admin`
     // is not the property under test here.
@@ -226,6 +354,7 @@ async fn serve(fapi2: bool) -> Subject {
             .expect("client"),
         key,
         other,
+        rsa,
     }
 }
 
@@ -419,7 +548,11 @@ async fn the_metadata_advertises_the_profile() {
         json!(format!("{}/par", s.origin))
     );
     assert_eq!(meta["require_pushed_authorization_requests"], json!(true));
-    assert_eq!(meta["dpop_signing_alg_values_supported"], json!(["ES256"]));
+    assert_eq!(
+        meta["dpop_signing_alg_values_supported"],
+        json!(["ES256", "PS256"]),
+        "FAPI2 s5.4.1: ES256 and PS256, the algorithms this server verifies"
+    );
     let methods = meta["token_endpoint_auth_methods_supported"]
         .as_array()
         .expect("methods");
@@ -428,6 +561,7 @@ async fn the_metadata_advertises_the_profile() {
         .as_array()
         .expect("assertion algorithms");
     assert!(algs.contains(&json!("ES256")), "{meta}");
+    assert!(algs.contains(&json!("PS256")), "{meta}");
     assert!(
         !algs.contains(&json!("RS256")),
         "FAPI2 s5.4.1 forbids RS256: {meta}"
@@ -1025,5 +1159,99 @@ async fn the_resource_refuses_what_rfc_9449_forbids() {
         resource(&s, &as_dpop, &[once]).await,
         401,
         "s11.1: a proof's jti is single use"
+    );
+}
+
+// ── PS256: the profile's RSA algorithm (FAPI2 s5.4.1) ────────────────────────────────────────────
+
+/// A client provisioned with an RSA key runs the whole profile on PS256 — its `private_key_jwt`
+/// assertions at PAR and the token endpoint, and its DPoP proofs at the token endpoint and at
+/// busbar's resource — and the SAME key signing RS256 is refused: FAPI2 s5.4.1 forbids it, and the
+/// registration pins PS256. That refusal is what the OIDF suite's
+/// `ensure-signed-client-assertion-with-RS256-fails` checks, and it can only run with an RSA client.
+#[tokio::test]
+async fn a_ps256_client_runs_the_profile_and_rs256_is_refused() {
+    let s = serve(true).await;
+    let rsa = &s.rsa;
+    let par = format!("{}/par", s.origin);
+    let token_endpoint = format!("{}/token", s.origin);
+    let push = |alg: &str| {
+        with(
+            &with(
+                &push_form(&s, RSA_CLIENT_ID, &s.key),
+                "client_id",
+                json!(RSA_CLIENT_ID),
+            ),
+            "client_assertion",
+            json!(rsa.assertion(alg, RSA_CLIENT_ID, json!(s.origin))),
+        )
+    };
+
+    let (status, body) = post(
+        &s,
+        "/par",
+        &push("RS256"),
+        Some(rsa.proof("POST", &par, None)),
+    )
+    .await;
+    assert!(
+        [400, 401].contains(&status) && body["error"] == json!("invalid_client"),
+        "FAPI2 s5.4.1: an RS256 client assertion is refused: {status} {body}"
+    );
+
+    let (status, body) = post(
+        &s,
+        "/par",
+        &push("PS256"),
+        Some(rsa.proof("POST", &par, None)),
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "a PS256 assertion and a PS256 DPoP proof push: {body}"
+    );
+    let request_uri = body["request_uri"]
+        .as_str()
+        .expect("request_uri")
+        .to_string();
+    let mut jar = Jar::new(false);
+    let redirect = consent(
+        &s,
+        &mut jar,
+        &authorize_url(&s, RSA_CLIENT_ID, &request_uri),
+        "approve",
+    )
+    .await;
+    let code = query_param(&redirect, "code").expect("a code");
+
+    let form = with(
+        &with(&token_form(&s, &code), "client_id", json!(RSA_CLIENT_ID)),
+        "client_assertion",
+        json!(rsa.assertion("PS256", RSA_CLIENT_ID, json!(s.origin))),
+    );
+    let (status, token) = post(
+        &s,
+        "/token",
+        &form,
+        Some(rsa.proof("POST", &token_endpoint, None)),
+    )
+    .await;
+    assert_eq!(status, 200, "{token}");
+    let access = token["access_token"]
+        .as_str()
+        .expect("access_token")
+        .to_string();
+    assert_eq!(payload(&access)["cnf"]["jkt"], json!(rsa.thumbprint()));
+
+    let htu = format!("{}/stats", s.origin);
+    assert_eq!(
+        resource(
+            &s,
+            &format!("DPoP {access}"),
+            &[rsa.proof("GET", &htu, Some(&ath(&access)))]
+        )
+        .await,
+        200,
+        "busbar's resource verifies a PS256 proof"
     );
 }

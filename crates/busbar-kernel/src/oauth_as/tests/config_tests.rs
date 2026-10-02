@@ -207,8 +207,8 @@ fn a_static_private_key_jwt_client_with_a_public_jwk_validates() {
     assert_eq!(clients.len(), 1);
     assert_eq!(clients[0].client_id, "fapi-client");
     assert_eq!(
-        clients[0].jwks.keys[0].x,
-        public_jwk()["x"].as_str().unwrap()
+        clients[0].jwks.keys[0].x.as_deref(),
+        public_jwk()["x"].as_str()
     );
 }
 
@@ -261,4 +261,54 @@ fn a_malformed_static_client_is_refused_at_boot() {
         ),
         "two clients with one id is refused"
     );
+}
+
+/// A 2048-bit RSA modulus as base64url: 256 bytes with the top bit set. Validation reads its length
+/// and nothing else, so a synthetic one is the honest fixture here.
+fn modulus(bytes: usize) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        vec![0xC5u8; bytes],
+    )
+}
+
+fn rsa_jwk() -> serde_json::Value {
+    serde_json::json!({ "kty": "RSA", "kid": "r1", "use": "sig", "alg": "PS256", "n": modulus(256), "e": "AQAB" })
+}
+
+/// FAPI 2.0 s5.4.1 admits PS256 alongside ES256: a client may be provisioned with the public half
+/// of an RSA key (RFC 7518 s6.3.1 `n`, `e`), at least 2048 bits.
+#[test]
+fn a_static_ps256_client_with_an_rsa_public_jwk_validates() {
+    let id = with_client(client(rsa_jwk())).expect("a 2048-bit RSA public JWK for PS256 validates");
+    assert_eq!(id.clients[0].jwks.keys[0].kty, "RSA");
+    let mut no_alg = rsa_jwk();
+    no_alg.as_object_mut().unwrap().remove("alg");
+    with_client(client(no_alg)).expect("an RSA key with no `alg` is PS256");
+}
+
+/// The RSA refusals: a private key (`d`), a modulus under 2048 bits, an algorithm other than PS256
+/// (RS256 is what FAPI 2.0 forbids), a missing `e`, and a client whose keys are not one algorithm
+/// (a registration carries ONE assertion algorithm).
+#[test]
+fn a_malformed_rsa_static_client_is_refused_at_boot() {
+    let refused = |c: serde_json::Value, why: &str| match with_client(c) {
+        Err(AsCfgError::StaticClient { .. }) => {}
+        other => panic!("{why}: expected a StaticClient refusal, got {other:?}"),
+    };
+    let mut private = rsa_jwk();
+    private["d"] = serde_json::json!(modulus(256));
+    refused(client(private), "a private key must never be configured");
+    let mut weak = rsa_jwk();
+    weak["n"] = serde_json::json!(modulus(128));
+    refused(client(weak), "a modulus under 2048 bits");
+    let mut rs256 = rsa_jwk();
+    rs256["alg"] = serde_json::json!("RS256");
+    refused(client(rs256), "PS256 only, never RS256");
+    let mut no_e = rsa_jwk();
+    no_e.as_object_mut().unwrap().remove("e");
+    refused(client(no_e), "an RSA key carries `e`");
+    let mut mixed = client(rsa_jwk());
+    mixed["jwks"]["keys"] = serde_json::json!([rsa_jwk(), public_jwk()]);
+    refused(mixed, "one client, one algorithm");
 }
