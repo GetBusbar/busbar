@@ -20,30 +20,26 @@
 //! M6-COLD-DELETE (TRANSITIONAL, drained by the request-log sinks' door re-pins: the file sink on
 //! the host's disk lane, the webhook sink on the connector's admission): a row still on the COLD
 //! export lane — a linked `BUSBAR_COLD_ENTRY`, or a dropped-in library stating no Statement — opens
-//! through [`ColdExport`] (ARCHITECT ruling 2026-09-29, WIRE-EXPORT Q4: the auth kind's
-//! arrangement). It and `crate::export` are deleted with the last such row.
+//! through [`crate::export::ColdExport`] (ARCHITECT ruling 2026-09-29, WIRE-EXPORT Q4: the auth
+//! kind's arrangement), which lives with the cold sink in `crate::export`; both are deleted with
+//! the last such row.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-use busbar_contract::abi::export::{CheckPhase, ExportStream, CHECK_PHASE_LIMITS};
+use busbar_contract::abi::export::{CheckPhase, CHECK_PHASE_LIMITS};
 use busbar_contract::abi::mechanism::lifecycle::refusal_lines;
-use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::DeclaredConns;
-use busbar_contract::export_calls::{Delivered, ExportCalls, Family, Probed, ServeRequest, Served};
+use busbar_contract::export_calls::{ExportCalls, Probed};
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::{
     load_dropped_bytes, load_linked, Bind, Dispatcher, EnvelopeSink, LinkedRow, NoSink, Plugin,
     PluginLogConfig,
 };
-use crate::export::DynExport;
 use crate::export_door::{self, ExportInstance};
 use crate::registry::LoadablePlugin;
 use crate::PluginRegistry;
-
-/// The export kind's name in the registry.
-const EXPORT: &str = busbar_contract::abi::cold::kind::EXPORT;
 
 /// The export kind's configuration section, read off the contract's kind list: a refusal's line
 /// renders under it.
@@ -104,9 +100,7 @@ impl<'r> ExportRows<'r> {
     }
 
     fn row(&self, module: &str) -> Option<&'r LoadablePlugin> {
-        self.registry
-            .resolve(module)
-            .filter(|p| p.manifest.kind == EXPORT)
+        self.registry.resolve_export(module)
     }
 
     /// Bind `row`'s door under `label`: an instance only probed or checked binds with no log sink
@@ -237,7 +231,7 @@ impl<'r> ExportRows<'r> {
                 let opened = ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?;
                 Ok(Arc::new(opened))
             }
-            Door::Cold => Ok(Arc::new(ColdExport::open(
+            Door::Cold => Ok(Arc::new(crate::export::ColdExport::open(
                 self.registry.open_export(module, &text)?,
             ))),
         }
@@ -264,98 +258,6 @@ impl<'r> ExportRows<'r> {
 /// The host's label for the instance the operator named `instance` under `export:`.
 fn label(instance: &str) -> String {
     format!("{SECTION}.{instance}")
-}
-
-/// M6-COLD-DELETE: a not-yet-ported sink on the cold export lane, as [`ExportCalls`].
-pub struct ColdExport {
-    sink: Arc<DynExport>,
-    streams: Vec<u8>,
-    started: OnceLock<Option<(bool, u64, String)>>,
-}
-
-impl std::fmt::Debug for ColdExport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ColdExport")
-            .field("sink", &self.sink.name())
-            .finish_non_exhaustive()
-    }
-}
-
-impl ColdExport {
-    /// The adapter over an opened cold sink.
-    #[must_use]
-    pub fn open(sink: DynExport) -> Self {
-        let streams = sink.streams().iter().map(|s| *s as u8).collect();
-        Self {
-            sink: Arc::new(sink),
-            streams,
-            started: OnceLock::new(),
-        }
-    }
-}
-
-impl ExportCalls for ColdExport {
-    fn streams(&self) -> &[u8] {
-        &self.streams
-    }
-
-    fn routes(&self) -> &[Route] {
-        self.sink.routes()
-    }
-
-    fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered {
-        let (Some(stream), Ok(payload)) = (
-            ExportStream::ALL.get(usize::from(stream)).copied(),
-            serde_json::from_slice::<serde_json::Value>(&line),
-        ) else {
-            return Delivered::Shed;
-        };
-        self.sink.deliver_detached(stream, Arc::new(payload), hold);
-        Delivered::Queued
-    }
-
-    fn scrape(&self, families: &[Family]) -> Result<Vec<u8>, String> {
-        self.sink
-            .scrape(crate::scrape::cold_families(families))
-            .map(|(_, body)| body.into_bytes())
-    }
-
-    fn status(&self) -> Option<Vec<u8>> {
-        self.sink.status();
-        None
-    }
-
-    fn serve(&self, req: &ServeRequest<'_>) -> Result<Served, String> {
-        use busbar_contract::abi::cold::endpoint::EndpointRequest;
-        let request = EndpointRequest {
-            method: req.method.to_string(),
-            path: req.path.to_string(),
-            query: req.query.unwrap_or_default().to_string(),
-            headers: req.headers.to_vec(),
-            body: req.body.to_vec(),
-        };
-        let r = self.sink.serve(&request);
-        Ok(Served {
-            status: r.status,
-            headers: r.headers,
-            body: r.body,
-        })
-    }
-
-    fn admission(&self) -> Option<(bool, u64, String)> {
-        self.started
-            .get_or_init(|| {
-                self.sink.start().unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "export plugin start failed");
-                    None
-                })
-            })
-            .clone()
-    }
-
-    fn shed(&self) {
-        self.sink.shed();
-    }
 }
 
 #[cfg(test)]

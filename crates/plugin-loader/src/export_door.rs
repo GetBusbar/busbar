@@ -656,17 +656,7 @@ impl ExportCalls for ExportInstance {
     /// `shed`), folded under its name through the one observability path, as the cold lane's sinks
     /// were counted (ARCHITECT ruling 2026-09-30, Q2).
     fn shed(&self) {
-        let name = self.plugin().name().to_string();
-        let metrics = crate::observe::shed_series(&name)
-            .into_iter()
-            .map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}))
-            .collect();
-        let report = busbar_contract::abi::cold::observe::Envelope {
-            result: (),
-            metrics,
-            diagnostics: Vec::new(),
-        };
-        crate::observe::fold(&name, busbar_contract::abi::cold::kind::EXPORT, &report);
+        crate::export::fold_shed(self.plugin().name());
     }
 }
 
