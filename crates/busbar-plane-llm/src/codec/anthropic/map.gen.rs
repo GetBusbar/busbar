@@ -24,6 +24,9 @@ pub(crate) const ROWS_STRUCTURE: &[Field] = &[
     row(&["system"], Slot::Structure, ValueCodec::Prim("system")),
     row(&["tool_choice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
     row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
+    row(&["metadata", "user_id"], Slot::Structure, ValueCodec::Prim("user")),
+    row(&["output_config", "effort"], Slot::Structure, ValueCodec::Prim("reasoning")),
+    row(&["messages[]", "content[]", "type=tool_use", "input"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
 ];
 
 /// Row group `tier`.
