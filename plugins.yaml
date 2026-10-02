@@ -158,6 +158,36 @@ plugins:
     description: "The HashiCorp Vault secret backend as a droppable busbar plugin: a cdylib exporting the secret C ABI. Drop it in the plugins folder, add vault to secrets: with its addr/token settings, and reference secrets as { module: vault, settings: { path: \"kv/data/name#field\" } }."
     macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip roundtrip_against_live_vault"
     declares: "secret-vault/declares.json"
+  - repo: busbar-secret-env
+    kind: secret
+    alias: env
+    crate: busbar-secret-env-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:secret plugin cdylib: the environment-variable secret source (`{ env: VAR }`), packaged as a droppable busbar plugin. busbar links it in the default build; a build without it resolves `{ env: VAR }` only when the signed tarball is dropped into plugins/."
+    macos_test: "cargo test --workspace --locked --lib --test conformance"
+    declares: "secret-env/declares.json"
+    # Moved out of busbar into its own repo (THE DESIGN §2: env and file secrets are ordinary
+    # plugins, linked in the default build; ARCHITECT 2026-10-02 WIRE-SECRET). busbar LINKS it at a
+    # pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: busbar-secret-file
+    kind: secret
+    alias: file
+    crate: busbar-secret-file-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:secret plugin cdylib: the file secret source (`{ file: /path }`), packaged as a droppable busbar plugin. busbar links it in the default build; a build without it resolves `{ file: /path }` only when the signed tarball is dropped into plugins/."
+    macos_test: "cargo test --workspace --locked --lib --test conformance"
+    declares: "secret-file/declares.json"
+    # Moved out of busbar into its own repo (THE DESIGN §2: env and file secrets are ordinary
+    # plugins, linked in the default build; ARCHITECT 2026-10-02 WIRE-SECRET). busbar LINKS it at a
+    # pinned rev. Its first release is cut with the core version that pins it.
+    released: false
   - repo: busbar-auth-oidc
     kind: auth
     alias: oidc

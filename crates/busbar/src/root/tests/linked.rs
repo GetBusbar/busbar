@@ -41,6 +41,7 @@ pub(super) fn linked(
         planes,
         hot_planes,
         plane_doors: &[],
+        secrets: &[],
         protocols: &[],
         path_ingress: &[],
         body_ingress: &[],
@@ -1291,4 +1292,39 @@ fn two_rows_declaring_the_default_refuse_boot() {
         )
     );
     assert_eq!(super::default_store(&[A, C]), Ok(Some("acme-a")));
+}
+
+/// WIRE-SECRET (THE DESIGN §2; TODO step 28) — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
+/// DISPATCHER. `env` and `file` are the linked secret plugins the root's axis answers for, by the
+/// module alias their Statements declare; a reference resolves through the secret kind table on
+/// `root::dispatch`'s dispatcher, on one shared instance, and the refusal text is the plugin's own
+/// (1.5.5's). A module no plugin answers is refused.
+///
+/// RED by dropping a door from the linked table: `file` stops being linked.
+#[test]
+fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
+    use busbar_contract::secret::SecretAxis;
+    let axis = super::link_secrets(crate::LINKED.secrets).expect("the linked secret doors state");
+    assert!(axis.linked("env") && axis.linked("file") && !axis.answers("vault"));
+    let env = axis.shared("env").expect("env opens");
+    assert!(
+        std::sync::Arc::ptr_eq(&env, &axis.shared("env").expect("env opens")),
+        "one shared instance per linked plugin"
+    );
+    let var = "BUSBAR_WIRE_SECRET_ROOT_AXIS";
+    std::env::set_var(var, "hunter2");
+    let got = env
+        .resolve(format!(r#"{{"key":"{var}"}}"#).as_bytes())
+        .expect("a set variable resolves");
+    assert_eq!(got.expose_secret().as_slice(), b"hunter2");
+    std::env::remove_var(var);
+    let refused = env
+        .resolve(br#"{"key":"BUSBAR_WIRE_SECRET_ROOT_UNSET"}"#)
+        .unwrap_err();
+    assert_eq!(
+        refused.text,
+        "secret env:BUSBAR_WIRE_SECRET_ROOT_UNSET cannot resolve: environment variable \
+         'BUSBAR_WIRE_SECRET_ROOT_UNSET' is unset"
+    );
+    assert!(axis.shared("vault").is_err());
 }

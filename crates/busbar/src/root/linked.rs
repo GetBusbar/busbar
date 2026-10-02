@@ -70,6 +70,9 @@ pub struct Linked {
     /// one load on the process's dispatcher exactly as the same plane dropped into `plugins/` is
     /// (see [`load_door_planes`]).
     pub plane_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
+    /// The secret axis: each linked secret plugin's door, loaded through the one loader when a
+    /// reference first names it (see [`secret_rows`]).
+    pub secrets: &'static [busbar_contract::abi::mechanism::door::DoorFn],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
@@ -293,23 +296,58 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     }
 }
 
-/// THE STORE AND HOOK AXES: the linked store and hook rows onto the kernel's cold-kind axis, with the
-/// default store resolved from the store rows' own claims ([`default_store`]). Two rows claiming the
-/// default refuse the boot (exit 2) before anything resolves a store.
+/// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
+/// with the default store resolved from the store rows' own claims ([`default_store`]), and the
+/// secret axis ([`secret_rows`]). Two rows claiming the default, or a linked secret door that does
+/// not state itself, refuse the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    match default_store(linked.stores) {
-        Ok(default) => busbar_kernel::preflight::install_linked_rows(RootInstall {
+    match default_store(linked.stores).and_then(|d| Ok((d, link_secrets(linked.secrets)?))) {
+        Ok((default, secrets)) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
             hooks: linked.hooks,
             default_store_module: default.unwrap_or_default(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
+            secret_axis: Some(secrets),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         }
     }
+}
+
+/// The process's secret plugins (`root::loader::secret_calls::SecretRows`), over the process's one
+/// dispatcher (`root::dispatch`): the linked rows [`register_stores`] adds once, and the dropped-in
+/// ones each registry build replaces (`root::boot::registry`).
+static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
+    std::sync::OnceLock::new();
+
+/// THE SECRET AXIS: the secret plugins this build links, each door's Statement read once (nothing is
+/// loaded until a reference names it). The first call stands.
+///
+/// # Errors
+/// A linked secret door that does not state itself, naming why.
+pub fn link_secrets(
+    doors: &[busbar_contract::abi::mechanism::door::DoorFn],
+) -> Result<&'static crate::root::loader::secret_calls::SecretRows, String> {
+    if let Some(rows) = SECRETS.get() {
+        return Ok(rows);
+    }
+    let mut rows =
+        crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher);
+    for door in doors {
+        rows.link(*door)
+            .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
+    }
+    Ok(SECRETS.get_or_init(|| rows))
+}
+
+/// The secret axis [`register_stores`] installed (an empty one where no root registered).
+pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
+    SECRETS.get_or_init(|| {
+        crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher)
+    })
 }
 
 /// THE DEFAULT GOVERNANCE STORE — the one linked store row that DECLARES itself the default, the

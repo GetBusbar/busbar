@@ -371,6 +371,8 @@ dependencies = [
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
+ "busbar-secret-env",
+ "busbar-secret-file",
  "busbar-store-memory",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -683,6 +685,8 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin-loader",
+ "busbar-secret-env",
+ "busbar-secret-file",
  "busbar-store-memory",
  "bytes",
  "crc32fast",
@@ -852,7 +856,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-llm",
  "busbar-plane-mcp",
- "busbar-plugin-loader",
  "bytes",
  "futures",
  "getrandom 0.3.4",
@@ -989,6 +992,24 @@ dependencies = [
  "tokio",
  "tracing",
  "tungstenite",
+]
+
+[[package]]
+name = "busbar-secret-env"
+version = "1.0.0"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=6f9f398e59c9414f27fa9ecb44c8e46412418ffa#6f9f398e59c9414f27fa9ecb44c8e46412418ffa"
+dependencies = [
+ "busbar-contract",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-secret-file"
+version = "1.0.0"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=479c833a108bc5d94e03f754b0a1b5f9ea97c0e3#479c833a108bc5d94e03f754b0a1b5f9ea97c0e3"
+dependencies = [
+ "busbar-contract",
+ "serde_json",
 ]
 
 [[package]]

@@ -75,6 +75,10 @@ pub(crate) const DOOR_AXIS: &str = "transport-door";
 /// the claims it declares (`CLAIMS`); rides on `plane`.
 const CLAIMS_AXIS: &str = "claims";
 
+/// The secret axis (THE DESIGN §2: env and file secrets are ordinary plugins, linked in the default
+/// build): each row's entry exports its memory-ABI `door`.
+const SECRET_AXIS: &str = "secrets";
+
 /// The auth axis (#2 rule (1), #40): each row's entry exports the SDK boundary every `kind: auth`
 /// plugin exports (`BUSBAR_COLD_ENTRY`), registered under the key its `linked-name` row states.
 const AUTH_AXIS: &str = "auths";
@@ -320,6 +324,13 @@ pub(crate) fn linked_source(
     out.push_str("],\n");
     out.push_str("    plane_doors: &[");
     for e in on_axis("plane-door") {
+        out.push_str(&format!("{e}::door, "));
+    }
+    out.push_str("],\n");
+    // THE SECRET AXIS: each linked secret plugin's memory-ABI door, loaded through the one loader
+    // (`crate::root::linked::secret_rows`).
+    out.push_str("    secrets: &[");
+    for e in on_axis(SECRET_AXIS) {
         out.push_str(&format!("{e}::door, "));
     }
     out.push_str("],\n");

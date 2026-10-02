@@ -214,14 +214,14 @@ unsafe fn resolve_child_env(ptr: *const u8, len: usize) -> EnvOutcome {
             ENV_KIND_PLAIN => String::from_utf8_lossy(value_bytes).into_owned(),
             ENV_KIND_SECRET => {
                 // The value is the OPAQUE JSON of a host secret-ref; deserialize and resolve it HERE
-                // through the built-in resolver — the same `resolve_builtin_string` the in-process
+                // through the built-in resolver — the same `resolve_linked_string` the in-process
                 // stdio spawn reads a `ChildEnvValue::Secret` with. A failure refuses the spawn.
                 let Ok(secret_ref) =
                     serde_json::from_slice::<crate::config::SecretRef>(value_bytes)
                 else {
                     return EnvOutcome::Refuse;
                 };
-                match crate::config::secret::resolve_builtin_string(&secret_ref) {
+                match crate::config::secret::resolve_linked_string(&secret_ref) {
                     Ok(plaintext) => plaintext,
                     Err(_) => return EnvOutcome::Refuse, // unresolvable secret ⇒ fail-closed.
                 }

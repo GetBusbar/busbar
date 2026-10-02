@@ -128,7 +128,7 @@ impl LoadablePlugin {
     pub fn in_process(&self) -> bool {
         matches!(
             self.entry,
-            Some(LinkedEntry::Store(_) | LinkedEntry::BuiltinSecret | LinkedEntry::Ranking { .. })
+            Some(LinkedEntry::Store(_) | LinkedEntry::Ranking { .. })
         )
     }
 
@@ -191,10 +191,6 @@ pub enum LinkedEntry {
     /// otherwise run the image load; everything before that (the row, its registration, name and
     /// alias resolution, the kind check) is the axis every other row takes.
     Store(fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>),
-    /// A BUILT-IN secret module (`env`, `file`): the row's own name is the reference
-    /// [`crate::builtin_secret::resolve_builtin`] resolves, in process. `open_secret` opens it where it would
-    /// otherwise run the image load, on the same axis as [`LinkedEntry::Store`].
-    BuiltinSecret,
     /// The BUILT-IN ranking hooks: ONE `kind: hook` row whose frozen config spellings (`least_busy`,
     /// …) are `aliases` in the axis's alias table — resolved there like any alias, never renamed and
     /// never put through the package-name rule, which governs the row's own name. `open_ranking`
@@ -226,16 +222,6 @@ impl LinkedPlugin {
             busbar_contract::abi::cold::ABI_VERSION,
         );
         Self::built_in(name, kind, abi, LinkedEntry::Store(open), ephemeral)
-    }
-
-    /// The built-in SECRET module named `name` (its own alias), at this binary's secret payload
-    /// schema.
-    pub fn builtin_secret(name: &str) -> Self {
-        let (kind, abi) = (
-            busbar_contract::abi::cold::kind::SECRET,
-            busbar_contract::abi::cold::SECRET_ABI_VERSION,
-        );
-        Self::built_in(name, kind, abi, LinkedEntry::BuiltinSecret, false)
     }
 
     /// A linked AUTH plugin named `name` (its own alias), at this binary's auth payload schema: the
@@ -300,25 +286,6 @@ impl LinkedPlugin {
             entry,
             ephemeral,
         }
-    }
-}
-
-/// An opened [`LinkedEntry::BuiltinSecret`] row: a reference to it resolves as
-/// [`crate::builtin_secret::resolve_builtin`] resolves a reference to the row's name — the failure text is the
-/// built-in's own, carried as the error's message.
-struct BuiltinSecret(String);
-
-impl busbar_contract::secret::SecretModule for BuiltinSecret {
-    fn resolve(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
-        let (module, settings) = (self.0.clone(), settings.clone());
-        crate::builtin_secret::resolve_builtin(&busbar_contract::secret_ref::SecretRef {
-            module,
-            settings,
-        })
-        .map_err(busbar_contract::secret::SecretModuleError::internal)
     }
 }
 
@@ -623,15 +590,16 @@ impl PluginRegistry {
     /// load pipeline as a store plugin - only the kind (and the seam consuming it) differs.
     /// FAIL-CLOSED: any resolution/kind/load failure is an error the caller surfaces as an
     /// unresolvable secret.
+    ///
+    /// TRANSITIONAL (THE COLD SECRET LANE, 1.6.0-TODO "TRANSITIONAL ROWS", deleted at M6): it serves
+    /// only a dropped-in secret plugin that states no door (a 1.5.x vault). A linked secret plugin and
+    /// a dropped-in one with a door are loaded through the one loader (`crate::secret_calls`).
     pub fn open_secret(
         &self,
         name_or_alias: &str,
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_contract::secret::SecretModule>, String> {
         let p = self.resolve_kind(name_or_alias, "secret", "resolve config secrets")?;
-        if let Some(LinkedEntry::BuiltinSecret) = p.entry {
-            return Ok(Box::new(BuiltinSecret(p.manifest.name.clone())));
-        }
         crate::load_secret_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
     }
 

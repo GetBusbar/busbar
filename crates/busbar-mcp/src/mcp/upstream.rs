@@ -197,7 +197,7 @@ impl SetupRefusal {
     /// two audiences need different information from the SAME refusal.
     ///
     /// `Credential` is the one arm that differs. Its `Display` message is built from
-    /// `busbar_plugin_loader::builtin_secret::resolve_builtin_string`'s error, whose own doc requires it to "name the source,
+    /// `busbar_kernel::config::secret::resolve_linked_string`'s error, whose own doc requires it to "name the source,
     /// not the value" — correct when the reader is the operator, who must know WHICH env var or
     /// file is missing to fix it, and wrong when the reader is the calling client: it is not the
     /// operator, and the secret's SOURCE (`env:VAR_NAME`, `file:/path/to/secret`) is a targeting
@@ -407,10 +407,8 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
          issued token is spendable at any backend the authorization server serves"
             .to_string()
     })?;
-    let subject_token = busbar_plugin_loader::builtin_secret::resolve_builtin_string(
-        &tx.subject_token,
-    )
-    .map_err(|e| format!("busbar's own subject token for this upstream cannot resolve: {e}"))?;
+    let subject_token = busbar_kernel::config::secret::resolve_linked_string(&tx.subject_token)
+        .map_err(|e| format!("busbar's own subject token for this upstream cannot resolve: {e}"))?;
     Ok(UpstreamCredential::Exchange(ExchangeCfg {
         token_url: tx.token_url.clone(),
         subject_token: Redacted::new(subject_token),

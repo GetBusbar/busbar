@@ -4,10 +4,10 @@
 //! MUTATION-HARDENING: the `busbar_contract::secret` module — `SecretModuleError`/`SecretErrorKind`
 //! and `SecretModule`'s defaulted `resolve_with_deadline`.
 //!
-//! Moved here from `busbar-api`'s own suite when that crate retired; the built-in `env`/`file`
-//! resolvers' half of that suite moved with them to the plugin loader
-//! (`crates/plugin-loader/tests/builtin_secret_hardening.rs`). Integration test — public-surface
-//! only, same convention as `mutation_hardening_record_store.rs` in this same directory.
+//! Moved here from `busbar-api`'s own suite when that crate retired; the `env`/`file` sources' half
+//! of that suite follows them as linked secret plugins, reached through the kernel's secret axis
+//! (`crates/busbar-kernel/src/config/tests/linked_secret_hardening_tests.rs`). Integration test —
+//! public-surface only, same convention as `mutation_hardening_record_store.rs` in this same directory.
 
 use busbar_contract::secret::{SecretErrorKind, SecretModule, SecretModuleError, SecretResult};
 use std::sync::atomic::Ordering;
