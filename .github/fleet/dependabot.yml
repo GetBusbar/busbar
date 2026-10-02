@@ -1,4 +1,6 @@
 # Dependency updates target dev; they reach main only through a release.
+# Every update of an ecosystem is ONE grouped PR; dependabot-bundle.yml folds the ecosystems into
+# one branch and one PR.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -6,8 +8,14 @@ updates:
     target-branch: dev
     schedule:
       interval: weekly
+    groups:
+      all:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: "/"
     target-branch: dev
     schedule:
       interval: weekly
+    groups:
+      all:
+        patterns: ["*"]
