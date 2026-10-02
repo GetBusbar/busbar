@@ -78,7 +78,8 @@ fn connector_over(
             wakes.fetch_add(1, Ordering::SeqCst);
         }),
     ));
-    c.declare_over(OWNER, NEED, "bytes");
+    c.declare_over(OWNER, NEED, "bytes")
+        .expect("a served scheme declares");
     c
 }
 
@@ -447,7 +448,8 @@ fn a_config_named_target_on_loopback_is_trusted() {
             Arc::default(),
         );
         let target = format!("db.test:{port}");
-        c.declare_need_to(OWNER, NEED, "bytes", crate::DEFAULT_CLASS, &target);
+        c.declare_need_to(OWNER, NEED, "bytes", crate::DEFAULT_CLASS, &target)
+            .expect("a served scheme declares");
         let id = c
             .open(OWNER, NEED, &OpenDesc::default())
             .expect("the configured target opens");

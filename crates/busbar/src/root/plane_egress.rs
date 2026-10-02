@@ -18,9 +18,16 @@ pub fn conns() -> Arc<dyn PollConns> {
 
 /// Declare `caller`'s outbound `needs` (need, transport scheme) on the one Connector: the only
 /// needs its egress may open.
-pub fn declare(caller: InstanceId, needs: &[(NeedId, &str)]) {
+///
+/// # Errors
+///
+/// A need's scheme no loaded transport serves (spec Part 2 #50: fail closed at boot), named.
+pub fn declare(caller: InstanceId, needs: &[(NeedId, &str)]) -> Result<(), String> {
     let connector = crate::root::connector::the();
     for (need, scheme) in needs {
-        connector.declare_over(caller, *need, scheme);
+        connector
+            .declare_over(caller, *need, scheme)
+            .map_err(|_| format!("no loaded transport serves `{scheme}`"))?;
     }
+    Ok(())
 }
