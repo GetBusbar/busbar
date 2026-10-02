@@ -682,8 +682,8 @@ impl Posted {
         // it. A settlement above the reservation is value delivered with nothing behind it whether
         // or not the door noticed, and the ledger identity closes a posting only when the
         // overdraft carried out is exactly that part: `settled - reserved`, the same comparison
-        // [`Posted::released`] floors the other way. Recording the counter there instead left the books out by the difference —
-        // by the whole excess when the counter was zero.
+        // [`Posted::released`] floors the other way. Recording the counter there instead left the
+        // books out by the difference — by the whole excess when the counter was zero.
         let overdraft = if settled > reserved {
             settled - reserved
         } else {
