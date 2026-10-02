@@ -60,9 +60,7 @@ for p in "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT"; do
 done
 
 # The mock upstream busbar will forward chat traffic to.
-python3 mock-upstream.py "$MOCK_PORT" "$MARKER" >/dev/null 2>&1 &
-track_pid $!
-wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 5 || true   # no GET route; just settle
+start_oracle_mock "$MOCK_PORT" "$MARKER" || fail_here "the oracle mock upstream did not come up" "port ${MOCK_PORT}; bin/oracle could not obtain the pinned engine."
 
 cat >"${WORK}/providers.yaml" <<EOF
 mock:
