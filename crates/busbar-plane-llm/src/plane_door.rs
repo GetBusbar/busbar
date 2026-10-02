@@ -53,9 +53,9 @@ use busbar_contract::abi::plane::{
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
     ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, CLAIM_EXACT,
     CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
-    PRINCIPAL_REQUIRED, SHAPE_PIECEWISE, TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED, VERDICT_HARD,
-    VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST,
+    PRINCIPAL_NONE, PRINCIPAL_REQUIRED, SHAPE_PIECEWISE, TAIL_FALLBACK, TAIL_PROBES,
+    UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
@@ -432,7 +432,11 @@ pub fn claims() -> Vec<ClaimSpec> {
     DIALECT_CLAIMS
         .iter()
         .copied()
-        .chain(FALLBACK_VERBS.iter().map(|&verb| (verb, "/", false, fallback)))
+        .chain(
+            FALLBACK_VERBS
+                .iter()
+                .map(|&verb| (verb, "/", false, fallback)),
+        )
         .map(|(verb, target, exact, dialect)| {
             let flags = if exact { CLAIM_EXACT } else { 0 };
             let mut claim = ClaimSpec::new(verb, target, TRANSPORT, flags);

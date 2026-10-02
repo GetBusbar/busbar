@@ -86,7 +86,9 @@ pub fn kind_of(reason: &str, status: u16) -> &'static str {
         "over_budget" => KIND_INSUFFICIENT_QUOTA,
         "group_frozen" | "scope_denied" | "pool_not_permitted" | "hook_veto" => KIND_PERMISSION,
         "body_too_large" | "cursor_budget" | "credential_budget" => KIND_REQUEST_TOO_LARGE,
-        "no_rate" | "unpriced" | "decode_failed" | "replayed" | "superseded" => KIND_INVALID_REQUEST,
+        "no_rate" | "unpriced" | "decode_failed" | "replayed" | "superseded" => {
+            KIND_INVALID_REQUEST
+        }
         "no_destination" => KIND_NOT_FOUND,
         "meter_disputed" | "handoff_mismatch" | "plane_panic" | "task_lost"
         | "secret_placeholder" => KIND_API_ERROR,
