@@ -6262,7 +6262,7 @@ impl Gate for KindIsolationGate {
                 &[
                     "unlisted-dep-edge",
                     "cleanliness -> transport",
-                    "busbar-core-oauth2 -> busbar-transport-http",
+                    "busbar-core-oauth2 -> busbar-transport-planted",
                 ],
             ));
             report.push(prove_rows_red(
@@ -9392,13 +9392,23 @@ fn drain_row_plant() -> Overlay {
     ))
 }
 
-/// `busbar-core-oauth2` — a `cleanliness` crate — declaring a wire.
+/// The transport crate [`cleanliness_reaches_wire`] lands beside the tree's own.
+const PLANTED_WIRE: &str = "busbar-transport-planted";
+
+/// `busbar-core-oauth2` — a `cleanliness` crate — declaring a wire. The wire is planted with it: the
+/// transports leave this tree for their own repos one by one, and an edge to a crate the census no
+/// longer holds is measured as no edge at all, so the case brings the transport it reaches.
 fn cleanliness_reaches_wire() -> Overlay {
     manifest_plant(
+        &format!("crates/{PLANTED_WIRE}"),
+        PLANTED_WIRE,
+        &["busbar-contract"],
+    )
+    .layered(&manifest_plant(
         "crates/busbar-core-oauth2",
         "busbar-core-oauth2",
-        &["busbar-contract", "busbar-transport-http"],
-    )
+        &["busbar-contract", PLANTED_WIRE],
+    ))
 }
 
 /// A plane declaring the `cleanliness` crate `busbar-core-oauth2`.
@@ -9976,9 +9986,15 @@ mod plant_tests {
                 c.declared_keys
             );
         }
+        // Planted inside whichever transport crate the census holds first: the wires leave this
+        // tree for their own repos one by one, and the property is about a sibling's module.
+        let host = transports[0]
+            .manifest
+            .strip_suffix("/Cargo.toml")
+            .expect("a crate manifest path");
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-tcp/src/planted_wire/meta.rs",
+            format!("{host}/src/planted_wire/meta.rs"),
             "impl TransportMeta for PlantedWire {\n    const KEY: &'static str = \"plantedwire\";\n}\n",
         );
         let planted = cx.with_overlay(ov);
@@ -10232,7 +10248,7 @@ mod plant_tests {
             &[
                 "unlisted-dep-edge",
                 "cleanliness -> transport",
-                "busbar-core-oauth2 -> busbar-transport-http",
+                "busbar-core-oauth2 -> busbar-transport-planted",
             ],
         );
     }
@@ -10578,9 +10594,12 @@ mod plant_tests {
             .expect("the absent exemplar is looked up")
             .as_ref()
             .unwrap_or_else(|e| panic!("the pinned exemplar resolves: {e}"));
+        // Its entries as the shape rule counts them (ARCHITECT 2026-09-30, option A): its `impl
+        // Transport` blocks PLUS its door tails. The exemplar is a door, so the one entry it states
+        // is its tail; an `impl` count alone reads zero for it and proves nothing.
         assert_eq!(
-            idx.impls[key].get("Transport").copied(),
-            Some(1),
+            entry_count(&idx, key, "transport", "Transport"),
+            1,
             "the pinned exemplar states exactly one entry"
         );
         let row = rule_shape(&crates, &idx, &pinned);

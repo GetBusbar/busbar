@@ -250,7 +250,10 @@ busbar-llm = 226
 # LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
 # contract's JSON-RPC reader, not the kernel's. Downward only.
 # LOWERED 282 -> 281 at the measure on the MCP-COMPAT train (T12, lk cli-5acd1cc0). Downward only.
-busbar-mcp = 280
+# LOWERED 280 -> 279 by the test-kit naming the kernel's one stand-in for the root's seam bindings
+# (test_support::install_root_seams) where it named the section-list install over two lines.
+# Downward only.
+busbar-mcp = 279
 # busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
 # instead of per signature.
 busbar-a2a = 232
