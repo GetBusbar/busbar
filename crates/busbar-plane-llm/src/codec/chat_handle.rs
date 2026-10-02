@@ -58,10 +58,6 @@ pub fn warn_dropped_image_details(ir: &IrRequest) {
 
 /// Chat cross-protocol EGRESS preparation (verbatim from the former `IrReq::Chat` arm).
 pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
-    // What the ingress reader holds only for a same-dialect write (Anthropic's positional
-    // placeholders for the blocks it does not model) never crosses: nothing is substituted for a
-    // dropped block. The drop itself is named by the block walker at the translate seam.
-    super::proto_codec::with_reader(prep.ingress_protocol, |r| r.strip_for_translate(ir));
     if ir.max_tokens.is_none() && prep.egress_requires_max_tokens {
         ir.max_tokens = Some(
             prep.lane_default_max_tokens
@@ -337,13 +333,11 @@ pub fn drop_request_extra(ir: &mut IrRequest, ingress_protocol: &str) {
 }
 
 /// What a TRANSLATE attempt's REQUEST drops before the far end's writer runs, for a host that does
-/// not run [`chat_prepare_for_egress`] (the plane's own crossing, design F7): the ingress reader's
-/// same-dialect-only placeholders are stripped (never substituted), the caller's content blocks the
-/// reader does not model are named, and every `extra` member is dropped. Call inside a
-/// [`drops::scope`].
+/// not run [`chat_prepare_for_egress`] (the plane's own crossing, design F7): the caller's content
+/// blocks the reader does not model are named (the reader put nothing in their place), and every
+/// `extra` member is dropped. Call inside a [`drops::scope`].
 pub fn drop_untranslatable_request(ir: &mut IrRequest, ingress_protocol: &str, body: &Value) {
     super::proto_codec::with_reader(ingress_protocol, |r| {
-        r.strip_for_translate(ir);
         drops::note_unmodelled_blocks(r.request_blocks(), body, drops::UNMODELLED_REQUEST_BLOCK);
     });
     drop_request_extra(ir, ingress_protocol);

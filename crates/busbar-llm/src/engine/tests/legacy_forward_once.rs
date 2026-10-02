@@ -623,6 +623,7 @@ pub(super) async fn forward_once(
                     true, // degraded path: selects the "degraded"-labeled warn strings
                     None,
                     &TapCell::new(),
+                    "anonymous",
                 )
                 .await);
             }

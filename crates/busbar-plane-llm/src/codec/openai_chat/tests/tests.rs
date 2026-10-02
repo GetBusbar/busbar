@@ -6085,3 +6085,31 @@ fn status_word_golden() {
         );
     }
 }
+
+/// DESIGN F3 "Drops" (DF-WIRE card item 5): a system turn whose parts are all of kinds the reader
+/// does not model is not an empty system turn: nothing is put in place of the dropped parts. RED
+/// before: the IR's system held `{"type":"text","text":""}`. A genuinely empty system turn keeps its
+/// empty text (that is the caller's own turn).
+#[test]
+fn system_turn_of_unmodelled_parts_gets_no_empty_text() {
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": [{"type": "some_future_part", "x": 1}]},
+            {"role": "user", "content": "hi"}
+        ]
+    });
+    let ir = OpenAiReader.read_request(&body).expect("parses");
+    assert!(ir.system.is_empty(), "{:?}", ir.system);
+
+    let empty_turn = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "system", "content": []}, {"role": "user", "content": "hi"}]
+    });
+    let ir = OpenAiReader.read_request(&empty_turn).expect("parses");
+    assert_eq!(
+        ir.system.len(),
+        1,
+        "the caller's own empty system turn is kept"
+    );
+}

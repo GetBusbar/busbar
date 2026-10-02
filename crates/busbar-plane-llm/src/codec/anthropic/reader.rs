@@ -203,10 +203,6 @@ impl ProtocolReader for AnthropicReader {
         super::RESPONSE_BLOCKS
     }
 
-    fn strip_for_translate(&self, req: &mut crate::codec::ir::IrRequest) {
-        super::strip_placeholders(req);
-    }
-
     /// IR-18: a `signature_delta` on the Anthropic wire is Claude's.
     fn stream_signature_origin(
         &self,
@@ -241,9 +237,7 @@ impl ProtocolReader for AnthropicReader {
                     refusal: false,
                 });
             } else if let Some(arr) = system_val.as_array() {
-                for block_val in arr {
-                    system_blocks.push(read_block(block_val)?);
-                }
+                system_blocks.extend(read_blocks(arr)?);
             }
         }
 
@@ -257,10 +251,10 @@ impl ProtocolReader for AnthropicReader {
         // preserving their position relative to any top-level `system` field already read above.
         let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
         // Positions (post system-filter, matching `write_request`'s indexing) of any raw content
-        // block whose type `read_block` cannot model (e.g. `document`) — parked here so an
-        // Anthropic-to-Anthropic hop that goes through the IR (not the byte-verbatim same-protocol
-        // passthrough) can splice the ORIGINAL block back rather than losing it to the degrade-to-
-        // empty-Text placeholder `read_block` already applies for shape-preservation.
+        // block the IR does not hold whole — parked here so an Anthropic-to-Anthropic hop that
+        // goes through the IR (not the byte-verbatim same-protocol relay) splices the ORIGINAL
+        // block back at its position. A block the IR does not read at all has nothing standing
+        // in for it (design F3 "Drops": never a substitution).
         let mut unmodeled_blocks: Vec<serde_json::Value> = Vec::new();
         if let Some(messages_val) = obj.get(keys::MESSAGES) {
             // EDGE-VALIDATE the top-level `messages` TYPE: a PRESENT-but-wrong-typed `messages`

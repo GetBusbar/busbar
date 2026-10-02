@@ -225,7 +225,13 @@ impl ProtocolReader for OpenAiReader {
                     // empty array) must not silently vanish: emit an empty Text block so the system
                     // turn is preserved rather than dropped. `content_val.is_none()` (key absent)
                     // also lands here, which matches treating an empty system turn as present.
-                    if system_blocks.len() == blocks_before {
+                    // A turn whose parts were all of kinds the reader does not model is NOT empty:
+                    // those parts are dropped (named at a translate seam) and nothing is put in
+                    // their place (design F3 "Drops").
+                    let had_parts = content_val
+                        .and_then(|c| c.as_array())
+                        .is_some_and(|a| !a.is_empty());
+                    if system_blocks.len() == blocks_before && !had_parts {
                         system_blocks.push(crate::codec::ir::IrBlock::Text {
                             text: String::new(),
                             cache_control: None,

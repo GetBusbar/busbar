@@ -209,11 +209,6 @@ pub trait ProtocolReader: Send + Sync {
     fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
         &[]
     }
-
-    /// On a translate attempt, before the request is prepared for the far end: take out of `req`
-    /// what this reader holds only for a same-dialect write (Anthropic's positional placeholders
-    /// for blocks it does not model). Nothing by default.
-    fn strip_for_translate(&self, _req: &mut crate::codec::ir::IrRequest) {}
 }
 
 pub trait ProtocolWriter: Send + Sync {
