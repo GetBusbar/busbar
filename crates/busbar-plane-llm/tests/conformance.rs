@@ -355,9 +355,15 @@ fn assert_the_planes_answers(t: &[String]) {
     let all = t.join("\n");
     assert_eq!(t[0], "validate broken Refused", "{all}");
     assert_eq!(t[1], "validate Ready", "{all}");
+    // ARCHITECT Q-FL1: the plane states its paths as claims, and 1.5.5's fallback is a prefix claim
+    // on `/` for every verb.
     assert!(
-        t[2].starts_with("open Ready Some(") && t[2].contains("claims: []"),
-        "the fallback publishes no claim: {all}"
+        t[2].starts_with("open Ready Some(")
+            && t[2].contains(r#"verb: "POST", target: "/v1/messages", carrier: "http""#)
+            && ["GET", "POST", "PUT", "PATCH", "DELETE"].iter().all(|v| {
+                t[2].contains(&format!(r#"verb: "{v}", target: "/", carrier: "http""#))
+            }),
+        "the plane's paths are claims and the fallback is a prefix claim on / per verb: {all}"
     );
     assert_eq!(
         t[5], "arrive Ready op_class=0 principal_required=true dialect=0 refusal=0 status=0",
