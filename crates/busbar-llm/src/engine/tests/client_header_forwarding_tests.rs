@@ -331,6 +331,11 @@ async fn translated_route_drops_what_does_not_map() {
         None,
         "a translated route forwards no client header"
     );
+    assert_eq!(
+        seen("user-agent").as_deref(),
+        Some(crate::engine::egress_user_agent("openai")),
+        "busbar writes the far dialect as its native client"
+    );
     let sent: serde_json::Value =
         serde_json::from_slice(&state.get_last_request_body().unwrap()).unwrap();
     assert!(
@@ -340,7 +345,8 @@ async fn translated_route_drops_what_does_not_map() {
     server.shutdown().await;
 }
 
-/// A request that sends no client header leaves busbar's own egress headers standing.
+/// A request that sends no client header leaves busbar's own egress headers standing, and a
+/// same-dialect hop fakes no user-agent.
 #[tokio::test]
 async fn no_client_header_leaves_egress_unchanged() {
     let (state, server, app) = upstream(
@@ -357,6 +363,7 @@ async fn no_client_header_leaves_egress_unchanged() {
         Some("2023-06-01"),
         "busbar's own pinned anthropic-version stands"
     );
+    assert_eq!(state.get_last_request_header("user-agent"), None);
     server.shutdown().await;
 }
 
@@ -416,6 +423,7 @@ fn neutral_collect_keeps_all_but_mechanics_and_governed() {
         ("x-made-up-alpha", "a1"),
         ("x-made-up-alpha", "a2"),
         ("x-made-up-governed", "g"),
+        ("x-busbar-made-up", "busbar's own"),
         ("connection", "x-made-up-nominated"),
         ("x-made-up-nominated", "n"),
         ("transfer-encoding", "chunked"),

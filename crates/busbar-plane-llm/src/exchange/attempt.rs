@@ -477,8 +477,9 @@ fn legal_field_value(v: &[u8]) -> bool {
     v.iter().all(|b| *b == b'\t' || (0x20..0x7f).contains(b))
 }
 
-/// The head fields a native client of `lane`'s dialect sends, then, when the caller speaks that
-/// dialect, every field the caller sent but the ones busbar governs ([`crate::dialect::governed`]):
+/// The head fields a native client of `lane`'s dialect sends (its user-agent only when translating),
+/// then, when the caller speaks that dialect, every field the caller sent but the ones busbar
+/// governs ([`crate::dialect::governed`]):
 /// busbar is invisible to upstreams (OWNER HARD RULE 2026-10-02). The caller's value of a name
 /// replaces busbar's native default; the per-connection mechanics are the kernel's to drop as it
 /// writes the head. A translated route forwards no caller field: none maps between dialects.
@@ -511,20 +512,21 @@ fn head_fields(
     let stream_accept = far.map_or(busbar_contract::protocol::TEXT_EVENT_STREAM, |d| {
         d.egress_stream_accept
     });
-    let mut fields = vec![
-        ("content-type".to_string(), content_type.into_bytes()),
-        ("user-agent".to_string(), user_agent.as_bytes().to_vec()),
-        (
-            "accept".to_string(),
-            handler
-                .egress_accept(stream_accept, wants_stream)
-                .as_bytes()
-                .to_vec(),
-        ),
-    ];
+    let accept = (
+        "accept".to_string(),
+        handler
+            .egress_accept(stream_accept, wants_stream)
+            .as_bytes()
+            .to_vec(),
+    );
+    let content_type = ("content-type".to_string(), content_type.into_bytes());
     if arrived.dialect != egress {
-        return Ok(fields);
+        // Written in the far dialect: a native client's user-agent, never a UA-less request.
+        let user_agent = ("user-agent".to_string(), user_agent.as_bytes().to_vec());
+        return Ok(vec![content_type, user_agent, accept]);
     }
+    // Same dialect: the caller's own user-agent passes (busbar fakes none).
+    let mut fields = vec![content_type, accept];
     // The caller's fields, in the order the caller sent them; a repeated name keeps every value.
     let forwarded: Vec<(String, Vec<u8>)> = caller
         .iter()

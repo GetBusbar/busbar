@@ -325,7 +325,8 @@ impl Drop for Head {
 /// Drop the plane's per-connection fields: busbar is invisible to upstreams (OWNER HARD RULE
 /// 2026-10-02), and the mechanics are the connection's own. A hop-by-hop field, one a `connection`
 /// field nominates, `host` and `content-length` never reach the wire; the connection re-derives them
-/// ([`crate::proxy::re_derived`], the one statement of the set).
+/// ([`crate::proxy::re_derived`], the one statement of the set). busbar's own namespace
+/// ([`crate::proxy::CONTROL_PREFIX`]) is addressed to busbar and never goes upstream either.
 fn strip_re_derived(fields: &mut HeadFields) {
     let nominated: Vec<Vec<u8>> = fields
         .iter()
@@ -333,8 +334,11 @@ fn strip_re_derived(fields: &mut HeadFields) {
         .map(|(_, v)| v.clone())
         .collect();
     fields.retain(|(n, _)| {
-        !std::str::from_utf8(n)
-            .is_ok_and(|n| crate::proxy::re_derived(n, nominated.iter().map(Vec::as_slice)))
+        !std::str::from_utf8(n).is_ok_and(|n| {
+            crate::proxy::re_derived(n, nominated.iter().map(Vec::as_slice))
+                || n.to_ascii_lowercase()
+                    .starts_with(crate::proxy::CONTROL_PREFIX)
+        })
     });
 }
 

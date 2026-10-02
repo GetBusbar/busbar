@@ -826,6 +826,7 @@ async fn the_planes_fields_go_out_but_the_per_connection_mechanics() {
         ("Host", "client.example"),
         ("content-length", "9999"),
         ("Authorization", "Bearer caller"),
+        ("X-Busbar-Made-Up", "busbar's own"),
     ] {
         req.fields
             .push((n.as_bytes().to_vec(), v.as_bytes().to_vec()));

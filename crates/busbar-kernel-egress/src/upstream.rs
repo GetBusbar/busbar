@@ -173,7 +173,9 @@ pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 //     the upstream request derives for itself;
 //   * the names the plane GOVERNS (its dialects' credential headers and tenant selectors, declared as
 //     the plane's DATA and asked through [`collect_client_headers`]'s `governed`): busbar's own
-//     upstream credential and configuration replace them.
+//     upstream credential and configuration replace them;
+//   * busbar's own control headers: its `x-busbar-` namespace ([`CONTROL_PREFIX`]) and whatever
+//     else the plane names as busbar's (a pool's affinity header) through the same predicate.
 //
 // A neutral build with no plane resident calls neither and forwards nothing.
 
@@ -183,6 +185,9 @@ pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 /// coding: a client's `gzip` would make the far end compress what busbar must read (escalated
 /// 2026-10-02, PROTO-FIXES; the owner's ruling decides whether it stays).
 pub const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
+
+/// busbar's own header namespace: a client field under it is addressed to busbar, never upstream.
+pub const CONTROL_PREFIX: &str = "x-busbar-";
 
 /// Whether the client field `name` is a per-connection mechanic the upstream request re-derives: a
 /// hop-by-hop field, a field a `connection` field `nominated`, or one of [`RE_DERIVED`].
@@ -200,7 +205,8 @@ pub fn re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>)
 
 /// Capture every header of an inbound client request that may go upstream on a same-dialect route:
 /// all of them, in order, bytes and multiplicity preserved, except the per-connection mechanics
-/// ([`re_derived`]) and the names `governed` answers true for: the caller (a plane) answers it off
+/// ([`re_derived`]), busbar's own namespace ([`CONTROL_PREFIX`]) and the names `governed` answers
+/// true for: the caller (a plane) answers it off
 /// its own declared data. Nothing is synthesized.
 pub fn collect_client_headers(
     headers: &http::HeaderMap,
@@ -215,7 +221,9 @@ pub fn collect_client_headers(
         .iter()
         .filter(|(name, _)| {
             let n = name.as_str();
-            !re_derived(n, nominated.iter().copied()) && !governed(n)
+            !re_derived(n, nominated.iter().copied())
+                && !n.starts_with(CONTROL_PREFIX)
+                && !governed(n)
         })
         .map(|(n, v)| (n.clone(), v.clone()))
         .collect()

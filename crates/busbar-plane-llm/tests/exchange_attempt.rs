@@ -121,7 +121,6 @@ fn a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones() {
     assert_eq!(
         names,
         [
-            "user-agent",
             "accept",
             "content-type",
             "anthropic-version",
@@ -131,9 +130,9 @@ fn a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones() {
         ],
         "busbar's native defaults the caller did not send, then every caller field but the credential"
     );
-    assert_eq!(
-        field(&r, "user-agent"),
-        [b"Anthropic/Python 0.39.0".as_slice()]
+    assert!(
+        field(&r, "user-agent").is_empty(),
+        "a same-dialect attempt fakes no user-agent"
     );
     assert_eq!(field(&r, "accept"), [b"application/json".as_slice()]);
     assert_eq!(
@@ -191,6 +190,11 @@ fn a_translated_route_forwards_no_caller_field() {
     let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
     let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, ["content-type", "user-agent", "accept"]);
+    assert_eq!(
+        field(&r, "user-agent"),
+        [b"OpenAI/Python 1.54.0".as_slice()],
+        "written in the far dialect, as its native client"
+    );
 }
 
 #[test]
