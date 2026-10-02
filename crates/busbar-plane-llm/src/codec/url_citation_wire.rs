@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! OpenAI-family citation `annotations` — the `url_citation` ↔ IR-citation mapping shared by the
-//! Chat and Responses codecs. This is LLM-dialect codec logic; it lives beside the openai
-//! readers/writers that use it, and the neutral router never names it.
+//! The `url_citation` `annotations` wire ↔ IR-citation mapping shared by the Chat and Responses
+//! codecs. A shared module named for the mechanism, so neither dialect imports the other (design
+//! F3 SELF-CONTAINED); the neutral router never names it.
 //!
 //! The two wires DIFFER in shape and each has its own builder here: Responses flattens the citation
 //! onto the entry (`UrlCitationBody`), Chat nests it under a `url_citation` object
@@ -229,10 +229,10 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::codec
 /// comparing against its own tag and the id crosses between the two OpenAI dialects. Any other
 /// vendor (a Bedrock `s3Location`, an Anthropic Files id) is `None`: those namespaces do not
 /// resolve at OpenAI.
-pub fn openai_file_id(source: &crate::codec::ir::IrImageSource) -> Option<&str> {
+pub fn files_api_id(source: &crate::codec::ir::IrImageSource) -> Option<&str> {
     match source {
         crate::codec::ir::IrImageSource::Vendor { vendor, value }
-            if OPENAI_FILES_VENDOR_TAGS.contains(vendor) =>
+            if FILES_API_VENDOR_TAGS.contains(vendor) =>
         {
             value
                 .get("file_id")
@@ -245,4 +245,4 @@ pub fn openai_file_id(source: &crate::codec::ir::IrImageSource) -> Option<&str> 
 
 /// The `Vendor` tags that name the OpenAI Files namespace: the Chat and the Responses readers'.
 /// Kept in step with their `VENDOR_NAME` consts by `openai_file_vendor_tags_are_the_dialect_names`.
-pub const OPENAI_FILES_VENDOR_TAGS: [&str; 2] = ["openai", "responses"];
+pub const FILES_API_VENDOR_TAGS: [&str; 2] = ["openai", "responses"];

@@ -4,15 +4,15 @@
 # exactly one token for the length of one call. If it could name the kernel it could reach past the
 # token; if it could name a transport it would grow a second opinion about what a credential is. So
 # the only edge out of this crate is `busbar-caps`, which is where the token and the answer type
-# live. Everything the chain needs from the outside — the header carriers, the credential digest,
-# the key verifier, the revocation set — arrives as a trait the caller implements.
+# live. Everything the chain needs from the outside — the credential digest, the key verifier,
+# the revocation set — arrives as a trait the caller implements.
 [package]
 name = "busbar-kernel-identity"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The authenticate step as a unit: the credential chain, the credential cache, the carriers, the challenge, and the protocol-claim ladder."
+description = "The authenticate step as a unit: the credential chain, the credential cache, the challenge, and the protocol-claim ladder."
 license = "Apache-2.0"
 
 [lib]

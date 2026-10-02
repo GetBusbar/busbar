@@ -7,11 +7,57 @@
 
 use crate::codec::carry::{Cond, Dir, Field, Handled, Slot, Table, ValueCodec, Word, row};
 
+/// Row group `blocks`.
+pub(crate) const ROWS_BLOCKS: &[Field] = &[
+    row(&["messages[]", "role"], Slot::Structure, ValueCodec::Prim("role")),
+    row(&["messages[]", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "image", "format"], Slot::Structure, ValueCodec::Prim("format")),
+    row(&["messages[]", "content[]", "image", "source", "bytes"], Slot::Structure, ValueCodec::Prim("bytes")),
+    row(&["messages[]", "content[]", "document", "format"], Slot::Structure, ValueCodec::Prim("format")),
+    row(&["messages[]", "content[]", "document", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "content[]", "document", "source", "bytes"], Slot::Structure, ValueCodec::Prim("bytes")),
+    row(&["messages[]", "content[]", "video", "format"], Slot::Structure, ValueCodec::Prim("format")),
+    row(&["messages[]", "content[]", "video", "source", "bytes"], Slot::Structure, ValueCodec::Prim("bytes")),
+    row(&["messages[]", "content[]", "toolUse", "toolUseId"], Slot::Structure, ValueCodec::Prim("tool_use_id")),
+    row(&["messages[]", "content[]", "toolUse", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "content[]", "toolResult", "toolUseId"], Slot::Structure, ValueCodec::Prim("tool_use_id")),
+    row(&["messages[]", "content[]", "toolResult", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "toolResult", "status"], Slot::Structure, ValueCodec::Prim("status")),
+    row(&["messages[]", "content[]", "reasoningContent", "reasoningText", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "reasoningContent", "reasoningText", "signature"], Slot::Structure, ValueCodec::Prim("signature")),
+    row(&["messages[]", "content[]", "reasoningContent", "redactedContent"], Slot::Structure, ValueCodec::Prim("redacted_content")),
+    row(&["messages[]", "content[]", "image", "source", "s3Location"], Slot::Structure, ValueCodec::Prim("s3_location")),
+    row(&["messages[]", "content[]", "document", "source", "s3Location"], Slot::Structure, ValueCodec::Prim("s3_location")),
+    row(&["messages[]", "content[]", "document", "citations"], Slot::Structure, ValueCodec::Prim("citations")),
+    row(&["messages[]", "content[]", "document", "context"], Slot::Structure, ValueCodec::Prim("context")),
+    row(&["messages[]", "content[]", "video", "source", "s3Location"], Slot::Structure, ValueCodec::Prim("s3_location")),
+    row(&["messages[]", "content[]", "cachePoint", "type"], Slot::Structure, ValueCodec::Prim("type")),
+    row(&["messages[]", "content[]", "guardContent"], Slot::Structure, ValueCodec::Prim("guard_content")),
+    row(&["messages[]", "content[]", "document", "source", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "document", "source", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "guardContent", "text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "citations"], Slot::Structure, ValueCodec::Prim("citations")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "context"], Slot::Structure, ValueCodec::Prim("context")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "source", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "source", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["system[]", "guardContent", "text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "citationsContent", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "document", "source", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "source", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+];
+
 /// Row group `inference_config`.
 pub(crate) const ROWS_INFERENCE_CONFIG: &[Field] = &[
     row(&["inferenceConfig", "temperature"], Slot::Temperature, ValueCodec::Plain).clamp(0.0, 1.0, "clamping temperature to Bedrock's [0.0, 1.0] range; the requested value was out of range and would be rejected with a 400 ValidationException", false).drop_if(Cond::Thinking, "omitting temperature on Bedrock egress: not compatible with thinking", true),
     row(&["inferenceConfig", "topP"], Slot::TopP, ValueCodec::Plain).drop_if(Cond::Thinking, "omitting topP on Bedrock egress: not compatible with thinking", true),
     row(&["inferenceConfig", "stopSequences"], Slot::Stop, ValueCodec::Plain),
+];
+
+/// Row group `output_config`.
+pub(crate) const ROWS_OUTPUT_CONFIG: &[Field] = &[
+    row(&["outputConfig", "effort"], Slot::ReasoningEffort, ValueCodec::Words(WORDS_EFFORT)),
 ];
 
 /// Row group `structure`.
@@ -20,6 +66,10 @@ pub(crate) const ROWS_STRUCTURE: &[Field] = &[
     row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     row(&["stream"], Slot::Structure, ValueCodec::Prim("stream")),
     row(&["system"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["inferenceConfig", "maxTokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["toolConfig", "tools"], Slot::Structure, ValueCodec::Prim("tools")),
+    row(&["toolConfig", "toolChoice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
+    row(&["messages[]", "content[]", "toolUse", "input"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
 ];
 
 /// Row group `tier`.
@@ -28,7 +78,7 @@ pub(crate) const ROWS_TIER: &[Field] = &[
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_INFERENCE_CONFIG, ROWS_TIER];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_INFERENCE_CONFIG, ROWS_TIER, ROWS_OUTPUT_CONFIG, ROWS_BLOCKS];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
@@ -44,6 +94,15 @@ pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
 /// The warn for every other derived drop.
 pub(crate) const DROP_WARN: crate::codec::dialect::DropWarn =
     crate::codec::dialect::DropWarn::Control("dropping a request control on Bedrock egress: Converse has no form for it");
+
+/// Word table `effort`: (wire word, IR word, direction).
+pub(crate) const WORDS_EFFORT: &[Word] = &[
+    ("low", "low", Dir::Read),
+    ("medium", "medium", Dir::Read),
+    ("high", "high", Dir::Read),
+    ("xhigh", "xhigh", Dir::Read),
+    ("max", "max", Dir::Read),
+];
 
 /// Word table `service_tier`: (wire word, IR word, direction).
 pub(crate) const WORDS_SERVICE_TIER: &[Word] = &[

@@ -345,8 +345,8 @@ async fn translated_route_drops_what_does_not_map() {
     server.shutdown().await;
 }
 
-/// A request that sends no client header leaves busbar's own egress headers standing, and a
-/// same-dialect hop fakes no user-agent.
+/// A request that sends no client header leaves busbar's own egress headers standing: the pinned
+/// anthropic-version and the native client's user-agent (1.5.5's bytes).
 #[tokio::test]
 async fn no_client_header_leaves_egress_unchanged() {
     let (state, server, app) = upstream(
@@ -363,7 +363,10 @@ async fn no_client_header_leaves_egress_unchanged() {
         Some("2023-06-01"),
         "busbar's own pinned anthropic-version stands"
     );
-    assert_eq!(state.get_last_request_header("user-agent"), None);
+    assert_eq!(
+        state.get_last_request_header("user-agent").as_deref(),
+        Some(crate::engine::egress_user_agent("anthropic"))
+    );
     server.shutdown().await;
 }
 
