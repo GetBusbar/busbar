@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 
 use crate::a2a::task::TaskState;
 use crate::arrival::{Refusal, JSON_MEDIA_TYPE};
+use crate::binding::{self, Binding};
 use crate::identity;
 
 /// The verb every JSON-RPC hop is sent with.
@@ -209,6 +210,19 @@ pub fn read_answer(status: u32, body: &[u8], id: &Value) -> Result<Value, HopRef
     }
 }
 
+/// An HTTP+JSON far end's whole answer, read as the answer to `id` once re-wrapped into the
+/// JSON-RPC envelope ([`binding::rewrap`]); `None` when a 2xx body is not JSON (unframable).
+fn read_rest_answer(status: u32, body: &[u8], id: &Value) -> Option<Result<Value, HopRefusal>> {
+    if !(200..300).contains(&status) {
+        return Some(Err(HopRefusal::Status));
+    }
+    if body.len() > MAX_REPLY_BYTES {
+        return Some(Err(HopRefusal::BodyTooLarge));
+    }
+    let envelope = binding::rewrap(body, id).ok()?;
+    Some(read_answer(status, &envelope, id))
+}
+
 /// The caller's answer to a relayed `result`, VERBATIM, under the caller's own `id`.
 #[must_use]
 pub fn relayed(id: &Value, result: Value) -> Reply {
@@ -249,6 +263,9 @@ pub struct Relay {
     instead: Option<Vec<u8>>,
     instead_sent: bool,
     settled: Option<Settled>,
+    binding: Binding,
+    method: String,
+    params: Value,
 }
 
 /// THE TASK A RELAYED HOP IS FOR (ARCHITECT ruling B1): busbar's identity for it, whether the
@@ -295,6 +312,104 @@ impl Relay {
             instead: None,
             instead_sent: false,
             settled: None,
+            binding: Binding::JsonRpc,
+            method: String::new(),
+            params: Value::Null,
+        }
+    }
+
+    /// The binding the next attempt speaks (ARCHITECT ruling B4), for the request `envelope` (the
+    /// translated one, when a task id was translated): HTTP+JSON composes its request line from the
+    /// envelope's `method` and `params`. The request is read once, at the first attempt's binding;
+    /// a later attempt keeps it.
+    pub fn bind(&mut self, binding: Binding, envelope: &Value) {
+        let first = self.method.is_empty() && self.params.is_null();
+        self.binding = binding;
+        if !first {
+            return;
+        }
+        let translated = self
+            .instead
+            .as_deref()
+            .and_then(|b| serde_json::from_slice::<Value>(b).ok());
+        let envelope = translated.as_ref().unwrap_or(envelope);
+        self.method = envelope
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        self.params = envelope.get("params").cloned().unwrap_or(Value::Null);
+    }
+
+    /// REFUSED BY NAME before the hop: the agent's card declares only `word`, a binding the plane
+    /// does not frame (the engine's early `Unframable` refusal; the task stays as it is).
+    pub fn refuse_unspeakable(&mut self, word: &str) -> Answer {
+        self.answered = true;
+        Answer::ToCaller(self.unframable_reply(word))
+    }
+
+    /// The early refusal of a request that cannot be carried over `word`.
+    fn unframable_reply(&self, word: &str) -> Reply {
+        let refusal = Refusal {
+            status: STATUS_BAD_GATEWAY,
+            id: Some(self.id.clone()),
+            code: CODE_INVALID_AGENT_RESPONSE,
+            message: binding::unframable_text(&self.method, word),
+        };
+        Reply {
+            status: STATUS_BAD_GATEWAY,
+            content_type: JSON_MEDIA_TYPE,
+            body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
+        }
+    }
+
+    /// The hop could not be framed on its binding: a task-less hop is refused by name; a task hop
+    /// answers as any failed hop does.
+    fn unframable(&mut self) -> Answer {
+        self.answered = true;
+        let Some(task) = &self.task else {
+            return Answer::ToCaller(self.unframable_reply(self.binding.word()));
+        };
+        let (reply, failed) = task_refusal(None, task, &self.id);
+        if failed {
+            self.settled = Some(Settled::Failed);
+        }
+        Answer::ToCaller(reply)
+    }
+
+    /// The request one attempt sends on the hop's binding, to the agent at `url`.
+    fn attempt(&mut self, url: &str) -> Answer {
+        let version = (crate::arrival::H_VERSION, self.version.to_string());
+        match self.binding {
+            Binding::JsonRpc => match target_of(url) {
+                Some(target) => Answer::Attempt(Attempt {
+                    verb: VERB,
+                    target,
+                    fields: vec![
+                        (H_CONTENT_TYPE, JSON_MEDIA_TYPE.to_string()),
+                        (H_ACCEPT, ACCEPT_UNARY.to_string()),
+                        version,
+                    ],
+                }),
+                None => Answer::Refused,
+            },
+            Binding::HttpJson => match binding::compose(url, &self.method, &self.params) {
+                Ok(framed) => {
+                    let mut fields = Vec::new();
+                    if framed.has_body {
+                        fields.push((H_CONTENT_TYPE, JSON_MEDIA_TYPE.to_string()));
+                    }
+                    fields.push((H_ACCEPT, ACCEPT_UNARY.to_string()));
+                    fields.push(version);
+                    self.instead = Some(framed.body);
+                    Answer::Attempt(Attempt {
+                        verb: framed.verb,
+                        target: framed.target,
+                        fields,
+                    })
+                }
+                Err(_) => self.unframable(),
+            },
         }
     }
 
@@ -356,16 +471,8 @@ impl Relay {
                 self.far.clear();
                 self.received = 0;
                 self.instead_sent = false;
-                match url.and_then(target_of) {
-                    Some(target) => Answer::Attempt(Attempt {
-                        verb: VERB,
-                        target,
-                        fields: vec![
-                            (H_CONTENT_TYPE, JSON_MEDIA_TYPE.to_string()),
-                            (H_ACCEPT, ACCEPT_UNARY.to_string()),
-                            (crate::arrival::H_VERSION, self.version.to_string()),
-                        ],
-                    }),
+                match url {
+                    Some(url) => self.attempt(url),
                     None => Answer::Refused,
                 }
             }
@@ -404,8 +511,14 @@ impl Relay {
         let Some(status) = self.status else {
             return Answer::Refused;
         };
+        let answer = match self.binding {
+            Binding::JsonRpc => read_answer(status, &self.far, &self.id),
+            Binding::HttpJson => match read_rest_answer(status, &self.far, &self.id) {
+                Some(answer) => answer,
+                None => return self.unframable(),
+            },
+        };
         self.answered = true;
-        let answer = read_answer(status, &self.far, &self.id);
         let Some(task) = &self.task else {
             return Answer::ToCaller(match answer {
                 Ok(result) => relayed(&self.id, result),

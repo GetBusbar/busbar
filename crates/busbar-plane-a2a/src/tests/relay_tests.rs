@@ -397,3 +397,103 @@ fn a_translated_request_is_sent_once_per_attempt_in_place_of_the_callers_pieces(
         Answer::ToFarEnd(b"translated".to_vec())
     );
 }
+
+// ── the outbound binding (ARCHITECT ruling B4) ───────────────────────────────────────────────────
+
+const GET: &[u8] = br#"{"jsonrpc":"2.0","id":7,"method":"GetTask","params":{"id":"t1"}}"#;
+
+fn rest_relay(task_hop: Option<TaskHop>) -> Relay {
+    let mut r = Relay::new(json!(7), "1.0");
+    if let Some(t) = task_hop {
+        r.for_task(t);
+    }
+    r.bind(
+        Binding::HttpJson,
+        &serde_json::from_slice::<serde_json::Value>(GET).unwrap(),
+    );
+    r
+}
+
+#[test]
+fn an_http_json_attempt_is_the_operations_request_line_and_sends_no_body_for_a_read() {
+    let mut r = rest_relay(None);
+    assert_eq!(
+        r.on_piece(kernel(Some(URL))),
+        Answer::Attempt(Attempt {
+            verb: "GET",
+            target: "/a2a/v1/tasks/t1".into(),
+            fields: vec![
+                ("accept", "application/json".into()),
+                ("a2a-version", "1.0".into()),
+            ],
+        })
+    );
+    assert_eq!(r.on_piece(caller(GET)), Answer::Nothing);
+    let reply = answered(&mut r, 200, br#"{"id":"t1","status":{"state":"working"}}"#);
+    assert_eq!(
+        body(&reply),
+        json!({ "jsonrpc": "2.0", "id": 7, "result": { "id": "t1", "status": { "state": "working" } } })
+    );
+}
+
+#[test]
+fn an_http_json_answer_that_is_not_json_is_unframable_and_fails_the_task_it_opened() {
+    let mut r = rest_relay(Some(task(false)));
+    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
+    let reply = answered(&mut r, 200, b"<html>");
+    assert_eq!(reply.status, 502);
+    assert_eq!(
+        body(&reply),
+        about(
+            -32006,
+            "INVALID_AGENT_RESPONSE",
+            "the backend agent did not complete this task"
+        )
+    );
+    assert_eq!(r.take_settled(), Some(Settled::Failed));
+
+    let mut r = rest_relay(None);
+    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
+    let reply = answered(&mut r, 200, b"<html>");
+    assert_eq!(
+        body(&reply)["error"]["message"],
+        "a2a.hop.unframable: `GetTask` could not be carried to this agent over its `HTTP+JSON` binding"
+    );
+}
+
+#[test]
+fn a_request_the_binding_cannot_carry_is_refused_at_the_attempt() {
+    let mut r = Relay::new(json!(7), "1.0");
+    r.bind(
+        Binding::HttpJson,
+        &json!({ "jsonrpc": "2.0", "id": 7, "method": "vendor/Thing" }),
+    );
+    let Answer::ToCaller(reply) = r.on_piece(kernel(Some(URL))) else {
+        panic!("not refused");
+    };
+    assert_eq!(reply.status, 502);
+    assert_eq!(
+        body(&reply)["error"]["message"],
+        "a2a.hop.unframable: `vendor/Thing` could not be carried to this agent over its `HTTP+JSON` binding"
+    );
+}
+
+#[test]
+fn a_card_naming_only_grpc_is_refused_by_name_before_the_hop() {
+    let mut r = Relay::new(json!(7), "1.0");
+    r.for_task(task(false));
+    r.bind(Binding::JsonRpc, &serde_json::from_slice(SEND).unwrap());
+    let Answer::ToCaller(reply) = r.refuse_unspeakable("GRPC") else {
+        panic!("not refused");
+    };
+    assert_eq!(reply.status, 502);
+    assert_eq!(
+        body(&reply),
+        json!({ "jsonrpc": "2.0", "id": 7, "error": { "code": -32006,
+            "message": "a2a.hop.unframable: `SendMessage` could not be carried to this agent over its `GRPC` binding",
+            "data": [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "domain": "a2a-protocol.org", "reason": "INVALID_AGENT_RESPONSE" }] } })
+    );
+    assert_eq!(r.take_settled(), None, "the task stays as it is");
+    assert_eq!(r.on_piece(caller(SEND)), Answer::Nothing);
+}

@@ -113,6 +113,8 @@ pub struct Hop {
     outbox: Outbox,
     /// A task hop's request, until its first ATTEMPT opens the task.
     opening: Option<serde_json::Value>,
+    /// The caller's request envelope: what a binding other than JSON-RPC composes from.
+    request: Option<serde_json::Value>,
     /// What the far end's answer said about the task, until its record writes are made.
     settle: Option<Settled>,
     /// The second the piece in flight entered, kept across its re-entries.
@@ -127,8 +129,22 @@ impl Hop {
             relay: Relay::new(id, version),
             outbox: Outbox::default(),
             opening: None,
+            request: None,
             settle: None,
             now: None,
+        }
+    }
+
+    /// A task-less hop for the request `envelope`.
+    #[must_use]
+    pub fn of(
+        id: serde_json::Value,
+        version: &'static str,
+        envelope: Option<serde_json::Value>,
+    ) -> Self {
+        Hop {
+            request: envelope,
+            ..Hop::new(id, version)
         }
     }
 
@@ -136,7 +152,8 @@ impl Hop {
     #[must_use]
     pub fn task(id: serde_json::Value, version: &'static str, envelope: serde_json::Value) -> Self {
         Hop {
-            opening: Some(envelope),
+            opening: Some(envelope.clone()),
+            request: Some(envelope),
             ..Hop::new(id, version)
         }
     }
@@ -521,7 +538,7 @@ fn hop_of(decision: &Decision, addressed: bool, request: Option<serde_json::Valu
     use crate::ops::{relay_class, OP_AGENT_CARD, OP_MESSAGE_SEND};
     match decision {
         Decision::Request { row, id, version } if row.op == OP_AGENT_CARD => {
-            addressed.then(|| Hop::new(id.clone(), version))
+            addressed.then(|| Hop::of(id.clone(), version, request))
         }
         Decision::Request { row, id, version }
             if !row.multi_frame && crate::local::verb_of(row.method).is_none() =>
@@ -665,6 +682,21 @@ fn settle_task(
     Ok(())
 }
 
+/// BIND the hop to the binding `member`'s card held under `generation` declares; the refusal's
+/// answer when the plane frames none of them.
+fn bind(reach: &Reach<'_>, hop: &mut Hop, member: &str, generation: u64) -> Option<Answer> {
+    let card = reach.plane.cards.at(member, generation);
+    let word = crate::binding::binding_of(card.as_deref());
+    match crate::binding::speakable(&word) {
+        Some(binding) => {
+            let envelope = hop.request.clone().unwrap_or(serde_json::Value::Null);
+            hop.relay.bind(binding, &envelope);
+            None
+        }
+        None => Some(hop.relay.refuse_unspeakable(&word)),
+    }
+}
+
 /// One piece of `unit`'s hop: applied (unless it continues or re-calls the answer still owed) and
 /// written into the host's buffers. A task hop's first ATTEMPT opens its task first, and the far
 /// end's answer settles it before anything is written. Answers the outcome and whether the unit is
@@ -708,9 +740,17 @@ fn piece(
         } else {
             None
         };
-        let answer = match opened {
-            Some(reply) => Answer::ToCaller(reply),
-            None => {
+        // The binding this attempt speaks, off the agent's held card (JSON-RPC when none is held);
+        // a card naming only a binding the plane does not frame refuses the hop by name.
+        let unspeakable = if given.from == FROM_KERNEL && opened.is_none() {
+            bind(reach, hop, member, unit.generation)
+        } else {
+            None
+        };
+        let answer = match (opened, unspeakable) {
+            (Some(reply), _) => Answer::ToCaller(reply),
+            (None, Some(answer)) => answer,
+            (None, None) => {
                 let from = match given.from {
                     FROM_KERNEL => relay::From::Kernel(url.as_deref()),
                     FROM_CALLER => relay::From::Caller,

@@ -52,6 +52,7 @@ pub mod a2a {
 }
 
 pub mod arrival;
+pub mod binding;
 pub mod cards;
 pub mod claims;
 pub mod diagnostics;
