@@ -1712,9 +1712,10 @@ impl GovState {
     ///
     /// SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await). The flat fee
     /// is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
-    /// in `finish`; a non-2xx outcome refunds the grant's [`FeeCharge`] via [`GovState::refund_charge`]. This allocates a
-    /// handful of chain-sized scratch `Vec`s per call (`chain_for`'s two Vecs, the collected bucket
-    /// slice, the shard-index/order/guard Vecs sized to the chain depth) — there are no fixed
+    /// in `finish`; a non-2xx outcome refunds the grant's [`FeeCharge`] via
+    /// [`GovState::refund_charge`]. This allocates a handful of chain-sized scratch `Vec`s per call
+    /// (`chain_for`'s two Vecs, the collected bucket slice, the shard-index/order/guard Vecs sized
+    /// to the chain depth, the grant's charged cells) — there are no fixed
     /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
     /// round-trip and no `await` anywhere on this path.
     ///
