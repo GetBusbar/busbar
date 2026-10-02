@@ -14,3 +14,19 @@ renamed_module_1_5_3: valkey
 durable_store_advice: Configure a durable store plugin.
 # The persisted credential `kind` of a row-looked-up (AccessKeyId) signed-ingress credential.
 signed_credential_kind: sigv4
+# THE ROOT LEGACY TABLE's rows, as a test build stands them in (`config::legacy::rows`, no root to hand
+# them in): the same rows `cargo xtask fleet sync` renders from plugins.yaml into the root manifest's
+# `[package.metadata.busbar.legacy]`; the root's tests hold the two equal.
+legacy_rows:
+  renamed_display: Valkey
+  retired_url_scheme: redis
+  gov14_module: sqlite
+  gov14_db_path: busbar-governance.db
+  gov14_busy_timeout_key: sqlite_busy_timeout_ms
+  gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
+  module_examples: "sqlite | postgres | valkey"
+  retired.store.redis: valkey
+  retired.store.busbar-store-redis: valkey
+  retired.store.busbar-store-redis-plugin: valkey
+  manifest.valkey: busbar-store-valkey
+  asset.valkey: busbar-store-valkey

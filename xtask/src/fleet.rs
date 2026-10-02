@@ -22,6 +22,9 @@
 //!   crate dirs exist, the README carries the skeleton's sections, and the repo is public,
 //!   Apache-2.0 and defaults to `main`. Any drift exits 1, one
 //!   line per finding naming the repo and the file (or branch). Reads GitHub through `gh`.
+//! * `fleet check` and `fleet sync` also hold THIS tree's root legacy table
+//!   (`[package.metadata.busbar.legacy]` in crates/busbar/Cargo.toml) to its render from
+//!   `plugins.yaml` ([`legacy`]): check reports drift, sync writes it.
 //! * `fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]` — applies the render to each
 //!   repo's `dev` (seeding an EMPTY registered repo by pushing `dev` first; it never creates a repo
 //!   or changes a repo setting; moving the pin with scripts/fleet/repin.sh), commits and
@@ -35,6 +38,7 @@
 //! touch the network or a clone.
 
 pub mod check;
+pub mod legacy;
 pub mod registry;
 pub mod remote;
 pub mod render;
@@ -128,12 +132,32 @@ fn run(cx: &Ctx, args: &[String]) -> Result<i32, String> {
             if !positional.is_empty() {
                 return Err(format!("check takes no positional arguments\n{USAGE}"));
             }
-            let findings = check::check(&fleet, &templates, &remote::Gh, &repos);
+            let mut findings = check::check(&fleet, &templates, &remote::Gh, &repos);
+            if let Some(reason) = legacy::drift(&cx.read(legacy::MANIFEST)?, &fleet) {
+                findings.push(check::Finding {
+                    repo: "busbar".to_string(),
+                    subject: legacy::MANIFEST.to_string(),
+                    reason,
+                    skip: false,
+                });
+            }
             Ok(check::report(&fleet, &repos, &findings))
         }
         "sync" => {
             if !positional.is_empty() {
                 return Err(format!("sync takes no positional arguments\n{USAGE}"));
+            }
+            // THE ROOT LEGACY TABLE first: it is this tree's own file, rendered from plugins.yaml.
+            let manifest = cx.read(legacy::MANIFEST)?;
+            let rendered = legacy::apply(&manifest, &fleet);
+            if rendered != manifest {
+                if dry_run {
+                    println!("would write {} `{}`", legacy::MANIFEST, legacy::HEADER);
+                } else {
+                    cx.write_file(legacy::MANIFEST, rendered)
+                        .map_err(|e| format!("{}: {e}", legacy::MANIFEST))?;
+                    println!("wrote {} `{}`", legacy::MANIFEST, legacy::HEADER);
+                }
             }
             let workdir = workdir
                 .unwrap_or_else(|| cx.scratch().join("fleet").to_string_lossy().into_owned());

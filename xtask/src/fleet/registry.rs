@@ -34,6 +34,9 @@ pub struct Plugin {
     /// checks (with the reason) while the crate dirs are absent, and the whole repo while it is empty;
     /// the registry gate keeps it out of the cloned/released set.
     pub pending_crate: bool,
+    /// The `module:` spellings it answered to in an earlier release: rows of the root legacy table
+    /// ([`crate::fleet::legacy`]).
+    pub retired: Vec<String>,
     /// Lines the rendered `.gitignore` carries after the fleet's own.
     pub gitignore: Vec<String>,
     /// Lines the rendered `NOTICE` carries after the fleet's own (a third-party credit).
@@ -49,6 +52,8 @@ pub struct Fleet {
     pub name_pattern: String,
     pub branches: Vec<String>,
     pub plugins: Vec<Plugin>,
+    /// The `legacy:` block: the root legacy table's frozen 1.5.5 text rows ([`crate::fleet::legacy`]).
+    pub legacy: Vec<(String, String)>,
 }
 
 impl Plugin {
@@ -192,6 +197,7 @@ pub fn parse(text: &str) -> Result<Fleet, String> {
             bundle_env: s(e, "bundle_env", &who)?.unwrap_or("").to_string(),
             keep: list(e, "keep", &who)?,
             pending_crate: b(e, "pending_crate", &who, false)?,
+            retired: list(e, "retired", &who)?,
             gitignore: list(e, "gitignore", &who)?,
             notice: list(e, "notice", &who)?,
             crate_name,
@@ -199,11 +205,29 @@ pub fn parse(text: &str) -> Result<Fleet, String> {
             index,
         });
     }
+    let legacy = match doc.get("legacy") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Object(m)) => m
+            .iter()
+            .map(|(k, v)| match v {
+                Value::String(x) => Ok((k.clone(), x.clone())),
+                other => Err(format!(
+                    "{REGISTRY} legacy: `{k}` must be a string, found {other}"
+                )),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(other) => {
+            return Err(format!(
+                "{REGISTRY}: `legacy:` must be a map, found {other}"
+            ))
+        }
+    };
     Ok(Fleet {
         pin_sha: sha,
         pin_version: version,
         name_pattern,
         branches,
         plugins,
+        legacy,
     })
 }

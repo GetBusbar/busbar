@@ -1205,3 +1205,85 @@ fn dependabot_is_a_fleet_file_every_repo_carries_identically() {
         "missing (the render owns it)",
     );
 }
+
+// ── THE ROOT LEGACY TABLE (`fleet::legacy`) ─────────────────────────────────────────────────────
+
+/// The committed root manifest's `[package.metadata.busbar.legacy]` IS the render of the committed
+/// plugins.yaml: `fleet check` is green on the tree as it stands.
+#[test]
+fn the_committed_legacy_table_is_the_render() {
+    let cx = Ctx::workspace().unwrap();
+    let manifest = cx.read(super::legacy::MANIFEST).unwrap();
+    assert_eq!(super::legacy::drift(&manifest, &registry()), None);
+}
+
+/// An edit to the table by hand is drift (RED), and `apply` puts the render back (idempotent).
+#[test]
+fn a_hand_edited_legacy_table_is_drift_and_sync_restores_it() {
+    let cx = Ctx::workspace().unwrap();
+    let fleet = registry();
+    let manifest = cx.read(super::legacy::MANIFEST).unwrap();
+    let (k, v) = super::legacy::rows(&fleet)
+        .into_iter()
+        .find(|(k, _)| k.starts_with("retired."))
+        .expect("a retired row");
+    let edited = manifest.replace(
+        &format!("\"{k}\" = \"{v}\""),
+        &format!("\"{k}\" = \"x{v}\""),
+    );
+    assert_ne!(edited, manifest, "the planted edit landed");
+    assert!(super::legacy::drift(&edited, &fleet).is_some());
+    let restored = super::legacy::apply(&edited, &fleet);
+    assert_eq!(restored, manifest);
+    assert_eq!(super::legacy::apply(&restored, &fleet), restored);
+}
+
+/// A plugin's `retired:` words become `retired.<kind>.<word>` rows beside its manifest and asset
+/// rows; a plugin with none adds no row.
+#[test]
+fn retired_words_render_as_rows_of_their_kind_and_alias() {
+    let mut fleet = fixture();
+    fleet.plugins[0].retired = vec!["old-alpha".to_string()];
+    let rows = super::legacy::rows(&fleet);
+    let p = &fleet.plugins[0];
+    assert_eq!(
+        rows,
+        vec![
+            (format!("retired.{}.old-alpha", p.kind), p.alias.clone()),
+            (format!("manifest.{}", p.alias), p.manifest_name.clone()),
+            (format!("asset.{}", p.alias), p.asset_prefix.clone()),
+        ]
+    );
+}
+
+/// Every frozen `legacy:` row of plugins.yaml cites the v1.5.5 line it is verbatim from (a
+/// `# … v1.5.5:crates/…` comment above it), and every row parsed.
+#[test]
+fn every_legacy_row_cites_v1_5_5() {
+    let text = Ctx::workspace().unwrap().read("plugins.yaml").unwrap();
+    let block: Vec<&str> = text
+        .lines()
+        .skip_while(|l| *l != "legacy:")
+        .skip(1)
+        .take_while(|l| l.starts_with("  ") || l.is_empty())
+        .collect();
+    let (mut cited, mut rows) = (false, 0);
+    for line in block {
+        let t = line.trim();
+        if t.starts_with('#') {
+            cited |= t.contains("v1.5.5:crates/");
+            continue;
+        }
+        if t.is_empty() {
+            continue;
+        }
+        let key = t.split_once(':').expect("a row").0;
+        assert!(
+            cited,
+            "legacy row `{key}` carries no v1.5.5 citation above it"
+        );
+        (cited, rows) = (false, rows + 1);
+    }
+    assert_eq!(rows, registry().legacy.len());
+    assert!(rows > 0);
+}
