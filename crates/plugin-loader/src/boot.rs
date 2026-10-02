@@ -677,6 +677,10 @@ pub struct Opening<'a> {
     pub doc: &'a serde_json::Value,
     /// The dispatcher every instance is adopted by ([`LoadRequest::dispatcher`] is its adopter).
     pub dispatcher: &'a crate::dispatch::Dispatcher,
+    /// The secret kind's resolver: each settings key the Statement names in `secret_refs` is
+    /// resolved through it, in that order, into `OpenIn::secrets`, and stripped from the settings
+    /// `open` is handed (ARCHITECT 2026-10-02).
+    pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
 }
 
 /// What [`load`] bound: `(instance, bound)`, in selection order.
@@ -713,27 +717,39 @@ pub fn load(req: &LoadRequest<'_>) -> Result<Loaded, String> {
         };
         let bound = bind_one(c, bind).map_err(|e| format!("{}: {e}", s.instance))?;
         if let (Some(opening), Bound::Auth(plugin)) = (req.opening, &bound) {
-            open_ready(plugin, opening, &s.instance).map_err(|e| format!("{}: {e}", s.instance))?;
+            open_ready(plugin, opening, c, &s.instance)
+                .map_err(|e| format!("{}: {e}", s.instance))?;
         }
         loaded.bound.push((s.instance.clone(), bound));
     }
     Ok(loaded)
 }
 
-/// Open `plugin` (the instance `instance`) with its settings block in `opening.doc`, then await its
-/// `ready` on `opening.dispatcher`.
+/// Open `plugin` (the instance `instance` of candidate `c`) with its settings block in
+/// `opening.doc` and its declared secrets resolved ([`resolve_secrets`]), then await its `ready` on
+/// `opening.dispatcher`.
 fn open_ready<K: crate::dispatch::Kind>(
     plugin: &Plugin<K>,
     opening: Opening<'_>,
+    c: &Candidate,
     instance: &str,
 ) -> Result<(), String> {
     use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
     use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 
-    let settings = instance_settings(opening.doc, K::CODE, instance)
-        .map(|(v, _)| serde_json::to_vec(v).unwrap_or_default())
-        .unwrap_or_default();
+    let keys = read(&c.stated).map(|r| r.secret_refs).map_err(|e| {
+        format!(
+            "the Statement rendering does not read back at byte {}",
+            e.at
+        )
+    })?;
+    let mut block = instance_settings(opening.doc, K::CODE, instance)
+        .map(|(v, _)| v.clone())
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    let mut held = Secrets(resolve_secrets(&mut block, &keys, opening.secrets)?);
+    let blobs = held.blobs();
+    let settings = serde_json::to_vec(&block).unwrap_or_default();
     let mut i: OpenIn = blank_in();
     i.settings = Blob {
         ptr: settings.as_ptr(),
@@ -741,13 +757,93 @@ fn open_ready<K: crate::dispatch::Kind>(
         fmt: BLOB_JSON,
         flags: 0,
     };
+    i.secrets = blobs.as_ptr();
+    i.secrets_len = blobs.len();
     i.generation = 1;
     let mut f = crate::dispatch::Frame::new(i, blank_out::<OpenOut>());
     let opened = plugin.call(slot::OPEN, &mut f);
+    drop(blobs);
+    held.wipe();
     if opened.outcome != Outcome::Ready {
         return Err(opened.open_failure(plugin.name()));
     }
     plugin.ready(opening.dispatcher, crate::dispatch::ready::READY_DEADLINE)
+}
+
+/// THE DECLARED SECRETS (the Statement's `secret_refs`, ARCHITECT 2026-10-02): each key — a path
+/// into the settings block, `.`-separated — is read as a secret reference, resolved through the
+/// secret kind's resolver, and REMOVED from the block, so the secret reaches `open` only as its
+/// `OpenIn::secrets` entry, in the Statement's order. A key the block does not set is an empty
+/// entry (its place is kept); a reference that does not parse or resolve refuses, naming the key
+/// and never a byte of the secret.
+///
+/// # Errors
+/// The key whose reference is malformed or does not resolve.
+pub fn resolve_secrets(
+    block: &mut serde_json::Value,
+    keys: &[String],
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+) -> Result<Vec<Vec<u8>>, String> {
+    keys.iter()
+        .map(|key| {
+            let Some(found) = take_path(block, key) else {
+                return Ok(Vec::new());
+            };
+            let r: busbar_contract::secret_ref::SecretRef = serde_json::from_value(found)
+                .map_err(|e| format!("settings.{key}: not a secret reference: {e}"))?;
+            resolver
+                .resolve(&r)
+                .map_err(|e| format!("settings.{key}: the secret did not resolve: {e}"))
+        })
+        .collect()
+}
+
+/// Remove and answer the value at the `.`-separated `path` of `v`, if set.
+fn take_path(v: &mut serde_json::Value, path: &str) -> Option<serde_json::Value> {
+    let (parent, last) = match path.rsplit_once('.') {
+        Some((head, last)) => (
+            head.split('.').try_fold(&mut *v, |v, k| v.get_mut(k))?,
+            last,
+        ),
+        None => (v, path),
+    };
+    parent.as_object_mut()?.remove(last)
+}
+
+/// Resolved secret bytes, held for one `open` and overwritten with zeroes when it returns.
+struct Secrets(Vec<Vec<u8>>);
+
+impl Secrets {
+    /// One `BLOB_SECRET` blob per secret, in order, over the bytes held here.
+    fn blobs(&self) -> Vec<busbar_contract::abi::mechanism::call::Blob> {
+        use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS, BLOB_SECRET};
+        self.0
+            .iter()
+            .map(|b| Blob {
+                ptr: b.as_ptr(),
+                len: b.len(),
+                fmt: BLOB_OCTETS,
+                flags: BLOB_SECRET,
+            })
+            .collect()
+    }
+
+    /// Overwrite every secret byte with zero.
+    fn wipe(&mut self) {
+        for b in &mut self.0 {
+            for byte in b.iter_mut() {
+                // SAFETY: `byte` is a live, exclusively borrowed `u8`; the volatile write keeps the
+                // compiler from dropping the zeroing of memory about to be freed.
+                unsafe { std::ptr::write_volatile(byte, 0) };
+            }
+        }
+    }
+}
+
+impl Drop for Secrets {
+    fn drop(&mut self) {
+        self.wipe();
+    }
 }
 
 fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {

@@ -101,8 +101,10 @@ pub mod without_ready {
     }
 }
 
-/// An AUTH door that states `ready` over the same lifecycle (the shape busbar-auth-oidc takes:
-/// discovery before it serves). Every auth op refuses: the witnesses are about boot.
+/// The AUTH witnesses (the shape busbar-auth-oidc takes): `auth` states `ready` over
+/// [`Discovers`]; `auth_secret` declares the secret reference `client_secret` and opens only when
+/// it is handed exactly that secret, resolved, and its settings no longer carry the reference.
+/// Every auth op refuses: the witnesses are about boot.
 pub mod auth {
     use std::marker::PhantomData;
 
@@ -110,38 +112,93 @@ pub mod auth {
         BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
         OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
     };
-    use busbar_contract::abi::mechanism::call::Outcome;
-    use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
-    use busbar_contract::abi::sdk::life::Held;
+    use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
+    use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
+    use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
     use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 
-    /// Its Statement name.
+    /// The `ready` witness's Statement name.
     pub const NAME: &str = "ready-auth-witness";
+    /// The secret witness's Statement name.
+    pub const SECRET_NAME: &str = "secret-auth-witness";
+    /// The settings key the secret witness declares as a secret reference.
+    pub const SECRET_KEY: &str = "client_secret";
+    /// The bytes the secret witness must be handed.
+    pub const SECRET: &[u8] = b"s3cret";
 
-    /// An auth op this witness does not serve.
-    pub struct Refuses<I, O>(PhantomData<(I, O)>);
-    impl<I: AbiIn, O: AbiOut> SafeSlot for Refuses<I, O> {
+    const SECRET_REFS: &[AbiStr] = &[abi_str(SECRET_KEY)];
+
+    /// An auth op the witnesses do not serve.
+    pub struct Refuses<L, I, O>(PhantomData<(L, I, O)>);
+    impl<L: Life, I: AbiIn, O: AbiOut> SafeSlot for Refuses<L, I, O> {
         type In = I;
         type Out = O;
-        type State = Held<super::Discovers>;
+        type State = Held<L>;
         fn call(_: Instance<'_, Self::State>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
             Outcome::Refused
         }
     }
 
-    type R<I, O> = busbar_contract::abi::sdk::Safe<Refuses<I, O>>;
+    type R<L, I, O> = busbar_contract::abi::sdk::Safe<Refuses<L, I, O>>;
 
-    busbar_contract::plugin_door! {
-        ops: busbar_contract::abi::auth::Ops,
-        statement: busbar_contract::abi::sdk::door::statement(NAME, "0", 4),
-        lifecycle: life(super::Discovers, ready),
-        kind_ops: {
-            verify: R<VerifyIn, IdentifyOut>,
-            begin_login: R<BeginLoginIn, BeginLoginOut>,
-            complete_login: R<CompleteLoginIn, IdentifyOut>,
-            open_outbound: R<OpenOutboundIn, OpenOutboundOut>,
-            outbound_ready: R<OutboundReadyIn, OutboundReadyOut>,
-            fields: R<FieldsIn, FieldsOut>,
-        },
+    /// The secret witness's state: it opens only over its resolved secret.
+    pub struct NeedsSecret;
+
+    impl Life for NeedsSecret {
+        const CANCEL: u32 = 0;
+
+        fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+            if secrets != [SECRET] {
+                return Err(Refusal::failed(format!(
+                    "{} secret(s) handed, not the resolved {SECRET_KEY}",
+                    secrets.len()
+                )));
+            }
+            if String::from_utf8_lossy(settings).contains(SECRET_KEY) {
+                return Err(Refusal::failed("the secret reference reached the settings"));
+            }
+            Ok(Self)
+        }
+
+        fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+            Ok(Refreshed::default())
+        }
+    }
+
+    macro_rules! auth_door {
+        ($life:ty, $statement:expr, $($ready:ident)?) => {
+            busbar_contract::plugin_door! {
+                ops: busbar_contract::abi::auth::Ops,
+                statement: $statement,
+                lifecycle: life($life $(, $ready)?),
+                kind_ops: {
+                    verify: R<$life, VerifyIn, IdentifyOut>,
+                    begin_login: R<$life, BeginLoginIn, BeginLoginOut>,
+                    complete_login: R<$life, CompleteLoginIn, IdentifyOut>,
+                    open_outbound: R<$life, OpenOutboundIn, OpenOutboundOut>,
+                    outbound_ready: R<$life, OutboundReadyIn, OutboundReadyOut>,
+                    fields: R<$life, FieldsIn, FieldsOut>,
+                },
+            }
+        };
+    }
+
+    /// The `ready` witness.
+    pub mod with_ready {
+        use super::*;
+        auth_door!(super::super::Discovers, statement(NAME, "0", 4), ready);
+    }
+
+    /// The secret witness.
+    pub mod with_secret {
+        use super::*;
+        auth_door!(
+            NeedsSecret,
+            busbar_contract::abi::mechanism::door::Statement {
+                secret_refs: SECRET_REFS.as_ptr(),
+                secret_refs_len: SECRET_REFS.len(),
+                ..statement(SECRET_NAME, "0", 4)
+            },
+        );
     }
 }
