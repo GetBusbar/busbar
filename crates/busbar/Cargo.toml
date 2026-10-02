@@ -118,7 +118,7 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
 busbar-store-memory = { path = "../store-memory" }
 # THE SECRET SOURCES (`{ env: VAR }`, `{ file: PATH }`), linked in every build through the `secrets`
-# axis (THE DESIGN §2: env and file secrets are ordinary plugins, linked in the default build;
+# axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the default build;
 # ARCHITECT 2026-10-02 WIRE-SECRET) and loaded through the one loader only when a reference names one.
 # They live in their own repos (GetBusbar/busbar-secret-env, GetBusbar/busbar-secret-file) and are
 # pulled at a PINNED rev; the workspace `[patch]` points the busbar crate they name at this tree.

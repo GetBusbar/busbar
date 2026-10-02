@@ -1294,7 +1294,7 @@ fn two_rows_declaring_the_default_refuse_boot() {
     assert_eq!(super::default_store(&[A, C]), Ok(Some("acme-a")));
 }
 
-/// WIRE-SECRET (THE DESIGN §2; TODO step 28) — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
+/// WIRE-SECRET (THE DESIGN, "Plugins"; TODO step 28) — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
 /// DISPATCHER. `env` and `file` are the linked secret plugins the root's axis answers for, by the
 /// module alias their Statements declare; a reference resolves through the secret kind table on
 /// `root::dispatch`'s dispatcher, on one shared instance, and the refusal text is the plugin's own

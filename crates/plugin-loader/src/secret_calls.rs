@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SECRET KIND'S CALLS over the one dispatcher (THE DESIGN §2 and §11.4; TODO step 28): the
+//! THE SECRET KIND'S CALLS over the one dispatcher (THE DESIGN, "Plugins" and the plugin ABI; TODO step 28): the
 //! contract's [`SecretAxis`] and [`SecretCalls`], implemented here over [`Plugin`]`<`[`Secret`]`>`.
 //! [`SecretRows`] holds every secret plugin the composition root admitted — a compiled-in row (its
 //! linked door) and a dropped-in one (its verified library, discovered off its signed manifest) —

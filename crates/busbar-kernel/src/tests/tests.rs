@@ -955,7 +955,7 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN §2 and §11.4; TODO
+/// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN, "Plugins" and the plugin ABI; TODO
 /// step 28). `env` and `file` are secret plugins the kernel reaches through the root's
 /// `SecretAxis`, not rows of the cold-kind registry and not a name the resolver matches: the
 /// registry holds no secret row for either, and a resolution's failure text is the plugin's own,

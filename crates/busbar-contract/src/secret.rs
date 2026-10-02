@@ -12,7 +12,7 @@
 //! contract's, #35(a)). The error is [`SecretModuleError`] here because [`crate::kinds::SecretError`]
 //! is a different type (#35 de-collision); its `Debug` keeps the historical `SecretError` label so
 //! every rendering is byte-identical. The `env`/`file` sources are ordinary secret-kind plugins in
-//! their own repos (`busbar-secret-env`, `busbar-secret-file`; THE DESIGN §2), called through the
+//! their own repos (`busbar-secret-env`, `busbar-secret-file`; THE DESIGN, "Plugins"), called through the
 //! secret kind table; the kernel reaches every loaded secret plugin through [`SecretAxis`] and
 //! [`SecretCalls`]. The [`SecretResolve`] seam followed the config secret reference it takes into
 //! this crate once that reference merged here, when `busbar-api` retired.

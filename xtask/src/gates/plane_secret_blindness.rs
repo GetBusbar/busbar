@@ -1,6 +1,6 @@
 //! `cargo xtask gate plane-secret-blindness` — A PLANE NEVER RECEIVES SECRET BYTES.
 //!
-//! THE RULE (`docs/design/BUSBAR-1.6.0.md` THE DESIGN §6, trust boundary): *"the kernel resolves
+//! THE RULE (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, the trust boundary, trust boundary): *"the kernel resolves
 //! and audits secret material and delivers it only to the auth object bound to it and to the
 //! non-plane plugin whose settings reference it … A plane never receives secret bytes."* The
 //! kernel resolves every secret through the secret kind table (`SecretAxis`/`SecretCalls`); a
@@ -40,9 +40,9 @@ pub const SPEC: Spec = Spec {
     ledger: "qa/plane-secret-blindness.toml",
     rules: &[(
         ROW_NAMES,
-        "no plane crate names a secret-resolving surface (THE DESIGN §6)",
+        "no plane crate names a secret-resolving surface (THE DESIGN, the trust boundary)",
     )],
-    header: "# plane-secret-blindness: DRAIN-ONLY ledger (THE DESIGN §6: a plane never receives secret\n\
+    header: "# plane-secret-blindness: DRAIN-ONLY ledger (THE DESIGN, the trust boundary: a plane never receives secret\n\
              # bytes). Each row is a plane site that still resolves a secret reference, OWED to the slot\n\
              # that gives it a host-held replacement: a2a/voice provider credentials and the mcp\n\
              # token-exchange subject token to the auth styles (step 21); the mcp stdio child's\n\

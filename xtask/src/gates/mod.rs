@@ -2742,7 +2742,7 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(plane_secret_blindness::PlaneSecretBlindnessGate),
         summary: "no plane crate names a secret-resolving surface; the owed sites are a drain-only \
-                  ledger (THE DESIGN §6)",
+                  ledger (THE DESIGN, the trust boundary)",
     },
     Registration {
         name: "linked-dropped-features",

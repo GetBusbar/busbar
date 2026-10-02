@@ -75,7 +75,7 @@ pub(crate) const DOOR_AXIS: &str = "transport-door";
 /// the claims it declares (`CLAIMS`); rides on `plane`.
 const CLAIMS_AXIS: &str = "claims";
 
-/// The secret axis (THE DESIGN §2: env and file secrets are ordinary plugins, linked in the default
+/// The secret axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the default
 /// build): each row's entry exports its memory-ABI `door`.
 const SECRET_AXIS: &str = "secrets";
 
@@ -246,6 +246,7 @@ pub(crate) fn linked_source(
                     || axis == TRANSPORT_AXIS
                     || axis == DOOR_AXIS
                     || axis == AUTH_AXIS
+                    || axis == SECRET_AXIS
                     || axis == CLAIMS_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
                     || SEAMS.iter().any(|(a, _)| a == axis),
