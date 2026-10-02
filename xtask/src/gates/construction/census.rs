@@ -435,11 +435,12 @@ mod tests {
             "[gate.census]\nplane_crates = 4\n",
             "[gate.census]\nplane_crates = 4\nloc_ceilings_kernel_files = 8\n",
         );
-        assert!(lowered_floors(&doc(DOC), &doc(&base), "abc1234").is_empty());
+        assert!(lowered_floors(&doc(DOC), &doc(&base), "abc1234", &BTreeMap::new()).is_empty());
         let out = lowered_floors(
             &doc(&DOC.replace("plane_crates = 4", "plane_crates = 3")),
             &doc(&base),
             "abc1234",
+            &BTreeMap::new(),
         );
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(out[0].contains("plane_crates"), "{out:?}");
