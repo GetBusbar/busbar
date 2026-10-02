@@ -35,6 +35,8 @@ usage:
   cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
+  cargo xtask method-inventory (--write | --check | --selftest)
+  cargo xtask pin-missing-cells [--write]
   cargo xtask dialect wire [--write | --diff] <dialect|all>
   cargo xtask dialect wire --diff-files <old.wire.json> <new.wire.json>
   cargo xtask dialect compile
@@ -62,6 +64,8 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "perf-ab-mock",
     "dialect",
     "ship",
+    "method-inventory",
+    "pin-missing-cells",
 ];
 
 pub fn main(args: &[String]) -> i32 {
@@ -137,6 +141,18 @@ pub fn main(args: &[String]) -> i32 {
         // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
         // node published, by the published recipe pages alone, and reads no tree.
         Some("audit-verify") => crate::audit_verify::main(&args[1..]),
+        // THE METHOD-INVENTORY GENERATOR and THE MISSING-QUEUE PINNER. Neither is a gate: a human
+        // runs them and reads the diff. `method-inventory` WRITES `qa/method-inventory.json` from
+        // the pinned rmcp and a2a-pb sources; `pin-missing-cells` rewrites
+        // `qa/method-coverage.missing`. `crates/busbar/tests/method_coverage.rs` is the gate.
+        Some("method-inventory") => match open_ctx() {
+            Ok(cx) => crate::method_inventory::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        Some("pin-missing-cells") => match open_ctx() {
+            Ok(cx) => crate::pin_missing_cells::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,
