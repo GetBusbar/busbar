@@ -66,8 +66,7 @@ fn usage_lines(pairs: &[(&'static str, u64)]) -> Vec<busbar_contract::caps::Usag
 
 /// The same counts as a sealed usage report, for the settlement posting.
 fn usage_report(pairs: &[(&'static str, u64)]) -> busbar_contract::caps::Usage {
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let token = busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal);
+    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::Consumption>();
     busbar_contract::caps::Usage::report(&token, usage_lines(pairs))
         .expect("a report within the line bound")
 }

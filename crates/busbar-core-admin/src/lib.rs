@@ -55,6 +55,10 @@ pub mod refusal;
 pub mod verb;
 pub mod verbs;
 
+/// The verbs unit's test-only `SecretOnce` mint (ARCHITECT ruling B): `cfg(test)` or `test-support` only.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 pub use idempotency::ReplayEncoder;
 pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
