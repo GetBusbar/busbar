@@ -3510,9 +3510,9 @@ fn fail_task(
         .into_response()
 }
 
-// EVERY PLACE A2A SPELLS a push callback and the config object it sits in: the plane's lists, one
-// home ([`busbar_plane_a2a::skill`]).
-use busbar_plane_a2a::skill::{CALLBACK_CONFIG_POINTERS, CALLBACK_POINTERS};
+// EVERY PLACE A2A SPELLS a push callback and the config object it sits in, and the stream reading
+// of a method name: the plane's, one home ([`busbar_plane_a2a::skill`]).
+use busbar_plane_a2a::skill::{reads_as_stream, CALLBACK_CONFIG_POINTERS, CALLBACK_POINTERS};
 
 /// THE CALLER'S PUSH-NOTIFICATION CALLBACK URL, if it registered one.
 ///
@@ -3657,7 +3657,7 @@ fn resumable_task(
 
 #[cfg(all(test, feature = "test-support"))]
 pub(crate) fn reads_as_stream_for_test(method: &str) -> bool {
-    busbar_plane_a2a::skill::reads_as_stream(method)
+    reads_as_stream(method)
 }
 
 #[cfg(all(test, feature = "test-support"))]
