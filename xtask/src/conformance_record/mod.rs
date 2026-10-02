@@ -25,8 +25,8 @@
 //!   the reason, never a pass.
 //! * A `fail` verdict is DATA, not an error: exit 0 means every targeted verdict was written,
 //!   whatever its status. Exit 3 means at least one could not be written (no HEAD, an unreadable
-//!   registry, an unwritable file, an incoherent outcome). Exit 2 is an argument error. These are
-//!   the codes `cli.rs` documents for every xtask command.
+//!   registry, an unwritable file, an incoherent outcome, a manifest the reconcile could not write).
+//!   Exit 2 is an argument error. These are the codes `cli.rs` documents for every xtask command.
 
 mod a2a;
 mod h2;
@@ -76,7 +76,7 @@ usage:
                  builder; without both the slsa-verifier verdict is not-run
     --out        where <id>.json is written (default conformance/verdicts; relative to the checkout)
   exit: 0 every targeted verdict written (pass, fail or not-run), 2 bad arguments,
-        3 a verdict could not be written";
+        3 a verdict or conformance/manifest.json could not be written";
 
 /// A verdict's status, the schema's `status` enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,6 +390,36 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
         }
     }
     let runner = rigs::Runner::new(&root, &inputs);
+    // The rigs run IN PARALLEL (ARCHITECT 2026-10-02): each is a separate toolchain
+    // (python, node, Docker, cargo) and most of the hop's conformance time is waiting
+    // on one of them; one thread per rig, each in its own work dir.
+    let ran: BTreeMap<rigs::Rig, BTreeMap<String, Outcome>> = match &blocked {
+        Some(_) => BTreeMap::new(),
+        None => std::thread::scope(|scope| {
+            let runner = &runner;
+            let handles: Vec<_> = by_rig
+                .keys()
+                .map(|&rig| (rig, scope.spawn(move || runner.run(rig))))
+                .collect();
+            handles
+                .into_iter()
+                .map(|(rig, h)| {
+                    let outcomes = h.join().unwrap_or_else(|_| {
+                        by_rig[&rig]
+                            .iter()
+                            .map(|s| {
+                                (
+                                    s.id.clone(),
+                                    Outcome::not_run(format!("the {} rig panicked", rig.name())),
+                                )
+                            })
+                            .collect()
+                    });
+                    (rig, outcomes)
+                })
+                .collect()
+        }),
+    };
     let mut unwritten = 0;
     for (rig, suites) in by_rig {
         let outcomes = match &blocked {
@@ -397,7 +427,7 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
                 .iter()
                 .map(|s| (s.id.clone(), Outcome::not_run(why.clone())))
                 .collect(),
-            None => runner.run(rig),
+            None => ran.get(&rig).cloned().unwrap_or_default(),
         };
         let moved = match head_commit(&root) {
             Ok(h) if h == start_head => None,
@@ -439,8 +469,39 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
     }
     if unwritten > 0 {
         eprintln!("conformance record: {unwritten} verdict(s) could not be written");
-        3
-    } else {
-        0
+        return 3;
+    }
+    // The manifest `conformance check` reads is rendered from the verdicts just
+    // written: reconcile it here, so producing is ONE command and the turnstile
+    // never has to run a gate to produce (an inheriting rung runs no gate).
+    if out_dir == root.join("conformance").join("verdicts") {
+        match reconcile_manifest(&root) {
+            Ok(()) => {
+                println!("conformance record: manifest reconciled (the conformance-sync write arm)")
+            }
+            Err(e) => {
+                eprintln!("conformance record: the manifest could not be reconciled: {e}");
+                return 3;
+            }
+        }
+    }
+    0
+}
+
+/// `conformance/manifest.json` (and the README badge block) rendered from the registry and the
+/// verdicts on disk: the `conformance-sync` gate's own write arm, run in this process over a fresh
+/// context (so no memoised read of a verdict written above can stand in for it), never a second
+/// binary. The gate's other rows (freshness for a suite with no producer, the README markers) may
+/// be red and the manifest is still written; only an unwritten manifest is an error.
+pub fn reconcile_manifest(root: &Path) -> Result<(), String> {
+    use crate::gates::conformance_sync::{ConformanceSyncGate, ROW_MANIFEST_DRIFT};
+    let cx = Ctx::new(root)?.write_mode(true);
+    let verdict = crate::gates::execute(&ConformanceSyncGate, &cx);
+    match verdict.rows.iter().find(|r| r.id == ROW_MANIFEST_DRIFT) {
+        Some(r) if r.status == crate::ledger::Status::Pass => Ok(()),
+        Some(r) => Err(format!("{}: {}", r.title, r.detail)),
+        None => Err(format!(
+            "conformance-sync returned no `{ROW_MANIFEST_DRIFT}` row"
+        )),
     }
 }
