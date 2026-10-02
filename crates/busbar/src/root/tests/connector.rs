@@ -9,7 +9,7 @@ use super::*;
 
 /// The strict default guard, as a deployment that states nothing builds it.
 fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
-    process::dest_judge(&busbar_kernel::config::Destinations::default()).expect("the default")
+    process::dest_judge(&Destinations::default()).expect("the default")
 }
 
 #[test]
@@ -37,9 +37,9 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
 /// refusal), naming the key and the entry.
 #[test]
 fn a_bad_allowlist_entry_refuses_the_guard() {
-    let d = busbar_kernel::config::Destinations {
+    let d = Destinations {
         allow: vec!["host.test:8080".into()],
-        ..busbar_kernel::config::Destinations::default()
+        ..Destinations::default()
     };
     let refusal = process::dest_judge(&d).err().expect("refused");
     assert!(

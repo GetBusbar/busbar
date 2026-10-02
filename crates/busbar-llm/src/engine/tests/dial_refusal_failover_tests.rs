@@ -36,6 +36,19 @@ fn names_answering(addr: SocketAddr) -> Arc<RebindingResolver> {
     Arc::new(RebindingResolver::counting(addr))
 }
 
+/// The mock's own address, off its base URL.
+fn address_of(mock: &MockServer) -> SocketAddr {
+    mock.base_url()
+        .trim_start_matches("http://")
+        .parse()
+        .expect("the mock's address")
+}
+
+/// The primary lane's URL: a NAME the test's resolver answers with `addr`.
+fn named_primary(addr: SocketAddr) -> String {
+    format!("http://primary.localhost:{}", addr.port())
+}
+
 fn lanes(n: usize) -> Vec<WeightedLane> {
     (0..n)
         .map(|idx| WeightedLane {
@@ -122,13 +135,9 @@ async fn a_refused_primary_fails_over_to_the_next_lane() {
     });
     let next = MockServer::new(next_state.clone()).await;
 
-    let primary_addr: SocketAddr = primary
-        .base_url()
-        .trim_start_matches("http://")
-        .parse()
-        .expect("the mock's address");
+    let primary_addr = address_of(&primary);
     let names = names_answering(primary_addr);
-    let primary_url = format!("http://primary.localhost:{}", primary_addr.port());
+    let primary_url = named_primary(primary_addr);
     let app = with_scoped_dial(blocking_loopback(), names.clone(), || {
         let app = TestApp::new()
             .lane(LaneSpec::new(
@@ -175,13 +184,9 @@ async fn an_allowlisted_primary_dials_and_answers() {
         abort_at_index: None,
     });
     let primary = MockServer::new(primary_state.clone()).await;
-    let primary_addr: SocketAddr = primary
-        .base_url()
-        .trim_start_matches("http://")
-        .parse()
-        .expect("the mock's address");
+    let primary_addr = address_of(&primary);
     let names = names_answering(primary_addr);
-    let primary_url = format!("http://primary.localhost:{}", primary_addr.port());
+    let primary_url = named_primary(primary_addr);
     let app = with_scoped_dial(
         private_refusing(&["primary.localhost"]),
         names.clone(),

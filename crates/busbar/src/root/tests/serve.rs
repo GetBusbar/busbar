@@ -129,7 +129,7 @@ fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
         block_private_addresses: true,
         blocked: blocked.iter().map(|h| (*h).to_string()).collect(),
         allow_all_metadata: allow_all,
-        ..busbar_kernel::config::Destinations::default()
+        ..Default::default()
     };
     kernel_services(crate::root::connector::guard_for(&d).expect("the guard"))
 }

@@ -17,7 +17,6 @@ use busbar_contract::abi::host::conn::connector::{EGRESS_LOOPBACK_ALLOWED, EGRES
 use busbar_contract::abi::host::service::{
     DEST_INTERNAL, DEST_NO_HOST, DEST_PLAINTEXT, DEST_SCHEME, DEST_UNRESOLVABLE,
 };
-use busbar_contract::net::parse_url;
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal};
@@ -119,20 +118,12 @@ fn plaintext_to_loopback(class: u32, https: bool, ip: IpAddr) -> Result<(), u64>
 /// refused), or a bare `host[:port]` authority (secure, port 443 unless named).
 fn split(dest: &str) -> Result<(String, u16, bool), u64> {
     if dest.contains("://") {
-        let url = parse_url(dest).map_err(|_| DEST_NO_HOST)?;
-        let https = match url.scheme.as_str() {
-            "https" => true,
-            "http" => false,
-            _ => return Err(DEST_SCHEME),
+        // The one http(s) URL reader (scheme allowlist, userinfo refused, the scheme's port).
+        return match busbar_kernel::net_guard::split_url(dest) {
+            Ok((https, host, port, _)) => Ok((host, port, https)),
+            Err(busbar_kernel::net_guard::AddressRefusal::Scheme { .. }) => Err(DEST_SCHEME),
+            Err(_) => Err(DEST_NO_HOST),
         };
-        if url.userinfo {
-            return Err(DEST_NO_HOST);
-        }
-        return Ok((
-            url.host,
-            url.port.unwrap_or(if https { 443 } else { 80 }),
-            https,
-        ));
     }
     if dest.is_empty() || dest.contains('@') {
         return Err(DEST_NO_HOST);

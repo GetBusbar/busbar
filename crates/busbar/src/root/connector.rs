@@ -20,14 +20,8 @@ use busbar_core_connector::framer::FramerDoor;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
 use busbar_kernel::config::{Destinations, RootCfg};
-use std::net::IpAddr;
-
-use busbar_kernel::egress::engine::ClientIdentity;
-use busbar_kernel::host_services::{DestJudge, DestRefusal};
-use busbar_kernel::plane_host::egress_trust::{
-    install_egress_trust_host, CertificateDer, EgressTrustHost, PassThroughEgressTrust,
-};
-use busbar_kernel::plane_host::spki::SpkiError;
+use busbar_kernel::host_services::DestJudge;
+use busbar_kernel::plane_host::egress_trust::{install_egress_trust_host, GuardedEgressTrust};
 
 use crate::root::loader::dispatch::{
     kinds::transport::Transport as TransportKind, load_linked, LinkedRow,
@@ -97,36 +91,10 @@ pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
     process::dest_judge(d)
 }
 
-/// THE EGRESS-TRUST CAPABILITY THE ROOT INSTALLS (ARCHITECT ruling (C), DEST-GUARD): the kernel's
-/// pass-through trust primitives, and every answer a kernel pooled client resolved judged by the
-/// deployment's one destination guard (`dest`). The connector decides; this only hands it on.
-pub struct GuardedEgressTrust(pub Arc<dyn DestJudge>);
-
-impl EgressTrustHost for GuardedEgressTrust {
-    fn register_client_identity(&self, identity: ClientIdentity) -> u64 {
-        PassThroughEgressTrust.register_client_identity(identity)
-    }
-    fn resolve_client_identity(&self, client_identity_ref: u64) -> Option<ClientIdentity> {
-        PassThroughEgressTrust.resolve_client_identity(client_identity_ref)
-    }
-    fn register_trust_anchor(&self, roots: Vec<CertificateDer<'static>>) -> u64 {
-        PassThroughEgressTrust.register_trust_anchor(roots)
-    }
-    fn resolve_trust_anchor(&self, trust_anchor_ref: u64) -> Vec<CertificateDer<'static>> {
-        PassThroughEgressTrust.resolve_trust_anchor(trust_anchor_ref)
-    }
-    fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError> {
-        PassThroughEgressTrust.peer_leaf_pin(cert_der)
-    }
-    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
-        self.0.judge_answer(host, addrs, class)
-    }
-}
-
-/// Install [`GuardedEgressTrust`] over `dest` as the process's egress-trust capability, once, at
-/// boot, before any pooled client dials.
+/// Install the deployment's one destination guard behind the egress-trust capability (ARCHITECT
+/// ruling (C), DEST-GUARD), once, at boot, before any kernel pooled client dials.
 pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
-    install_egress_trust_host(Box::leak(Box::new(GuardedEgressTrust(dest))));
+    install_egress_trust_host(Arc::new(GuardedEgressTrust(dest)));
 }
 
 /// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, its dials

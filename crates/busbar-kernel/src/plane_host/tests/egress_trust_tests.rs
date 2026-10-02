@@ -96,8 +96,7 @@ fn peer_leaf_pin_seam_is_byte_for_byte_the_free_walk() {
 fn the_composition_root_install_hands_the_installed_capability_back() {
     // Dormant by default: nothing installs the seam on the shipped path. This test installs its
     // own and reads it back, exercising the OnceLock accessor the composition root uses.
-    static HOST: PassThroughEgressTrust = PassThroughEgressTrust;
-    install_egress_trust_host(&HOST);
+    install_egress_trust_host(std::sync::Arc::new(PassThroughEgressTrust));
     let installed = egress_trust_host().expect("the just-installed capability reads back");
     let der = a_root();
     assert_eq!(
@@ -120,4 +119,14 @@ fn the_pass_through_seam_fails_closed() {
         refused.verdict,
         busbar_contract::abi::host::service::DEST_NO_HOST
     );
+}
+
+/// The root's capability hands every answer to the guard behind it, deciding nothing itself.
+#[test]
+fn the_guarded_seam_judges_by_the_guard_behind_it() {
+    let judged = GuardedEgressTrust(crate::egress::fixtures::private_refusing(&[]));
+    let private: std::net::IpAddr = "10.0.0.5".parse().unwrap();
+    let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
+    assert!(judged.judge_answer("db.test", &[private], 0).is_err());
+    assert_eq!(judged.judge_answer("api.test", &[public], 0), Ok(()));
 }
