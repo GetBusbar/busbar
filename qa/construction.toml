@@ -522,6 +522,12 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
 
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 29397
+to      = 29926
+because = "GRPC-DOOR Q1 (ARCHITECT 2026-10-02T00:15Z): contract_caps re-arms as the approved delta over predev's measure: predev carries 29397 (train/cg-61a lowered it to the measured 29392, train/cg-65 +5); the lane adds +529 (busbar_contract::hyper_io!, the sans-IO hyper drive moved out of busbar-transport-http, +694 in crates/busbar-contract/src/sdk_hyper.rs, a dev-only hyper dependency; RefuseIn.status +11; measured 30119 against predev 8fc5e67e2's 29590 at 6f604f51b), 29397 + 529 = 29926. The http door shrinks by 486 in the same lane."
+
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
 
@@ -548,6 +554,12 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 29397
+to      = 29926
+because = "GRPC-DOOR Q1 (ARCHITECT 2026-10-02T00:15Z): caps_contract_ceiling re-arms as the approved delta over predev's measure: predev carries 29397 (train/cg-61a lowered it to the measured 29392, train/cg-65 +5); the lane adds +529 (busbar_contract::hyper_io!, the sans-IO hyper drive moved out of busbar-transport-http, +694 in crates/busbar-contract/src/sdk_hyper.rs, a dev-only hyper dependency; RefuseIn.status +11; measured 30119 against predev 8fc5e67e2's 29590 at 6f604f51b), 29397 + 529 = 29926. The http door shrinks by 486 in the same lane."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -901,7 +913,8 @@ because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over 29392, 
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A deletes the dead hot/cold ABI; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-contract_caps = 29397
+# ── RE-ARMED 29397 -> 29926 by GRPC-DOOR Q1 (+529), declared above.
+contract_caps = 29926
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1683,7 +1696,8 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-caps_contract_ceiling = 29397
+# ── RE-ARMED 29397 -> 29926 by GRPC-DOOR Q1 (+529), declared above.
+caps_contract_ceiling = 29926
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
