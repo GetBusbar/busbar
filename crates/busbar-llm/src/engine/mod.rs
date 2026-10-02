@@ -126,21 +126,22 @@ pub(crate) use busbar_kernel::egress::engine::{
 // (`busbar_kernel::proxy`) — the plane names the neutral ABI crate directly. Re-exported into the
 // flattened engine namespace so the moved classification/error-envelope call sites keep naming them at
 // their historical short paths (`crate::engine::{KIND_*, DISPOSITION_TRANSIENT, APPLICATION_JSON, …}`).
-pub(crate) use busbar_kernel::proxy::{APPLICATION_JSON, EGRESS_UA_DEFAULT, TEXT_EVENT_STREAM};
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_kernel::proxy::{
-    DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH, DISPOSITION_HARD_DOWN,
-    DISPOSITION_TRANSIENT, ERR_DEGRADED_NON2XX, ERR_NET_CONNECT, ERR_NET_TIMEOUT,
-    ERR_NET_TRANSPORT, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
-    KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT,
-    KIND_TIMEOUT, POOL_LABEL_UNRESOLVED,
+    answer_re_derived, DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH,
+    DISPOSITION_HARD_DOWN, DISPOSITION_TRANSIENT, ERR_DEGRADED_NON2XX, ERR_NET_CONNECT,
+    ERR_NET_TIMEOUT, ERR_NET_TRANSPORT, KIND_API_ERROR, KIND_AUTHENTICATION,
+    KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED,
+    KIND_PERMISSION, KIND_RATE_LIMIT, KIND_TIMEOUT, POOL_LABEL_UNRESOLVED,
 };
+pub(crate) use busbar_kernel::proxy::{APPLICATION_JSON, EGRESS_UA_DEFAULT, TEXT_EVENT_STREAM};
 // The NEUTRAL hook-content ceiling knob + the egress-client builder now live in the neutral substrate
 // (`busbar_kernel::proxy`) — re-exported into the flattened engine namespace so the relocated tests
 // (which named them at `proxy::…`) keep resolving at `crate::engine::…`.
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_kernel::proxy::{
-    build_egress_client, set_hook_content_max_bytes, DEFAULT_HOOK_CONTENT_MAX_BYTES,
+    add_relayed_headers, build_egress_client, set_hook_content_max_bytes, strip_answer_mechanics,
+    DEFAULT_HOOK_CONTENT_MAX_BYTES,
 };
 
 // ── THE MONEY-PATH ENGINE TESTS ──────────────────────────────────────────────────────────────────
