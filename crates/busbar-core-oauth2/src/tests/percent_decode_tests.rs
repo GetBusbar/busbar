@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-oauth2/src/routes.rs` — the `percent_decode_tests` battery.
+//! Tests for `crates/busbar-core-oauth2/src/routes.rs` — the `percent_decode_tests` battery.
 
 use super::percent_decode;
 
