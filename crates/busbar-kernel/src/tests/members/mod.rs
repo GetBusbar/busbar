@@ -9,4 +9,5 @@ mod breaker;
 mod egress;
 mod identity;
 mod ledger;
+mod plugin_loader;
 mod wal;

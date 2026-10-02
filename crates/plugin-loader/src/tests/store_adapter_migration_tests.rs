@@ -18,9 +18,9 @@
 //! bound to payload schema 2, which is where the request log lives, and the REAL published sqlite
 //! store from the oracle cache, which skips when the cache is cold.
 
-use super::store_adapter_tests::cached_published_store_tarball;
 use super::*;
 use crate::store_adapter::{LegacyReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS};
+use crate::test_support::cached_published_store_tarball;
 use busbar_contract::records::{
     AuditRecord, MeteringDelta, MeteringRow, ModelTokens, RecordStore as AbiStore,
     RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,

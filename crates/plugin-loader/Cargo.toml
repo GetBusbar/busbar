@@ -20,6 +20,12 @@ license = "Apache-2.0"
 #   cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 [features]
 pack = ["dep:jsonschema"]
+# TEST ONLY: `test_support`, the fake-call store harness, for busbar-kernel's minting tests (the
+# store adapter's verb seam takes a minted `Grant<AdminVerb>`, so those tests live in the kernel).
+# Enabled only from busbar-kernel's [dev-dependencies]; never by a shipped build. Adds no
+# dependency: the harness locates the store both-ways proof's cdylib by the name `build.rs`
+# exports, and the dependent's own graph builds it.
+test-support = []
 
 [[bin]]
 name = "busbar-plugin-pack"
