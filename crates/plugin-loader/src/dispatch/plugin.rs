@@ -279,7 +279,7 @@ struct FamilyShape {
 /// THE INSTANCE, kind-erased: what every crossing needs. Shared across workers.
 pub(crate) struct Instance {
     /// The instance's identity on the host's connection table.
-    instance: InstanceId,
+    pub(crate) instance: InstanceId,
     /// The needs its Statement declares, in Statement order (empty when it was handed no table).
     /// Each whose `target_from` or `trust_from` names a config path is declared at every `open` and
     /// `refresh`, with what those paths resolve to in the settings it is handed.

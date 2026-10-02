@@ -151,12 +151,22 @@ fn bound(needs: &'static [Need], table: &Arc<Recording>) -> Plugin<TestKind> {
 
 /// `ESTABLISH` through the slots, under `p`'s context, for `need` at `target`.
 fn establish(p: &Plugin<TestKind>, need: u32, target: &'static str) -> ServiceOut {
+    establish_on(p, need, target, Ticket::NONE)
+}
+
+/// [`establish`] on `ticket`'s first completion handle.
+fn establish_on(
+    p: &Plugin<TestKind>,
+    need: u32,
+    target: &'static str,
+    ticket: Ticket,
+) -> ServiceOut {
     let i = EstablishIn {
         head: ServiceHead {
             size: std::mem::size_of::<EstablishIn>() as u32,
             op: service::ESTABLISH,
             handle: CompletionHandle {
-                ticket: Ticket::NONE,
+                ticket,
                 seq: 0,
                 _reserved: 0,
             },
@@ -346,6 +356,65 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
             (None, Some("PEM-B".to_owned())),
             (None, None),
         ]
+    );
+}
+
+/// RED (Q-FC7): two instances, each on its own dispatcher, whose first tickets collide (fresh
+/// dispatchers mint identical first tickets). Recycling one's ticket forgets only its own kept
+/// answers: the other's re-issued `ESTABLISH` redeems its stored stream and is never run a second
+/// time, while the recycled instance's re-issue is a new call. A replaced worker forgets only its
+/// own instances' answers in the same way.
+#[test]
+fn recycling_one_instances_ticket_never_replays_anothers_establish() {
+    use super::{forget, forget_worker};
+    let first = Ticket {
+        slot: 0,
+        generation: 1,
+    };
+    let (one_table, two_table) = (
+        Arc::new(Recording::default()),
+        Arc::new(Recording::default()),
+    );
+    let one = bound(Box::leak(Box::new(NEEDS)), &one_table);
+    let two = bound(Box::leak(Box::new(NEEDS)), &two_table);
+    for p in [&one, &two] {
+        assert_eq!(
+            open_with(p, br#"{"upstream":"127.0.0.1:9"}"#),
+            Outcome::Ready
+        );
+    }
+    let opens = |t: &Recording| t.opened.lock().unwrap().len();
+    let one_stream = establish_on(&one, 0, "127.0.0.1:9", first);
+    let two_stream = establish_on(&two, 0, "127.0.0.1:9", first);
+    assert_eq!(two_stream.outcome, RawOutcome::of(Outcome::Ready));
+    assert_eq!((opens(&one_table), opens(&two_table)), (1, 1));
+
+    forget(one.instance(), first);
+    let replayed = establish_on(&two, 0, "127.0.0.1:9", first);
+    assert_eq!(
+        (replayed.outcome, replayed.value),
+        (two_stream.outcome, two_stream.value),
+        "the other instance redeems its stored stream"
+    );
+    assert_eq!(
+        opens(&two_table),
+        1,
+        "the other instance's establish never ran twice"
+    );
+    let rerun = establish_on(&one, 0, "127.0.0.1:9", first);
+    assert_eq!(
+        opens(&one_table),
+        2,
+        "the recycled instance's re-issue is a new call"
+    );
+    assert_ne!(rerun.value, one_stream.value);
+
+    forget_worker(&[one.instance()], 0);
+    let _ = establish_on(&two, 0, "127.0.0.1:9", first);
+    assert_eq!(
+        opens(&two_table),
+        1,
+        "a replaced worker forgets only its own instances"
     );
 }
 

@@ -395,14 +395,19 @@ fn kept(id: InstanceId, h: CompletionHandle, run: impl FnOnce() -> Answer) -> An
     a
 }
 
-/// Forget every answer kept under `ticket`: the worker recycled it.
-pub(crate) fn forget(ticket: Ticket) {
-    kept_answers().retain(|(_, t), _| *t != ticket);
+/// Forget every answer instance `id` kept under `ticket`: its worker recycled it. Keyed by the
+/// instance as well as the ticket: tickets are minted per dispatcher, so another dispatcher's
+/// instance may hold an identical ticket, and its kept answers are never its neighbour's to drop
+/// (dropping them would make it run a stored establish or write a second time).
+pub(crate) fn forget(id: InstanceId, ticket: Ticket) {
+    kept_answers().remove(&(id, ticket));
 }
 
-/// Forget every answer kept under worker `worker`'s tickets: it was replaced.
-pub(crate) fn forget_worker(worker: u32) {
-    kept_answers().retain(|(_, t), _| super::ticket::decode(t.slot).0 != worker);
+/// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.
+/// Another dispatcher's worker of the same index is not touched.
+pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
+    kept_answers()
+        .retain(|(id, t), _| !(ids.contains(id) && super::ticket::decode(t.slot).0 == worker));
 }
 
 // ── FRAMED REQUESTS AND REPLIES ──────────────────────────────────────────────────────────────────
