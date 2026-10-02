@@ -363,9 +363,10 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
     let ran: BTreeMap<rigs::Rig, BTreeMap<String, Outcome>> = match &blocked {
         Some(_) => BTreeMap::new(),
         None => std::thread::scope(|scope| {
+            let runner = &runner;
             let handles: Vec<_> = by_rig
                 .keys()
-                .map(|&rig| (rig, scope.spawn(|| runner.run(rig))))
+                .map(|&rig| (rig, scope.spawn(move || runner.run(rig))))
                 .collect();
             handles
                 .into_iter()
