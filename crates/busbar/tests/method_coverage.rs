@@ -54,7 +54,7 @@
 //! not deleted from the queue. The full-strength 1.6.0 acceptance assertion,
 //! [`every_cell_is_implemented_or_waived`], is kept at full strength and marked `#[ignore]` with
 //! its reason; the QA PROMOTION GATE runs it with `-- --ignored` (the `method-coverage-acceptance`
-//! fast segment in `qa/segments.toml`, driven by `scripts/qa-gate-run.sh` on every push to `qa`)
+//! fast segment in the removed `qa/segments.toml`, driven by the removed `scripts/qa-gate-run.sh` on every push to `qa`)
 //! and it is acceptance test 5 of the release — red there blocks the qa→main promotion until
 //! every owed cell is implemented or waived.
 //!

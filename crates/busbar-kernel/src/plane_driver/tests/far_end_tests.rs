@@ -802,6 +802,53 @@ async fn the_method_and_path_arrive_as_the_upstream_requests_head_words() {
     );
 }
 
+/// BUSBAR IS INVISIBLE TO UPSTREAMS (OWNER HARD RULE 2026-10-02): every field the plane hands over
+/// goes out, except the per-connection mechanics the connection re-derives (hop-by-hop fields, one
+/// a `connection` field nominates, `host`, `content-length`) and a field naming an auth field, which
+/// the auth binding's own stands for.
+#[tokio::test]
+async fn the_planes_fields_go_out_but_the_per_connection_mechanics() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let mut req = request();
+    for (n, v) in [
+        ("x-client-trace", "abc"),
+        ("Connection", "keep-alive, x-nominated"),
+        ("x-nominated", "1"),
+        ("keep-alive", "timeout=5"),
+        ("transfer-encoding", "chunked"),
+        ("Host", "client.example"),
+        ("content-length", "9999"),
+        ("Authorization", "Bearer caller"),
+        ("X-Busbar-Made-Up", "busbar's own"),
+    ] {
+        req.fields
+            .push((n.as_bytes().to_vec(), v.as_bytes().to_vec()));
+    }
+    assert!(far.send(&t, req).await);
+    let _ = drain(&far, &t).await;
+    let opened = r.table.opened.lock().unwrap().clone();
+    let head: Vec<(&str, &[u8])> = opened[0]
+        .1
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        head,
+        [
+            ("authorization", b"Bearer sk-test".as_slice()),
+            ("content-type", b"application/json".as_slice()),
+            ("x-client-trace", b"abc".as_slice()),
+        ]
+    );
+}
+
 /// A target that is not a path never leaves: joined onto the base it could move the authority
 /// (`api.host@evil.test`) and carry the member's auth fields there. Nothing is opened, the auth
 /// binding is never called, nothing is recorded against the member.

@@ -17,7 +17,7 @@
 #   * ZERO ROWS IS RED. A functional gate that passes because it exercised nothing is the exact
 #     "green-having-run-nothing" failure the audit named; verdict.sh checks for it by name.
 #
-# WHY THE LOGIC LIVES HERE AND NOT INLINE IN plugin-functional.yml. Same reason as the release
+# WHY THE LOGIC LIVES HERE AND NOT INLINE IN the removed plugin-functional.yml. Same reason as the release
 # gate: a check nobody can run on a laptop is a check nobody exercises against a real artifact
 # before trusting it. Every probe below is runnable directly —
 #
@@ -82,6 +82,27 @@ trap _reap_fixtures EXIT
 
 track_pid() { FIXTURE_PIDS+=("$1"); }
 
+# ── The upstream far end: the pinned Rust oracle's `mock` ───────────────────────────────────────
+# ONE upstream mock: the `busbar-oracle mock <port> [marker] [control-file]` subcommand of the engine
+# testing/shadow-oracle/oracle-rust.pin names. It answers every dialect with the marker as the
+# assistant text and fixed NONZERO usage (11 in / 7 out), which is what the store probe's durability
+# assertion needs. Set ORACLE_MOCK_CAPTURE_DIR=<dir> in the caller to have the mock write one JSON file
+# per request it received (path, method, every header unmasked, body): that is how a probe asserts what
+# busbar SENT upstream.
+# BUSBAR_ORACLE_BIN, when set and executable, is the engine; otherwise bin/oracle (the one shim that
+# obtains the pinned engine) runs it. The first run may build the engine, hence the long wait.
+start_oracle_mock() {  # start_oracle_mock <port> <marker> — backgrounds the mock, tracks its pid, waits until it answers
+  local port="$1" marker="$2" repo
+  repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  if [ -n "${BUSBAR_ORACLE_BIN:-}" ] && [ -x "$BUSBAR_ORACLE_BIN" ]; then
+    "$BUSBAR_ORACLE_BIN" mock "$port" "$marker" >/dev/null 2>&1 &
+  else
+    "$repo/bin/oracle" mock "$port" "$marker" >/dev/null 2>&1 &
+  fi
+  track_pid $!
+  wait_for_http "http://127.0.0.1:${port}/" 900
+}
+
 # ── HTTP helpers ────────────────────────────────────────────────────────────────────────────────
 # Every outbound call carries a timeout: a TCP connection that is accepted and never answered hangs,
 # and a hang is the one outcome that is neither red nor green until the job timeout fires.
@@ -131,7 +152,7 @@ PY
 }
 
 # ── Oracle mock control-file writes (atomic + confirmed) ──────────────────────────────────────────
-# testing/shadow-oracle/mock-upstream.py re-reads its control file on every request. A plain
+# The oracle's `mock` (see start_oracle_mock) re-reads its control file on every request. A plain
 # `> "$CONTROL"` truncates the file in place, so a request that lands mid-write can observe an EMPTY
 # file -- and the mock now holds its last-known verb rather than treat that as "no outage", but the
 # writer side of that contract is: never let a reader observe a partial write in the first place.

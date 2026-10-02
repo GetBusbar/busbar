@@ -9,7 +9,7 @@
 //! restart, two nodes on one file) and `GetBusbar/busbar-hook-webrequest` (hook: reject, restrict and a slow
 //! upstream, against a local mock upstream).
 //!
-//! ci.yml's `plugin-proofs` job checks hashicorp-vault and auth-github out beside this one at `dev`,
+//! the removed ci.yml's `plugin-proofs` job checks hashicorp-vault and auth-github out beside this one at `dev`,
 //! `[patch]`es the busbar crates they name by git (busbar-contract, and busbar-plugin-loader
 //! dev-only) to this tree through cargo config, and builds their `cdylib`s; it checks store-sqlite
 //! and webrequest-hook out at the revs it pins and builds their `cdylib`s `--locked`

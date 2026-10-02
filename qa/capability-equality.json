@@ -389,13 +389,12 @@
     {
       "capability": "audit-chain",
       "plane": "llm",
-      "state": "proven",
-      "test": "crates/busbar-llm/src/engine/tests/reqlog_dispatch_tests.rs::every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_and_refusal_alike",
-      "note": "closed by proxy/reqlog.rs -- a RECORD TYPE and nothing else, appended at the plane's one terminal (ingress::finish_inner) through the ONE mechanism in crate::audit. Scoped per principal like the MCP call log. The test drives a real request through build_router over a real socket and reads the chain back; deleting the append fails it and leaves the other 4,540 tests green. HONEST LIMIT: busbar_contract::records::RecordStore carries no model-request method, so this stream is a bounded in-memory window and a restart loses it -- adding durability is a plugin-ABI change fanned out to four store repos and is deliberately not made here. Nothing may call it durable until that method exists.",
+      "state": "missing",
+      "note": "reopened by the P2 ruling (2026-09-30, proxy/reqlog DELETE): the per-principal request chain proxy/reqlog.rs kept was an in-memory window nothing read, and it is deleted with its tests. No llm per-request hash chain exists until a durable one is built on the store door. The one-terminal-per-unit witness that chain carried lives in crates/busbar-kernel/src/ingress/tests/terminal_tests.rs. ARCHITECT-PENDING: escalate.q DEL-REQLOG Q1.",
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::one_unit_leaves_exactly_one_link_on_the_chain"
+        "test": "crates/busbar/src/root/tests/plane_node.rs::a_driven_planes_abandoned_end_seals_one_audit_record"
       }
     },
     {

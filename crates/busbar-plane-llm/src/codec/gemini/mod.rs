@@ -333,11 +333,10 @@ const FIELD_TRAFFIC_TYPE: &str = "trafficType";
 /// reassemble. This is a REGISTERED money change — see the CHANGELOG line and
 /// `testing/shadow-oracle/accepted-differences.json`.
 ///
-/// THIS TABLE IS ALSO THE GUARD. Because the billed figure is now exactly the sum of the terms
-/// listed here, [`gemini_usage_identity_note`] reduces to a DISCREPANCY METRIC over
+/// THIS TABLE IS ALSO THE GUARD. [`gemini_usage_identity_note`] is a DISCREPANCY METRIC over
 /// `totalTokenCount`: it fires when Google's stated total cannot be reached from this table, i.e.
-/// when Google is reporting a counter this dialect does not model yet. It never corrects, clamps or
-/// zeroes a bucket to make the sum close.
+/// when Google is reporting a counter this dialect does not model yet. The turn still bills
+/// Google's total (Q91 option A): the usage table adds the unitemized remainder to output.
 const GEMINI_USAGE_ADDITIVE_TERMS: &[&str] = &[
     FIELD_PROMPT_TOKEN_COUNT,
     FIELD_CANDIDATES_TOKEN_COUNT,
@@ -376,9 +375,8 @@ fn additive_sum(u: &serde_json::Value) -> Option<u64> {
 /// counters entirely on the early SSE frames, which carry a `usageMetadata` object with nothing in
 /// it), or the billed figure already matches Google's total.
 ///
-/// NOTHING IS ZEROED, CLAMPED OR BACK-FILLED. `totalTokenCount` was write-only in this dialect until
-/// now, which is precisely why a whole additive term could go unbilled without anything noticing.
-/// The buckets stay exactly as Google sent them; the shortfall travels beside them.
+/// NOTHING IS ZEROED OR CLAMPED. A total above the sum of its terms bills (the usage table adds the
+/// remainder to output, Q91 option A); this note is what says a remainder existed.
 fn gemini_usage_identity_note(
     u: Option<&serde_json::Value>,
 ) -> Option<crate::codec::ir::UsageIdentityNote> {
@@ -413,11 +411,11 @@ fn gemini_usage_identity_note(
         unaccounted,
         wire_sum,
         unmodelled_term,
-        "gemini usageMetadata does not reconcile: the stated totalTokenCount disagrees with what \
-         busbar bills. unmodelled_term=true means Google reports a counter this dialect does not \
-         model and GEMINI_USAGE_ADDITIVE_TERMS needs a new entry backed by a recording; false means \
-         the wire's own terms close and the gap is in normalization. Buckets are reported as \
-         received; nothing was zeroed, clamped or back-filled."
+        "gemini usageMetadata does not reconcile: the stated totalTokenCount disagrees with the \
+         sum of the counters it names. unmodelled_term=true means Google reports a counter this \
+         dialect does not model and GEMINI_USAGE_ADDITIVE_TERMS needs a new entry backed by a \
+         recording; false means the wire's own terms close and the gap is in normalization. The \
+         turn bills Google's total; an unitemized remainder is billed as output."
     );
     Some(crate::codec::ir::UsageIdentityNote {
         reported_total,

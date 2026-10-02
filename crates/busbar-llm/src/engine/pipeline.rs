@@ -66,7 +66,7 @@ mod test_forward_entry {
             op,
             usage_sink,
             // No inbound `HeaderMap` on this bytes-only test entry ⇒ nothing to forward. The
-            // production ingress path collects the allowlist from the real client headers.
+            // production ingress path collects the real client headers.
             Vec::new(),
         )
         .await
@@ -86,7 +86,7 @@ mod test_forward_entry {
         ingress_protocol: &str,
         op: Op,
         usage_sink: Option<UsageSink>,
-        // The allowlisted client beta/version headers to forward (opt-in). A test entry that exercises
+        // The collected client headers a same-dialect egress forwards. A test entry that exercises
         // the forwarding path passes a collected set; every other test passes an empty Vec.
         client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
     ) -> Response {
@@ -170,9 +170,8 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     ingress_protocol: &'a str,
     op: Op,
     usage_sink: Option<UsageSink>,
-    // The allowlisted client beta/version headers the caller ACTUALLY SENT (captured at ingress by the
-    // neutral `busbar_kernel::proxy::collect_client_headers`), threaded to the egress assembly sites
-    // where they are forwarded scoped to the matching egress dialect. Empty ⇒ byte-identical egress.
+    // The client headers a same-dialect egress forwards (captured at ingress by the neutral
+    // `busbar_kernel::proxy::collect_client_headers`), threaded to the egress assembly site.
     client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
 ) -> impl std::future::Future<Output = Response> + 'a {
     use tracing::Instrument;
@@ -320,11 +319,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // `RequestCtx::request_id` below, and threaded into every hook projection built in here) rather
     // than re-derived per hop.
     request_id: u64,
-    // The allowlisted client beta/version headers the caller ACTUALLY SENT, captured at ingress by the
-    // neutral `busbar_kernel::proxy::collect_client_headers` against the plane's
-    // `forwardable_client_header_names()` set. Stored on `RequestCtx` below so BOTH the hot path here
-    // and the degraded exhaustion paths read the same set for the whole failover walk. Empty ⇒
-    // nothing forwarded (byte-identical egress).
+    // The client headers a same-dialect egress forwards, captured at ingress by the neutral
+    // `busbar_kernel::proxy::collect_client_headers` (every one but the per-connection mechanics and
+    // the dialect-governed names). Stored on `RequestCtx` below so BOTH the hot path here and the
+    // degraded exhaustion paths read the same set for the whole failover walk.
     client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
 ) -> Response {
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
@@ -389,7 +387,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     let (gemini_json_array, affinity_key_hash) =
         derive_route_signals(v.as_ref(), op, ingress_protocol, affinity_key);
 
-    // Failover + breaker config, the request context (carrying the client beta/version allowlist),
+    // Failover + breaker config, the request context (carrying the collected client headers),
     // and this pool's configured member exclusions applied to `cands` (see `prepare_failover_ctx`).
     let (mut request_ctx, breaker_cfg, max_cap) =
         prepare_failover_ctx(rt, &mut cands, pool_name, request_id, client_fwd);
@@ -1174,7 +1172,7 @@ fn derive_route_signals(
 }
 
 /// Failover + breaker config for this pool (own settings else defaults), the `RequestCtx` carrying
-/// the ingress-collected client beta/version allowlist across the whole walk, and this pool's
+/// the ingress-collected client headers across the whole walk, and this pool's
 /// configured member exclusions applied to `cands`. Returns `(request_ctx, breaker_cfg, max_cap)`.
 fn prepare_failover_ctx(
     rt: &Arc<NativeRuntime>,

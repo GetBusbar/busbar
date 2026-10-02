@@ -22,7 +22,6 @@ use crate::gates::design_bindings::tables;
 use crate::rx::Regex;
 
 const RUNNABLE_SUFFIXES: [&str; 6] = [".sh", ".py", ".mjs", ".js", ".ts", ".rb"];
-const SEGMENT_RUNNER: &str = "scripts/qa-gate-run.sh";
 pub const XTASK_GATE_DIR: &str = "xtask/src/gates";
 
 /// THE LEDGER IS NEVER AN INVOKER OF ITSELF. The derivation names every gate the ledger cites, so
@@ -299,13 +298,6 @@ pub fn ci_invoked_refs(root: &Path) -> Result<BTreeSet<String>, String> {
         .join("\n");
 
     let mut invoked = refs_in(&workflows, &mut gate_modules);
-    let segments = root.join("qa").join("segments.toml");
-    // The qa manifest is admitted ONLY when a workflow is seen driving its runner, so it cannot
-    // vouch for itself.
-    if invoked.contains(SEGMENT_RUNNER) && segments.is_file() {
-        let text = runnable_text(&segments);
-        invoked.extend(refs_in(&text, &mut gate_modules));
-    }
 
     let mut frontier: BTreeSet<String> = invoked.clone();
     while !frontier.is_empty() {
@@ -410,7 +402,7 @@ pub fn check_verdict(c: &J, ctx: &Ctx) -> (bool, String) {
                     false,
                     format!(
                         "{k}:{r} (exists on disk, but nothing under .github/workflows invokes it, \
-                         directly or through the qa segment manifest, and it is no registered \
+                         directly or through a script one runs, and it is no registered \
                          gate the turnstile runs -- a gate nobody runs compares nothing)"
                     ),
                 );

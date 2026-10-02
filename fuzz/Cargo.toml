@@ -2,7 +2,7 @@
 #
 # This is a SELF-CONTAINED workspace (note the empty `[workspace]` table below): it is NOT a
 # member of the root workspace, so it never affects a normal `cargo build`/`cargo test` and adds
-# zero cost to the per-push CI. It only builds when `cargo fuzz` is invoked (see qa-fuzz.yml,
+# zero cost to the per-push CI. It only builds when `cargo fuzz` is invoked (see the removed qa-fuzz.yml,
 # which runs at the qa promotion boundary, time-boxed). The harnesses depend on the target crates
 # by path with their sanctioned `test-support` feature and DO NOT modify any crate source.
 [package]

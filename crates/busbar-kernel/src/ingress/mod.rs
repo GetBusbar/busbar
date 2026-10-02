@@ -406,7 +406,7 @@ pub fn destination_guard(
             proto,
             StatusCode::BAD_REQUEST,
             crate::proxy::KIND_INVALID_REQUEST,
-            &format!("no configured rate for model '{pool}'"),
+            &crate::door::VerifyRefusal::NoRate { name: pool.into() }.message(),
         );
         return Err(Box::new(finish_rejected(
             app, gov, proto, label, started, charged_at, resp,
@@ -497,7 +497,6 @@ pub fn finish(
         charged_at,
         resp,
         true,
-        crate::proxy::reqlog::Terminal::Admitted,
     )
 }
 
@@ -530,7 +529,6 @@ pub fn finish_admitted(
         charged_at,
         resp,
         charged,
-        crate::proxy::reqlog::Terminal::Admitted,
     )
 }
 
@@ -563,7 +561,6 @@ pub fn finish_rejected(
         charged_at,
         resp,
         false,
-        crate::proxy::reqlog::Terminal::Rejected,
     )
 }
 
@@ -577,7 +574,6 @@ fn finish_inner(
     charged_at: u64,
     resp: Response,
     refund_on_non_2xx: bool,
-    terminal: crate::proxy::reqlog::Terminal,
 ) -> Response {
     // FINISH stage: metrics record + request-log gate + non-2xx refund check (zero cost unprofiled).
     let _fin = crate::profile::start(crate::profile::Stage::Finish);
@@ -614,17 +610,12 @@ fn finish_inner(
     // same "the read runs ONLY when declared, never call-then-discard" discipline
     // `requested_signals` applies to hook signals. Nobody subscribed ⇒ nothing is generated. Each
     // sink then receives a payload built to ITS OWN projection (`crate::export::deliver_request_log`).
-    // ONE finish-time wall-clock read shared by the (gated) export log record and the always-on
-    // audit reqlog record below — the same instant, observed once. In 1.5.5 the only finish-time
-    // read was the gated export one; the 1.6.0 audit record's ungated second read is what this
-    // collapses away.
-    let finished_ts = busbar_kernel::store::now();
     if app
         .export_projections
         .wants_stream(busbar_contract::abi::export::ExportStream::Logs)
     {
         crate::export::deliver_request_log(&crate::export::RequestLogFacts {
-            ts: finished_ts,
+            ts: busbar_kernel::store::now(),
             ingress_protocol,
             pool,
             outcome,
@@ -632,33 +623,7 @@ fn finish_inner(
         });
     }
 
-    // THE PLANE'S EVIDENCE, on the ONE chain in `crate::audit` — the same mechanism `calllog`
-    // and `provenance` append to, with a record type of its own and nothing else of its own
-    // (`crate::proxy::reqlog`). Here, at the plane's single terminal, for the same reason the metric
-    // emit is here: every model request passes through this function exactly once, admitted or
-    // refused, so a record written here cannot be skipped by a path that forgot to write one — and
-    // the refusals are the half a log that only records successes cannot provide.
-    //
-    // The PRINCIPAL is the presenting key; an ungoverned request chains under the fixed sentinel
-    // rather than being dropped, because a chain that silently omits every anonymous request is a
-    // chain with a hole an attacker can choose. The POOL is the bounded label, never the raw
-    // caller-supplied model string.
     let status = resp.status().as_u16();
-    let (audit_outcome, audit_reason) = crate::proxy::reqlog::outcome_of(terminal, status);
-    crate::proxy::reqlog::REQUESTS.record(
-        gov.key
-            .as_ref()
-            .map(|k| k.id.as_str())
-            .unwrap_or(crate::proxy::reqlog::PRINCIPAL_UNGOVERNED),
-        crate::proxy::reqlog::RequestInput {
-            ts: finished_ts,
-            ingress_protocol: ingress_protocol.to_string(),
-            pool: pool.to_string(),
-            outcome: audit_outcome,
-            reason: audit_reason,
-            status,
-        },
-    );
 
     // The flat per-request fee was charged ATOMICALLY at admission. REFUND it for a request
     // that produced no usable upstream result (non-2xx: router 503 exhaustion, upstream 5xx, 4xx
@@ -698,6 +663,10 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
 // names for the ingress concern: "one plane-neutral admission in ingress/, with the plane supplying
 // its wire reader". This is the envelope half of that.
 pub mod jsonrpc;
+
+#[cfg(test)]
+#[path = "tests/terminal_tests.rs"]
+mod terminal_tests;
 
 /// THE NEUTRAL PATH-MODEL ARRIVAL SEAM — the `ArrivalHost` ABI a URL-model dialect calls to reach the
 /// core request pipeline, and the protocol-name-keyed side-table the composition root registers those

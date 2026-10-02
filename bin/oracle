@@ -11,7 +11,7 @@
 # replaces the old archive digest-pin (an unpinned judge is not a judge; money integrity). The argv
 # contract is UNCHANGED (cells / record / replay / diff / normalize / merge / renormalize /
 # harness-rev / owed-baseline / fetch-golden / fetch-plugin / replay-selftest / selftest / tool-dir),
-# so every caller (ci.yml's `./bin/oracle <sub>`, the turnstile's HarnessOracle) is unchanged.
+# so every caller (the removed ci.yml's `./bin/oracle <sub>`, the turnstile's HarnessOracle) is unchanged.
 #
 # TOOL_DIR is a SHIM directory this shim generates beside the binary: `record.sh` there forwards to
 # `busbar-oracle record --native` so the turnstile's HarnessOracle — which drives
@@ -231,7 +231,7 @@ resolve_bin() {
     # busbar-release is a PRIVATE first-party repo, so a plain `git clone https://…` of it fails
     # unauthenticated on CI (the default GITHUB_TOKEN is scoped to THIS repo, not the sibling).
     # Fold a token — the first of BUSBAR_RELEASE_TOKEN / GH_TOKEN / GITHUB_TOKEN that is set — into
-    # the github.com https URL as `x-access-token`, exactly as ci.yml already does for this repo's
+    # the github.com https URL as `x-access-token`, exactly as the removed ci.yml already does for this repo's
     # own authenticated remote. No token set (local dev over ssh / a cached credential helper) →
     # the URL is used verbatim, so nothing regresses off CI.
     # A Latchkey runner (`latchkey run`) has no token and no credential helper, so this clone fails
@@ -338,7 +338,7 @@ export BUSBAR_ORACLE_TOOL_DIR="${BUSBAR_ORACLE_TOOL_DIR:-$shim_dir}"
 export BUSBAR_ORACLE_BIN="$RUST_BIN"
 
 # ── argv contract (unchanged for callers) → the Rust CLI ────────────────────────────────────────
-# The committed callers (ci.yml, manual-keep-proof.yml, the turnstile's record.sh shim) speak the
+# The committed callers (the removed ci.yml, the removed manual-keep-proof.yml, the turnstile's record.sh shim) speak the
 # historical Python argv. The Rust CLI takes explicit paths; this dispatcher fills the same
 # BUSBAR_ORACLE_DATA-derived defaults the Python tool derived, so `./bin/oracle <sub> …` is unchanged.
 DATA="$BUSBAR_ORACLE_DATA"
@@ -513,7 +513,7 @@ PY
     # It is OPT-IN now: a caller that genuinely compares across a harness change passes the flag
     # itself, at the call site, where a reader can see it and ask why. The two that do are the
     # workflows diffing a Rust-recorded candidate against the COMMITTED, Python-recorded 1.5.5
-    # golden (ci.yml and oracle-proof.yml); they now say so in their own lines. The DONE oracle
+    # golden (the removed ci.yml and the removed oracle-proof.yml); they now say so in their own lines. The DONE oracle
     # records BOTH sides with this engine, so its revisions agree and it needs no flag — which is
     # exactly the run the guard should have been armed on all along. Re-recording the committed
     # golden with the Rust engine (oracle-rerecord workflow) retires the two explicit uses too.

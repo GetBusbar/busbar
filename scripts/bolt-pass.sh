@@ -12,7 +12,7 @@
 # hardware (the EC2 benchmark host): plain cycles sampling — Graviton has no LBR, and SPE branch
 # stacks are not available to perf there, which is why the conversion below passes `-nl`
 # (no-LBR mode). The REWRITE half (perf2bolt + llvm-bolt) needs no PMU and runs anywhere the
-# tools exist, GitHub runners included — .github/workflows/bolt-pass.yml orchestrates that half.
+# tools exist, GitHub runners included — the removed bolt-pass.yml orchestrates that half.
 #
 # FAIL-CLOSED, NO KNOBS. The BOLT flags below are the proven recipe and they are constants, not
 # options. Every precondition that has an observed failure behind it is checked loudly:

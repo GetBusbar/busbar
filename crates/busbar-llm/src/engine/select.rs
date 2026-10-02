@@ -43,8 +43,8 @@ pub(crate) struct RequestCtx {
     /// "don't mutate the caller's exclusion set" rule. Cleared at the start of every `pick_among` call
     /// so it reflects that hop's exhaustion, not a stale earlier one.
     //
-    // Consumed by the queue/least_bad/Retry-After wiring in a later phase; populated and asserted by
-    // the taxonomy/refactor unit tests now — silence the release-build dead-code lint meanwhile.
+    // Read by the queue exhaustion pre-check (`exhaustion::queue`), which runs only when a pool
+    // exhausts; the unit tests populate and assert it. The lint is silenced outside tests.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) excluded_reasons: Vec<(usize, busbar_kernel::store::Unavailable)>,
     /// This request's correlation id — a single `u64` `fetch_add`'d off [`App::next_request_id`]
@@ -58,17 +58,15 @@ pub(crate) struct RequestCtx {
     /// the default path). Deliberately internal-only — never surfaced as a response header (busbar
     /// stays invisible-by-default).
     pub(crate) request_id: u64,
-    /// The allowlisted client request headers (`anthropic-beta` / `OpenAI-Beta` / `anthropic-version`)
-    /// the caller ACTUALLY SENT, captured ONCE at ingress by the neutral
-    /// [`busbar_kernel::proxy::collect_client_headers`] against the plane's
-    /// [`crate::engine::forwardable_client_header_names`] set, and threaded through the whole failover
-    /// walk so BOTH the hot forward path (`pipeline.rs`) and the degraded
-    /// [`crate::engine::walk::forward_once`] path forward the SAME set. EMPTY on a request that sent
-    /// none (the common case) — the egress map is then byte-identical to the non-forwarding build.
-    /// Dialect scoping (the no-cross-dialect-leak guard) is applied at the egress assembly site via
-    /// [`busbar_kernel::proxy::apply_client_headers`] with
-    /// [`crate::engine::client_header_names_for_egress`], NOT here — a request may fail over to a
-    /// different dialect's lane after this is captured.
+    /// The client request headers a same-dialect egress forwards unchanged (busbar is invisible to
+    /// upstreams): every header the caller sent but the per-connection mechanics and the names the
+    /// dialects govern, captured ONCE at ingress by the neutral
+    /// [`busbar_kernel::proxy::collect_client_headers`] with [`crate::engine::governed`],
+    /// and threaded through the whole failover walk so BOTH the hot forward path (`pipeline.rs`) and
+    /// the degraded [`crate::engine::walk::forward_once`] path forward the SAME set. Whether to
+    /// forward is decided at the egress assembly site ([`busbar_kernel::proxy::apply_client_headers`],
+    /// same dialect only), NOT here: a request may fail over to a different dialect's lane after
+    /// this is captured.
     pub(crate) forwarded_client_headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
 }
 
@@ -102,8 +100,8 @@ impl RequestCtx {
             excluded_reasons: Vec::new(),
             request_id,
             // Empty by default: `forward_with_pool_parsed_inner` OVERWRITES this with the ingress-
-            // collected allowlist before the failover walk. A request that sent no allowlisted header
-            // (and every test/entry that constructs `RequestCtx` directly) forwards nothing.
+            // collected client headers before the failover walk. Every test/entry that constructs
+            // `RequestCtx` directly forwards nothing.
             forwarded_client_headers: Vec::new(),
         }
     }

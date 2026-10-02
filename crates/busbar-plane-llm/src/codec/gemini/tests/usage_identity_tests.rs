@@ -239,14 +239,15 @@ fn a_grounded_turn_bills_the_tool_use_term() {
     assert_eq!(billed.output, 172);
 }
 
-/// THE GUARD IS A DISCREPANCY METRIC, NOT A CORRECTION. If Google states a `totalTokenCount` that
-/// the modelled terms cannot reach, the buckets stay exactly as sent and the gap is REPORTED — the
-/// decoder never zeroes, clamps or back-fills a bucket to make the sum close.
+/// GOOGLE'S TOTAL BILLS, AND THE GAP IS STILL REPORTED (Q91 option A, ARCHITECT ruling C8/576). If
+/// Google states a `totalTokenCount` the modelled terms cannot reach, the turn bills Google's total:
+/// every input-side term is itemized, so the unitemized remainder is billed as output. The note
+/// still reports the gap, which is what says a counter is unmodelled.
 ///
 /// The term here (`someFutureTokenCount`) is deliberately one `GEMINI_USAGE_ADDITIVE_TERMS` does not
-/// model: that is the case the metric exists for now that the tool-use term is billed.
+/// model.
 #[test]
-fn an_unmodelled_term_is_reported_never_absorbed() {
+fn an_unmodelled_term_is_reported_and_billed_as_output() {
     let body = serde_json::json!({
         "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
         "usageMetadata": {
@@ -260,9 +261,9 @@ fn an_unmodelled_term_is_reported_never_absorbed() {
         .reader()
         .read_response(&body)
         .expect("read");
-    // Buckets exactly as sent — the 7 unknown tokens were NOT folded into any of them.
+    // The input bucket as sent; the 7 unitemized tokens bill as output, so the turn bills 22.
     assert_eq!(ir.usage.input_tokens, 10);
-    assert_eq!(ir.usage.output_tokens, 5);
+    assert_eq!(ir.usage.output_tokens, 12);
     let note = ir
         .usage
         .detail
@@ -276,6 +277,57 @@ fn an_unmodelled_term_is_reported_never_absorbed() {
         "positive = tokens busbar did not decode"
     );
     assert_eq!(note.identity, "gemini.usageMetadata");
+}
+
+/// THE ORACLE CELL `usage.gemini|tool-use|total-not-a-sum` (TODO 576): Google states 64 where its
+/// named counters sum to 57 (18 prompt + 7 candidates + 32 tool-use). The turn bills 64: 50 input
+/// (prompt + tool-use) and 14 output (7 visible + the 7 unitemized), on every read path.
+#[test]
+fn a_total_above_its_terms_bills_googles_total_on_every_path() {
+    const RESP: &str = r#"{"candidates":[{"content":{"parts":[{"text":"pong"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":18,"candidatesTokenCount":7,"toolUsePromptTokenCount":32,"totalTokenCount":64},"modelVersion":"m-cap"}"#;
+    let body: serde_json::Value = serde_json::from_str(RESP).unwrap();
+    let ir = Protocol::gemini()
+        .reader()
+        .read_response(&body)
+        .expect("read");
+    let billed = ir.usage.to_token_usage();
+    assert_eq!((billed.input, billed.output), (50, 14));
+    assert_eq!(billed.input + billed.output, 64, "Google's totalTokenCount");
+    let recovered = Protocol::gemini()
+        .reader()
+        .recover_truncated_usage(RESP.as_bytes())
+        .expect("the trailing usageMetadata is recoverable");
+    assert_eq!((recovered.input, recovered.output), (50, 14));
+}
+
+/// A total at or below the sum of its terms adds nothing: an early stream frame states none, and a
+/// turn whose terms close bills exactly them.
+#[test]
+fn a_total_that_closes_or_is_absent_adds_nothing() {
+    for (usage, out) in [
+        (
+            serde_json::json!({"promptTokenCount": 10, "candidatesTokenCount": 5}),
+            5,
+        ),
+        (
+            serde_json::json!({"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15}),
+            5,
+        ),
+        (
+            serde_json::json!({"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 3}),
+            5,
+        ),
+    ] {
+        let body = serde_json::json!({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+            "usageMetadata": usage
+        });
+        let ir = Protocol::gemini()
+            .reader()
+            .read_response(&body)
+            .expect("read");
+        assert_eq!((ir.usage.input_tokens, ir.usage.output_tokens), (10, out));
+    }
 }
 
 /// THE TRUNCATED PATH BILLS THE SAME. A response too large to reassemble is metered through

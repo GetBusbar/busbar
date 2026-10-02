@@ -376,11 +376,10 @@ abi = ["crates/busbar-contract"]
 # ── THE TEST ANCHORS OF RESOLVE-PIN'S FAILOVER-AFTER-REFUSAL TEST (ARCHITECT 2026-10-01; busbar-llm rows
 #    expire at LLM-ENGINE-DELETE)
 
-[gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-llm"]
-file    = "qa/construction.toml"
-from    = 990
-to      = 55691
-because = "Test anchors for the failover-after-refusal test the ARCHITECT asked for (RESOLVE-PIN; ARCHITECT 2026-10-01, approved as test-only re-pins at the measured figures). Expires at LLM-ENGINE-DELETE: busbar-llm goes, and these lines with it. The five lines: crates/busbar-llm/src/engine/tests/dial_refusal_failover_tests.rs:19 (busbar_kernel::egress::engine::{with_scoped_dial, DialTable}), :20 (egress::fixtures::RebindingResolver), :21 (net_guard::DialDenylist), :22 (store::now), :64 (test_support::BuiltAppSeam). Measured by cargo xtask gate construction: 990 on url-seam-final 9f2563a05, 995 at the tip. Then the step-34a proof test (the plane driver's DriverConfig::status over the llm plane's refusal rows against 64 golden/1.5.5 cells) moved from the root into crates/busbar-llm/tests (ARCHITECT ruling under GRANT 2, 2026-09-30): it names busbar_kernel::plane_driver once, +1: 995 -> 996. Drains at D3."
+# [gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-llm"] 990 -> 996 (RESOLVE-PIN test anchors, then the
+# step-34a proof test) — EXPIRED AND STRUCK: its commit reached the base, where busbar-llm reads 996. The entry read
+# `to = 55691` from 8eba7940c on, whose kernel re-arm rewrote this block's `to` line instead of the kernel's, so
+# `ceiling-rose` reported it as a declared raise that is not a raise at the base.
 
 [gate.ceiling_raises."cell[crate=busbar-llm,kind=transport].count"]
 file    = "qa/kind-isolation.toml"
@@ -395,11 +394,15 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 # ── THE KERNEL CEILING, RE-ARMED BY THE P1 CORE UNIT (KIND-SHARE, KERNEL-AUTH-ZERO, BOOT-CHAIN, CONNECTOR-19,
 #    HEAD-FIELDS, CONNECTOR-19-U12; OWNER GRANT 2026-09-29 (3)) — one declaration over BIG for the stacked unit
 
+# [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 54254 -> 55817 (the P1 core unit over BIG, S3S4-KERNEL-67 at
+# 55691, then K-SERVE +320) — EXPIRED AND STRUCK: its commits reached the base, where kernel_ceiling reads 55789 (CONVERGER
+# cg-60: 55440 + DEST-PIN +29 + K-SERVE +320), so the entry described no raise at the base and `ceiling-rose` reported it.
+
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
-from    = 54254
-to      = 55817
-because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254. Then the llm fold (step 34a and the plane ABI v1 refusal/arrival edits: the plane driver chooses a refusal's status from the plane's stated rows, keeps a refused arrive's own code and 4xx and the unit key, and hands refusal the reason, unit, code, target and the method on arrive), +41 measured over the plane driver core: 54254 + 41 = 54295. Then the production far end and money seam for the plane driver, +1313 at the measurement (ARCHITECT cap from the itemised table, 2026-10-01): step 15's budget modes +80; the walk's pick in the pump +33; the far end over the kernel's egress walk and the connector +831 and its follow-ups +116; the production money seam +180 and its checked sums and once-only ledger +68; the piece's claim, dialect and caller reference +64; one identity re-export home +3; drains -64: 54295 + 1313 = 55608. Then the hold sizing and fee refund on the plane driver (step 17) at the measurement, +185: the estimate budget mode +45; a plane's fee refund off its own fee lane and the refund primitive +40; the fee-unit report decides the refund +30; ledgering and metering under the serving member +60; the driver names the serving member at the answer's commit +10: 55608 + 185 = 55793. Measured on the stacked unit tip: 55799 (+6 over the summed ledger, the driver's own verify seat beside the forwarded seats). THEN (summed on the trunk by CONVERGER, +18 -> 55817): OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over BIG 54254 (the P1 core unit: KIND-SHARE A3/A4/TL, KERNEL-AUTH-ZERO, BOOT-CHAIN, CONNECTOR-19 item 2, HEAD-FIELDS, CONNECTOR-19-U12): BOOT-CHAIN +22 (the One Statement, claims and conns fill; lane-measured 52136 -> 52158, GRANT 3), KERNEL-AUTH-ZERO -3 (lane-measured 52136 -> 52133), the rest 0; composed and measured by cargo xtask gate construction on the unit tip: 54272 (+18; the one-line difference from +19 is the composition). Then the S3+S4 chunk measured 55691 at 83743044b: ARCHITECT S3S4-KERNEL-67 2026-10-01 grants exactly 55691 (q176 Q17-6 refund +48 ruled GRANT3; the S3/S4 stacking resolutions and fmt +19), consuming the 73-line R-KERNEL reservation. Then R-KERNEL exception, ARCHITECT C2c S5 K-SERVE 2026-10-01 (escalate.q 17:29:52Z Q1-Q6: serve layer + admin mount; 17:31:11Z Q4: the abi/plane append): the plane serve driver (crates/busbar-kernel/src/plane_driver/serve.rs), +320 at the measurement: 55440 at predev 8fc5e67e2 -> 55760 at the lane tip; the ceiling re-arms 55691 -> 55760 (within this declaration's 55817). Repaid at the a2a flip (C2c S8)."
+from    = 55599
+to      = 55614
+because = "SDK-SVC (R-KERNEL, ARCHITECT S7-TICK 2026-10-01 ruling A, approved +28): the late attach of the kernel pool, signer and demotion record in set-once slots, +15 kernel lines measured by the promote turnstile on PR #139 (55804 over predev 94b053174's 55789). Re-summed on merge of predev: predev arms 55599 + 15 = 55614."
 
 # ── THE KERNEL CEILING, RE-ARMED BY TRAIN BIG 53148 -> 54254 (E12 lowers, URL-SEAM + RESOLVE-PIN, H2) — EXPIRED
 #    AND STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above, which declares the next
@@ -523,11 +526,7 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
 
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 29284
-to      = 29803
-because = "REARM cg-58 then cg-60 (K-SERVE abi/plane append +31, ARCHITECT C2c S5 Q4: 29772 + 31 = 29803) (CONVERGER; ARCHITECT ruling 2026-10-01: ceilings land as approved DELTAS on top of what predev measures): gate.surface_ceilings.contract_caps measured 29772 by cargo xtask gate construction on the DEST-PIN tip 93c14402a (lane-fast2); predev 8fc5e67e2 carries 29284 and already measures 29590 (the standing loc-ceilings:caps-contract / surface-ceiling:contract red); the bundle adds exactly the approved +182 (SDK-SVC wrappers +130, ARCHITECT S7-TICK 2026-10-01; DEST-PIN judged-address pin +52, ARCHITECT DEST-PIN 2026-10-01): 29590 + 182 = 29772."
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -554,11 +553,7 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
 
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 29284
-to      = 29803
-because = "REARM cg-58 then cg-60 (K-SERVE abi/plane append +31, ARCHITECT C2c S5 Q4: 29772 + 31 = 29803) (CONVERGER; ARCHITECT ruling 2026-10-01: ceilings land as approved DELTAS on top of what predev measures): rules.loc-ceilings.caps_contract_ceiling measured 29772 by cargo xtask gate construction on the DEST-PIN tip 93c14402a (lane-fast2); predev 8fc5e67e2 carries 29284 and already measures 29590 (the standing loc-ceilings:caps-contract / surface-ceiling:contract red); the bundle adds exactly the approved +182 (SDK-SVC wrappers +130, ARCHITECT S7-TICK 2026-10-01; DEST-PIN judged-address pin +52, ARCHITECT DEST-PIN 2026-10-01): 29590 + 182 = 29772."
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -588,6 +583,18 @@ file    = "qa/kind-isolation.toml"
 from    = 233
 to      = 236
 because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2026-09-30 (URL-PARSE audit) SEAM puts the one URL and host reader at busbar-contract/src/net.rs (BUSBAR-1.6.0.md, the engine-folds paragraph). The three hits are the web scheme names the reader must spell: net.rs:398 (the http literal of strip_scheme, moved verbatim from busbar-kernel-egress trust::net) and net.rs:518 (the http and ws arms of UrlFamily::of, folded from the two split_ws_url copies). The pair nets down in the same commit: busbar-kernel-egress x transport 56 -> 55 and x plane 16 -> 13 (net -1). Measured by cargo xtask gate kind-isolation --report on predev 8a4b18692: 233 at the base, 236 at the tip."
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 29392
+to      = 29397
+because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over predev 29392, after the union drain), merge-steward delegation <= +150 (ARCHITECT 2026-10-01). Predev arms 29392."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 29392
+to      = 29397
+because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over 29392, after the union drain), merge-steward delegation <= +150. Predev arms 29392."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -898,7 +905,9 @@ because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
-contract_caps = 29803
+# ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A deletes the dead hot/cold ABI; lower only).
+# ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
+contract_caps = 29397
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -973,7 +982,7 @@ busbar-llm = 226
 # LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
 # contract's JSON-RPC reader, not the kernel's. Downward only.
 # LOWERED 282 -> 281 at the measure on the MCP-COMPAT train (T12, lk cli-5acd1cc0). Downward only.
-busbar-mcp = 281
+busbar-mcp = 280
 # busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
 # instead of per signature.
 busbar-a2a = 232
@@ -988,7 +997,9 @@ counts can trend to zero at their own pace."""
 [rules.ports-only-tests.max_per_crate]
 # RAISED 995 -> 996 (the step-34a proof test's one busbar_kernel line; GRANT 2, declared above;
 # drains at D3).
-busbar-llm = 996
+# LOWERED 996 -> 980 at the measurement by DEL-REQLOG (reqlog_dispatch_tests and the chain reads in
+# unit/tests/{audit,chain}.rs deleted).
+busbar-llm = 980
 busbar-mcp = 185
 busbar-a2a = 98
 busbar-voice = 43
@@ -1542,10 +1553,16 @@ kernel_crate = "busbar-kernel"
 #    the plane serve driver (plane_driver/serve.rs) +320 over predev 8fc5e67e2's 55440; repaid at the a2a flip (C2c S8).
 # ── RE-ARMED 55760 -> 55789 by CONVERGER cg-60 (ARCHITECT 2026-10-01: approved deltas over what predev measures; replaces K-SERVE's absolute 55760):
 #    predev 335d02828 measures 55440; DEST-PIN +29 (cg-58, under its approved +28 ruling plus the ceiling) + K-SERVE +320 (C2c S5) = 55789.
-# ── RE-ARMED 55789 -> 55804 for SDK-SVC at the measurement (R-KERNEL, ARCHITECT S7-TICK 2026-10-01 ruling A, approved +28):
-#    the late attach of the pool, signer and demotion record (host_services.rs set-once slots), +15 kernel lines measured
-#    by the promote turnstile on PR #139 (55804 at a84cdaaf7 over predev 94b053174's 55789).
-kernel_ceiling = 55804
+# ── LOWERED 55789 -> 55783 at the measurement (PROTO-FIXES #158, promote run 36945934870 ceiling-slack): the far end's
+#    field strip lives in busbar-kernel-egress and its two identical early refusals share one branch; lower-only.
+# ── LOWERED 55783 -> 55605 at the measurement by DEL-REQLOG (TODO PATH P2, card step 4): proxy/reqlog and its
+#    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
+# ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
+#    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
+# ── RE-ARMED 55599 -> 55614 for SDK-SVC (R-KERNEL, ARCHITECT S7-TICK 2026-10-01 ruling A, approved +28): the late attach
+#    of the pool, signer and demotion record (host_services.rs set-once slots), +15 kernel lines as measured by the
+#    promote turnstile on PR #139 (55804 over 55789), re-summed over predev's 55599 on merge.
+kernel_ceiling = 55614
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
@@ -1673,7 +1690,9 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
-caps_contract_ceiling = 29803
+# ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A; lower only).
+# ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
+caps_contract_ceiling = 29397
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
@@ -1760,7 +1779,7 @@ ceiling = 450
 label = "in-flight/sessions"
 patterns = ["inflight.rs"]
 # RE-BASELINED 2026-09-22: 575 -> 572, the measurement.
-ceiling = 552
+ceiling = 540
 
 [rules.loc-ceilings.kernel_files.recovery]
 label = "recovery"
@@ -1782,7 +1801,7 @@ patterns = ["registry.rs"]
 # RE-BASELINED 2026-09-22: 887 -> 724, the measurement. The pattern still matches three files by
 # basename — `registry.rs` 314, `plane/registry.rs` 389, `proto/registry.rs` 21 — and all three
 # have drained since the ceiling was last pinned.
-ceiling = 681
+ceiling = 675
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
@@ -1800,7 +1819,7 @@ ceiling = 61
 # item 130 took the sweep's named-grant line out (the take now mints its grant in the argument).
 label = "tick: node tick and the drain sweep"
 patterns = ["tick.rs"]
-ceiling = 191
+ceiling = 137
 
 # ── REPOINTED 2026-09-22, the same repair `ticks` above already had. ───────────────────────────
 # Neither `arena.rs` nor `masking.rs` exists anywhere in the tree, so this row measured the empty
@@ -1987,7 +2006,9 @@ words = [
 # neutral copies were deleted rather than re-homed. This is a floor now, not a ceiling: a unit crate
 # that names an open-vocabulary word again is RED with no slack to hide in.
 max_hits = 0
-# SITE-LEVEL review (exact `path:line`, never a whole file): busbar-core's config absorption into
+# SITE-LEVEL review (`<path> :: <literal text>`, the exact string in the exact file, never a whole
+# file; ARCHITECT 2026-10-02 STANDING-REDS option 2: an entry follows its literal when lines move, and
+# one that matches no literal is reported stale): busbar-core's config absorption into
 # busbar-kernel (W4.a) brought these findings over as-is; each is a literal `model`/`mcp`/`prompt`/
 # `completion` this rule's word list bans as DIALECT vocabulary, but every one below is actually one
 # of three things that are NOT dialect leaking into the kernel:
@@ -2008,54 +2029,54 @@ max_hits = 0
 # the pricer renders on usage reports, and changing operator-visible billing terminology is not a
 # call this rule's cleanup gets to make unilaterally.
 known_sites = [
-  "crates/busbar-kernel/src/appbuild.rs:240",
-  "crates/busbar-kernel/src/appbuild.rs:702",
-  "crates/busbar-kernel/src/appbuild.rs:776",
-  "crates/busbar-kernel/src/appbuild.rs:889",
-  "crates/busbar-kernel/src/config/migrate.rs:333",
-  "crates/busbar-kernel/src/config/migrate.rs:1505",
-  "crates/busbar-kernel/src/config/migrate.rs:1850",
-  "crates/busbar-kernel/src/config/migrate.rs:1851",
-  "crates/busbar-kernel/src/config/mod.rs:796",
-  "crates/busbar-kernel/src/config/mod.rs:2285",
-  "crates/busbar-kernel/src/config/pools.rs:302",
+  "crates/busbar-kernel/src/appbuild.rs :: model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
+  "crates/busbar-kernel/src/appbuild.rs :: model '{model}' references unknown provider '{}'",
+  "crates/busbar-kernel/src/appbuild.rs ::   model {} via {} ({}) max {}{}",
+  "crates/busbar-kernel/src/appbuild.rs :: pool '{name}' references unknown model '{}'",
+  "crates/busbar-kernel/src/config/migrate.rs :: `pools.{}.members[].target:` (renamed to model)",
+  "crates/busbar-kernel/src/config/migrate.rs :: prompt",
+  "crates/busbar-kernel/src/config/migrate.rs :: model",
+  "crates/busbar-kernel/src/config/migrate.rs :: pools.{pname}.members[].target -> model",
+  "crates/busbar-kernel/src/config/mod.rs :: completion",
+  "crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference.",
+  "crates/busbar-kernel/src/config/pools.rs :: a bare member name, or a member object `{ model, weight, ... }`",
   # Moved from the retired shared value crate with the code that carries them (#83a SD-8), reviewed
   # there and frozen: the omitted-`protocol:` default of the 1.5.3 providers.yaml grammar, and the
   # published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
-  "crates/busbar-kernel/src/config/providers.rs:104",
-  "crates/busbar-kernel/src/diagnostics/mod.rs:2843",
+  "crates/busbar-kernel/src/config/providers.rs :: anthropic",
+  "crates/busbar-kernel/src/diagnostics/mod.rs :: rate_card entry prices a model at ALL ZERO (metered as free, uncapped)",
   # `crates/busbar-kernel/src/config/providers.rs:75` STRUCK: the provider config shapes moved to
   # the LLM plane side and left that file 20 lines long, so the pin named a line that does not exist
   # and waived nothing. A reviewed site that points at nothing is a waiver waiting for the next
   # literal written there.
-  "crates/busbar-kernel/src/config/transaction.rs:365",
-  "crates/busbar-kernel/src/config_validate/mod.rs:132",
-  "crates/busbar-kernel/src/config_validate/mod.rs:140",
-  "crates/busbar-kernel/src/config_validate/mod.rs:152",
-  "crates/busbar-kernel/src/config_validate/mod.rs:181",
-  "crates/busbar-kernel/src/config_validate/mod.rs:192",
-  "crates/busbar-kernel/src/config_validate/mod.rs:213",
-  "crates/busbar-kernel/src/config_validate/mod.rs:232",
-  "crates/busbar-kernel/src/config_validate/mod.rs:232",
-  "crates/busbar-kernel/src/config_validate/mod.rs:260",
-  "crates/busbar-kernel/src/config_validate/mod.rs:306",
-  "crates/busbar-kernel/src/config_validate/mod.rs:306",
-  "crates/busbar-kernel/src/config_validate/mod.rs:394",
-  "crates/busbar-kernel/src/config_validate/mod.rs:423",
-  "crates/busbar-kernel/src/config_validate/mod.rs:428",
-  "crates/busbar-kernel/src/config_validate/mod.rs:1242",
-  "crates/busbar-kernel/src/config_validate/mod.rs:2192",
-  "crates/busbar-kernel/src/endpoints.rs:109",
-  "crates/busbar-kernel/src/ingress/mod.rs:404",
-  "crates/busbar-kernel/src/ingress/mod.rs:409",
-  "crates/busbar-kernel/src/ingress/mod.rs:755",
-  "crates/busbar-kernel/src/ingress/mod.rs:907",
-  "crates/busbar-kernel/src/metrics/money.rs:166",
-  "crates/busbar-kernel/src/metrics/money.rs:236",
-  "crates/busbar-kernel/src/plane_host/build_input.rs:152",
-  "crates/busbar-kernel/src/router.rs:424",
-  "crates/busbar-kernel/src/store/vocab.rs:136",
-  "crates/busbar-kernel/src/test_support/mod.rs:220",
+  "crates/busbar-kernel/src/config/transaction.rs :: loom-model",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' references unknown provider '{}'",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has max_concurrent: 0; must be >= 1, or omit it (default = unbounded)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has max_requests: 0; a lane with a zero lifetime budget never admits a request — use a positive cap, or omit it (default -1 = unlimited)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to disable the per-attempt cap",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has an empty upstream_model; set a non-empty provider model id, or omit it to use the config key",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool name '{}' conflicts with model name '{}'; pools and models must have distinct names",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: provider name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a provider reachable via the adhoc /admin/<model> route is unreachable to clients; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: provider name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a provider reachable via the adhoc /{}/<model> route is unreachable to clients; rename it",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool '{}' member '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to inherit the model's setting",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool '{}' member '{}' references model '{}', which is defined but whose provider is unresolvable; fix that model's provider reference (the model's 'references unknown provider' error is reported separately)",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: pool '{}' references unknown model '{}'",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
+  "crates/busbar-kernel/src/config_validate/mod.rs :: provider '{provider_name}' base_url must use https for a public host (got '{base_url}'); plaintext http is permitted only for a private/loopback local-model upstream",
+  "crates/busbar-kernel/src/endpoints.rs :: model",
+  "crates/busbar-kernel/src/ingress/mod.rs :: governance: no configured rate for model; rejecting (rate_card is authoritative and complete)",
+  "crates/busbar-kernel/src/door.rs :: no configured rate for model '{name}'",
+  "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
+  "crates/busbar-kernel/src/ingress/mod.rs :: /{provider}/{model}/v1/messages",
+  "crates/busbar-kernel/src/metrics/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
+  "crates/busbar-kernel/src/metrics/money.rs :: model",
+  "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
+  "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
+  "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
+  "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
 ]
 
 # ── 18. no-default-bodies (BUSBAR-1.6.0.md THE DESIGN, §8) ─────────────────────────────────────────────────────
@@ -3160,7 +3181,7 @@ plane_crates = 4
 #   * `secret` 1 -> 0. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES":
 #     "these are trash … real plugins are the examples"): `crates/secret-example-plugin` was
 #     deleted, and the secret kind is proven by the real plugin repo GetBusbar/busbar-secret-vault
-#     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, ci.yml `plugin-proofs`).
+#     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, the removed ci.yml `plugin-proofs`).
 #     `crates/secret-*` now matches no directory: the kind's documented zero in this repo.
 #
 # ── RE-PINNED 2026-09-26: `auth` 2 -> 1 ─────────────────────────────────────────────────────────────────────
@@ -3169,7 +3190,7 @@ plane_crates = 4
 #     plugins are the examples"; ARCHITECT R-FIX2): `crates/auth-static-plugin` was deleted. The auth
 #     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/busbar-auth-oidc (pinned by
 #     git: busbar-kernel `auth/tests/plugin_chain_tests.rs`, `crates/busbar/tests/mcp_stdio_serve.rs`,
-#     busbar-plugin-loader `auth_conformance_tests`), and ci.yml `plugin-proofs` proves
+#     busbar-plugin-loader `auth_conformance_tests`), and the removed ci.yml `plugin-proofs` proves
 #     GetBusbar/busbar-auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
 #
 # ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────

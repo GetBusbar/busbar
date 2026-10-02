@@ -54,7 +54,7 @@ fi
 # THE STAGED-COMPARISON IDS ARE OWED EXACTLY WHEN A RECORD WAS SUPPLIED, AND THAT IS NOT A LOOPHOLE.
 #
 # `sha256:<target>`, `docker:staged-digest` and `docker:staged-armv8-digest` diff the PUBLISHED
-# artifacts against the record release-stage.yml wrote on qa. That record is a workflow artifact
+# artifacts against the record the removed release-stage.yml wrote on qa. That record is a workflow artifact
 # with a 90-day retention, so for a release older than that — or one that predates the design —
 # there is nothing to diff against and demanding the rows would make the required `release gate`
 # status permanently red for a reason that is not about the release. It would also be a lie in the
