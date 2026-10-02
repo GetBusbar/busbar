@@ -1978,7 +1978,7 @@
     },
     {
       "id": "581 busbar is invisible to upstreams except what it governs",
-      "kind": "additive",
+      "kind": "improvement",
       "changelog": "busbar is invisible to upstreams. On a same-dialect route every client header and body field passes through unchanged, except the fields busbar governs: credential headers (each dialect declares its own, e.g. Authorization, x-api-key, api-key, x-goog-api-key), replaced by busbar's upstream credential; tenant selectors (e.g. OpenAI-Organization, OpenAI-Project), set from busbar's config and never from the caller; the model, which is mapped; hook rewrites; and the HTTP hop-by-hop headers plus Host and Content-Length, re-derived for the upstream connection. On a translated route busbar translates what maps and drops the rest. There are no feature allowlists; beta and version headers are ordinary fields. 1.5.5 forwarded no client header.",
       "by": "owner (Matthew Jackson), 2026-10-02 HARD RULE \"BUSBAR IS INVISIBLE TO UPSTREAMS\" (escalate.q 03:40Z, refined 04:00Z)",
       "cells": "^egress\\.headers\\|forwarded\\|(anthropic|openai)-beta$",
@@ -1986,7 +1986,7 @@
       "classes": [
         "body"
       ],
-      "rationale": "Same-dialect routes forward every client header and body field; 1.5.5 forwarded no client header. The two cells send an anthropic-beta / openai-beta header on a same-dialect route: 1.5.5's upstream request carries neither, the candidate's carries `anthropic-beta: prompt-caching-2024-07-31` / `openai-beta: assistants=v2` and nothing else differs. The translated route (egress.headers|forwarded|anthropic-beta-cross) is identical to 1.5.5 and is NOT in scope: it carries no beta header on either build. The cells for the invisible-upstream rule's other fields (INVISIBLE-UPSTREAM card) join `cells` when recorded. Premise: the same-dialect upstream really carries the header, the translated one does not.",
+      "rationale": "Same-dialect routes forward every client header and body field; 1.5.5 forwarded no client header. The two cells send an anthropic-beta / openai-beta header on a same-dialect route: 1.5.5's upstream request carries neither, the candidate's carries `anthropic-beta: prompt-caching-2024-07-31` / `openai-beta: assistants=v2` and nothing else differs. The translated route (egress.headers|forwarded|anthropic-beta-cross) is identical to 1.5.5 and is NOT in scope: it carries no beta header on either build. The cells for the invisible-upstream rule's other fields (INVISIBLE-UPSTREAM card) join `cells` when recorded. Premise: the same-dialect upstream really carries the header, the translated one does not. KIND NOTE: the signed draft said `additive`, but the additive judge requires the candidate's arrays to be a position-wise superset of 1.5.5's, and the forwarded header lands mid-list (before host and content-length), so C13/C14 scored FAIL `additive: not a superset at /upstream/0/headers/5/0`; `improvement` (additive or strictly better, per this file's own legend) is the kind the register can express.",
       "premise": {
         "all": [
           {
