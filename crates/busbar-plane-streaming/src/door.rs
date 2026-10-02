@@ -29,7 +29,16 @@
 //! The plane's own `streams:` section as JSON, the kernel's reserved keys already read and stripped.
 //! [`read_settings`] judges it with the plane's grammar ([`crate::config::StreamsCfg`], unknown keys
 //! refused); an empty blob is the default section.
+//!
+//! ## What each unit's pieces are answered
+//!
+//! A one-request door (the mint, the SDP offer, the metadata document) answers its pieces through
+//! a [`RequestUnit`] the instance keeps by the kernel's unit key, built at the unit's first piece
+//! over the newest live generation's session params and audience. Its answer's bytes are paid into
+//! the reply buffer across `more = 1` re-calls (`busbar_contract::abi::sdk::piece`). A session
+//! door's pieces are refused: the kernel's driver serves request units only.
 
+use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::ptr;
 use std::sync::Mutex;
@@ -43,21 +52,25 @@ use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, PlaneDriveIn,
-    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_FAILED, CLAIM_EXACT,
-    CLAIM_OPEN, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, SHAPE_PIECEWISE, UNITS_ESTIMATED,
+    ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
+    PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
+    CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST,
+    SHAPE_PIECEWISE, UNITS_ESTIMATED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
+use busbar_contract::abi::sdk::piece::{self, Owed};
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
-use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot};
+use busbar_contract::abi::sdk::{Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::plane::{PER_SESSION, TOKEN_FAMILY};
 
 use crate::claims::{Dialect, HTTP_TRANSPORT, WS_TRANSPORT};
 use crate::config::StreamsCfg;
-use crate::driven::Steps;
+use crate::driven::{Door, Steps};
 use crate::meta;
 use crate::provider::{GEMINI_LIVE, OPENAI_REALTIME};
+use crate::request_unit::{self, Answer, Piece, RequestUnit};
 
 /// The name the plane's Statement carries.
 pub const NAME: &str = crate::codec::PLANE_KEY;
@@ -463,6 +476,20 @@ impl Generation {
 /// serves it (a 404).
 pub const REFUSAL_NO_DOOR: u32 = 1;
 
+/// The most units an instance keeps state for at once; past it, the oldest is dropped first.
+pub const MAX_UNITS: usize = 4096;
+
+/// One unit on a one-request door, kept from its first piece to the caller's answer.
+struct Held {
+    /// The plane's answers to the unit's pieces.
+    unit: RequestUnit,
+    /// What the unit's answer still owes the reply buffer.
+    owed: Owed,
+    /// An answer that did not fit its field or arena buffer: the re-call carries the same piece,
+    /// which is answered from here rather than read twice.
+    short: Option<Answer>,
+}
+
 /// One open plane instance.
 pub struct Plane {
     /// The deployment's public base URL, as `open` read it; a refresh keeps it.
@@ -471,9 +498,31 @@ pub struct Plane {
     generations: Mutex<Vec<(StreamsCfg, Generation)>>,
     /// The published snapshots, held by the SDK until their generation's `retire`.
     snapshots: Generations<PlaneSnapshot>,
+    /// The request units in flight, by the kernel's unit key.
+    units: Mutex<BTreeMap<u64, Held>>,
 }
 
 impl Plane {
+    /// A unit arriving on claim `claim`, under the newest live generation's session params and
+    /// audience, naming its caller by `caller_ref`. `None` for a claim the plane never published,
+    /// and for a door that opens a live session.
+    fn held(&self, claim: u32, caller_ref: Option<String>) -> Option<Held> {
+        let door = Door::of(claim)?;
+        let generations = lock(&self.generations);
+        let (cfg, g) = generations.last()?;
+        let unit = RequestUnit::new(
+            door,
+            cfg.session.clone(),
+            caller_ref,
+            g.audience().to_string(),
+        )?;
+        Some(Held {
+            unit,
+            owed: Owed::default(),
+            short: None,
+        })
+    }
+
     /// Publish generation `generation` into the `out` field `pick` names.
     fn publish<T: busbar_contract::abi::sdk::door::AbiOut>(
         &self,
@@ -532,6 +581,7 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
         public_url,
         generations: Mutex::new(Vec::new()),
         snapshots: Generations::new(),
+        units: Mutex::new(BTreeMap::new()),
     };
     p.publish(&mut out, |o| &o.snapshot, input.open.generation, cfg);
     instance.open(p);
@@ -607,12 +657,156 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     Outcome::Ready
 });
 
-// The door serves no unit's pieces yet: every piece, refusal render, admin serve and projection is
-// declined, and a declined unit is charged nothing.
+/// The piece `input` carries, in the plane's own vocabulary; `None` for a source the kind does not
+/// name. `head` holds the far end's kept response fields, read on its first piece.
+fn piece_of<'h, 'a: 'h>(
+    input: Lent<'a, OnPieceIn>,
+    head: &'h mut Vec<(&'a [u8], &'a [u8])>,
+) -> Option<Piece<'h>> {
+    let given = input.get();
+    let has_status = given.flags & PIECE_HAS_STATUS != 0;
+    let from = match given.from {
+        FROM_CALLER => request_unit::From::Caller,
+        FROM_FAR_END => request_unit::From::FarEnd,
+        FROM_KERNEL => request_unit::From::Kernel(given.attempt_no),
+        _ => return None,
+    };
+    if has_status {
+        head.extend(
+            input
+                .head_fields()
+                .iter()
+                .map(|f| (f.field(|f| &f.name).bytes(), f.field(|f| &f.value).bytes())),
+        );
+    }
+    Some(Piece {
+        from,
+        bytes: input.field(|i| &i.bytes).bytes(),
+        status: has_status.then(|| u16::try_from(given.status_code).unwrap_or(0)),
+        last: given.flags & PIECE_LAST != 0,
+        head: head.as_slice(),
+    })
+}
 
-slot!(OnPiece, OnPieceIn, OnPieceOut, |_, _, _out| {
-    Outcome::Refused
+/// Write the head fields `pairs` (name, value) into the host's field buffer over its arena.
+fn push_fields(
+    fields: &mut HostBuf<'_, OutField>,
+    arena: &mut HostBuf<'_, u8>,
+    pairs: &[(&'static str, String)],
+) {
+    for (name, value) in pairs {
+        fields.push(OutField {
+            name: arena.span(name.as_bytes()),
+            value: arena.span(value.as_bytes()),
+        });
+    }
+}
+
+/// Write the plane's `answer` for `held` into the host's buffers. Answers the outcome and whether
+/// the unit is done.
+fn answer_piece(
+    held: &mut Held,
+    answer: Answer,
+    input: Lent<'_, OnPieceIn>,
+    out: &mut Out<'_, OnPieceOut>,
+) -> (Outcome, bool) {
+    match answer {
+        Answer::Nothing => (Outcome::Ready, false),
+        Answer::Refused => (Outcome::Refused, true),
+        Answer::ToFarEnd(bytes) => {
+            held.owed.owe(&bytes, EMIT_TO_FAR_END, input, out);
+            (Outcome::Ready, false)
+        }
+        Answer::Attempt(attempt) => {
+            let (mut fields, units, mut arena) =
+                (input.fields_buf(), input.units_buf(), input.arena_buf());
+            let verb = arena.span(attempt.verb.as_bytes());
+            let target = arena.span(attempt.target.as_bytes());
+            push_fields(&mut fields, &mut arena, &attempt.fields);
+            if piece::settle(out, &fields, &units, &arena) {
+                held.short = Some(Answer::Attempt(attempt));
+                return (Outcome::Failed, false);
+            }
+            out.set(|o| &o.verb, verb);
+            out.set(|o| &o.target, target);
+            held.owed.owe(&attempt.body, EMIT_TO_FAR_END, input, out);
+            (Outcome::Ready, false)
+        }
+        Answer::ToCaller(reply) => {
+            let (mut fields, units, mut arena) =
+                (input.fields_buf(), input.units_buf(), input.arena_buf());
+            push_fields(&mut fields, &mut arena, &reply.fields);
+            if piece::settle(out, &fields, &units, &arena) {
+                held.short = Some(Answer::ToCaller(reply));
+                return (Outcome::Failed, false);
+            }
+            out.set(|o| &o.reply_status, u32::from(reply.status));
+            let done = held.owed.owe(&reply.body, EMIT_DONE, input, out);
+            (Outcome::Ready, done)
+        }
+    }
+}
+
+// `on_piece`: a one-request door's pieces (the mint, the SDP offer, the metadata document), each
+// answered by the unit's [`RequestUnit`]: the ATTEMPT's request with its body, the caller's body to
+// the far end, and the caller's answer from the far end's. A finished or refused unit is forgotten.
+// A live session's pieces are refused: the kernel's driver serves request units, and a session door
+// is answered here once the driver hands a session its pieces.
+slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
+    let Some(p) = instance.get() else {
+        return Outcome::Failed;
+    };
+    let given = input.get();
+    let mut units = lock(&p.units);
+    if piece::is_recall(input) {
+        if let Some(held) = units.get_mut(&given.unit) {
+            if held.owed.pending() {
+                if held.owed.pay(input, &mut out) {
+                    units.remove(&given.unit);
+                }
+                return Outcome::Ready;
+            }
+        }
+    }
+    if !units.contains_key(&given.unit) {
+        let caller_ref = input
+            .field(|i| &i.caller_ref)
+            .as_str()
+            .ok()
+            .filter(|r| !r.is_empty())
+            .map(str::to_owned);
+        let Some(held) = p.held(given.claim, caller_ref) else {
+            return Outcome::Refused;
+        };
+        while units.len() >= MAX_UNITS {
+            if units.pop_first().is_none() {
+                break;
+            }
+        }
+        units.insert(given.unit, held);
+    }
+    let Some(held) = units.get_mut(&given.unit) else {
+        return Outcome::Failed;
+    };
+    let answer = match held.short.take() {
+        Some(answer) => answer,
+        None => {
+            let mut head = Vec::new();
+            let Some(piece) = piece_of(input, &mut head) else {
+                return Outcome::Refused;
+            };
+            held.unit.on_piece(piece)
+        }
+    };
+    let (outcome, done) = answer_piece(held, answer, input, &mut out);
+    if done {
+        units.remove(&given.unit);
+    }
+    outcome
 });
+
+// The refusal render, the admin serve and the hook projection are declined: a declined unit is
+// charged nothing.
 
 slot!(Refusal, RefusalIn, RefusalOut, |_, _, _out| {
     Outcome::Refused
