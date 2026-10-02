@@ -6,6 +6,21 @@ use super::*;
 const OWNER: InstanceId = InstanceId(1);
 const OTHER: InstanceId = InstanceId(2);
 
+/// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
+/// private address the scheme-rule test names (the destination guard refuses both by default), so
+/// what those tests assert stays the connector's own rule.
+fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
+    let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
+    std::sync::Arc::new(crate::LiteralsOnly(
+        crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
+            block_private_addresses: true,
+            allow,
+            ..busbar_kernel::config::Destinations::default()
+        })
+        .expect("the loopback allowlist"),
+    ))
+}
+
 /// A far end on loopback: the bound listener, and the address a need dials to reach it.
 async fn far_end() -> (tokio::net::TcpListener, String) {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -145,7 +160,7 @@ fn serving(wakes: Arc<AtomicU64>) -> Connector {
     .unwrap();
     Connector::serving(
         view,
-        crate::support::loopback_literals(),
+        loopback_literals(),
         None,
         Arc::new(move |_| {
             wakes.fetch_add(1, Ordering::SeqCst);
@@ -336,12 +351,7 @@ fn literal_connector() -> Connector {
         alpn: Vec::new(),
     }])
     .unwrap();
-    Connector::serving(
-        view,
-        crate::support::loopback_literals(),
-        None,
-        Arc::new(|_| {}),
-    )
+    Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}))
 }
 
 /// RED: a need whose config names its target (`target_from`) dials that target and no other: an
@@ -590,7 +600,7 @@ fn scheme_connector() -> Connector {
     let tls = crate::tls::client::build_client_config(&Default::default()).expect("the config");
     Connector::serving(
         view,
-        crate::support::loopback_literals(),
+        loopback_literals(),
         Some(Arc::new(tls)),
         Arc::new(|_| {}),
     )

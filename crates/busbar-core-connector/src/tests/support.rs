@@ -331,18 +331,3 @@ pub fn worker() -> tokio::runtime::Runtime {
         .build()
         .unwrap()
 }
-
-/// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
-/// private address the scheme-rule test names (the destination guard refuses both by default), so
-/// what those tests assert stays the connector's own rule.
-pub fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
-    let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
-    std::sync::Arc::new(crate::LiteralsOnly(
-        crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
-            block_private_addresses: true,
-            allow,
-            ..busbar_kernel::config::Destinations::default()
-        })
-        .expect("the loopback allowlist"),
-    ))
-}
