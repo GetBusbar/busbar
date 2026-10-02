@@ -13,8 +13,8 @@ it; `-` means the dialect has no form for it.
 
 | dialect | direction | mapped paths | no-equivalent marks |
 | --- | --- | ---: | ---: |
-| anthropic | request | 66 | 12 |
-| anthropic | response | 15 | 0 |
+| anthropic | request | 70 | 12 |
+| anthropic | response | 20 | 0 |
 | anthropic | stream | 10 | 0 |
 | bedrock | request | 50 | 8 |
 | bedrock | response | 13 | 1 |
@@ -130,6 +130,7 @@ it; `-` means the dialect has no form for it.
 | user | `metadata.user_id` | - | `messages[].role=user` | - | `user`<br>`messages[].role=user` | `user` |
 | verbosity | - | - | - | - | `verbosity` | `text.verbosity` |
 | web_search | - | - | - | `tools[].googleSearch` | `web_search_options` | - |
+| web_search_record | `messages[].content[].type=web_search_tool_result`<br>`messages[].content[].type=web_search_tool_result.tool_use_id`<br>`messages[].content[].type=web_search_tool_result.content[].url`<br>`messages[].content[].type=web_search_tool_result.content[].title` | - | - | - | - | - |
 
 ## response
 
@@ -196,6 +197,7 @@ it; `-` means the dialect has no form for it.
 | tool_use_prompt_token_count | - | - | - | `usageMetadata.toolUsePromptTokenCount` | - | - |
 | total_tokens | - | `usage.totalTokens` | - | `usageMetadata.totalTokenCount` | `usage.total_tokens` | `usage.total_tokens` |
 | type | `type` | - | - | - | - | - |
+| web_search | `content[].type=web_search_tool_result`<br>`content[].type=web_search_tool_result.tool_use_id`<br>`content[].type=web_search_tool_result.content[].url`<br>`content[].type=web_search_tool_result.content[].title`<br>`content[].type=web_search_tool_result.content.error_code` | - | - | - | - | - |
 | web_search_requests | `usage.server_tool_use.web_search_requests` | - | - | - | - | - |
 
 ## stream
