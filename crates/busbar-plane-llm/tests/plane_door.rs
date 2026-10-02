@@ -98,8 +98,7 @@ fn claim_for(path: &str) -> busbar_contract::abi::sdk::publish::ClaimSpec {
         .find(|c| c.flags & CLAIM_EXACT != 0 && c.target == path);
     let under = |c: &&busbar_contract::abi::sdk::publish::ClaimSpec| {
         let t = c.target.trim_end_matches('/');
-        c.flags & CLAIM_EXACT == 0
-            && (path == c.target || path.starts_with(&format!("{t}/")))
+        c.flags & CLAIM_EXACT == 0 && (path == c.target || path.starts_with(&format!("{t}/")))
     };
     exact
         .or_else(|| post.filter(under).max_by_key(|c| c.target.len()))
