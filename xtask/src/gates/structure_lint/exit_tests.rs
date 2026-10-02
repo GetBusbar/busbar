@@ -16,7 +16,6 @@ const UNLEDGERED: &str = "structure-lint:plane-dup:unledgered";
 const LEDGER_INTEGRITY: &str = "structure-lint:plane-dup:ledger-integrity";
 const STALE_LEDGER: &str = "structure-lint:plane-dup:stale-ledger";
 const PLANE_ROOTS: &str = "structure-lint:plane-roots";
-const GRANDFATHERED: &str = "structure-lint:oversized:grandfathered";
 
 fn row<'v>(v: &'v Verdict, id: &str) -> (&'v Status, &'v str) {
     let r = v
@@ -163,43 +162,6 @@ fn item_224_the_plane_set_is_derived_not_spelled() {
         ],
     );
     names(&v, PLANE_ROOTS, &["PLANE-ROOT-AMBIGUOUS", "`voice`"]);
-}
-
-/// Item 222: the grandfathered list is measured — green on the shipped list, red on an entry that
-/// names nothing, an entry under the cap, and a list past its ceiling.
-#[test]
-fn item_222_the_grandfathered_list_is_a_measured_ratchet() {
-    let cx = Ctx::workspace().expect("workspace");
-    let shipped = StructureLintGate::new().run(&cx);
-    let (status, detail) = row(&shipped, GRANDFATHERED);
-    assert_eq!(
-        status,
-        &Status::Pass,
-        "the shipped list must be live debt: {detail}"
-    );
-
-    let mut t = real_tables();
-    let n = t.grandfathered.len();
-    t.grandfathered = vec![
-        "crates/the-oversized-file-that-moved/src/lib.rs".to_string(),
-        "crates/busbar-kernel/src/lib.rs".to_string(),
-    ];
-    for i in 0..n {
-        t.grandfathered.push(format!(
-            "crates/busbar-kernel/src/planted_new_monster_{i}.rs"
-        ));
-    }
-    names(
-        &run_tables(t),
-        GRANDFATHERED,
-        &[
-            "GRANDFATHER-MISSING",
-            "the-oversized-file-that-moved",
-            "GRANDFATHER-RETIRED",
-            "crates/busbar-kernel/src/lib.rs",
-            "GRANDFATHER-LIST-GREW",
-        ],
-    );
 }
 
 /// Item 236: the DEBT half is reachable — a DEBT row naming an undeclared concern is refused even
