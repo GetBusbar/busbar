@@ -61,6 +61,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC;
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
 
 use crate::dispatch::kinds::{
     auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
@@ -446,8 +447,17 @@ pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     p.call(life::VALIDATE, &mut f)
 }
 
-/// `open` over `settings`, generation 1.
+/// `open` over `settings`, generation 1, in the frame the kernel opens kind `K` with: a plane's
+/// `open` is `PlaneOpenIn`/`PlaneOpenOut` (its `out` carries the first generation's snapshot, and
+/// the kind's check FAULTs an `open` whose `out` cannot hold it); every other kind's is the
+/// lifecycle's `OpenIn`/`OpenOut`.
 pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
+    if K::CODE == KindCode::Plane {
+        let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
+        f.input.open.settings = json(settings);
+        f.input.open.generation = 1;
+        return p.call(life::OPEN, &mut f);
+    }
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
     f.input.settings = json(settings);
     f.input.generation = 1;
