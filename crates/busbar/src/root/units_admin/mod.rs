@@ -1401,9 +1401,10 @@ fn amend_rate_history_effect(
     if obj.contains_key("currency") {
         return Err(GovernanceError::Validation);
     }
-    // The corrected card. The fee defaults to zero. A correction must move at least one figure — a
-    // rate or the fee — because an amendment that changes no price is a history append and nothing
-    // else.
+    // The corrected cells. A correction must move at least one figure — a rate or the fee — because
+    // an amendment that changes no price is a history append and nothing else. A fee it does not
+    // name stays the fee in force: the corrected card is the card in force for the window with the
+    // named cells set (`Correction::draft_over`), never a card of the named cells alone.
     //
     // A NEGATIVE FEE IS REFUSED HERE, at the signing door, and never reaches the card (item 29). The
     // card's constructor clamps a fee at zero, so a `-5` used to be SEALED into the append-only
@@ -1454,16 +1455,6 @@ fn amend_rate_history_effect(
     if entries.is_empty() && per_request_fee.is_none() {
         return Err(GovernanceError::Validation);
     }
-    // The cells the correction names, captured before the card consumes them, so the durable record
-    // can state the figure the card SEALED for each — not the decimal the body spelt.
-    let cells: std::collections::BTreeSet<(String, String)> = entries
-        .iter()
-        .map(|(cell, _)| (cell.lane.clone(), cell.class.clone()))
-        .collect();
-    let card = busbar_kernel_ledger::cost::RateCard::from_nano_rates(
-        entries,
-        per_request_fee.unwrap_or(0),
-    );
 
     // The cryptographic seam (D38 hardening). A well-formed correction is now verified against the
     // single operator key the fleet sealed — not merely checked for the presence of a signer. This
@@ -1515,6 +1506,12 @@ fn amend_rate_history_effect(
     // is not touched, so no correction can price a window without its durable record. A history with
     // no opening entry is refused first, so a record is never written for a correction that would
     // then not apply (the holder never returns to empty once resolved).
+    //
+    // THE CORRECTED CARD IS RESOLVED BEFORE THE RECORD (#79): the card in force for the window with
+    // the named cells set. A window no single card prices — a config apply or an earlier
+    // correction resolves part of it — or a cell on a plane whose billing is off has no one card to
+    // correct: a correction that cannot say what it corrects is malformed (`Validation`, 400), and
+    // nothing is recorded or appended. Split it at the boundary and sign each part.
     if history.is_empty() {
         return Err(GovernanceError::NotFound);
     }
@@ -1522,43 +1519,55 @@ fn amend_rate_history_effect(
         .dual_control
         .ok_or(GovernanceError::Validation)?;
     let journal = journal.ok_or(GovernanceError::Store)?;
-    let record = AmendmentRecord {
+    let correction = crate::root::kernel::Correction {
         effective_from,
         effective_until,
-        amended_at_ms: appended_at_ms,
-        sealed_fee: card.fee(),
-        rates: cells
-            .into_iter()
-            .map(|(lane, class)| {
-                // A cell the card could not represent (a sub-quantum rate) is UNPRICED on the live
-                // card and refuses a hit (#42); the record says so rather than writing a zero the
-                // signer never sealed, so the entry a restart rebuilds refuses it too.
-                let nanos = card
-                    .lane_rates(&lane)
-                    .filter(|rates| rates.class_priced(&class))
-                    .map(|rates| rates.nanos_per_unit(&class));
-                (lane, class, nanos)
-            })
-            .collect(),
-        operator_fingerprint: operator_fingerprint.clone(),
-        reason_hash,
-        principal: attribution.principal.clone(),
-        dual_control: dual_control_word(dual_control).to_string(),
-        signed_payload: canonical_amend_payload(obj),
-        signature: signature.to_string(),
-    };
-    journal.record(&record, arrival_secs)?;
-
-    let seq = history
-        .amend(
-            card,
-            effective_from,
-            effective_until,
-            appended_at_ms,
-            operator_fingerprint.clone(),
+        appended_at: appended_at_ms,
+        author: busbar_kernel_ledger::cost::Author::Amend {
+            operator_fingerprint: operator_fingerprint.clone(),
             reason_hash,
-        )
-        .ok_or(GovernanceError::NotFound)?;
+        },
+        cells: entries,
+        fee: per_request_fee,
+    };
+    let seq = history
+        .amend(&correction, |card, base| {
+            let record = AmendmentRecord {
+                effective_from,
+                effective_until,
+                amended_at_ms: appended_at_ms,
+                sealed_over: Some(base),
+                sealed_fee: card.fee(),
+                rates: correction
+                    .cells
+                    .iter()
+                    .map(|(cell, _)| (cell.lane.clone(), cell.class.clone()))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .map(|(lane, class)| {
+                        // The figure the corrected card SEALED for each named cell — not the
+                        // decimal the body spelt.
+                        let nanos = card
+                            .lane_rates(&lane)
+                            .filter(|rates| rates.class_priced(&class))
+                            .map(|rates| rates.nanos_per_unit(&class));
+                        (lane, class, nanos)
+                    })
+                    .collect(),
+                operator_fingerprint: operator_fingerprint.clone(),
+                reason_hash,
+                principal: attribution.principal.clone(),
+                dual_control: dual_control_word(dual_control).to_string(),
+                signed_payload: canonical_amend_payload(obj),
+                signature: signature.to_string(),
+            };
+            journal.record(&record, arrival_secs)
+        })
+        .map_err(|refused| match refused {
+            crate::root::kernel::AmendRefused::NoHistory => GovernanceError::NotFound,
+            crate::root::kernel::AmendRefused::NoSoleCard => GovernanceError::Validation,
+            crate::root::kernel::AmendRefused::Seal(e) => e,
+        })?;
 
     let mut out = String::new();
     out.push_str("{\"history_seq\":");
@@ -1609,7 +1618,14 @@ fn dual_control_word(dual_control: busbar_core_admin::DualControl) -> &'static s
 ///
 /// `v2` states, per cell, whether the sealed card PRICED it: a `v1` record wrote an unpriced cell
 /// as nanos 0, which a restart read back as a free cell where the live card refused it (#42).
-pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v2";
+///
+/// `v3` records a correction OVER THE CARD IN FORCE ([`AmendmentRecord::sealed_over`]): its cells
+/// are set on the card that priced the window, every other cell and plane card kept, and it names
+/// that card's entry and digest so a restart rebuilds it over that card or refuses it.
+pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v3";
+
+/// The `v2` tag: a record whose cells were the WHOLE sealed card, still read and rebuilt as that.
+const AMENDMENT_RECORD_TAG_V2: &str = "busbar/rate-amendment/v2";
 
 /// The tag a record written before [`AMENDMENT_RECORD_TAG`] carried, still read: every cell on it
 /// reads back as the figure it holds, which is all a `v1` record can say.
@@ -1626,13 +1642,19 @@ pub struct AmendmentRecord {
     pub effective_until: Option<u64>,
     /// When the correction was admitted, milliseconds.
     pub amended_at_ms: u64,
+    /// `Some` (every record this node writes, `v3`): the cells are set OVER the card in force for
+    /// the window, and this is that card's entry number and digest, written at amend time. A
+    /// restart rebuilds the entry over the entry at that number holding that card, or refuses it
+    /// ([`crate::root::kernel::CorrectionRefused`]). `None` for a `v1`/`v2` record, whose cells
+    /// and fee were the whole card it sealed.
+    pub sealed_over: Option<crate::root::kernel::CorrectionBase>,
     /// THE SEALED CARD'S FEE, MINOR UNITS — named `sealed_fee` and not the wire spelling.
     ///
     /// This is the journal's own internal record shape, not the wire: it stores what the sealed
     /// [`busbar_kernel_ledger::cost::RateCard`] already resolved (`card.fee()`), never the
     /// operator's raw JSON field. Kept off the `per_request_fee`/`fee_cents` spellings on purpose —
     /// `[rules.one-pricing-site.fee_allowed.amend-rate-history]` reviews exactly four reads of that
-    /// wire name in this file (the parse, the shape refusal, the relay to `from_nano_rates`, and
+    /// wire name in this file (the parse, the shape refusal, the relay to the `Correction`, and
     /// the signed payload's own key literal); a durable record's encode/decode is not one of them,
     /// and giving it the wire's own name would silently spend two of the grant's four slots on a
     /// binary journal format that was never reviewed as a wire reader.
@@ -1659,11 +1681,19 @@ pub struct AmendmentRecord {
 #[must_use]
 pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
     let mut body = busbar_kernel_wal::BodyWriter::new();
-    body.text(AMENDMENT_RECORD_TAG);
+    body.text(if record.sealed_over.is_some() {
+        AMENDMENT_RECORD_TAG
+    } else {
+        AMENDMENT_RECORD_TAG_V2
+    });
     body.num(record.effective_from);
     body.num(u64::from(record.effective_until.is_some()));
     body.num(record.effective_until.unwrap_or(0));
     body.num(record.amended_at_ms);
+    if let Some(base) = &record.sealed_over {
+        body.num(base.seq.get());
+        body.bytes(&base.card_digest);
+    }
     body.figure(i128::from(record.sealed_fee));
     body.num(record.rates.len() as u64);
     for (lane, class, nanos) in &record.rates {
@@ -1709,15 +1739,24 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
         }
     }
     let mut r = Reader(body);
-    let v2 = match r.text()?.as_str() {
-        AMENDMENT_RECORD_TAG => true,
-        AMENDMENT_RECORD_TAG_V1 => false,
+    let (v2, v3) = match r.text()?.as_str() {
+        AMENDMENT_RECORD_TAG => (true, true),
+        AMENDMENT_RECORD_TAG_V2 => (true, false),
+        AMENDMENT_RECORD_TAG_V1 => (false, false),
         _ => return None,
     };
     let effective_from = r.num()?;
     let has_until = r.num()?;
     let until = r.num()?;
     let amended_at_ms = r.num()?;
+    let sealed_over = if v3 {
+        Some(crate::root::kernel::CorrectionBase {
+            seq: busbar_kernel_ledger::cost::HistorySeq(r.num()?),
+            card_digest: r.bytes()?.try_into().ok()?,
+        })
+    } else {
+        None
+    };
     let sealed_fee = i64::try_from(r.figure()?).ok()?;
     let n = r.num()?;
     let mut rates = Vec::new();
@@ -1736,6 +1775,7 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
         effective_from,
         effective_until: (has_until == 1).then_some(until),
         amended_at_ms,
+        sealed_over,
         sealed_fee,
         rates,
         operator_fingerprint: r.text()?,

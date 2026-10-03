@@ -280,6 +280,30 @@ impl HistoryView<'_> {
         self.entries.iter().rev().find(|e| e.covers(t))
     }
 
+    /// **THE ONE ENTRY THAT PRICES EVERY INSTANT OF `[from, until)`** (`until` `None` is open-ended),
+    /// or `None` when no single entry does — a hole somewhere in the window, or a second entry
+    /// resolving part of it.
+    ///
+    /// A signed correction is built over this entry's card ([`RateCard::corrected`]); a window that
+    /// two entries price has no one card to correct, and correcting the first would silently revert
+    /// the second for the rest of the window.
+    pub fn sole_entry_over(&self, from: u64, until: Option<u64>) -> Option<&CardEntry> {
+        let base = self.entry_at(from)?;
+        let base_reaches_end = match (base.effective_until, until) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(ends), Some(until)) => until <= ends,
+        };
+        // An entry that out-ranks the base and overlaps the window resolves part of it (it cannot
+        // cover `from`, or it would have been the base).
+        let outranked = self.entries.iter().any(|e| {
+            e.seq > base.seq
+                && e.effective_until.is_none_or(|ends| from < ends)
+                && until.is_none_or(|until| e.effective_from < until)
+        });
+        (base_reaches_end && !outranked).then_some(base)
+    }
+
     /// The snapshot this view is.
     pub fn seq(&self) -> HistorySeq {
         self.at
