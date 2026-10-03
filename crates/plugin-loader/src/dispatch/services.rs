@@ -15,9 +15,10 @@
 //! * **May pend only on a ticket.** A service that may pend, called with no ticket, is REFUSED and
 //!   never runs.
 //! * **Served so far:** `clock.now`, `dest.judge`, `records.get`/`records.list`/`records.claim`,
-//!   `sign`, `trust.sight`, `trust.due`, `trust.verify` and `records.secret` (to the credential
-//!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise). Every other slot answers REFUSED
-//!   ([`UNIMPLEMENTED`]).
+//!   `sign`, `trust.sight`, `trust.due`, `trust.verify`, `records.secret` (to the credential
+//!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise) and `work.open` /
+//!   `work.find` / `work.settle` / `work.resume` (for the unit the crossing serves). Every other
+//!   slot answers REFUSED ([`UNIMPLEMENTED`]).
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -32,17 +33,18 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, Weak};
 
 use busbar_contract::abi::host::service::{
-    self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in, may_pend,
-    op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, RandomFillIn,
-    RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead,
-    ServiceOut, SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn, SERVICES,
+    self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in,
+    check_work_record, may_pend, op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn,
+    HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn,
+    ServiceBufs, ServiceHead, ServiceOut, SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn,
+    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 
 pub use busbar_contract::services::{
-    Caller, HostServices, Later, Ran, Reading, RecordsList, Stored,
+    Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 
 use super::ticket::{decode, InstanceWake, WakeRoute};
@@ -915,6 +917,124 @@ extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
+/// The refusal of a `work.open` or `work.settle` record past `MAX_WORK_RECORD`, before anything is
+/// opened or settled.
+pub const WORK_RECORD_TOO_LONG: &str = "the work record is longer than MAX_WORK_RECORD";
+
+extern "C" fn work_open(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::WORK_OPEN,
+        size_of::<WorkOpenIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `WorkOpenIn`.
+            let i = unsafe { input.cast::<WorkOpenIn>().read_unaligned() };
+            let (Some(kind), Some(record)) = (
+                text_of(i.kind, "work_open.kind"),
+                blob_of(i.record, "work_open.record"),
+            ) else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if check_work_record(&i.record).is_err() {
+                return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.work_open(&caller, unit, &kind, &record, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn work_find(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::WORK_FIND,
+        size_of::<WorkFindIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `WorkFindIn`.
+            let i = unsafe { input.cast::<WorkFindIn>().read_unaligned() };
+            let Some(reference) = bytes_of(i.reference, "work_find.reference") else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.work_find(&caller, unit, &reference, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn work_settle(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::WORK_SETTLE,
+        size_of::<WorkSettleIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `WorkSettleIn`.
+            let i = unsafe { input.cast::<WorkSettleIn>().read_unaligned() };
+            let Some(record) = blob_of(i.record, "work_settle.record") else {
+                return Answered::fault();
+            };
+            if check_work_record(&i.record).is_err() {
+                return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                pended(&served, &route, &head, None, |later| {
+                    provider.work_settle(&caller, i.handle, &record, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn work_resume(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::WORK_RESUME,
+        size_of::<WorkResumeIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `WorkResumeIn`.
+            let i = unsafe { input.cast::<WorkResumeIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.work_resume(&caller, unit, i.handle, later)
+                })
+            }
+        },
+    )
+}
+
 /// `name = OP, In;`: a slot this host does not serve yet: its frame, then REFUSED.
 macro_rules! unimplemented_slot {
     ($($name:ident = $op:ident, $in:ident;)*) => {$(
@@ -927,11 +1047,7 @@ macro_rules! unimplemented_slot {
 }
 
 unimplemented_slot! {
-        unit_nest = UNIT_NEST, UnitNestIn;
-    work_open = WORK_OPEN, WorkOpenIn;
-    work_find = WORK_FIND, WorkFindIn;
-    work_settle = WORK_SETTLE, WorkSettleIn;
-    work_resume = WORK_RESUME, WorkResumeIn;
+    unit_nest = UNIT_NEST, UnitNestIn;
     verify_lookup = VERIFY_LOOKUP, VerifyLookupIn;
     verify_store = VERIFY_STORE, VerifyStoreIn;
     content_scan = CONTENT_SCAN, ContentScanIn;

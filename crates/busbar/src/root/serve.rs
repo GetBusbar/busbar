@@ -26,7 +26,9 @@ use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
 use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
-use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
+use busbar_contract::services::{
+    Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+};
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
 use busbar_kernel::plane::store::KIND_DEMOTION;
@@ -312,6 +314,48 @@ impl HostServices for LateServices {
     fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
         match self.served() {
             Ok(s) => s.records_secret(kind, id, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.unit_nest(caller, unit, ask, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn work_open(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        kind: &str,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
+        match self.served() {
+            Ok(s) => s.work_open(caller, unit, kind, record, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.work_find(caller, unit, reference, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.work_settle(caller, handle, record, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.work_resume(caller, unit, handle, later),
             Err(r) => Ran::Now(r),
         }
     }

@@ -569,6 +569,7 @@ impl Units for DoorSteps<'_> {
                         ctx.key.get(),
                         busbar_kernel::host_units::UnitRecord {
                             principal: self.key.clone(),
+                            depth: 0,
                         },
                     );
                     self.lock().recorded = Some(ctx.key.get());

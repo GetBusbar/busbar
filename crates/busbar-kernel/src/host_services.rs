@@ -58,7 +58,7 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
-    merge_list, Caller, HostServices, Later, Ran, Reading, RecordsList, Stored,
+    merge_list, Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 
 /// The refusal of a record write past the write queue's bound.
@@ -66,6 +66,10 @@ pub const QUEUE_FULL: &str = "the record write queue is full";
 
 use crate::host_records::{
     record_key, Acked, Owed as WriteOwed, PendingRecords, RecordRows, Write, WriteBehind,
+};
+use crate::host_work::{
+    owner_of, parse_reference, reference_text, refusal as work_refusal, work_key, Owner, Work,
+    WorkBook, WorkBounds, WORK_SCHEMA,
 };
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
@@ -360,6 +364,9 @@ pub struct KernelServices {
     /// The destination guard; when set it IS the judge (`dest.judge`, [`Self::judge_dial`]).
     judge: Option<Arc<dyn DestJudge>>,
     demotions: OnceLock<Demotions>,
+    /// The work book behind `work.*`, and its bounds.
+    work: Arc<WorkBook>,
+    work_bounds: WorkBounds,
 }
 
 /// The durable demotion record, and the instance its unprefixed rows belong to.
@@ -400,7 +407,22 @@ impl KernelServices {
             trust: TrustBook::default(),
             judge: None,
             demotions: OnceLock::new(),
+            work: Arc::default(),
+            work_bounds: WorkBounds::default(),
         }
+    }
+
+    /// Bound every instance's work at `bounds` (the legacy registries' bounds until then).
+    #[must_use]
+    pub fn with_work_bounds(mut self, bounds: WorkBounds) -> Self {
+        self.work_bounds = bounds;
+        self
+    }
+
+    /// The work book behind `work.*`.
+    #[must_use]
+    pub fn work(&self) -> &Arc<WorkBook> {
+        &self.work
     }
 
     /// The same services judging every destination through `judge` (the connector's guard).
@@ -783,6 +805,37 @@ impl KernelServices {
     }
 }
 
+impl KernelServices {
+    /// The owner digest of the principal of `unit`, while it is in flight.
+    fn owner_of_unit(&self, unit: Option<u64>) -> Option<Owner> {
+        let record = self.units.get(unit?)?;
+        Some(owner_of(record.principal.as_deref().map(|k| k.id.as_str())))
+    }
+
+    /// The stores and pool a work call reaches, for an admitted caller; or the refusal.
+    fn work_scope(
+        &self,
+        caller: &Caller,
+    ) -> Result<(Arc<InstanceFacts>, &Records, &dyn Offload), Stored> {
+        let facts = self
+            .facts(caller)
+            .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
+        let records = self
+            .records
+            .as_ref()
+            .ok_or_else(|| Stored::refused(NO_STORE))?;
+        let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
+        Ok((facts, records, pool))
+    }
+}
+
+/// A work handle's answer: `value` = the handle, span `0` = the state byte and the record.
+fn work_found(handle: u64, w: &Work) -> Stored {
+    let mut s = spans_of(vec![(vec![w.state()], w.record.clone())]);
+    s.value = handle;
+    s
+}
+
 /// The refusal of a caller-scoped service from an instance never admitted.
 pub const NOT_ADMITTED: &str = "the instance is not admitted";
 /// The refusal of a record kind the caller did not declare.
@@ -1146,6 +1199,185 @@ impl HostServices for KernelServices {
             bytes: named.into_bytes(),
             ..Stored::ready(value)
         }
+    }
+
+    fn unit_nest(&self, _caller: &Caller, _unit: Option<u64>, _ask: NestAsk, _later: Later) -> Ran {
+        Ran::Now(Stored::refused(busbar_contract::services::UNSERVED))
+    }
+
+    fn work_open(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        kind: &str,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
+        let (facts, records, pool) = match self.work_scope(caller) {
+            Ok(s) => s,
+            Err(refused) => return Ran::Now(refused),
+        };
+        if !facts.record_kinds.iter().any(|k| k.as_str() == kind) {
+            return Ran::Now(Stored::refused(NOT_A_KIND));
+        }
+        if record.len() > svc::MAX_WORK_RECORD {
+            return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
+        }
+        let Some(owner) = self.owner_of_unit(unit) else {
+            return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
+        };
+        let book = Arc::clone(&self.work);
+        let rows = Arc::clone(&records.reads);
+        let bounds = self.work_bounds;
+        let wall_ms = Arc::clone(&self.wall_ms);
+        let instance = Arc::clone(&caller.instance);
+        let (kind, record) = (kind.to_string(), record.to_vec());
+        submit(pool, later, move || {
+            if book.load(&*rows, &instance).is_err() {
+                return failed(STORE_FAILED);
+            }
+            let now_ms = wall_ms();
+            // THE SWEEP RUNS ON SUBMIT: settled handles past their retention leave the book, and
+            // their rows are struck (an empty row is absent).
+            for gone in book.sweep(&instance, now_ms, bounds.retain_ms) {
+                if let Ok(empty) = RecordBytes::new(Vec::new()) {
+                    let _struck = rows.record_put(WORK_SCHEMA, &work_key(&instance, &gone), &empty);
+                }
+            }
+            let mut reference = [0u8; 16];
+            if getrandom::fill(&mut reference).is_err() {
+                return failed(NO_RANDOMNESS);
+            }
+            let work = Work {
+                instance: Arc::clone(&instance),
+                reference,
+                kind,
+                owner,
+                live: true,
+                opened_ms: now_ms,
+                settled_ms: 0,
+                record,
+                bound: None,
+            };
+            let Some(row) = work.row() else {
+                return Stored::refused(work_refusal::TOO_LONG);
+            };
+            // THE BOUND REFUSES AT ADMISSION: the reservation is the bound's; nothing is evicted.
+            let Some(handle) = book.reserve(work, bounds.max_live) else {
+                return Stored::refused(work_refusal::AT_BOUND);
+            };
+            // Durable before answered: a write the store refuses leaves the book as it was.
+            if rows
+                .record_put(WORK_SCHEMA, &work_key(&instance, &reference), &row)
+                .is_err()
+            {
+                book.unreserve(handle);
+                return failed(STORE_FAILED);
+            }
+            let text = reference_text(&reference).into_bytes();
+            let len = text.len();
+            let mut s = Stored::ready(handle);
+            s.bytes = text;
+            s.spans.push(ItemSpan {
+                value: absent_span(),
+                ..span(0, len, 0, 0)
+            });
+            s
+        })
+    }
+
+    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
+        let (_, records, pool) = match self.work_scope(caller) {
+            Ok(s) => s,
+            Err(refused) => return Ran::Now(refused),
+        };
+        let Some(owner) = self.owner_of_unit(unit) else {
+            return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
+        };
+        // EVERY DENIAL ANSWERS ALIKE: a malformed reference, an unknown one, another instance's,
+        // another principal's, and one settled past its retention are each READY absent.
+        let absent = || Stored::ready(svc::ABSENT);
+        let Some(reference) = parse_reference(reference) else {
+            return Ran::Now(absent());
+        };
+        let book = Arc::clone(&self.work);
+        let rows = Arc::clone(&records.reads);
+        let retain_ms = self.work_bounds.retain_ms;
+        let wall_ms = Arc::clone(&self.wall_ms);
+        let instance = Arc::clone(&caller.instance);
+        submit(pool, later, move || {
+            let held = match book.by_reference(&instance, &reference) {
+                Some(held) => Some(held),
+                // Not in this process's book: the store's row (an earlier process's handle, or
+                // another node's), adopted under a handle of this process's.
+                None => match rows.record_get(WORK_SCHEMA, &work_key(&instance, &reference)) {
+                    Err(_) => return failed(STORE_FAILED),
+                    Ok(row) => row
+                        .and_then(|row| Work::read(&instance, reference, row.as_slice()))
+                        .map(|w| (book.adopt(w.clone()), w)),
+                },
+            };
+            match held {
+                Some((handle, w))
+                    if w.owner == owner
+                        && (w.live || w.settled_ms.saturating_add(retain_ms) > wall_ms()) =>
+                {
+                    work_found(handle, &w)
+                }
+                _ => absent(),
+            }
+        })
+    }
+
+    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran {
+        let (_, records, pool) = match self.work_scope(caller) {
+            Ok(s) => s,
+            Err(refused) => return Ran::Now(refused),
+        };
+        if record.len() > svc::MAX_WORK_RECORD {
+            return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
+        }
+        let now_ms = (self.wall_ms)();
+        let (before, settled) =
+            match self
+                .work
+                .settle(&caller.instance, handle, record.to_vec(), now_ms)
+            {
+                Ok(v) => v,
+                Err(why) => return Ran::Now(Stored::refused(why)),
+            };
+        let Some(row) = settled.row() else {
+            self.work.restore(handle, before);
+            return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
+        };
+        let book = Arc::clone(&self.work);
+        let rows = Arc::clone(&records.reads);
+        let key = work_key(&caller.instance, &settled.reference);
+        submit(pool, later, move || {
+            if rows.record_put(WORK_SCHEMA, &key, &row).is_err() {
+                book.restore(handle, before);
+                return failed(STORE_FAILED);
+            }
+            Stored::ready(0)
+        })
+    }
+
+    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, _later: Later) -> Ran {
+        if self.facts(caller).is_none() {
+            return Ran::Now(Stored::refused(NOT_ADMITTED));
+        }
+        let (Some(unit), Some(owner)) = (unit, self.owner_of_unit(unit)) else {
+            return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
+        };
+        Ran::Now(
+            match self.work.bind(&caller.instance, handle, &owner, unit) {
+                Ok(w) => Stored {
+                    value: 0,
+                    ..work_found(handle, &w)
+                },
+                Err(why) => Stored::refused(why),
+            },
+        )
     }
 }
 

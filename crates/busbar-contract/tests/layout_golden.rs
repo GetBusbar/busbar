@@ -2022,7 +2022,7 @@ fn compute_layout() -> String {
     );
     record!(s, hsvc::SignIn, [head, data, into]);
     record!(s, hsvc::UnitNestIn, [head, verb, target, body, into]);
-    record!(s, hsvc::WorkOpenIn, [head, kind, record]);
+    record!(s, hsvc::WorkOpenIn, [head, kind, record, into]);
     record!(s, hsvc::WorkFindIn, [head, reference, into]);
     record!(s, hsvc::WorkSettleIn, [head, handle, record]);
     record!(s, hsvc::WorkResumeIn, [head, handle, into]);
