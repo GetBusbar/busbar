@@ -159,9 +159,8 @@ pub struct Connection {
     head_words: HeadWords,
     /// Writes the caller made before the framing began, in order: `(stream, bytes, end)`.
     early: Vec<(u64, Vec<u8>, bool, bool)>,
-    /// The stream the dialled connection's CURRENT exchange rides: [`EXCHANGE_STREAM`] for the
-    /// first, the next number for each exchange a reuse opens on it ([`Connection::reuse`]).
-    exchange: u64,
+    /// Every byte the socket has taken, for the life of the connection.
+    flushed: u64,
     open_deadline: Option<Instant>,
     framer_deadline: Option<Instant>,
     sleep: Option<(Instant, Pin<Box<tokio::time::Sleep>>)>,
@@ -303,19 +302,17 @@ impl Planned {
         self.located.name.as_deref()
     }
 
-    /// Send this dial's first message as a NEW exchange on `conn`, an open connection to the same
-    /// place (the pool's): no socket, no handshake, no judgement.
-    ///
-    /// # Errors
-    ///
-    /// The connection is not open, or the entry refused the message.
-    pub fn reuse(self, conn: &mut Connection) -> Result<(), Failure> {
-        let Dial {
-            opening,
-            head_words,
-            ..
-        } = self.dial;
-        conn.reuse(opening, head_words)
+    /// The dial this plan was located for.
+    #[must_use]
+    pub fn dial(&self) -> &Dial {
+        &self.dial
+    }
+
+    /// This dial's first message and its head words, taken out (a reuse sends them on a pooled
+    /// connection instead of dialling).
+    #[must_use]
+    pub fn into_opening(self) -> (Option<Opening>, HeadWords) {
+        (self.dial.opening, self.dial.head_words)
     }
 
     /// Dial exactly `addr` — the address judged for [`Self::authority`] — with the name the entry
@@ -363,9 +360,16 @@ impl Planned {
             None
         };
         let sock = reactor::register(socket::connect(addr).map_err(failed)?).map_err(failed)?;
+        // No handshake to agree a protocol in the clear: an entry that offers exactly one
+        // protocol speaks it by prior knowledge, and it is recorded as agreed
+        // (`LocateOut::alpn_written`).
+        let prior = match located.offer.as_slice() {
+            [one] if tls.is_none() => Some(one.clone()),
+            _ => None,
+        };
         let established = Established {
             offered_name: tls.as_ref().and(located.name.clone()),
-            agreed_protocol: None,
+            agreed_protocol: prior,
             claim: door.facts().claims.first().map(|c| (*c).to_owned()),
         };
         Ok(Connection {
@@ -382,7 +386,7 @@ impl Planned {
             opening: dial.opening,
             head_words: dial.head_words,
             early: Vec::new(),
-            exchange: EXCHANGE_STREAM,
+            flushed: 0,
             open_deadline: Some(Instant::now() + dial.open_timeout),
             framer_deadline: None,
             sleep: None,
@@ -525,7 +529,7 @@ impl Connection {
             opening: None,
             head_words: HeadWords::default(),
             early: Vec::new(),
-            exchange: EXCHANGE_STREAM,
+            flushed: 0,
             open_deadline: Some(Instant::now() + accept.handshake_timeout),
             framer_deadline: None,
             sleep: None,
@@ -550,10 +554,25 @@ impl Connection {
         self.side == SIDE_DIAL
     }
 
-    /// The stream the dialled connection's current exchange rides.
+    /// Whether the connection has neither ended nor failed.
     #[must_use]
-    pub fn exchange(&self) -> u64 {
-        self.exchange
+    pub fn live(&self) -> bool {
+        !matches!(self.phase, Phase::Ended | Phase::Failed(_))
+    }
+
+    /// Whether the connection carries CONCURRENT exchanges, one stream each: the protocol agreed
+    /// (in the handshake, or by prior knowledge) is `h2` (RFC 9113; ARCHITECT ruling Q-L18-MUX
+    /// 2026-10-03: concurrent requests to one origin share an h2 connection, h1 stays one request
+    /// per connection).
+    #[must_use]
+    pub fn multiplexes(&self) -> bool {
+        self.dialled() && self.live() && self.established.agreed_protocol.as_deref() == Some(b"h2")
+    }
+
+    /// Every byte the socket has taken so far.
+    #[must_use]
+    pub fn flushed(&self) -> u64 {
+        self.flushed
     }
 
     /// Whether the connection can carry another exchange now: dialled, framed and open, with
@@ -570,10 +589,9 @@ impl Connection {
     /// Take in whatever the far end sent while the connection sat idle (its goodbye, a closed
     /// socket, a settings change), without waiting, and answer whether it can still carry an
     /// exchange.
-    pub fn fresh(&mut self) -> bool {
-        let mut cx = Context::from_waker(std::task::Waker::noop());
+    pub fn fresh(&mut self, cx: &mut Context<'_>) -> bool {
         loop {
-            match self.drive(&mut cx) {
+            match self.drive(cx) {
                 Ok(true) if self.inbox.is_empty() => {}
                 Ok(_) => return self.reusable(),
                 Err(f) => {
@@ -584,25 +602,65 @@ impl Connection {
         }
     }
 
-    /// Open a NEW exchange on this open dialled connection: `opening`, encoded with its head words
-    /// by the entry, emitted on the next stream. The framer speaks whatever the connection agreed
-    /// (on HTTP/2, a new stream on the same connection).
+    /// Open a NEW exchange on this dialled connection, on `stream`: `opening`, encoded with its
+    /// head words by the entry, emitted now if the framing has begun and with the early writes
+    /// once it does. The framer speaks whatever the connection agreed (on HTTP/2, a new stream of
+    /// the same connection).
     ///
     /// # Errors
     ///
-    /// The connection cannot carry another exchange, or the entry refused the message.
-    pub fn reuse(
+    /// The connection ended or failed, or the entry refused the message.
+    pub fn open_exchange(
         &mut self,
+        stream: u64,
         opening: Option<Opening>,
         head_words: HeadWords,
+        cx: &mut Context<'_>,
     ) -> Result<(), Failure> {
-        if !self.reusable() {
-            return Err(Failure::Closed);
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended => return Err(Failure::Closed),
+            _ => {}
         }
-        self.exchange += 1;
-        self.opening = opening;
-        self.head_words = head_words;
-        self.send_opening()
+        let Some(message) = self.encode_opening(opening, head_words)? else {
+            return Ok(());
+        };
+        match self.phase {
+            Phase::Open => {
+                let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
+                let y = framing
+                    .emit(stream, &message, true, false)
+                    .map_err(failed)?;
+                self.absorb(y)?;
+            }
+            _ => self.early.push((stream, message, true, false)),
+        }
+        if let Err(f) = self.drive(cx) {
+            self.phase = Phase::Failed(f.clone());
+            return Err(f);
+        }
+        Ok(())
+    }
+
+    /// `opening` as the entry's wire message with its head words; `None` = nothing to send.
+    fn encode_opening(
+        &self,
+        opening: Option<Opening>,
+        (method, target): HeadWords,
+    ) -> Result<Option<Vec<u8>>, Failure> {
+        let Some((fields, body)) = opening else {
+            return Ok(None);
+        };
+        if fields.is_empty() && body.is_empty() && method.is_empty() && target.is_empty() {
+            return Ok(None);
+        }
+        let fields: Vec<(&str, &[u8])> = fields
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_slice()))
+            .collect();
+        framer::encode_head(self.door.as_ref(), &method, &target, &fields, &body)
+            .map(Some)
+            .map_err(|e| Failure::Refused(e.to_string()))
     }
 }
 
@@ -769,7 +827,7 @@ impl Connection {
         text: bool,
         cx: &mut Context<'_>,
     ) -> Result<usize, Failure> {
-        self.emit(self.exchange, bytes, end, text, cx)
+        self.emit(EXCHANGE_STREAM, bytes, end, text, cx)
     }
 
     /// Offer `bytes` on `stream` (`end` = the stream's message is complete, `text` = it is a text
@@ -871,6 +929,7 @@ impl Connection {
                 Poll::Ready(Ok(0)) => return Err(Failure::Closed),
                 Poll::Ready(Ok(n)) => {
                     self.out.drain(..n);
+                    self.flushed += n as u64;
                     moved = true;
                 }
                 Poll::Ready(Err(e)) => return Err(failed(e)),
@@ -976,24 +1035,16 @@ impl Connection {
         Ok(())
     }
 
-    /// Send the first message of the current exchange, if one is held, on its stream.
+    /// Send the dial's first message, if one is held, on [`EXCHANGE_STREAM`].
     fn send_opening(&mut self) -> Result<(), Failure> {
-        if let Some((fields, body)) = self.opening.take() {
-            let (method, target) = std::mem::take(&mut self.head_words);
-            if !fields.is_empty() || !body.is_empty() || !method.is_empty() || !target.is_empty() {
-                let fields: Vec<(&str, &[u8])> = fields
-                    .iter()
-                    .map(|(n, v)| (n.as_str(), v.as_slice()))
-                    .collect();
-                let message =
-                    framer::encode_head(self.door.as_ref(), &method, &target, &fields, &body)
-                        .map_err(|e| Failure::Refused(e.to_string()))?;
-                let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-                let y = framing
-                    .emit(self.exchange, &message, true, false)
-                    .map_err(failed)?;
-                self.absorb(y)?;
-            }
+        let opening = self.opening.take();
+        let words = std::mem::take(&mut self.head_words);
+        if let Some(message) = self.encode_opening(opening, words)? {
+            let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
+            let y = framing
+                .emit(EXCHANGE_STREAM, &message, true, false)
+                .map_err(failed)?;
+            self.absorb(y)?;
         }
         Ok(())
     }

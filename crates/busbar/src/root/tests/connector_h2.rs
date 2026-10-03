@@ -44,6 +44,9 @@ type Seen = (u8, u8, u32);
 #[derive(Default)]
 struct FarEnd {
     accepted: AtomicUsize,
+    /// HTTP/2: answer only once this many request streams have ended on one connection (`0` or
+    /// `1`: each at once), so an answer proves the requests were in flight TOGETHER.
+    hold: AtomicUsize,
     frames: Mutex<Vec<Seen>>,
     offered: Mutex<Vec<Vec<Vec<u8>>>>,
     agreed: Mutex<Vec<Option<Vec<u8>>>>,
@@ -75,8 +78,9 @@ fn frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
 
 /// Serve HTTP/2 on `s`: the server preface, every SETTINGS acknowledged, every PING answered, and
 /// each request stream answered `:status 200` (HPACK static index 8) with the body `ok` once the
-/// client ended it.
+/// client ended it (and, under `hold`, once that many had ended).
 async fn serve_h2<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, far: Arc<FarEnd>) {
+    let mut pending: Vec<u32> = Vec::new();
     let mut pre = [0_u8; 24];
     if s.read_exact(&mut pre).await.is_err() {
         return;
@@ -109,10 +113,17 @@ async fn serve_h2<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, far: Arc<FarEnd>)
             4 if flags & 1 == 0 => frame(4, 1, 0, &[]),
             // PING: answered with its payload.
             6 if flags & 1 == 0 => frame(6, 1, 0, &payload),
-            // HEADERS or DATA ending the stream: the answer.
+            // HEADERS or DATA ending the stream: the answer, once `hold` streams have ended.
             0 | 1 if flags & 1 != 0 => {
-                let mut a = frame(1, 4, stream, &[0x88]);
-                a.extend(frame(0, 1, stream, b"ok"));
+                pending.push(stream);
+                if pending.len() < far.hold.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let mut a = Vec::new();
+                for stream in pending.drain(..) {
+                    a.extend(frame(1, 4, stream, &[0x88]));
+                    a.extend(frame(0, 1, stream, b"ok"));
+                }
                 a
             }
             // GOAWAY: the client is done.
@@ -274,21 +285,30 @@ fn connector(settings: &TransportSettings, trust: &EgressTrust) -> Connector {
 /// One request through the connector, read to its completion: the status and the body. The
 /// connection is closed (handed back to the pool when the exchange ended whole).
 async fn ask(c: &Connector, url: &str) -> (Option<u32>, Vec<u8>) {
-    let conn: ConnId = c
-        .open(
-            OWNER,
-            NEED,
-            &OpenDesc {
-                target: url,
-                fields: &[("content-type", b"application/json")],
-                body: b"{\"model\":\"m\"}",
-                timeout_ms: 5_000,
-                method: b"POST",
-                head_target: b"/v1/chat/completions",
-                within: &[],
-            },
-        )
-        .expect("the open");
+    let conn = start(c, url);
+    finish(c, conn).await
+}
+
+/// Open one request (its opening message on its way, nothing read).
+fn start(c: &Connector, url: &str) -> ConnId {
+    c.open(
+        OWNER,
+        NEED,
+        &OpenDesc {
+            target: url,
+            fields: &[("content-type", b"application/json")],
+            body: b"{\"model\":\"m\"}",
+            timeout_ms: 5_000,
+            method: b"POST",
+            head_target: b"/v1/chat/completions",
+            within: &[],
+        },
+    )
+    .expect("the open")
+}
+
+/// Read `conn` to its completion: the status and the body; then close it.
+async fn finish(c: &Connector, conn: ConnId) -> (Option<u32>, Vec<u8>) {
     let (mut status, mut body) = (None, Vec::new());
     let mut buf = vec![0_u8; 64 * 1024];
     loop {
@@ -468,4 +488,274 @@ async fn without_a_pool_each_request_dials() {
     }
     assert_eq!(far.accepted.load(Ordering::SeqCst), 2);
     assert_eq!(far.request_streams(), vec![1, 1]);
+}
+
+/// Drive `conn` until `ready` holds (each read attempt bounded, its piece, if any, ignored).
+async fn drive_until(c: &Connector, conn: ConnId, ready: impl Fn() -> bool) {
+    let mut buf = vec![0_u8; 4096];
+    for _ in 0..200 {
+        if ready() {
+            return;
+        }
+        let _ = tokio::time::timeout(
+            Duration::from_millis(20),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, conn, cx, &mut buf)),
+        )
+        .await;
+    }
+    assert!(ready(), "the condition held within the bound");
+}
+
+/// THE MUX (ARCHITECT ruling Q-L18-MUX): two CONCURRENT requests to one h2c origin share one
+/// connection as streams 1 and 3. The far end answers neither until both have arrived, so the
+/// answers prove both were in flight together on the one connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn concurrent_h2c_requests_share_one_connection() {
+    let (port, far) = h2c_far_end().await;
+    far.hold.store(2, Ordering::SeqCst);
+    let settings = pooled(TransportSettings {
+        upstream_h2_prior_knowledge: true,
+        ..TransportSettings::default()
+    });
+    let c = connector(&settings, &EgressTrust::default());
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let (a, b) = (start(&c, &url), start(&c, &url));
+    let (ra, rb) = tokio::join!(finish(&c, a), finish(&c, b));
+    assert_eq!((ra.0, ra.1.as_slice()), (Some(200), &b"ok"[..]));
+    assert_eq!((rb.0, rb.1.as_slice()), (Some(200), &b"ok"[..]));
+    assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "one connection");
+    assert_eq!(far.request_streams(), vec![1, 3], "two streams of it");
+    // The shared line goes back to the pool whole: a third request rides it as stream 5.
+    far.hold.store(0, Ordering::SeqCst);
+    let (status, _) = ask(&c, &url).await;
+    assert_eq!(status, Some(200));
+    assert_eq!(far.accepted.load(Ordering::SeqCst), 1);
+    assert_eq!(far.request_streams(), vec![1, 3, 5]);
+}
+
+/// Over TLS the protocol is known once the handshake agreed it: a request opened while the first
+/// one's answer is outstanding on an agreed `h2` connection rides it as stream 3.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_concurrent_request_rides_an_agreed_h2_tls_connection() {
+    let (port, far, ca) = tls_far_end().await;
+    far.hold.store(2, Ordering::SeqCst);
+    let trust = EgressTrust {
+        extra_anchors: vec![ca],
+        ..EgressTrust::default()
+    };
+    let c = connector(&pooled(TransportSettings::default()), &trust);
+    let url = format!("https://127.0.0.1:{port}/v1/chat/completions");
+    let a = start(&c, &url);
+    drive_until(&c, a, || far.request_streams().len() == 1).await;
+    let b = start(&c, &url);
+    let (ra, rb) = tokio::join!(finish(&c, a), finish(&c, b));
+    assert_eq!((ra.0, rb.0), (Some(200), Some(200)));
+    assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "one connection");
+    assert_eq!(
+        far.offered.lock().expect("offered").len(),
+        1,
+        "one handshake"
+    );
+    assert_eq!(far.request_streams(), vec![1, 3]);
+}
+
+/// HTTP/1.1 stays one request per connection: two concurrent requests take two connections.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn concurrent_http1_requests_each_take_a_connection() {
+    let (port, far) = h1_far_end().await;
+    let c = connector(
+        &pooled(TransportSettings::default()),
+        &EgressTrust::default(),
+    );
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let (a, b) = (start(&c, &url), start(&c, &url));
+    let (ra, rb) = tokio::join!(finish(&c, a), finish(&c, b));
+    assert_eq!((ra.0, rb.0), (Some(200), Some(200)));
+    assert_eq!(far.accepted.load(Ordering::SeqCst), 2, "a connection each");
+}
+
+/// An h2c far end whose FIRST connection takes its first request, says nothing, and on `rst` is
+/// reset (SO_LINGER 0); every connection after it is served as [`serve_h2`] serves.
+async fn resetting_far_end() -> (u16, Arc<FarEnd>, tokio::sync::mpsc::Sender<()>) {
+    let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = l.local_addr().expect("its address").port();
+    let far = Arc::new(FarEnd::default());
+    let seen = Arc::clone(&far);
+    let (rst, mut reset) = tokio::sync::mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        let Ok((mut s, _)) = l.accept().await else {
+            return;
+        };
+        seen.accepted.fetch_add(1, Ordering::SeqCst);
+        let first = Arc::clone(&seen);
+        tokio::spawn(async move {
+            let mut pre = [0_u8; 24];
+            if s.read_exact(&mut pre).await.is_err() {
+                return;
+            }
+            let _ = s.write_all(&frame(4, 0, 0, &[])).await;
+            let mut buf = [0_u8; 4096];
+            // Read until the request's HEADERS (type 1 on stream 1) has been seen, roughly: the
+            // test waits on the recorded frame.
+            let mut got = Vec::new();
+            while !got.windows(4).any(|w| w == [0x01, 0x04, 0x00, 0x00]) || got.len() < 24 {
+                match s.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            first.frames.lock().expect("frames").push((1, 0, 1));
+            let _ = reset.recv().await;
+            // A reset, not a goodbye: SO_LINGER 0 (its blocking-on-drop warning is about a
+            // non-zero linger; zero drops at once).
+            #[allow(deprecated)]
+            let _ = s.set_linger(Some(Duration::ZERO));
+            drop(s);
+        });
+        while let Ok((s, _)) = l.accept().await {
+            seen.accepted.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(serve_h2(s, Arc::clone(&seen)));
+        }
+    });
+    (port, far, rst)
+}
+
+/// THE ONE REDIAL (ARCHITECT ruling Q-L18-RETRY): a request lent a pooled h2 line the far end has
+/// reset, before any byte of the request left, is dialled once on a fresh connection and served
+/// there: the caller sees one answered exchange, no failover. The request the reset cut, whose
+/// bytes had left, is not re-sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_lent_line_reset_before_any_byte_left_is_redialled_once() {
+    let (port, far, rst) = resetting_far_end().await;
+    let settings = pooled(TransportSettings {
+        upstream_h2_prior_knowledge: true,
+        ..TransportSettings::default()
+    });
+    let c = connector(&settings, &EgressTrust::default());
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let a = start(&c, &url);
+    drive_until(&c, a, || far.request_streams().len() == 1).await;
+    rst.send(()).await.expect("the reset");
+    // The reset reaches this side; nothing drives the line meanwhile.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let b = start(&c, &url);
+    let (status, body) = finish(&c, b).await;
+    assert_eq!((status, body.as_slice()), (Some(200), &b"ok"[..]));
+    assert_eq!(
+        far.accepted.load(Ordering::SeqCst),
+        2,
+        "the redial is one fresh connection"
+    );
+    assert_eq!(
+        far.request_streams(),
+        vec![1, 1],
+        "the cut request once, the redialled one once, as stream 1 of its own connection"
+    );
+    let mut buf = [0_u8; 1024];
+    let cut = tokio::time::timeout(
+        Duration::from_secs(5),
+        std::future::poll_fn(|cx| c.poll_read(OWNER, a, cx, &mut buf)),
+    )
+    .await
+    .expect("the cut request answers at once");
+    assert!(
+        cut.is_err() || cut.as_ref().is_ok_and(|p| p.kind == PieceKind::Completion),
+        "the request whose bytes had left is not re-sent: {cut:?}"
+    );
+    let _ = c.close(OWNER, a);
+    assert_eq!(far.accepted.load(Ordering::SeqCst), 2);
+}
+
+/// An h2c far end that answers stream 1 and then, on the next request, closes the connection
+/// without answering it.
+async fn closing_far_end() -> (u16, Arc<FarEnd>) {
+    let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = l.local_addr().expect("its address").port();
+    let far = Arc::new(FarEnd::default());
+    let seen = Arc::clone(&far);
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            seen.accepted.fetch_add(1, Ordering::SeqCst);
+            let seen = Arc::clone(&seen);
+            tokio::spawn(async move {
+                let mut pre = [0_u8; 24];
+                if s.read_exact(&mut pre).await.is_err() {
+                    return;
+                }
+                let _ = s.write_all(&frame(4, 0, 0, &[])).await;
+                loop {
+                    let mut h = [0_u8; 9];
+                    if s.read_exact(&mut h).await.is_err() {
+                        return;
+                    }
+                    let len = u32::from_be_bytes([0, h[0], h[1], h[2]]) as usize;
+                    let (kind, flags) = (h[3], h[4]);
+                    let stream = u32::from_be_bytes([h[5], h[6], h[7], h[8]]) & 0x7fff_ffff;
+                    let mut payload = vec![0_u8; len];
+                    if s.read_exact(&mut payload).await.is_err() {
+                        return;
+                    }
+                    seen.frames
+                        .lock()
+                        .expect("frames")
+                        .push((kind, flags, stream));
+                    let answer = match kind {
+                        4 if flags & 1 == 0 => frame(4, 1, 0, &[]),
+                        6 if flags & 1 == 0 => frame(6, 1, 0, &payload),
+                        // The second request: the connection closes under it.
+                        1 if stream > 1 => return,
+                        0 | 1 if flags & 1 != 0 => {
+                            let mut a = frame(1, 4, stream, &[0x88]);
+                            a.extend(frame(0, 1, stream, b"ok"));
+                            a
+                        }
+                        _ => continue,
+                    };
+                    if s.write_all(&answer).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, far)
+}
+
+/// NO DOUBLE SEND: a request whose bytes LEFT on a pooled line before the far end closed it is not
+/// redialled; it fails, and its far end saw it exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_request_whose_bytes_left_is_not_redialled() {
+    let (port, far) = closing_far_end().await;
+    let settings = pooled(TransportSettings {
+        upstream_h2_prior_knowledge: true,
+        ..TransportSettings::default()
+    });
+    let c = connector(&settings, &EgressTrust::default());
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let (status, _) = ask(&c, &url).await;
+    assert_eq!(status, Some(200));
+    let b = start(&c, &url);
+    let mut buf = [0_u8; 1024];
+    let mut answered = false;
+    loop {
+        let got = tokio::time::timeout(
+            Duration::from_secs(5),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, b, cx, &mut buf)),
+        )
+        .await
+        .expect("the closed line answers at once");
+        match got {
+            Err(_) => break,
+            Ok(p) if p.kind == PieceKind::Completion => break,
+            Ok(p) => answered |= p.kind == PieceKind::Fields,
+        }
+    }
+    let _ = c.close(OWNER, b);
+    assert!(!answered, "nothing answered the request the close cut");
+    assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "no redial");
+    assert_eq!(
+        far.request_streams(),
+        vec![1, 3],
+        "the cut request was sent once"
+    );
 }
