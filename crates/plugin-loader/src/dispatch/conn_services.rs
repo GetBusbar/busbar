@@ -35,8 +35,9 @@
 //!
 //! THE REPLAY RULE (`abi::sdk::conn`): the host never runs a service twice. A ticketed service's
 //! answer is kept under its completion handle, and a re-issued handle answers it again without a
-//! second run; the worker forgets a ticket's answers when it recycles the ticket, and a driver
-//! ticket's when its next tick starts ([`forget`]).
+//! second run; the worker forgets a ticket's answers when it recycles the ticket, a driver
+//! ticket's when its next tick starts, and any other ticket's when a new op (not a short answer's
+//! re-call) starts on it ([`forget`]).
 
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -526,8 +527,8 @@ fn kept(id: InstanceId, h: CompletionHandle, run: impl FnOnce() -> Answer) -> An
     a
 }
 
-/// Forget every answer instance `id` kept under `ticket` (its worker recycled it, or a driver
-/// ticket's tick started); how many there were. Keyed by the instance as well as the ticket:
+/// Forget every answer instance `id` kept under `ticket` (its worker recycled it, a driver
+/// ticket's tick started, or a new op started on it); how many there were. Keyed by the instance as well as the ticket:
 /// tickets are minted per dispatcher, so another dispatcher's instance may hold an identical
 /// ticket, and its kept answers are never its neighbour's to drop (dropping them would make it run
 /// a stored establish or write a second time).
