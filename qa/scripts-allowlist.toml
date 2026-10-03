@@ -24,16 +24,6 @@ class = "port"
 reason = "release step in RELEASE.md (version bump, changelog roll): becomes a busbar-release subcommand on the CLI-AUDIT tree"
 
 [[script]]
-path = "assets/readme/generate.py"
-class = "port"
-reason = "README asset generator, run by hand: becomes `cargo xtask readme-assets`"
-
-[[script]]
-path = "assets/readme/install-sizes.py"
-class = "port"
-reason = "README asset generator, run by hand: becomes `cargo xtask readme-assets`"
-
-[[script]]
 path = "examples/claude-code-bedrock/bedrock-usage.sh"
 class = "keep"
 reason = "user-facing example the README tells an operator to run (env.sh must be sourced into their own shell); product docs, not tooling"
@@ -177,11 +167,6 @@ reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an
 path = "scripts/fleet/verify-abi-completeness.sh"
 class = "port"
 reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"
-
-[[script]]
-path = "scripts/loom.sh"
-class = "port"
-reason = "the loom model run for the config swap: becomes `cargo xtask loom`"
 
 [[script]]
 path = "scripts/mcp-conformance.sh"
@@ -402,16 +387,14 @@ reason = "the #40 secret-accessor seal witness: becomes an xtask gate"
 path = "scripts/secret-hygiene-gate.sh"
 class = "port"
 reason = "the #53 secret-hygiene scan (owner-locked release blocker): becomes an xtask gate"
+path = "scripts/release-script-lint.sh"
+class = "retire"
+reason = "the qa soak, struck 2026-10-01 (d2db89fa93); the service-images gate row images|release-check-tags still scans it, so it goes with that row"
 
 [[script]]
 path = "scripts/signing-gate.sh"
 class = "port"
 reason = "plugin-ci.yml's signing gate: becomes an xtask fleet subcommand the reusable workflow calls"
-
-[[script]]
-path = "scripts/txn-fence.sh"
-class = "port"
-reason = "the transaction compile fence (must fail to compile): becomes an xtask gate"
 
 [[script]]
 path = "scripts/verify-1.6.0-done.sh"
