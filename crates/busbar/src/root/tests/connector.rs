@@ -181,6 +181,9 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         "security:\n  allow_metadata_hosts: [169.254.169.254]\n",
     );
     let judge = dest_judge(&boot);
+    // The boot path's own step: the guard goes behind the egress-trust capability, which is what
+    // hears a commit (no other test in this binary installs one).
+    crate::root::connector::install_egress_trust(judge.clone());
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         None,
@@ -203,35 +206,35 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
 fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
     let private = vec!["10.0.0.5".parse().unwrap()];
-    let bare = deployment(&[("local_llm", "http://llm.internal:8000", &[])], "");
+    let bare = deployment(&[("local_model", "http://model.internal:8000", &[])], "");
     let judge = guard_for(&bare.destinations()).expect("a guard");
     assert_eq!(
         judge
-            .judge_answer("llm.internal", &private, EGRESS_PROVIDER)
+            .judge_answer("model.internal", &private, EGRESS_PROVIDER)
             .err()
             .map(|r| r.verdict),
         Some(DEST_INTERNAL),
         "the provider's own host, no allowlist entry"
     );
     assert_eq!(
-        judge.judge_answer("llm.internal", &private, EGRESS_OPERATOR_INFRASTRUCTURE),
+        judge.judge_answer("model.internal", &private, EGRESS_OPERATOR_INFRASTRUCTURE),
         Ok(()),
         "operator infrastructure needs no entry"
     );
     let listed = deployment(
-        &[("local_llm", "http://llm.internal:8000", &[IMDS])],
-        "advanced:\n  allow_destinations: [llm.internal]\n",
+        &[("local_model", "http://model.internal:8000", &[IMDS])],
+        "advanced:\n  allow_destinations: [model.internal]\n",
     );
     let judge = guard_for(&listed.destinations()).expect("a guard");
     assert_eq!(
-        judge.judge_answer("llm.internal", &private, EGRESS_PROVIDER),
+        judge.judge_answer("model.internal", &private, EGRESS_PROVIDER),
         Ok(()),
         "the allowlist admits it"
     );
     assert_eq!(
         metadata_verdict(
             judge.as_ref(),
-            "llm.internal",
+            "model.internal",
             EGRESS_OPERATOR_INFRASTRUCTURE
         ),
         Some(DEST_METADATA),

@@ -33,6 +33,7 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use crate::config::Destinations;
 use crate::egress::engine::ClientIdentity;
 use crate::host_services::{DestJudge, DestRefusal};
 use crate::plane_host::spki::SpkiError;
@@ -89,6 +90,9 @@ pub trait EgressTrustHost: Send + Sync {
             reason: format!("host `{host}` was not dialled: no destination guard is installed"),
         })
     }
+    /// A config commit: the deployment's destinations are now `d`, raised to the guard behind the
+    /// capability ([`DestJudge::destinations_applied`]); the pass-through has none and keeps nothing.
+    fn destinations_applied(&self, _: &Destinations) {}
 }
 
 /// The production egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side primitives.
@@ -106,6 +110,9 @@ impl EgressTrustHost for GuardedEgressTrust {
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
         self.0.judge_answer(host, addrs, class)
     }
+    fn destinations_applied(&self, d: &Destinations) {
+        self.0.destinations_applied(d);
+    }
 }
 
 /// THE PROCESS-WIDE egress-trust capability, installed once by the composition root
@@ -118,6 +125,15 @@ static EGRESS_TRUST: std::sync::OnceLock<Arc<dyn EgressTrustHost>> = std::sync::
 /// hop opens. Idempotent by `OnceLock`: a second install is a no-op (the first wins).
 pub fn install_egress_trust_host(host: Arc<dyn EgressTrustHost>) {
     let _ = EGRESS_TRUST.set(host);
+}
+
+/// Raise a config commit to the installed capability, so the deployment's one destination guard
+/// re-reads its metadata lists. Called at the commit (`InstalledLimits::keep`), so a rejected apply
+/// leaves the lists in force; with no capability installed there is no guard to hear it.
+pub(crate) fn destinations_applied(d: &Destinations) {
+    if let Some(host) = egress_trust_host() {
+        host.destinations_applied(d);
+    }
 }
 
 /// The installed egress-trust capability, or `None` when none was installed (the dormant default).

@@ -64,9 +64,14 @@ use busbar_kernel::config::Destinations;
 /// unless an IP/CIDR allowlist entry names it (or, for a provider dial only, a 1.5.5 carve-out).
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
     connector::EGRESS_DEFAULT,
-    connector::EGRESS_PROVIDER,
+    CARVE_OUT_CLASS,
     connector::EGRESS_OPEN_WEB,
 ];
+
+/// The one class the 1.5.5 metadata carve-outs are read in ([`Metadata::lifts`]): the provider
+/// class, as 1.5.5 read them for provider URLs only. The guard speaks in classes; this is the
+/// class's one spelling here.
+const CARVE_OUT_CLASS: u32 = connector::EGRESS_PROVIDER;
 
 /// The classes a need whose config names its target is lifted out of, to operator infrastructure:
 /// the request-data classes. Never `provider`: a provider dial is refused a private address unless
@@ -287,8 +292,8 @@ struct Metadata {
     /// `security.allow_all_metadata`: every metadata address and extra refusal lifted, for a
     /// provider dial.
     allow_all: bool,
-    /// `security.allow_metadata_hosts`: carve-outs for every provider dial.
-    every_provider: Vec<Entry>,
+    /// `security.allow_metadata_hosts`: carve-outs for every dial in the carve-out class.
+    everywhere: Vec<Entry>,
     /// Each provider's own `allow_metadata_hosts`, keyed by the host its URLs name (the union,
     /// where two providers name one host).
     by_host: HashMap<String, Vec<Entry>>,
@@ -299,7 +304,7 @@ struct Metadata {
 impl Metadata {
     fn from_config(d: &Destinations) -> Metadata {
         let mut by_host: HashMap<String, Vec<Entry>> = HashMap::new();
-        for (url, own) in &d.provider_allow {
+        for (url, own) in &d.url_allow {
             // The one http(s) URL reader; a URL it cannot read names no host, so carves nothing.
             if let Ok((_, host, _, _)) = busbar_kernel::net_guard::split_url(url) {
                 by_host
@@ -310,7 +315,7 @@ impl Metadata {
         }
         Metadata {
             allow_all: d.allow_all_metadata,
-            every_provider: d.legacy_allow.iter().filter_map(|e| legacy(e)).collect(),
+            everywhere: d.legacy_allow.iter().filter_map(|e| legacy(e)).collect(),
             by_host,
             blocked: d.blocked.iter().filter_map(|e| legacy(e)).collect(),
         }
@@ -318,16 +323,16 @@ impl Metadata {
 
     /// Whether a carve-out lifts the refusal of `name` (normalized) answering `addr` (`None`: the
     /// name itself) under `class`: in the provider class only, `allow_all`, or an entry of the
-    /// every-provider list or of the providers that name `name` that names the host or the
+    /// everywhere list or of the providers that name `name` that names the host or the
     /// address.
     fn lifts(&self, name: &str, addr: Option<IpAddr>, class: u32) -> bool {
-        if class != connector::EGRESS_PROVIDER {
+        if class != CARVE_OUT_CLASS {
             return false;
         }
         let own = self.by_host.get(name).map_or(&[][..], Vec::as_slice);
         self.allow_all
             || self
-                .every_provider
+                .everywhere
                 .iter()
                 .chain(own)
                 .any(|e| e.names(name) || addr.is_some_and(|a| e.covers(a)))

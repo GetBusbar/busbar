@@ -534,7 +534,7 @@ impl InstalledLimits {
             destinations,
         } = self;
         guard.commit();
-        crate::host_services::destinations_applied(&destinations);
+        crate::plane_host::egress_trust::destinations_applied(&destinations);
         staged.armed = false;
         crate::rate_apply::rates_applied(&rates.raw());
     }

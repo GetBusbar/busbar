@@ -255,7 +255,7 @@ fn the_1_5_5_keys_keep_their_meaning() {
 fn a_provider_carve_out_admits_only_for_its_own_url_host() {
     let g = Guard::from_config(&Destinations {
         block_private_addresses: true,
-        provider_allow: vec![
+        url_allow: vec![
             (
                 "https://IMDS-Proxy.test./v1".into(),
                 vec!["169.254.169.254".into()],
@@ -296,7 +296,7 @@ fn a_provider_carve_out_admits_only_for_its_own_url_host() {
 fn a_commit_republishes_the_metadata_lists() {
     let carved = Destinations {
         block_private_addresses: true,
-        provider_allow: vec![(
+        url_allow: vec![(
             "https://imds-proxy.test".into(),
             vec!["169.254.169.254".into()],
         )],
@@ -393,7 +393,7 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     let strict = Guard::default();
     let p = EGRESS_PROVIDER;
     assert_eq!(
-        verdict(strict.judge_answer("llm.internal", &[ip("10.0.0.5")], p)),
+        verdict(strict.judge_answer("model.internal", &[ip("10.0.0.5")], p)),
         Some(DEST_INTERNAL)
     );
     assert_eq!(
@@ -404,9 +404,9 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
         strict.judge_name("localhost", p).unwrap_err().verdict,
         DEST_INTERNAL
     );
-    let allowed = guard(true, &["llm.internal", "127.0.0.1", "localhost"]);
+    let allowed = guard(true, &["model.internal", "127.0.0.1", "localhost"]);
     assert_eq!(
-        allowed.judge_answer("llm.internal", &[ip("10.0.0.5")], p),
+        allowed.judge_answer("model.internal", &[ip("10.0.0.5")], p),
         Ok(())
     );
     assert_eq!(
@@ -415,13 +415,13 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     );
     assert_eq!(allowed.judge_name("localhost", p), Ok(None));
     assert_eq!(
-        verdict(allowed.judge_answer("llm.internal", &[ip("169.254.169.254")], p)),
+        verdict(allowed.judge_answer("model.internal", &[ip("169.254.169.254")], p)),
         Some(DEST_METADATA),
         "a host entry never admits a metadata answer"
     );
     let carved = Guard::from_config(&Destinations {
         block_private_addresses: true,
-        provider_allow: vec![(
+        url_allow: vec![(
             "https://imds-proxy.test".into(),
             vec!["169.254.169.254".into()],
         )],
@@ -429,12 +429,12 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     })
     .unwrap();
     assert_eq!(
-        verdict(carved.judge_answer("llm.internal", &[ip("169.254.169.254")], p)),
+        verdict(carved.judge_answer("model.internal", &[ip("169.254.169.254")], p)),
         Some(DEST_METADATA),
         "another provider's carve-out admits nothing here"
     );
     assert_eq!(
-        verdict(carved.judge_answer("llm.internal", &[ip("10.0.0.5")], p)),
+        verdict(carved.judge_answer("model.internal", &[ip("10.0.0.5")], p)),
         Some(DEST_INTERNAL),
         "a metadata carve-out is no private allowance"
     );
@@ -459,7 +459,7 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
         block_private_addresses: true,
         allow: vec!["db.test".into()],
         legacy_allow: vec!["169.254.169.254".into(), "db.test".into()],
-        provider_allow: vec![(
+        url_allow: vec![(
             "https://db.test".into(),
             vec!["169.254.169.254".into(), "db.test".into()],
         )],

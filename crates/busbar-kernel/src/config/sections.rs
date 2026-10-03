@@ -238,7 +238,7 @@ pub struct Destinations {
     /// Each URL a provider names (its `base_url`, and its `token_url`), with that provider's own
     /// `allow_metadata_hosts` (by provider name): carve-outs for a provider dial of the host the URL
     /// names, and no other.
-    pub provider_allow: Vec<(String, Vec<String>)>,
+    pub url_allow: Vec<(String, Vec<String>)>,
     /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
     pub blocked: Vec<String>,
     /// `security.allow_all_metadata`: every cloud-metadata name and address admitted for a
@@ -252,7 +252,7 @@ impl super::RootCfg {
     pub fn destinations(&self) -> Destinations {
         let mut providers: Vec<_> = self.providers.iter().collect();
         providers.sort_by(|a, b| a.0.cmp(b.0));
-        let provider_allow = providers
+        let url_allow = providers
             .into_iter()
             .filter(|(_, p)| !p.allow_metadata_hosts.is_empty())
             .flat_map(|(_, p)| {
@@ -263,7 +263,7 @@ impl super::RootCfg {
             .collect();
         Destinations {
             legacy_allow: self.allow_metadata_hosts.clone(),
-            provider_allow,
+            url_allow,
             blocked: self.blocked_metadata_hosts.clone(),
             allow_all_metadata: self.allow_all_metadata,
             ..self.guard.clone()
