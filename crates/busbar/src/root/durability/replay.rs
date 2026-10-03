@@ -374,6 +374,10 @@ pub enum JournalDisagreement {
         /// The unit's monotonic reading, which with the balance and window names it.
         mono: u64,
     },
+    /// A signed rate correction on the chain whose base entry the rebuilt dated history does not
+    /// hold (#79). It is not rebuilt: its window prices at the card the rebuilt history holds, and
+    /// this finding is the operator's notice that a signed correction is not in force.
+    CorrectionRefused(crate::root::kernel::CorrectionRefused),
 }
 
 impl std::fmt::Display for JournalDisagreement {
@@ -381,6 +385,7 @@ impl std::fmt::Display for JournalDisagreement {
         match self {
             JournalDisagreement::Unreadable(why) => f.write_str(why),
             JournalDisagreement::Quarantined(what) => write!(f, "journal quarantine: {what}"),
+            JournalDisagreement::CorrectionRefused(refused) => write!(f, "{refused}"),
             JournalDisagreement::OpenQuarantined { key, window, mono } => write!(
                 f,
                 "{key} in the window opening at {window}: unit {mono} is left OPEN-QUARANTINED — a \

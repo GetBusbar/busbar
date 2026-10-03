@@ -686,6 +686,17 @@ fn boot_book(
     holder: &'static RootHistory,
     dir: &std::path::Path,
 ) -> Arc<Mutex<crate::root::durability::Durability>> {
+    let book = open_book(holder, dir);
+    holder.bind_journal(&book);
+    book
+}
+
+/// [`boot_book`] before its handle is bound: the history is rebuilt and every apply after it is
+/// HELD off the chain until [`RootHistory::bind_journal`].
+fn open_book(
+    holder: &'static RootHistory,
+    dir: &std::path::Path,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
     let book = crate::root::durability::build_with_cards(
         &crate::root::durability::DurabilityConfig {
             data_dir: Some(dir.to_path_buf()),
@@ -697,9 +708,7 @@ fn boot_book(
         Some(holder),
     )
     .expect("the journal opens");
-    let book = Arc::new(Mutex::new(book));
-    holder.bind_journal(&book);
-    book
+    Arc::new(Mutex::new(book))
 }
 
 fn bucket(name: &str) -> busbar_kernel_ledger::totals::TotalsKey {
@@ -1125,13 +1134,13 @@ fn a_back_dated_correction_survives_a_restart() {
                     )],
                     fee: None,
                 },
-                |card| {
+                |card, base| {
                     journal.record(
                         &crate::root::units_admin::AmendmentRecord {
                             effective_from: CORRECTED.0,
                             effective_until: Some(CORRECTED.1),
                             amended_at_ms: SIGNED_AT,
-                            over_card_in_force: true,
+                            sealed_over: Some(base),
                             sealed_fee: card.fee(),
                             rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(4_000))],
                             operator_fingerprint: "op".to_string(),
@@ -1170,6 +1179,252 @@ fn a_back_dated_correction_survives_a_restart() {
         entry.author(),
         busbar_kernel_ledger::cost::Author::Amend { operator_fingerprint, .. } if operator_fingerprint == "op"
     ));
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The effect half of `amend_rate_history`, as `amend_rate_history_effect` runs it: [`FLAT_LANE`]
+/// `input` corrected to `nanos` over `window`, signed at `signed_at`, its `v3` record sealed onto
+/// `book` (ahead of the append) with the base `rebase` makes of the one the append resolved. Every
+/// honest record is `rebase` = the identity.
+#[cfg(feature = "root-admin")]
+fn seal_correction(
+    holder: &RootHistory,
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    window: (u64, u64),
+    signed_at: u64,
+    nanos: u64,
+    rebase: impl FnOnce(super::CorrectionBase) -> super::CorrectionBase,
+) -> busbar_kernel_ledger::cost::HistorySeq {
+    use busbar_contract::caps::{DurableWrite, KernelSeal};
+    let journal = crate::root::units_admin::AmendmentJournal::new(
+        Arc::clone(book),
+        Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel()),
+    );
+    holder
+        .amend(
+            &super::Correction {
+                effective_from: window.0,
+                effective_until: Some(window.1),
+                appended_at: signed_at,
+                author: busbar_kernel_ledger::cost::Author::Amend {
+                    operator_fingerprint: "op".to_string(),
+                    reason_hash: [9; 32],
+                },
+                cells: vec![(
+                    busbar_kernel_ledger::cost::LaneClass::new(FLAT_LANE, "input"),
+                    nanos,
+                )],
+                fee: None,
+            },
+            |card, base| {
+                journal.record(
+                    &crate::root::units_admin::AmendmentRecord {
+                        effective_from: window.0,
+                        effective_until: Some(window.1),
+                        amended_at_ms: signed_at,
+                        sealed_over: Some(rebase(base)),
+                        sealed_fee: card.fee(),
+                        rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(nanos))],
+                        operator_fingerprint: "op".to_string(),
+                        reason_hash: [9; 32],
+                        principal: "admin".to_string(),
+                        dual_control: "single".to_string(),
+                        signed_payload: b"signed".to_vec(),
+                        signature: "00".to_string(),
+                    },
+                    signed_at / 1_000,
+                )
+            },
+        )
+        .expect("a resolved history takes a correction")
+}
+
+/// Every journalled correction `book`'s restart refused, as its restart findings name them.
+#[cfg(feature = "root-admin")]
+fn refused_corrections(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+) -> Vec<super::CorrectionRefused> {
+    book.lock()
+        .expect("the book")
+        .restart_findings
+        .iter()
+        .filter_map(|finding| match finding {
+            crate::root::durability::JournalDisagreement::CorrectionRefused(refused) => {
+                Some(refused.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether any entry on `holder`'s history is a signed correction.
+#[cfg(feature = "root-admin")]
+fn holds_a_correction(holder: &RootHistory) -> bool {
+    holder
+        .history()
+        .expect("a history")
+        .entries()
+        .iter()
+        .any(|e| matches!(e.author(), busbar_kernel_ledger::cost::Author::Amend { .. }))
+}
+
+/// **A RESTORE WHOSE REBUILT PREFIX LACKS THE CORRECTION'S BASE REFUSES IT, LOUDLY** (#79: a
+/// correction reprices exactly its window, at the card it was signed over).
+///
+/// Card A is the boot card; card B is applied while the journal is held (rebuilt, not yet bound),
+/// so B is entry 1 on the live history but goes on the chain only at the bind. A correction of
+/// B's era is sealed over entry 1 in between, so the chain reads A, the correction, B. The restart
+/// reaches the correction with only A rebuilt. Rebuilding it over A would reprice its window at a
+/// card nobody signed, and dropping it with a log line would silently reprice the window back. It
+/// is refused, and the refusal is a named restart finding. The same divergence follows from an
+/// applied card whose journal write was lost while the journal was bound.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
+    const CORRECTED: (u64, u64) = (25_000, 35_000);
+    const SIGNED_AT: u64 = 36_000;
+    let dir = journal_dir("missing-base");
+    {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        let book = open_book(holder, &dir);
+        apply_at(holder, 5.0, APPLIED_B);
+        let seq = seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |base| base);
+        assert_eq!(seq, busbar_kernel_ledger::cost::HistorySeq(2));
+        holder.bind_journal(&book);
+    }
+
+    let holder = process_holder();
+    apply_at(holder, 5.0, REBOOT);
+    let book = boot_book(holder, &dir);
+    assert_eq!(
+        refused_corrections(&book),
+        vec![super::CorrectionRefused {
+            effective_from: CORRECTED.0,
+            effective_until: Some(CORRECTED.1),
+            appended_at: SIGNED_AT,
+            sealed_over: super::CorrectionBase {
+                seq: busbar_kernel_ledger::cost::HistorySeq(1),
+                card_digest: holder
+                    .history()
+                    .expect("a history")
+                    .entries()
+                    .get(1)
+                    .expect("card B is rebuilt as entry 1")
+                    .card()
+                    .digest(),
+            },
+            cause: super::BaseMismatch::MissingBase,
+        }],
+        "the correction is refused by name, not dropped with a log line or rebuilt over card A"
+    );
+    assert!(
+        !holds_a_correction(holder),
+        "a refused correction is not rebuilt over another card"
+    );
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A RESTORE WHOSE BASE CARD DIFFERS REFUSES THE CORRECTION** (#79). The record names entry 0, the
+/// card its window resolves to on the rebuilt history too, but a digest that is not that card's: the
+/// card it was sealed over is not the card the restart rebuilt. It is refused as a named finding,
+/// never rebuilt over the card that is there now.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_restore_whose_base_digest_differs_refuses_the_correction() {
+    const CORRECTED: (u64, u64) = (5_000, 15_000);
+    const SIGNED_AT: u64 = 20_000;
+    let dir = journal_dir("base-digest");
+    let sealed_over = {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        let book = boot_book(holder, &dir);
+        let mut sealed_over = None;
+        seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |mut base| {
+            base.card_digest[0] ^= 0xff;
+            sealed_over = Some(base);
+            base
+        });
+        sealed_over.expect("the seal ran")
+    };
+    assert_eq!(sealed_over.seq, busbar_kernel_ledger::cost::HistorySeq(0));
+
+    let holder = process_holder();
+    apply_at(holder, 3.0, REBOOT);
+    let book = boot_book(holder, &dir);
+    assert_eq!(
+        refused_corrections(&book),
+        vec![super::CorrectionRefused {
+            effective_from: CORRECTED.0,
+            effective_until: Some(CORRECTED.1),
+            appended_at: SIGNED_AT,
+            sealed_over,
+            cause: super::BaseMismatch::BaseDigest,
+        }]
+    );
+    assert!(!holds_a_correction(holder));
+    assert_eq!(holder.len(), 1, "the opening card alone");
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A RESTORE OVER THE SEALED BASE REBUILDS THE IDENTICAL CARD** (#79, #42, #44). The correction is
+/// sealed over entry 0 with that card's digest; the restart rebuilds entry 0 as the same card, so
+/// it rebuilds the correction as the very card the live node priced: every plane's card, the
+/// fees, the open class and the corrected cell, byte for byte. Nothing is refused.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_restore_over_the_sealed_base_rebuilds_the_identical_card() {
+    const CORRECTED: (u64, u64) = (5_000, 15_000);
+    const SIGNED_AT: u64 = 20_000;
+    let dir = journal_dir("sealed-base");
+    let (live_seq, live_card) = {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        let book = boot_book(holder, &dir);
+        let seq = seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |base| base);
+        let history = holder.history().expect("a history");
+        let card = history
+            .entries()
+            .get(usize::try_from(seq.get()).expect("a small seq"))
+            .expect("the correction is on the live history")
+            .card()
+            .clone();
+        (seq, card)
+    };
+
+    let holder = process_holder();
+    apply_at(holder, 3.0, REBOOT);
+    let book = boot_book(holder, &dir);
+    assert!(
+        book.lock().expect("the book").restart_findings.is_empty(),
+        "{:?}",
+        book.lock().expect("the book").restart_findings
+    );
+    let history = holder.history().expect("a history");
+    let rebuilt = history
+        .entries()
+        .get(usize::try_from(live_seq.get()).expect("a small seq"))
+        .expect("the correction is rebuilt at the number it had");
+    assert!(matches!(
+        rebuilt.author(),
+        busbar_kernel_ledger::cost::Author::Amend { .. }
+    ));
+    assert_eq!(rebuilt.card().digest(), live_card.digest());
+    assert_eq!(
+        format!("{:?}", rebuilt.card()),
+        format!("{live_card:?}"),
+        "the rebuilt correction is the card the live node priced"
+    );
+    assert_eq!(
+        rebuilt
+            .card()
+            .lane_rates(FLAT_LANE)
+            .map(|r| r.nanos_per_unit("input")),
+        Some(4_000)
+    );
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
 }

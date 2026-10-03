@@ -571,6 +571,56 @@ impl RateCard {
         Some(card)
     }
 
+    /// **THE CARD'S DIGEST**: `sha256` over every figure the card prices with, in one fixed order.
+    /// That is whether it is present, its flat and session fees, every `(lane, class)` cell (an
+    /// UNPRICED cell is spelt apart from every rate, zero included), and each plane's own card the
+    /// same way. Two cards with one digest price every hit alike. A signed correction records the
+    /// digest of the card it was sealed over (#79), and a restart rebuilds it over that card and no
+    /// other.
+    ///
+    /// [`Self::refused_cells`] is not in it. That list is boot validation's report about the
+    /// configuration, and every cell on it is already an unpriced cell of the card.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        let mut bytes = b"busbar/rate-card-digest/v1\0".to_vec();
+        self.digest_into(&mut bytes);
+        crate::digest::sha256(&bytes)
+    }
+
+    /// The bytes [`Self::digest`] hashes: length-prefixed, every map in its own (sorted) order.
+    fn digest_into(&self, out: &mut Vec<u8>) {
+        fn count(out: &mut Vec<u8>, n: usize) {
+            out.extend_from_slice(&(n as u64).to_le_bytes());
+        }
+        fn text(out: &mut Vec<u8>, s: &str) {
+            count(out, s.len());
+            out.extend_from_slice(s.as_bytes());
+        }
+        out.push(u8::from(self.present));
+        out.extend_from_slice(&self.fee.to_le_bytes());
+        out.extend_from_slice(&self.session_fee.to_le_bytes());
+        count(out, self.prices.len());
+        for (lane, classes) in &self.prices {
+            text(out, lane);
+            count(out, classes.len());
+            for (class, cell) in classes {
+                text(out, class);
+                match cell.nanos_per_unit() {
+                    None => out.push(0),
+                    Some(nanos) => {
+                        out.push(1);
+                        out.extend_from_slice(&nanos.to_le_bytes());
+                    }
+                }
+            }
+        }
+        count(out, self.planes.len());
+        for (plane, card) in &self.planes {
+            text(out, plane);
+            card.digest_into(out);
+        }
+    }
+
     /// The fee a reserved fee class ([`PER_REQUEST`], [`PER_SESSION`]) prices at on this card, in
     /// minor units; `None` for any other class.
     pub fn fee_of(&self, class: &str) -> Option<i64> {

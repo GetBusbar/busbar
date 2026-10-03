@@ -469,3 +469,69 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
         "a fee alone corrects an absent card's fee and leaves billing off"
     );
 }
+
+/// **A CORRECTED CELL IS NO LONGER A REFUSED ONE** (#79, #42). A card that could not represent
+/// its configured `gpt`/`input` leaves that cell UNPRICED and lists it in `refused_cells`; a
+/// signed correction that prices the cell takes it off the list, on the flat card and on a plane's
+/// own card alike, and leaves every refused cell it did not name on it.
+#[test]
+fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
+    use crate::cost::TierRates;
+    let unrepresentable = 0.0001;
+    let card = RateCard::from_config(
+        Some([
+            (
+                "gpt",
+                TierRates {
+                    input: unrepresentable,
+                    output: unrepresentable,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+            (
+                "plane-b\u{1f}search",
+                TierRates {
+                    input: unrepresentable,
+                    output: 1.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+        ]),
+        0,
+    );
+    let plane_refused = |card: &RateCard| {
+        card.plane_lane("plane-b\u{1f}search")
+            .0
+            .refused_cells()
+            .to_vec()
+    };
+    assert_eq!(
+        card.refused_cells(),
+        [
+            LaneClass::new("gpt", "input"),
+            LaneClass::new("gpt", "output")
+        ]
+    );
+    assert_eq!(plane_refused(&card), [LaneClass::new("search", "input")]);
+
+    let corrected = card
+        .corrected(
+            [
+                (LaneClass::new("gpt", "input"), 1_000),
+                (LaneClass::new("plane-b\u{1f}search", "input"), 9_000),
+            ],
+            None,
+        )
+        .expect("both cards are present");
+    assert_eq!(
+        corrected.refused_cells(),
+        [LaneClass::new("gpt", "output")],
+        "the corrected cell is priced, so it is not refused; the cell it did not name still is"
+    );
+    assert!(
+        plane_refused(&corrected).is_empty(),
+        "the plane's corrected cell is not refused either"
+    );
+}

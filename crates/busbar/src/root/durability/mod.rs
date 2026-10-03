@@ -2299,12 +2299,13 @@ pub fn build_with_cards(
     // AND THE DATED RATE-CARD HISTORY IS REBUILT FROM THE CHAIN FIRST (#79, OWNER RULING Q14), so a
     // replayed posting prices at the card in force when it arrived — never at the boot card.
     let chain = durability.journal.replay();
+    let mut refused_corrections = Vec::new();
     if let Some(cards) = cards {
         let records = match (&cfg.data_dir, &chain) {
             (Some(_), Ok(Ok(records))) => Some(records.as_slice()),
             _ => None,
         };
-        cards.rebuild_from_chain(&mut durability, records);
+        refused_corrections = cards.rebuild_from_chain(&mut durability, records);
     }
     let pinned = (durability.history)();
     let view = pinned.as_ref().map(PinnedHistory::view);
@@ -2401,6 +2402,13 @@ pub fn build_with_cards(
             .iter()
             .cloned()
             .map(JournalDisagreement::Unreadable),
+    );
+    // A signed rate correction the dated history's rebuild refused: its base is not on the rebuilt
+    // history, so it is reported here rather than rebuilt over a card nobody signed (#79).
+    findings.extend(
+        refused_corrections
+            .into_iter()
+            .map(JournalDisagreement::CorrectionRefused),
     );
     findings.extend(durability.reconcile_with_journal());
     findings.dedup();

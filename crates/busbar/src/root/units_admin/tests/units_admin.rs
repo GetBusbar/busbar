@@ -4798,7 +4798,7 @@ fn a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports() {
                 )],
                 fee: Some(0),
             },
-            |_| Ok::<(), ()>(()),
+            |_, _| Ok::<(), ()>(()),
         )
         .expect("the fixture has an opening entry to correct");
 
