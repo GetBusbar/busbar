@@ -52,7 +52,6 @@ use std::os::raw::c_void;
 pub mod auth;
 pub mod endpoint;
 pub mod export;
-pub mod hook;
 pub mod observe;
 
 /// The "decision observability" signal catalog — re-exported wholesale from
@@ -567,8 +566,8 @@ pub enum StoreResponse {
 pub const SECRET_ABI_VERSION: u32 = 1;
 
 /// The auth-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: auth`).
-/// v1 (1.5.0): the initial wire. Named the same way `SECRET_ABI_VERSION` and `hook::HOOK_ABI_VERSION`
-/// are — auth was the one kind still floor-checked against a bare `&[1, 1]` literal duplicated in
+/// v1 (1.5.0): the initial wire. Named the same way `SECRET_ABI_VERSION`
+/// is — auth was the one kind still floor-checked against a bare `&[1, 1]` literal duplicated in
 /// `plugin-loader::registry` AND `plugin-sdk`, with no compiler link between the two halves of the
 /// handshake; the other two kinds already share a named const, so a bump there is caught at compile
 /// time. This closes that gap without changing the value.

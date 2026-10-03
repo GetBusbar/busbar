@@ -101,8 +101,8 @@ pub use registry::{
 };
 pub use stage::sweep_dead_staging;
 pub use transport::{
-    host_wake, link_transport, load_transport, load_transport_from_bytes, wire_settings, Built,
-    DeclCarrier, DeclFramer, DynTransport, WakeToken, HOST_WAKER,
+    host_wake, link_transport, load_transport_from_bytes, wire_settings, Built, DeclCarrier,
+    DeclFramer, DynTransport, WakeToken, HOST_WAKER,
 };
 pub use transport_adapter::{CarrierIo, WireTransport};
 

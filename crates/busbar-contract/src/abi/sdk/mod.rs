@@ -84,9 +84,8 @@ pub mod life;
 // `busbar_contract::abi::sdk::export_store_plugin!` exactly where it wrote
 // `busbar_plugin_sdk::export_store_plugin!`.
 pub use crate::{
-    export_auth_plugin, export_carrier, export_export_plugin, export_framer, export_hook_plugin,
-    export_login_plugin, export_plane, export_plugin, export_secret_plugin, export_store_plugin,
-    export_transport,
+    export_carrier, export_export_plugin, export_framer, export_login_plugin, export_plane,
+    export_plugin, export_secret_plugin, export_store_plugin, export_transport,
 };
 
 // Convenience alias for out-of-tree store plugins that want to name the trait without also
@@ -341,50 +340,16 @@ pub type AuthHandle = Box<dyn crate::auth::AuthPlugin>;
 
 pub use crate::abi::cold::auth::{AuthRequest, AuthResponse};
 /// Re-export the auth wire and the two auth faces so an auth author (and the `dispatch_compiled_in`
-/// twin `export_auth_plugin!` emits) names `busbar_contract::abi::sdk::AuthRequest` (etc.) without a direct
+/// twin `export_login_plugin!` emits) names `busbar_contract::abi::sdk::AuthRequest` (etc.) without a direct
 /// `busbar-plugin` dependency, mirroring the hook/export re-export path.
 pub use crate::auth::{AuthModule, AuthPlugin};
 
 /// The auth handle behind the opaque `*mut c_void`: a boxed [`crate::auth::AuthPlugin`].
 type BoxedAuth = AuthHandle;
 
-/// Fail-closed login adapter: wraps a verify-only [`crate::auth::AuthModule`] as a full
-/// [`crate::auth::AuthPlugin`] by delegating the verify methods and taking [`crate::auth::LoginModule`]'s
-/// default (Reject) login behavior. This is what lets `export_auth_plugin!` keep accepting a
-/// `fn(&str) -> Result<Box<dyn AuthModule>, String>` ctor UNCHANGED while the exported handle is the
-/// unified `Box<dyn AuthPlugin>`.
-///
-/// Generic over how the module is held: the dropped-in door's handle OWNS it (`Box`), and the
-/// compiled-in twin `export_auth_plugin!` emits BORROWS the one its caller opened (`&`) — one adapter,
-/// so the two doors cannot adapt a verify-only module differently.
-struct VerifyOnlyAuth<M>(M);
-impl<'a, M: std::ops::Deref<Target = dyn crate::auth::AuthModule + 'a> + Send + Sync>
-    crate::auth::AuthModule for VerifyOnlyAuth<M>
-{
-    fn name(&self) -> &'static str {
-        self.0.name()
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> crate::auth::AuthVerdict {
-        self.0.authenticate(candidate)
-    }
-    fn cacheable(&self) -> bool {
-        self.0.cacheable()
-    }
-}
-impl<'a, M: std::ops::Deref<Target = dyn crate::auth::AuthModule + 'a> + Send + Sync>
-    crate::auth::LoginModule for VerifyOnlyAuth<M>
-{
-}
-
-/// Wrap a verify-only auth module into the unified [`AuthHandle`]. Used by the `export_auth_plugin!`
-/// expansion; also the boundary for future login-capable plugins (which would box directly).
-pub fn adapt_auth_handle(module: Box<dyn crate::auth::AuthModule>) -> AuthHandle {
-    Box::new(VerifyOnlyAuth(module))
-}
-
 /// The auth PAYLOAD schema version this SDK builds against (the manifest `abi_version` a `kind: auth`
 /// plugin declares). NOT the transport version — see [`transport_version`]. Mirrors
-/// `secret_abi_version()`/`hook_abi_version()` below: reads the shared const rather than a bare
+/// `secret_abi_version()` below: reads the shared const rather than a bare
 /// literal, so `plugin-loader::registry`'s floor and this SDK's declared version cannot drift apart.
 /// See `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check.
 pub fn auth_abi_version() -> u32 {
@@ -430,7 +395,7 @@ pub fn dispatch_auth(
 /// An auth module's verify and login faces report nothing on the back-channel, so the envelope is
 /// BARE (`{"result": …}`): what makes it load-bearing is not what it carries today but that the
 /// dropped-in door (`busbar_call`, via [`auth_dispatch`]) and the compiled-in door (the
-/// `dispatch_compiled_in` twin `export_auth_plugin!` emits) run THIS function and nothing else, so the
+/// `dispatch_compiled_in` twin `export_login_plugin!` emits) run THIS function and nothing else, so the
 /// two builds of one crate are byte-identical on the wire and a compiled-in build has no
 /// back-channel of its own to reach. Shipped at auth payload schema v3 ([`auth_abi_version`]); the
 /// loader keeps the v1 floor and reads a bare (pre-envelope) answer exactly as before.
@@ -441,18 +406,7 @@ pub fn dispatch_auth_enveloped(
     Envelope::bare(dispatch_auth(module, req))
 }
 
-/// [`dispatch_auth_enveloped`] over a VERIFY-ONLY module, adapted exactly as the dropped-in door
-/// adapts it ([`adapt_auth_handle`]): login requests take the fail-closed default. What the twin
-/// `export_auth_plugin!` emits runs, so the compiled-in door cannot adapt the module differently.
-#[doc(hidden)]
-pub fn dispatch_verify_only_enveloped(
-    module: &dyn crate::auth::AuthModule,
-    req: crate::abi::cold::auth::AuthRequest,
-) -> Envelope<crate::abi::cold::auth::AuthResponse> {
-    dispatch_auth_enveloped(&VerifyOnlyAuth(module), req)
-}
-
-/// The per-kind `dispatch` closure `export_auth_plugin!` hands to [`boundary::call_boundary`]: decode an
+/// The per-kind `dispatch` closure `export_login_plugin!` hands to [`boundary::call_boundary`]: decode an
 /// [`crate::abi::cold::auth::AuthRequest`], run it via [`dispatch_auth_enveloped`], and encode the
 /// enveloped [`crate::abi::cold::auth::AuthResponse`] into a [`BoundaryOutcome`]. An
 /// `authenticate` verdict (`Reject`/`Pass`) rides the OK payload — only an undecodable request /
@@ -536,56 +490,14 @@ pub mod hostlog {
 }
 
 /// Emit an `auth`-kind cdylib plugin from `$ctor` (a
-/// `fn(&str) -> Result<Box<dyn crate::auth::AuthModule>, String>`). Expands through
-/// [`export_plugin!`], stamping `busbar_plugin_kind() == "auth"` + the six neutral symbols.
-#[macro_export]
-macro_rules! export_auth_plugin {
-    ($ctor:path) => {
-        /// Adapt the verify-only ctor into the unified `Box<dyn AuthPlugin>` handle (fail-closed
-        /// login default). Keeps `$ctor`'s `-> Result<Box<dyn AuthModule>, String>` signature valid
-        /// under the ABI-v2 handle change.
-        #[doc(hidden)]
-        fn __busbar_auth_open_adapted(
-            cfg: &str,
-        ) -> ::core::result::Result<$crate::abi::sdk::AuthHandle, ::std::string::String> {
-            ::core::result::Result::Ok($crate::abi::sdk::adapt_auth_handle($ctor(cfg)?))
-        }
-        $crate::export_plugin!(
-            kind = "auth",
-            dispatch = $crate::abi::sdk::auth_dispatch,
-            ctor = __busbar_auth_open_adapted,
-            handle = $crate::abi::sdk::AuthHandle,
-        );
-        /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above (#2's auth
-        /// witness, step (2)). A compiled-in build reaches the module `$ctor` opened through the SAME
-        /// op-dispatch and the SAME envelope the C symbol runs — `dispatch_auth_enveloped`, over the
-        /// same verify-only adapter — never through a shortcut into the module, so the two builds of
-        /// this crate are one plugin over one contract.
-        pub fn dispatch_compiled_in(
-            module: &dyn $crate::abi::sdk::AuthModule,
-            req: $crate::abi::sdk::AuthRequest,
-        ) -> $crate::abi::sdk::Envelope<$crate::abi::sdk::AuthResponse> {
-            $crate::abi::sdk::dispatch_verify_only_enveloped(module, req)
-        }
-    };
-}
-
-/// Emit an `auth`-kind cdylib plugin from `$ctor` (a
 /// `fn(&str) -> Result<Box<dyn crate::auth::AuthPlugin>, String>`) — a LOGIN-CAPABLE module that
 /// implements BOTH [`crate::auth::AuthModule`] (verify) AND [`crate::auth::LoginModule`]
 /// (BeginLogin/CompleteLogin).
 ///
-/// This is the sibling of [`export_auth_plugin!`] for a plugin that also drives the hosted browser
-/// login flow (e.g. `auth-oidc`). The crucial difference: `export_auth_plugin!` routes its ctor
-/// through the verify-only `VerifyOnlyAuth` adapter, which takes [`crate::auth::LoginModule`]'s
-/// fail-closed default — so a login-capable plugin exported through it would have its login
-/// capability MASKED (every BeginLogin/CompleteLogin would return `Reject`). `export_login_plugin!`
-/// boxes the ctor's `Box<dyn AuthPlugin>` DIRECTLY (no adapter), so [`auth_dispatch`] sees the real
-/// [`crate::auth::LoginModule`] impl and the login arms work.
-///
-/// Both macros stamp `busbar_plugin_kind() == "auth"` and the same six neutral symbols, so the
-/// plugin loader treats a login plugin exactly like any other auth plugin (its `abi_version >= 2`
-/// is what the engine's capability gate reads to decide it can serve the browser flow).
+/// The ctor's `Box<dyn AuthPlugin>` is boxed DIRECTLY, so [`auth_dispatch`] sees the real
+/// [`crate::auth::LoginModule`] impl and the login arms work. It stamps `busbar_plugin_kind() ==
+/// "auth"` and the six neutral symbols (its `abi_version >= 2` is what the engine's capability gate
+/// reads to decide it can serve the browser flow).
 #[macro_export]
 macro_rules! export_login_plugin {
     ($ctor:path) => {
@@ -604,7 +516,7 @@ macro_rules! export_login_plugin {
             handle = $crate::abi::sdk::AuthHandle,
         );
         /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above, as
-        /// `export_auth_plugin!` emits it: the same `dispatch_auth_enveloped` the C symbol runs.
+        /// the same `dispatch_auth_enveloped` the C symbol runs.
         pub fn dispatch_compiled_in(
             module: &dyn $crate::abi::sdk::AuthPlugin,
             req: $crate::abi::sdk::AuthRequest,
@@ -696,8 +608,8 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
 // ── HOOK-plugin glue (`kind: hook`) ───────────────────────────────────────────────────────────────
 // A hook plugin is a routing policy behind the frozen six-symbol ABI. Its author implements the tiny
 // SYNC [`HookHandler`] trait (the six ops over JSON), NOT the engine's async `RoutingPolicy`; on the
-// hook door the SDK's `json_hook` bridges it onto the kind's typed ops. The op-dispatch match ([`dispatch_hook`]) is the ergonomic helper the spec asks for:
-// a hook author writes `decide`/`transform`/etc. and the SDK routes the op envelope to them.
+// hook door the SDK's `json_hook` bridges it onto the kind's typed ops: a hook author writes
+// `decide`/`transform`/etc. and the SDK routes each op to them.
 
 /// The sync contract a `kind: hook` plugin author implements. Each method receives the op's payload as
 /// the opaque projection [`serde_json::Value`] the engine built (`hooks::wire::build`) and returns the
@@ -792,101 +704,6 @@ pub trait HookHandler: Send + Sync {
             headers: Vec::new(),
             body: Vec::new(),
         }
-    }
-}
-
-/// The hook handle behind the opaque `*mut c_void`: a boxed [`HookHandler`]. Named at the module level
-/// so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
-pub type HookHandle = Box<dyn HookHandler>;
-
-/// Re-export the hook wire so a hook author (and the `dispatch_compiled_in` twin
-/// `export_hook_plugin!` emits) names `busbar_contract::abi::sdk::HookRequest` / `HookReply` without a direct
-/// `busbar-plugin` dependency, mirroring the auth/export re-export path.
-pub use crate::abi::cold::hook::{HookReply, HookRequest};
-
-/// The hook handle behind the opaque `*mut c_void`: a boxed [`HookHandler`].
-type BoxedHook = HookHandle;
-
-/// Return the HOOK PAYLOAD schema version this SDK builds against (`busbar_plugin_kind() == "hook"`).
-/// See `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check against it.
-pub fn hook_abi_version() -> u32 {
-    crate::abi::cold::hook::HOOK_ABI_VERSION
-}
-
-/// Run one [`crate::abi::cold::hook::HookRequest`] against a [`HookHandler`] — the single op-dispatch
-/// match that maps the wire envelope to the trait, unit-testable without FFI. This is the ergonomic
-/// helper a hook author never has to write.
-pub fn dispatch_hook(
-    handler: &dyn HookHandler,
-    req: crate::abi::cold::hook::HookRequest,
-) -> crate::abi::cold::hook::HookReply {
-    use crate::abi::cold::hook::{HookReply, HookRequest};
-    match req {
-        HookRequest::Decide { payload } => match handler.decide_result(&payload) {
-            Ok(v) => HookReply::Reply(v),
-            Err(message) => HookReply::Failed { message },
-        },
-        HookRequest::Transform { payload } => match handler.transform_result(&payload) {
-            Ok(v) => HookReply::Reply(v),
-            Err(message) => HookReply::Failed { message },
-        },
-        HookRequest::Notify { payload } => {
-            handler.notify(&payload);
-            HookReply::None
-        }
-        HookRequest::Configure(body) => {
-            if handler.configure(&body.settings, body.settings_version) {
-                HookReply::ConfigureAck {
-                    settings_version: body.settings_version,
-                }
-            } else {
-                // A non-ack is signaled by echoing a version that CANNOT match the pushed one, so the
-                // engine's exact-version ack rule rejects the configure (commit does not proceed).
-                HookReply::ConfigureAck {
-                    settings_version: body.settings_version.wrapping_add(1),
-                }
-            }
-        }
-        HookRequest::Describe => HookReply::Reply(handler.describe()),
-        HookRequest::Status => HookReply::Reply(handler.status()),
-        HookRequest::Routes => HookReply::Routes(handler.routes()),
-        HookRequest::Endpoint { request } => HookReply::Endpoint(handler.handle_http(&request)),
-    }
-}
-
-/// Run one hook request and wrap the reply in the observability envelope (DECISIONS #85) — what
-/// actually goes on the wire; the hook twin of [`dispatch_export_enveloped`].
-///
-/// A hook reports its metrics in its `status` reply (the shape #85's envelope was modelled on), so the
-/// envelope is BARE and the reply inside it is exactly [`dispatch_hook`]'s — the hook kind is a 1.6.0
-/// FUNCTIONAL fixed point, and this moves its wire, never its behaviour. The dropped-in door
-/// (`busbar_call`, via [`hook_dispatch`]) and the compiled-in door (the `dispatch_compiled_in` twin
-/// `export_hook_plugin!` emits) both run this, so the two builds are byte-identical on the wire.
-/// Shipped at hook payload schema v2 ([`hook_abi_version`]); the loader keeps the v1 floor and reads a
-/// bare (pre-envelope) reply exactly as before.
-pub fn dispatch_hook_enveloped(
-    handler: &dyn HookHandler,
-    req: crate::abi::cold::hook::HookRequest,
-) -> Envelope<crate::abi::cold::hook::HookReply> {
-    Envelope::bare(dispatch_hook(handler, req))
-}
-
-/// The per-kind `dispatch` closure `export_hook_plugin!` hands to [`boundary::call_boundary`]: decode a
-/// [`crate::abi::cold::hook::HookRequest`], run it via [`dispatch_hook_enveloped`], and encode the
-/// enveloped reply into a [`BoundaryOutcome`].
-///
-/// # Safety
-/// `handle` is a live hook handle from `open` (guaranteed non-null by the boundary wrapper).
-pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
-    let handler: &BoxedHook = &*(handle as *const BoxedHook);
-    let request: crate::abi::cold::hook::HookRequest = match serde_json::from_slice(bytes) {
-        Ok(r) => r,
-        Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
-    };
-    let resp = dispatch_hook_enveloped(handler.as_ref(), request);
-    match serde_json::to_vec(&resp) {
-        Ok(payload) => BoundaryOutcome::Ok(payload),
-        Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
     }
 }
 
@@ -1075,8 +892,7 @@ type BoxedExport = ExportHandle;
 
 /// Return the EXPORT PAYLOAD schema version this SDK builds against (`busbar_plugin_kind() ==
 /// "export"`). Reads the shared const rather than a bare literal, so `plugin-loader::registry`'s floor
-/// and this SDK's declared version cannot drift apart — mirroring `secret_abi_version()`/
-/// `hook_abi_version()`.
+/// and this SDK's declared version cannot drift apart — mirroring `secret_abi_version()`.
 pub fn export_abi_version() -> u32 {
     crate::abi::cold::export::EXPORT_ABI_VERSION
 }
@@ -1171,30 +987,6 @@ macro_rules! export_export_plugin {
             ctor = $ctor,
             handle = $crate::abi::sdk::ExportHandle,
         );
-    };
-}
-
-/// Emit a `hook`-kind cdylib plugin from `$ctor` (a
-/// `fn(&str) -> Result<Box<dyn busbar_contract::abi::sdk::HookHandler>, String>`). Expands through
-/// [`export_plugin!`], stamping `busbar_plugin_kind() == "hook"` + the six neutral symbols.
-#[macro_export]
-macro_rules! export_hook_plugin {
-    ($ctor:path) => {
-        $crate::export_plugin!(
-            kind = "hook",
-            dispatch = $crate::abi::sdk::hook_dispatch,
-            ctor = $ctor,
-            handle = $crate::abi::sdk::HookHandle,
-        );
-        /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above: the handler
-        /// `$ctor` opened, reached through the SAME op-dispatch and envelope the C symbol runs
-        /// (`dispatch_hook_enveloped`), never through a shortcut into the handler.
-        pub fn dispatch_compiled_in(
-            handler: &dyn $crate::abi::sdk::HookHandler,
-            req: $crate::abi::sdk::HookRequest,
-        ) -> $crate::abi::sdk::Envelope<$crate::abi::sdk::HookReply> {
-            $crate::abi::sdk::dispatch_hook_enveloped(handler, req)
-        }
     };
 }
 

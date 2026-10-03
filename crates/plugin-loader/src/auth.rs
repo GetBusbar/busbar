@@ -189,20 +189,10 @@ impl std::fmt::Debug for DynAuth {
     }
 }
 
-/// Load an AUTH module from EXACTLY the verified library `bytes` (TOCTOU-safe), returning the
-/// verify-only [`AuthModule`] seam the data-plane chain consumes. The concrete [`DynAuth`] is ALSO a
-/// [`LoginModule`]; a caller that needs the login capability (the hosted browser flow) uses
-/// [`load_login_from_bytes`] instead, which returns the unified [`AuthPlugin`] box.
-pub fn load_auth_from_bytes(
-    bytes: &[u8],
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-) -> Result<Box<dyn AuthModule>, String> {
-    load_auth_image(crate::Image::Bytes(bytes), cfg_json, display, manifest_kind)
-}
-
-/// [`load_auth_from_bytes`] over either door's [`crate::Image`].
+/// Load an AUTH module over either door's [`crate::Image`], returning the verify-only [`AuthModule`]
+/// seam the data-plane chain consumes. The concrete [`DynAuth`] is ALSO a [`LoginModule`]; a caller
+/// that needs the login capability (the hosted browser flow) uses [`load_login_image`] instead, which
+/// returns the unified [`AuthPlugin`] box.
 pub fn load_auth_image(
     image: crate::Image<'_>,
     cfg_json: &str,
@@ -217,21 +207,10 @@ pub fn load_auth_image(
     )?))
 }
 
-/// Load an auth plugin as the unified [`AuthPlugin`] handle (verify + login). Same verified-bytes,
-/// same frozen contract as [`load_auth_from_bytes`]; the only difference is the boxed trait object
-/// KEEPS the [`LoginModule`] capability so the core can drive `begin_login`/`complete_login`. Used by
-/// the 1.5.2 hosted login flow (`auth.methods`). A verify-only plugin still loads here — its login
-/// methods fail closed by the module's own default/ABI behavior.
-pub fn load_login_from_bytes(
-    bytes: &[u8],
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-) -> Result<Box<dyn AuthPlugin>, String> {
-    load_login_image(crate::Image::Bytes(bytes), cfg_json, display, manifest_kind)
-}
-
-/// [`load_login_from_bytes`] over either door's [`crate::Image`].
+/// Load an auth plugin as the unified [`AuthPlugin`] handle (verify + login) over either door's
+/// [`crate::Image`]. The boxed trait object KEEPS the [`LoginModule`] capability so the core can
+/// drive `begin_login`/`complete_login` (the 1.5.2 hosted login flow, `auth.methods`). A verify-only
+/// plugin still loads here; its login methods fail closed by the module's own default/ABI behavior.
 pub fn load_login_image(
     image: crate::Image<'_>,
     cfg_json: &str,
