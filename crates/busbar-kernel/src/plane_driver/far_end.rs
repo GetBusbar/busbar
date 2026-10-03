@@ -419,7 +419,7 @@ impl EgressFarEnd<'_> {
     }
 
     /// Make `member` of `pool` the live attempt: excluded from every later pick of the unit.
-    fn take(
+    fn claim_member(
         &self,
         w: &mut Walk,
         pool: &str,
@@ -489,7 +489,7 @@ impl EgressFarEnd<'_> {
             .find(|m| m.destination == picked.destination)?
             .clone();
         let probe = picked.take_probe_epoch();
-        Some(self.take(w, &pool.name, member, Some(picked.permit), probe, !primary))
+        Some(self.claim_member(w, &pool.name, member, Some(picked.permit), probe, !primary))
     }
 
     /// The shed for `pool`: refuse, with the wait its own members justify.
@@ -524,7 +524,7 @@ impl EgressFarEnd<'_> {
                     Phase::Probe(member) => {
                         // ONE member: a probe that brings no answer has nowhere to fail over to.
                         w.phase = Phase::Shed(503, None);
-                        return self.take(&mut w, "", member, None, None, false);
+                        return self.claim_member(&mut w, "", member, None, None, false);
                     }
                     Phase::Shed(status, retry_after) => {
                         return exhausted(&Shed {
@@ -617,7 +617,7 @@ impl EgressFarEnd<'_> {
                 .try_acquire(m.destination)
                 .map(|p| ((*m).clone(), p))
         })?;
-        Some(self.take(w, &pool.name, member, Some(permit), None, true))
+        Some(self.claim_member(w, &pool.name, member, Some(permit), None, true))
     }
 
     /// The bounded wait for a slot on a member passed over AT CAPACITY, then the breaker re-asked
@@ -662,7 +662,7 @@ impl EgressFarEnd<'_> {
                         break None;
                     };
                     let mut w = self.lock();
-                    let pick = self.take(
+                    let pick = self.claim_member(
                         &mut w,
                         &pool.name,
                         member.clone(),
