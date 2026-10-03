@@ -15,8 +15,8 @@
 //!    it to the destination its manifest declares, and the line is on disk — the line, and no span
 //!    (the instance subscribes `logs` only);
 //! 3. the host's `/metrics` exposition, read into the recorder snapshot, reaches the dropped-in
-//!    sink's render. A sink that serves no metrics answers the SDK default, the text content type
-//!    and no body; the byte-for-byte render is the prometheus sink's own, proven in its repo
+//!    sink's render through its memory-ABI door. A sink that serves no metrics renders no body;
+//!    the byte-for-byte render is the prometheus sink's own, proven in its repo
 //!    (`render_exposition` left the contract SDK for it, ABI-TRIM F10a).
 //!
 //! RED against the tree before the axis: step 1 fails, the process exits naming the unknown exporter.
@@ -264,14 +264,17 @@ fn a_dropped_in_export_plugin_serves() {
     );
 
     // 3. THE RECORDER SNAPSHOT (K9a S6): the host's real exposition, read into the snapshot, is
-    // handed to the dropped-in sink. The file sink serves no `/metrics`, so it answers the SDK
-    // default: the text content type and no body. The byte-for-byte render is the prometheus
+    // handed to the dropped-in sink through its door. The file sink serves no `/metrics`, so it
+    // renders no body. The byte-for-byte render is the prometheus
     // sink's, which owns `render_exposition` (ABI-TRIM F10a) and proves it in its own repo.
     let exposition = scrape(data_port).map(|(_, b)| b).unwrap_or_default();
     assert!(!exposition.is_empty(), "the host serves an exposition");
-    let (content_type, rendered) = common::plugins::render_snapshot(&lib, PLUGIN, &exposition);
-    assert_eq!(content_type, "text/plain; version=0.0.4");
-    assert_eq!(rendered, "", "a sink serving no metrics renders no body");
+    let settings = format!("{{\"path\":\"{}\"}}", lines.display());
+    let rendered = common::plugins::render_snapshot(&lib, PLUGIN, &settings, &exposition);
+    assert!(
+        rendered.is_empty(),
+        "a sink serving no metrics renders no body"
+    );
 
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);

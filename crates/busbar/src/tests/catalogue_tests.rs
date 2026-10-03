@@ -39,7 +39,14 @@ fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
         )
     };
     let mut out = Vec::new();
-    for &(name, _, declares, _) in LINKED.exports {
+    // Both export axes: the cold rows still on `exports` and the memory-ABI rows on `export-doors`
+    // state their `declares` alike.
+    let rows = LINKED
+        .exports
+        .iter()
+        .map(|&(name, _, declares, _)| (name, declares))
+        .chain(LINKED.export_doors.iter().map(|d| (d.name, d.declares)));
+    for (name, declares) in rows {
         let decl: serde_json::Value = serde_json::from_str(declares)
             .unwrap_or_else(|e| panic!("linked export '{name}': its declares section: {e}"));
         for d in decl["diagnostics"].as_array().into_iter().flatten() {
@@ -138,9 +145,9 @@ fn declared_codes_do_not_collide_with_the_registry() {
 // THE PUBLISHED PAGE DOCUMENTS THE SHIPPED CATALOGUE: the host registry, every plane's catalogue and
 // the linked export sinks' declared codes. A feature-set build that links fewer rows (a single-plane
 // row, `--no-default-features`) installs fewer catalogues, so its render is a DIFFERENT page, not a
-// stale one; the pair below is compiled only where every plane and the export axis are linked. The
+// stale one; the pair below is compiled only where every plane and an export axis are linked. The
 // uniqueness checks above run in every build.
-#[cfg(all(linked_every_plane, linked_axis_exports))]
+#[cfg(all(linked_every_plane, any(linked_axis_exports, linked_axis_export_doors)))]
 mod page {
     use super::*;
     use busbar_kernel::diagnostics::{render_json_for, render_markdown_for, REGISTRY};
