@@ -192,7 +192,11 @@ jobs:
         run: |
           set -euo pipefail
           lib_flag=""; [ "$LIB_ONLY" = true ] && lib_flag="--lib"
-          cargo build --release --locked $lib_flag --target "${{ matrix.target }}" -p "$CRATE"
+          # the door is behind the crate's `dropped-in` feature once the crate declares it (a linked rlib
+          # must not export busbar_plugin_door); pass it only then, so this works before and after.
+          feat=""
+          if cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
+          cargo build --release --locked $lib_flag $feat --target "${{ matrix.target }}" -p "$CRATE"
       - name: "C: build the library from busbar_plugin.h alone"
         if: inputs.plugin_lang == 'c'
         shell: bash
