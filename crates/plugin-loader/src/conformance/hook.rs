@@ -166,7 +166,12 @@ impl Request {
             let rate = f("rate_headroom").inspect(|_| present |= CANDIDATE_HAS_RATE_HEADROOM);
             dynamics.push(CandidateDynamic {
                 latency_ms: latency.unwrap_or(0.0),
-                available_concurrency: c["available_concurrency"].as_u64().unwrap_or(0),
+                // Absent is no concurrency; present and not a u64 is a broken script, refused.
+                available_concurrency: c.get("available_concurrency").map_or(0, |n| {
+                    n.as_u64().unwrap_or_else(|| {
+                        panic!("conformance.json: request '{label}': available_concurrency {n}")
+                    })
+                }),
                 budget_remaining: budget.unwrap_or(0),
                 rate_headroom: rate.unwrap_or(0.0),
                 signals: std::ptr::null(),
