@@ -987,36 +987,16 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .clone()
         .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
     root::serve::attach(&late_services, signer, &app.demotion_record, &planes);
-    // THE DOOR PLANES, COMPOSED (`root::serve::compose_planes`, TODO U6-U7): each plane bound through
-    // its door whose section this deployment writes is opened, driven and ticked here, once, its
-    // money posted onto the process's one node. A deployment without governance has no money book
-    // for a driven unit to settle on, so its door planes stay bound and unopened, as before.
-    let served = match app.governance.clone() {
-        Some(gov) => {
-            let post: Arc<dyn busbar_kernel::plane_driver::EndPost> =
-                Arc::new(root::plane_node::NodeEndPost::new(root::plane_node::node()));
-            let money = move || {
-                Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
-                    Arc::clone(&gov),
-                    Arc::clone(&post),
-                )) as Arc<dyn busbar_kernel::plane_driver::MoneySeam>
-            };
-            root::serve::compose_planes(
-                root::linked::door_planes(),
-                &root::dispatch::dispatcher(),
-                &late_services,
-                &deploy.plane_raw,
-                &money,
-            )
-            .unwrap_or_else(|e| die(e))
-        }
-        None => {
-            if !root::linked::door_planes().is_empty() {
-                tracing::warn!("door planes stay unopened: no governance book to settle on");
-            }
-            root::serve::Served::default()
-        }
-    };
+    // THE DOOR PLANES, COMPOSED (`root::serve::compose_served`): opened, driven and ticked here, once,
+    // their money posted onto the process's one node.
+    let served = root::serve::compose_served(
+        app.governance.clone(),
+        root::linked::door_planes(),
+        &root::dispatch::dispatcher(),
+        &late_services,
+        &deploy.plane_raw,
+    )
+    .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
     // THE DATA ROUTES (`root::serve::mount`, TODO U6-U7 P2): a request a composed plane claims
     // reaches its driver on the data router's fallback; with no door plane nothing is mounted.

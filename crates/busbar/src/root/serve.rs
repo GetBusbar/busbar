@@ -331,6 +331,58 @@ impl Served {
     }
 }
 
+/// THE DOOR PLANES, COMPOSED ([`compose_planes`], TODO U6-U7) over the deployment's governance book
+/// `gov`: each plane bound through its door whose section this deployment writes is opened, driven
+/// and ticked once, its money posted onto the process's one node. A deployment without governance
+/// has no money book for a driven unit to settle on, so its door planes stay bound and unopened.
+///
+/// # Errors
+///
+/// A configured plane that will not compose ([`compose_planes`]), or, in a build that links no
+/// node to post a unit's money on, any configured door plane at all, which the boot refuses rather
+/// than leaving its claims unserved.
+pub fn compose_served(
+    gov: Option<Arc<busbar_kernel::governance::GovState>>,
+    doors: &[(String, DoorPlane)],
+    dispatcher: &Arc<Dispatcher>,
+    late: &LateServices,
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+) -> Result<Served, String> {
+    let Some(gov) = gov else {
+        if !doors.is_empty() {
+            tracing::warn!("door planes stay unopened: no governance book to settle on");
+        }
+        return Ok(Served::default());
+    };
+    #[cfg(linked_axis_node)]
+    {
+        let post: Arc<dyn busbar_kernel::plane_driver::EndPost> = Arc::new(
+            crate::root::plane_node::NodeEndPost::new(crate::root::plane_node::node()),
+        );
+        let money = move || {
+            Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
+                Arc::clone(&gov),
+                Arc::clone(&post),
+            )) as Arc<dyn MoneySeam>
+        };
+        compose_planes(doors, dispatcher, late, sections, &money)
+    }
+    #[cfg(not(linked_axis_node))]
+    {
+        let _ = (gov, dispatcher, late);
+        match doors
+            .iter()
+            .find(|(_, plugin)| sections.contains_key(plugin.served().section))
+        {
+            Some((instance, _)) => Err(format!(
+                "{instance}: a door plane's money is posted on the process's node, and this build \
+                 links none"
+            )),
+            None => Ok(Served::default()),
+        }
+    }
+}
+
 /// THE DOOR PLANES' COMPOSITION (ARCHITECT Q-SW4, 2026-10-02): every plane bound through its door
 /// (`root::linked::door_planes`) whose declared section this deployment writes (LAW 7: a plugin
 /// loads iff its section is present) is opened with that section as its settings, and composed:
