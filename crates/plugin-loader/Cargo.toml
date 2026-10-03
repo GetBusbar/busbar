@@ -20,6 +20,12 @@ license = "Apache-2.0"
 #   cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 [features]
 pack = ["dep:jsonschema"]
+# THE PUBLISHED CONFORMANCE SUITE (`src/conformance/`, TODO ABI-b4): every real plugin repo's own
+# `tests/conformance.rs` names this crate as a dev-dependency with this feature, at the busbar commit
+# it pins, and runs the suite over its linked door and its built cdylib (`plugin-ci.yml`'s
+# conformance step). OWNER 2026-10-03: plugins test themselves against busbar; busbar tests no
+# plugin. No new dependency: the suite is the loader's own code.
+conformance = []
 
 [[bin]]
 name = "busbar-plugin-pack"
