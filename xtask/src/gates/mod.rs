@@ -2554,6 +2554,8 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(documented_claims::DocumentedClaimsGate),
         summary: "qa/documented-claims.json: every README/CHANGELOG claim is pinned by a recorded cell or excused, ids address their quotes",
+    },
+    Registration {
         name: "secret-hygiene",
         batch: 1,
         tier: Tier::Fast,
