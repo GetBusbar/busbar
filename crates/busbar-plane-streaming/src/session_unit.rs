@@ -16,7 +16,7 @@ use bytes::Bytes;
 use crate::codec::ir::codec::{DuplexReader, DuplexWriter, WireEvent};
 use crate::codec::ir::config::SessionConfig;
 use crate::codec::ir::usage::IrDuplexUsage;
-use crate::codec::topology::twilio::{assert_g711_ulaw, TwilioEnvelope, TwilioError, TwilioEvent};
+use crate::codec::topology::twilio::{CallerStep, TwilioBridge};
 use crate::governed::GovernedSession;
 use crate::meta;
 use crate::session::{class_counts, TurnCounters};
@@ -62,87 +62,6 @@ pub struct Plan {
     pub to_caller: Vec<Vec<u8>>,
     /// The session ends after these frames.
     pub end: bool,
-}
-
-/// THE TELEPHONY CARRIER'S ENVELOPE around a session: the caller speaks Twilio Media Streams, the
-/// far end the realtime dialect locked to `g711_ulaw` both ways, so the audio passes through
-/// unchanged and only the envelope is rewritten.
-#[derive(Debug, Default)]
-pub struct TwilioBridge {
-    stream_sid: Option<String>,
-}
-
-/// What one caller frame on the telephony door is.
-#[derive(Debug, PartialEq, Eq)]
-pub enum CallerStep {
-    /// Caller audio, as the far end's dialect frames an uplink append.
-    Audio(WireEvent),
-    /// The call ended.
-    Stop,
-    /// The call is refused (no stream id, another media format, a frame not in Twilio's shape, a
-    /// payload that is not clean base64): the session ends.
-    Refused,
-    /// Nothing for the far end (the handshake, a start, a mark, a keypress, an event this reader
-    /// does not model, or media for another stream).
-    Nothing,
-}
-
-impl TwilioBridge {
-    /// Read one caller frame. A start with no stream id, or in another media format, is refused; so
-    /// is a frame that is not Twilio's shape or carries a payload that is not clean base64 (data
-    /// resuming after padding is never billed as a longer payload). An event this reader does not
-    /// model is dropped.
-    pub fn from_caller(&mut self, frame: &[u8]) -> CallerStep {
-        match TwilioEnvelope::decode(frame) {
-            Ok(TwilioEvent::Start(start)) => {
-                if start.stream_sid.is_empty() || assert_g711_ulaw(&start.media_format).is_err() {
-                    return CallerStep::Refused;
-                }
-                self.stream_sid = Some(start.stream_sid);
-                CallerStep::Nothing
-            }
-            Ok(TwilioEvent::Media {
-                stream_sid,
-                payload,
-            }) => {
-                if stream_sid.is_empty() || self.stream_sid.as_deref() != Some(stream_sid.as_str())
-                {
-                    return CallerStep::Nothing;
-                }
-                let append = serde_json::json!({
-                    "type": "input_audio_buffer.append",
-                    "audio": busbar_contract::media::base64_encode(&payload),
-                });
-                CallerStep::Audio(WireEvent(Bytes::from(
-                    serde_json::to_vec(&append).unwrap_or_default(),
-                )))
-            }
-            Ok(TwilioEvent::Stop) => CallerStep::Stop,
-            Ok(_) | Err(TwilioError::UnknownEvent(_)) => CallerStep::Nothing,
-            Err(_) => CallerStep::Refused,
-        }
-    }
-
-    /// Rewrite one frame bound for the caller into the carrier's envelope: model audio becomes a
-    /// `media` frame on the call's stream, and a barge-in clears the audio the carrier has queued.
-    /// `None` for a frame the carrier has no event for.
-    #[must_use]
-    pub fn to_caller(&self, frame: &[u8]) -> Option<Vec<u8>> {
-        let sid = self.stream_sid.as_deref()?;
-        let v: serde_json::Value = serde_json::from_slice(frame).ok()?;
-        match v.get("type").and_then(serde_json::Value::as_str)? {
-            "response.output_audio.delta" | "response.audio.delta" => {
-                let audio = busbar_contract::media::base64_decode(v.get("delta")?.as_str()?)?;
-                Some(TwilioEnvelope::encode_media(sid, &audio))
-            }
-            "input_audio_buffer.speech_started" => serde_json::to_vec(&serde_json::json!({
-                "event": "clear",
-                "streamSid": sid,
-            }))
-            .ok(),
-            _ => None,
-        }
-    }
 }
 
 /// Every frame a session emits is one text message: the door sets the text bit on each.

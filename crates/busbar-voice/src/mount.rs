@@ -1496,6 +1496,7 @@ where
                         meter,
                         now,
                         served_governed_session(),
+                        matches!(ingress, Ingress::Telephony),
                     ) {
                         Ok(proxy) => {
                             let pool = stream_breaker_key(dialect);
