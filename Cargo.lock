@@ -948,6 +948,7 @@ dependencies = [
  "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
+ "busbar-plane-decisions",
  "busbar-plugin-example-plane",
  "busbar-store-memory",
  "busbar-transport-tcp-plugin",

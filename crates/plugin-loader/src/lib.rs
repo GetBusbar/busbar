@@ -2205,6 +2205,12 @@ mod store_door_conformance_tests;
 #[path = "tests/secret_door_conformance_tests.rs"]
 mod secret_door_conformance_tests;
 
+/// `kind: plane` over the SHIPPED decisions door, both ways: the linked door against the dropped-in
+/// cdylib of the same source, one script, equal transcripts and exact crossing counts.
+#[cfg(test)]
+#[path = "tests/plane_door_conformance_tests.rs"]
+mod plane_door_conformance_tests;
+
 /// `kind: hook` through both doors on the memory ABI: decide identical, a broken one refused.
 #[cfg(test)]
 #[path = "tests/hook_door_conformance_tests.rs"]

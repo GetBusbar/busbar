@@ -54,6 +54,13 @@ crate-type = ["cdylib"]
 # `export_door!` line (`store_v3` conformance, `store_axis`, `store_money_acceptance`). An example,
 # not a crate: `cargo test` builds it and it never ships (the shipped artifact is the store crate's
 # own `cdylib`, built with its `dropped-in` feature).
+# THE SHIPPED PLANE'S DROPPED-IN DOOR (`plane_door_conformance_tests`): the decisions plane's own
+# `export_door!` source, built here as a cdylib so the loader's tests build the artifact they dlopen.
+[[example]]
+name = "decisions_door_dropped"
+path = "../busbar-plane-decisions/examples/decisions_door.rs"
+crate-type = ["cdylib"]
+
 [[example]]
 name = "store_v3_door"
 path = "tests/fixtures/store_v3_door.rs"
@@ -171,6 +178,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io
 # `PLANE_DECL` reference and separately `dlopen`s its `cdylib` (located on disk) — the two decls the
 # both-ways test compares. `cargo test -p busbar-plugin-loader` builds the member cdylib.
 busbar-plugin-example-plane = { path = "../plane-example" }
+# The SHIPPED plane the both-ways proof drives (`plane_door_conformance_tests`): the decisions plane's
+# linked door, `busbar_plane_decisions::plane_door::door`. Its `export_door!` lives only in its example,
+# so linking the rlib exports no door symbol.
+busbar-plane-decisions = { path = "../busbar-plane-decisions" }
 # The `kind: export` BOTH-WAYS proofs are the REAL sinks (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real
 # plugins are the proofs"), each from its own repo at the SAME pinned rev the composition root
 # links: the request-log FILE sink (the `export` row — host-written destinations, rotation counters),
