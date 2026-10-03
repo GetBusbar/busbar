@@ -10,7 +10,7 @@ use crate::driven::MINT_FAILED_STATUS;
 const AUDIENCE: &str = "https://gw.example/v1/realtime";
 
 fn unit(door: Door, caller_ref: Option<&str>) -> RequestUnit {
-    RequestUnit::new(
+    RequestUnit::open(
         door,
         SessionConfig::default(),
         caller_ref.map(str::to_owned),
@@ -54,7 +54,7 @@ fn reply(a: Answer) -> Reply {
 #[test]
 fn a_session_door_is_no_request_unit() {
     for door in [Door::Sideband, Door::Gemini, Door::Twilio] {
-        assert!(RequestUnit::new(door, SessionConfig::default(), None, String::new()).is_none());
+        assert!(RequestUnit::open(door, SessionConfig::default(), None, String::new()).is_none());
     }
 }
 
