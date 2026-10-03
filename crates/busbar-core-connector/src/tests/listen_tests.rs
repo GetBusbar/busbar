@@ -37,6 +37,7 @@ async fn echo(mut conn: Connection) {
                 p.stream,
                 &p.bytes,
                 false,
+                false,
                 &mut std::task::Context::from_waker(waker),
             )
             .is_err()
@@ -156,6 +157,7 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
             p.stream,
             &p.bytes,
             false,
+            false,
             &mut std::task::Context::from_waker(waker),
         )
         .unwrap();
@@ -166,6 +168,7 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
             conn.emit(
                 p.stream,
                 &p.bytes,
+                false,
                 false,
                 &mut std::task::Context::from_waker(waker),
             )

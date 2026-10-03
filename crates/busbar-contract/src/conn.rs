@@ -184,8 +184,8 @@ pub trait Conns: Send + Sync {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError>;
 
-    /// Offer `bytes` to the connection (`end` = the caller's message is complete); answers how many
-    /// were taken.
+    /// Offer `bytes` to the connection (`end` = the caller's message is complete, `text` = it is a
+    /// text message, for a wire whose messages are text or binary); answers how many were taken.
     ///
     /// # Errors
     ///
@@ -196,6 +196,7 @@ pub trait Conns: Send + Sync {
         conn: ConnId,
         bytes: &[u8],
         end: bool,
+        text: bool,
     ) -> Result<usize, ConnError>;
 
     /// The next piece, its bytes into `buf`; with nothing ready, [`ConnError::Pending`] and interest
@@ -238,31 +239,61 @@ pub trait Conns: Send + Sync {
 
 /// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
 /// lowered to a plugin). The loader declares every need an instance's signed Statement states: a
-/// need whose target the plugin names at bind, a need whose `target_from` names a config path at
-/// every `open` and `refresh`, with the target that path resolved to in the instance's settings.
-/// The host's need-admission service reads the answers back.
+/// need whose target the plugin names at bind, a need whose `target_from` or `trust_from` names a
+/// config path at every `open` and `refresh`, with what that path resolved to in the instance's
+/// settings. The host's need-admission service reads the answers back.
 pub trait DeclaredConns: Conns {
     /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
     /// states it: the whole need — direction, transport, auth, egress class, target and trust
     /// sources, details. `target` is what the need's `target_from` resolved to in the instance's
     /// settings (`None`: it resolved to nothing, or the need has no `target_from`); a need declared
-    /// with a target dials that target only. Declaring the same need again replaces its record. The
-    /// answer is kept: [`DeclaredConns::declared`] reads it back.
+    /// with a target dials that target only. `trust` is the PEM the need's `trust_from` resolved
+    /// to (`None`: it resolved to nothing, or the need has no `trust_from`): an operator CA the
+    /// host adds on top of the public roots for the need's connections. Declaring the same need
+    /// again replaces its record. The answer is kept: [`DeclaredConns::declared`] reads it back.
     ///
     /// # Errors
     ///
-    /// [`ConnError::Refused`] when the host will not carry the need as declared, and for a need
-    /// whose `target_from` resolved to nothing.
+    /// [`ConnError::Refused`] when the host will not carry the need as declared, for a need whose
+    /// `target_from` or `trust_from` resolved to nothing, and for a `trust` that does not parse.
     fn declare(
         &self,
         owner: InstanceId,
         need: NeedId,
         spec: &ReadNeed,
         target: Option<&str>,
+        trust: Option<&str>,
     ) -> Result<(), ConnError>;
 
     /// What [`DeclaredConns::declare`] answered for `owner`'s `need`; `None` = never declared.
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
+
+    /// UPGRADE `conn`, an open raw byte stream, to connection security from its next byte on
+    /// (`abi::host::conn::connector::service::UPGRADE_SECURE`: StartTLS after the plugin's own
+    /// negotiation, or TLS from the first byte when made before any byte): offering `name`
+    /// (`None` = the endpoint's host name) and trusting the need's anchors — the public roots, and
+    /// the operator CA its `trust_from` names on top. `trust` names the anchors by the need's
+    /// `trust_from` reference (`None` = the need's); any other reference is refused. The first
+    /// call starts the handshake and every call drives it: `Ok` once it completed,
+    /// [`ConnError::Pending`] with interest under `ticket` while it runs. A host that offers no
+    /// upgrade refuses.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Pending`], [`ConnError::Refused`] (the stream is framed, already secure, or
+    /// the far end's certificate was refused), [`ConnError::NotOwner`], [`ConnError::Closed`],
+    /// [`ConnError::Timeout`].
+    fn upgrade_secure(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        name: Option<&str>,
+        trust: Option<&str>,
+        ticket: Ticket,
+    ) -> Result<(), ConnError> {
+        let _ = (caller, conn, name, trust, ticket);
+        Err(ConnError::Refused)
+    }
 
     /// Whether `owner`'s `need` is carried over a FRAMED transport (a framer composed over a
     /// carrier, http's kind): its request goes out as one opening message, head words, fields and

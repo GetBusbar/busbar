@@ -9,7 +9,7 @@ const OTHER: InstanceId = InstanceId(2);
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
 /// private address the scheme-rule test names (the destination guard refuses both by default), so
 /// what those tests assert stays the connector's own rule.
-fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
+pub(crate) fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
     let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
     std::sync::Arc::new(crate::LiteralsOnly(
         crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
@@ -67,7 +67,7 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
         let mut unserved = config_targeted_need("");
         unserved.transport = "nowhere".to_owned();
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(1), &unserved, None),
+            DeclaredConns::declare(&c, OWNER, NeedId(1), &unserved, None, None),
             Err(ConnError::Refused)
         );
         assert_eq!(c.declared(OWNER, NeedId(1)), Some(Err(ConnError::Refused)));
@@ -75,12 +75,12 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
         let mut inbound = unserved.clone();
         inbound.direction = busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None),
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None, None),
             Err(ConnError::Refused)
         );
         inbound.transport = "bytes".to_owned();
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None),
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None, None),
             Ok(())
         );
         let desc = OpenDesc {
@@ -97,7 +97,7 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
         );
 
         // The served scheme opens.
-        DeclaredConns::declare(&c, OWNER, NeedId(2), &config_targeted_need(""), None)
+        DeclaredConns::declare(&c, OWNER, NeedId(2), &config_targeted_need(""), None, None)
             .expect("a served scheme declares");
         let id = c
             .open(OWNER, NeedId(2), &desc)
@@ -119,7 +119,7 @@ fn an_id_the_shell_never_opened_is_closed() {
     let c = Connector::new();
     let mut buf = [0_u8; 4];
     assert_eq!(
-        c.write(OWNER, ConnId(1), b"x", true),
+        c.write(OWNER, ConnId(1), b"x", true, false),
         Err(ConnError::Closed)
     );
     assert_eq!(
@@ -223,6 +223,49 @@ fn a_need_over_a_served_transport_reaches_a_real_far_end() {
     });
 }
 
+/// RED (C19-TAIL U5 write): a write through the table stated as text reaches the framer as a text
+/// emit (`EMIT_TEXT`), held through the dial like any early write.
+#[test]
+fn a_text_write_through_the_table_reaches_the_framer_as_text() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 2];
+            s.read_exact(&mut buf).await.unwrap();
+            let _ = tx.send(buf.to_vec());
+        });
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let view = Transports::new(vec![Entry {
+            door: door.clone(),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_: Ticket| {}));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        assert_eq!(c.write(OWNER, id, b"{}", true, true), Ok(2));
+        let mut buf = [0_u8; 8];
+        let got = loop {
+            let _ = c.read(OWNER, id, 7, &mut buf);
+            match rx.try_recv() {
+                Ok(v) => break v,
+                Err(_) => tokio::task::yield_now().await,
+            }
+        };
+        assert_eq!(got, b"{}");
+        assert_eq!(door.count("emit text"), 1, "the write crossed as text");
+        assert_eq!(door.count("emit"), 0, "and never as binary");
+    });
+}
+
 /// RED: a metadata target is refused through the table even when a transport serves the need.
 #[test]
 fn a_metadata_target_is_refused_even_over_a_served_transport() {
@@ -320,17 +363,17 @@ fn writes_held_for_a_pending_judgement_are_capped() {
         .expect("opens, judgement pending");
     let big = vec![1_u8; crate::compose::WRITE_BUFFER_BYTES + 10];
     assert_eq!(
-        c.write(OWNER, id, &big, true),
+        c.write(OWNER, id, &big, true, false),
         Ok(crate::compose::WRITE_BUFFER_BYTES),
         "taken short, up to the cap"
     );
     assert_eq!(
-        c.write(OWNER, id, b"more", false),
+        c.write(OWNER, id, b"more", false, false),
         Err(ConnError::Pending),
         "no room: Pending"
     );
     assert_eq!(
-        c.write(OWNER, id, b"", true),
+        c.write(OWNER, id, b"", true, false),
         Ok(0),
         "an empty write still passes"
     );
@@ -414,7 +457,7 @@ fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
         let c = literal_connector();
         let need = config_targeted_need("settings.upstream");
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved)),
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved), None),
             Ok(())
         );
         let open = |target: &str| {
@@ -436,7 +479,7 @@ fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
         c.close(OWNER, id).unwrap();
         let (_moved_listening, moved) = far_end().await;
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&moved)),
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&moved), None),
             Ok(())
         );
         assert_eq!(open(&resolved), Err(ConnError::Refused), "the old pin");
@@ -453,9 +496,9 @@ fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
         let (_listening, resolved) = far_end().await;
         let c = literal_connector();
         let need = config_targeted_need("settings.upstream");
-        let _ = DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved));
+        let _ = DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved), None);
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None),
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None, None),
             Err(ConnError::Refused)
         );
         assert_eq!(
@@ -734,10 +777,10 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
         }
         assert_eq!(got, b"knock");
         assert_eq!(
-            c.emit(OTHER, id, stream, b"x", false),
+            c.emit(OTHER, id, stream, b"x", false, false),
             Err(ConnError::NotOwner)
         );
-        c.emit(OWNER, id, stream, b"welcome"[..5].as_ref(), false)
+        c.emit(OWNER, id, stream, b"welcome"[..5].as_ref(), false, false)
             .unwrap();
         // Nothing drives the connection but the owner's own calls.
         let answered = loop {
@@ -771,7 +814,7 @@ fn a_declared_target_carrying_a_userinfo_is_refused() {
             format!("user@{resolved}"),
         ] {
             assert_eq!(
-                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed)),
+                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed), None),
                 Err(ConnError::Refused),
                 "{credentialed}"
             );
@@ -796,7 +839,8 @@ fn a_declared_target_carrying_a_userinfo_is_refused() {
                 OWNER,
                 NeedId(0),
                 &need,
-                Some(&format!("http://{resolved}/v1/traces"))
+                Some(&format!("http://{resolved}/v1/traces")),
+                None
             ),
             Ok(())
         );

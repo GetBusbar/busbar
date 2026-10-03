@@ -735,6 +735,9 @@ extern "C-unwind" fn out_frame(ctx: *mut c_void, piece: *const WireFramed) {
             status,
             status_code: (p.flags & FRAMED_HAS_STATUS_CODE != 0).then_some(p.status_code),
             retry_after_secs: (p.flags & FRAMED_HAS_RETRY_AFTER != 0).then_some(p.retry_after_secs),
+            // The condemned HOT lane carries no text bit (`qa/abi-freeze.toml`): a text message
+            // reaches the host over the memory ABI only (`abi::transport::PIECE_TEXT`).
+            text: false,
         });
     }));
 }
@@ -910,6 +913,9 @@ impl Framer for DeclFramer {
         stream: StreamId,
         bytes: &[u8],
         end_of_frame: bool,
+        // The condemned HOT lane carries no text bit (`qa/abi-freeze.toml`); a text message goes
+        // out over the memory ABI only (`abi::transport::EMIT_TEXT`).
+        _text: bool,
         mut out: &mut dyn FramerOut,
     ) -> Result<(), TransportError> {
         let f = self.slots.emit.ok_or(TransportError::Closed)?;

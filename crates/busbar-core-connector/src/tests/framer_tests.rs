@@ -17,7 +17,7 @@ fn a_full_sink_is_re_called_until_every_byte_is_out() {
     let (mut f, _) = Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::default()).unwrap();
     f.bufs = Buffers::new(7, 5, 1);
     let sent: Vec<u8> = (0..200).collect();
-    let y = f.emit(1, &sent, true).unwrap();
+    let y = f.emit(1, &sent, true, false).unwrap();
     assert_eq!(y.wire, sent);
     let y = f.ingest(&sent, true).unwrap();
     let got: Vec<u8> = y.pieces.iter().flat_map(|p| p.bytes.clone()).collect();
@@ -25,6 +25,27 @@ fn a_full_sink_is_re_called_until_every_byte_is_out() {
     assert!(y.pieces.last().unwrap().end_of_frame);
     assert!(y.ended);
     assert!(door.count("ingest") > 1, "re-called while it owed more");
+}
+
+/// RED (C19-TAIL U5): a piece the framer states as text (`PIECE_TEXT`) is read up as text; one it
+/// does not is binary.
+#[test]
+fn a_text_piece_is_read_as_text() {
+    for text in [true, false] {
+        let door = Arc::new(TestDoor::new(
+            "ws",
+            &["ws"],
+            &[],
+            Knobs {
+                text,
+                ..Knobs::default()
+            },
+        ));
+        let (mut f, _) = Framing::begin(door, SIDE_DIAL, "t", &Established::default()).unwrap();
+        let y = f.ingest(b"{}", false).unwrap();
+        assert_eq!(y.pieces.len(), 1);
+        assert_eq!(y.pieces[0].text, text, "stated text={text}");
+    }
 }
 
 #[test]

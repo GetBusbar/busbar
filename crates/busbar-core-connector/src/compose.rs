@@ -138,12 +138,15 @@ pub struct Connection {
     /// Its head words.
     head_words: HeadWords,
     /// Writes the caller made before the framing began, in order: `(stream, bytes, end)`.
-    early: Vec<(u64, Vec<u8>, bool)>,
+    early: Vec<(u64, Vec<u8>, bool, bool)>,
     open_deadline: Option<Instant>,
     framer_deadline: Option<Instant>,
     sleep: Option<(Instant, Pin<Box<tokio::time::Sleep>>)>,
     /// The listener's hold on one of its connection slots, freed when the connection is dropped.
     _slot: Option<Slot>,
+    /// Connection security was asked for mid-stream ([`Connection::upgrade_secure`]), not at the
+    /// dial.
+    upgraded: bool,
 }
 
 /// One of a listener's connection slots, held by the connection it admitted and freed on drop.
@@ -333,6 +336,7 @@ impl Planned {
             framer_deadline: None,
             sleep: None,
             _slot: None,
+            upgraded: false,
         })
     }
 }
@@ -389,6 +393,7 @@ impl Connection {
             framer_deadline: None,
             sleep: None,
             _slot: slot,
+            upgraded: false,
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -408,6 +413,102 @@ impl Connection {
     #[must_use]
     pub fn established(&self) -> &Established {
         &self.established
+    }
+
+    /// THE MID-STREAM SECURITY UPGRADE (`UPGRADE_SECURE`): secure this dialled connection with
+    /// `config`, offering `name`, from the next byte on. Whatever the connection already queued for
+    /// the socket goes out in the clear first (a StartTLS request), then the client handshake; from
+    /// then on every byte both ways crosses TLS, and the framing that already began is kept. A
+    /// connection still connecting (TLS from the first byte, ldaps) takes the same path the dial's
+    /// own security does. The first call starts it; every call drives it: `Ready(Ok)` once the
+    /// handshake completed, `Pending` with `cx`'s waker registered while it runs. Bounded by
+    /// `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`]: the connection is an accepted one, was secured at its dial, the name
+    /// is not a server name, or the far end's certificate or handshake was refused.
+    pub fn upgrade_secure(
+        &mut self,
+        config: &Arc<rustls::ClientConfig>,
+        name: &str,
+        timeout: Duration,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), Failure>> {
+        if !self.upgraded {
+            if self.side != SIDE_DIAL || self.tls.is_some() {
+                return Poll::Ready(Err(Failure::Refused(
+                    "the stream is already secure, or is not a dialled one".into(),
+                )));
+            }
+            let mut config = (**config).clone();
+            config.alpn_protocols.clear();
+            let server = rustls::pki_types::ServerName::try_from(
+                name.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_owned(),
+            )
+            .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")));
+            let client = match server
+                .and_then(|n| rustls::ClientConnection::new(Arc::new(config), n).map_err(failed))
+            {
+                Ok(c) => c,
+                Err(f) => return Poll::Ready(Err(f)),
+            };
+            self.tls = Some(rustls::Connection::Client(client));
+            self.upgraded = true;
+            self.established.offered_name = Some(name.to_owned());
+            self.open_deadline = Some(Instant::now() + timeout);
+            if !matches!(self.phase, Phase::Connecting) {
+                if let Err(f) = self.tls_out() {
+                    self.phase = Phase::Failed(f.clone());
+                    return Poll::Ready(Err(f));
+                }
+            }
+        }
+        loop {
+            match &self.phase {
+                Phase::Failed(f) => return Poll::Ready(Err(f.clone())),
+                Phase::Ended => return Poll::Ready(Err(Failure::Closed)),
+                Phase::Open if !self.handshaking() => return Poll::Ready(Ok(())),
+                _ => {}
+            }
+            match self.drive(cx) {
+                Ok(true) => {}
+                Ok(false) => return Poll::Pending,
+                Err(f) => self.phase = Phase::Failed(f),
+            }
+        }
+    }
+
+    /// The target the connection was dialled to.
+    #[must_use]
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Whether connection security is set and its handshake has not completed.
+    fn handshaking(&self) -> bool {
+        self.tls.as_ref().is_some_and(|t| t.is_handshaking())
+    }
+
+    /// The SHA-256 of the far end's certificate (the channel-binding input), lower-case hex, once a
+    /// handshake completed; `None` on a connection in the clear or still handshaking.
+    #[must_use]
+    pub fn peer_cert_hash(&self) -> Option<String> {
+        use std::fmt::Write as _;
+        let tls = self.tls.as_ref().filter(|t| !t.is_handshaking())?;
+        let leaf = tls.peer_certificates()?.first()?;
+        let digest = ring::digest::digest(&ring::digest::SHA256, leaf.as_ref());
+        Some(
+            digest
+                .as_ref()
+                .iter()
+                .fold(String::with_capacity(64), |mut hex, b| {
+                    let _ = write!(hex, "{b:02x}");
+                    hex
+                }),
+        )
     }
 
     /// The next frame piece: `Ready(Ok(Some))` a piece, `Ready(Ok(None))` the connection ended,
@@ -450,10 +551,11 @@ impl Connection {
 
     /// The bytes held for the socket: early writes and framed bytes it has not taken.
     fn buffered(&self) -> usize {
-        self.out.len() + self.early.iter().map(|(_, b, _)| b.len()).sum::<usize>()
+        self.out.len() + self.early.iter().map(|(_, b, _, _)| b.len()).sum::<usize>()
     }
 
-    /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete),
+    /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete, `text` =
+    /// it is a text message),
     /// answering how many were taken: framed now if the framing has begun, else once it does; the
     /// socket takes them as its readiness allows, driven by `cx`. At most the room left under
     /// [`WRITE_BUFFER_BYTES`] is taken (`end` holds only when all of `bytes` was), so `Ok(0)` for a
@@ -466,12 +568,14 @@ impl Connection {
         &mut self,
         bytes: &[u8],
         end: bool,
+        text: bool,
         cx: &mut Context<'_>,
     ) -> Result<usize, Failure> {
-        self.emit(EXCHANGE_STREAM, bytes, end, cx)
+        self.emit(EXCHANGE_STREAM, bytes, end, text, cx)
     }
 
-    /// Offer `bytes` on `stream` (`end` = the stream's message is complete): the framer's `emit`
+    /// Offer `bytes` on `stream` (`end` = the stream's message is complete, `text` = it is a text
+    /// message): the framer's `emit`
     /// on that stream, now if the framing has begun, else once it does. An accepted connection
     /// answers each piece on the stream the piece came on.
     ///
@@ -483,6 +587,7 @@ impl Connection {
         stream: u64,
         bytes: &[u8],
         end: bool,
+        text: bool,
         cx: &mut Context<'_>,
     ) -> Result<usize, Failure> {
         match &self.phase {
@@ -507,11 +612,11 @@ impl Connection {
             Phase::Ended => return Err(Failure::Closed),
             Phase::Open => {
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-                let y = framing.emit(stream, bytes, end).map_err(failed)?;
+                let y = framing.emit(stream, bytes, end, text).map_err(failed)?;
                 self.absorb(y)?;
             }
             Phase::Connecting | Phase::Handshaking => {
-                self.early.push((stream, bytes.to_vec(), end));
+                self.early.push((stream, bytes.to_vec(), end, text));
             }
         }
         if let Err(f) = self.drive(cx) {
@@ -589,7 +694,7 @@ impl Connection {
     /// The open's bound and the framer's deadline: the earlier is a timer on the worker's clock.
     fn keep_deadlines(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let now = Instant::now();
-        if matches!(self.phase, Phase::Connecting | Phase::Handshaking) {
+        if matches!(self.phase, Phase::Connecting | Phase::Handshaking) || self.handshaking() {
             if self.open_deadline.is_some_and(|at| at <= now) {
                 return Err(Failure::Timeout);
             }
@@ -660,14 +765,14 @@ impl Connection {
                         .map_err(|e| Failure::Refused(e.to_string()))?;
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
                 let y = framing
-                    .emit(EXCHANGE_STREAM, &message, true)
+                    .emit(EXCHANGE_STREAM, &message, true, false)
                     .map_err(failed)?;
                 self.absorb(y)?;
             }
         }
-        for (stream, bytes, end) in std::mem::take(&mut self.early) {
+        for (stream, bytes, end, text) in std::mem::take(&mut self.early) {
             let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-            let y = framing.emit(stream, &bytes, end).map_err(failed)?;
+            let y = framing.emit(stream, &bytes, end, text).map_err(failed)?;
             self.absorb(y)?;
         }
         Ok(())

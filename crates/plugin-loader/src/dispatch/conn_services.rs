@@ -13,6 +13,12 @@
 //! * `READ` answers the next piece's bytes; nothing ready is PENDING on the caller's ticket (the
 //!   table wakes it), and never PENDING without one. A closed stream reads as its end (`len` 0).
 //! * `WRITE` offers bytes; `CLOSE` closes.
+//! * `UPGRADE_SECURE` secures a raw stream from its next byte on (StartTLS after the plugin's own
+//!   negotiation; TLS from the first byte, ldaps, when made before any byte), trusting the need's
+//!   anchors (the public roots, and the operator CA its `trust_from` names on top); PENDING on the
+//!   caller's ticket while the handshake runs. A framed stream refuses it.
+//! * `FACTS` writes the stream's facts: whether it is secure, the protocol agreed and the hash of
+//!   the far end's certificate (the channel-binding input), the strings held until it closes.
 //! * `RANDOM` fills the buffer from the OS; `IDENTITY` names the process.
 //! * `WRITE_REQUEST` sends a request on a FRAMED stream piece by piece (head, body, end): a framed
 //!   need's `ESTABLISH` answers a stream the host holds unopened, the head and body are held here,
@@ -40,9 +46,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, IdentityIn, IoIn, ProcessIdentity, RandomIn, ReplyIn,
-    ReplyPiece, RequestIn, RequestPiece, StreamIn, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
-    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, WITHIN_SEPARATOR,
+    service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, RandomIn,
+    ReplyIn, ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, REPLY_ACK,
+    REPLY_BODY, REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES,
+    WITHIN_SEPARATOR,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -63,8 +70,8 @@ pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     side_stream: None,
     read: Some(read),
     write: Some(write),
-    upgrade_secure: None,
-    facts: None,
+    upgrade_secure: Some(upgrade_secure),
+    facts: Some(facts),
     checkout: None,
     checkin: None,
     close: Some(close),
@@ -326,7 +333,7 @@ extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
                 Ok(c) => c,
                 Err(e) => return Answer::of(e),
             };
-            match table.write(id, conn, buf, false) {
+            match table.write(id, conn, buf, false, false) {
                 Ok(n) => Answer::ready(0, n as u64),
                 Err(e) => Answer::of(e),
             }
@@ -344,6 +351,7 @@ extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
         |id, table, _| {
             // SAFETY: the head covered a `StreamIn`.
             let i = unsafe { input.cast::<StreamIn>().read_unaligned() };
+            held_facts().remove(&(id, i.stream));
             let held = held_conns().remove(&(id, i.stream));
             let conn = match held.map(|s| s.conn) {
                 // Never opened, or refused: nothing on the table to close.
@@ -356,6 +364,128 @@ extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
                 Ok(()) => Answer::ready(0, 0),
                 Err(e) => Answer::of(e),
             }
+        },
+    )
+}
+
+/// An optional text the caller handed: `Ok(None)` when absent or empty, `Err` when it is not text.
+///
+/// # Safety
+/// A non-NULL `s.ptr` names `s.len` live bytes for the call.
+unsafe fn optional_text<'a>(s: AbiStr) -> Result<Option<&'a str>, ()> {
+    if s.ptr.is_null() || s.len == 0 {
+        return Ok(None);
+    }
+    // SAFETY: the caller's contract.
+    let b = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    std::str::from_utf8(b).map(Some).map_err(|_| ())
+}
+
+extern "C" fn upgrade_secure(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    slot(
+        ctx,
+        input,
+        out,
+        service::UPGRADE_SECURE,
+        size_of::<UpgradeIn>(),
+        |id, table, head| {
+            // SAFETY: the head covered an `UpgradeIn`.
+            let i = unsafe { input.cast::<UpgradeIn>().read_unaligned() };
+            // SAFETY: the caller's strings, live for the call.
+            let (Ok(name), Ok(trust)) = (unsafe { optional_text(i.offered_name) }, unsafe {
+                optional_text(i.trust)
+            }) else {
+                return Answer::with(Outcome::Fault, "");
+            };
+            if i.stream & HELD != 0 {
+                return Answer::with(
+                    Outcome::Refused,
+                    "a framed stream is secured by its need, never upgraded",
+                );
+            }
+            let ticket = conn_ticket(head.handle.ticket);
+            match table.upgrade_secure(id, ConnId(i.stream), name, trust, ticket) {
+                Ok(()) => Answer::ready(0, 0),
+                Err(ConnError::Pending) if head.handle.ticket.is_none() => Answer::with(
+                    Outcome::Refused,
+                    "an upgrade that would pend is callable only inside a ticketed op",
+                ),
+                Err(e) => Answer::of(e),
+            }
+        },
+    )
+}
+
+/// The facts strings each stream was answered, held until it closes (`FactsIn::facts`: "the
+/// strings stay valid until the stream closes"): a later answer that differs is added, never put
+/// in an earlier one's place.
+type HeldFacts = HashMap<(InstanceId, u64), Vec<Box<str>>>;
+
+fn held_facts() -> MutexGuard<'static, HeldFacts> {
+    static HELD_FACTS: OnceLock<Mutex<HeldFacts>> = OnceLock::new();
+    HELD_FACTS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `text`, held for `stream` until it closes, as the caller reads it.
+fn held_text(all: &mut HeldFacts, key: (InstanceId, u64), text: Option<&str>) -> AbiStr {
+    let Some(text) = text else {
+        return AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        };
+    };
+    let kept = all.entry(key).or_default();
+    if !kept.iter().any(|k| &**k == text) {
+        kept.push(text.into());
+    }
+    let k = kept.iter().find(|k| &***k == text).expect("just kept");
+    AbiStr {
+        ptr: k.as_ptr(),
+        len: k.len(),
+    }
+}
+
+extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    slot(
+        ctx,
+        input,
+        out,
+        service::FACTS,
+        size_of::<FactsIn>(),
+        |id, table, _| {
+            // SAFETY: the head covered a `FactsIn`.
+            let i = unsafe { input.cast::<FactsIn>().read_unaligned() };
+            if i.facts.is_null() {
+                return Answer::with(Outcome::Fault, "");
+            }
+            let conn = match resolve(id, table, i.stream) {
+                Ok(c) => c,
+                Err(e) => return Answer::of(e),
+            };
+            let f = match table.facts(id, conn) {
+                Ok(f) => f,
+                Err(e) => return Answer::of(e),
+            };
+            let hash = f.peer_cert.as_ref().map(|c| c.fingerprint.as_str());
+            let mut all = held_facts();
+            let key = (id, i.stream);
+            let written = StreamFacts {
+                size: size_of::<StreamFacts>() as u32,
+                secure: u32::from(hash.is_some()),
+                endpoint: held_text(&mut all, key, None),
+                agreed_protocol: held_text(&mut all, key, f.alpn.as_deref()),
+                peer_cert_hash: held_text(&mut all, key, hash),
+            };
+            // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
+            unsafe { i.facts.write_unaligned(written) };
+            Answer::ready(0, 0)
         },
     )
 }
@@ -395,14 +525,19 @@ fn kept(id: InstanceId, h: CompletionHandle, run: impl FnOnce() -> Answer) -> An
     a
 }
 
-/// Forget every answer kept under `ticket`: the worker recycled it.
-pub(crate) fn forget(ticket: Ticket) {
-    kept_answers().retain(|(_, t), _| *t != ticket);
+/// Forget every answer instance `id` kept under `ticket`: its worker recycled it. Keyed by the
+/// instance as well as the ticket: tickets are minted per dispatcher, so another dispatcher's
+/// instance may hold an identical ticket, and its kept answers are never its neighbour's to drop
+/// (dropping them would make it run a stored establish or write a second time).
+pub(crate) fn forget(id: InstanceId, ticket: Ticket) {
+    kept_answers().remove(&(id, ticket));
 }
 
-/// Forget every answer kept under worker `worker`'s tickets: it was replaced.
-pub(crate) fn forget_worker(worker: u32) {
-    kept_answers().retain(|(_, t), _| super::ticket::decode(t.slot).0 != worker);
+/// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.
+/// Another dispatcher's worker of the same index is not touched.
+pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
+    kept_answers()
+        .retain(|(id, t), _| !(ids.contains(id) && super::ticket::decode(t.slot).0 == worker));
 }
 
 // ── FRAMED REQUESTS AND REPLIES ──────────────────────────────────────────────────────────────────
