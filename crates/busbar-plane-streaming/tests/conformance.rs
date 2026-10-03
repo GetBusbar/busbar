@@ -390,14 +390,18 @@ fn at(buf: &[u8], s: Span) -> String {
 /// The host's buffers for one `on_piece`.
 struct Bufs {
     reply: Vec<u8>,
-    units: [UnitCount; 2],
+    units: Vec<UnitCount>,
     fields: [OutField; 4],
     arena: [u8; 256],
+    /// The units the last answer wrote (class, source, amount), or, short, the room it needed.
+    last_units: String,
 }
 
 /// One piece pushed to a unit: whose it is, its flags, bytes, status and kept head fields.
 struct Push<'a> {
     unit: u64,
+    /// A live session's stream (`0` = a request unit).
+    stream: u64,
     claim: u32,
     from: u32,
     flags: u32,
@@ -409,11 +413,16 @@ struct Push<'a> {
 
 impl Bufs {
     fn new(reply_cap: usize) -> Self {
+        Self::with_units(reply_cap, 2)
+    }
+
+    fn with_units(reply_cap: usize, units: usize) -> Self {
         Self {
             reply: vec![0; reply_cap],
-            units: [z(); 2],
+            units: vec![z(); units],
             fields: [z(); 4],
             arena: [0; 256],
+            last_units: String::new(),
         }
     }
 
@@ -422,6 +431,7 @@ impl Bufs {
         let mut i: OnPieceIn = z();
         i.head = in_head();
         (i.unit, i.claim, i.from, i.flags) = (push.unit, push.claim, push.from, push.flags);
+        i.stream = push.stream;
         (i.attempt_no, i.bytes, i.status_code) = (push.attempt_no, octets(push.bytes), push.status);
         i.caller_ref = text(CALLER_REF);
         if !push.head.is_empty() {
@@ -436,6 +446,15 @@ impl Bufs {
         let mut f = Frame::new(i, o);
         let c = p.call(slot::ON_PIECE, &mut f);
         let o = f.out;
+        self.last_units = if o.units_needed != 0 {
+            format!("needed {}", o.units_needed)
+        } else {
+            self.units[..o.units_written as usize]
+                .iter()
+                .map(|u| format!("{}:{}={}", u.class, u.source, u.amount))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         let fields: Vec<String> = self.fields[..o.fields_written as usize]
             .iter()
             .map(|f| format!("{}={}", at(&self.arena, f.name), at(&self.arena, f.value)))
@@ -458,6 +477,7 @@ impl Bufs {
 const fn push(unit: u64, claim: u32, from: u32, flags: u32, bytes: &[u8]) -> Push<'_> {
     Push {
         unit,
+        stream: 0,
         claim,
         from,
         flags,
@@ -599,5 +619,140 @@ fn the_dropped_door_answers_the_one_request_doors_as_the_linked_door_does() {
         unit_script(&dropped),
         unit_script(&linked(&d)),
         "the two doors must answer identically"
+    );
+}
+
+// ── LIVE SESSIONS THROUGH THE DOOR (K6) ──────────────────────────────────────────────────────────
+
+/// A piece of the live session on stream `stream` (claim 2, the sideband socket).
+const fn session(stream: u64, from: u32, flags: u32, bytes: &[u8]) -> Push<'_> {
+    Push {
+        stream,
+        ..push(stream, 2, from, flags, bytes)
+    }
+}
+
+/// `ms` milliseconds of 24 kHz PCM16 uplink audio, as the caller's realtime frame.
+fn uplink(ms: usize) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({"type":"input_audio_buffer.append",
+        "audio": busbar_contract::media::base64_encode(&vec![0u8; ms * 48])}))
+    .expect("json")
+}
+
+const USAGE_DONE: &[u8] = br#"{"type":"response.done","response":{"usage":{"input_token_details":{"audio_tokens":10,"text_tokens":3},"output_token_details":{"audio_tokens":20,"text_tokens":4}}}}"#;
+
+/// THE SESSION SCRIPT, in the order the driver pushes a session's pieces: the caller's audio (a
+/// turn toward the far end), the turn's ATTEMPT, the far end's usage, a collection with nothing
+/// owed, an answer short of unit room and its re-call, and the caller's end.
+fn session_script(p: &Plugin<Plane>) -> Vec<String> {
+    let mut t = vec![format!("open {:?}", open(p, 1, SESSION, Some(PUBLIC)).0)];
+    let mut b = Bufs::with_units(1 << 18, 6);
+    let line = |t: &mut Vec<String>, b: &mut Bufs, what: &str, push: &Push<'_>| {
+        let answer = b.call(p, push);
+        t.push(format!("{what} {answer} units=[{}]", b.last_units));
+    };
+    let audio = uplink(2000);
+    line(
+        &mut t,
+        &mut b,
+        "caller audio",
+        &session(20, FROM_CALLER, 0, &audio),
+    );
+    let turn = Push {
+        attempt_no: 1,
+        ..session(20, FROM_KERNEL, 0, &[])
+    };
+    line(&mut t, &mut b, "turn attempt", &turn);
+    let far = Push {
+        status: 101,
+        ..session(20, FROM_FAR_END, PIECE_HAS_STATUS, USAGE_DONE)
+    };
+    line(&mut t, &mut b, "far usage", &far);
+    line(&mut t, &mut b, "collect", &session(20, FROM_KERNEL, 0, &[]));
+    let mut narrow = Bufs::with_units(1 << 18, 2);
+    let short = session(20, FROM_CALLER, 0, &audio);
+    let answer = narrow.call(p, &short);
+    t.push(format!("short {answer} units=[{}]", narrow.last_units));
+    line(&mut t, &mut b, "short re-call", &short);
+    line(
+        &mut t,
+        &mut b,
+        "caller end",
+        &session(20, FROM_CALLER, PIECE_LAST, &[]),
+    );
+    line(
+        &mut t,
+        &mut b,
+        "request unit on a session door",
+        &attempt(21, 2),
+    );
+    t
+}
+
+#[test]
+fn a_live_session_is_answered_through_the_door() {
+    let d = Dispatcher::new(DispatchConfig::default());
+    let t = session_script(&linked(&d));
+    let payload = busbar_contract::media::base64_encode(&vec![0u8; 2000 * 48]);
+    let line = |what: &str| {
+        t.iter()
+            .find(|l| l.starts_with(what))
+            .unwrap_or_else(|| panic!("no `{what}` line in {t:#?}"))
+            .clone()
+    };
+    assert_eq!(t[0], "open Ready");
+    let caller = line("caller audio");
+    assert!(
+        caller.contains("far=true")
+            && caller.contains("verb=GET target=/v1/realtime ")
+            && caller.contains("input_audio_buffer.append")
+            && caller.contains(&payload)
+            && caller.contains("more=0")
+            && caller.ends_with("units=[]"),
+        "the caller's frame is one turn toward the far end, its audio unchanged: {caller}"
+    );
+    assert_eq!(
+        line("turn attempt"),
+        "turn attempt Ready emitted= more=0 far=false done=false status=0 verb= target= \
+         fields=[] units=[]",
+        "the turn's request is the caller side's answer"
+    );
+    let far = line("far usage");
+    assert!(
+        far.contains("far=false done=false")
+            && far.ends_with("units=[0:1=10 1:1=20 2:1=3 3:1=4 4:1=2]"),
+        "the closed turn's tokens and its two admitted seconds, reported: {far}"
+    );
+    assert!(line("collect ").contains("emitted= more=0 far=false done=false"));
+    assert!(
+        line("short ").starts_with("short Failed") && line("short ").ends_with("units=[needed 5]"),
+        "{}",
+        line("short ")
+    );
+    let recall = line("short re-call");
+    assert!(
+        recall.contains("far=true") && recall.ends_with("units=[0:1=10 1:1=20 2:1=3 3:1=4 4:1=2]"),
+        "the re-call answers the same piece once, its audio not counted twice: {recall}"
+    );
+    let end = line("caller end");
+    assert!(
+        end.contains("done=true") && end.ends_with("units=[0:1=10 1:1=20 2:1=3 3:1=4 4:1=4]"),
+        "the caller's end settles the open turn's two seconds once: {end}"
+    );
+    assert!(line("request unit on a session door")
+        .starts_with("request unit on a session door Refused"));
+}
+
+#[test]
+fn the_dropped_door_answers_a_live_session_as_the_linked_door_does() {
+    let d = Dispatcher::new(DispatchConfig::default());
+    let Some(dropped) = dropped(&d) else {
+        eprintln!("skip: the streaming_door example cdylib is not built");
+        return;
+    };
+    assert_eq!(
+        session_script(&dropped),
+        session_script(&linked(&d)),
+        "the two doors must answer a session identically"
     );
 }

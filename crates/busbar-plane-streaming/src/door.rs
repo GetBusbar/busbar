@@ -35,8 +35,12 @@
 //! A one-request door (the mint, the SDP offer, the metadata document) answers its pieces through
 //! a [`RequestUnit`] the instance keeps by the kernel's unit key, built at the unit's first piece
 //! over the newest live generation's session params and audience. Its answer's bytes are paid into
-//! the reply buffer across `more = 1` re-calls ([`crate::piece`]). A session
-//! door's pieces are refused: the kernel's driver serves request units only.
+//! the reply buffer across `more = 1` re-calls ([`crate::piece`]).
+//!
+//! A piece that names a stream is a live session's, served by the door's [`Sessions`]
+//! ([`crate::session_door`]): the driver's duplex vocabulary (K6), one frame per answer, the
+//! session's unsolicited output named on the instance's driver ticket, and the session's cumulative
+//! units on every answer. A request unit on a session door is refused.
 
 use std::collections::BTreeMap;
 use std::mem::size_of;
@@ -54,17 +58,18 @@ use busbar_contract::abi::mechanism::door::{
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
     FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST,
-    SHAPE_PIECEWISE, UNITS_ESTIMATED,
+    PIECE_OUT_TEXT, SHAPE_PIECEWISE, UNITS_ESTIMATED, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
-use busbar_contract::abi::sdk::{Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot};
+use busbar_contract::abi::sdk::{Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot, Wake};
 use busbar_contract::plane::{PER_SESSION, TOKEN_FAMILY};
 
 use crate::claims::{Dialect, HTTP_TRANSPORT, WS_TRANSPORT};
@@ -73,6 +78,7 @@ use crate::driven::{Door, Steps};
 use crate::meta;
 use crate::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 use crate::request_unit::{self, Answer, Piece, RequestUnit};
+use crate::session_door::{Sessions, Side, CEILING_TICK_NS};
 
 /// The name the plane's Statement carries.
 pub const NAME: &str = crate::codec::PLANE_KEY;
@@ -506,6 +512,13 @@ pub struct Plane {
     snapshots: Generations<PlaneSnapshot>,
     /// The request units in flight, by the kernel's unit key.
     units: Mutex<BTreeMap<u64, Held>>,
+    /// The live sessions, by the kernel's stream.
+    sessions: Mutex<Sessions>,
+    /// The host's wake, as `open` handed it; `None` = no session output can be named.
+    wake: Option<Wake>,
+    /// The instance's driver ticket, as its last `tick` was handed it, and that tick's clock
+    /// reading in milliseconds.
+    driver: Mutex<(Ticket, u64)>,
 }
 
 impl Plane {
@@ -527,6 +540,26 @@ impl Plane {
             owed: Owed::default(),
             short: None,
         })
+    }
+
+    /// The newest live generation's section; `None` before the first publish.
+    fn newest(&self) -> Option<StreamsCfg> {
+        lock(&self.generations).last().map(|(cfg, _)| cfg.clone())
+    }
+
+    /// Whether any live generation configures a session wall-clock ceiling.
+    fn any_ceiling(&self) -> bool {
+        lock(&self.generations)
+            .iter()
+            .any(|(cfg, _)| cfg.session_max_secs.is_some())
+    }
+
+    /// Name the instance's driver ticket: a session owes output of its own.
+    fn wake_driver(&self) {
+        let (ticket, _) = *lock(&self.driver);
+        if let (Some(wake), false) = (self.wake, ticket == Ticket::NONE) {
+            wake.wake(ticket);
+        }
     }
 
     /// Publish generation `generation` into the `out` field `pick` names.
@@ -583,11 +616,15 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
         .ok()
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
+    let wake = input.field(|i| &i.open).host().and_then(|h| Wake::of(&h));
     let p = Plane {
         public_url,
         generations: Mutex::new(Vec::new()),
         snapshots: Generations::new(),
         units: Mutex::new(BTreeMap::new()),
+        sessions: Mutex::new(Sessions::default()),
+        wake,
+        driver: Mutex::new((Ticket::NONE, 0)),
     };
     p.publish(&mut out, |o| &o.snapshot, input.open.generation, cfg);
     instance.open(p);
@@ -618,16 +655,58 @@ slot!(Retire, GenIn, OutHead, |instance, input, _out| {
     Outcome::Ready
 });
 
-slot!(Tick, TickIn, TickOut, |_, _, out| {
-    out.set(|o| &o.next_tick_ns, 0);
+// The tick: the instance's driver ticket is noted, every live session's clock and ceiling read on
+// the tick clock, and a session that now owes its end names the driver ticket. While a live
+// generation configures a ceiling the door asks to be ticked every `CEILING_TICK_NS`.
+slot!(Tick, TickIn, TickOut, |instance, input, out| {
+    let given = input.get();
+    let next = match instance.get() {
+        Some(p) => {
+            *lock(&p.driver) = (given.head.ticket, given.now_ns / 1_000_000);
+            if lock(&p.sessions).tick(given.now_ns) {
+                p.wake_driver();
+            }
+            if p.any_ceiling() {
+                given.now_ns.saturating_add(CEILING_TICK_NS)
+            } else {
+                0
+            }
+        }
+        None => 0,
+    };
+    out.set(|o| &o.next_tick_ns, next);
     Outcome::Ready
 });
 
-slot!(Drive, PlaneDriveIn, PlaneDriveOut, |_, _, _out| {
-    Outcome::Ready
-});
+// `drive`: the sessions with output of their own, by stream, as many as the host's buffer takes.
+slot!(
+    Drive,
+    PlaneDriveIn,
+    PlaneDriveOut,
+    |instance, input, out| {
+        let Some(p) = instance.get() else {
+            return Outcome::Ready;
+        };
+        let sessions = lock(&p.sessions);
+        let mut buf = input.sessions_buf();
+        for stream in sessions.ready(usize::MAX) {
+            buf.push(stream);
+        }
+        if !buf.fits() {
+            out.set(|o| &o.sessions_needed, buf.needed() as u32);
+            return Outcome::Failed;
+        }
+        out.set(|o| &o.sessions_written, buf.written() as u32);
+        Outcome::Ready
+    }
+);
 
-slot!(Cancel, CancelIn, CancelOut, |_, _, out| {
+// `cancel`: an op on a session's ticket ends the session (each side tells the other); a request
+// unit's cancel is declined.
+slot!(Cancel, CancelIn, CancelOut, |instance, input, out| {
+    if let Some(p) = instance.get() {
+        lock(&p.sessions).cancel(input.get().ticket);
+    }
     out.set(|o| &o.disposition, CANCEL_FAILED);
     Outcome::Ready
 });
@@ -753,16 +832,137 @@ fn answer_piece(
     }
 }
 
+/// A live session's piece (`stream != 0`), answered by its [`crate::session_door::Live`]: the
+/// caller's and the far end's pieces go through the session, a collection (`FROM_KERNEL`, no
+/// attempt) answers its next queued frame, and the turn's ATTEMPT carries nothing of its own (the
+/// turn's request is the caller side's answer). Every answer reports the session's cumulative
+/// units and writes at most one frame; a session still owing output names the driver ticket.
+fn session_piece(p: &Plane, input: Lent<'_, OnPieceIn>, out: &mut Out<'_, OnPieceOut>) -> Outcome {
+    let given = input.get();
+    let Some(door) = Door::of(given.claim).filter(|d| d.is_session()) else {
+        return Outcome::Refused;
+    };
+    let Some(cfg) = p.newest() else {
+        return Outcome::Refused;
+    };
+    let now_ms = lock(&p.driver).1;
+    let mut sessions = lock(&p.sessions);
+    // Only the caller's piece opens a session: a far-end piece or a collection for a stream the
+    // door holds nothing for (an ended or cancelled session) is refused, never a fresh session.
+    let live = if given.from == FROM_CALLER {
+        sessions.get_or_open(given.stream, door, &cfg)
+    } else {
+        sessions.get(given.stream)
+    };
+    if live.is_none() {
+        return Outcome::Refused;
+    }
+    sessions.crossed(given.stream, given.head.ticket);
+    let Some(live) = sessions.get(given.stream) else {
+        return Outcome::Refused;
+    };
+    let near = given.from != FROM_FAR_END;
+    // A re-call after a `more = 1` answer pays what that side's frame still owes.
+    let owed = if near { &mut live.near } else { &mut live.far };
+    if piece::is_recall(input) && owed.pending() {
+        owed.pay(input, out);
+        return Outcome::Ready;
+    }
+    let short = if near {
+        live.short_near.take()
+    } else {
+        live.short_far.take()
+    };
+    let emit = match short {
+        Some(emit) => emit,
+        None => {
+            let caller_last = given.from == FROM_CALLER && given.flags & PIECE_LAST != 0;
+            let bytes = input.field(|i| &i.bytes).bytes();
+            match given.from {
+                FROM_CALLER => live.from_caller(bytes, caller_last),
+                FROM_FAR_END => live.from_far_end(bytes, now_ms),
+                FROM_KERNEL => {}
+                _ => return Outcome::Refused,
+            }
+            // The caller's last piece ends the session: what it still owed either side has no
+            // one to go to. A turn's ATTEMPT carries nothing of its own.
+            if caller_last {
+                crate::session_door::Emit {
+                    frame: None,
+                    done: true,
+                }
+            } else if given.from == FROM_KERNEL && given.attempt_no > 0 {
+                crate::session_door::Emit::default()
+            } else {
+                live.next(near)
+            }
+        }
+    };
+    let (fields, mut units, mut arena) = (input.fields_buf(), input.units_buf(), input.arena_buf());
+    for (class, amount) in live.units() {
+        units.push(UnitCount {
+            class,
+            source: UNITS_REPORTED,
+            amount,
+        });
+    }
+    let target = match emit.frame {
+        Some((Side::FarEnd, _)) => door.route(&cfg.session, None, &[]).ok().flatten(),
+        _ => None,
+    };
+    let verb = target.as_ref().map(|a| arena.span(a.verb.as_bytes()));
+    let path = target.as_ref().map(|a| arena.span(a.target.as_bytes()));
+    if piece::settle(out, &fields, &units, &arena) {
+        // Short as a whole: the re-call carries the same piece, answered from here.
+        if near {
+            live.short_near = Some(emit);
+        } else {
+            live.short_far = Some(emit);
+        }
+        return Outcome::Failed;
+    }
+    let done = match emit.frame {
+        Some((Side::FarEnd, frame)) => {
+            if let (Some(verb), Some(path)) = (verb, path) {
+                out.set(|o| &o.verb, verb);
+                out.set(|o| &o.target, path);
+            }
+            live.near.owe(&frame, EMIT_TO_FAR_END, input, out);
+            false
+        }
+        Some((Side::Caller, frame)) => {
+            let owed = if near { &mut live.near } else { &mut live.far };
+            owed.owe(&frame, PIECE_OUT_TEXT, input, out);
+            false
+        }
+        None if emit.done => {
+            out.set(|o| &o.flags, EMIT_DONE);
+            true
+        }
+        None => false,
+    };
+    let owes = live.ready();
+    if done {
+        sessions.close(given.stream);
+    } else if owes {
+        drop(sessions);
+        p.wake_driver();
+    }
+    Outcome::Ready
+}
+
 // `on_piece`: a one-request door's pieces (the mint, the SDP offer, the metadata document), each
 // answered by the unit's [`RequestUnit`]: the ATTEMPT's request with its body, the caller's body to
 // the far end, and the caller's answer from the far end's. A finished or refused unit is forgotten.
-// A live session's pieces are refused: the kernel's driver serves request units, and a session door
-// is answered here once the driver hands a session its pieces.
+// A piece that names a stream is a live session's ([`session_piece`]).
 slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
     let Some(p) = instance.get() else {
         return Outcome::Failed;
     };
     let given = input.get();
+    if given.stream != 0 {
+        return session_piece(p, input, &mut out);
+    }
     let mut units = lock(&p.units);
     if piece::is_recall(input) {
         if let Some(held) = units.get_mut(&given.unit) {

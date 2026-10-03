@@ -30,7 +30,7 @@ use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
 };
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
-use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables};
+use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
 
 /// Why a service call has no value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +140,37 @@ impl<'b> Records<'b> {
     #[must_use]
     pub fn last_key(&self) -> Option<&'b [u8]> {
         present(self.bytes, self.spans.last()?.key)
+    }
+}
+
+/// THE HOST'S WAKE, as `open` handed it (`HostTables::wake`): an instance holding work of its own
+/// (a plane's session output, named on its driver ticket) wakes a ticket through it, from any
+/// thread. A wake never blocks and never fails; one for a stale ticket is dropped by the host.
+#[derive(Debug, Clone, Copy)]
+pub struct Wake {
+    ctx: HostCtx,
+    wake: WakeFn,
+}
+
+// SAFETY: the context is the host's per-instance state and the wake a plain code address; the
+// mechanism states the wake callable from any thread for the instance's life.
+unsafe impl Send for Wake {}
+// SAFETY: as above.
+unsafe impl Sync for Wake {}
+
+impl Wake {
+    /// The wake in the tables `open` handed the instance; `None` when the host handed none.
+    #[must_use]
+    pub fn of(tables: &HostTables) -> Option<Self> {
+        tables.wake.map(|wake| Self {
+            ctx: tables.ctx,
+            wake,
+        })
+    }
+
+    /// Wake `ticket`.
+    pub fn wake(&self, ticket: Ticket) {
+        (self.wake)(self.ctx, ticket);
     }
 }
 

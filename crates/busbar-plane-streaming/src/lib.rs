@@ -64,6 +64,7 @@ pub mod provider;
 pub mod register;
 pub mod request_unit;
 pub mod session;
+pub mod session_door;
 pub mod session_params;
 pub mod session_pump;
 pub mod session_row;

@@ -222,7 +222,16 @@ where
         if now_ns.saturating_sub(self.opened_ns) < ceiling.saturating_mul(1_000_000_000) {
             return Plan::default();
         }
-        let told = self.pump.ceiling_error(ceiling);
+        self.close_at_ceiling(ceiling)
+    }
+
+    /// The session reached the wall-clock ceiling of `ceiling_secs` its host measured: it is told
+    /// why, in its dialect, and ends.
+    pub fn close_at_ceiling(&mut self, ceiling_secs: u64) -> Plan {
+        if self.ended {
+            return Plan::default();
+        }
+        let told = self.pump.ceiling_error(ceiling_secs);
         let mut plan = self.end();
         plan.to_caller = self.caller_frames(told.into_iter().collect());
         plan
