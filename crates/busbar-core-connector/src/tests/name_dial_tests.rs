@@ -298,7 +298,7 @@ fn a_judged_address_set_pins_the_dial() {
                 },
             )
             .expect("a name opens, its dial in flight");
-        assert_eq!(c.write(OWNER, id, b"pin!", false), Ok(4));
+        assert_eq!(c.write(OWNER, id, b"pin!", false, false), Ok(4));
         assert_eq!(read_direct(&c, id).await.expect("the echo"), b"pin!");
         assert_eq!(accepted.load(Ordering::SeqCst), 1);
     });
@@ -329,7 +329,11 @@ fn a_rebound_name_is_refused_before_its_bytes_leave() {
                 },
             )
             .expect("a name opens, its judgement pending");
-        assert_eq!(c.write(OWNER, id, b"leak", false), Ok(4), "held, not sent");
+        assert_eq!(
+            c.write(OWNER, id, b"leak", false, false),
+            Ok(4),
+            "held, not sent"
+        );
         assert_eq!(read_direct(&c, id).await, Err(ConnError::Refused));
         assert_eq!(
             read_direct(&c, id).await,
@@ -377,7 +381,7 @@ fn an_empty_address_set_keeps_the_dial_as_it_was() {
                 },
             )
             .expect("opens");
-        assert_eq!(c.write(OWNER, id, b"same", false), Ok(4));
+        assert_eq!(c.write(OWNER, id, b"same", false, false), Ok(4));
         assert_eq!(read_direct(&c, id).await.expect("the echo"), b"same");
         assert_eq!(accepted.load(Ordering::SeqCst), 1);
     });

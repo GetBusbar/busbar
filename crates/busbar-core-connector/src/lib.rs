@@ -188,7 +188,7 @@ struct Judging {
     /// The address set the pinned address must be in (`OpenDesc::within`); empty = any.
     within: Vec<IpAddr>,
     /// Writes the caller made before the dial, in order.
-    early: Vec<(Vec<u8>, bool)>,
+    early: Vec<(Vec<u8>, bool, bool)>,
     answer: Answer,
 }
 
@@ -499,7 +499,8 @@ impl Connector {
     }
 
     /// Offer `bytes` on `stream` of `caller`'s connection `conn` (`end` = the stream's message is
-    /// complete): an accepted connection answers each piece on the stream it came on.
+    /// complete, `text` = it is a text message): an accepted connection answers each piece on the
+    /// stream it came on.
     ///
     /// # Errors
     ///
@@ -511,6 +512,7 @@ impl Connector {
         stream: u64,
         bytes: &[u8],
         end: bool,
+        text: bool,
     ) -> Result<usize, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
         if !Self::settle(&held, None)? {
@@ -518,8 +520,14 @@ impl Connector {
         }
         let mut c = held.conn.lock().expect("connection");
         let c = c.as_mut().ok_or(ConnError::Closed)?;
-        c.emit(stream, bytes, end, &mut Context::from_waker(Waker::noop()))
-            .map_err(|f| map(&f))
+        c.emit(
+            stream,
+            bytes,
+            end,
+            text,
+            &mut Context::from_waker(Waker::noop()),
+        )
+        .map_err(|f| map(&f))
     }
 
     /// Dial a held connection whose judgement has answered. `Ok(false)`: still judging, `waker`
@@ -552,8 +560,8 @@ impl Connector {
         let early = std::mem::take(&mut j.early);
         *judging = None;
         let mut conn = planned.dial_at(addr).map_err(|f| map(&f))?;
-        for (bytes, end) in early {
-            conn.write(&bytes, end, &mut Context::from_waker(Waker::noop()))
+        for (bytes, end, text) in early {
+            conn.write(&bytes, end, text, &mut Context::from_waker(Waker::noop()))
                 .map_err(|f| map(&f))?;
         }
         *held.conn.lock().expect("connection") = Some(conn);
@@ -864,12 +872,13 @@ impl Conns for Connector {
         conn: ConnId,
         bytes: &[u8],
         end: bool,
+        text: bool,
     ) -> Result<usize, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
         if !Self::settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
                 // Held until the judgement answers, under the same cap a connection's buffer has.
-                let held_bytes: usize = j.early.iter().map(|(b, _)| b.len()).sum();
+                let held_bytes: usize = j.early.iter().map(|(b, _, _)| b.len()).sum();
                 let take = bytes
                     .len()
                     .min(WRITE_BUFFER_BYTES.saturating_sub(held_bytes));
@@ -877,14 +886,14 @@ impl Conns for Connector {
                     return Err(ConnError::Pending);
                 }
                 j.early
-                    .push((bytes[..take].to_vec(), end && take == bytes.len()));
+                    .push((bytes[..take].to_vec(), end && take == bytes.len(), text));
                 return Ok(take);
             }
         }
         let mut c = held.conn.lock().expect("connection");
         let c = c.as_mut().ok_or(ConnError::Closed)?;
         let waker = Waker::noop();
-        match c.write(bytes, end, &mut Context::from_waker(waker)) {
+        match c.write(bytes, end, text, &mut Context::from_waker(waker)) {
             Ok(0) if !bytes.is_empty() => Err(ConnError::Pending),
             got => got.map_err(|f| map(&f)),
         }

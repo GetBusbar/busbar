@@ -326,7 +326,7 @@ extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
                 Ok(c) => c,
                 Err(e) => return Answer::of(e),
             };
-            match table.write(id, conn, buf, false) {
+            match table.write(id, conn, buf, false, false) {
                 Ok(n) => Answer::ready(0, n as u64),
                 Err(e) => Answer::of(e),
             }

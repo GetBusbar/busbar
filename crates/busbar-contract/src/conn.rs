@@ -184,8 +184,8 @@ pub trait Conns: Send + Sync {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError>;
 
-    /// Offer `bytes` to the connection (`end` = the caller's message is complete); answers how many
-    /// were taken.
+    /// Offer `bytes` to the connection (`end` = the caller's message is complete, `text` = it is a
+    /// text message, for a wire whose messages are text or binary); answers how many were taken.
     ///
     /// # Errors
     ///
@@ -196,6 +196,7 @@ pub trait Conns: Send + Sync {
         conn: ConnId,
         bytes: &[u8],
         end: bool,
+        text: bool,
     ) -> Result<usize, ConnError>;
 
     /// The next piece, its bytes into `buf`; with nothing ready, [`ConnError::Pending`] and interest

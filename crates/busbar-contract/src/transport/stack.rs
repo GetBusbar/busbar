@@ -384,17 +384,21 @@ pub trait Framer: Plugin + Send + Sync + 'static {
     ) -> Result<(), TransportError>;
 
     /// Put the bytes that carry `bytes` on `stream` into `out`. `end_of_frame` marks the last piece
-    /// of the frame.
+    /// of the frame; `text` says the frame is a TEXT message, not a binary one
+    /// ([`crate::abi::transport::EMIT_TEXT`]), for a wire whose messages are one or the other (a
+    /// wire that draws no such line ignores it).
     ///
     /// # Errors
     ///
-    /// The frame cannot be carried on this state (framing, or a closed state).
+    /// The frame cannot be carried on this state (framing, or a closed state), or a text frame is
+    /// not UTF-8.
     fn emit(
         &self,
         state: u64,
         stream: StreamId,
         bytes: &[u8],
         end_of_frame: bool,
+        text: bool,
         out: &mut dyn FramerOut,
     ) -> Result<(), TransportError>;
 

@@ -17,7 +17,7 @@ fn a_full_sink_is_re_called_until_every_byte_is_out() {
     let (mut f, _) = Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::default()).unwrap();
     f.bufs = Buffers::new(7, 5, 1);
     let sent: Vec<u8> = (0..200).collect();
-    let y = f.emit(1, &sent, true).unwrap();
+    let y = f.emit(1, &sent, true, false).unwrap();
     assert_eq!(y.wire, sent);
     let y = f.ingest(&sent, true).unwrap();
     let got: Vec<u8> = y.pieces.iter().flat_map(|p| p.bytes.clone()).collect();

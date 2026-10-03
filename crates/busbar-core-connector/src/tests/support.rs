@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{
-    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_END_OF_FRAME, PIECE_TEXT,
-    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, EMIT_TEXT, PIECE_END_OF_FRAME,
+    PIECE_TEXT, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 use super::framer::{Call, Crossed, DoorFacts, FramerDoor};
@@ -255,7 +255,13 @@ impl FramerDoor for TestDoor {
                 Some(st) => {
                     st.outbound.extend(raw(i.bytes, i.len));
                     answer(st, &i.sink, o, silence);
-                    ("emit", ok)
+                    // A text emit is counted as its own op, so a test sees the bit cross.
+                    let op = if i.flags & EMIT_TEXT != 0 {
+                        "emit text"
+                    } else {
+                        "emit"
+                    };
+                    (op, ok)
                 }
             },
             Call::Refuse(i, o) => match framings.get_mut(&i.framing) {
