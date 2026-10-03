@@ -199,6 +199,9 @@ pub struct RootHistory {
     /// One config apply at a time, so an entry's number on the history and its record's position
     /// on the chain are the same order.
     applying: Mutex<()>,
+    /// The form of the config card in force, as the journal holds it: what a refused apply puts
+    /// back behind the card the journal left in doubt ([`Self::withdraw`]).
+    in_force: Mutex<Option<CardForm>>,
 }
 
 /// Where a holder's applied cards go (see [`RootHistory::arm_journal`]).
@@ -222,12 +225,21 @@ enum CardJournal {
     },
 }
 
-/// WHY A CONFIG CARD APPLY WAS REFUSED: the card was not made durable, so it was not published and
-/// the card in force is the one that was (MONEY-AUDIT D-6).
+/// WHY A CONFIG CARD APPLY WAS REFUSED: the card was not made durable, so the card in force is the
+/// one that was (MONEY-AUDIT D-6).
 #[derive(Debug)]
 pub enum CardRefused {
-    /// The journal could not make the applied card durable.
+    /// The journal could not make the applied card durable, and the card is IN DOUBT: the journal
+    /// chained its record before the log was asked to take it, and the log retained the refused
+    /// batch and offers it again, in order, on the next append (`busbar-kernel-wal`
+    /// `Journal::append`, `Wal::append_batch`). So the record may yet land, and the holder put the
+    /// card in force back on the journal behind it at the same instant ([`RootHistory::withdraw`]).
     Lost(busbar_contract::caps::DurabilityLost),
+    /// The log did not even retain the card: its segment was poisoned and a fresh one could not be
+    /// opened, so the batch was refused before it was held (`Wal::append_batch`). The record can
+    /// never land, so nothing is published and nothing is put back — the node fails closed, and
+    /// every later append on that log is refused at the same check until a segment opens.
+    Dropped(busbar_contract::caps::DurabilityLost),
     /// The boot's book has rebuilt the history but its handle is not bound yet: there is no journal
     /// the card could go on.
     Unbound,
@@ -342,8 +354,11 @@ impl RootHistory {
     /// JOURNAL FIRST, PUBLISH SECOND (MONEY-AUDIT D-6). A card published before its record is
     /// durable prices postings in an era a restart cannot reproduce: the rebuilt history lacks the
     /// entry and every row earned under it reprices at the card before. So an apply the journal
-    /// will not take is REFUSED: the card in force stays the one that was, and no policy epoch is
-    /// spent on it — as `amend_rate_history` refuses a correction the journal will not take.
+    /// will not take is REFUSED: the card in force stays the one that was. A refusal is IN DOUBT,
+    /// not absent — the journal chained the record and the log retained it — so the card in force
+    /// is journalled back behind it at the same instant and both land on the live history, which
+    /// then prices every instant as the rebuilt chain does (REV-293 #1); the refused record's
+    /// policy epoch is spent, so no later entry shares it.
     ///
     /// # Errors
     ///
@@ -361,17 +376,108 @@ impl RootHistory {
         // One apply at a time (the lock above), so the epoch and the `effective_from` read here are
         // the ones the append below lands with.
         let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
-        self.journal_applied(CardApplied {
-            effective_from: self.effective_from_for(now_ms),
-            appended_at: now_ms,
-            policy_epoch,
-            form,
-        })?;
+        self.journal_or_withdraw(
+            CardApplied {
+                effective_from: self.effective_from_for(now_ms),
+                appended_at: now_ms,
+                policy_epoch,
+                form: form.clone(),
+            },
+            now_ms,
+        )?;
+        *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = Some(form);
+        Ok(self.append_config(card, now_ms, policy_epoch))
+    }
+
+    /// Spend `policy_epoch`: a record was sealed under it, so no later entry may take it — whether
+    /// or not that record lands.
+    fn spend_epoch(&self, policy_epoch: u64) {
         self.resolutions.fetch_max(
             policy_epoch.saturating_add(1),
             std::sync::atomic::Ordering::Relaxed,
         );
-        Ok(self.append_config(card, now_ms, policy_epoch))
+    }
+
+    /// Journal `applied` BEFORE it is published (the caller publishes on `Ok`). A refusal the
+    /// journal left IN DOUBT ([`CardRefused::Lost`]) is withdrawn as it is refused: the card in
+    /// force goes on the journal behind it at the same instant, and both entries land on the live
+    /// history in one step, so the live node prices every instant as the history a restart rebuilds
+    /// from the chain — whichever way the log's retry lands (REV-293 #1). A card the log dropped
+    /// outright ([`CardRefused::Dropped`]) can never land, and nothing is published for it. The
+    /// caller holds `applying`.
+    fn journal_or_withdraw(&self, applied: CardApplied, now_ms: u64) -> Result<(), CardRefused> {
+        match self.journal_applied(applied.clone()) {
+            Ok(()) => {
+                self.spend_epoch(applied.policy_epoch);
+                Ok(())
+            }
+            Err(CardRefused::Unbound) => Err(CardRefused::Unbound),
+            Err(CardRefused::Dropped(lost)) => {
+                self.spend_epoch(applied.policy_epoch);
+                Err(CardRefused::Dropped(lost))
+            }
+            Err(CardRefused::Lost(lost)) => {
+                self.spend_epoch(applied.policy_epoch);
+                self.withdraw(applied, now_ms);
+                Err(CardRefused::Lost(lost))
+            }
+        }
+    }
+
+    /// Put the card in force back on the journal at `in_doubt`'s own `effective_from`, behind it, so
+    /// the in-doubt entry never prices an instant — on the chain a restart rebuilds from (where the
+    /// equal `effective_from` resolves to the later entry), and in memory, where both entries land
+    /// in one step whatever the journal answers for the second: an in-doubt answer is retained
+    /// behind the first and lands with it. Only a put-back the log dropped outright leaves the
+    /// in-doubt card alone on the live history, which is then the one the chain will hold. The
+    /// caller holds `applying`.
+    fn withdraw(&self, in_doubt: CardApplied, now_ms: u64) {
+        let prior = self
+            .in_force
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let mut drafts = vec![in_doubt.draft()];
+        match prior {
+            None => tracing::error!(
+                effective_from = in_doubt.effective_from,
+                "a rate card the journal left in doubt has no card in force to put back behind it"
+            ),
+            Some(prior) => {
+                let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
+                let back = CardApplied {
+                    effective_from: in_doubt.effective_from,
+                    appended_at: now_ms,
+                    policy_epoch,
+                    form: prior,
+                };
+                match self.journal_applied(back.clone()) {
+                    Ok(()) | Err(CardRefused::Lost(_)) => {
+                        self.spend_epoch(policy_epoch);
+                        drafts.push(back.draft());
+                    }
+                    Err(refused) => {
+                        self.spend_epoch(policy_epoch);
+                        tracing::error!(
+                            ?refused,
+                            effective_from = in_doubt.effective_from,
+                            "the log dropped the card in force put back behind a rate card left in \
+                             doubt: the in-doubt card prices from this instant, as the chain holds it"
+                        );
+                    }
+                }
+            }
+        }
+        self.history.rcu(|current| {
+            let mut next = match current {
+                Some(history) => busbar_kernel_ledger::cost::History::clone(history),
+                None => busbar_kernel_ledger::cost::History::new(),
+            };
+            for draft in &drafts {
+                next.append(draft.clone());
+            }
+            Some(Arc::new(next))
+        });
     }
 
     /// ARM THE JOURNAL: from here on every apply is recorded — held until the boot's book has
@@ -411,7 +517,7 @@ impl RootHistory {
                 let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
                 journal_card(&mut durability, &applied, token)
                     .map(|_| ())
-                    .map_err(CardRefused::Lost)
+                    .map_err(|lost| refusal_of(&durability, lost))
             }
         }
     }
@@ -432,7 +538,12 @@ impl RootHistory {
     fn restore(
         journalled: Vec<JournalledCard>,
         held: Vec<CardApplied>,
-    ) -> (busbar_kernel_ledger::cost::History, Vec<CardApplied>, u64) {
+    ) -> (
+        busbar_kernel_ledger::cost::History,
+        Vec<CardApplied>,
+        u64,
+        Option<CardForm>,
+    ) {
         use busbar_kernel_ledger::cost::{CardEntryDraft, History};
         let mut opening: Option<CardEntryDraft> = None;
         let mut rest: Vec<CardEntryDraft> = Vec::new();
@@ -476,7 +587,7 @@ impl RootHistory {
         for draft in opening.into_iter().chain(rest) {
             history.append(draft);
         }
-        (history, write, next_epoch)
+        (history, write, next_epoch, newest)
     }
 
     /// **THE BOOT'S REBUILD, RUN BY THE BOOK** before it prices a replayed posting: `records` is the
@@ -507,7 +618,7 @@ impl RootHistory {
         let CardJournal::Armed(held) = &mut *journal else {
             return Ok(());
         };
-        let (history, write, next_epoch) =
+        let (history, write, next_epoch, newest) =
             Self::restore(journalled_cards(records), std::mem::take(held));
         let token = new_kernel().durability_token();
         for applied in &write {
@@ -518,6 +629,7 @@ impl RootHistory {
         }
         self.resolutions
             .fetch_max(next_epoch, std::sync::atomic::Ordering::Relaxed);
+        *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = newest;
         *journal = CardJournal::Restored;
         durability.cards_from = Some(self);
         Ok(())
@@ -1031,6 +1143,24 @@ fn journal_card(
     durability
         .journal
         .append(token, busbar_contract::caps::StepName::Route, &[entry])
+}
+
+/// What a `DurabilityLost` from [`journal_card`] leaves the card as. The journal sealed the card
+/// last, so it is the number just below the journal's next; the log either holds it or owes it
+/// (retained, offered again on the next append: IN DOUBT) — or neither, which is the one path that
+/// refuses a batch before retaining it: a poisoned segment no fresh one could replace (DROPPED).
+fn refusal_of(
+    durability: &crate::root::durability::Durability,
+    lost: busbar_contract::caps::DurabilityLost,
+) -> CardRefused {
+    let journal = &durability.journal;
+    let card = (journal.node(), journal.next_seq().saturating_sub(1));
+    let log = journal.log();
+    if log.holds(card.0, card.1) || log.owed().iter().any(|r| r.identity() == card) {
+        CardRefused::Lost(lost)
+    } else {
+        CardRefused::Dropped(lost)
+    }
 }
 
 /// One entry of the dated history as the chain holds it.
