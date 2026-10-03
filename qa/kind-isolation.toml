@@ -892,6 +892,16 @@ drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this ro
 
 [[dep]]
 from    = "busbar-kernel"
+to      = "busbar-kernel-audit"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md — kernel workflow crates form the loop; #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). Both crates are kernel-tier, so this edge crosses no kind boundary."
+why     = "busbar-kernel names busbar-kernel-audit: declared dev in the test graph (dev-dependencies, features test-support), 1 declaration(s) at this commit, beside the shipped edge. TOKEN-SEALED A (ARCHITECT Q-GG3, #373): the audit crate's minting tests moved into the kernel and reach its private step through its off-by-default `test-support` feature. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this row holds is the NUMBER."
+
+[[dep]]
+from    = "busbar-kernel"
 to      = "busbar-kernel-scope"
 half    = "shipped"
 count   = "1"
@@ -912,6 +922,16 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar-kernel"
+to      = "busbar-plugin-loader"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 — kernel -> plugin-tooling is a granted class (the loop names the author-side plugin machinery face)."
+why     = "busbar-kernel names busbar-plugin-loader: declared dev in the test graph (dev-dependencies, features test-support), 1 declaration(s) at this commit, beside the shipped edge. TOKEN-SEALED A (ARCHITECT Q-GG3, #373): the loader's store-adapter tests mint a `Grant<AdminVerb>`, so they moved into the kernel and drive the fake-call harness through the loader's off-by-default `test-support` feature. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER."
+
+[[dep]]
+from    = "busbar-kernel"
 to      = "busbar-store-memory"
 half    = "shipped"
 count   = "1"
@@ -920,6 +940,16 @@ cite    = "ARCHITECT K5/K5b/K5c/K5d rulings (b17f0a2c1, 0ade205df): the composit
 why     = "busbar-kernel names busbar-store-memory as `fixture-store`: declared normal, optional in the shipped graph, enabled ONLY by the kernel's `test-support` feature (`dep:fixture-store`) — a test build has no root, so this fixture stands in for the row the root links (`preflight::install_linked_rows`); no kernel source names the plugin, and no default or shipped feature turns the edge on. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "delete the `fixture-store` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their linked rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-store-memory)."
 
+
+[[dep]]
+from    = "busbar-kernel"
+to      = "busbar-store-memory"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECT Q-GG3 (token-sealed A, #373): the plugin-loader store-adapter tests moved into the kernel and wire up the memory store's cold door. `kernel -> store` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict stays the one the architecture implies; the row holds a TEST-SUPPORT edge beside the optional `fixture-store` stand-in, not a shipped coupling."
+why     = "busbar-kernel names busbar-store-memory as `fixture-store`: declared dev in the test graph (dev-dependencies, features cold-dropped-in), 1 declaration(s) at this commit, so a scoped `cargo test -p busbar-kernel` builds the store-proof cdylib WITH its door. No kernel source names the plugin. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "delete this dev-dependency once the moved store-adapter tests take their cdylib from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-store-memory)."
 
 [[dep]]
 from    = "busbar-a2a"
