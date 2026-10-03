@@ -415,7 +415,7 @@ plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gaunt
 plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
 plane-decisions = "plane claims"
 export-file = "export-doors"
-export-webhook = "exports"
+export-webhook = "export-doors"
 export-prometheus = "export-doors"
 export-otlp = "export-doors"
 auth-admin-tokens = "auths"
@@ -454,8 +454,9 @@ llm-on-driver = "busbar_plane_llm::plane_door"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
 busbar-export-prometheus = "busbar_export_prometheus::door"
 busbar-export-otlp = "busbar_export_otlp::door"
-# The file sink's door is at its logic crate's root (`pub use table::door`).
+# The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
 busbar-export-file = "busbar_export_file"
+busbar-export-webhook = "busbar_export_webhook"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]

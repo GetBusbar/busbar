@@ -65,17 +65,24 @@ pub fn pack(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
 /// `lib` packed UNSIGNED as a `kind` plugin, its manifest stating the library's own Statement
 /// rendering when it exports a door (the door is admitted against it), as the pack tool signs it.
 pub fn pack_stated(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
+    let mut m = manifest(kind, name, publisher);
+    state(&mut m, lib);
+    seal(m, lib)
+}
+
+/// `m` states the Statement rendering `lib`'s door answers (what the packer signs into a
+/// memory-ABI plugin's manifest).
+pub fn state(m: &mut Manifest, lib: &[u8]) {
     let path = std::env::temp_dir().join(format!(
-        "busbar-stated-{}-{name}{}",
+        "busbar-stated-{}-{}{}",
         std::process::id(),
+        m.name,
         std::env::consts::DLL_SUFFIX
     ));
     std::fs::write(&path, lib).expect("stage the library");
     let rendering = rendering_of_library(&path).expect("the library states itself");
     let _ = std::fs::remove_file(&path);
-    let mut m = manifest(kind, name, publisher);
     m.statement = rendering.map(hex::encode);
-    seal(m, lib)
 }
 
 /// `lib` packed UNSIGNED under `m`, the manifest bound to the library's hash.

@@ -73,11 +73,13 @@ fn free_port() -> u16 {
 }
 
 /// The export `cdylib` packed as an UNSIGNED `kind: export` tarball (the config below opts into
-/// unsigned plugins, as the CLI fixtures do), its manifest declaring `destinations` (K9a S4): the
-/// settings keys the host opens a destination for.
+/// unsigned plugins, as the CLI fixtures do), its manifest stating the door's Statement and
+/// declaring `destinations` (K9a S4): the settings keys the host appends to for it.
 fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
     let mut m = common::plugins::manifest("export", PLUGIN, "acme");
     m.declares.destinations = destinations.iter().map(|d| d.to_string()).collect();
+    // The sink is on the export kind's memory ABI: its manifest states its door's Statement.
+    common::plugins::state(&mut m, lib);
     let bytes = common::plugins::seal(m, lib);
     std::fs::write(dir.join("plugins").join("dropped-sink.tar.gz"), bytes).unwrap();
 }
