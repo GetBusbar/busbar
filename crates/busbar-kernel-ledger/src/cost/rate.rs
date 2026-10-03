@@ -689,12 +689,14 @@ impl RateCard {
     /// ALWAYS A FIGURE, NEVER A SILENCE — and that is a structural guarantee rather than a
     /// convention. The fee used to be read out of a per-currency map that a caller could leave a
     /// hole in: a card could name a currency for its RATES and stay silent about the fee in it,
-    /// pass every guard, and then have the missing entry read as zero. That is silent under-billing — fail-open, the one outcome this module refuses
-    /// everywhere else (#42 `BUSBAR-1.6.0.md:367`: *"a hit class not priced ⇒ REFUSE (money-sacred,
-    /// never a silent 0)"*). #66 removed the second axis, so the hole is GONE rather than guarded:
-    /// every constructor takes the fee by value, only a signed correction ([`Self::corrected`]) names a
-    /// new one on a new card, and there is no key that could be absent. A fee CONFIGURED at nothing is #77(5)'s (`:420`) explicit zero row —
-    /// legitimately free, and distinguishable from a silence because a silence can no longer exist.
+    /// pass every guard, and then have the missing entry read as zero. That is silent
+    /// under-billing — fail-open, the one outcome this module refuses everywhere else (#42, the
+    /// money model row of `BUSBAR-1.6.0.md`'s ruling table: *"a hit class not priced ⇒ REFUSE
+    /// (money-sacred, never a silent 0)"*). #66 removed the second axis, so the hole is GONE rather
+    /// than guarded: every constructor takes the fee by value, only a signed correction
+    /// ([`Self::corrected`]) names a new one on a new card, and there is no key that could be
+    /// absent. A fee CONFIGURED at nothing is #77(5)'s explicit zero row — legitimately free, and
+    /// distinguishable from a silence because a silence can no longer exist.
     ///
     /// THE SPELLING THAT DEFAULTED IS STILL GONE. `per_request_fee(&self)` used to answer
     /// `unwrap_or(0)` out of that map; this answers the number the card was built with, and the
