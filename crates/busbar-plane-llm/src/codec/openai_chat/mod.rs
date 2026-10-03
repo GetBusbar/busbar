@@ -901,9 +901,7 @@ const STREAM_CODE: &[&str] = &[
 
 /// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
 /// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
-const RESPONSE_DROPS: &[&str] = &[
-    "choices[].message.audio.expires_at",
-];
+const RESPONSE_DROPS: &[&str] = &["choices[].message.audio.expires_at"];
 const STREAM_DROPS: &[&str] = &[
     "usage.completion_tokens_details.text_tokens",
     "usage.prompt_tokens_details.image_tokens",
