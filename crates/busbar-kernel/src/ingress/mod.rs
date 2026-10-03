@@ -482,24 +482,15 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
 #[allow(clippy::too_many_arguments)]
 pub fn finish(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    _gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
+    _charged_at: u64,
     resp: Response,
     charge: &crate::governance::FeeCharge,
 ) -> Response {
-    finish_inner(
-        app,
-        gov,
-        ingress_protocol,
-        pool,
-        started,
-        charged_at,
-        resp,
-        Some(charge),
-    )
+    finish_inner(app, ingress_protocol, pool, started, resp, Some(charge))
 }
 
 /// Post-admission finish whose non-2xx refund is CONDITIONAL on whether the flat fee actually landed
@@ -515,24 +506,15 @@ pub fn finish(
 #[allow(clippy::too_many_arguments)]
 pub fn finish_admitted(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    _gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
+    _charged_at: u64,
     resp: Response,
     charged: Option<&crate::governance::FeeCharge>,
 ) -> Response {
-    finish_inner(
-        app,
-        gov,
-        ingress_protocol,
-        pool,
-        started,
-        charged_at,
-        resp,
-        charged,
-    )
+    finish_inner(app, ingress_protocol, pool, started, resp, charged)
 }
 
 /// NOT-CHARGED finish: the request was turned away BEFORE the admission charge ever ran — either a
@@ -547,33 +529,24 @@ pub fn finish_admitted(
 #[allow(private_interfaces)]
 pub fn finish_rejected(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    _gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
+    _charged_at: u64,
     resp: Response,
 ) -> Response {
-    finish_inner(
-        app,
-        gov,
-        ingress_protocol,
-        pool,
-        started,
-        charged_at,
-        resp,
-        None,
-    )
+    finish_inner(app, ingress_protocol, pool, started, resp, None)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The one finish. It takes no key and no instant: a refund reads only the admission's own
+/// [`FeeCharge`](crate::governance::FeeCharge), never a cell resolved again from the key and
+/// `charged_at` (the three entries above still accept both for their callers).
 fn finish_inner(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
     resp: Response,
     refund_on_non_2xx: Option<&crate::governance::FeeCharge>,
 ) -> Response {
