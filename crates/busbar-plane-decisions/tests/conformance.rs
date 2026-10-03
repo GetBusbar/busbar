@@ -492,7 +492,7 @@ mod door {
         "validate typo Refused",
         "validate Ready",
         "open Ready Some(OwnedSnapshot { generation: 1, claims: [OwnedClaim { verb: \"POST\", \
-         target: \"/v1/systemone\", carrier: \"http\", flags: 2 }], \
+         target: \"/v1/systemone\", carrier: \"http\", flags: 2, refusal_dialect: 0 }], \
          admin_routes: [], openapi: None, audience: None, resource_metadata: None })",
         "13 Ready",
         "14 Ready",

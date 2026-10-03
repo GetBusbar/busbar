@@ -627,6 +627,9 @@ pub struct OwnedClaim {
     pub carrier: String,
     /// `CLAIM_OPEN` | `CLAIM_EXACT` | `CLAIM_PATTERN`.
     pub flags: u32,
+    /// The dialect a refusal on this route wears before `arrive` has read the arrival (an index
+    /// into the tail's dialects, opaque to the host): the guest-list line's dialect.
+    pub refusal_dialect: u16,
 }
 
 /// One admin route of a snapshot, owned by the host.
@@ -738,6 +741,7 @@ fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot
                     target: text(c.target)?,
                     carrier: text(c.carrier)?,
                     flags: c.flags,
+                    refusal_dialect: c.refusal_dialect,
                 })
             })
             .collect::<Option<_>>()?,

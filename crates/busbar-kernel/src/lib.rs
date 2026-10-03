@@ -390,6 +390,31 @@ pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> 
     .collect()
 }
 
+/// THE KERNEL'S OWN DATA ROUTES for `app`, as lines (path, method, bar): the routes the data router
+/// mounts before any door plane's, read off the same `router::base_data_router` production calls.
+/// The composition root writes them on the data listener's guest list beside the door planes'
+/// claims (THE DESIGN §6: a cleanliness crate's route is a claimant).
+#[must_use]
+pub fn base_data_core_lines(
+    app: &state::App,
+) -> Vec<(
+    String,
+    busbar_contract::abi::mechanism::route::RouteMethod,
+    busbar_contract::abi::mechanism::route::RouteAuth,
+)> {
+    router::base_data_router(
+        &app.plugin_routes,
+        &app.plane_slots,
+        app.oauth_as.as_ref(),
+        Vec::new(),
+    )
+    .1
+    .routes()
+    .iter()
+    .map(|r| (r.path.clone(), r.method, r.auth))
+    .collect()
+}
+
 /// TEST-SUPPORT ROUTER-SURFACE VIEW, with the declared METHOD. The sibling of
 /// [`base_data_route_table_view`] for the plane-boundary ratchet, which walks each mounted route with
 /// a real request and so needs the method too. Over PUBLIC types only (`String`, `String`,

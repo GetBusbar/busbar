@@ -45,7 +45,7 @@ use axum::Router;
 // checks without booting, and the last two are the config/providers path precedence the scanners
 // there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_with_limits, load_config_from_disk, LoadedConfig,
+    build_app_from_config, build_split_routers_serving, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
 use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
@@ -920,6 +920,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // as the release without this field, byte for byte.
     #[cfg(feature = "root-admin")]
     let boot_operator_auth = cfg.auth.clone();
+    // The operator's data chain (`auth.chain`), the auth of every data-listener guest-list line
+    // (THE DESIGN §6), captured for the door planes' lines before `cfg` is consumed.
+    let data_chain: Vec<String> = cfg
+        .auth
+        .as_ref()
+        .map(|a| a.chain.iter().map(|e| e.name.clone()).collect())
+        .unwrap_or_default();
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]
@@ -998,9 +1005,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
-    // THE DATA ROUTES (`root::serve::mount`, TODO U6-U7 P2): a request a composed plane claims
-    // reaches its driver on the data router's fallback; with no door plane nothing is mounted.
-    root::serve::mount(served).unwrap_or_else(|e| die(e));
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
     // business, and nothing about it is restored from disk here. The durable config that makes "fix
@@ -1051,8 +1055,26 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &tls_secret_resolver,
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_with_limits(
+    // THE PROCESS'S ONE BOOK IS OPENED BEFORE THE ROUTERS ARE BUILT (ARCHITECT Q-SW7, 2026-10-02):
+    // the door planes' data routes are the router's construction (Q-SW1) and their units settle onto
+    // this same one book, so it is opened from the boot `app` and opened once; nothing below opens
+    // another (the rationale for the book itself is at its uses below). A build that serves a door
+    // plane opens it too.
+    let book = (cfg!(feature = "root-admin")
+        || ROOT_UNITS.iter().any(|u| u.opens_book)
+        || !served.planes.is_empty())
+    .then(|| open_boot_book(&app));
+    // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
+    // guest-list lines beside the kernel's own, onto the data router at its construction.
+    let doors = root::serve::data_routes(
+        served,
+        &data_chain,
+        &busbar_kernel::base_data_core_lines(&app),
+    )
+    .unwrap_or_else(|e| die(e));
+    let (data_router, admin_router, app_handle) = build_split_routers_serving(
         app,
+        doors,
         req_body_max,
         max_inbound,
         response_headers_cfg.server_timing,
@@ -1078,8 +1100,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // from a checkpoint that was not written yet.
     // Opened for the admin surface and for every root unit that settles onto it; a build with
     // neither opens nothing.
-    let book = (cfg!(feature = "root-admin") || ROOT_UNITS.iter().any(|u| u.opens_book))
-        .then(|| open_boot_book(&app_handle.load()));
+    // (Opened above, before the routers: Q-SW7.)
 
     // THE CHECKPOINT CADENCE (OWNER Q71(3); BUSBAR-1.6.0.md THE DESIGN, §7): armed on the one book once its
     // opening is sealed, so every serving append checks the entry half and this tick checks the

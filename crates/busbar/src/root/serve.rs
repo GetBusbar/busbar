@@ -49,17 +49,19 @@ use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
 #[cfg(linked_axis_node)]
 use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 #[cfg(linked_axis_node)]
+use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+#[cfg(linked_axis_node)]
 use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN};
 #[cfg(linked_axis_node)]
 use busbar_contract::auth::AuthPrincipal;
 #[cfg(linked_axis_node)]
 use busbar_contract::caps::{Pass, PrincipalId, Route};
 #[cfg(linked_axis_node)]
-use busbar_kernel::plane_driver::serve::{DataAnswer, DataRequest};
-#[cfg(linked_axis_node)]
 use busbar_kernel::plane_driver::{
     Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
 };
+#[cfg(linked_axis_node)]
+use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
 
 /// The egress class `dest.judge` applies when a plugin names none: the deployment's own stance.
 pub const DEFAULT_EGRESS_CLASS: u32 = 0;
@@ -611,13 +613,13 @@ fn open(plugin: &DoorPlane, section: &serde_yaml::Value) -> Result<OwnedSnapshot
 
 // ── the data routes: a claimed arrival, driven ──────────────────────────────────────────────────
 
-/// THE DOOR PLANES' DATA ROUTES (SERVE-WIRE P2, TODO U6-U7; ARCHITECT ruling 2026-10-01, option C):
-/// every composed plane's snapshot claims, offered each data request on the data router's fallback
-/// before any other plane reads it ([`busbar_kernel::plane_driver::serve::claimed`]). A claimed
-/// arrival is one unit of that plane, driven on the process's one node over the plane's
-/// [`PlaneDriver`] under its kernel steps ([`DoorSteps`]), its caller's side an [`IngressCaller`].
-/// A plane is served exactly when it is composed, so its door row is its serve switch: a fold adds
-/// only its door row (spec K5).
+/// THE DOOR PLANES' DATA ROUTES (SERVE-WIRE P2, TODO U6-U7; ARCHITECT Q-SW1 2026-10-02: the route
+/// install is the router's construction, no static): every composed plane's snapshot claims, each a
+/// line on the data listener's guest list ([`door_routes`]), mounted at construction with its
+/// handler. A claimed arrival is one unit of that plane, driven on the process's one node over the
+/// plane's [`PlaneDriver`] under its kernel steps ([`DoorSteps`]), its caller's side an
+/// [`IngressCaller`]. A plane is served exactly when it is composed, so its door row is its serve
+/// switch: a fold adds only its door row (spec K5).
 #[cfg(linked_axis_node)]
 pub struct DataRoutes {
     served: Served,
@@ -635,41 +637,37 @@ impl std::fmt::Debug for DataRoutes {
     }
 }
 
-/// The data routes [`mount`] mounted, for the process.
-#[cfg(linked_axis_node)]
-static ROUTES: OnceLock<Arc<DataRoutes>> = OnceLock::new();
-
-/// MOUNT the composed planes' data routes, once per process, after their composition
-/// ([`compose_served`]). A composition that claims no data route mounts nothing, so a build with no
-/// door plane serves every request as before.
+/// THE DATA ROUTES THIS PROCESS'S DATA ROUTER IS BUILT WITH ([`door_routes`], pinned to the
+/// process's card history): none when no composed plane claims a route.
 ///
 /// # Errors
 ///
-/// The data routes, or another data door, were already mounted; or (a build with no node) a plane
-/// claims a route no unit could be driven for.
-pub fn mount(served: Served) -> Result<(), String> {
+/// A claim the data listener cannot mount, two claims at an equal precedence, or (a build with no
+/// node) any claim at all: no unit could be driven for it.
+pub fn data_routes(
+    served: Served,
+    data_chain: &[String],
+    core: &[(
+        String,
+        busbar_contract::abi::mechanism::route::RouteMethod,
+        busbar_contract::abi::mechanism::route::RouteAuth,
+    )],
+) -> Result<Vec<busbar_kernel::plane_routes::PlaneRouteSpec>, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok(());
+        return Ok(Vec::new());
     }
     #[cfg(linked_axis_node)]
     {
-        let post = served.post.clone().unwrap_or_else(|| {
-            Arc::new(crate::root::plane_node::NodeEndPost::new(
-                crate::root::plane_node::node(),
-            ))
-        });
-        ROUTES
-            .set(Arc::new(DataRoutes {
-                served,
-                post,
-                pin: || crate::root::kernel::ROOT_CARD.pin(),
-            }))
-            .map_err(|_| "the data routes are mounted once".to_string())?;
-        busbar_kernel::plane_driver::serve::mount_data(data_door)
-            .map_err(|_| "a data door is already mounted".to_string())
+        door_routes(
+            served,
+            || crate::root::kernel::ROOT_CARD.pin(),
+            data_chain,
+            core,
+        )
     }
     #[cfg(not(linked_axis_node))]
     {
+        let _ = (data_chain, core);
         Err(
             "a door plane's units are driven on the process's node, and this build links none"
                 .to_string(),
@@ -677,62 +675,286 @@ pub fn mount(served: Served) -> Result<(), String> {
     }
 }
 
-/// The data door the kernel's fallback asks ([`mount`]).
+/// ONE DATA REQUEST on a door plane's claim, as its route handed it over: the credentials the auth
+/// gate consumed already struck, its verdict on the caller, and the generation serving it (its cost
+/// model, governance book and groups).
 #[cfg(linked_axis_node)]
-fn data_door(req: DataRequest) -> Result<DataAnswer, Box<DataRequest>> {
-    match ROUTES.get() {
-        Some(routes) => routes.claimed(req),
-        None => Err(Box::new(req)),
+pub struct DoorRequest {
+    /// The verb.
+    pub method: axum::http::Method,
+    /// The target, as it arrived.
+    pub uri: axum::http::Uri,
+    /// The head fields.
+    pub headers: axum::http::HeaderMap,
+    /// The body, read under the inbound body limit.
+    pub body: Bytes,
+    /// The auth gate's verdict for the caller.
+    pub gov: busbar_contract::records::PlaneRequestCtx,
+    /// The generation serving the request.
+    pub app: Arc<busbar_kernel::state::App>,
+}
+
+/// THE AUTH ON A DOOR CLAIM'S GUEST-LIST LINE (THE DESIGN §6, "Auth points and guest lists"): the
+/// operator's data chain (`auth.chain`) is the auth of every data-listener line; only where it gives
+/// the line none does the claim's own declared default inbound style apply. `CLAIM_OPEN` declares
+/// none; any other claim takes a credential, verified by the deployment's (empty) chain.
+#[cfg(linked_axis_node)]
+fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAuth {
+    use busbar_kernel::guest::LineAuth;
+    if data_chain.is_empty() && flags & CLAIM_OPEN != 0 {
+        LineAuth::None
+    } else {
+        LineAuth::Chain(data_chain.to_vec())
+    }
+}
+
+/// The claimant the kernel's own data routes are lines of.
+#[cfg(linked_axis_node)]
+const CORE_CLAIMANT: &str = "core";
+
+/// The name of a subtree claim's tail capture.
+#[cfg(linked_axis_node)]
+const SUBTREE: &str = "rest";
+
+/// The methods the data listener mounts a door claim under.
+#[cfg(linked_axis_node)]
+const METHODS: [RouteMethod; 5] = [
+    RouteMethod::Get,
+    RouteMethod::Post,
+    RouteMethod::Put,
+    RouteMethod::Patch,
+    RouteMethod::Delete,
+];
+
+/// The guest-list line a plane's claim writes on the data listener, and the method the data router
+/// mounts it under.
+#[cfg(linked_axis_node)]
+fn claim_line(
+    instance: &str,
+    rung: u32,
+    claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim,
+    data_chain: &[String],
+) -> Result<(busbar_kernel::guest::Line, RouteMethod), String> {
+    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    let method = METHODS
+        .into_iter()
+        .find(|m| m.as_str() == claim.verb)
+        .ok_or_else(|| {
+            format!(
+                "{instance}: claim {} {} names a verb the data listener does not serve",
+                claim.verb, claim.target
+            )
+        })?;
+    let exact = claim.flags & CLAIM_EXACT != 0;
+    let line = busbar_kernel::guest::Line {
+        route: busbar_kernel::guest::Route {
+            methods: method_bit(&claim.verb),
+            // An exact claim is its target; any other is its target's whole subtree, at any depth
+            // (the guest list's tail pattern, which matches what remains, including nothing).
+            path_form: if exact { PATH_EXACT } else { PATH_PATTERN },
+            path: if exact {
+                claim.target.clone()
+            } else {
+                format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
+            },
+            fields: Vec::new(),
+            rung,
+        },
+        claimant: busbar_kernel::guest::Claimant::Plane(instance.to_string()),
+        dialect: u32::from(claim.refusal_dialect),
+        auth: line_auth(claim.flags, data_chain),
+        upgrade: None,
+    };
+    Ok((line, method))
+}
+
+/// One claim's route: the plane it is of and the claim's index in its snapshot.
+#[cfg(linked_axis_node)]
+type DoorClaim = (usize, u32);
+
+/// THE DOOR PLANES' DATA ROUTES (ARCHITECT Q-SW1, 2026-10-02): every claim of every served plane is
+/// a line on the data listener's guest list (sealed: two claims that could meet at an equal
+/// precedence refuse the boot), mounted at its line's path and auth, its handler the plane's unit
+/// on the node, posted through `post` and pinned to the card `pin` answers. An exact claim mounts
+/// its target; any other its target and the whole subtree under it, at any depth. The kernel's own
+/// data routes (`core`) are lines on the same list, and a method the list gives one is never a door
+/// mount. The data router is built once, with these in it (`build_split_routers_serving`).
+///
+/// # Errors
+///
+/// A claim the data listener cannot mount, or two claims at an equal precedence, named: the boot
+/// refuses it.
+#[cfg(linked_axis_node)]
+pub fn door_routes(
+    served: Served,
+    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
+    data_chain: &[String],
+    core: &[(String, RouteMethod, RouteAuth)],
+) -> Result<Vec<PlaneRouteSpec>, String> {
+    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_kernel::guest::{Claimant, GuestList, GuestRefusal, LineAuth, Matched};
+    use std::collections::HashMap;
+    if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let mut lines = Vec::new();
+    let mut doors: Vec<(busbar_kernel::guest::Line, RouteMethod, DoorClaim)> = Vec::new();
+    for (p, plane) in served.planes.iter().enumerate() {
+        for (i, claim) in plane.snapshot.claims.iter().enumerate() {
+            let rung =
+                u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
+            let (line, method) = claim_line(&plane.instance, rung, claim, data_chain)?;
+            lines.push(line.clone());
+            doors.push((line, method, (p, rung)));
+        }
+    }
+    // The kernel's own data routes, lines of the core's claimant (a cleanliness crate's route,
+    // THE DESIGN §6).
+    for (rung, (path, method, auth)) in (0u32..).zip(core) {
+        lines.push(busbar_kernel::guest::Line {
+            route: busbar_kernel::guest::Route {
+                methods: method_bit(method.as_str()),
+                path_form: if path.contains('{') {
+                    PATH_PATTERN
+                } else {
+                    PATH_EXACT
+                },
+                path: path.clone(),
+                fields: Vec::new(),
+                rung,
+            },
+            claimant: Claimant::Clean(CORE_CLAIMANT.to_string()),
+            dialect: 0,
+            auth: match auth {
+                RouteAuth::None => LineAuth::None,
+                _ => LineAuth::Chain(data_chain.to_vec()),
+            },
+            upgrade: None,
+        });
+    }
+    let guests = GuestList::seal(lines).map_err(|refusal| match refusal {
+        GuestRefusal::EqualPrecedence(pair) => format!(
+            "the data listener's claims {:?} {} and {:?} {} meet at an equal precedence",
+            pair.0.claimant, pair.0.route.path, pair.1.claimant, pair.1.route.path
+        ),
+    })?;
+    let post = served.post.clone().unwrap_or_else(|| {
+        Arc::new(crate::root::plane_node::NodeEndPost::new(
+            crate::root::plane_node::node(),
+        ))
+    });
+    let instances: Vec<String> = served.planes.iter().map(|p| p.instance.clone()).collect();
+    let routes = Arc::new(DataRoutes { served, post, pin });
+    // Every mount: an exact line at its one path; a subtree line at its target and its tail.
+    let mut mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
+    let mut of_line: HashMap<(String, u32), (RouteAuth, DoorClaim)> = HashMap::new();
+    for (line, method, door) in doors {
+        let auth = match line.auth {
+            LineAuth::None => RouteAuth::None,
+            LineAuth::Chain(_) => RouteAuth::Key,
+        };
+        let paths = if line.route.path_form == PATH_EXACT {
+            vec![line.route.path.clone()]
+        } else {
+            let tail = format!("/{{*{SUBTREE}}}");
+            let target = line.route.path.trim_end_matches(&tail).to_string();
+            let target = if target.is_empty() {
+                "/".to_string()
+            } else {
+                target
+            };
+            vec![target, line.route.path.clone()]
+        };
+        for path in paths {
+            mounts.push((path, method, auth, door));
+        }
+        of_line.insert((instances[door.0].clone(), line.route.rung), (auth, door));
+    }
+    // THE GUEST LIST DECIDES, NOT THE ROUTER: at a concrete path one line names, a method no line
+    // mounts there is the line the guest list matches for that path and method (a line that
+    // matches the path and not the method is passed over), never the router's own 405.
+    let concrete: Vec<String> = mounts
+        .iter()
+        .map(|(path, ..)| path.clone())
+        .filter(|path| !path.contains('{'))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    for path in concrete {
+        for method in METHODS {
+            if mounts.iter().any(|(p, m, ..)| *p == path && *m == method) {
+                continue;
+            }
+            let Matched::Line(line) = guests.matched(method.as_str(), &path, &[]) else {
+                continue;
+            };
+            let Claimant::Plane(instance) = &line.claimant else {
+                continue;
+            };
+            if let Some((auth, door)) = of_line.get(&(instance.clone(), line.route.rung)) {
+                mounts.push((path.clone(), method, *auth, *door));
+            }
+        }
+    }
+    Ok(mounts
+        .into_iter()
+        .map(|(path, method, auth, (plane, claim))| {
+            let routes = Arc::clone(&routes);
+            PlaneRouteSpec {
+                path,
+                method,
+                auth,
+                handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                    let routes = Arc::clone(&routes);
+                    Box::pin(async move {
+                        match DoorRequest::of(ctx) {
+                            Some(req) => routes.answer(plane, claim, req).await,
+                            None => stated(
+                                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                                Body::empty(),
+                            ),
+                        }
+                    })
+                }),
+            }
+        })
+        .collect())
+}
+
+#[cfg(linked_axis_node)]
+impl DoorRequest {
+    /// The request a door claim's route was handed (`None` when its engine is not the kernel's).
+    fn of(ctx: PlaneReqCtx) -> Option<Self> {
+        let app = ctx
+            .engine
+            .downcast::<busbar_kernel::state::AppHandle>()
+            .ok()?
+            .load();
+        Some(DoorRequest {
+            method: axum::http::Method::from_bytes(ctx.method.as_str().as_bytes()).ok()?,
+            uri: ctx.uri,
+            headers: ctx.headers,
+            body: ctx.body,
+            gov: ctx.gov.unwrap_or_default(),
+            app,
+        })
     }
 }
 
 #[cfg(linked_axis_node)]
 impl DataRoutes {
-    /// The answer of the plane whose claim `req` matches, or `req` back.
-    fn claimed(self: &Arc<Self>, req: DataRequest) -> Result<DataAnswer, Box<DataRequest>> {
-        let Some((plane, claim)) = self.claim(req.method.as_str(), req.uri.path()) else {
-            return Err(Box::new(req));
-        };
-        let routes = Arc::clone(self);
-        Ok(Box::pin(routes.answer(plane, claim, req)))
-    }
-
-    /// The first plane, in bind order, with a claim on `verb` and `path`: its index and the
-    /// claim's. A claim without `CLAIM_EXACT` matches a path it prefixes.
-    fn claim(&self, verb: &str, path: &str) -> Option<(usize, u32)> {
-        self.served
-            .planes
-            .iter()
-            .enumerate()
-            .find_map(|(p, plane)| {
-                let at = plane.snapshot.claims.iter().position(|c| {
-                    c.verb.eq_ignore_ascii_case(verb)
-                        && if c.flags & CLAIM_EXACT == 0 {
-                            path.starts_with(c.target.as_str())
-                        } else {
-                            path == c.target
-                        }
-                })?;
-                Some((p, u32::try_from(at).ok()?))
-            })
-    }
-
     /// ONE CLAIMED ARRIVAL, SERVED: the caller's head (the credentials the auth gate consumed and
     /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
     /// resolved; the unit driven inside the response, so a caller that goes away drops it.
-    async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DataRequest) -> Response {
-        let DataRequest {
+    async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
+        let DoorRequest {
             method,
             uri,
-            mut headers,
+            headers,
             body,
             gov,
-            consumed,
             app,
         } = req;
-        if let Some(consumed) = &consumed {
-            consumed.strip(&mut headers);
-        }
         let fields: HeadFields = headers
             .iter()
             .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))

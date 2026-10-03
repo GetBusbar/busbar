@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33, TODO U6-U7): a request the decisions
-//! plane's door claims reaches that plane's driver through the kernel's data door, is admitted and
+//! plane's door claims reaches that plane's driver through its route on the data router (mounted at
+//! the router's construction, ARCHITECT Q-SW1), behind the deployment's auth gate, is admitted and
 //! charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
 //! pieces), leaves through the host chokepoint (the plane's egress walk over the process's
 //! connector: the destination guard's judgement and pin, the breaker, the dispatch record) to a
@@ -16,22 +17,18 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::body::Bytes;
-use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::http::StatusCode;
 use busbar_contract::caps::ReasonCode;
 use busbar_contract::conn::{DeclaredConns, NeedId, PollConns};
-use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SEP};
-use busbar_kernel::plane_driver::serve::{claimed, DataRequest};
 use busbar_kernel::plane_driver::{refusal_status, EndPost, MemberRoute, PlaneMoney};
-use busbar_kernel::state::App;
 use busbar_plane_decisions::plane_door::door as jev_door;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, money, Published, PUBLISHING};
-use super::{compose_planes, mount, DataRoutes};
+use super::{compose_planes, door_routes};
 use crate::root::door_steps::compose_egress;
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -61,16 +58,22 @@ const CLAIMED: &str = "/v1/systemone";
 /// The far end's answer: a decision, and the one unit it reports using.
 const ANSWER: &str = r#"{"id":"d-1","decision":"approve","usage":{"units":1}}"#;
 
-fn request(path: &str, key: Option<Arc<VirtualKey>>, app: Arc<App>) -> DataRequest {
-    DataRequest {
-        method: Method::POST,
-        uri: path.parse::<Uri>().expect("a target"),
-        headers: HeaderMap::new(),
-        body: Bytes::from_static(br#"{"state":{"amount":7}}"#),
-        gov: PlaneRequestCtx { key },
-        consumed: None,
-        app,
+/// A POST of the caller's decision state to `path` on `router`, with `token` as its bearer or with
+/// none: the response.
+async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::response::Response {
+    use tower::ServiceExt as _;
+    let mut req = axum::http::Request::builder().method("POST").uri(path);
+    if let Some(token) = token {
+        req = req.header("authorization", format!("Bearer {token}"));
     }
+    let req = req
+        .body(axum::body::Body::from(r#"{"state":{"amount":7}}"#))
+        .expect("a request");
+    router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("the router answers")
 }
 
 /// A far end on loopback answering every request with [`ANSWER`]; what it was sent comes back on
@@ -180,7 +183,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
             .expect("governance"),
     );
-    let (key, _token) = gov
+    let (key, token) = gov
         .mint_signed(
             NewKeySpec {
                 name: "decider".to_string(),
@@ -249,21 +252,17 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let plane_key = composed.facts.plane.clone();
     served.post = Some(Arc::clone(&post));
     let app = busbar_kernel::test_support::TestApp::new()
+        .keys_chain()
         .governance(Arc::clone(&gov))
         .cost(CostModel::flat(1))
         .build();
-    let doors = Arc::new(DataRoutes {
-        served,
-        post: Arc::clone(&post),
-        pin: || CARD.pin(),
-    });
+    // THE DATA ROUTER, BUILT WITH THE DOOR'S ROUTES (Q-SW1: its construction, no static).
+    let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
+    let (router, _admin, _handle) =
+        busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
 
-    // THE SERVED REQUEST.
-    let answer = doors
-        .claimed(request(CLAIMED, Some(Arc::clone(&key)), Arc::clone(&app)))
-        .ok()
-        .expect("the plane claims it");
-    let response = answer.await;
+    // THE SERVED REQUEST, as the keyed caller.
+    let response = send(&router, CLAIMED, Some(token.expose_secret())).await;
     assert_eq!(response.status(), StatusCode::OK, "served through the door");
     let kind = response.headers()["content-type"].to_str().expect("a type");
     assert!(kind.starts_with("application/json"), "{kind}");
@@ -313,20 +312,20 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
 }
 
-/// THE MOUNT: a request the composed door does not claim comes back whole for the fallback's own
-/// dispatch; a claimed one is the door's. An unkeyed caller on the door's claim (it takes a
-/// credential) is refused before anything is charged, rendered by the plane.
+/// THE MOUNT: the door's claim is a route on the data router only when the router is built with
+/// it; a path the door does not claim is the router's own. An unkeyed caller on the door's claim (it
+/// takes a credential) is refused before anything is charged, rendered by the plane.
 #[tokio::test]
-async fn the_mounted_data_door_claims_only_the_planes_routes() {
+async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-jev";
     let _published = Published(instance);
     let app = busbar_kernel::test_support::TestApp::new().build();
-    // RED ARM, before the mount: the kernel's data door claims nothing.
-    let back = claimed(request(CLAIMED, None, Arc::clone(&app)))
-        .err()
-        .expect("no data door is mounted yet");
-    assert_eq!(back.uri.path(), CLAIMED);
+    // RED ARM: a data router built without the door's routes does not hand the claim to the plane.
+    let (bare, _admin, _handle) =
+        busbar_kernel::build_split_routers_serving(Arc::clone(&app), Vec::new(), 1 << 20, 0, false);
+    let refused = u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status");
+    assert_ne!(send(&bare, CLAIMED, None).await.status().as_u16(), refused);
 
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let row = LinkedRow::of(jev_door).expect("the door states its Statement");
@@ -355,21 +354,20 @@ async fn the_mounted_data_door_claims_only_the_planes_routes() {
         &money,
     )
     .expect("the door plane composes");
-    mount(served).expect("the data routes mount");
+    let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
+    assert!(!doors.is_empty(), "the claim is a route");
+    let (router, _admin, _handle) =
+        busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
 
-    let back = claimed(request("/v1/unclaimed", None, Arc::clone(&app)))
-        .err()
-        .expect("unclaimed");
-    assert_eq!(back.uri.path(), "/v1/unclaimed");
-
-    let answer = claimed(request(CLAIMED, None, app))
-        .ok()
-        .expect("the plane claims it");
-    let response = answer.await;
-    assert_eq!(
-        u32::from(response.status().as_u16()),
-        refusal_status(ReasonCode::Unauthenticated)
+    let unclaimed = send(&router, "/v1/unclaimed", None).await;
+    assert_ne!(
+        unclaimed.status().as_u16(),
+        refused,
+        "a path the door does not claim"
     );
+
+    let response = send(&router, CLAIMED, None).await;
+    assert_eq!(response.status().as_u16(), refused);
     let body = axum::body::to_bytes(response.into_body(), 1 << 16)
         .await
         .expect("the body");
@@ -380,7 +378,9 @@ async fn the_mounted_data_door_claims_only_the_planes_routes() {
         "the kernel wrote the text, the plane rendered it: {body}"
     );
     assert!(
-        mount(super::Served::default()).is_ok(),
+        door_routes(super::Served::default(), || CARD.pin(), &[], &[])
+            .expect("nothing to mount")
+            .is_empty(),
         "a composition that claims nothing mounts nothing"
     );
 }

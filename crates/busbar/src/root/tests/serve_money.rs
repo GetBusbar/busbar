@@ -11,33 +11,34 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::body::Bytes;
-use axum::http::{HeaderMap, Method, Uri};
-use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
+use busbar_contract::records::VirtualKey;
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
-use busbar_kernel::plane_driver::serve::DataRequest;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::App;
 
 use super::planes_tests::{bound, composed_services, Published, PUBLISHING};
-use super::{compose_planes, DataRoutes};
+use super::{compose_planes, door_routes};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
 
 /// A governed composition of the test plane: a signing book with one minted key, the plane's
-/// section one entry `m`, its data routes over a node of its own.
+/// section one entry `m`, its data routes on a data router built with them, over a node of its own.
 struct Governed {
     _published: Published,
-    routes: Arc<DataRoutes>,
+    router: axum::Router,
+    post: Arc<NodeEndPost>,
     money: Arc<PlaneMoney>,
     gov: Arc<GovState>,
-    key: Arc<VirtualKey>,
+    key: VirtualKey,
+    token: String,
     app: Arc<App>,
 }
 
-fn governed(instance: &'static str) -> Option<Governed> {
+/// `keys_chain`: the deployment's data chain verifies a key (a claim that takes a credential is
+/// then refused by the gate when none is presented).
+fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let plane = bound(instance, &dispatcher)?;
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
@@ -49,7 +50,7 @@ fn governed(instance: &'static str) -> Option<Governed> {
         name: "door".to_string(),
         ..Default::default()
     };
-    let (key, _token) = gov
+    let (key, token) = gov
         .mint_signed(spec, 4_000_000_000, 1_700_000_000)
         .expect("mint");
     gov.hydrate_budgets(&CostModel::flat(1), 0)
@@ -71,45 +72,53 @@ fn governed(instance: &'static str) -> Option<Governed> {
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
-    let app = busbar_kernel::test_support::TestApp::new()
+    let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
+        .expect("its claims mount");
+    let app = busbar_kernel::test_support::TestApp::new();
+    let app = if keys_chain { app.keys_chain() } else { app };
+    let app = app
         .governance(Arc::clone(&gov))
         .cost(CostModel::flat(1))
         .build();
+    let (router, _admin, _handle) =
+        busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
     Some(Governed {
         _published: Published(instance),
-        routes: Arc::new(DataRoutes {
-            served,
-            post,
-            pin: || crate::root::kernel::ROOT_CARD.pin(),
-        }),
+        router,
+        post,
         money,
         gov,
-        key: Arc::new(key),
+        key,
+        token: token.expose_secret().clone(),
         app,
     })
 }
 
 impl Governed {
-    /// A POST of `ping` to `path`, as the keyed caller or as nobody: the status and the body.
+    /// A POST of `ping` to `path` on the data router, with the minted key's token or with none: the
+    /// status and the body.
     async fn post(&self, path: &str, keyed: bool) -> (u16, String) {
-        let req = DataRequest {
-            method: Method::POST,
-            uri: path.parse::<Uri>().expect("a target"),
-            headers: HeaderMap::new(),
-            body: Bytes::from_static(b"ping"),
-            gov: PlaneRequestCtx {
-                key: keyed.then(|| Arc::clone(&self.key)),
-            },
-            consumed: None,
-            app: Arc::clone(&self.app),
-        };
-        let answer = self.routes.claimed(req).ok().expect("the plane claims it");
-        let response = answer.await;
-        let status = response.status().as_u16();
-        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+        use http_body_util::BodyExt as _;
+        use tower::ServiceExt as _;
+        let mut req = axum::http::Request::builder().method("POST").uri(path);
+        if keyed {
+            req = req.header("authorization", format!("Bearer {}", self.token));
+        }
+        let req = req.body(axum::body::Body::from("ping")).expect("a request");
+        let resp = self
+            .router
+            .clone()
+            .oneshot(req)
             .await
-            .expect("the body");
-        (status, String::from_utf8_lossy(&body).into_owned())
+            .expect("the router answers");
+        let status = resp.status().as_u16();
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("the body")
+            .to_bytes();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// The requests the governance book admitted for the key, this window.
@@ -128,7 +137,7 @@ impl Governed {
 #[tokio::test]
 async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-keyed") else {
+    let Some(g) = governed("serve-money-keyed", true) else {
         eprintln!("skip: the test plane's cdylib is not built in this scoped run");
         return;
     };
@@ -141,11 +150,7 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
     );
     assert_eq!(g.requests(), 1, "its request was charged at admission");
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
-    assert_eq!(
-        g.routes.post.open_units(),
-        0,
-        "its node facts closed at its end"
-    );
+    assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
 }
 
 /// 1.5.5'S ORDER FOR A ROUTE ITS SECTION DOES NOT HOLD: the keyed unit is admitted (charged) first
@@ -153,7 +158,7 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
 #[tokio::test]
 async fn an_unknown_route_is_admitted_then_refused_and_settles() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-unknown") else {
+    let Some(g) = governed("serve-money-unknown", true) else {
         eprintln!("skip: the test plane's cdylib is not built in this scoped run");
         return;
     };
@@ -168,7 +173,7 @@ async fn an_unknown_route_is_admitted_then_refused_and_settles() {
 #[tokio::test]
 async fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-unkeyed") else {
+    let Some(g) = governed("serve-money-unkeyed", false) else {
         eprintln!("skip: the test plane's cdylib is not built in this scoped run");
         return;
     };
@@ -186,7 +191,7 @@ async fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
 #[tokio::test]
 async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-open") else {
+    let Some(g) = governed("serve-money-open", false) else {
         eprintln!("skip: the test plane's cdylib is not built in this scoped run");
         return;
     };
