@@ -94,9 +94,12 @@ impl Offload for RefusesFirst {
     }
 }
 
+/// One job a pool was handed.
+type Job = Box<dyn FnOnce() + Send>;
+
 /// Holds every job until the test runs them; its clones share the jobs.
 #[derive(Default, Clone)]
-struct Held(Arc<Mutex<Vec<Box<dyn FnOnce() + Send>>>>);
+struct Held(Arc<Mutex<Vec<Job>>>);
 
 impl Held {
     fn run_all(&self) -> usize {
