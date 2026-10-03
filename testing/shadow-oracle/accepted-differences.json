@@ -2153,6 +2153,31 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "DF-DROP an untranslatable content block is dropped, not sent as empty text",
+      "kind": "improvement",
+      "changelog": "A request translated between LLM dialects no longer carries an empty text block in place of a content block the target dialect cannot represent, and an answer translated back no longer delivers one; the block is dropped with a warning and an audit row naming its wire path.",
+      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops",
+      "cells": "^llm\\.unmodelled-block\\|(anthropic|openai)\\|(bedrock|cohere|gemini|openai|anthropic)$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "On a TRANSLATE attempt the Anthropic and OpenAI readers put an empty text block ({\"type\":\"text\",\"text\":\"\"}) in place of a content block they do not model (a sourceless document, a block kind added after the build), and the far end's writer sent it: a substitution the LLM DIALECT FIDELITY rule forbids (translate what maps, drop what cannot). The block is now left out of the IR, dropped with a WARN and an egress.control_unrepresentable audit row naming its wire path; a same-dialect relay still carries it. Fixtures: crates/busbar-plane-llm/src/codec/tests/proto/golden/req_a2{b,c,g,o}_degenerate.json. No oracle cell sends an unmodelled block across dialects: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing anthropic-door llm cell.",
+      "premise": {
+        "cell": "llm|anthropic|openai|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-01",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }

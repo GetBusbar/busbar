@@ -342,9 +342,74 @@ const BLOCK_TYPE_REDACTED_THINKING: &str = "redacted_thinking";
 /// its own protocol's round-trip instead of being destroyed.
 const ANTHROPIC_UNMODELED_BLOCKS_SENTINEL: &str = "__busbar_anthropic_unmodeled_blocks";
 
-/// The native Anthropic content-block `type` values [`read_block`] models. Anything else degrades
-/// to an empty Text placeholder there; used here to find which raw blocks need parking under
-/// [`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`] without duplicating `read_block`'s parse logic.
+/// Every content-block kind [`read_block`] reads (the request and answer grammar, `codec::drops`).
+/// A block of any other kind does not cross a translate attempt, which names it.
+const BLOCK_KINDS: &[&str] = &[
+    keys::TEXT,
+    keys::THINKING,
+    STOP_TOOL_USE,
+    TOOL_RESULT,
+    keys::IMAGE,
+    BLOCK_TYPE_DOCUMENT,
+    BLOCK_TYPE_SEARCH_RESULT,
+    BLOCK_TYPE_REDACTED_THINKING,
+    WEB_SEARCH_TOOL_RESULT,
+];
+
+/// The request content-block grammar: the turns' blocks and the system blocks.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["messages[]", "content[]"],
+        tag: Some(keys::TYPE),
+        modelled: BLOCK_KINDS,
+        companions: &[],
+    },
+    crate::codec::drops::Blocks {
+        at: &["system[]"],
+        tag: Some(keys::TYPE),
+        modelled: BLOCK_KINDS,
+        companions: &[],
+    },
+];
+
+/// The answer content-block grammar.
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["content[]"],
+    tag: Some(keys::TYPE),
+    modelled: BLOCK_KINDS,
+    companions: &[],
+}];
+
+/// What the Anthropic reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // The raw unmodelled blocks, for a same-dialect write; `REQUEST_BLOCKS` names them.
+    crate::codec::drops::Parked {
+        key: ANTHROPIC_UNMODELED_BLOCKS_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // The thinking ask and the legacy structured-output spelling cross as the IR's reasoning and
+    // response format.
+    crate::codec::drops::Parked {
+        key: keys::THINKING,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::OUTPUT_FORMAT,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::OUTPUT_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[keys::EFFORT, keys::FORMAT]),
+    },
+    crate::codec::drops::Parked {
+        key: keys::METADATA,
+        holds: crate::codec::drops::Holds::Members(&[USER_ID]),
+    },
+];
+
+/// The native Anthropic content-block `type` values [`read_block`] holds whole in the IR; used to
+/// find which raw blocks need parking under [`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`] without
+/// duplicating `read_block`'s parse logic.
 fn is_modeled_anthropic_block_type(t: &str) -> bool {
     matches!(
         t,
@@ -418,10 +483,14 @@ fn inline_document_source(media_type: &str, data: &str) -> Option<serde_json::Va
 /// deliberately NOT in [`is_modeled_anthropic_block_type`].
 const BLOCK_TYPE_SEARCH_RESULT: &str = "search_result";
 
-/// Scan a message's RAW `content` array (as read from the wire, BEFORE `read_block` parses it) for
-/// unmodeled blocks, pushing `{"m","i","block"}` sentinel entries for each. `read_block` parses
-/// every raw block 1:1 with no filtering, so a raw-array index always matches the parsed
-/// `IrMessage.content` index at the same position — no separate index bookkeeping needed.
+/// The stash entry member marking a raw block the IR does not hold at all (an insertion, not a
+/// replacement, on a same-dialect write).
+const STASH_INSERT: &str = "insert";
+
+/// Scan a message's RAW `content` array (as read from the wire, BEFORE `read_blocks` parses it) for
+/// blocks the IR does not hold whole, pushing `{"m","i","block"}` sentinel entries for each (`i` is
+/// the RAW index). A block [`read_blocks`] leaves out of the IR is marked `"insert": true`; every
+/// other entry replaces the IR block standing at that raw position.
 fn stash_unmodeled_blocks(
     msg_val: &serde_json::Value,
     m: usize,
@@ -446,7 +515,14 @@ fn stash_unmodeled_blocks(
         // case keeps the modelled-not-stashed contract its round-trip test pins.
         let document_needs_stash = block_type == BLOCK_TYPE_DOCUMENT
             && (block_val.get(keys::CONTEXT).is_some() || block_val.get(keys::CITATIONS).is_some());
-        if !is_modeled_anthropic_block_type(block_type) || document_needs_stash {
+        if !is_read_into_ir(block_val) {
+            // Not in the IR at all: a same-dialect write INSERTS it back at raw index `i`.
+            sink.push(serde_json::json!({
+                (keys::M): m, (keys::I): i, (keys::BLOCK): block_val, (STASH_INSERT): true
+            }));
+        } else if !is_modeled_anthropic_block_type(block_type) || document_needs_stash {
+            // In the IR, but not whole: a same-dialect write REPLACES the IR block at raw index
+            // `i` with the original.
             sink.push(serde_json::json!({ (keys::M): m, (keys::I): i, (keys::BLOCK): block_val }));
         }
     }
@@ -462,10 +538,32 @@ fn find_stashed_block(
     sentinel.iter().find_map(|entry| {
         let em = entry.get(keys::M)?.as_u64()? as usize;
         let ei = entry.get(keys::I)?.as_u64()? as usize;
-        (em == m && ei == i)
+        (em == m && ei == i && !is_insert(entry))
             .then(|| entry.get(keys::BLOCK).cloned())
             .flatten()
     })
+}
+
+/// Whether a stash entry is a block the IR does not hold at all.
+fn is_insert(entry: &serde_json::Value) -> bool {
+    entry.get(STASH_INSERT).and_then(|v| v.as_bool()) == Some(true)
+}
+
+/// The blocks of turn `m` the IR does not hold at all, by raw index, in order.
+fn stashed_inserts(sentinel: &[serde_json::Value], m: usize) -> Vec<(usize, serde_json::Value)> {
+    let mut out: Vec<(usize, serde_json::Value)> = sentinel
+        .iter()
+        .filter(|entry| is_insert(entry))
+        .filter_map(|entry| {
+            let em = entry.get(keys::M)?.as_u64()? as usize;
+            let ei = entry.get(keys::I)?.as_u64()? as usize;
+            (em == m)
+                .then(|| Some((ei, entry.get(keys::BLOCK)?.clone())))
+                .flatten()
+        })
+        .collect();
+    out.sort_by_key(|(i, _)| *i);
+    out
 }
 
 /// Anthropic error `type` strings used in error envelopes and in-stream error events. Values
@@ -1431,11 +1529,23 @@ fn write_message(
     // position `read_request` recorded, which is the RAW pre-filter content index; collapsing
     // dropped blocks out of the index space here would misalign every stash lookup after the
     // first drop.
-    let blocks: Vec<serde_json::Value> = msg
-        .content
-        .iter()
-        .enumerate()
-        .filter_map(|(i, block)| {
+    // The IR holds no block for a raw block it did not read; those come back at their raw
+    // positions (a same-dialect write), so the walk counts RAW positions, not IR indexes.
+    let mut inserts = stashed_inserts(unmodeled_sentinel, m)
+        .into_iter()
+        .peekable();
+    let mut raw = 0usize;
+    let mut blocks: Vec<serde_json::Value> = Vec::with_capacity(msg.content.len());
+    for block in &msg.content {
+        while inserts.peek().is_some_and(|(at, _)| *at <= raw) {
+            if let Some((_, b)) = inserts.next() {
+                blocks.push(b);
+            }
+            raw += 1;
+        }
+        let i = raw;
+        raw += 1;
+        let written: Option<serde_json::Value> = 'block: {
             if let crate::codec::ir::IrBlock::Thinking {
                 signature,
                 redacted: false,
@@ -1451,31 +1561,33 @@ fn write_message(
                     .is_some_and(|o| o != crate::codec::ir::IrSignatureOrigin::Anthropic);
                 if signature.is_none() || foreign {
                     dropped_unsigned_thinking += 1;
-                    return None;
+                    break 'block None;
                 }
             }
             if !attachment_is_sendable(block) {
-                return None;
+                break 'block None;
             }
             if block.is_citation_carrier() {
                 tracing::warn!(
                     "dropping citations with no text on Anthropic egress: an empty text block is \
                      rejected (COH-17)"
                 );
-                return None;
+                break 'block None;
             }
-            // A parked unmodeled block (e.g. `document`) at this exact position: splice the
-            // ORIGINAL raw block back rather than emitting `write_block`'s empty-Text placeholder.
-            if let Some(raw) = find_stashed_block(unmodeled_sentinel, m, i) {
-                return Some(raw);
+            // A parked block (e.g. a `document` with `context`) at this exact raw position: splice
+            // the ORIGINAL raw block back in place of its IR projection.
+            if let Some(original) = find_stashed_block(unmodeled_sentinel, m, i) {
+                break 'block Some(original);
             }
             if let crate::codec::ir::IrBlock::HostedToolRecord { .. } = block {
                 warn_hosted_record_dropped();
-                return None;
+                break 'block None;
             }
             Some(write_block(block))
-        })
-        .collect();
+        };
+        blocks.extend(written);
+    }
+    blocks.extend(inserts.map(|(_, b)| b));
     if dropped_unsigned_thinking > 0 {
         tracing::warn!(
             dropped = dropped_unsigned_thinking,

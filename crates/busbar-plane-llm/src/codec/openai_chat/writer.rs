@@ -60,6 +60,9 @@ impl ProtocolWriter for OpenAiWriter {
         _model: &str,
         caps: &LaneCaps,
     ) -> serde_json::Value {
+        // The request controls with no Chat form — the same set `dropped_egress_controls` reports
+        // for the seam's audit.
+        crate::codec::carry::warn_drops(super::map::REQUEST, super::map::CONTROLS, None, req);
         let mut messages_array: Vec<serde_json::Value> = Vec::new();
 
         // Prepend system message as first message if present. OpenAI system messages carry plain

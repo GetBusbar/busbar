@@ -222,15 +222,100 @@ pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::D
 /// Reported so the cross-protocol seam can LOG that they were dropped — no other protocol can carry
 /// them. The nested `candidates[]` lookup is Gemini's own shape and stays here, off core.
 fn vendor_response_metadata(body: &serde_json::Value) -> Vec<&'static str> {
-    ["safetyRatings"]
+    // Named by wire path, as the drop path reports it.
+    [("safetyRatings", "candidates[].safetyRatings")]
         .into_iter()
-        .filter(|k| {
+        .filter(|(k, _)| {
             body.get(FIELD_CANDIDATES)
                 .and_then(|c| c.as_array())
                 .is_some_and(|cands| cands.iter().any(|c| c.get(k).is_some()))
         })
+        .map(|(_, path)| path)
         .collect()
 }
+
+/// The wire word `responseJsonSchema`.
+const FIELD_RESPONSE_JSON_SCHEMA: &str = "responseJsonSchema";
+
+/// The part kinds the request reader models; a `thought` part is a text part.
+const REQUEST_PART_KINDS: &[&str] = &[
+    keys::TEXT,
+    FIELD_FUNCTION_CALL,
+    FIELD_FUNCTION_RESPONSE,
+    FIELD_INLINE_DATA,
+    FIELD_FILE_DATA,
+];
+
+/// The members a part carries beside its kind.
+const PART_COMPANIONS: &[&str] = &[FIELD_THOUGHT, FIELD_THOUGHT_SIGNATURE];
+
+/// The Gemini request content grammar (`codec::drops`): a union keyed by its kind member. A part of
+/// any other kind (the code-interpreter's `executableCode` / `codeExecutionResult`) does not cross
+/// a translate attempt, which names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["contents[]", "parts[]"],
+        tag: None,
+        modelled: REQUEST_PART_KINDS,
+        companions: PART_COMPANIONS,
+    },
+    crate::codec::drops::Blocks {
+        at: &[FIELD_SYSTEM_INSTRUCTION, "parts[]"],
+        tag: None,
+        modelled: &[keys::TEXT],
+        companions: PART_COMPANIONS,
+    },
+];
+
+/// The Gemini answer content grammar.
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["candidates[]", "content", "parts[]"],
+    tag: None,
+    modelled: &[
+        keys::TEXT,
+        FIELD_FUNCTION_CALL,
+        FIELD_INLINE_DATA,
+        FIELD_FILE_DATA,
+    ],
+    companions: PART_COMPANIONS,
+}];
+
+/// What the Gemini reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // The model and the stream ask are the route's (they ride the URL).
+    crate::codec::drops::Parked {
+        key: keys::MODEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::STREAM,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // `labels` crosses as the caller metadata.
+    crate::codec::drops::Parked {
+        key: FIELD_LABELS,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // The members of `generationConfig` the reader's own code carries; the map file maps the rest
+    // of what crosses.
+    crate::codec::drops::Parked {
+        key: FIELD_GENERATION_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[
+            FIELD_MAX_OUTPUT_TOKENS,
+            FIELD_RESPONSE_MIME_TYPE,
+            FIELD_RESPONSE_SCHEMA,
+            FIELD_RESPONSE_JSON_SCHEMA,
+            FIELD_RESPONSE_LOGPROBS,
+            keys::LOGPROBS,
+            FIELD_THINKING_CONFIG,
+            FIELD_RESPONSE_MODALITIES,
+        ]),
+    },
+    crate::codec::drops::Parked {
+        key: keys::TOOL_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[FIELD_FUNCTION_CALLING_CONFIG]),
+    },
+];
 
 /// Router-internal shim key the gemini ingress route injects into the request body when the client
 /// sent a streaming `:streamGenerateContent` request WITHOUT `?alt=sse` (so the response must be the
@@ -490,16 +575,12 @@ const FIELD_CHOSEN_CANDIDATES: &str = "chosenCandidates";
 const FIELD_CITATION_METADATA: &str = "citationMetadata";
 /// The wire word `citationSources`.
 const FIELD_CITATION_SOURCES: &str = "citationSources";
-/// The wire word `codeExecutionResult`.
-const FIELD_CODE_EXECUTION_RESULT: &str = "codeExecutionResult";
 /// The wire word `contents`.
 const FIELD_CONTENTS: &str = "contents";
 /// The wire word `details`.
 const FIELD_DETAILS: &str = "details";
 /// The wire word `endIndex`.
 const FIELD_END_INDEX: &str = "endIndex";
-/// The wire word `executableCode`.
-const FIELD_EXECUTABLE_CODE: &str = "executableCode";
 /// The wire word `fileData`.
 const FIELD_FILE_DATA: &str = "fileData";
 /// The wire word `fileUri`.

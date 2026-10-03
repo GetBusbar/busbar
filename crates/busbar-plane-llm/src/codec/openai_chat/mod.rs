@@ -802,7 +802,75 @@ fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Read an OpenAI-format block from JSON.
+/// The Chat content-part kinds this reader models.
+const PART_KINDS: &[&str] = &[
+    keys::TEXT,
+    keys::IMAGE_URL,
+    keys::INPUT_AUDIO,
+    FILE,
+    keys::REFUSAL,
+];
+
+/// The Chat request content-part grammar (`codec::drops`). A part of any other kind does not cross
+/// a translate attempt, which names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["messages[]", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: PART_KINDS,
+    companions: &[],
+}];
+
+/// The Chat answer content-part grammar.
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["choices[]", "message", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: PART_KINDS,
+    companions: &[],
+}];
+
+/// What the Chat reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // A spelling hint: the cap itself crosses as `max_tokens`.
+    crate::codec::drops::Parked {
+        key: MAX_COMPLETION_TOKENS_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: crate::codec::dialect::MESSAGE_NAMES_SENTINEL,
+        holds: crate::codec::drops::Holds::Path(crate::codec::dialect::MESSAGE_NAMES_PATH),
+    },
+    crate::codec::drops::Parked {
+        key: MESSAGE_EXTRAS_SENTINEL,
+        holds: crate::codec::drops::Holds::Items("messages[]", &[LEGACY_FUNCTION_ROLE_KEY]),
+    },
+    // The legacy function-calling members: read into `tools` / `tool_choice`, which cross.
+    crate::codec::drops::Parked {
+        key: FUNCTIONS,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::FUNCTION_CALL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // Governed: the usage opt-in is busbar's metering edit for the far end (design F2).
+    crate::codec::drops::Parked {
+        key: keys::STREAM_OPTIONS,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+];
+
+/// Read one OpenAI-format content part: `None` for a part kind this reader does not model, which
+/// is dropped — nothing is put in its place.
+fn read_openai_part(
+    block_val: &serde_json::Value,
+) -> Result<Option<crate::codec::ir::IrBlock>, IrError> {
+    if !REQUEST_BLOCKS.iter().all(|g| g.models(block_val)) {
+        return Ok(None);
+    }
+    read_openai_block(block_val).map(Some)
+}
+
+/// Read an OpenAI-format block of a kind [`REQUEST_BLOCKS`] models.
 fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
@@ -960,20 +1028,9 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
                 refusal: true,
             })
         }
-        // Forward-compatibility: an unknown/future content-part type (one OpenAI adds after this
-        // build) must not break otherwise-valid conversation history. Degrade gracefully to an empty
-        // Text block — preserving the part's position in the turn without injecting foreign data —
-        // rather than failing the whole request with a ClientError. This is a content-shape match, not
-        // a disposition/breaker match, so a named graceful-degradation arm is correct here.
-        other => {
-            let _ = other;
-            Ok(crate::codec::ir::IrBlock::Text {
-                text: String::new(),
-                cache_control: None,
-                citations: Vec::new(),
-                refusal: false,
-            })
-        }
+        // An unknown/future part kind never reaches here: `read_openai_part` drops it (nothing is
+        // put in its place), so this arm only answers a direct call with a kind outside the grammar.
+        _ => Err(ir_parse_error()),
     }
 }
 

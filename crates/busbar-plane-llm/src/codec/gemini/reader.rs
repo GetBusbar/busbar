@@ -473,27 +473,9 @@ impl ProtocolReader for GeminiReader {
                         else if let Some(block) = read_gemini_media_part(part) {
                             msg_content.push(block);
                         }
-                        // Code-execution parts (`executableCode` / `codeExecutionResult`) are the
-                        // Gemini code-interpreter tool's model-authored artifacts, replayed in the
-                        // conversation history. No other dialect in the matrix has a native slot for
-                        // them, so on a CROSS-protocol egress they have nowhere to go: drop WITH a
-                        // warn naming the construct (drop-with-warn convention) rather than vanishing
-                        // silently or corrupting them into a text part. Same-protocol Gemini→Gemini
-                        // relay is byte-verbatim and never reaches this reader, so nothing is lost
-                        // there. Kept AFTER the content arms above so a normal part is unaffected.
-                        else if part.get(FIELD_EXECUTABLE_CODE).is_some() {
-                            tracing::warn!(
-                                "dropping gemini executableCode part on cross-protocol ingress: the \
-                                 code-interpreter tool's model-authored code has no cross-protocol \
-                                 analog and is NOT carried (same-protocol relay preserves it verbatim)"
-                            );
-                        } else if part.get(FIELD_CODE_EXECUTION_RESULT).is_some() {
-                            tracing::warn!(
-                                "dropping gemini codeExecutionResult part on cross-protocol ingress: \
-                                 the code-interpreter tool's execution output has no cross-protocol \
-                                 analog and is NOT carried (same-protocol relay preserves it verbatim)"
-                            );
-                        }
+                        // Any other part (the code-interpreter's `executableCode` /
+                        // `codeExecutionResult`, a future kind) has no IR form: it is not read, and
+                        // a translate attempt names the drop (`REQUEST_BLOCKS`).
                     }
                 }
 
@@ -1489,24 +1471,9 @@ impl ProtocolReader for GeminiReader {
                     content.push(block);
                 }
 
-                // Code-execution parts the model authored (`executableCode` / `codeExecutionResult`,
-                // emitted by Gemini's code-interpreter tool). No cross-protocol dialect has a native
-                // slot, so drop WITH a warn on cross-protocol egress rather than corrupting them into
-                // text. Same-protocol Gemini→Gemini relay is byte-verbatim and never reaches here.
-                if part.get(FIELD_EXECUTABLE_CODE).is_some() {
-                    tracing::warn!(
-                        "dropping gemini executableCode part on cross-protocol egress: the \
-                         code-interpreter tool's model-authored code has no cross-protocol analog \
-                         and is NOT carried (same-protocol relay preserves it verbatim)"
-                    );
-                }
-                if part.get(FIELD_CODE_EXECUTION_RESULT).is_some() {
-                    tracing::warn!(
-                        "dropping gemini codeExecutionResult part on cross-protocol egress: the \
-                         code-interpreter tool's execution output has no cross-protocol analog and \
-                         is NOT carried (same-protocol relay preserves it verbatim)"
-                    );
-                }
+                // Any other part (the code-interpreter's `executableCode` /
+                // `codeExecutionResult`, a future kind) has no IR form: a translate attempt names
+                // the drop (`RESPONSE_BLOCKS`).
             }
         }
 
@@ -1613,6 +1580,22 @@ impl ProtocolReader for GeminiReader {
 
     fn clone_box(&self) -> Box<dyn ProtocolReader> {
         Box::new(self.clone())
+    }
+
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
     }
 }
 

@@ -101,7 +101,7 @@ pub(super) fn read_block(
                 .to_string();
             let content_val = obj.get(keys::CONTENT).unwrap_or(&serde_json::Value::Null);
             let content = if let Some(arr) = content_val.as_array() {
-                arr.iter().map(read_block).collect::<Result<_, _>>()?
+                read_blocks(arr)?
             } else {
                 vec![crate::codec::ir::IrBlock::Text {
                     text: content_val.as_str().unwrap_or("").to_string(),
@@ -203,17 +203,10 @@ pub(super) fn read_block(
             // conversation history into a rejected request. Degrade to the empty-Text placeholder
             // (holding the block's POSITION in the turn) with a warn naming it, which is what every
             // other unmodeled Anthropic block does.
+            // [`read_blocks`] never hands this arm a document with no `source` (it carries no
+            // payload, so it is not read at all); a direct call with one is malformed.
             let Some(source) = obj.get(keys::SOURCE) else {
-                tracing::warn!(
-                    "degrading anthropic `document` block with no `source` to an empty text \
-                     placeholder: the block carries no payload to translate"
-                );
-                return Ok(crate::codec::ir::IrBlock::Text {
-                    text: String::new(),
-                    cache_control: None,
-                    citations: Vec::new(),
-                    refusal: false,
-                });
+                return Err(ir_parse_error());
             };
             let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             // `document.context` (a free-text hint) and `document.citations` (an `{enabled}` toggle)
@@ -374,29 +367,47 @@ pub(super) fn read_block(
         // IR's hosted-tool record. A `web_search_tool_result_error` content carries its error code
         // as the record's status and no results.
         WEB_SEARCH_TOOL_RESULT => Ok(read_web_search_tool_result(obj)),
-        // Forward-compatibility: a valid native Anthropic content-block type the IR does not model
-        // (e.g. `document`, or a future type Anthropic adds after this build).
-        // These appear in legitimate Messages API requests, so the prior `_ => Err(ClientError)`
-        // catch-all turned an otherwise-valid request into a 400. Mirror the OpenAI reader's
-        // unmodeled-part handling (see `read_openai_block`): degrade gracefully to an empty Text
-        // block — preserving the block's position in the turn without injecting foreign data —
-        // rather than failing the whole request. This is a content-shape match, not a
-        // disposition/breaker match, so a NAMED graceful-degradation arm (binding `other`) is
-        // correct here, and there is no `_ =>` swallowing a real disposition.
-        other => {
-            tracing::warn!(
-                block_type = other,
-                "skipping unmodeled anthropic content-block type during ir parse; degrading to an \
-                 empty text block rather than 400ing a legitimate request"
-            );
-            Ok(crate::codec::ir::IrBlock::Text {
-                text: String::new(),
-                cache_control: None,
-                citations: Vec::new(),
-                refusal: false,
-            })
+        // A block kind the IR does not model never reaches here: [`read_blocks`] leaves it out of
+        // the IR (nothing is put in its place, design F3 "Drops"). A direct call with one is
+        // malformed.
+        _ => Err(ir_parse_error()),
+    }
+}
+
+/// Whether [`read_block`] reads `block_val` into the IR: a block of a kind the reader models
+/// ([`BLOCK_KINDS`]) that carries a payload. A block of another kind (a type Anthropic added after
+/// this build, a server-tool result) and a `document` with no `source` are not read: nothing
+/// stands in for them in the IR. A same-dialect write splices the raw block back at its position
+/// ([`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`]); a translate attempt drops it, named. A non-object is
+/// read (and refused by [`read_block`] in the dialect's own error envelope).
+pub(super) fn is_read_into_ir(block_val: &serde_json::Value) -> bool {
+    let Some(obj) = block_val.as_object() else {
+        return true;
+    };
+    let kind = obj.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
+    BLOCK_KINDS.contains(&kind) && !(kind == BLOCK_TYPE_DOCUMENT && obj.get(keys::SOURCE).is_none())
+}
+
+/// Read a content-block array into the IR: every block [`is_read_into_ir`] keeps, in order. A
+/// `document` with no `source` is dropped through the one drop path (its kind is modelled, so the
+/// block grammar does not name it); an unmodelled kind is named by the grammar walk at the seam.
+pub(super) fn read_blocks(
+    arr: &[serde_json::Value],
+) -> Result<Vec<crate::codec::ir::IrBlock>, IrError> {
+    let mut out = Vec::with_capacity(arr.len());
+    for block_val in arr {
+        if is_read_into_ir(block_val) {
+            out.push(read_block(block_val)?);
+        } else if block_val.get(keys::TYPE).and_then(|v| v.as_str()) == Some(BLOCK_TYPE_DOCUMENT) {
+            crate::codec::drops::note(crate::codec::drops::Dropped::new(
+                "messages[].content[].type=document",
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                "dropping an Anthropic `document` block with no `source` on the cross-protocol \
+                 seam: it carries no payload to translate (nothing is put in its place)",
+            ));
         }
     }
+    Ok(out)
 }
 
 pub(super) fn read_message(
@@ -421,7 +432,7 @@ pub(super) fn read_message(
         return Err(ir_parse_error());
     }
     let content = if let Some(arr) = content_val.as_array() {
-        arr.iter().map(read_block).collect::<Result<_, _>>()?
+        read_blocks(arr)?
     } else {
         vec![crate::codec::ir::IrBlock::Text {
             text: content_val.as_str().unwrap_or("").to_string(),

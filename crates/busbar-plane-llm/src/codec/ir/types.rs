@@ -238,14 +238,15 @@ pub fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<Strin
     // `stop.len() > cap` is guaranteed by the early return above, so this cannot underflow;
     // `saturating_sub` would only imply a doubt that isn't there.
     let dropped = provided - cap;
-    ::tracing::debug!(diag = %crate::codec::diagnostics::IR_TRUNCATE_STOP_SEQUENCES.banner(),
-        proto,
-        cap,
-        provided,
-        dropped,
-        "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
-         {provided}, so {dropped} were dropped"
-    );
+    // A cap keeps its behaviour and always warns, through the one drop path.
+    crate::codec::drops::note(crate::codec::drops::Dropped::new(
+        "stop",
+        &crate::codec::diagnostics::IR_TRUNCATE_STOP_SEQUENCES,
+        format!(
+            "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
+             {provided}, so {dropped} were dropped"
+        ),
+    ));
     stop[..cap].to_vec()
 }
 

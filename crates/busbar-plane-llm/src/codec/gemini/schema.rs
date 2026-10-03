@@ -20,7 +20,7 @@ pub(super) fn read_gemini_response_format(
     let schema = gc
         .get(FIELD_RESPONSE_SCHEMA)
         .map(gemini_openapi_schema_to_json_schema)
-        .or_else(|| gc.get("responseJsonSchema").cloned());
+        .or_else(|| gc.get(FIELD_RESPONSE_JSON_SCHEMA).cloned());
     if mime.is_none() && schema.is_none() {
         return None;
     }

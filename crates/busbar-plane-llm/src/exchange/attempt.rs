@@ -54,9 +54,10 @@ pub struct FarRequest {
     pub body: Vec<u8>,
     /// The body went out as the caller sent it.
     pub pristine: bool,
-    /// Controls the far end's dialect cannot represent, dropped from the request (the kernel
-    /// records each: `egress.control_unrepresentable`, `<control> on <dialect>`, degraded).
-    pub dropped_controls: Vec<&'static str>,
+    /// What did not cross to the far end's dialect: the controls it cannot represent, then every
+    /// other dropped member by its wire path (`codec::drops`). The kernel records each:
+    /// `egress.control_unrepresentable`, `<control or path> on <dialect>`, degraded.
+    pub dropped_controls: Vec<String>,
 }
 
 /// The caller's stream intent, read off the caller's body before any rewrite.
@@ -283,8 +284,8 @@ pub struct Translation<'a> {
     pub outcome: Result<Translated<'a>, Answer>,
     /// A JSON request was read for a far end of another dialect.
     pub crossed: bool,
-    /// Controls the far end's dialect cannot represent.
-    pub dropped_controls: Vec<&'static str>,
+    /// What did not cross to the far end's dialect (see [`FarRequest::dropped_controls`]).
+    pub dropped_controls: Vec<String>,
 }
 
 fn static_name(name: &str) -> &'static str {

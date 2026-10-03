@@ -3416,14 +3416,12 @@ fn read_openai_block_refusal_maps_to_text() {
 }
 
 #[test]
-fn read_openai_block_unknown_type_degrades_to_empty_text() {
-    // A future/unknown content-part type must not break otherwise-valid history.
+fn read_openai_part_unknown_type_is_dropped_not_substituted() {
+    // A future/unknown content-part type must not break otherwise-valid history, and nothing is put
+    // in its place (design F3 "Drops"): the part is not read; a translate attempt names it.
     let block = serde_json::json!({"type": "some_future_part", "foo": "bar"});
-    let ir = read_openai_block(&block).expect("unknown type must degrade, not error");
-    match ir {
-        crate::codec::ir::IrBlock::Text { text, .. } => assert_eq!(text, ""),
-        other => panic!("expected empty Text, got {other:?}"),
-    }
+    let ir = read_openai_part(&block).expect("unknown type must not error");
+    assert!(ir.is_none(), "an unknown part is dropped, got {ir:?}");
 }
 
 // --- finish_reason normalization (content_filter -> safety, function_call -> tool_use) ---
@@ -6155,4 +6153,32 @@ fn a_custom_tool_call_in_history_is_skipped_not_refused() {
         "messages": [{"role": "assistant", "tool_calls": [{"id": "call_x", "type": "function"}]}]
     });
     assert!(OpenAiReader.read_request(&malformed).is_err());
+}
+
+/// DESIGN F3 "Drops" (DF-WIRE card item 5): a system turn whose parts are all of kinds the reader
+/// does not model is not an empty system turn: nothing is put in place of the dropped parts. RED
+/// before: the IR's system held `{"type":"text","text":""}`. A genuinely empty system turn keeps its
+/// empty text (that is the caller's own turn).
+#[test]
+fn system_turn_of_unmodelled_parts_gets_no_empty_text() {
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": [{"type": "some_future_part", "x": 1}]},
+            {"role": "user", "content": "hi"}
+        ]
+    });
+    let ir = OpenAiReader.read_request(&body).expect("parses");
+    assert!(ir.system.is_empty(), "{:?}", ir.system);
+
+    let empty_turn = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "system", "content": []}, {"role": "user", "content": "hi"}]
+    });
+    let ir = OpenAiReader.read_request(&empty_turn).expect("parses");
+    assert_eq!(
+        ir.system.len(),
+        1,
+        "the caller's own empty system turn is kept"
+    );
 }

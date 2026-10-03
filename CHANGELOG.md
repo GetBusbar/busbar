@@ -874,6 +874,9 @@ each dialect translates, field by field, is listed in the generated
   member it governs (the mapped `model`, the `stream_options.include_usage` it asks for to meter a
   stream, a `prompt: rw` hook's rewrite), the member is edited in place; key order, spacing and
   number spelling stay the caller's. 1.5.5 re-serialized such a body with its keys sorted.
+- A request translated between LLM dialects no longer carries an empty text block in place of a
+  content block the target dialect cannot represent, and an answer translated back no longer
+  delivers one; the block is dropped with a warning and an audit row naming its wire path.
 
 ### Fixed
 

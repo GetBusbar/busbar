@@ -300,6 +300,27 @@ const SOURCES: &str = "sources";
 /// The cohere wire word `strict_tools`, spelled once.
 const STRICT_TOOLS: &str = "strict_tools";
 
+/// The Cohere v2 request content grammar (`codec::drops`). A part of any other kind does not cross
+/// a translate attempt, which names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["messages[]", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: &[keys::TEXT, keys::IMAGE_URL, keys::DOCUMENT, keys::THINKING],
+    companions: &[],
+}];
+
+/// The Cohere v2 answer content grammar.
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["message", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: &[keys::TEXT, keys::THINKING],
+    companions: &[],
+}];
+
+/// The Cohere reader parks nothing beyond the members its map file does not model (what it
+/// promotes, it takes back out of `extra`).
+const PARKED: &[crate::codec::drops::Parked] = &[];
+
 /// The cohere wire word `texts`, spelled once.
 const TEXTS: &str = "texts";
 
