@@ -89,6 +89,13 @@ pub(crate) const ROWS_TIER: &[Field] = &[
 
 /// The response wire paths this dialect carries (the drop walk's map).
 pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "serviceTier.type",
+    "trace.guardrail.inputAssessment{}.contentPolicy.filters[].type",
+    "trace.guardrail.inputAssessment{}.contentPolicy.filters[].action",
+    "trace.guardrail.inputAssessment{}.contentPolicy.filters[].detected",
+    "trace.guardrail.outputAssessments{}[].contentPolicy.filters[].type",
+    "trace.guardrail.outputAssessments{}[].contentPolicy.filters[].action",
+    "trace.guardrail.outputAssessments{}[].contentPolicy.filters[].detected",
     "output.message.role",
     "output.message.content",
     "stopReason",
@@ -106,6 +113,7 @@ pub(crate) const RESPONSE_PATHS: &[&str] = &[
 
 /// The stream wire paths this dialect carries (the drop walk's map).
 pub(crate) const STREAM_PATHS: &[&str] = &[
+    "metadata.serviceTier.type",
     "messageStart",
     "contentBlockStart",
     "contentBlockDelta",

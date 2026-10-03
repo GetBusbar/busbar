@@ -1,7 +1,7 @@
 # DF-MAP-IR-GAPS section E: every response/stream wire path no dialect code names (handoffs/DF-MAP-irgap.json,
 # base 4f4aa80ee; a `{}` map segment is cut at its parent). A translate attempt's drop walk names each one.
 # Paths a later DF-MAP lane mapped (Gemini avgLogprobs and safety ratings; the Responses stream events themselves, whose members stay listed) are removed: they cross.
-# The answer rows DF-MAP has since mapped (Anthropic and Responses web-search records, Responses file citations and moderation, OpenAI moderation, audio transcript and modality token counts, Gemini cache-token details and served tier) are removed too: they cross, and the members under them that no row carries are on the dialect's drop list.
+# The answer rows DF-MAP has since mapped (Anthropic and Responses web-search records, Responses file citations and moderation, OpenAI moderation, audio transcript and modality token counts, Gemini cache-token details and served tier, Bedrock served tier) are removed too: they cross, and the members under them that no row carries are on the dialect's drop list.
 anthropic response container.expires_at
 anthropic response container.skills
 anthropic response container.skills[].skill_id
@@ -145,7 +145,6 @@ bedrock response output.message.content[].toolRemoval
 bedrock response output.message.content[].toolRemoval.tool.serverName
 bedrock response output.message.content[].toolResult.content[].searchResult
 bedrock response performanceConfig.latency
-bedrock response serviceTier
 bedrock response trace.guardrail
 bedrock response trace.guardrail.actionReason
 bedrock response trace.guardrail.inputAssessment

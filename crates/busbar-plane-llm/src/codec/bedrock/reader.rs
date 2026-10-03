@@ -1442,6 +1442,7 @@ impl ProtocolReader for BedrockReader {
 
             request_echo: None,
             stop_detail,
+            safety: super::read_guardrail_verdicts(obj.get(TRACE)),
             ..Default::default()
         })
     }
