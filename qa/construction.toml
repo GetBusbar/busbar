@@ -1056,12 +1056,18 @@ max_sites = 0
 # file is now 0, and no file under `crates/busbar-core-admin/` implements the trait. So the entry is
 # NOT repointed at the successor: a row pointed at a path with no finding suppresses nothing today
 # and would silently excuse the seal if anyone re-forged one there. Striking it puts that path back
-# under the rule immediately, which is what the ratchet is for. The seal debt that remains is the
-# nine below, each still forging today.
+# under the rule immediately, which is what the ratchet is for.
+#
+# STRUCK 2026-10-03: `crates/busbar-kernel-egress/src/tests/harness.rs`. MOVED AND CURED — `4b8891c0a`
+# (token-sealed A, ARCHITECT Q-GG3) moved the harness whole to
+# `crates/busbar-kernel/src/tests/members/egress/route/harness.rs`, where it lends a real
+# kernel-minted Pass (`KernelSeal::acquire_for_kernel()`) instead of the test seal, and egress's
+# test-seal dev-dependency went with it. The rule's pattern matches no file under either crate, so
+# the entry is not repointed (a row on a path with no finding would only excuse a future forgery);
+# it is struck, and both paths are held to the rule. The seal debt that remains is the two below.
 known_sites = [
   "crates/busbar-plane-streaming/src/tests/harness.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
-  "crates/busbar-kernel-egress/src/tests/harness.rs",
 ]
 
 # ── 22. forbid-unsafe ────────────────────────────────────────────────────────────────────────────

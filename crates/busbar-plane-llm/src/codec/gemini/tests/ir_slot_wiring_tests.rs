@@ -424,9 +424,11 @@ fn ir04_to_07_unsupported_slots_are_dropped_and_reported() {
     let out = gw().write_request(&ir);
     assert_eq!(out.get("serviceTier"), Some(&json!("priority")), "{out}");
     assert_eq!(out.get("store"), Some(&json!(true)), "{out}");
+    // `store` is carried (asserted just above), and its wire key is spelled the same as the IR
+    // slot, so it cannot also be on this never-written list; `service_tier` stays here as the
+    // snake_case spelling Gemini must never put on the wire.
     for k in [
         "service_tier",
-        "store",
         "safety_identifier",
         "prompt_cache_key",
         "verbosity",
