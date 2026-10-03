@@ -32,13 +32,23 @@
 //! is built, persistent, outside `max_inflight`, recycled when the driver goes. [`PlaneDriver::ticks`]
 //! runs the instance's lifecycle `tick` on it at each `next_tick_ns` the last answered (the first at
 //! once; `0` = no more), so a conn read or a host service that pends inside `tick` is woken through
-//! `drive`. A session's unsolicited output (R-B) wakes the same ticket.
+//! `drive`. A session's unsolicited output (R-B) wakes the same ticket: [`PlaneDriver::drives`]
+//! wakes each session its `drive` names, and the session collects its output.
+//!
+//! DUPLEX SESSIONS (K6): [`PlaneUnits::session`], after `open_unit` admitted the unit.
 //!
 //! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
 //! ([`KernelServices::admit`]) from what it declares ([`PlaneCalls::declared`], its Statement tail)
 //! and its configured section, so its caller-scoped services (`records.*`, `sign`, `trust.*`)
-//! answer; right before each `tick` it runs the kernel's own tick ([`KernelServices::mark_due`],
-//! [`KernelServices::flush_tick`]), so the plane's `trust.due` sees the marks.
+//! answer; right before each `tick` it marks what is due ([`KernelServices::mark_due`]), so the
+//! plane's `trust.due` sees the marks.
+//!
+//! THE INSTANCE'S RECORD WRITES (ruling H2 U10): a piece's `RecordWrite`s join the kernel's one
+//! write-behind batcher ([`crate::host_records::WriteBehind`]) and the instance reads them at once
+//! through the pending-records overlay; the piece completes only once the store took every one.
+//! The batcher's cadence is not the plane's tick schedule: [`KernelServices::flushes`] restarts a
+//! stalled flush every second, and a reload never waits on a store write (the unit waiting on it is
+//! cancelled; the write itself runs on).
 
 mod cancel;
 mod epoch;
@@ -48,6 +58,7 @@ mod needs;
 mod route;
 pub mod serve;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::{
@@ -66,7 +77,7 @@ use busbar_contract::caps::{
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
@@ -75,7 +86,7 @@ pub use far_end::{
 };
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
-pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
+pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, SessionCaller};
 
 use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
@@ -183,6 +194,8 @@ pub struct PlaneDriver {
     records: Option<(Arc<KernelServices>, Caller)>,
     driver: Option<Ticket>,
     services: Arc<KernelServices>,
+    /// The open duplex sessions, by stream: what wakes each when `drive` names it (R-B).
+    sessions: Mutex<HashMap<u64, Arc<Notify>>>,
 }
 
 impl Drop for PlaneDriver {
@@ -243,6 +256,7 @@ impl PlaneDriver {
             records: None,
             driver,
             services,
+            sessions: Mutex::default(),
         })
     }
 
@@ -261,7 +275,6 @@ impl PlaneDriver {
                 tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
             }
             self.services.mark_due();
-            self.services.flush_tick();
             match self.calls.tick(driver, self.calls.now_ns()).await {
                 Some(next) if next != 0 => at = next,
                 _ => return,
@@ -597,9 +610,9 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
             let caller_ref = st.caller_ref.clone();
             drop(st);
-            run.lend_unit(self.arrival.claim, dialect, &caller_ref);
+            run.lend_unit(self.arrival.claim, dialect, &caller_ref, 0);
         }
-        let end = self.attempts(&mut run).await;
+        let end = self.attempts(&mut run, None).await;
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
             route::End::Failed(reason) => StepAnswer::refuse(token, Refusal::new(reason)),

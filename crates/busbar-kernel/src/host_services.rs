@@ -698,13 +698,29 @@ impl KernelServices {
         self.trust.mark_due((self.wall_ms)());
     }
 
-    /// The kernel tick, every [`crate::host_records::FLUSH_INTERVAL`]: start a flush of the queued
-    /// record writes when none runs, so writes a refused flush left queued still reach the store.
+    /// The kernel's flush tick, run by [`Self::flushes`] every [`crate::host_records::FLUSH_INTERVAL`]:
+    /// start a flush of the queued record writes when none runs, so writes a refused flush left
+    /// queued still reach the store.
     pub fn flush_tick(&self) {
         if let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool()) {
             if self.batcher.start() {
                 self.start_flush(records, pool);
             }
+        }
+    }
+
+    /// THE WRITE-BEHIND CADENCE, for the services' life (ruling H2 U10: a tick of at most 1 s):
+    /// [`Self::flush_tick`] every [`crate::host_records::FLUSH_INTERVAL`], the first one interval
+    /// after it starts, whatever any plane's own tick schedule is. A record write whose flush the
+    /// pool refused, with no later write to start another, reaches the store within one interval.
+    /// The composition root runs it once, beside the services it built; it never ends.
+    pub async fn flushes(&self) {
+        let every = crate::host_records::FLUSH_INTERVAL;
+        let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            at.tick().await;
+            self.flush_tick();
         }
     }
 

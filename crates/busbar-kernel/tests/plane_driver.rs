@@ -619,6 +619,11 @@ impl PlaneCalls for Double {
         Box::pin(std::future::ready(Some(next)))
     }
 
+    /// The double holds no session: its `drive` names none.
+    fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
+        Box::pin(std::future::ready(Vec::new()))
+    }
+
     /// The client-drop path: an op held on `ticket` is cancelled "on its worker" and answers the
     /// plane kind's timeout outcome with the disposition (or FAULT when the cancel FAULTs).
     fn drop_client(&self, ticket: Ticket) {
@@ -1014,3 +1019,8 @@ async fn a_due_subject_shows_in_trust_due_after_a_tick() {
         .expect("one tick");
     assert_eq!(due(&services), b"peer".to_vec(), "due after the tick");
 }
+
+// ── write-behind (ruling H2 U10) ────────────────────────────────────────────────────────────────
+
+#[path = "support/plane_driver_write_behind.rs"]
+mod write_behind;

@@ -661,3 +661,12 @@ fn a_fee_unit_floor_count_keeps_the_fee() {
     r.money.settle_end(UnitKey::new(1), 503);
     assert_eq!(usage(&r).1, 5, "a floor fee unit keeps the fee");
 }
+
+/// THE SESSION MONEY GUARD (ARCHITECT 2026-09-30: K6's refusing session defaults stand until
+/// K6-4). The production money seam states no session money yet, so it refuses every duplex
+/// session at its open, as `Unpriced`: no session runs unbilled. K6-4 turns this test over.
+#[test]
+fn the_production_money_seam_refuses_a_session_until_its_money_is_stated() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    assert_eq!(r.money.session_opened(&ctx(1)), Err(ReasonCode::Unpriced));
+}
