@@ -379,19 +379,6 @@ class = "port"
 reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
 
 [[script]]
-path = "scripts/secret-accessor-seal-witness.sh"
-class = "port"
-reason = "the #40 secret-accessor seal witness: becomes an xtask gate"
-
-[[script]]
-path = "scripts/secret-hygiene-gate.sh"
-class = "port"
-reason = "the #53 secret-hygiene scan (owner-locked release blocker): becomes an xtask gate"
-path = "scripts/release-script-lint.sh"
-class = "retire"
-reason = "the qa soak, struck 2026-10-01 (d2db89fa93); the service-images gate row images|release-check-tags still scans it, so it goes with that row"
-
-[[script]]
 path = "scripts/signing-gate.sh"
 class = "port"
 reason = "plugin-ci.yml's signing gate: becomes an xtask fleet subcommand the reusable workflow calls"
