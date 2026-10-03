@@ -14,7 +14,6 @@ pub(crate) fn moved_sources() -> &'static [&'static str] {
         "src/ir/lane_caps.rs",
         "src/config/providers.rs",
         "src/proto/installed.rs",
-        "src/sigv4.rs",
     ]
 }
 // The monolith's root tests reached every crate-root item through `use super::*`. The split put
