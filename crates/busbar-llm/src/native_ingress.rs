@@ -116,7 +116,8 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
                 Err(resp) => return *resp,
                 Ok(admitted) => admitted,
             };
-        let charged = admit.is_some();
+        // The admission's own handle, held to the terminal: its charge is what a non-2xx refunds.
+        let charged = admit.clone();
         // A budget downgrade re-pooled the admission: dispatch through the pool the charge actually
         // landed on, not the one the client asked for.
         let model = downgraded.as_deref().unwrap_or(req.destination);
@@ -152,7 +153,7 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
                     req.started,
                     req.charged_at,
                     resp,
-                    charged,
+                    charged.as_ref(),
                 );
             };
 
@@ -235,7 +236,7 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
             req.started,
             req.charged_at,
             resp,
-            charged,
+            charged.as_ref(),
         )
     }
 

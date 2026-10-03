@@ -166,7 +166,7 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
         charged_at,
     };
     let admitted = admit(&ctx, &[]);
-    assert!(admitted.charged, "the step's charge landed too");
+    assert!(admitted.charged.is_some(), "the step's charge landed too");
     assert!(
         admitted.refusal.is_none(),
         "an admitted unit renders nothing"
@@ -278,7 +278,7 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
         charged_at,
     };
     let refused = admit(&ctx, &[]);
-    assert!(!refused.charged, "nothing was charged");
+    assert!(refused.charged.is_none(), "nothing was charged");
     assert!(refused.sink.is_none(), "no admission, so no meter half");
     assert_eq!(
         refused

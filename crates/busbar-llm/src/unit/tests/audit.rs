@@ -122,7 +122,7 @@ async fn audit_matches_the_live_admitted_terminal() {
         Instant::now(),
         at,
         (StatusCode::BAD_GATEWAY, "upstream said no").into_response(),
-        true,
+        None,
     );
 
     let unit_gov = busbar_contract::records::PlaneRequestCtx {
@@ -133,7 +133,7 @@ async fn audit_matches_the_live_admitted_terminal() {
         &token,
         &ctx(&host, &unit_gov, "p", at),
         Served::of((StatusCode::BAD_GATEWAY, "upstream said no").into_response()),
-        true,
+        None,
     );
     assert_eq!(
         unit.decision
@@ -260,7 +260,7 @@ async fn the_sealed_end_is_the_taps_where_there_is_one_and_the_status_where_ther
             "no tap, non-2xx: still the status",
         ),
     ] {
-        let audited = audit(&token, &ctx(&host, &gov, "p", at), Served::of(resp), true);
+        let audited = audit(&token, &ctx(&host, &gov, "p", at), Served::of(resp), None);
         let facts = audited
             .decision
             .into_result(&seal)

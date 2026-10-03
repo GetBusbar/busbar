@@ -54,19 +54,13 @@ impl FeeEras {
         }
     }
 
-    /// One billable request refunded: taken from the NEWEST dated era still holding one, or from the
-    /// undated remainder when none does.
-    ///
-    /// A refund names no era — the request's own admission instant is not carried to its refund —
-    /// and the newest era is where a request that failed just now was most recently admitted. The
-    /// caller decrements the bucket's total in the same step, so the remainder never goes negative.
-    pub fn refund(&mut self) {
-        if let Some((_, n)) = self
-            .0
-            .iter_mut()
-            .filter(|(_, n)| *n > 0)
-            .max_by_key(|(e, _)| *e)
-        {
+    /// One billable request refunded from the era it was ADMITTED under: `era` is the admission's
+    /// own, carried from its charge to its refund, so the fee that comes back is the one that request
+    /// was charged — never another era's. Era zero, or an era this split no longer holds a request
+    /// of, is the undated remainder. The caller decrements the bucket's total in the same step, so
+    /// the remainder never goes negative.
+    pub fn refund(&mut self, era: u64) {
+        if let Some((_, n)) = self.0.iter_mut().find(|(e, n)| *e == era && *n > 0) {
             *n -= 1;
         }
     }

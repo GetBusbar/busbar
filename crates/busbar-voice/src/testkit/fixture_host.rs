@@ -791,7 +791,7 @@ impl AdmissionHost for FixtureHost {
         _started: std::time::Instant,
         _charged_at: u64,
         resp: axum::response::Response,
-        _charged: bool,
+        _charged: Option<&AdmitHandle>,
     ) -> axum::response::Response {
         resp
     }

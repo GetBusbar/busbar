@@ -105,7 +105,7 @@ fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
         Instant::now(),
         0,
         StatusCode::BAD_GATEWAY.into_response(),
-        grant.is_some(),
+        grant.as_ref().map(crate::governance::AdmitGrant::charge),
     );
     assert_eq!(
         terminals(proto) - before,
@@ -140,7 +140,7 @@ fn each_finish_door_is_one_terminal() {
         Instant::now(),
         0,
         StatusCode::OK.into_response(),
-        false,
+        None,
     );
     assert_eq!(terminals(proto) - before, 2, "the charged door");
 }

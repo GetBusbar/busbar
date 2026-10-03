@@ -993,7 +993,7 @@ async fn drive(
         &Pass::mint(seal),
         &audit_ctx(host, gov, &effective, started, charged_at),
         audit::Served::of(response),
-        charged,
+        charged.as_ref(),
     );
     // The sealed end, read back at the moment the terminal really runs — which for a stream is
     // while the body is still flowing, so it is the client-facing status the terminal names and
@@ -1207,7 +1207,7 @@ async fn a_stream_audited_at_its_end_seals_the_class_the_tap_reported() {
             &Pass::mint(&seal),
             &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
             audit::Served::of(drained),
-            true,
+            None,
         );
         let facts = audited
             .decision
@@ -1560,7 +1560,7 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         &destinations,
     );
     assert!(
-        admitted.charged,
+        admitted.charged.is_some(),
         "the governed fixture is admitted with the charge landed, or this pins nothing"
     );
     let _admission = walk.take_admission(admitted);
@@ -1936,7 +1936,7 @@ async fn route_and_audit_are_on_the_token_seam() {
         &token,
         &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
         audit::Served::of(response),
-        true,
+        None,
     );
     let status = audited.response.as_response().status().as_u16();
     let _ = axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX).await;
