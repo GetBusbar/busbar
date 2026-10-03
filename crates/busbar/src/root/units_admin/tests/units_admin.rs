@@ -3937,7 +3937,7 @@ fn priced_at(
     nanos_of_exact(tally.exact()?)
 }
 
-/// **A CORRECTION OF ONE CELL REPRICES THAT CELL AND NOTHING ELSE** (MONEY-AUDIT D-1; #79 "a
+/// **A CORRECTION OF ONE CELL REPRICES THAT CELL AND NOTHING ELSE** (#79 "a
 /// correction reprices exactly its window", #42 "never a silent 0", #44).
 ///
 /// THE DEFECT THIS CLOSES. The corrected card was built from the cells the body named ALONE, with

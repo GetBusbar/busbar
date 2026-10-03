@@ -386,7 +386,7 @@ fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
     );
 }
 
-/// **A CORRECTED CARD IS THE CARD WITH THE NAMED CELLS SET** (MONEY-AUDIT D-1): every other lane,
+/// **A CORRECTED CARD IS THE CARD WITH THE NAMED CELLS SET** (#79): every other lane,
 /// class and plane card and the unnamed fee stay; a named fee replaces the fee; a cell on a plane
 /// with no present card, or naming no lane, has nowhere to land.
 #[test]

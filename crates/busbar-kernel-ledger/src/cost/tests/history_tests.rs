@@ -329,7 +329,7 @@ fn a_snapshot_above_the_head_sees_the_whole_history() {
     assert_eq!(above.card_at(120).expect("covered").0, HistorySeq(2));
 }
 
-/// **THE ONE CARD A CORRECTION'S WINDOW RESOLVES TO** (MONEY-AUDIT D-1): the entry pricing every
+/// **THE ONE CARD A CORRECTION'S WINDOW RESOLVES TO** (#79): the entry pricing every
 /// instant of the window, or nothing when a second entry resolves part of it or the window runs past
 /// the entry's end.
 #[test]
