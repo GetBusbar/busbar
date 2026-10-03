@@ -700,8 +700,10 @@ name = "busbar-hook-test-plugin"
 version = "1.5.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-loader",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

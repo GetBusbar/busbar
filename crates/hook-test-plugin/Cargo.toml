@@ -22,3 +22,11 @@ tracing = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# THE KIND'S CONFORMANCE (`tests/conformance.rs`, the loader's only user here): the compiled-in door
+# and this crate's own cdylib, each admitted through the hook axis of the one loader and called
+# through the one dispatcher (compiled-in is dropped-in). Any other file naming the loader makes this
+# an ungranted test edge.
+busbar-plugin-loader = { path = "../plugin-loader" }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }

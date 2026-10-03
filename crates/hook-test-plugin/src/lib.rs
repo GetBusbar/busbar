@@ -310,12 +310,19 @@ impl HookOpen for Open {
 /// tests grant every combination).
 const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
 
+/// The plugin's Statement name (the module a hook's `plugin:` ref names).
+pub const NAME: &str = "busbar-hook-test-plugin";
+
+/// The plugin's Statement: its name, its tail and a 64-op in-flight cap. `pub` so the conformance
+/// suite's red-arm door states exactly what this one does.
+pub const STATEMENT: busbar_contract::abi::mechanism::door::Statement = statement_with_tail(
+    busbar_contract::abi::sdk::door::statement(NAME, "1.5.0", 64),
+    TAIL,
+);
+
 busbar_contract::hook_door! {
     open: Open,
-    statement: statement_with_tail(
-        busbar_contract::abi::sdk::door::statement("busbar-hook-test-plugin", "1.5.0", 64),
-        TAIL,
-    ),
+    statement: STATEMENT,
 }
 
 busbar_contract::export_door!(door);
