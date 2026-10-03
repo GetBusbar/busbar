@@ -12,8 +12,9 @@
 //!     "malformed": <resolve settings that are not a reference: FAILED, INVALID> } }
 //! ```
 //!
-//! Every step is one ticket-less crossing of the secret table, but the resolve after `close`
-//! (a closed instance answers FAULT without a crossing) and `ready` ([`super::ready_step`]).
+//! Every step is one ticket-less crossing of the secret table, but those the HOST answers without
+//! one (`Instance::refuse`): a resolve before `open`, a second `open`, a resolve after `close`
+//! (FAULT); the host-side reads (`facts`, `own leases`); and `ready` ([`super::ready_step`]).
 
 use busbar_contract::abi::mechanism::call::{Outcome, BLOB_SECRET};
 use busbar_contract::abi::secret::{self, ResolveIn, ResolveOut};
@@ -101,9 +102,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         });
     }
     r.line("validate", 1, || called(&validate(&p, &settings)));
-    r.line("resolve unopened", 1, || resolve(&p, &known, &material).0);
+    // The host refuses an op on an unopened instance before the crossing (`Instance::refuse`).
+    r.line("resolve unopened", 0, || resolve(&p, &known, &material).0);
     r.line("open", 1, || called(&open(&p, &settings)));
-    r.line("open again", 1, || called(&open(&p, &settings)));
+    // The host refuses a second `open` of an open instance before the crossing.
+    r.line("open again", 0, || called(&open(&p, &settings)));
     ready_step(&mut r, s, &p, &d);
     let first = r.step("resolve known", 1, || resolve(&p, &known, &material));
     let second = r.step("resolve known again", 1, || resolve(&p, &known, &material));
