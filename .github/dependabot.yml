@@ -1,24 +1,28 @@
-# Dependabot configuration — keeps dependencies current with automated PRs.
-# Security updates are enabled separately in the repo's security settings.
+# Version updates are monthly and grouped into one PR per ecosystem.
+# Security updates are separate and run whenever an advisory is published.
 version: 2
 updates:
-  # Rust crate dependencies (Cargo.toml / Cargo.lock).
-  - package-ecosystem: "cargo"
-    directory: "/"
-    target-branch: "dev"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-    commit-message:
-      prefix: "deps"
-
-  # GitHub Actions used by the CI / release / pages / security workflows.
-  # A compromised action is itself a supply-chain vector, so these are tracked too.
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    target-branch: "dev"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-    commit-message:
-      prefix: "ci"
+- package-ecosystem: cargo
+  directory: /
+  target-branch: dev
+  schedule:
+    interval: monthly
+  open-pull-requests-limit: 10
+  commit-message:
+    prefix: deps
+  groups:
+    all:
+      patterns:
+      - '*'
+- package-ecosystem: github-actions
+  directory: /
+  target-branch: dev
+  schedule:
+    interval: monthly
+  open-pull-requests-limit: 10
+  commit-message:
+    prefix: ci
+  groups:
+    all:
+      patterns:
+      - '*'
