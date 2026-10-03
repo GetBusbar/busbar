@@ -295,13 +295,11 @@ plane-decisions-door = ["plane-decisions"]
 # (#2, #30; THE DESIGN section 11.4). It carries `proto-llm`, whose row stays linked and answers
 # every arrival the serve path does not hand the door.
 llm-on-driver = ["proto-llm", "dep:busbar-plane-llm"]
-# THE STREAMING PLANE THROUGH ITS DOOR, the streaming fold's development-only switch
-# (BUSBAR-1.6.0.md Part 3 section 12, "The switch"). TRANSITIONAL: deleted with `busbar-voice`,
-# when the streaming fold completes. Never in `default`. On, the plane's memory-ABI door
-# (`busbar_plane_streaming::door::door`) is a `plane-door` row, bound through the loader's one load
-# beside every dropped-in plane door, the same table as its dropped-in cdylib (#2, #30; THE DESIGN
-# section 11.4). It carries `plane-streaming`, whose `busbar-voice` row stays linked and serves every
-# streaming route until the serve path hands the door the arrivals it takes.
+# The next plane's development-only switch, the same shape as the one above (BUSBAR-1.6.0.md Part 3
+# section 12, "The switch"). TRANSITIONAL: deleted when its fold completes; never in `default`. On,
+# the plane's memory-ABI door is a `plane-door` row bound through the loader's one load beside every
+# dropped-in plane door (#2, #30; THE DESIGN section 11.4), and the legacy row it carries keeps
+# serving every route until the serve path hands the door the arrivals it takes.
 streaming-on-driver = ["plane-streaming"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE KIND'S PIECE ANSWER, PLUGIN SIDE: what an `on_piece` answer owes the host's reply
+//! THIS PLANE'S PIECE ANSWER: what an `on_piece` answer owes the host's reply
 //! buffer, and the one settle of the answer's field, unit and arena buffers.
 //!
 //! `BUSBAR-1.6.0.md` Part 3, section 12, "The route pump": a full reply buffer answers `more = 1`;
@@ -9,11 +9,12 @@
 //! bytes ([`is_recall`]). An answer that does not fit its field, unit or arena buffer is short as a
 //! whole ([`settle`]): the slot answers FAILED, and the kernel re-calls with the same piece and room.
 //!
-//! One home for every plane door: a plane keeps an [`Owed`] per unit and pays it across the
-//! re-calls, so the backpressure rule (`EMIT_DONE` only with the last byte) is written once.
+//! The door keeps an [`Owed`] per unit and pays it across the re-calls, so the backpressure rule
+//! (`EMIT_DONE` only with the last byte) is written once in this plane. Each plane door carries
+//! this logic today; one SDK home for all of them is 1.6.0-QUESTIONS.md PIECE-HOME.
 
-use crate::abi::plane::{OnPieceIn, OnPieceOut, OutField, UnitCount, EMIT_DONE};
-use crate::abi::sdk::{HostBuf, Lent, Out};
+use busbar_contract::abi::plane::{OnPieceIn, OnPieceOut, OutField, UnitCount, EMIT_DONE};
+use busbar_contract::abi::sdk::{HostBuf, Lent, Out};
 
 /// Whether `input` is the kernel's re-call after a `more = 1` answer: no bytes, no flags and no
 /// attempt.
