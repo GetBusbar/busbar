@@ -71,13 +71,14 @@ pub const ROW_DISCOVERY: &str = "workspace-deps:discovery";
 /// one is a reviewable source edit.
 pub const MIN_MEMBERS: usize = 8;
 pub const MIN_INHERITED: usize = 40;
-/// 30, not 40. The crate fold's planned end state is 35 crates under `crates/`, 34 if
+/// 29 (ARCHITECT 2026-10-03, Law 9 arm-at-today: the measured count after hooks-ranking left, never lower
+/// than measured; 14 when P5 is done). Before it: 30, not 40. The crate fold's planned end state is 35 crates under `crates/`, 34 if
 /// `busbar-core-connsec` folds, and the architecture's crate roster names 33 — at 40 this row went RED at 39 crates, i.e. at
 /// fold #10, against a planned shrink. The floor guards against a BLIND walk (a moved or emptied
 /// `crates/`, a filter that stopped matching), which finds a handful or nothing; it is not a
 /// ratchet on the roster. 30 sits three under the smallest roster variant, so no planned fold
 /// trips it, while any walk that loses more than a sixth of the smallest roster is still RED.
-pub const MIN_CRATE_MANIFESTS: usize = 30;
+pub const MIN_CRATE_MANIFESTS: usize = 29;
 
 const SECTIONS: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
 
