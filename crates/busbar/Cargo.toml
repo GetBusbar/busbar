@@ -519,3 +519,10 @@ crate-type = ["cdylib"]
 [[bench]]
 name = "hook_path"
 harness = false
+
+# The linked door this binary proves is the export axis's optional edge; without the feature there is
+# no linked row to prove, so the target is not built.
+[[test]]
+name = "traces_stream_both_doors"
+path = "tests/traces_stream_both_doors.rs"
+required-features = ["export-otlp"]

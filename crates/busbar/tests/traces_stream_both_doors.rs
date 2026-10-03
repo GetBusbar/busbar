@@ -29,9 +29,6 @@
 //! This is its own test binary because the export axis, the opened sinks and the egress carrier are
 //! process-global, set once — as they are at boot.
 
-// The linked door is the `export-otlp` feature's optional edge; without it there is no linked row to prove.
-#![cfg(feature = "export-otlp")]
-
 mod common;
 
 use busbar_contract::abi::cold::export::{HostResult, HttpRequest, HttpResponse};
