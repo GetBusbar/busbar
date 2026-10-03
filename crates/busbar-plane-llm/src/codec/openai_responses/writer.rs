@@ -1574,8 +1574,9 @@ impl ProtocolWriter for ResponsesWriter {
                     if text.is_empty() {
                         continue;
                     }
-                    let annotations =
+                    let mut annotations =
                         super::super::url_citation_wire::url_annotations(text, 0, citations);
+                    annotations.extend(super::file_annotations(citations));
                     let logprobs =
                         write_responses_part_logprobs(pending_logprobs.take().unwrap_or(&[]));
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
@@ -1668,8 +1669,18 @@ impl ProtocolWriter for ResponsesWriter {
                 // nothing to project here and nothing is lost by omitting these.
                 crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. }
-                | crate::codec::ir::IrBlock::Json(_)
-                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
+                | crate::codec::ir::IrBlock::Json(_) => {}
+                // A provider-run web search (DF-MAP item 2) is a `web_search_call` output item.
+                crate::codec::ir::IrBlock::HostedToolRecord {
+                    call_id,
+                    status,
+                    results,
+                    ..
+                } => output_arr.push(super::write_web_search_call(
+                    call_id.as_deref(),
+                    status.as_deref(),
+                    results,
+                )),
             }
         }
 

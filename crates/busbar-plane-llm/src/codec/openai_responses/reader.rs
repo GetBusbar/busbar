@@ -1557,10 +1557,13 @@ impl ProtocolReader for ResponsesReader {
                                         // `annotations` is a sibling key on this same content-part
                                         // object. See `read_url_annotations` for why offsets are
                                         // deliberately not carried.
-                                        let citations = block_item
+                                        let mut citations = block_item
                                             .get(keys::ANNOTATIONS)
                                             .map(super::super::url_citation_wire::read_url_annotations)
                                             .unwrap_or_default();
+                                        citations.extend(super::read_file_annotations(
+                                            block_item.get(keys::ANNOTATIONS),
+                                        ));
                                         // RSP-03: the part's token `logprobs` join the response's
                                         // one IR logprob run, in part order — the writer's inverse
                                         // attaches that run to the first text part.
@@ -1679,6 +1682,11 @@ impl ProtocolReader for ResponsesReader {
                         }
                     }
 
+                    // A provider-run WEB SEARCH (DF-MAP item 2): the IR's hosted web-search record,
+                    // its sources as results.
+                    super::ITEM_TYPE_WEB_SEARCH_CALL => {
+                        content.push(super::read_web_search_call(item));
+                    }
                     // A HOSTED-tool output item (`web_search_call`, `file_search_call`,
                     // `code_interpreter_call`, `computer_call`, `mcp_call`, …). These carry the
                     // provider-side execution of a built-in tool (an `id` and a `status`, plus
@@ -1821,6 +1829,7 @@ impl ProtocolReader for ResponsesReader {
 
             request_echo: None,
             stop_detail: None,
+            safety: super::read_moderation(body),
             ..Default::default()
         })
     }

@@ -355,6 +355,8 @@ const STATUS_INCOMPLETE: &str = "incomplete";
 // gap recurs.
 pub const ITEM_TYPE_FUNCTION_CALL: &str = "function_call";
 const ITEM_TYPE_MESSAGE: &str = keys::MESSAGE;
+/// A provider-run web search's output item.
+const ITEM_TYPE_WEB_SEARCH_CALL: &str = "web_search_call";
 pub const ITEM_TYPE_REASONING: &str = keys::REASONING;
 
 /// Content part `type` values on the `/v1/responses` wire.
@@ -3196,3 +3198,146 @@ mod ir_round3_tests;
 #[cfg(test)]
 #[path = "tests/usage_census_tests.rs"]
 mod usage_census_tests;
+
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;
+
+// ── DF-MAP answer slots (ARCHITECT rulings 2026-10-02, items 2 and 5) ──────────────────────────────
+
+const ACTION: &str = "action";
+const SOURCES: &str = "sources";
+const SEARCH: &str = "search";
+const FILE_CITATION: &str = "file_citation";
+const CONTAINER_FILE_CITATION: &str = "container_file_citation";
+const FILE_PATH: &str = "file_path";
+const FILE_ID: &str = "file_id";
+const FILENAME: &str = "filename";
+const INDEX: &str = "index";
+
+/// A `web_search_call` output item -> [`crate::codec::ir::IrBlock::HostedToolRecord`]: its `id`, its
+/// `status`, and its search action's `sources[].url` as results (the query has no IR member).
+fn read_web_search_call(item: &serde_json::Value) -> crate::codec::ir::IrBlock {
+    let text = |k: &str| item.get(k).and_then(|v| v.as_str()).map(String::from);
+    let results = item
+        .get(ACTION)
+        .and_then(|a| a.get(SOURCES))
+        .and_then(|s| s.as_array())
+        .map(|sources| {
+            sources
+                .iter()
+                .filter_map(|src| {
+                    Some(crate::codec::ir::IrSearchResult {
+                        url: src.get(keys::URL)?.as_str()?.to_string(),
+                        title: None,
+                        snippet: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::codec::ir::IrBlock::HostedToolRecord {
+        kind: crate::codec::ir::IrHostedToolKind::WebSearch,
+        call_id: text(keys::ID),
+        status: text(keys::STATUS),
+        results,
+    }
+}
+
+/// A hosted web-search record -> a `web_search_call` output item (`id` synthesized when the record
+/// carries none, `status` `completed` when it names none, its results as the search action's
+/// `sources`).
+fn write_web_search_call(
+    call_id: Option<&str>,
+    status: Option<&str>,
+    results: &[crate::codec::ir::IrSearchResult],
+) -> serde_json::Value {
+    let sources: Vec<serde_json::Value> = results
+        .iter()
+        .map(|r| serde_json::json!({ (keys::TYPE): keys::URL, (keys::URL): r.url }))
+        .collect();
+    serde_json::json!({
+        (keys::TYPE): ITEM_TYPE_WEB_SEARCH_CALL,
+        (keys::ID): call_id.map_or_else(|| synthesize_item_id(ITEM_ID_PREFIX_WEB_SEARCH), String::from),
+        (keys::STATUS): status.unwrap_or(STATUS_COMPLETED),
+        (ACTION): { (keys::TYPE): SEARCH, (SOURCES): sources },
+    })
+}
+
+/// The id prefix of a synthesized web-search item.
+const ITEM_ID_PREFIX_WEB_SEARCH: &str = "ws";
+
+/// The file annotations of an `output_text` part (`file_citation`, `container_file_citation`,
+/// `file_path`) -> IR citations carrying [`crate::codec::ir::IrFileLocation`]; url citations are
+/// read by `url_citation_wire`.
+fn read_file_annotations(
+    annotations: Option<&serde_json::Value>,
+) -> Vec<crate::codec::ir::IrCitation> {
+    let Some(items) = annotations.and_then(|a| a.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|a| {
+            let kind = a.get(keys::TYPE)?.as_str()?;
+            if ![FILE_CITATION, CONTAINER_FILE_CITATION, FILE_PATH].contains(&kind) {
+                return None;
+            }
+            let text = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
+            Some(crate::codec::ir::IrCitation {
+                kind: Some(kind.to_string()),
+                file: Some(crate::codec::ir::IrFileLocation {
+                    file_id: text(FILE_ID),
+                    filename: text(FILENAME),
+                    index: a.get(INDEX).and_then(|v| v.as_i64()),
+                }),
+                raw: Some(a.clone()),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// The IR file citations of a text block as Responses `file_citation` annotations (a citation that
+/// arrived as a container or path annotation keeps its own kind, from `raw`).
+fn file_annotations(citations: &[crate::codec::ir::IrCitation]) -> Vec<serde_json::Value> {
+    citations
+        .iter()
+        .filter_map(|c| {
+            let f = c.file.as_ref()?;
+            if let Some(raw) = &c.raw {
+                return Some(raw.clone());
+            }
+            let mut a = serde_json::Map::new();
+            a.insert(keys::TYPE.to_string(), serde_json::json!(FILE_CITATION));
+            if let Some(id) = &f.file_id {
+                a.insert(FILE_ID.to_string(), serde_json::json!(id));
+            }
+            if let Some(name) = &f.filename {
+                a.insert(FILENAME.to_string(), serde_json::json!(name));
+            }
+            a.insert(INDEX.to_string(), serde_json::json!(f.index.unwrap_or(0)));
+            Some(serde_json::Value::Object(a))
+        })
+        .collect()
+}
+
+const MODERATION: &str = "moderation";
+const MODERATION_INPUT: &str = "input";
+const MODERATION_OUTPUT: &str = "output";
+const MODERATION_CATEGORIES: &str = "categories";
+
+/// A response's `moderation.{input,output}` (each a `moderation_result`) -> the IR's safety verdicts
+/// (DF-MAP item 1): one flagged verdict per category set `true`; scores do not cross.
+fn read_moderation(body: &serde_json::Value) -> Vec<crate::codec::ir::IrSafetyVerdict> {
+    [MODERATION_INPUT, MODERATION_OUTPUT]
+        .into_iter()
+        .flat_map(|side| {
+            crate::codec::ir::IrSafetyVerdict::flagged_categories(
+                body.get(MODERATION)
+                    .and_then(|m| m.get(side))
+                    .and_then(|r| r.get(MODERATION_CATEGORIES)),
+            )
+        })
+        .collect()
+}
