@@ -550,8 +550,21 @@ fn a_same_dialect_answer_carrying_an_unknown_member_reaches_the_caller_byte_iden
     }
 }
 
+/// One instant for the whole process: a relay timed on it reports a stream's latency as 0 however
+/// long the relay took.
+fn stopped_clock() -> std::time::Instant {
+    static AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *AT.get_or_init(std::time::Instant::now)
+}
+
 /// A stream from a far end of every dialect reaches a caller of every dialect whole, whatever the
 /// piece boundaries, and its usage is read at the end.
+///
+/// ONE CLOCK FOR BOTH RELAYS. A Bedrock caller's `metadata` frame reports the stream's real elapsed
+/// `metrics.latencyMs` (1.5.5 bytes), so two relays of one stream on the wall clock answer
+/// different bytes whenever they straddle a millisecond (bedrock<-responses, latencyMs 1 vs 0, on a
+/// loaded runner: merge-queue run 37136423381). The byte equality below is the piece-boundary claim,
+/// not a race against the clock, so both relays are timed on [`stopped_clock`].
 #[test]
 fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
     let mut checked = 0;
@@ -560,11 +573,11 @@ fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
         assert!(!far.is_empty(), "{egress}");
         for ingress in SIX {
             let whole = relay_all(
-                &mut Relay::new(relay_ctx(ingress, egress, true)),
+                &mut Relay::new_on(relay_ctx(ingress, egress, true), stopped_clock),
                 &far,
                 usize::MAX,
             );
-            let mut r = Relay::new(relay_ctx(ingress, egress, true));
+            let mut r = Relay::new_on(relay_ctx(ingress, egress, true), stopped_clock);
             let pieces = relay_all(&mut r, &far, 7);
             assert!(!whole.is_empty(), "{ingress}<-{egress}");
             if ingress != "responses" && ingress != "anthropic" && ingress != "cohere" {

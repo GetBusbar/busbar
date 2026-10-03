@@ -2114,7 +2114,7 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
         &self,
         event_type: &str,
         data: &mut serde_json::Value,
-        started_at: Option<std::time::Instant>,
+        elapsed_ms: Option<u64>,
     ) {
         // A native ConverseStream `metadata` frame carries a `metrics` object with the stream's real
         // `latencyMs`, and the service model marks it required. Inject the elapsed wall-clock since
@@ -2125,9 +2125,6 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
         if event_type != ET_METADATA {
             return;
         }
-        // u128 -> u64 for JSON; saturate (elapsed never realistically exceeds u64 ms).
-        let elapsed_ms =
-            started_at.map(|start| u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
         ensure_metrics(data, elapsed_ms);
     }
 

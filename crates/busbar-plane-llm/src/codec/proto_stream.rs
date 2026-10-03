@@ -48,6 +48,11 @@ pub struct StreamTranslate {
     /// hard-coded `0` was a detectable tell). Set lazily on the first `feed`. `None` until then (and
     /// for non-Bedrock ingress, where it is never read).
     started_at: Option<std::time::Instant>,
+    /// The clock `started_at` and the `metrics.latencyMs` it measures are read from:
+    /// [`std::time::Instant::now`] on every serving path. A caller that relays one stream twice and
+    /// compares the bytes (a piece-boundary proof) hands both relays one clock
+    /// ([`StreamTranslate::with_clock`]), so the latency they report cannot differ by scheduling.
+    clock: fn() -> std::time::Instant,
     /// Per-stream, INGRESS-keyed protocol framing state. All protocol-specific stream-shape
     /// decisions the translator used to make inline — the OpenAI per-chunk identity replay +
     /// include_usage trailing-usage un-fold, and the Bedrock messageStop/metadata two-frame deferral
@@ -214,6 +219,7 @@ impl StreamTranslate {
             egress_eventstream,
             ingress_eventstream,
             started_at: None,
+            clock: std::time::Instant::now,
             framing,
             tool_id_remap: ToolIdRemap::default(),
             // The wire-frame paths (`new`/`new_same_proto`) always read ids straight off the egress
@@ -232,6 +238,13 @@ impl StreamTranslate {
             #[cfg(test)]
             parse_calls: std::cell::Cell::new(0),
         })
+    }
+
+    /// The translator over `clock` instead of [`std::time::Instant::now`] (see the field).
+    #[must_use]
+    pub fn with_clock(mut self, clock: fn() -> std::time::Instant) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Record whether the ORIGINAL client request opted into streaming usage
@@ -727,8 +740,13 @@ impl StreamTranslate {
                 // `application/vnd.amazon.eventstream` frame with valid CRC32. Per-frame protocol metrics
                 // (a native usage frame's real latency) are injected through the framing vtable, so this
                 // agnostic emitter names no wire event-type of its own.
+                // u128 -> u64 for JSON; saturate (elapsed never realistically exceeds u64 ms).
+                let elapsed_ms = self.started_at.map(|start| {
+                    let ms = (self.clock)().saturating_duration_since(start).as_millis();
+                    u64::try_from(ms).unwrap_or(u64::MAX)
+                });
                 self.framing
-                    .inject_streaming_metrics(&out_et, &mut out_data, self.started_at);
+                    .inject_streaming_metrics(&out_et, &mut out_data, elapsed_ms);
                 let payload = crate::codec::json::to_vec(&out_data).unwrap_or_default();
                 // Bedrock-INGRESS usage (Change A): the usage carried by this frame was already accumulated
                 // into `last_usage` by `translate_event`/`extract_usage_only` from the structured IR event,
@@ -784,7 +802,7 @@ impl StreamTranslate {
         // frame can report a real `metrics.latencyMs` (elapsed since the stream began) instead of a
         // tell-tale hard-coded 0. Cheap monotonic clock read; only read on the bedrock-ingress path.
         if self.started_at.is_none() {
-            self.started_at = Some(std::time::Instant::now());
+            self.started_at = Some((self.clock)());
         }
         self.buf.extend_from_slice(chunk);
         let mut out: Vec<u8> = Vec::new();
@@ -1388,6 +1406,16 @@ pub fn new_stream_translator(
     egress: &str,
     is_sse: bool,
 ) -> Option<Box<dyn StreamTranslator>> {
+    new_stream_translator_on(ingress, egress, is_sse, std::time::Instant::now)
+}
+
+/// [`new_stream_translator`], its stream timed on `clock` ([`StreamTranslate::with_clock`]).
+pub fn new_stream_translator_on(
+    ingress: &str,
+    egress: &str,
+    is_sse: bool,
+    clock: fn() -> std::time::Instant,
+) -> Option<Box<dyn StreamTranslator>> {
     if !is_sse {
         // A buffered (non-stream) body. Cross-protocol never reaches here (the forward path buffers
         // and translates it before building a stream wrapper); same-protocol is a verbatim relay:
@@ -1399,7 +1427,7 @@ pub fn new_stream_translator(
     } else {
         StreamTranslate::new(ingress, egress)
     }?;
-    Some(Box::new(st))
+    Some(Box::new(st.with_clock(clock)))
 }
 
 /// Rewrite a same-protocol OpenAI SSE frame's bytes with its top-level `usage` member removed,

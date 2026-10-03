@@ -6576,14 +6576,14 @@ fn streaming_metadata_metrics_is_always_present_and_never_overwrites_upstream() 
     );
     // Upstream-supplied: kept.
     let mut data = serde_json::json!({"usage": {}, "metrics": {"latencyMs": 31}});
-    framing.inject_streaming_metrics(ET_METADATA, &mut data, Some(std::time::Instant::now()));
+    framing.inject_streaming_metrics(ET_METADATA, &mut data, Some(0));
     assert_eq!(
         data.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
         Some(31)
     );
     // Only the metadata frame is touched.
     let mut other = serde_json::json!({"stopReason": "end_turn"});
-    framing.inject_streaming_metrics(ET_MESSAGE_STOP, &mut other, Some(std::time::Instant::now()));
+    framing.inject_streaming_metrics(ET_MESSAGE_STOP, &mut other, Some(0));
     assert!(other.get("metrics").is_none());
 }
 

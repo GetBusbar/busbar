@@ -221,6 +221,20 @@ pub fn linked_transport(
 /// test names no transport. A door composing over a layer (the http door example, where a workspace
 /// build emits it) is not a dropped-in wire.
 pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
+    transport_cdylib_under(&[])
+}
+
+/// [`transport_cdylib`] PINNED TO THE WIRE A PROOF NEEDS: the floor door whose key is one of
+/// `keys` (the keys the build's linked layers compose over, read off its linked table); every key
+/// when `keys` is empty.
+///
+/// The target directory holds every transport door any build in it emitted (the pinned plugin
+/// repos' cdylibs, the loader's examples, an in-tree carrier built with its door), and "the newest
+/// floor door" was whichever of them a build happened to touch last: in the dropped-in-tcp row it
+/// was one the layers do not compose over, and the node refused to boot (`transport http composes
+/// over tcp, which no registered transport provides`). Filtered by the key the layers need, the
+/// artifact is the one wire that can sit under them, whatever else was built since.
+pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> {
     // The neutral frame door claims no linked key and no layer composes over it; the proofs that
     // need it name it ([`neutral_frame_door`]).
     let neutral = plugin_library_filename("neutral_frame_door");
@@ -230,6 +244,9 @@ pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
         }
         let (plugin, key) = transport_door(&p)?;
         if !plugin.context::<TransportFacts>()?.composes_over.is_empty() {
+            return None;
+        }
+        if !keys.is_empty() && !keys.contains(&key) {
             return None;
         }
         Some((std::fs::read(&p).ok()?, key))

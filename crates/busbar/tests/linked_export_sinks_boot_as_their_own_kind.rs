@@ -135,11 +135,6 @@ fn linked_sinks() -> Vec<&'static str> {
         .collect()
 }
 
-/// The in-tree transport `cdylib` and the key it declares, found by KIND beside the binary.
-fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
-    common::plugins::transport_cdylib()
-}
-
 /// The transport `cdylib` packed as an UNSIGNED `kind: transport` tarball.
 fn drop_in_wire(dir: &Path, lib: &[u8]) {
     let bytes = common::plugins::pack("transport", "dropped-wire", lib, "acme");
@@ -196,7 +191,7 @@ fn every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary() {
     // THE WIRE UNDER THE DOOR. A build that does not link the tcp row boots only with it dropped
     // in; one that links it would refuse the tarball as a second row on the same key.
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp") {
-        let Some((lib, _)) = transport_cdylib().filter(|(_, key)| *key == "tcp") else {
+        let Some((lib, _)) = common::plugins::transport_cdylib_under(&["tcp"]) else {
             assert!(
                 std::env::var_os("CI").is_none(),
                 "no in-tree tcp transport cdylib is built beside the binary under CI"

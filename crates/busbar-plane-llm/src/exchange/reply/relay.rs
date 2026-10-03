@@ -171,10 +171,18 @@ pub type Parts = (
 /// for its stream as an array.
 #[must_use]
 pub fn parts(ctx: &RelayCtx<'_>) -> Parts {
-    let translate = crate::codec::proto_stream::new_stream_translator(
+    parts_on(ctx, std::time::Instant::now)
+}
+
+/// [`parts`], the stream timed on `clock` (a Bedrock caller's `metrics.latencyMs`): a proof that
+/// relays one stream twice and compares the bytes hands both relays one clock.
+#[must_use]
+pub fn parts_on(ctx: &RelayCtx<'_>, clock: fn() -> std::time::Instant) -> Parts {
+    let translate = crate::codec::proto_stream::new_stream_translator_on(
         ctx.ingress,
         ctx.egress,
         ctx.far_is_stream,
+        clock,
     )
     .map(|mut t| {
         t.set_client_include_usage(ctx.client_include_usage);
@@ -197,7 +205,13 @@ impl Relay {
     /// OPEN the relay.
     #[must_use]
     pub fn new(ctx: RelayCtx<'_>) -> Self {
-        let (translate, json_array) = parts(&ctx);
+        Self::new_on(ctx, std::time::Instant::now)
+    }
+
+    /// OPEN the relay, its stream timed on `clock` ([`parts_on`]).
+    #[must_use]
+    pub fn new_on(ctx: RelayCtx<'_>, clock: fn() -> std::time::Instant) -> Self {
+        let (translate, json_array) = parts_on(&ctx, clock);
         Self::from_parts(
             ctx.ingress,
             ctx.far_is_stream,
