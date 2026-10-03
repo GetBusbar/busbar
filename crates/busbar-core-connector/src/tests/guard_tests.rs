@@ -6,7 +6,8 @@
 use super::*;
 
 use busbar_contract::abi::host::conn::connector::{
-    EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
+    EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    EGRESS_PROVIDER,
 };
 
 /// A class whose destinations come from request data: the private refusal holds.
@@ -181,9 +182,10 @@ fn the_name_arm_decides_before_resolution() {
     assert_eq!(g.judge_name("localhost", C), Ok(None));
 }
 
-/// The 1.5.5 keys that still load: a carve-out NAME admits its metadata answer (as 1.5.5's did),
-/// `allow_all_metadata` admits every metadata name and address, an extra blocked host is refused
-/// as metadata unless the allowlist names it.
+/// The 1.5.5 keys that still load: for a provider dial, a carve-out NAME admits its metadata
+/// answer (as 1.5.5's did) and `allow_all_metadata` admits every metadata name and address; in any
+/// other class neither admits anything. An extra blocked host is refused as metadata unless the
+/// allowlist names it.
 #[test]
 fn the_1_5_5_keys_keep_their_meaning() {
     let legacy = |allow: &[&str], blocked: &[&str], all: bool| {
@@ -198,15 +200,36 @@ fn the_1_5_5_keys_keep_their_meaning() {
     };
     let g = legacy(&["imds.corp.example"], &[], false);
     assert_eq!(
-        g.judge_answer("imds.corp.example", &[ip("169.254.169.254")], C),
+        g.judge_answer("imds.corp.example", &[ip("169.254.169.254")], EGRESS_PROVIDER),
         Ok(())
     );
     let g = legacy(&[], &[], true);
-    assert_eq!(g.judge_name("metadata.google.internal", C), Ok(None));
+    assert_eq!(g.judge_name("metadata.google.internal", EGRESS_PROVIDER), Ok(None));
     assert_eq!(
-        g.judge_answer("x.test", &[ip("169.254.169.254")], C),
+        g.judge_answer("x.test", &[ip("169.254.169.254")], EGRESS_PROVIDER),
         Ok(())
     );
+    let carved = legacy(&["imds.corp.example", "169.254.169.254"], &[], true);
+    for class in [
+        C,
+        EGRESS_OPEN_WEB,
+        EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_LOOPBACK_ALLOWED,
+    ] {
+        assert_eq!(
+            verdict(carved.judge_answer("imds.corp.example", &[ip("169.254.169.254")], class)),
+            Some(DEST_METADATA),
+            "class {class}"
+        );
+        assert_eq!(
+            carved
+                .judge_name("metadata.google.internal", class)
+                .unwrap_err()
+                .verdict,
+            DEST_METADATA,
+            "class {class}"
+        );
+    }
     let g = legacy(&[], &["imds.corp.example", "203.0.113.9"], false);
     assert_eq!(
         g.judge_name("imds.corp.example", C).unwrap_err().verdict,
@@ -216,6 +239,63 @@ fn the_1_5_5_keys_keep_their_meaning() {
         verdict(g.judge_answer("x.test", &[ip("203.0.113.9")], C)),
         Some(DEST_METADATA)
     );
+}
+
+/// A provider's own carve-out (`providers.<p>.allow_metadata_hosts`) admits for a provider dial of
+/// a host that provider's URLs name, and for no other host: another provider's, or one no
+/// provider names.
+#[test]
+fn a_provider_carve_out_admits_only_for_its_own_url_host() {
+    let g = Guard::from_config(&Destinations {
+        block_private_addresses: true,
+        provider_allow: vec![
+            ("https://IMDS-Proxy.test./v1".into(), vec!["169.254.169.254".into()]),
+            ("https://token.test/oauth".into(), vec!["169.254.169.254".into()]),
+            ("https://other.test".into(), Vec::new()),
+        ],
+        ..Destinations::default()
+    })
+    .unwrap();
+    let imds = [ip("169.254.169.254")];
+    for host in ["imds-proxy.test", "token.test"] {
+        assert_eq!(g.judge_answer(host, &imds, EGRESS_PROVIDER), Ok(()), "{host}");
+    }
+    for host in ["other.test", "unnamed.test"] {
+        assert_eq!(
+            verdict(g.judge_answer(host, &imds, EGRESS_PROVIDER)),
+            Some(DEST_METADATA),
+            "{host}"
+        );
+    }
+    assert_eq!(
+        verdict(g.judge_answer("imds-proxy.test", &imds, C)),
+        Some(DEST_METADATA)
+    );
+}
+
+/// A config commit re-publishes the metadata lists to every clone of the guard: a carve-out the
+/// commit removes is refused at the next judgement, and one it adds is admitted.
+#[test]
+fn a_commit_republishes_the_metadata_lists() {
+    let carved = Destinations {
+        block_private_addresses: true,
+        provider_allow: vec![("https://imds-proxy.test".into(), vec!["169.254.169.254".into()])],
+        ..Destinations::default()
+    };
+    let g = Guard::from_config(&carved).unwrap();
+    let held = g.clone();
+    let imds = [ip("169.254.169.254")];
+    assert_eq!(held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER), Ok(()));
+    g.publish(&Destinations {
+        block_private_addresses: true,
+        ..Destinations::default()
+    });
+    assert_eq!(
+        verdict(held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER)),
+        Some(DEST_METADATA)
+    );
+    g.publish(&carved);
+    assert_eq!(held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER), Ok(()));
 }
 
 /// A bad allowlist entry refuses the boot, naming the key, its index and the entry (userinfo

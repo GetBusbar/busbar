@@ -30,6 +30,7 @@ fn private_addresses_are_blocked_by_default() {
     let d = cfg.destinations();
     assert!(d.block_private_addresses);
     assert!(d.allow.is_empty() && d.legacy_allow.is_empty() && d.blocked.is_empty());
+    assert!(d.provider_allow.is_empty());
 }
 
 /// RED: a resolved config carries the allowlist as written, and the 1.5.5 `security` keys still
@@ -51,6 +52,7 @@ fn the_1_5_5_security_keys_feed_the_one_guard() {
             block_private_addresses: true,
             allow: vec!["127.0.0.1".into()],
             legacy_allow: vec!["169.254.169.254".into()],
+            provider_allow: Vec::new(),
             blocked: vec!["imds.corp.example".into()],
             allow_all_metadata: true,
         }

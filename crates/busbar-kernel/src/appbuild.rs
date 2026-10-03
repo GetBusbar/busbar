@@ -477,6 +477,10 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 pub struct InstalledLimits {
     guard: limits::InstallGuard,
     rates: ResolvedRates,
+    /// The destinations this configuration states, raised to the destination judge at the commit
+    /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
+    /// rejected apply must not leave them in force.
+    destinations: config::Destinations,
 }
 
 /// The rates one build resolved, held (owned) until the build's commit raises them.
@@ -493,8 +497,13 @@ impl InstalledLimits {
     /// raise the rate-apply seam with the rates this build resolved — the one moment the
     /// configuration they came from is the one in force.
     pub fn keep(self) {
-        let InstalledLimits { guard, rates } = self;
+        let InstalledLimits {
+            guard,
+            rates,
+            destinations,
+        } = self;
         guard.commit();
+        crate::host_services::destinations_applied(&destinations);
         crate::rate_apply::rates_applied(&crate::rate_apply::RawRates {
             lanes: &rates.lanes,
             units: &rates.units,
@@ -531,6 +540,7 @@ pub fn build_app_from_config(
     // for process-wide limits the same way it holds for everything else, including when it is the
     // PERSIST that refused.
     let limits_guard = limits::InstallGuard::install(&cfg.limits);
+    let destinations = cfg.destinations();
     // The config version this App will carry — computed ONCE up front because hook-transport
     // resolution stamps it into every socket configure preamble (the preamble's
     // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
@@ -2025,6 +2035,7 @@ pub fn build_app_from_config(
         InstalledLimits {
             guard: limits_guard,
             rates: resolved_rates,
+            destinations,
         },
     ))
 }

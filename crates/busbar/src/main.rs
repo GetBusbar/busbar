@@ -819,7 +819,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
     // THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): ONE judge for every outbound
     // connection, built once here, before anything dials: the kernel's `dest.judge` and its own
-    // clients ask it (installed below), and the connector dials by it.
+    // clients ask it (installed below), and the connector dials by it. Its metadata lists are
+    // re-published at every config commit, this boot's own build included.
     let dest = root::connector::dest_judge(&cfg);
     root::connector::install_egress_trust(dest.clone());
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
