@@ -134,11 +134,6 @@ class = "port"
 reason = "the CI cost gate BUSBAR-1.6.0.md #78 requires: becomes a busbar-release subcommand"
 
 [[script]]
-path = "scripts/deferral-words.py"
-class = "port"
-reason = "the #15 banned-word detector: becomes a class of the xtask no-deferral gate"
-
-[[script]]
 path = "scripts/fleet/pin-check.sh"
 class = "port"
 reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"

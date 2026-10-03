@@ -29,6 +29,7 @@ pub mod config_schema;
 pub mod conformance_sync;
 pub mod construction;
 pub mod contract_stateless;
+pub mod deferral_words;
 pub mod denylist_gate;
 pub mod dep_wall;
 pub mod design_bindings;
@@ -2530,6 +2531,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(construction::ConstructionGate),
         summary: "how the tree is BUILT, against BUSBAR-1.6.0.md and qa/construction.toml",
+    },
+    Registration {
+        name: "deferral-words",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(deferral_words::DeferralWordsGate),
+        summary: "DECISIONS #15 banned-word shapes over the 1.6.0 docs (report-only) + the pinned positive control",
     },
     Registration {
         name: "design-docs-allowlist",
