@@ -149,7 +149,7 @@ impl Capacity for MemberPermits {
                     }
                     // A closed queue frees nothing, ever: it leaves the race.
                     Poll::Ready(Err(_)) => {
-                        waits.swap_remove(i);
+                        drop(waits.swap_remove(i));
                     }
                     Poll::Pending => i += 1,
                 }

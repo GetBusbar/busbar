@@ -693,6 +693,8 @@ struct DoorSteps {
     audited: OpClassId,
 }
 
+impl busbar_kernel::plane_driver::DriverSteps for DoorSteps {}
+
 /// The refusal of a door plane's unit past authenticate: no destination is sealed.
 fn unsealed<S: Step>(token: &Pass<S>) -> SeatVerdict<S> {
     SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination))
