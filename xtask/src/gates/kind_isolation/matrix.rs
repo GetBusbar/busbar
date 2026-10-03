@@ -4333,7 +4333,7 @@ mod tests {
         let reg = super::super::load_registry(&cx).expect("the ledger reads");
         let crates = super::super::census(&cx).expect("the census reads");
         let rel = "crates/store-memory/src/vendor.rs";
-        let base = rule_matrix(&cx, &crates, &reg, false);
+        let base = rule_matrix(&cx, &crates, &reg, false, true);
         assert!(
             !base.detail.contains(rel),
             "the unplanted tree already names {rel}"
@@ -4344,7 +4344,7 @@ mod tests {
             "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
         ));
         let crates = super::super::census(&planted).expect("the census reads");
-        let row = rule_matrix(&planted, &crates, &reg, false);
+        let row = rule_matrix(&planted, &crates, &reg, false, true);
         let finding = format!("vendor-name\tbusbar-store-memory\t{rel}:1");
         assert!(
             row.detail.contains(&finding),
