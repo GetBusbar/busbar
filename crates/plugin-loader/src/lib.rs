@@ -2205,6 +2205,12 @@ mod store_door_conformance_tests;
 #[path = "tests/secret_door_conformance_tests.rs"]
 mod secret_door_conformance_tests;
 
+/// `kind: transport` over the REAL `tcp` door, both ways: the shipped linked door against the pinned
+/// cdylib, one script, equal transcripts and exact crossing counts.
+#[cfg(test)]
+#[path = "tests/transport_door_conformance_tests.rs"]
+mod transport_door_conformance_tests;
+
 /// `kind: hook` through both doors on the memory ABI: decide identical, a broken one refused.
 #[cfg(test)]
 #[path = "tests/hook_door_conformance_tests.rs"]
