@@ -11,7 +11,7 @@
     "behaviour, Cargo/build metadata, or a bare pointer into another §'s own detailed cross-check —",
     "are `status: \"prose\"` with a one-line `reason`, never silently dropped.",
     "THIS FILE IS A REGISTER, NOT A GATE: it compares nothing on its own. The gate that asserts it is",
-    "scripts/documented-claims-check.sh (qa/segments.toml segment `documented-claims`), which checks the",
+    "`cargo xtask gate documented-claims`, which checks the",
     "shape of every claim, that the claim run for each document is complete and contiguous, that the",
     "`counts` block below is what the claims actually add up to, that every `cell` id named here exists",
     "in testing/shadow-oracle/cells.json AND was RECORDED PASS by the pinned golden, and that both",

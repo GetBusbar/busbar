@@ -35,6 +35,7 @@ pub mod design_bindings;
 pub mod design_docs_allowlist;
 pub mod dialect_coverage;
 pub mod dialect_map;
+pub mod documented_claims;
 pub mod door_only;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
@@ -2536,6 +2537,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(design_docs_allowlist::DesignDocsAllowlistGate),
         summary: "docs/design holds the spec, the TODO, QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only",
+    },
+    Registration {
+        name: "documented-claims",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(documented_claims::DocumentedClaimsGate),
+        summary: "qa/documented-claims.json: every README/CHANGELOG claim is pinned by a recorded cell or excused, ids address their quotes",
     },
     Registration {
         name: "secret-hygiene",
