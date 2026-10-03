@@ -109,9 +109,10 @@ pub mod auth {
     use std::marker::PhantomData;
 
     use busbar_contract::abi::auth::{
-        BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
-        OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
+        AuthPoints, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
+        IdentifyOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
     };
+    use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail};
     use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
     use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
     use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
@@ -127,6 +128,10 @@ pub mod auth {
     pub const SECRET: &[u8] = b"s3cret";
 
     const SECRET_REFS: &[AbiStr] = &[abi_str(SECRET_KEY)];
+
+    /// The kind tail every auth Statement states (train/14's auth door refuses a Statement with
+    /// none): inbound at `Head`, no facts. The witnesses serve no op; the tail only admits them.
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
 
     /// An auth op the witnesses do not serve.
     pub struct Refuses<L, I, O>(PhantomData<(L, I, O)>);
@@ -186,7 +191,11 @@ pub mod auth {
     /// The `ready` witness.
     pub mod with_ready {
         use super::*;
-        auth_door!(super::super::Discovers, statement(NAME, "0", 4), ready);
+        auth_door!(
+            super::super::Discovers,
+            with_tail(statement(NAME, "0", 4), TAIL),
+            ready
+        );
     }
 
     /// The secret witness.
@@ -194,11 +203,14 @@ pub mod auth {
         use super::*;
         auth_door!(
             NeedsSecret,
-            busbar_contract::abi::mechanism::door::Statement {
-                secret_refs: SECRET_REFS.as_ptr(),
-                secret_refs_len: SECRET_REFS.len(),
-                ..statement(SECRET_NAME, "0", 4)
-            },
+            with_tail(
+                busbar_contract::abi::mechanism::door::Statement {
+                    secret_refs: SECRET_REFS.as_ptr(),
+                    secret_refs_len: SECRET_REFS.len(),
+                    ..statement(SECRET_NAME, "0", 4)
+                },
+                TAIL
+            ),
         );
     }
 }
