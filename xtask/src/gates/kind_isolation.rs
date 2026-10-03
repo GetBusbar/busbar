@@ -8852,8 +8852,8 @@ impl Gate for KindIsolationGate {
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-kernel/src/planted_second_registry.rs",
-            "use busbar_transport_ws::WsFramer;\npub fn compose() { let _ = \
-             WsFramer::default(); }\n",
+            "use busbar_transport_ws::WsTransport;\npub fn compose() { let _ = \
+             WsTransport::default(); }\n",
         );
         report.push(prove_rows_red(
             cx,
