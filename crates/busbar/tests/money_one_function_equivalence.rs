@@ -979,6 +979,11 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
                 // `price_usage_nanos` (the one function) — see `plane_host`.
                 || body.contains(".price_usage(")
                 || body.contains("derive_spend_micros(")
+                // The cost unit's row read (one-pricing-site, ARCHITECT ruling 2026-09-30): a
+                // reader hands its row over and prices nothing. Both reads are derivation-named, so
+                // this census checks their own bodies in project.rs (`price_in_view`, `Tally`).
+                || body.contains(".spend_micros_in_view(")
+                || body.contains(".spend_micros_at_card(")
                 || body.contains("derive_spend_minor(")
                 || body.contains("one_function_total(");
             if !routes {
@@ -1060,6 +1065,14 @@ fn census_every_former_copy_routes_to_the_one_function() {
         (
             "crates/busbar-kernel-ledger/src/cost/project.rs",
             "derive_spend_micros",
+        ),
+        (
+            "crates/busbar-kernel-ledger/src/cost/project.rs",
+            "spend_micros_in_view",
+        ),
+        (
+            "crates/busbar-kernel-ledger/src/cost/project.rs",
+            "spend_micros_at_card",
         ),
         (
             "crates/busbar-kernel-ledger/src/cost/posting.rs",

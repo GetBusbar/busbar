@@ -2282,6 +2282,50 @@ fn a_settlement_altered_at_the_tail_is_quarantined_and_never_settles_at_zero() {
     );
 }
 
+/// A SETTLEMENT WHOSE FRAME HEADER IS ALTERED AT THE TAIL IS A QUARANTINE, NEVER A TORN TAIL
+/// (MONEY-AUDIT E4). One byte of the final frame's header — its payload length — is changed while
+/// the node is down. The frame is whole (its digest and payload are all there), so the write that
+/// made it completed and the settlement was acknowledged. Read as a torn tail it was cut silently and
+/// the hold recovered at its checkpoint: a settled unit settled again, with no alarm.
+#[test]
+fn a_settlement_whose_header_is_altered_at_the_tail_is_quarantined_not_cut() {
+    let scratch = ScratchDir::new("altered-header-tail");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_header");
+    {
+        let mut durability = boot(&cfg, 24).expect("the directory is writable");
+        settle_one(&mut durability, &key, 5_000, 4_321, 13);
+    }
+    assert!(
+        edit_segment(&scratch.path, &4_321u64.to_le_bytes(), |bytes, _| {
+            let last = bytes
+                .iter()
+                .rposition(|&b| b != 0)
+                .expect("a written segment");
+            bytes[(last / FRAME_BYTES) * FRAME_BYTES + 33] ^= 0xFF;
+        }),
+        "the fixture found the settlement on disk"
+    );
+    let restarted = boot(&cfg, 24).expect("a corrupt journal does not stop the boot");
+    assert_eq!(
+        restarted.quarantined.len(),
+        1,
+        "the whole final frame whose header was altered is set aside"
+    );
+    assert_eq!(
+        restarted.recovered_holds, 0,
+        "nothing was recovered on a guess"
+    );
+    let figures = restarted.ledger.book().get(&key, 86_400);
+    assert_eq!(figures.settled, 0);
+    assert_eq!(
+        figures.open_holds, 5_000,
+        "the hold stays open, OPEN-QUARANTINED"
+    );
+}
+
 /// A TRUE TORN TAIL STILL TRUNCATES AND RECOVERS. The settlement's write stopped inside its frame's
 /// header (a crash mid-append): the header check fails, the tail is cut silently, and the unit's
 /// hold is recovered as it always was — nothing was acknowledged past the tear.
