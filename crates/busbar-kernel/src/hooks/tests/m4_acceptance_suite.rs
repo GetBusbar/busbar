@@ -86,6 +86,13 @@ use std::time::Duration;
 /// exported across the crate boundary; the value is the pinned 1.5.5 constant, not a guess).
 const MAX_INFLIGHT_HOOK_CALLS: usize = 64;
 
+/// How long each wedged call holds its slot: past the callers' 50 ms and 150 ms budgets, under the
+/// dispatcher's Call-class budget (1 s). A call inside the plugin for longer than that class budget
+/// is cut off by the dispatcher's WATCHDOG and the instance quarantined, so at 1.5 s no call, the
+/// resuming one included (it sleeps too), could ever be served: the test would wait on a state that
+/// cannot come. The watchdog has its own tests; this one is about the cap.
+const WEDGE_MS: u64 = 600;
+
 /// Ported from the plugin loader's
 /// `hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline` (v1.5.5 `hook.rs` inline
 /// test), rebuilt against THIS crate's `resolve_one`/`test_env` harness (the real `plugin:`
@@ -102,8 +109,11 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_res
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
-    let wedged = super::resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 1_500}))
-        .expect("resolve");
+    let wedged = super::resolve_one(
+        &env,
+        serde_json::json!({"order": [0], "sleep_ms": WEDGE_MS}),
+    )
+    .expect("resolve");
 
     let mut inflight = Vec::with_capacity(MAX_INFLIGHT_HOOK_CALLS);
     for _ in 0..MAX_INFLIGHT_HOOK_CALLS {
@@ -153,14 +163,10 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_res
     }
 
     // The callers' own deadlines passed long ago for every wedged call (they return at 50 ms), but
-    // the plugin is still inside each slot, for longer than the dispatcher's Call-class budget: its
-    // watchdog faults the instance, and the next call waits out the quarantine's trial window (1 s)
-    // and is served by a FRESH instance. So until service resumes a call may be refused (slots
-    // held), answered FAULT (the watchdog's verdict, seen by a call already in flight) or find the
-    // instance quarantined: each is the cap and the quarantine doing their jobs, and WHICH one a
-    // probe meets depends on where the plugin's sleep and the watchdog tick fall. What is asserted
-    // is the state they converge on: the cap is backpressure, not a latch, so service RESUMES. A
-    // latch would never serve a call, and the hang guard is the only clock asserted on.
+    // the plugin is still inside each slot: the slots free when the PLUGIN returns, and until then a
+    // call over the cap is refused. What is asserted is the state that follows: the cap is
+    // backpressure, not a latch, so service RESUMES. A latch would never serve a call, and the hang
+    // guard is the only clock asserted on.
     for h in inflight {
         let _ = h.await;
     }
