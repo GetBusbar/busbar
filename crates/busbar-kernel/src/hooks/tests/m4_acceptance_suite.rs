@@ -119,41 +119,60 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_res
                 .await;
         }));
     }
-    // Let every spawned call reach the plugin and take its slot.
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // SATURATION IS A STATE, NOT A DURATION: probe until the instance REFUSES (every one of its
+    // slots is held), never "after 400 ms". A probe that lands before the wedged calls took their
+    // slots is not refused: it is itself held and cut off at its budget, and the loop probes again.
+    // The cap answers a call over it at once (it never waits for a slot), so the refusal is the
+    // whole of "fails on the caller's own deadline, never waits out the wedge": a call that waited
+    // would end as a deadline, which is not what this loop waits for.
+    let probe = |ms: u64| {
+        let wedged = wedged.clone();
+        async move {
+            wedged
+                .decide(
+                    &super::dreq("y"),
+                    &[super::dcand(0)],
+                    &super::dctx(),
+                    Duration::from_millis(ms),
+                )
+                .await
+        }
+    };
+    let hang_guard = std::time::Instant::now();
+    loop {
+        match probe(150).await {
+            Err(e) if format!("{e:?}").contains("Refused") => break,
+            _ => {
+                assert!(
+                    hang_guard.elapsed() < Duration::from_secs(60),
+                    "the wedged calls never took every slot"
+                );
+                tokio::task::yield_now().await;
+            }
+        }
+    }
 
-    let start = std::time::Instant::now();
-    let saturated = wedged
-        .decide(
-            &super::dreq("y"),
-            &[super::dcand(0)],
-            &super::dctx(),
-            Duration::from_millis(150),
-        )
-        .await;
-    assert!(
-        saturated.is_err(),
-        "with every slot held, a further call must fail rather than wait for one"
-    );
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "the wait must be bounded by the caller's own deadline, not by the wedged plugin"
-    );
-
-    // The wedged calls returning frees the slots — the cap is backpressure, not a latch.
+    // The callers' own deadlines passed long ago for every wedged call (they return at 50 ms), but
+    // the plugin is still inside each slot: the slots free when the PLUGIN returns. Wait on that
+    // state: the cap is backpressure, not a latch, so a freed slot lets the next call through. A
+    // latch would never free one, and the hang guard is the only clock here.
     for h in inflight {
         let _ = h.await;
     }
-    let resumed = wedged
-        .decide(
-            &super::dreq("z"),
-            &[super::dcand(0)],
-            &super::dctx(),
-            Duration::from_secs(5),
-        )
-        .await;
-    assert!(
-        resumed.is_ok(),
-        "a freed slot must let the next call through"
-    );
+    loop {
+        match probe(5_000).await {
+            Ok(_) => break,
+            Err(e) => {
+                assert!(
+                    format!("{e:?}").contains("Refused"),
+                    "a call over the cap is refused, not failed another way: {e:?}"
+                );
+                assert!(
+                    hang_guard.elapsed() < Duration::from_secs(60),
+                    "the wedged calls returned but no slot ever freed (a latch)"
+                );
+                tokio::task::yield_now().await;
+            }
+        }
+    }
 }
