@@ -583,6 +583,33 @@ const IR_BLOCK_KINDS: &[(&str, &str)] = &[
     (crate::codec::drops::kind::TOOL_RESULT, TOOL_RESULT),
 ];
 
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (
+        crate::codec::drops::name::RESPONSE_FORMAT,
+        "outputConfig.textFormat",
+    ),
+    (crate::codec::drops::name::METADATA, FIELD_REQUEST_METADATA),
+    // Converse has no `top_k`: the reader takes it from the model-specific fields.
+    (
+        crate::codec::drops::name::TOP_K,
+        "additionalModelRequestFields.top_k",
+    ),
+];
+
+/// The IR request members the reader never sets.
+// A `cachePoint` is its own block, kept raw for a same-dialect hop (never a block's cache mark);
+// no candidate count, parallel-call switch, logprobs or output modalities.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::N,
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::PARALLEL_TOOL_CALLS,
+    crate::codec::drops::name::TOP_LOGPROBS,
+    crate::codec::drops::name::OUTPUT_MODALITIES,
+    crate::codec::drops::name::LOGPROBS,
+];
+
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
     at: &["output", "message", "content[]"],
     tag: None,

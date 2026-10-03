@@ -223,6 +223,14 @@ impl ProtocolReader for AnthropicReader {
         super::IR_BLOCK_KINDS
     }
 
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
+    }
+
     /// IR-18: a `signature_delta` on the Anthropic wire is Claude's.
     fn stream_signature_origin(
         &self,

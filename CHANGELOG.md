@@ -883,6 +883,10 @@ each dialect translates, field by field, is listed in the generated
   target with no such setting instead of sent as the `medium` effort; each drop is warned and
   audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
   answered with the caller's own 400 error instead of being translated.
+- What a dialect's reader cannot carry across a translation (an unknown image detail or effort
+  word, a tool-choice form or modality with no counterpart, extra choices or candidates, a Bedrock-only
+  answer member, a Responses answer's request echoes) is now audited like a writer's drop, and every
+  drop names the caller's own wire path, never an internal name.
 
 ### Fixed
 

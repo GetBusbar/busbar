@@ -817,8 +817,10 @@ impl ProtocolReader for GeminiReader {
         if let Some(cands) = candidates {
             if cands.len() > 1 && !state.multi_candidate_warned {
                 state.multi_candidate_warned = true;
-                tracing::warn!(
-                    candidates = cands.len(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire("candidates[]"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [candidates = cands.len(),],
                     "gemini stream chunk carried multiple candidates; only candidates[0] survives IR translation — a cross-protocol hop drops the rest (a same-protocol relay preserves all)"
                 );
             }
@@ -971,8 +973,12 @@ impl ProtocolReader for GeminiReader {
                                     && !state.tool_frame_cap_warned
                                 {
                                     state.tool_frame_cap_warned = true;
-                                    tracing::warn!(
-                                        cap = MAX_GEMINI_TOOL_FRAMES,
+                                    crate::codec::drops::writer_drop!(
+                                        crate::codec::drops::wire(
+                                            "candidates[].content.parts[].functionCall"
+                                        ),
+                                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                        [cap = MAX_GEMINI_TOOL_FRAMES,],
                                         "gemini stream exceeded MAX_GEMINI_TOOL_FRAMES concurrent tool-call frames; new functionCall parts are being dropped for the rest of this stream"
                                     );
                                 }
@@ -1348,8 +1354,10 @@ impl ProtocolReader for GeminiReader {
         // cross-protocol hop. Warn so the truncation is observable rather than silent (same-proto
         // passthrough preserves all candidates and never reaches here).
         if candidates.len() > 1 {
-            tracing::warn!(
-                candidates = candidates.len(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire("candidates[]"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [candidates = candidates.len(),],
                 "gemini response carried multiple candidates; only the first is translated cross-protocol (the rest are dropped)"
             );
         }
@@ -1623,6 +1631,14 @@ impl ProtocolReader for GeminiReader {
 
     fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
         super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
     }
 }
 

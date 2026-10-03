@@ -232,6 +232,20 @@ pub trait ProtocolReader: Send + Sync {
     fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
         &[]
     }
+
+    /// The IR request members this reader carries by its own code from a wire path no map-file row
+    /// names (`("response_format", "output_config.format")`): how a drop of one is named by the
+    /// caller's wire path ([`crate::codec::drops::resolve`]).
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+
+    /// The IR request members this reader never sets: the dialect has no wire form for them (or
+    /// keeps its own spelling of the concept for a same-dialect hop only), so a caller of this
+    /// dialect never has one dropped and no drop is ever named for it.
+    fn unread(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 pub trait ProtocolWriter: Send + Sync {

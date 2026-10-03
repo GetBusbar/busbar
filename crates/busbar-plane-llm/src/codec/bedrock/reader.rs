@@ -1295,8 +1295,10 @@ impl ProtocolReader for BedrockReader {
             "performanceConfig",
         ] {
             if obj.contains_key(dropped) {
-                tracing::warn!(
-                    field = dropped,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire(dropped),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [field = dropped,],
                     "dropping Bedrock-only Converse response member `{dropped}` on a cross-protocol \
                      egress: it has no neutral-IR carrier and no equivalent in any other protocol, \
                      so it cannot be projected to a non-Bedrock client (a same-protocol \
@@ -1361,7 +1363,10 @@ impl ProtocolReader for BedrockReader {
                     if let Some(block) = read_bedrock_reasoning_block(reasoning) {
                         content.push(block);
                     } else {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::THINKING,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "dropping Converse response reasoningContent block with no decodable \
                              member (neither reasoningText nor redactedContent)"
                         );
@@ -1379,7 +1384,10 @@ impl ProtocolReader for BedrockReader {
                     if let Some(block) = read_bedrock_image_block(image) {
                         content.push(block);
                     } else {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::IMAGE,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "dropping Converse response image block with no decodable source \
                              (neither source.bytes nor source.s3Location)"
                         );
@@ -1489,6 +1497,14 @@ impl ProtocolReader for BedrockReader {
 
     fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
         super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
     }
 }
 

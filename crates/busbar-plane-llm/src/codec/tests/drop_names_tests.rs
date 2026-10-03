@@ -283,16 +283,17 @@ fn cohere_control_drop_is_named_by_its_wire_path() {
     );
 }
 
-/// The fallback: Cohere's map file has no row for the reasoning ask (its `thinking` member is the
-/// reader's own code), so the gate's drop keeps the IR name.
+/// A member the caller's map file has no row for, carried by the reader's own code: Cohere's
+/// budget ask is its `thinking.token_budget` member, and the gate's drop is named by it (DF-SITES: the
+/// reader's request code names), not by the IR name.
 #[test]
-fn a_slot_the_callers_map_has_no_row_for_keeps_its_name() {
+fn a_slot_the_callers_reader_carries_by_code_is_named_by_its_wire_path() {
     gate_named(
         "cohere",
         "openai",
         json!({"model": "m", "thinking": {"type": "enabled", "token_budget": 100},
             "messages": [{"role": "user", "content": "hi"}]}),
-        "reasoning",
+        "thinking.token_budget",
         "reasoning",
     );
 }

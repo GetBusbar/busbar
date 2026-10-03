@@ -289,7 +289,10 @@ impl ProtocolReader for OpenAiReader {
                                     if tc_val.get(keys::TYPE).and_then(|t| t.as_str())
                                         == Some(keys::CUSTOM)
                                     {
-                                        tracing::warn!(
+                                        crate::codec::drops::writer_drop!(
+                                            crate::codec::drops::wire("messages[].tool_calls[]"),
+                                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                            [],
                                             "dropping a replayed custom-tool call on translate: the \
                                              IR carries function tool calls only (no-equivalent)"
                                         );
@@ -634,8 +637,10 @@ impl ProtocolReader for OpenAiReader {
         if let Some(raw) = reasoning_effort_raw {
             if crate::codec::ir::IrReasoningEffort::parse(raw).is_none() {
                 if reasoning.is_none() {
-                    tracing::warn!(
-                        reasoning_effort = raw,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::REASONING,
+                        &crate::codec::diagnostics::IR_DROP_REASONING,
+                        [reasoning_effort = raw,],
                         "reasoning_effort value has no IR word; preserving it verbatim in extra so \
                          a same-protocol OpenAI egress still carries it (a cross-protocol hop \
                          carries no ask)"
@@ -771,8 +776,10 @@ impl ProtocolReader for OpenAiReader {
         if let Some(arr) = choices_arr {
             if arr.len() > 1 && !state.multi_candidate_warned {
                 state.multi_candidate_warned = true;
-                tracing::warn!(
-                    choices = arr.len(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire("choices[]"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [choices = arr.len(),],
                     "openai stream chunk carried multiple choices; only choices[0] survives IR translation — a cross-protocol hop drops the rest (a same-protocol relay preserves all)"
                 );
             }
@@ -957,8 +964,10 @@ impl ProtocolReader for OpenAiReader {
                 // The text these sources annotate is already closed (a tool call intervened), and
                 // a CitationsDelta at a closed index would un-balance the stream. Say so rather
                 // than detach the sources into a new, empty text block.
-                tracing::warn!(
-                    citations = citations.len(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire("choices[].delta.annotations[]"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [citations = citations.len(),],
                     "dropping streamed url_citation annotations that arrived after their text \
                      block closed; they are NOT forwarded on this cross-protocol stream"
                 );
@@ -1254,6 +1263,14 @@ impl ProtocolReader for OpenAiReader {
         super::IR_BLOCK_KINDS
     }
 
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
+    }
+
     fn read_response(
         &self,
         body: &serde_json::Value,
@@ -1275,8 +1292,10 @@ impl ProtocolReader for OpenAiReader {
         // cross-protocol case rather than asserting an unconditional drop. Defense-in-depth: the
         // engine now rejects n>1 up front on cross-protocol routes.
         if choices.len() > 1 {
-            tracing::warn!(
-                choices = choices.len(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire("choices[]"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [choices = choices.len(),],
                 "openai response carried multiple choices; only choices[0] survives IR translation — a cross-protocol hop drops the rest (a same-protocol relay preserves all)"
             );
         }
@@ -1340,7 +1359,10 @@ impl ProtocolReader for OpenAiReader {
                     // is dropped — but OBSERVABLY: `warn!` instead of the prior silent skip, so a
                     // dropped image part in a model's array-content response is visible in logs.
                     if matches!(block, crate::codec::ir::IrBlock::Image { .. }) {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::IMAGE,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "dropping an image content part from an OpenAI Chat response message: the \
                              completion response shape carries no image output; the block is NOT \
                              emitted"

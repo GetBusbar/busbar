@@ -222,11 +222,14 @@ impl ProtocolReader for CohereReader {
                                         // non-text block in the system array has no representation and
                                         // is dropped. Keep the drop, but surface it: a silent loss of
                                         // a system instruction block is otherwise invisible.
-                                        tracing::warn!(
-                                            block_type = bo
-                                                .get(keys::TYPE)
-                                                .and_then(|t| t.as_str())
-                                                .unwrap_or("<missing>"),
+                                        let block_type = bo
+                                            .get(keys::TYPE)
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("<missing>");
+                                        crate::codec::drops::writer_drop!(
+                                            crate::codec::drops::wire("messages[].content[]"),
+                                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                            [block_type,],
                                             "dropping non-text block in cohere system array (cohere \
                                              system is text-only)"
                                         );
@@ -1261,6 +1264,14 @@ impl ProtocolReader for CohereReader {
 
     fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
         super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
     }
 
     fn read_response(

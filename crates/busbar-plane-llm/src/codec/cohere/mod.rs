@@ -318,6 +318,29 @@ const IR_BLOCK_KINDS: &[(&str, &str)] = &[
     (crate::codec::drops::kind::THINKING, "type=thinking"),
 ];
 
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (crate::codec::drops::name::REASONING, keys::THINKING),
+    (
+        crate::codec::drops::name::THINKING_BUDGET,
+        "thinking.token_budget",
+    ),
+];
+
+/// The IR request members the reader never sets.
+// No candidate count, cache marks, parallel-call switch, metadata, top-logprob count, output
+// modalities or service tier.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::N,
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::PARALLEL_TOOL_CALLS,
+    crate::codec::drops::name::METADATA,
+    crate::codec::drops::name::TOP_LOGPROBS,
+    crate::codec::drops::name::OUTPUT_MODALITIES,
+    crate::codec::drops::name::SERVICE_TIER,
+];
+
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
     at: &["message", "content[]"],
     tag: Some(keys::TYPE),
@@ -653,8 +676,10 @@ fn read_cohere_image_detail(
     let word = image_url?.get(keys::DETAIL)?.as_str()?;
     let detail = crate::codec::ir::IrImageDetail::parse(word);
     if detail.is_none() {
-        tracing::warn!(
-            detail = %word,
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::wire("messages[].content[].image_url.detail"),
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [detail = %word,],
             "cohere: dropping an unknown image_url.detail word (not auto/low/high)"
         );
     }

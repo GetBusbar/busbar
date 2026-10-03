@@ -120,6 +120,7 @@ impl Dropped {
                 diag,
                 message: message.into(),
             },
+            Member::Wire(path) => Dropped::new(path, diag, message),
         }
     }
 }
@@ -146,6 +147,10 @@ pub enum Member {
     /// A content block of the IR kind (`image`, `document`, `audio`, `video`, `thinking`, `text`,
     /// `tool_use`, `tool_result`), named by the source dialect's block container.
     Block(&'static str),
+    /// A member of the SOURCE dialect's own wire at this path (notation A): what a READER drops of
+    /// the bytes it reads (the caller's on a request, the far end's on an answer) because the IR has
+    /// no place for it.
+    Wire(&'static str),
 }
 
 /// The IR member `name`, by its own rows.
@@ -162,6 +167,11 @@ pub const REASONING: Member = Member::Slot(
 /// A content block of the IR kind `kind`.
 pub const fn block(kind: &'static str) -> Member {
     Member::Block(kind)
+}
+
+/// A member of the reading dialect's own wire at `path` (a reader's drop).
+pub const fn wire(path: &'static str) -> Member {
+    Member::Wire(path)
 }
 
 /// The IR's content-block kinds ([`crate::codec::ir::IrBlock::kind_name`]), spelled once: the
@@ -193,27 +203,49 @@ pub const THINKING: Member = block(kind::THINKING);
 /// A provider-run tool's record.
 pub const HOSTED_TOOL: Member = block(kind::HOSTED_TOOL);
 
-/// The IR members a writer drops by name, spelled once.
-pub const TOOLS: Member = member("tools");
-pub const TOOL_CHOICE: Member = member("tool_choice");
-pub const PARALLEL_TOOL_CALLS: Member = member("parallel_tool_calls");
-pub const RESPONSE_FORMAT: Member = member("response_format");
-pub const METADATA: Member = member("metadata");
-pub const OUTPUT_MODALITIES: Member = member("output_modalities");
-pub const TOP_LOGPROBS: Member = member("top_logprobs");
-pub const TOP_K: Member = member("top_k");
-pub const SERVICE_TIER: Member = member("service_tier");
-pub const LOGPROBS: Member = member("logprobs");
+/// The IR request members a drop names, spelled once (the dialects' `REQUEST_CODE_NAMES` and
+/// `UNREAD` tables name them from here).
+pub mod name {
+    pub const N: &str = "n";
+    pub const REASONING: &str = "reasoning";
+    pub const THINKING_BUDGET: &str = "thinking_budget";
+    pub const CACHE_CONTROL: &str = "cache_control";
+    pub const STOP: &str = "stop";
+    pub const TOOLS: &str = "tools";
+    pub const TOOL_CHOICE: &str = "tool_choice";
+    pub const PARALLEL_TOOL_CALLS: &str = "parallel_tool_calls";
+    pub const RESPONSE_FORMAT: &str = "response_format";
+    pub const METADATA: &str = "metadata";
+    pub const OUTPUT_MODALITIES: &str = "output_modalities";
+    pub const TOP_LOGPROBS: &str = "top_logprobs";
+    pub const TOP_K: &str = "top_k";
+    pub const SERVICE_TIER: &str = "service_tier";
+    pub const LOGPROBS: &str = "logprobs";
+    pub const STRICT: &str = "strict";
+}
+
+/// The IR members a writer drops by name.
+pub const TOOLS: Member = member(name::TOOLS);
+pub const TOOL_CHOICE: Member = member(name::TOOL_CHOICE);
+pub const PARALLEL_TOOL_CALLS: Member = member(name::PARALLEL_TOOL_CALLS);
+pub const RESPONSE_FORMAT: Member = member(name::RESPONSE_FORMAT);
+pub const METADATA: Member = member(name::METADATA);
+pub const OUTPUT_MODALITIES: Member = member(name::OUTPUT_MODALITIES);
+pub const TOP_LOGPROBS: Member = member(name::TOP_LOGPROBS);
+pub const TOP_K: Member = member(name::TOP_K);
+pub const SERVICE_TIER: Member = member(name::SERVICE_TIER);
+pub const LOGPROBS: Member = member(name::LOGPROBS);
+pub const STRICT: Member = member(name::STRICT);
 
 /// Whether a TRANSLATE attempt is open on this thread.
 pub fn is_open() -> bool {
     OPEN.with(|o| o.borrow().is_some())
 }
 
-/// THE WRITER DROP: a writer's member or block that does not cross. Inside a TRANSLATE attempt it
-/// is [`note`]d (one warn per path naming the source dialect's wire path, and the audit); outside
-/// one (a same-dialect write, a direct writer call) the writer's own warn is emitted unchanged and
-/// nothing is audited. `fields` are the writer warn's own fields (each followed by a comma).
+/// THE WRITER DROP (and a reader's, by [`wire`]): a member or block that does not cross. Inside a
+/// TRANSLATE attempt it is [`note`]d (one warn per path naming the source dialect's wire path, and
+/// the audit); outside one (a same-dialect write, a direct writer call, a relay's tap) the
+/// writer's own warn is emitted unchanged and nothing is audited. `fields` are the writer warn's own fields (each followed by a comma).
 ///
 /// `writer_drop!(member("tool_choice"), &DIAG, [count = n,], "dropping ... {x}", x = 1)`
 macro_rules! writer_drop {
@@ -239,13 +271,20 @@ pub fn wire_path(dialect: &str, name: &str, rows: &[&str]) -> String {
     resolve(dialect, name, rows).unwrap_or_else(|| name.to_string())
 }
 
-/// [`wire_path`], `None` when `dialect` has no row for it (the drop is then named by the IR name,
-/// which the drop-names census counts).
+/// [`wire_path`]: a map-file row for it, else the path the dialect's reader carries it from by code
+/// ([`crate::codec::proto_codec::ProtocolReader::request_code_names`]); `None` when it has neither
+/// (the drop is then named by the IR name, which the drop-names census holds at 0).
 pub fn resolve(dialect: &str, name: &str, rows: &[&str]) -> Option<String> {
     let rows = if rows.is_empty() { &[name][..] } else { rows };
     crate::codec::proto_codec::with_reader(dialect, |r| {
-        rows.iter()
-            .find_map(|n| crate::codec::carry::wire_path(r.request_map(), n))
+        rows.iter().find_map(|n| {
+            crate::codec::carry::wire_path(r.request_map(), n).or_else(|| {
+                r.request_code_names()
+                    .iter()
+                    .find(|(ir, _)| ir == n)
+                    .map(|(_, path)| path.to_string())
+            })
+        })
     })
     .flatten()
 }

@@ -802,8 +802,10 @@ fn read_responses_tool_choice_directive(
                 // choice have no IR carrier (`allowed_tools` does — IR-10, read above); the
                 // directive is not carried and the target applies its default. Say so rather than
                 // drop it silently.
-                tracing::warn!(
-                    tool_choice_type = o.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or(""),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire(keys::TOOL_CHOICE),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [tool_choice_type = o.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or(""),],
                     "dropping Responses tool_choice on ir parse: this tool_choice form has no IR \
                      carrier; the backend's default tool choice applies"
                 );
@@ -1072,6 +1074,23 @@ const IR_BLOCK_KINDS: &[(&str, &str)] = &[
         crate::codec::drops::kind::TOOL_RESULT,
         "type=function_call_output",
     ),
+];
+
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (crate::codec::drops::name::RESPONSE_FORMAT, "text.format"),
+    (crate::codec::drops::name::TOP_LOGPROBS, keys::TOP_LOGPROBS),
+];
+
+/// The IR request members the reader never sets.
+// No candidate count, cache marks, stop sequences, `top_k` or output modalities.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::N,
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::STOP,
+    crate::codec::drops::name::TOP_K,
+    crate::codec::drops::name::OUTPUT_MODALITIES,
 ];
 
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
