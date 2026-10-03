@@ -193,3 +193,48 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         "the reload removed the carve-out"
     );
 }
+
+/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14 on Q130/Q131): a deployment
+/// whose provider has no `advanced.allow_destinations` entry is refused the private address its
+/// name answers with on a provider dial (its own configured host included); once the allowlist
+/// names it, the same dial is admitted. Operator infrastructure reaches the private address with
+/// no entry, and refuses metadata even with every carve-out.
+#[test]
+fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
+    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    let private = vec!["10.0.0.5".parse().unwrap()];
+    let bare = deployment(&[("local_llm", "http://llm.internal:8000", &[])], "");
+    let judge = guard_for(&bare.destinations()).expect("a guard");
+    assert_eq!(
+        judge
+            .judge_answer("llm.internal", &private, EGRESS_PROVIDER)
+            .err()
+            .map(|r| r.verdict),
+        Some(DEST_INTERNAL),
+        "the provider's own host, no allowlist entry"
+    );
+    assert_eq!(
+        judge.judge_answer("llm.internal", &private, EGRESS_OPERATOR_INFRASTRUCTURE),
+        Ok(()),
+        "operator infrastructure needs no entry"
+    );
+    let listed = deployment(
+        &[("local_llm", "http://llm.internal:8000", &[IMDS])],
+        "advanced:\n  allow_destinations: [llm.internal]\n",
+    );
+    let judge = guard_for(&listed.destinations()).expect("a guard");
+    assert_eq!(
+        judge.judge_answer("llm.internal", &private, EGRESS_PROVIDER),
+        Ok(()),
+        "the allowlist admits it"
+    );
+    assert_eq!(
+        metadata_verdict(
+            judge.as_ref(),
+            "llm.internal",
+            EGRESS_OPERATOR_INFRASTRUCTURE
+        ),
+        Some(DEST_METADATA),
+        "operator infrastructure refuses metadata whatever is carved"
+    );
+}

@@ -471,3 +471,32 @@ fn a_config_named_target_on_loopback_is_trusted() {
         assert_eq!(accepted.load(Ordering::SeqCst), 1);
     });
 }
+
+/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14: "refused unless allowlisted"
+/// holds for the provider class): a PROVIDER need whose config names a target on loopback is not
+/// lifted to operator infrastructure; it is refused before any socket until the allowlist names it.
+#[test]
+fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
+    use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+    worker().block_on(async {
+        let (port, accepted) = counting_echo().await;
+        let target = format!("llm.test:{port}");
+        let names = || Arc::new(Table(vec![("llm.test", [127, 0, 0, 1].into())]));
+        let strict = connector_over(&[], names(), Arc::default());
+        strict.declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target);
+        let id = strict
+            .open(OWNER, NEED, &OpenDesc::default())
+            .expect("a name opens, its judgement pending");
+        assert_eq!(read_direct(&strict, id).await, Err(ConnError::Refused));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing was dialled");
+        let allowed = connector_over(&["llm.test"], names(), Arc::default());
+        allowed.declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target);
+        let id = allowed
+            .open(OWNER, NEED, &OpenDesc::default())
+            .expect("the allowlisted target opens");
+        assert_eq!(allowed.write(OWNER, id, b"prov", false), Ok(4));
+        assert_eq!(read_direct(&allowed, id).await.expect("the echo"), b"prov");
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    });
+}

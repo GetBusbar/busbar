@@ -384,3 +384,100 @@ fn private_is_refused_for_request_data_and_trusted_for_configured_destinations()
         );
     }
 }
+
+/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14 on Q130/Q131: "the 'refused
+/// unless allowlisted' default applies to the provider and IdP egress classes only"): a provider
+/// dial with no allowlist entry for it is refused a private or loopback address, by name, by
+/// literal and by answer; the allowlist admits it; a HOST allowlist entry still never admits a
+/// metadata answer, and no 1.5.5 carve-out admits metadata for a host the provider does not name.
+#[test]
+fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
+    let strict = Guard::default();
+    let p = EGRESS_PROVIDER;
+    assert_eq!(
+        verdict(strict.judge_answer("llm.internal", &[ip("10.0.0.5")], p)),
+        Some(DEST_INTERNAL)
+    );
+    assert_eq!(
+        strict.judge_name("127.0.0.1", p).unwrap_err().verdict,
+        DEST_INTERNAL
+    );
+    assert_eq!(
+        strict.judge_name("localhost", p).unwrap_err().verdict,
+        DEST_INTERNAL
+    );
+    let allowed = guard(true, &["llm.internal", "127.0.0.1", "localhost"]);
+    assert_eq!(
+        allowed.judge_answer("llm.internal", &[ip("10.0.0.5")], p),
+        Ok(())
+    );
+    assert_eq!(
+        allowed.judge_name("127.0.0.1", p),
+        Ok(Some(ip("127.0.0.1")))
+    );
+    assert_eq!(allowed.judge_name("localhost", p), Ok(None));
+    assert_eq!(
+        verdict(allowed.judge_answer("llm.internal", &[ip("169.254.169.254")], p)),
+        Some(DEST_METADATA),
+        "a host entry never admits a metadata answer"
+    );
+    let carved = Guard::from_config(&Destinations {
+        block_private_addresses: true,
+        provider_allow: vec![(
+            "https://imds-proxy.test".into(),
+            vec!["169.254.169.254".into()],
+        )],
+        ..Destinations::default()
+    })
+    .unwrap();
+    assert_eq!(
+        verdict(carved.judge_answer("llm.internal", &[ip("169.254.169.254")], p)),
+        Some(DEST_METADATA),
+        "another provider's carve-out admits nothing here"
+    );
+    assert_eq!(
+        verdict(carved.judge_answer("llm.internal", &[ip("10.0.0.5")], p)),
+        Some(DEST_INTERNAL),
+        "a metadata carve-out is no private allowance"
+    );
+}
+
+/// THE DESIGN §5 egress-class table (owner-signed 2026-09-27), held beside the provider fix above:
+/// operator infrastructure is allowed private and loopback with no allowlist entry, and refuses cloud metadata even when the
+/// allowlist names the host and every 1.5.5 carve-out names the address.
+#[test]
+fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_carved() {
+    let oi = EGRESS_OPERATOR_INFRASTRUCTURE;
+    let strict = Guard::default();
+    assert_eq!(
+        strict.judge_answer("db.test", &[ip("10.0.0.5")], oi),
+        Ok(())
+    );
+    assert_eq!(
+        strict.judge_name("127.0.0.1", oi),
+        Ok(Some(ip("127.0.0.1")))
+    );
+    let carved = Guard::from_config(&Destinations {
+        block_private_addresses: true,
+        allow: vec!["db.test".into()],
+        legacy_allow: vec!["169.254.169.254".into(), "db.test".into()],
+        provider_allow: vec![(
+            "https://db.test".into(),
+            vec!["169.254.169.254".into(), "db.test".into()],
+        )],
+        allow_all_metadata: true,
+        ..Destinations::default()
+    })
+    .unwrap();
+    assert_eq!(
+        verdict(carved.judge_answer("db.test", &[ip("169.254.169.254")], oi)),
+        Some(DEST_METADATA)
+    );
+    assert_eq!(
+        carved
+            .judge_name("metadata.google.internal", oi)
+            .unwrap_err()
+            .verdict,
+        DEST_METADATA
+    );
+}
