@@ -711,6 +711,8 @@ fn trust_verify_failures_are_errors() {
     assert_eq!(
         services(&old).trust_verify(handle(), "peer", b"ok", b"", &mut buf),
         Err(ServiceError::Unserved)
+    );
+}
 
 // ── records.get, records.list, records.claim ──────────────────────────────────────────────────
 
