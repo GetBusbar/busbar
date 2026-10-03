@@ -2111,6 +2111,11 @@ mod store_scope_kind_conformance_tests;
 #[path = "tests/both_ways.rs"]
 mod both_ways;
 
+/// No rlib the test binary links exports `busbar_plugin_door` (the fat-LTO duplicate-symbol guard).
+#[cfg(test)]
+#[path = "tests/door_symbol_tests.rs"]
+mod door_symbol_tests;
+
 /// `kind: store` through both doors: one row, one store, one fold over every store operation.
 #[cfg(test)]
 #[path = "tests/store_conformance_tests.rs"]
