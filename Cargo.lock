@@ -345,6 +345,7 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-plane-decisions",
+ "busbar-plane-llm",
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
@@ -426,17 +427,44 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=648b6683d0b9274c02a20f6da17146ba1b85f74c#648b6683d0b9274c02a20f6da17146ba1b85f74c"
 dependencies = [
  "busbar-contract",
+ "serde_json",
 ]
 
 [[package]]
 name = "busbar-auth-admin-tokens-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=648b6683d0b9274c02a20f6da17146ba1b85f74c#648b6683d0b9274c02a20f6da17146ba1b85f74c"
 dependencies = [
  "busbar-auth-admin-tokens",
+ "busbar-contract",
+]
+
+[[package]]
+name = "busbar-auth-header"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-auth-oauth"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "http",
+ "ring",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -467,15 +495,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-auth-sigv4"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "hex",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-auth-webhook-signature"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "hex",
  "http",
  "indexmap",
  "jsonschema",
+ "libc",
  "memchr",
  "serde",
  "serde_json",
@@ -523,6 +579,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plugin-loader",
+ "busbar-transport-tcp-plugin",
  "crc32fast",
  "dimpl",
  "futures",
@@ -652,9 +709,9 @@ dependencies = [
 name = "busbar-hooks-ranking"
 version = "1.6.0"
 dependencies = [
- "async-trait",
  "busbar-contract",
- "tokio",
+ "busbar-plugin-loader",
+ "serde_json",
 ]
 
 [[package]]
@@ -896,6 +953,7 @@ name = "busbar-plane-llm"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-loader",
  "bytes",
  "getrandom 0.3.4",
  "serde",
@@ -937,7 +995,6 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
- "async-trait",
  "busbar-auth-admin-tokens-plugin",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
@@ -945,7 +1002,6 @@ dependencies = [
  "busbar-export-otlp-plugin",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook-plugin",
- "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin-example-plane",
@@ -1030,12 +1086,10 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=2812d6355610673614681bd4f523da9bed32d07b#2812d6355610673614681bd4f523da9bed32d07b"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
- "busbar-transport-ws",
  "futures",
- "libloading",
  "serde_json",
  "tokio",
  "tokio-tungstenite",

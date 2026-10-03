@@ -1096,19 +1096,7 @@ pub(crate) fn wire_up_transport(
     manifest_kind: &str,
     backing: Option<stage::Staged>,
 ) -> Result<DynTransport, String> {
-    let handshake = {
-        let f = unsafe {
-            lib.get::<busbar_contract::abi::cold::AbiFn>(busbar_contract::abi::cold::symbol::ABI)
-        }
-        .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        crate::ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
-    };
-    if handshake != busbar_contract::abi::cold::TRANSPORT_VERSION {
-        return Err(format!(
-            "transport '{display}' targets transport ABI v{handshake}, engine speaks v{}",
-            busbar_contract::abi::cold::TRANSPORT_VERSION
-        ));
-    }
+    crate::abi_handshake(crate::abi_symbol(&lib, &display)?, &display, "transport")?;
     let exported_kind = crate::read_plugin_kind(&lib, &display)?;
     if exported_kind != busbar_contract::abi::cold::kind::TRANSPORT {
         return Err(format!(

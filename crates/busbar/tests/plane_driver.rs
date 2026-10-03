@@ -34,7 +34,7 @@ use busbar_contract::conn::{
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
-use busbar_kernel::host_services::{KernelServices, SystemResolver};
+use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 use busbar_plugin_loader::dispatch::{
     conn_services::ticket_of,
@@ -391,10 +391,7 @@ fn driver_of(plugin: &Plugin<Plane>, dispatcher: Arc<Dispatcher>) -> PlaneDriver
 
 /// The kernel's host services, with no egress class and no store.
 fn services() -> Arc<KernelServices> {
-    Arc::new(KernelServices::new(
-        std::collections::HashMap::new(),
-        Arc::new(SystemResolver),
-    ))
+    Arc::new(KernelServices::new())
 }
 
 /// Wait up to 5 s for `done`.
@@ -482,6 +479,9 @@ impl DeclaredConns for Far {
     }
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
         self.slab.check_need(owner, need).ok().map(Ok)
+    }
+    fn serves_scheme(&self, _: &str) -> bool {
+        true
     }
 }
 

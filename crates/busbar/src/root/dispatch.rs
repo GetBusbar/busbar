@@ -49,6 +49,19 @@ pub fn dispatcher() -> Arc<Dispatcher> {
     boot(1, crate::root::serve::LateServices::new())
 }
 
+/// THE AUTH AXIS of one build: that build's registry's auth rows, opened on the process's dispatcher
+/// (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1). Installed on the kernel as its auth-axis opener
+/// (`busbar_kernel::preflight::install_auth_axis`), so the kernel opens every auth instance through
+/// the contract's `AuthAxis` and names neither the loader's rows nor this dispatcher.
+pub fn auth_axis(
+    registry: Arc<crate::root::loader::PluginRegistry>,
+) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
+    Arc::new(crate::root::loader::auth_axis::AuthRows::new(
+        registry,
+        dispatcher(),
+    ))
+}
+
 #[cfg(test)]
 #[path = "tests/dispatch.rs"]
 mod tests;

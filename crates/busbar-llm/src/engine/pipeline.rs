@@ -474,13 +474,6 @@ fn fire_global_taps(
     }
     // SELECTION: this tap fires for THIS caller iff its `groups:` scope admits the caller.
     let fires = |groups: &[String]| host.caller_in_hook_groups(caller_group, groups);
-    let ctx = busbar_contract::hooks::RoutingContext {
-        pool: pool_name,
-        budget_remaining: None,
-        // Taps observe request shape; the budget-chain projection is a routing-policy signal
-        // (decide_policy_order), not a tap payload.
-        budget: &[],
-    };
     // THE ONE READ for this seam, done once and shared by both projections. A body the reader
     // refuses yields the zeroed shape here rather than failing anything: request-stage taps are
     // fire-and-forget observation, and the gate/rewrite seams — which read the same IR — are where
@@ -503,14 +496,8 @@ fn fire_global_taps(
             with_prompt,
             request_id,
         );
-        busbar_plane_llm::codec::json::to_vec(&busbar_kernel::hooks::wire::build(
-            busbar_kernel::hooks::wire::OP_NOTIFY,
-            &req,
-            &[],
-            &ctx,
-        ))
-        .ok()
-        .map(std::sync::Arc::new)
+        // The tap's fixed view; the prompt view rides it only for a `prompt: ro` tap.
+        busbar_contract::abi::host::hook::NotifyFrame::build(&req, None, with_prompt)
     };
     // Shape-only is needed whenever any FIRING tap lacks the prompt grant; the prompt projection only
     // when at least one FIRING tap holds `prompt: ro`. Build each at most once. A tap filtered out by
@@ -523,17 +510,16 @@ fn fire_global_taps(
         .tap_hooks()
         .iter()
         .any(|(_, send_prompt, _, groups)| !*send_prompt && fires(groups));
-    let shape_proj = if any_shape { build_proj(false) } else { None };
-    let prompt_proj = if any_prompt { build_proj(true) } else { None };
+    let shape_proj = any_shape.then(|| build_proj(false));
+    let prompt_proj = any_prompt.then(|| build_proj(true));
     for (timeout, send_prompt, hook, groups) in host.tap_hooks() {
         // SELECTION: skip a tap whose `groups:` scope does not admit this caller.
         if !fires(groups) {
             continue;
         }
-        // A granted tap prefers the prompt projection; fall back to shape-only if it failed to
-        // serialize (never over-share, always safe).
+        // A granted tap is handed the prompt view; every other tap the shape-only one.
         let proj = if *send_prompt {
-            prompt_proj.clone().or_else(|| shape_proj.clone())
+            prompt_proj.clone()
         } else {
             shape_proj.clone()
         };
@@ -546,7 +532,7 @@ fn fire_global_taps(
             let policy = hook.clone();
             let budget = *timeout;
             crate::engine::hooks::spawn_bounded_tap(
-                async move { policy.notify(&proj, budget).await },
+                async move { policy.notify(proj, budget).await },
             );
         }
     }

@@ -577,8 +577,13 @@ impl busbar_contract::hooks::RoutingPolicy for CaptureTap {
     fn name(&self) -> &'static str {
         "route-step-capture-tap"
     }
-    async fn notify(&self, projection: &[u8], _budget: std::time::Duration) {
-        *self.last.lock().unwrap() = Some(projection.to_vec());
+    async fn notify(
+        &self,
+        tap: std::sync::Arc<busbar_contract::abi::host::hook::NotifyFrame>,
+        _budget: std::time::Duration,
+    ) {
+        let projection = serde_json::to_vec(&tap.projection_json()).expect("the tap's JSON");
+        *self.last.lock().unwrap() = Some(projection);
         self.fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }

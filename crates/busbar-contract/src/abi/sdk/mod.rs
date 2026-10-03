@@ -45,6 +45,7 @@ pub mod transport;
 // THE DOOR MACRO (THE DESIGN, the plugin ABI; abi-v2, the SDK): the plugin side of the shared mechanism — one door,
 // every slot a catch_unwind trampoline (`plugin_door!` / `export_door!`).
 pub mod door;
+pub mod hook;
 pub use crate::{export_door, plugin_door};
 // THE CALL CAPTURE: what a plugin logs during a call rides its reply as diagnostics (#85).
 pub mod capture;
@@ -63,10 +64,14 @@ pub mod exchange;
 pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
-pub use services::{Judged, Names, Pend, ServiceError, Services};
+pub use services::{Judged, Names, Pend, ServiceError, Services, Signed};
+// THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
+pub mod digest;
 // THE AUTH KIND'S VERIFY DOOR over the safe layer (`auth_verify_door!`). An auth plugin keeps its
 // inbound verdict cache inside itself (THE DESIGN, section 11.11).
 pub mod auth_door;
+// THE AUTH LOGIN KIT's shared checks: the id-token nonce binding v1.5.5's core ran for every login.
+pub mod login;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
 // PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
@@ -690,9 +695,8 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
 
 // ── HOOK-plugin glue (`kind: hook`) ───────────────────────────────────────────────────────────────
 // A hook plugin is a routing policy behind the frozen six-symbol ABI. Its author implements the tiny
-// SYNC [`HookHandler`] trait (the six ops over JSON), NOT the engine's async `RoutingPolicy` — the
-// async/borrowed trait lives on the ENGINE side (`DlopenPolicy`), which translates each method into a
-// `busbar_call`. The op-dispatch match ([`dispatch_hook`]) is the ergonomic helper the spec asks for:
+// SYNC [`HookHandler`] trait (the six ops over JSON), NOT the engine's async `RoutingPolicy`; on the
+// hook door the SDK's `json_hook` bridges it onto the kind's typed ops. The op-dispatch match ([`dispatch_hook`]) is the ergonomic helper the spec asks for:
 // a hook author writes `decide`/`transform`/etc. and the SDK routes the op envelope to them.
 
 /// The sync contract a `kind: hook` plugin author implements. Each method receives the op's payload as

@@ -272,6 +272,7 @@ fn register_planes() {
         LINKED.auths,
         root::auth_bindings::operator_words(),
     );
+    busbar_kernel::preflight::install_auth_axis(root::dispatch::auth_axis);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::linked::dropped_from_config(&LINKED);
@@ -816,9 +817,17 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // build_app_from_config — the one construction path).
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
+    // THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): ONE judge for every outbound
+    // connection, built once here, before anything dials: the kernel's `dest.judge` and its own
+    // clients ask it (installed below), and the connector dials by it.
+    let dest = root::connector::dest_judge(&cfg);
+    root::connector::install_egress_trust(dest.clone());
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
-    root::serve::compose(&cfg, &late_services);
+    // `records.secret` reads the App's governance through its swap handle, which exists once the App
+    // is built below; until then the read answers REFUSED (`root::credentials`).
+    let (credentials, credential_handle) = root::credentials::AppCredentials::late();
+    root::serve::compose(dest.clone(), &late_services, credentials);
     // THE EXPORT AXIS'S SINKS, opened once — before the first app is built, so the routes they
     // declare are in the boot route table (restart-to-apply, as every built-in PUSH sink is). A
     // configured sink that will not open refuses the boot.
@@ -874,13 +883,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
-    // transport door as a framer entry, every dial judged by the kernel's one judge. Inbound
+    // transport door as a framer entry, every dial judged by the one destination guard. Inbound
     // listening and outbound egress both take it from `root::connector::the()`.
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
-        &cfg.blocked_metadata_hosts,
-        &cfg.allow_metadata_hosts,
-        cfg.allow_all_metadata,
+        dest,
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
     );
     // The planes that state themselves through a door bind on the process's one dispatcher (built
@@ -958,8 +965,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
 
     // Record the BOOT snapshot as version 0 so the version history always has a rollback floor
     // (the pre-any-mutation state).
-    app.versions
-        .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
+    busbar_kernel::admin::seam::record_boot(&app);
 
     // DURABLE STATE HYDRATION — the audit ring, the A2A task table, the MCP per-call log and
     // the MCP demotion/spent-approval records, restored from the configured governance store
@@ -1020,7 +1026,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // business, and nothing about it is restored from disk here. The durable config that makes "fix
     // the config and restart" the recovery path lives in the config-overlay persistence, not in a
     // health snapshot. The config version-history ring is likewise RAM-only, re-seeded here
-    // at its boot floor (see `app.versions.record(0, …)` above); durable cross-restart rollback would
+    // at its boot floor (see `admin::seam::record_boot` above); durable cross-restart rollback would
     // need a store seam, which does not exist over the plugin wire ABI today (see the 1.5.3 report).
     tracing::info!(
         "reliability state (breakers, cooldowns, latency, hard-down) starts fresh on boot and is \
@@ -1071,6 +1077,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    credential_handle.set(std::sync::Arc::clone(&app_handle));
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,

@@ -119,6 +119,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         blocked_metadata_hosts: _,
         allow_metadata_hosts: _,
         allow_all_metadata: _,
+        guard: _,
         upstream_credentials: _,
         // The configured plane section NAMES (Law 7): `&'static str` keys, no credential.
         plane_sections: _,

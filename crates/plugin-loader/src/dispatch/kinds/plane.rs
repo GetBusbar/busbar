@@ -61,6 +61,10 @@ use crate::dispatch::{
     Kind, OutFrame,
 };
 
+/// The plane tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
+/// GROWTH RULE, `abi::mechanism::door::tail_read_len`).
+const PLANE_TAIL_FROZEN: usize = std::mem::size_of::<PlaneTail>();
+
 /// The plane kind.
 #[derive(Debug, Clone, Copy)]
 pub struct Plane;
@@ -124,21 +128,10 @@ fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
 /// Statement's sections, exactly one of them declaring (`check_sections`), and refusal statuses
 /// that pass `check_refusal_statuses`.
 fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
-    let p = st.kind_tail;
-    if p.is_null() {
-        return Err("a plane states no kind tail".into());
-    }
-    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`, whose
-    // size the loader checked covers the head; the whole tail is read only once its size covers
-    // this host's `PlaneTail`.
-    let size = unsafe { (*p).size };
-    if (size as usize) < std::mem::size_of::<PlaneTail>() {
-        return Err(format!(
-            "the plane tail is {size} bytes, smaller than this host's"
-        ));
-    }
-    // SAFETY: as above.
-    let tail = unsafe { p.cast::<PlaneTail>().read_unaligned() };
+    // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
+    // non-NULL kind tail is `'static` plugin data of its stated size.
+    let tail: PlaneTail =
+        unsafe { crate::dispatch::plugin::kind_tail(st, "a plane", PLANE_TAIL_FROZEN) }?;
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_trust_keys(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;

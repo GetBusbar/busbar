@@ -23,9 +23,19 @@
 
 pub mod door;
 
+use crate::abi::sdk::conn::Host;
 use crate::abi::store::OpId;
 use crate::kinds::{Head, RecordBytes};
-use crate::records::{AuditRecord, MeteringDelta, PlaneRecordRef, RecordStore, UsageDelta};
+use crate::records::{
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
+    PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+};
+
+mod op;
+pub use op::{Checkout, Op, Services, Step};
+
+/// What `record_scan` answers: `(key, record)` in key order.
+pub type Scanned = Vec<(Vec<u8>, RecordBytes)>;
 
 /// Why an `op_id`-carrying write answered without applying anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,15 +159,24 @@ pub struct Tail {
 
 /// A store plugin, as the store v3 table serves it. Every method is required: the table has no
 /// NULL slot and no UNSUPPORTED answer.
-pub trait StoreSlots: RecordStore + Sized {
+pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// What this store states in its Statement tail.
     const TAIL: Tail;
 
-    /// Open an instance from the operator's settings (the section's JSON).
+    /// PARSE the operator's settings (the section's JSON) and nothing more: `validate` never opens,
+    /// connects to or migrates a store (`--validate` runs no store).
     ///
     /// # Errors
-    /// A text naming why the settings do not open a store.
-    fn open(settings: &[u8]) -> Result<Self, String>;
+    /// The store's own refusal text, carried verbatim to the operator.
+    fn validate(settings: &[u8]) -> Result<(), String>;
+
+    /// Open an instance from the operator's settings (the section's JSON), with the host tables
+    /// `open` was handed (`OpenIn.host`; `None` when none): its connector is reached per op through
+    /// [`Op`].
+    ///
+    /// # Errors
+    /// A text naming why the settings do not open a store, carried verbatim to the operator.
+    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
 
     /// `add_usage` (slot 8): [`RecordStore::add_usage`], deduped on `op`.
     ///
@@ -165,72 +184,111 @@ pub trait StoreSlots: RecordStore + Sized {
     /// [`OpRefused`].
     fn add_usage_op(
         &self,
+        cx: &mut Op<'_>,
         op: OpId,
         bucket: &str,
         window_start: u64,
         delta: &UsageDelta,
-    ) -> OpResult<()>;
+    ) -> Step<OpResult<()>>;
 
     /// `add_metering` (slot 9): [`RecordStore::add_metering`], deduped on `op`.
     ///
     /// # Errors
     /// [`OpRefused`].
-    fn add_metering_op(&self, op: OpId, delta: &MeteringDelta) -> OpResult<()>;
+    fn add_metering_op(
+        &self,
+        cx: &mut Op<'_>,
+        op: OpId,
+        delta: &MeteringDelta,
+    ) -> Step<OpResult<()>>;
 
     /// `append_audit` (slot 19): [`RecordStore::append_audit`], deduped on `op`.
     ///
     /// # Errors
     /// [`OpRefused`]; a different record at a used `seq` is `Failed` (a fork).
-    fn append_audit_op(&self, op: OpId, entry: &AuditRecord) -> OpResult<()>;
+    fn append_audit_op(&self, cx: &mut Op<'_>, op: OpId, entry: &AuditRecord)
+        -> Step<OpResult<()>>;
 
     /// `append_plane_record` (slot 26): [`RecordStore::append_plane_record`], deduped on `op`.
     ///
     /// # Errors
     /// [`OpRefused`].
-    fn append_plane_record_op(&self, op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()>;
+    fn append_plane_record_op(
+        &self,
+        cx: &mut Op<'_>,
+        op: OpId,
+        record: PlaneRecordRef<'_>,
+    ) -> Step<OpResult<()>>;
 
     /// `append_batch` (slot 33): append `records` to `stream`; the head it reached.
     ///
     /// # Errors
     /// [`OpRefused`].
-    fn append_batch(&self, op: OpId, stream: &str, records: &[RecordBytes]) -> OpResult<Head>;
+    fn append_batch(
+        &self,
+        cx: &mut Op<'_>,
+        op: OpId,
+        stream: &str,
+        records: &[RecordBytes],
+    ) -> Step<OpResult<Head>>;
 
     /// `heads` (slot 36): where each stream has reached.
     ///
     /// # Errors
     /// A backend text.
-    fn heads(&self) -> Result<Vec<(String, Head)>, String>;
+    fn heads(&self, cx: &mut Op<'_>) -> Step<Result<Vec<(String, Head)>, String>>;
 
     /// `session_put` (slot 37): an upsert on `session`.
     ///
     /// # Errors
     /// A backend text.
-    fn session_put(&self, session: u64, node: &str, principal: &str) -> Result<(), String>;
+    fn session_put(
+        &self,
+        cx: &mut Op<'_>,
+        session: u64,
+        node: &str,
+        principal: &str,
+    ) -> Step<Result<(), String>>;
 
     /// `session_remove` (slot 38); absent is `Ok`.
     ///
     /// # Errors
     /// A backend text.
-    fn session_remove(&self, session: u64) -> Result<(), String>;
+    fn session_remove(&self, cx: &mut Op<'_>, session: u64) -> Step<Result<(), String>>;
 
     /// `sessions_for` (slot 39): the sessions `principal` holds, with their nodes.
     ///
     /// # Errors
     /// A backend text.
-    fn sessions_for(&self, principal: &str) -> Result<Vec<(u64, String)>, String>;
+    fn sessions_for(
+        &self,
+        cx: &mut Op<'_>,
+        principal: &str,
+    ) -> Step<Result<Vec<(u64, String)>, String>>;
 
     /// `record_put` (slot 40): an upsert on `(schema, key)`. `value` is the host's bytes, borrowed,
     /// and at most `MAX_RECORD_BYTES` (the door refuses a longer one before calling).
     ///
     /// # Errors
     /// A backend text.
-    fn record_put(&self, schema: &str, key: &[u8], value: &[u8]) -> Result<(), String>;
+    fn record_put(
+        &self,
+        cx: &mut Op<'_>,
+        schema: &str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Step<Result<(), String>>;
 
     /// `record_get` (slot 41).
     ///
     /// # Errors
     /// A backend text.
-    fn record_get(&self, schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String>;
+    fn record_get(
+        &self,
+        cx: &mut Op<'_>,
+        schema: &str,
+        key: &[u8],
+    ) -> Step<Result<Option<RecordBytes>, String>>;
 
     /// `record_scan` (slot 42): at most `limit` records under `prefix`, in key order; `limit` 0 is
     /// nothing.
@@ -239,62 +297,357 @@ pub trait StoreSlots: RecordStore + Sized {
     /// A backend text.
     fn record_scan(
         &self,
+        cx: &mut Op<'_>,
         schema: &str,
         prefix: &[u8],
         limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, String>;
+    ) -> Step<Result<Scanned, String>>;
 
     /// `reserve` (slot 34): all or nothing; on `Ok`, EXACTLY one [`Grant`] per cell, in order,
     /// into `grants` (else FAULT). `cells` reads the host's array in place (clone it to read it
     /// again) and `grants` writes into the host's, its room checked first: the request path
     /// allocates nothing in the SDK (the design's plugin memory rule). Write grants only on `Ok`.
+    /// The epoch and a slice's life follow `abi::store::SLICE_TTL_MS`'s spec: a fleet store fences
+    /// on its persisted epoch and bounds `valid_until_ms`; a single-node store may not.
     ///
     /// # Errors
-    /// [`ReserveRefused`]; nothing is applied.
+    /// [`ReserveRefused`] (a stale epoch is `StaleEpoch`); nothing is applied.
     fn reserve<'c>(
         &self,
+        cx: &mut Op<'_>,
         op: OpId,
         epoch: u64,
         cells: impl Iterator<Item = Cell<'c>> + Clone,
         grants: &mut impl Extend<Grant>,
-    ) -> Result<(), ReserveRefused>;
+    ) -> Step<Result<(), ReserveRefused>>;
 
     /// `slice_release` (slot 35): per item `(slice_id, unspent)`, the amount taken back after
     /// clamping, in item order, into `released`. As `reserve`: `items` reads the host's array in
     /// place and `released` writes into the host's. Exactly one amount per item: any other count
-    /// is FAULT. Write amounts only on `Ok`.
+    /// is FAULT. Write amounts only on `Ok`. It always applies, whatever the epoch, capped at what
+    /// the slice has left: a slice with nothing left returns `0`.
     ///
     /// # Errors
-    /// [`OpRefused`]; an unknown slice or a stale epoch is `Failed`, nothing applied.
+    /// [`OpRefused`]; a slice the store never granted is `Failed`, nothing applied.
     fn slice_release(
         &self,
+        cx: &mut Op<'_>,
         op: OpId,
         epoch: u64,
         items: impl Iterator<Item = (u64, u64)> + Clone,
         released: &mut impl Extend<u64>,
-    ) -> OpResult<()>;
+    ) -> Step<OpResult<()>>;
 
     /// `add_usage_batch` (slot 43): the cells in order, atomically.
     ///
     /// # Errors
     /// [`OpRefused`].
-    fn add_usage_batch(&self, op: OpId, cells: &[(&str, u64, UsageDelta)]) -> OpResult<()>;
+    fn add_usage_batch(
+        &self,
+        cx: &mut Op<'_>,
+        op: OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> Step<OpResult<()>>;
 
     /// `add_metering_batch` (slot 44): the deltas in order, atomically.
     ///
     /// # Errors
     /// [`OpRefused`].
-    fn add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()>;
+    fn add_metering_batch(
+        &self,
+        cx: &mut Op<'_>,
+        op: OpId,
+        deltas: &[MeteringDelta],
+    ) -> Step<OpResult<()>>;
 
     /// `append_audit_batch` (slot 45): the records in order, atomically.
     ///
     /// # Errors
     /// [`OpRefused`]; one fork refuses the whole batch.
-    fn append_audit_batch(&self, op: OpId, entries: &[AuditRecord]) -> OpResult<()>;
+    fn append_audit_batch(
+        &self,
+        cx: &mut Op<'_>,
+        op: OpId,
+        entries: &[AuditRecord],
+    ) -> Step<OpResult<()>>;
 
     /// `window_caps` (slot 46): upsert each cap by its slot, newest `config_gen` wins; atomic.
     ///
     /// # Errors
     /// [`CapsRefused`]; nothing is applied.
-    fn window_caps(&self, op: OpId, caps: &[Cap<'_>]) -> Result<(), CapsRefused>;
+    fn window_caps(
+        &self,
+        cx: &mut Op<'_>,
+        op: OpId,
+        caps: &[Cap<'_>],
+    ) -> Step<Result<(), CapsRefused>>;
+
+    // ── the 1.5.5 op set (slots 0-32), each one body, served through the table ─────────────────
+
+    /// `put_key` (slot 0): upsert `key` by its id.
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn put_key(&self, cx: &mut Op<'_>, key: &VirtualKey) -> Step<RecordStoreResult<()>>;
+
+    /// `get_key` (slot 1).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn get_key(&self, cx: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<Option<VirtualKey>>>;
+
+    /// `list_keys` (slot 2).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_keys(&self, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>>;
+
+    /// `delete_key` (slot 3): tombstone it.
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn delete_key(&self, cx: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>>;
+
+    /// `scrub_key` (slot 4).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn scrub_key(&self, cx: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>>;
+
+    /// `list_keys_since` (slot 5).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_keys_since(
+        &self,
+        cx: &mut Op<'_>,
+        since: u64,
+    ) -> Step<RecordStoreResult<Vec<VirtualKey>>>;
+
+    /// `get_usage` (slot 6).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn get_usage(
+        &self,
+        cx: &mut Op<'_>,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> Step<RecordStoreResult<UsageLedger>>;
+
+    /// `put_usage` (slot 7).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn put_usage(
+        &self,
+        cx: &mut Op<'_>,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &UsageLedger,
+    ) -> Step<RecordStoreResult<()>>;
+
+    /// `list_metering` (slot 10).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_metering(
+        &self,
+        cx: &mut Op<'_>,
+        bucket: u64,
+    ) -> Step<RecordStoreResult<Vec<MeteringRow>>>;
+
+    /// `purge_windows_before` (slot 11).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn purge_windows_before(&self, cx: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>>;
+
+    /// `purge_metering_before` (slot 12).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn purge_metering_before(&self, cx: &mut Op<'_>, bucket: &str) -> Step<RecordStoreResult<u64>>;
+
+    /// `put_credential` (slot 13).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn put_credential(
+        &self,
+        cx: &mut Op<'_>,
+        secret: &CredentialSecret,
+    ) -> Step<RecordStoreResult<()>>;
+
+    /// `put_key_with_credential` (slot 14): both, atomically.
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn put_key_with_credential(
+        &self,
+        cx: &mut Op<'_>,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> Step<RecordStoreResult<()>>;
+
+    /// `list_credentials` (slot 15).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_credentials(
+        &self,
+        cx: &mut Op<'_>,
+        key_id: &str,
+    ) -> Step<RecordStoreResult<Vec<CredentialMeta>>>;
+
+    /// `lookup_credential_secret` (slot 16).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn lookup_credential_secret(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        public_id: &str,
+    ) -> Step<RecordStoreResult<Option<CredentialSecret>>>;
+
+    /// `revoke_credential` (slot 17).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn revoke_credential(
+        &self,
+        cx: &mut Op<'_>,
+        id: &str,
+        reason: &str,
+    ) -> Step<RecordStoreResult<()>>;
+
+    /// `list_credentials_since` (slot 18).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_credentials_since(
+        &self,
+        cx: &mut Op<'_>,
+        since: u64,
+    ) -> Step<RecordStoreResult<Vec<CredentialSecret>>>;
+
+    /// `list_audit` (slot 20).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_audit(&self, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>>;
+
+    /// `add_denylist` (slot 21).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn add_denylist(&self, cx: &mut Op<'_>, sub: &str, reason: &str)
+        -> Step<RecordStoreResult<()>>;
+
+    /// `list_denylist` (slot 22).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_denylist(&self, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>>;
+
+    /// `list_audit_tail` (slot 23).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_audit_tail(
+        &self,
+        cx: &mut Op<'_>,
+        limit: u64,
+    ) -> Step<RecordStoreResult<Vec<AuditRecord>>>;
+
+    /// `upsert_plane_record` (slot 24).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn upsert_plane_record(
+        &self,
+        cx: &mut Op<'_>,
+        record: PlaneRecordRef<'_>,
+    ) -> Step<RecordStoreResult<()>>;
+
+    /// `get_plane_record` (slot 25): the body.
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn get_plane_record(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        id: &str,
+    ) -> Step<RecordStoreResult<Option<Vec<u8>>>>;
+
+    /// `list_plane_records` (slot 27): the bodies.
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_plane_records(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        selector: &PlaneSelector<'_>,
+    ) -> Step<RecordStoreResult<Vec<Vec<u8>>>>;
+
+    /// `list_plane_record_parents` (slot 28).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn list_plane_record_parents(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+    ) -> Step<RecordStoreResult<Vec<String>>>;
+
+    /// `purge_plane_records_before` (slot 29).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn purge_plane_records_before(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+    ) -> Step<RecordStoreResult<u64>>;
+
+    /// `delete_plane_record` (slot 30); absent is `Ok`.
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn delete_plane_record(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        id: &str,
+    ) -> Step<RecordStoreResult<()>>;
+
+    /// `redeem_plane_token` (slot 31): whether this call was the first redemption.
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn redeem_plane_token(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Step<RecordStoreResult<bool>>;
+
+    /// `plane_token_live` (slot 32).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn plane_token_live(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Step<RecordStoreResult<bool>>;
 }

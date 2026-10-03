@@ -349,25 +349,6 @@ fn the_remaining_families_are_decided_rather_than_assumed() {
     assert!(Selector::Port(443).overlaps(&Selector::Port(443)));
 }
 
-/// A claim on one transport cannot collide with a claim on another.
-#[test]
-fn claims_on_different_transports_never_collide() {
-    use busbar_contract::grammar::Claim;
-    let a = Claim {
-        transport: "http",
-        selector: Selector::ExactPath("/v1/chat/completions"),
-        scheme: Some("token"),
-        scheme_alternatives: &[],
-        idempotency: None,
-    };
-    let b = Claim {
-        transport: "stdio",
-        ..a
-    };
-    assert!(a.overlaps(&a));
-    assert!(!a.overlaps(&b));
-}
-
 /// One table writes both the ladder and the claim list, so the two cannot disagree.
 ///
 /// A claim carries exactly one selector, which is right, and a plane whose protocol detection is a

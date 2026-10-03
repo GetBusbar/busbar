@@ -737,3 +737,33 @@ fn an_rsa_pkcs8_key_becomes_a_ps256_jwk_pair() {
     assert_eq!(private["n"], public["n"]);
     assert!(rsa_jwk_from_pkcs8(b"not der", "x").is_err());
 }
+
+/// The jev subject's far end is a loopback port the rig owns, and the connector's destination guard
+/// refuses loopback by default (`advanced.block_private_addresses`, QUESTIONS Q130/Q131): the rig
+/// declares it as an allowed destination the way an operator would, as the oidf rig does.
+#[test]
+fn the_jev_subject_declares_its_loopback_far_end_as_an_allowed_destination() {
+    let text = xtask::conformance_record::jev_subject_config(
+        41000,
+        41001,
+        std::path::Path::new("/tmp/signing.key"),
+    );
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("the config is YAML");
+    assert_eq!(
+        doc["advanced"]["allow_destinations"],
+        serde_yaml::from_str::<serde_yaml::Value>("[\"127.0.0.1\"]").unwrap()
+    );
+    assert_eq!(doc["listen"].as_str(), Some("127.0.0.1:41000"));
+    assert_eq!(
+        doc["decisions"]["models"]["jev-1"]["provider"].as_str(),
+        Some("typesafe")
+    );
+    assert_eq!(
+        doc["decisions"]["rate_card"]["jev-1"]["units"]["decision"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        doc["auth"]["signing_key"]["file"].as_str(),
+        Some("/tmp/signing.key")
+    );
+}

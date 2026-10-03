@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 // ── Hook plugin test env ──────────────────────────────────────────────────────────────────────────
 // The 1.5.0 hooks-as-plugins world: a hook resolves its `plugin:` ref against a validated plugin
-// registry into a `DlopenPolicy`. These resolution tests build a real registry from the hermetic
+// registry into a `HookPolicy`. These resolution tests build a real registry from the hermetic
 // `busbar-hook-test-plugin` cdylib (aliased `test-hook`), so `resolve_*` exercises the true
 // registry-resolution path — the same seam the request path uses. A gate whose `plugin:` names a
 // missing plugin resolves to `None` (gate-absent), exactly as before.
@@ -84,7 +84,8 @@ fn test_env_needs(alias: &str, needs: busbar_plugin_loader::sign::HookNeeds) -> 
     // Poison-tolerant: a panicking test elsewhere must not cascade into every other dlopen test
     // reporting a lock error instead of its own result.
     let _staging_guard = DLOPEN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let lib = std::fs::read(hook_cdylib()?).expect("read hook cdylib");
+    let cdylib = hook_cdylib()?;
+    let lib = std::fs::read(&cdylib).expect("read hook cdylib");
     let dir = crate::tests::tmp_plugin_dir(&format!("hook-env-{alias}"));
     let mut m = crate::tests::plugin_manifest("busbar-hook-test-plugin", alias, "acme");
     m.kind = "hook".into();
@@ -93,6 +94,7 @@ fn test_env_needs(alias: &str, needs: busbar_plugin_loader::sign::HookNeeds) -> 
         .max()
         .expect("hook abi");
     m.needs = needs;
+    m.statement = Some(crate::test_support::hook_fixture_statement(&cdylib));
     let tarball = crate::tests::unsigned_tarball(m, &lib);
     std::fs::write(dir.join("hook.tar.gz"), tarball).unwrap();
     let mut policy = busbar_plugin_loader::sign::TrustPolicy {
@@ -102,10 +104,13 @@ fn test_env_needs(alias: &str, needs: busbar_plugin_loader::sign::HookNeeds) -> 
     policy.allow_unsigned = true;
     let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
     let _ = std::fs::remove_dir_all(&dir);
-    Some(HookEnv::new(
-        std::sync::Arc::new(registry),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-    ))
+    Some(
+        HookEnv::new(
+            std::sync::Arc::new(registry),
+            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        )
+        .expect("the registry's hook axis"),
+    )
 }
 
 /// A [`HookEnv`] that resolves `test-hook` (declaring rw prompt + ro user intent, so the projection
@@ -126,6 +131,7 @@ fn empty_env() -> HookEnv {
         std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     )
+    .expect("the registry's hook axis")
 }
 
 /// Fail-closed: a hook whose SecretRef setting cannot resolve must make `preresolve_hook_secrets`
@@ -419,7 +425,7 @@ fn unknown_hook_ref_falls_back_to_none() {
     assert!(resolve_pool_gates(&pool_with_hook("nonexistent"), &hooks, &empty_env(), 0).is_empty());
 }
 
-/// A pool `hook:` naming a plugin-backed gate resolves to a constructed `DlopenPolicy` whose name is
+/// A pool `hook:` naming a plugin-backed gate resolves to a constructed `HookPolicy` whose name is
 /// the hook's registry name; a gate whose plugin is missing (empty registry) degrades to gate-absent.
 #[test]
 fn plugin_gate_resolves_constructed_policy() {
@@ -441,7 +447,7 @@ fn plugin_gate_resolves_constructed_policy() {
             assert_eq!(
                 policy.name(),
                 "h",
-                "the DlopenPolicy carries the hook's registry name"
+                "the HookPolicy carries the hook's registry name"
             );
             assert_eq!(
                 timeout,
@@ -652,7 +658,8 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
             let reused = HookEnv::new(
                 reg,
                 std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-            );
+            )
+            .expect("the registry's hook axis");
             assert!(
                 resolve_pool_gates(&pool_with_hook("h"), &hooks, &reused, 0).is_empty(),
                 "a registry that does not carry the plugin must resolve to gate-absent even when \
@@ -1479,10 +1486,10 @@ fn opt_in_projections_redact_debug() {
     assert!(dbg.contains("sales-team"));
 }
 
-// ── DlopenPolicy behavior over the REAL projectors (ported socket/webhook transport coverage) ──────
-// These drive a LOADED test-hook plugin through the resolved `DlopenPolicy` using the engine's REAL
-// `hooks::plugin::projectors()` (the wire.rs fail-closed parsers), porting the retired socket/webhook
-// transport tests (reject-precedence, order, abstain, rewrite, notify delivery) onto the dlopen seam.
+// ── HookPolicy behavior over the REAL lowering (ported socket/webhook transport coverage) ──────
+// These drive a LOADED test-hook plugin through the resolved `HookPolicy`: the SDK lowers its JSON
+// reply on the plugin side and the kernel lowers the fixed answer through the wire.rs fail-closed
+// normalizing (reject-precedence, order, abstain, rewrite, notify delivery).
 
 /// Resolve the single gate `h` from a one-hook registry backed by the test-hook plugin (settings
 /// carry the plugin's behavior config), returning the constructed `Arc<dyn RoutingPolicy>`.
@@ -1638,9 +1645,8 @@ async fn dlopen_transform_rewrite_and_reject() {
     }
 }
 
-/// A `notify` tap over the dlopen seam is fire-and-forget AND actually DISPATCHED: a well-formed
-/// projection reaches the plugin's `notify`, a malformed one is swallowed BEFORE the ABI call, and
-/// neither errors or tears down the seam.
+/// A `notify` tap over the hook seam is fire-and-forget AND actually DISPATCHED: each tap view
+/// reaches the plugin's `notify`, and neither errors or tears down the seam.
 ///
 /// The dispatch is observed through the plugin's own `test_notifies_total` counter, read back over
 /// `status`. Without that observation this test asserted nothing at all — `notify` returns `()`, so
@@ -1669,22 +1675,15 @@ async fn dlopen_notify_is_fire_and_forget() {
     }
 
     assert_eq!(taps(&policy).await, 0.0, "no tap dispatched yet");
-    let projection = serde_json::to_vec(&serde_json::json!({"request": {"pool": "p"}})).unwrap();
-    policy.notify(&projection, budget).await;
+    let tap = || busbar_contract::abi::host::hook::NotifyFrame::build(&dreq("hello"), None, false);
+    policy.notify(tap(), budget).await;
     assert_eq!(
         taps(&policy).await,
         1.0,
-        "a well-formed tap projection must actually reach the plugin's `notify` over the ABI"
+        "a tap view must actually reach the plugin's `notify` over the ABI"
     );
-
-    // A MALFORMED projection is swallowed at the engine boundary: no panic, no error (the call
-    // returns `()` either way) and — the part that is observable — no ABI dispatch at all.
-    policy.notify(b"not json", budget).await;
-    assert_eq!(
-        taps(&policy).await,
-        1.0,
-        "a malformed tap projection must be swallowed BEFORE the ABI call, not forwarded"
-    );
+    policy.notify(tap(), budget).await;
+    assert_eq!(taps(&policy).await, 2.0, "each tap is one dispatch");
 
     // The seam is still live and correct after both taps — a fire-and-forget call must never
     // poison or close the handle it rode.
@@ -1695,7 +1694,7 @@ async fn dlopen_notify_is_fire_and_forget() {
 }
 
 /// `status` + `describe` over the dlopen seam: the plugin reports a metric (via `fetch_status`) and a
-/// schema envelope (via `fetch_schema`, single-nest extracted), using the REAL projectors.
+/// schema envelope (via `fetch_schema`, single-nest extracted), through the real lowering.
 #[tokio::test]
 async fn dlopen_status_and_schema_reads() {
     let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
@@ -1734,7 +1733,7 @@ async fn dlopen_status_and_schema_reads() {
 }
 
 /// `configure` push over the dlopen seam: the test-hook plugin acks the EXACT pushed version → Ok.
-/// (A wrong-version ack rejecting the commit is covered at the DlopenPolicy configure unit level.)
+/// (A wrong-version ack rejecting the commit is covered at the HookPolicy configure unit level.)
 ///
 /// **The one assertion this test makes is about the ACK.** It used to make a second one nobody
 /// intended: that a `dlopen` of the 2.1 MB test cdylib completed inside the control plane's 5 s
@@ -1849,7 +1848,7 @@ fn a_hook_carrying_a_secret_ref_is_never_reused() {
 }
 
 /// The on_error CHAIN fires through LOADED plugins: gate `a` (on_error → gate `b`) resolves a
-/// one-link fallback chain whose link is a live `DlopenPolicy` (name `b`), bottoming out on `b`'s
+/// one-link fallback chain whose link is a live `HookPolicy` (name `b`), bottoming out on `b`'s
 /// `reject` terminal. Ported from the socket on_error-chain test onto the dlopen seam.
 #[tokio::test]
 async fn dlopen_on_error_chain_link_is_live_plugin() {
@@ -1873,7 +1872,7 @@ async fn dlopen_on_error_chain_link_is_live_plugin() {
     assert_eq!(
         on_error_chain[0].policy.name(),
         "b",
-        "the fallback link is a live DlopenPolicy"
+        "the fallback link is a live HookPolicy"
     );
     assert_eq!(on_error, PolicyOnError::Reject);
     // And the live fallback link actually decides over the ABI.
@@ -2152,6 +2151,37 @@ async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
     assert!(
         started.elapsed() < std::time::Duration::from_secs(1),
         "the deadline must cut the exchange off promptly, not wait out the sleep"
+    );
+}
+
+/// A slow gate is cut off by the `budget` over the dlopen seam (spawn_blocking + timeout), promptly
+/// → `Err`, never a hang. The blocking sleep never stalls the runtime.
+///
+/// One of the two 1.5.5 timeout tests BUSBAR-1.6.0.md R1 (Q-LEAK) requires to pass as written: its
+/// assertions are the deleted loader test's, verbatim; only the call path is the hook axis's
+/// (`resolve_one`), where `load` and `DlopenPolicy` went.
+#[tokio::test]
+async fn dlopen_slow_gate_hits_the_deadline() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
+    let Some(env) = test_env() else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let policy =
+        resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 2000})).expect("resolve");
+    let started = std::time::Instant::now();
+    let r = policy
+        .decide(
+            &dreq("x"),
+            &[dcand(0)],
+            &dctx(),
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+    assert!(r.is_err(), "a slow gate must exceed the deadline");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "the deadline must cut off promptly"
     );
 }
 
@@ -2435,6 +2465,7 @@ fn parking_secret_env(park: std::time::Duration) -> HookEnv {
             }),
         )),
     )
+    .expect("the registry's hook axis")
 }
 
 /// A hook whose `settings:` carry a SecretRef pointing at a NON-built-in module, i.e. one that must
@@ -2599,7 +2630,7 @@ fn resolve_rewrite_pair(
 ///
 /// A call that FAILED is driven by the fixture's own "I could not answer" reply — the shape a gate
 /// takes when its classifier or model endpoint is down. A hook that is unreachable or over its
-/// deadline reaches the same arm one layer lower, in the transport (`DlopenPolicy::transform`).
+/// deadline reaches the same arm one layer lower, in the transport (`HookPolicy::transform`).
 #[tokio::test]
 async fn rewrite_call_failure_takes_the_configured_disposition() {
     let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;

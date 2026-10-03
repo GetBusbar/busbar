@@ -73,6 +73,7 @@ pub mod auth_bindings;
 pub mod boot;
 pub mod cli;
 pub mod connector;
+pub mod credentials;
 pub mod dispatch;
 pub mod doors;
 pub mod durability;
@@ -80,6 +81,7 @@ pub mod gauntlet_install;
 pub mod gauntlet_kernel;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
+pub mod hooks;
 pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;

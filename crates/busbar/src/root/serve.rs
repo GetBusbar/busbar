@@ -7,13 +7,13 @@
 //!
 //! THE HOST SERVICES ARRIVE LATE, BY DESIGN. The one dispatcher is built as the process's first act,
 //! before any configuration is read (the one-dispatcher boot), while the kernel's services are
-//! built from the loaded configuration (the egress rules `dest.judge` applies, among others). So the
+//! built from the loaded configuration (the destination guard `dest.judge` asks, among others). So the
 //! dispatcher is handed a [`LateServices`]: it answers every service REFUSED, as a dispatcher with
 //! no services does, until the composition installs the kernel's services, once, after the
 //! configuration loads and before any plugin is bound. No plugin crosses before then in a booted
 //! process, so none sees the refusal.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::{Body, Bytes};
@@ -34,13 +34,9 @@ use busbar_contract::caps::{
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
-use busbar_kernel::config::RootCfg;
 use busbar_kernel::door::{admitted_facts, refused_facts, UnitKeyMint};
 use busbar_kernel::host_records::QUEUE_CAP;
-use busbar_kernel::host_services::{
-    BlockingPool, DestRules, KernelServices, SignKey, SystemResolver,
-};
-use busbar_kernel::net_guard::{Denylist, GuardPolicy};
+use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
 use busbar_kernel::plane::store::KIND_DEMOTION;
 use busbar_kernel::plane::DemotionRecord;
 use busbar_kernel::plane_driver::serve::{
@@ -65,44 +61,29 @@ use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
 /// The egress class `dest.judge` applies when a plugin names none: the deployment's own stance.
 pub const DEFAULT_EGRESS_CLASS: u32 = 0;
 
-/// The kernel's egress rules for the deployment's default class, from its `security` section: the
-/// metadata denylist with the operator's additions, carve-outs and override, as the provider SSRF
-/// guard states them. A name named inside content is judged by its host (plaintext admitted, as the
-/// host was all that was judged there), and a private address is refused: no class a plugin can
-/// name relaxes that without a declared class of its own.
+/// The kernel's host services, judging every destination by `dest`: the deployment's one
+/// destination guard, the same judge the connector dials by (OWNER ruling DESTINATION GUARD).
 #[must_use]
-pub fn default_egress_rules(blocked: &[String], allowed: &[String], allow_all: bool) -> DestRules {
-    DestRules {
-        policy: GuardPolicy {
-            allow_plaintext: true,
-            ..GuardPolicy::default()
-        },
-        denylist: Arc::new(Denylist::new(blocked, allowed, allow_all)),
-    }
+pub fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
+    KernelServices::new().with_dest_judge(dest)
 }
 
-/// The kernel's host services for `cfg`: the default egress class and the system resolver. A class
-/// not mapped here is refused.
-#[must_use]
-pub fn kernel_services(cfg: &RootCfg) -> KernelServices {
-    KernelServices::new(
-        HashMap::from([(
-            DEFAULT_EGRESS_CLASS,
-            default_egress_rules(
-                &cfg.blocked_metadata_hosts,
-                &cfg.allow_metadata_hosts,
-                cfg.allow_all_metadata,
-            ),
-        )]),
-        Arc::new(SystemResolver),
-    )
-}
-
-/// THE COMPOSITION, once the configuration loads: the kernel's host services are installed into
-/// the dispatcher's [`LateServices`], before any plugin is bound. A second call (a reload) installs
-/// nothing.
-pub fn compose(cfg: &RootCfg, late: &LateServices) {
-    if late.install_kernel(Arc::new(kernel_services(cfg))).is_err() {
+/// THE COMPOSITION, once the configuration loads: the kernel's host services, judging by `dest`,
+/// with the host's `records.secret` read over `credentials` (`root::credentials`: the App's
+/// governance, through its swap handle once the App is built), are installed into the dispatcher's
+/// [`LateServices`], before any plugin is bound, the kernel's own kept whole for the late attach and
+/// the plane driver. A second call (a reload) installs nothing.
+pub fn compose(
+    dest: Arc<dyn DestJudge>,
+    late: &LateServices,
+    credentials: crate::root::credentials::AppCredentials,
+) {
+    let kernel = Arc::new(kernel_services(dest));
+    let services = crate::root::credentials::CredentialServices::new(
+        Arc::clone(&kernel) as Arc<dyn HostServices>,
+        Arc::new(credentials),
+    );
+    if late.install_kernel(kernel, Arc::new(services)).is_err() {
         tracing::debug!("the kernel's host services were already installed");
     }
 }
@@ -150,9 +131,9 @@ pub fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static str> {
 /// The kernel's host services, installed once after the configuration loads (see the module doc).
 pub struct LateServices {
     installed: OnceLock<Arc<dyn HostServices>>,
-    /// The kernel's own services, when those are what was installed ([`Self::install_kernel`]).
+    /// The kernel's own services, when those are what was composed ([`Self::install_kernel`]).
     kernel: OnceLock<Arc<KernelServices>>,
-    /// The clock before the install: the kernel's own, mapping no egress class.
+    /// The clock before the install: the kernel's own, judging no destination.
     clock: KernelServices,
 }
 
@@ -170,7 +151,7 @@ impl LateServices {
         Arc::new(LateServices {
             installed: OnceLock::new(),
             kernel: OnceLock::new(),
-            clock: KernelServices::new(HashMap::new(), Arc::new(SystemResolver)),
+            clock: KernelServices::new(),
         })
     }
 
@@ -180,11 +161,15 @@ impl LateServices {
         self.installed.set(services).map_err(|_| AlreadyInstalled)
     }
 
-    /// Install the kernel's own services, as [`Self::install`] does, and keep them whole for the
-    /// late attach ([`attach`]) and the plane driver ([`Self::kernel`]).
-    pub fn install_kernel(&self, services: Arc<KernelServices>) -> Result<(), AlreadyInstalled> {
-        self.install(Arc::clone(&services) as Arc<dyn HostServices>)?;
-        self.kernel.set(services).map_err(|_| AlreadyInstalled)
+    /// Install `services` (the kernel's own, wrapped by the root's), as [`Self::install`] does, and
+    /// keep `kernel` whole for the late attach ([`attach`]) and the plane driver ([`Self::kernel`]).
+    pub fn install_kernel(
+        &self,
+        kernel: Arc<KernelServices>,
+        services: Arc<dyn HostServices>,
+    ) -> Result<(), AlreadyInstalled> {
+        self.install(services)?;
+        self.kernel.set(kernel).map_err(|_| AlreadyInstalled)
     }
 
     /// The kernel's composed services: the plane driver admits its instances and ticks over them.
@@ -276,6 +261,13 @@ impl HostServices for LateServices {
         }
     }
 
+    fn trust_verify(&self, caller: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_verify(caller, cp, payload, sigs),
+            Err(r) => r,
+        }
+    }
+
     fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
         match self.served() {
             Ok(s) => s.entitlement_check(caller, unit, target),
@@ -287,6 +279,13 @@ impl HostServices for LateServices {
         match self.served() {
             Ok(s) => s.random_fill(len),
             Err(r) => r,
+        }
+    }
+
+    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.records_secret(kind, id, later),
+            Err(r) => Ran::Now(r),
         }
     }
 }

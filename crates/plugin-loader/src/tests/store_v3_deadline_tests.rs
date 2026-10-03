@@ -153,8 +153,17 @@ fn open() -> (LoadedStore, Arc<Dispatcher>) {
     )
     .expect("the hung door loads");
     (
-        LoadedStore::open(p, d.clone(), b"{}", 1).expect("it opens"),
+        LoadedStore::open(p, d.clone(), b"{}", mint).expect("it opens"),
         d,
+    )
+}
+
+/// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+fn mint() -> OpId {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    OpId::from_parts(
+        0x7e59,
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
     )
 }
 

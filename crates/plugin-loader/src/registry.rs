@@ -65,11 +65,9 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // envelope (#85), which the decoder reads beside the bare shape. `[1, AUTH_ABI_VERSION]` =
         // `[1, 3]`.
         "auth" => &[1, busbar_contract::abi::cold::AUTH_ABI_VERSION],
-        // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
-        // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
-        // out-of-process socket/webhook hook transport. Payload schema v1 (bare replies) up to v2
-        // (the same replies inside the observability envelope, #85): the decoder accepts either
-        // shape, so THE FLOOR STAYS 1 and every published hook keeps loading.
+        // A `kind: hook` plugin states its Statement and is opened through the hook axis
+        // (`hook_door::HookRows`) on the hook kind's memory ABI; one whose manifest states none is
+        // refused there. The payload schema range is the manifest's (C21 narrows it).
         "hook" => &[1, busbar_contract::abi::cold::hook::HOOK_ABI_VERSION],
         // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
         // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
@@ -128,8 +126,26 @@ impl LoadablePlugin {
     pub fn in_process(&self) -> bool {
         matches!(
             self.entry,
-            Some(LinkedEntry::Store(_) | LinkedEntry::BuiltinSecret | LinkedEntry::Ranking { .. })
+            Some(LinkedEntry::Store { .. } | LinkedEntry::BuiltinSecret)
         )
+    }
+
+    /// M6-COLD-DELETE: whether this row is a LINKED cold boundary (`BUSBAR_COLD_ENTRY`).
+    pub fn image_is_cold_linked(&self) -> bool {
+        matches!(self.entry, Some(LinkedEntry::Boundary(_)))
+    }
+
+    /// A compiled-in memory-ABI row's door; `None` for any other row.
+    pub fn door(&self) -> Option<busbar_contract::abi::mechanism::door::DoorFn> {
+        match self.entry {
+            Some(LinkedEntry::Door(door)) => Some(door),
+            _ => None,
+        }
+    }
+
+    /// Whether this row came in through the LINKED door (it has no tarball).
+    pub fn linked(&self) -> bool {
+        self.entry.is_some()
     }
 
     /// What the one load runs over: the linked boundary, or the verified bytes.
@@ -178,9 +194,6 @@ pub struct LinkedPlugin {
     pub ephemeral: bool,
 }
 
-/// What a [`LinkedEntry::Ranking`] row opens: the routing policy one of its spellings ranks by.
-pub type RankingPolicy = std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>;
-
 /// A linked plugin's boundary.
 #[derive(Clone, Copy)]
 pub enum LinkedEntry {
@@ -190,19 +203,22 @@ pub enum LinkedEntry {
     /// default a build ships. `open_store` calls it with the row's configuration, where it would
     /// otherwise run the image load; everything before that (the row, its registration, name and
     /// alias resolution, the kind check) is the axis every other row takes.
-    Store(fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>),
+    Store {
+        /// The row's in-process open (the cold lane; DEL-COLD-LOADER deletes it).
+        open: fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>,
+        /// The row's store v3 door, which boot opens it through ([`PluginRegistry::store_door`]);
+        /// `None` for a row that states none.
+        door: Option<busbar_contract::abi::mechanism::door::DoorFn>,
+    },
     /// A BUILT-IN secret module (`env`, `file`): the row's own name is the reference
     /// [`crate::builtin_secret::resolve_builtin`] resolves, in process. `open_secret` opens it where it would
     /// otherwise run the image load, on the same axis as [`LinkedEntry::Store`].
     BuiltinSecret,
-    /// The BUILT-IN ranking hooks: ONE `kind: hook` row whose frozen config spellings (`least_busy`,
-    /// …) are `aliases` in the axis's alias table — resolved there like any alias, never renamed and
-    /// never put through the package-name rule, which governs the row's own name. `open_ranking`
-    /// hands `open` the spelling a reference used, where it would otherwise run the image load.
-    Ranking {
-        open: fn(&str) -> Option<RankingPolicy>,
-        aliases: &'static [&'static str],
-    },
+    /// A compiled-in plugin on its kind's memory ABI: the logic crate's `plugin_door!` door function,
+    /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
+    /// dropped-in). Loaded
+    /// through [`crate::dispatch::load_linked`].
+    Door(busbar_contract::abi::mechanism::door::DoorFn),
 }
 
 impl LinkedPlugin {
@@ -211,6 +227,16 @@ impl LinkedPlugin {
         LinkedPlugin {
             manifest,
             entry: LinkedEntry::Boundary(entry),
+            ephemeral: false,
+        }
+    }
+
+    /// A linked MEMORY-ABI plugin: `manifest` and its door (THE DESIGN: compiled-in = dropped-in,
+    /// the same door the dropped-in build exports).
+    pub fn door(manifest: Manifest, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Door(door),
             ephemeral: false,
         }
     }
@@ -225,7 +251,23 @@ impl LinkedPlugin {
             busbar_contract::abi::cold::kind::STORE,
             busbar_contract::abi::cold::ABI_VERSION,
         );
-        Self::built_in(name, kind, abi, LinkedEntry::Store(open), ephemeral)
+        Self::built_in(
+            name,
+            kind,
+            abi,
+            LinkedEntry::Store { open, door: None },
+            ephemeral,
+        )
+    }
+
+    /// This STORE row with its store v3 `door` (the door boot opens it through); any other row is
+    /// returned as it was.
+    #[must_use]
+    pub fn with_store_door(mut self, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
+        if let LinkedEntry::Store { door: d, .. } = &mut self.entry {
+            *d = Some(door);
+        }
+        self
     }
 
     /// The built-in SECRET module named `name` (its own alias), at this binary's secret payload
@@ -249,24 +291,14 @@ impl LinkedPlugin {
         Self::built_in(name, kind, abi, LinkedEntry::Boundary(entry), false)
     }
 
-    /// The built-in RANKING row named `name`, at this binary's hook payload schema, answering to
-    /// every one of `aliases` (see [`LinkedEntry::Ranking`]).
-    pub fn ranking(
-        name: &str,
-        aliases: &'static [&'static str],
-        open: fn(&str) -> Option<RankingPolicy>,
-    ) -> Self {
+    /// A linked AUTH plugin named `name` (its own alias) on the auth kind's MEMORY ABI: the logic
+    /// crate's `plugin_door!` door, the same door its dropped-in build exports.
+    pub fn auth_door(name: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
         let (kind, abi) = (
-            busbar_contract::abi::cold::kind::HOOK,
-            busbar_contract::abi::cold::hook::HOOK_ABI_VERSION,
+            busbar_contract::abi::cold::kind::AUTH,
+            busbar_contract::abi::auth::ABI_VERSION,
         );
-        Self::built_in(
-            name,
-            kind,
-            abi,
-            LinkedEntry::Ranking { open, aliases },
-            false,
-        )
+        Self::built_in(name, kind, abi, LinkedEntry::Door(door), false)
     }
 
     /// The row a built-in states: the manifest a first-party tarball of `kind` would carry.
@@ -386,15 +418,6 @@ impl PluginRegistry {
         for row in rows {
             registry.admit(row);
         }
-        // A built-in's frozen spellings are the WEAKEST claim on the alias table: registered after
-        // every row's own name and alias, so no row that answered to one before loses it.
-        for (i, row) in registry.rows.iter().enumerate() {
-            if let Some(LinkedEntry::Ranking { aliases, .. }) = row.entry {
-                for alias in aliases {
-                    registry.by_alias.entry(alias.to_string()).or_insert(i);
-                }
-            }
-        }
         registry
     }
 
@@ -488,6 +511,15 @@ impl PluginRegistry {
         &self.skipped
     }
 
+    /// Every DROPPED-IN `kind: hook` row, in scan order: the rows the hook axis reads its
+    /// dropped-in candidates from ([`crate::hook_door::HookRows::new`]). The manifest's kind word is
+    /// read here, where every other kind's is ([`Self::open_planes`], [`Self::open_transports`]).
+    pub fn dropped_hooks(&self) -> impl Iterator<Item = &LoadablePlugin> {
+        self.loadable()
+            .iter()
+            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::HOOK && !p.linked())
+    }
+
     /// Resolve `name_or_alias` to a row of `kind`, or say why not — the one explanation every
     /// `open_*` below gives: a skipped match names the skip, a miss names the loadable set, a row of
     /// another kind says it cannot `role`.
@@ -523,6 +555,13 @@ impl PluginRegistry {
         Ok(p)
     }
 
+    /// The STORE `name_or_alias` resolves to, refused unless its manifest says `store`. The one
+    /// place the loader spells the store kind's root key; [`Self::open_store`] and
+    /// [`Self::store_door`] both resolve through it.
+    fn resolve_store(&self, name_or_alias: &str) -> Result<&LoadablePlugin, String> {
+        self.resolve_kind(name_or_alias, "store", "back the governance store")
+    }
+
     /// Open a STORE plugin resolved by name or alias: verifies the resolved plugin's `kind` is
     /// `store`, then loads it over the store C ABI (its verified bytes staged — memfd on Linux,
     /// private temp elsewhere — or its linked boundary) and `open`s it with `cfg_json`. The one
@@ -532,8 +571,8 @@ impl PluginRegistry {
         name_or_alias: &str,
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
-        let p = self.resolve_kind(name_or_alias, "store", "back the governance store")?;
-        if let Some(LinkedEntry::Store(open)) = p.entry {
+        let p = self.resolve_store(name_or_alias)?;
+        if let Some(LinkedEntry::Store { open, .. }) = p.entry {
             return open(cfg_json);
         }
         // Hand the manifest's payload schema to the loader: a store built against an older schema
@@ -547,6 +586,44 @@ impl PluginRegistry {
         )
     }
 
+    /// THE DOOR a STORE resolved by name or alias opens through (the store axis,
+    /// `busbar_contract::store_calls::StoreAxis`): a linked row's store v3 door, or a dropped-in
+    /// plugin's verified bytes with the Statement its signed manifest states. A store that states no
+    /// door (a 1.5.5 JSON-contract plugin) is refused, naming the rebuild.
+    ///
+    /// # Errors
+    /// The name resolves to no store, or the store states no door.
+    pub fn store_door(
+        &self,
+        name_or_alias: &str,
+    ) -> Result<busbar_contract::store_calls::StoreDoor, String> {
+        use busbar_contract::store_calls::StoreDoor;
+        let p = self.resolve_store(name_or_alias)?;
+        let no_door = || {
+            format!(
+                "plugin '{}' states no store door: rebuild the plugin against the 1.6.0 SDK",
+                p.manifest.name
+            )
+        };
+        if let Some(entry) = p.entry {
+            return match entry {
+                LinkedEntry::Store {
+                    door: Some(door), ..
+                } => Ok(StoreDoor::Linked(door)),
+                _ => Err(no_door()),
+            };
+        }
+        let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
+        match p.manifest.stated_rendering().map_err(named)? {
+            Some(stated) => Ok(StoreDoor::Dropped {
+                file: p.file.clone(),
+                bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                stated,
+            }),
+            None => Err(no_door()),
+        }
+    }
+
     /// Open an AUTH plugin resolved by name or alias: verifies the resolved plugin's `kind` is `auth`,
     /// then loads it over the kind-neutral C ABI and `open`s it with `cfg_json`, returning
     /// `Box<dyn AuthModule>` — the seam the engine's auth chain consumes. Same trust and load
@@ -557,7 +634,30 @@ impl PluginRegistry {
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_contract::auth::AuthModule>, String> {
         let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
+        if p.door().is_some() {
+            return Err(format!(
+                "auth plugin '{name_or_alias}' is on the memory ABI: it opens through the auth \
+                 axis, not the cold lane"
+            ));
+        }
         crate::auth::load_auth_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
+    }
+
+    /// M6-COLD-DELETE: open an AUTH row that is on the COLD lane as the contract's `AuthCalls`
+    /// ([`crate::auth_axis::ColdAuth`]), over `settings` (a JSON string's own text, else the
+    /// document, as the cold lane took its config). A memory-ABI row is opened by the composition
+    /// root's auth axis, never here: a door needs the process's dispatcher.
+    pub fn open_auth_calls(
+        &self,
+        name_or_alias: &str,
+        settings: &serde_json::Value,
+    ) -> Result<std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>, String> {
+        let text = match settings {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let module = self.open_auth(name_or_alias, &text)?;
+        Ok(std::sync::Arc::new(crate::auth_axis::ColdAuth::new(module)))
     }
 
     /// Open an AUTH plugin as the unified [`busbar_contract::auth::AuthPlugin`] handle (verify + LOGIN) —
@@ -575,47 +675,6 @@ impl PluginRegistry {
         let module =
             crate::auth::load_login_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)?;
         Ok((module, abi_version))
-    }
-
-    /// Open a HOOK plugin resolved by name or alias: verifies the resolved plugin's `kind` is `hook`,
-    /// then loads it over the kind-neutral C ABI and `open`s it with `cfg_json`, returning
-    /// `Arc<dyn RoutingPolicy>` — the seam the engine's routing/hook chains consume. Same trust and
-    /// load pipeline as store/secret/auth; only the kind (and consuming seam) differs. `name` is the
-    /// hook's registry name (metrics id); `projectors` are the engine's fail-closed projection/parse
-    /// closures. FAIL-CLOSED on any resolution/kind/load failure.
-    pub fn open_hook(
-        &self,
-        name_or_alias: &str,
-        cfg_json: &str,
-        name: &str,
-        projectors: std::sync::Arc<crate::hook::HookProjectors>,
-    ) -> Result<std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>, String> {
-        let p = self.resolve_kind(name_or_alias, "hook", "serve as a routing hook")?;
-        crate::hook::load_hook_image(
-            p.image(),
-            cfg_json,
-            &p.manifest.name,
-            &p.manifest.kind,
-            name,
-            projectors,
-        )
-    }
-
-    /// Open a BUILT-IN ranking strategy resolved by name or alias: the row must be a `kind: hook`
-    /// [`LinkedEntry::Ranking`] row, opened with the spelling `name_or_alias` used. FAIL-CLOSED: any
-    /// other row, or a spelling the row does not rank by, is an error.
-    pub fn open_ranking(&self, name_or_alias: &str) -> Result<RankingPolicy, String> {
-        let p = self.resolve_kind(name_or_alias, "hook", "rank a pool")?;
-        match p.entry {
-            Some(LinkedEntry::Ranking { open, .. }) => open(name_or_alias),
-            _ => None,
-        }
-        .ok_or_else(|| {
-            format!(
-                "plugin '{}' is not a built-in ranking strategy",
-                p.manifest.name
-            )
-        })
     }
 
     /// Open a SECRET plugin resolved by name or alias: verifies the resolved plugin's `kind` is

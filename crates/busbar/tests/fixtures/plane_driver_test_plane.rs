@@ -311,6 +311,10 @@ static NEEDS: Shared<[Need; 1]> = Shared([Need {
     keep_response_headers: std::ptr::null(),
     keep_response_headers_len: 0,
     timeout_ms: 0,
+    keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+    _reserved: 0,
+    deny_response_headers: std::ptr::null(),
+    deny_response_headers_len: 0,
 }]);
 
 static OPS: Shared<Ops> = Shared(Ops {

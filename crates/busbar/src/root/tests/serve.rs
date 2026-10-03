@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
-
 use busbar_contract::abi::host::service as svc;
 use busbar_contract::abi::mechanism::call::Outcome;
 
@@ -40,11 +38,17 @@ impl HostServices for Judges {
     fn trust_due(&self, _: &Caller) -> Stored {
         Stored::ready(7)
     }
+    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        Stored::ready(10)
+    }
     fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
         Stored::ready(8)
     }
     fn random_fill(&self, _: u64) -> Stored {
         Stored::ready(9)
+    }
+    fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(Stored::ready(11))
     }
 }
 
@@ -109,6 +113,8 @@ fn every_service(s: &LateServices) -> Vec<Stored> {
         s.trust_due(&caller),
         s.entitlement_check(&caller, None, "model:m"),
         s.random_fill(16),
+        s.trust_verify(&caller, "peer", b"payload", b"[]"),
+        now(s.records_secret("sigv4", "AKID", Box::new(|_| {}))),
     ]
 }
 
@@ -123,18 +129,17 @@ fn every_service_is_the_installed_services_answer() {
     let after = every_service(&late);
     assert!(after.iter().all(|s| s.outcome == Outcome::Ready));
     let values: Vec<u64> = after.iter().map(|s| s.value).collect();
-    assert_eq!(values, (2..=9).collect::<Vec<u64>>());
+    assert_eq!(values, (2..=11).collect::<Vec<u64>>());
 }
 
 fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
-    let blocked: Vec<String> = blocked.iter().map(|h| (*h).to_string()).collect();
-    KernelServices::new(
-        HashMap::from([(
-            DEFAULT_EGRESS_CLASS,
-            default_egress_rules(&blocked, &[], allow_all),
-        )]),
-        Arc::new(SystemResolver),
-    )
+    let d = busbar_kernel::config::Destinations {
+        block_private_addresses: true,
+        blocked: blocked.iter().map(|h| (*h).to_string()).collect(),
+        allow_all_metadata: allow_all,
+        ..Default::default()
+    };
+    kernel_services(crate::root::connector::guard_for(&d).expect("the guard"))
 }
 
 fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
@@ -144,10 +149,12 @@ fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
     }
 }
 
-/// The default egress class is the deployment's `security` section: the metadata denylist with the
-/// operator's additions and override; a class the kernel did not map is refused.
+/// `dest.judge` asks the deployment's one destination guard: the metadata denylist with the
+/// operator's additions and override, private addresses refused by default, plaintext to a public
+/// host judged by its host (the default class takes its target's scheme); a class the guard does
+/// not know is refused.
 #[test]
-fn the_default_egress_class_is_the_deployments_security_stance() {
+fn dest_judge_asks_the_deployments_one_guard() {
     let late = LateServices::new();
     late.install(Arc::new(kernel(&["metadata.corp.example"], false)))
         .expect("the install");
@@ -164,9 +171,9 @@ fn the_default_egress_class_is_the_deployments_security_stance() {
     assert_eq!(judged("https://10.0.0.7/"), svc::DEST_INTERNAL);
     assert_eq!(judged("http://93.184.216.34/"), svc::DEST_ALLOWED);
     assert_eq!(
-        verdict(late.as_ref(), "https://93.184.216.34/", 9).outcome,
-        busbar_contract::abi::mechanism::call::Outcome::Refused,
-        "an unmapped class is refused"
+        verdict(late.as_ref(), "https://93.184.216.34/", 9).value,
+        svc::DEST_NO_HOST,
+        "a class the guard does not know dials nothing"
     );
     // `allow_all_metadata` is 1.5.5's nuclear override: the metadata guard is fully disabled, the
     // operator's additions and the metadata address alike; with it off the address stays refused.
@@ -275,12 +282,12 @@ fn the_composed_kernel_services_are_kept_for_the_driver() {
     let late = LateServices::new();
     assert!(late.kernel().is_none(), "nothing before the compose");
     let composed = Arc::new(kernel(&[], false));
-    late.install_kernel(Arc::clone(&composed))
+    late.install_kernel(Arc::clone(&composed), composed.clone())
         .expect("the install");
     assert!(Arc::ptr_eq(&late.kernel().expect("kept"), &composed));
     assert!(late.is_installed());
     assert_eq!(
-        late.install_kernel(Arc::new(kernel(&[], false))),
+        late.install_kernel(Arc::new(kernel(&[], false)), Arc::new(kernel(&[], false))),
         Err(AlreadyInstalled)
     );
 }
@@ -335,7 +342,8 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     use busbar_kernel::trust::reverify::Policy;
     use busbar_kernel::trust::section::TrustEntry;
     let late = LateServices::new();
-    late.install_kernel(Arc::new(kernel(&[], false)))
+    let k = Arc::new(kernel(&[], false));
+    late.install_kernel(Arc::clone(&k), k)
         .expect("the install");
     let k = late.kernel().expect("kept");
     let entry = TrustEntry {

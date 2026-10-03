@@ -328,6 +328,8 @@ struct Bearer {
     /// Never answers on the spot, and its submitted call never answers at all.
     stall: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
+    /// The point each call was made at and the body it lent.
+    points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
 }
 struct Done(Fields);
 /// A submitted call that never answers.
@@ -372,6 +374,7 @@ impl OutboundAuth for Bearer {
             .lock()
             .unwrap()
             .push((r.method.clone(), r.authority.clone(), r.path.clone()));
+        self.points.lock().unwrap().push((r.point, r.body.clone()));
         Some(Fields::Ready(vec![AuthField {
             name: b"authorization".to_vec(),
             value: b"Bearer sk-test".to_vec().into(),
@@ -436,6 +439,12 @@ fn rig(
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,
                         style_flags: 0,
+                        // m1's style signs the body (`HeadBody`); every other is over the head.
+                        points: if k == 1 {
+                            AuthPoints::HEAD_BODY
+                        } else {
+                            AuthPoints::HEAD
+                        },
                         passthrough: k == 1,
                     }),
                 },
@@ -982,6 +991,36 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
     );
     // The pick says so, and the plane is told: only the passthrough member relays.
     assert_eq!(relays, vec![false, true]);
+}
+
+/// AUTH POINTS: a member whose style signs the body (`HeadBody`) has its one auth call made at
+/// `HeadBody` with the whole body, the bytes the framer sends; a member whose style is over the
+/// head is called at `Head` and lent no body.
+#[tokio::test]
+async fn a_body_signing_style_is_called_at_head_body_with_the_whole_body() {
+    // m0's style is over the head, m1's signs the body (the rig's binding for member 1).
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(503, None, vec![b"x"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    for n in 1..=2 {
+        let _ = far.member(&t, n).await;
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        *r.auth.points.lock().unwrap(),
+        vec![
+            (AuthPoint::Head, None),
+            (AuthPoint::HeadBody, Some(request().body)),
+        ]
+    );
 }
 
 /// THE ERROR-BODY CAP (1.5.5's `limits.upstream_error_body_max_bytes`): a relayed failure's body is

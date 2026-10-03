@@ -63,6 +63,9 @@ pub(crate) struct InstanceWake {
     pub(crate) route: OnceLock<Weak<dyn WakeRoute>>,
     /// The instance as the host services see it, stated once at bind.
     pub(crate) caller: OnceLock<busbar_contract::services::Caller>,
+    /// The credential kinds the instance's Statement declares it reads, stated once at bind:
+    /// `records.secret` serves this instance those only.
+    pub(crate) credential_kinds: OnceLock<Vec<String>>,
     /// The instance's identity on the host's connection table and the table itself, set at bind
     /// when the instance's Statement declares a need (the connector slots read it).
     pub(crate) conn: OnceLock<(
@@ -76,6 +79,7 @@ impl std::fmt::Debug for InstanceWake {
         f.debug_struct("InstanceWake")
             .field("route", &self.route)
             .field("caller", &self.caller)
+            .field("credential_kinds", &self.credential_kinds)
             .field("conn", &self.conn.get().map(|(id, _)| id))
             .finish()
     }

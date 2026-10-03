@@ -18,6 +18,14 @@
     "AdvancedCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "allow_destinations": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "block_private_addresses": {
+          "optional": true,
+          "type": "bool"
+        },
         "rate_sweep_interval": {
           "optional": true,
           "type": "u32"
@@ -2560,6 +2568,10 @@
       "kind": "manual",
       "refused": [],
       "wire_keys": []
+    },
+    "type AdminChainAnswer": {
+      "kind": "alias",
+      "target": "Result<(ChainVerdict, Option<busbar_contract::authz::Scope>), AdminUnavailable>"
     },
     "type Answer": {
       "kind": "alias",

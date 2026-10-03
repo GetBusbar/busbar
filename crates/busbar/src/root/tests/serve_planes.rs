@@ -7,11 +7,11 @@
 //! into it): a bound plane whose section the deployment writes is opened, driven and its admin
 //! routes published; one whose section is absent stays unopened (LAW 7).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_contract::abi::plane::UnitCount;
-use busbar_kernel::host_services::{KernelServices, SystemResolver};
+use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{CancelBill, Checkpoint, MoneySeam};
 use busbar_kernel::teller::{Ended, UnitCtx};
 
@@ -72,10 +72,8 @@ fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> Option<crate::root::li
 
 pub(super) fn composed_services() -> Arc<LateServices> {
     let late = LateServices::new();
-    late.install_kernel(Arc::new(KernelServices::new(
-        HashMap::new(),
-        Arc::new(SystemResolver),
-    )))
+    let kernel = Arc::new(KernelServices::new());
+    late.install_kernel(Arc::clone(&kernel), kernel)
     .expect("installed once");
     late
 }

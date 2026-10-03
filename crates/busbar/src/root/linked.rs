@@ -41,7 +41,7 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
-use busbar_kernel::preflight::{LinkedAuth, LinkedHook, LinkedStore, RegistryIn, RootInstall};
+use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RegistryIn, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -96,8 +96,9 @@ pub struct Linked {
     pub exports: &'static [LinkedExport],
     /// The store axis: each linked in-process store's `(name, ephemeral, default, open)`.
     pub stores: &'static [LinkedStore],
-    /// The hook axis: each linked ranking row's `(name, aliases, open)`.
-    pub hooks: &'static [LinkedHook],
+    /// The hook axis: each linked `kind: hook` row's door, bound through the one loader path by the
+    /// root's hook axis (`crate::root::hooks`).
+    pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
     /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
     pub auths: &'static [LinkedAuth],
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
@@ -300,16 +301,33 @@ pub fn register_stores(linked: &Linked) {
     match default_store(linked.stores) {
         Ok(default) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
-            hooks: linked.hooks,
             default_store_module: default.unwrap_or_default(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
+            hook_axis: Some(crate::root::hooks::axis),
+            store_axis: Some(store_axis),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         }
     }
+}
+
+/// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's
+/// axis over the process's ONE dispatcher (`root::dispatch`, built at boot before the configuration
+/// is applied), each store instance logging under the configured `plugins.logs`, its needs declared
+/// on the process's one connection table, its bridge writes minted by the kernel's one `op_id`
+/// allocator.
+fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
+    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
+        crate::root::connector::the().clone();
+    std::sync::Arc::new(crate::root::loader::store_v3::DoorStoreAxis {
+        dispatcher: crate::root::dispatch::dispatcher(),
+        logs: plugin_logs().clone(),
+        conns: Some(conns),
+        mint: busbar_kernel::door::op_id,
+    })
 }
 
 /// THE DEFAULT GOVERNANCE STORE — the one linked store row that DECLARES itself the default, the
@@ -1030,7 +1048,7 @@ pub fn load_door_planes() {
 static LOGS: std::sync::OnceLock<crate::root::loader::dispatch::PluginLogConfig> =
     std::sync::OnceLock::new();
 
-fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
+pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
     LOGS.get_or_init(|| {
         let none = Default::default();
         crate::root::loader::dispatch::PluginLogConfig::from_words(None, None, &none, None, None)
@@ -1255,15 +1273,13 @@ pub fn register_ws_arrivals(linked: &Linked) {
 /// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
 /// `linked_*` cfgs): the hostless-egress driver and the egress-trust host, the parse-time section
 /// list a cross-plane hook refusal reads, and the envelope a self-enveloping admin verb replies
-/// through. Each backing is a ZST unit struct, so it promotes to `'static`.
+/// through. Each backing is a ZST unit struct, so it promotes to `'static`. The egress-trust host
+/// is installed by `run` once the configuration loads, over the destination guard.
 pub fn register_seams() {
     #[cfg(linked_egress)]
     {
         busbar_kernel::egress::seam::install_hostless_egress(
             &busbar_kernel::egress::seam::CoreHostlessEgress,
-        );
-        busbar_kernel::plane_host::egress_trust::install_egress_trust_host(
-            &busbar_kernel::plane_host::egress_trust::PassThroughEgressTrust,
         );
     }
     #[cfg(linked_plane_sections)]
