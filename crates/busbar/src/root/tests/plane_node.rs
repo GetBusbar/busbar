@@ -3191,7 +3191,7 @@ fn invoice_micros(
     let at = invoice::row_priced_at_ms(bucket_start_secs, era);
     let (_, card) = view.card_at(at).expect("a card covers every instant");
     let unit = |k: &str| report.usage.usage_units.get(k).copied().unwrap_or(0);
-    let row = busbar_core_admin::v1::contract::UsageBreakdown {
+    let row = invoice::UsageBreakdown {
         tokens_input: unit(busbar_contract::records::UNIT_INPUT),
         tokens_output: unit(busbar_contract::records::UNIT_OUTPUT),
         tokens_cache_read: unit(busbar_contract::records::UNIT_CACHE_READ),
@@ -3460,7 +3460,7 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     use busbar_core_admin::v1::service::read_path_money as invoice;
     let view = history.view();
     let (_, card) = view.card_at(at.ms()).expect("the card is in force");
-    let row = busbar_core_admin::v1::contract::UsageBreakdown {
+    let row = invoice::UsageBreakdown {
         tokens_input: 1_000,
         tokens_output: 250,
         tokens_cache_read: 10_000_000,

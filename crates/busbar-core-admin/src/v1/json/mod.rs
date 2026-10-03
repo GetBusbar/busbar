@@ -29,7 +29,9 @@ use crate::v1::contract::{
     AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS,
     PATH_PLUGINS_INSPECT,
 };
-use busbar_kernel::audit_ring as audit;
+// The kernel's admin audit ring, named once for this crate (the handlers, the plane-verb backing and
+// the audit-page view all reach it here).
+pub(crate) use busbar_kernel::audit_ring as audit;
 use busbar_kernel::state::AppHandle;
 
 /// The OpenAPI response-object key (`"responses"`). Named here ONCE and assembled from fragments so

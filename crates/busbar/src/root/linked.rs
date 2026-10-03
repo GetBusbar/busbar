@@ -1146,10 +1146,11 @@ pub fn register_ws_arrivals(linked: &Linked) {
 
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
 /// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
-/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host, the parse-time section
-/// list a cross-plane hook refusal reads, and the envelope a self-enveloping admin verb replies
-/// through. Each backing is a ZST unit struct, so it promotes to `'static`. The egress-trust host
-/// is installed by `run` once the configuration loads, over the destination guard.
+/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host and the parse-time section
+/// list a cross-plane hook refusal reads. The envelope a self-enveloping admin verb replies through
+/// is the admin crate's, bound by its `install()`. Each backing is a ZST unit struct, so it promotes
+/// to `'static`. The egress-trust host is installed by `run` once the configuration loads, over the
+/// destination guard.
 pub fn register_seams() {
     #[cfg(linked_egress)]
     {
@@ -1161,10 +1162,8 @@ pub fn register_seams() {
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::config_sections,
     );
-    #[cfg(linked_admin_envelope)]
-    busbar_kernel::admin_verbs::install_plane_admin_envelope(
-        &busbar_core_admin::planeverbs::CorePlaneAdminEnvelope,
-    );
+    // `admin-envelope`: the self-enveloping plane-verb backing is the admin crate's own, bound by
+    // its `install()` (main.rs), which the composition root calls unconditionally.
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a

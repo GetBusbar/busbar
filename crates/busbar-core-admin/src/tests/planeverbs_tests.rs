@@ -170,7 +170,7 @@ fn the_not_found_names_the_plane_s_own_subject() {
 /// `codec/tests/decl_tests.rs`, busbar-a2a `a2a/tests/serve_tests.rs`).
 #[test]
 fn the_audit_naming_is_derived_from_the_plane() {
-    use busbar_kernel::audit_ring::AUDIT;
+    use crate::v1::json::audit::AUDIT;
     let principal = busbar_contract::auth::AuthPrincipal(None);
     for decl in verb_planes() {
         assert_eq!(

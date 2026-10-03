@@ -52,7 +52,7 @@ pub fn audit(
     principal: &busbar_kernel::auth::AuthPrincipal,
 ) {
     let audit_kind = busbar_kernel::plane::plane_decl(plane).audit_kind;
-    busbar_kernel::audit_ring::AUDIT.record_by(
+    crate::v1::json::audit::AUDIT.record_by(
         &format!("{audit_kind}.{verb}"),
         &format!("{audit_kind}:{name}"),
         outcome,

@@ -263,7 +263,9 @@ pub struct InfoView {
 pub struct BuildInfo {
     /// Auth modules baked into this binary (e.g. `["tokens"]`; empty under `--no-default-features`).
     pub auth_modules: Vec<&'static str>,
-    /// Hook plugins baked into this binary (e.g. `["ranking"]`).
+    /// Hook plugins baked into this binary — the served description's example is read off the
+    /// compiled-in list itself ([`hook_plugins_description`]).
+    #[cfg_attr(feature = "openapi-schema", schemars(description = hook_plugins_description()))]
     pub hook_plugins: Vec<&'static str>,
     /// The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).
     pub weighted_floor: bool,
@@ -1041,6 +1043,17 @@ pub struct AdminAuthView {
     /// operator credential's provider alone), reported in order. Empty when the admin plane is open.
     #[cfg_attr(feature = "openapi-schema", schemars(description = modules_description()))]
     pub modules: Vec<String>,
+}
+
+/// The served description of [`BuildInfo::hook_plugins`]: 1.5.5's text byte for byte, its example
+/// read off the list the info read reports (`v1::service::hook_plugins_compiled_in`), so this
+/// contract spells no hook plugin.
+#[cfg(feature = "openapi-schema")]
+fn hook_plugins_description() -> String {
+    format!(
+        "Hook plugins baked into this binary (e.g. `{:?}`).",
+        crate::v1::service::hook_plugins_compiled_in()
+    )
 }
 
 /// The served description of [`AdminAuthView::modules`]: 1.5.5's text byte for byte, its example

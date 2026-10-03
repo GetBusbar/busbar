@@ -137,10 +137,7 @@ fn ledger_card(rates: Option<&[(&str, Rates4)]>, fee: i64) -> RateCard {
 use busbar_core_admin::v1::service::read_path_money as admin;
 
 /// One metering row in the shape `GET /api/v1/admin/usage` aggregates before it prices.
-fn admin_row(
-    counts: &[(&'static str, u64)],
-    requests: u64,
-) -> busbar_core_admin::v1::contract::UsageBreakdown {
+fn admin_row(counts: &[(&'static str, u64)], requests: u64) -> admin::UsageBreakdown {
     let at = |unit: &str| {
         counts
             .iter()
@@ -148,7 +145,7 @@ fn admin_row(
             .map(|(_, v)| *v)
             .unwrap_or(0)
     };
-    busbar_core_admin::v1::contract::UsageBreakdown {
+    admin::UsageBreakdown {
         tokens_input: at(INPUT),
         tokens_output: at(OUTPUT),
         tokens_cache_read: at(CACHE_READ),
