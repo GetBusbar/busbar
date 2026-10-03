@@ -110,7 +110,7 @@ fn external_chain(b: &[u8], start: usize, roots: &BTreeSet<String>) -> Option<us
 fn imported_names(path: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
-    let mut flush = |cur: &mut String, followed_by_path: bool, out: &mut Vec<String>| {
+    let flush = |cur: &mut String, followed_by_path: bool, out: &mut Vec<String>| {
         if !cur.is_empty()
             && !followed_by_path
             && !matches!(cur.as_str(), "self" | "as" | "super" | "crate")
@@ -237,15 +237,15 @@ pub(super) fn mask_kernel_facade<'a>(rel: &str, text: &'a str) -> Cow<'a, str> {
             let end = group_end(b, at);
             let mut depth = 0usize;
             let mut item_start = true;
-            for k in at..end {
-                match b[k] {
+            for (k, &c) in b.iter().enumerate().take(end).skip(at) {
+                match c {
                     b'{' => {
                         depth += 1;
                         item_start = depth == 1;
                     }
                     b'}' => depth = depth.saturating_sub(1),
                     b',' if depth == 1 => item_start = true,
-                    c if c.is_ascii_whitespace() => {}
+                    _ if c.is_ascii_whitespace() => {}
                     _ if item_start && depth == 1 => {
                         mask_module(&mut buf, k, &mut changed);
                         item_start = false;
