@@ -722,7 +722,6 @@ busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
-busbar-transport-ws = ["tokio-util", "tokio", "tokio-tungstenite", "futures"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
@@ -1053,8 +1052,6 @@ max_sites = 0
 known_sites = [
   "crates/busbar-plane-streaming/src/tests/harness.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
-  "crates/busbar-transport-ws/src/tests/battery.rs",
-  "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-kernel-egress/src/tests/harness.rs",
 ]
 
@@ -1229,7 +1226,6 @@ known_sites = [
   # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
   # verbatim (#83a SD-8).
   "crates/busbar-kernel/src/proto/installed.rs",
-  "crates/busbar-transport-ws/src/transport.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
   "crates/plane-example/src/",
