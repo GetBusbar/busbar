@@ -221,14 +221,13 @@ plugins:
   - repo: busbar-hook-webrequest
     kind: hook
     alias: webrequest
-    crate: busbar-hook-webrequest
+    crate: busbar-hook-webrequest-plugin
     version_line: "1.0"
     service: none
     release_gate: optional
     gate: smoke
     description: "A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/notify/configure/describe/status) to an operator-configured URL and returns the capped JSON reply: a busbar first-party kind:hook plugin (dlopen cdylib)."
     busbar_checkout: true
-    lib_only: true
     needs_prompt: "rw"
     needs_user: "ro"
     declares: "declares.json"
