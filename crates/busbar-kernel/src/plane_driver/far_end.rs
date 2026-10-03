@@ -199,7 +199,44 @@ impl Egress {
                 hops: 0,
                 live: None,
             }),
+            probe_of: None,
         }
+    }
+
+    /// THE FAR END OF ONE HEALTH PROBE (K7) of `destination`, its walk bounded by `timeout`: pinned
+    /// to that ONE member, which it reaches past the breaker's admission (a probe exists to reach a
+    /// suppressed member) and without a permit, a dispatch record or the request counters, as
+    /// 1.5.5's prober did. Its answer is recorded on every cell of the member ([`Breaker::probed`]).
+    /// `None` for a member with no route, or one configured for passthrough: it holds no
+    /// credential of its own, so a probe could only collect a refusal (1.5.5: "no key, no probe").
+    #[must_use]
+    pub fn probe(&self, destination: DestinationId, timeout: Duration) -> Option<EgressFarEnd<'_>> {
+        let route = self.routes.get(&destination)?;
+        if route.auth.as_ref().is_some_and(|a| a.passthrough) {
+            return None;
+        }
+        let member = self
+            .pools
+            .values()
+            .flat_map(|p| &p.members)
+            .find(|m| m.destination == destination)?
+            .clone();
+        let ctx = RequestCtx::new(
+            timeout.as_secs().max(1),
+            self.clock.now_secs(),
+            self.clock.now_millis(),
+        );
+        Some(EgressFarEnd {
+            egress: self,
+            route: UnitRoute::default(),
+            walk: Mutex::new(Walk {
+                ctx,
+                phase: Phase::Probe(member),
+                hops: 0,
+                live: None,
+            }),
+            probe_of: Some(destination),
+        })
     }
 }
 
@@ -214,6 +251,8 @@ enum Phase {
     Spill(String),
     /// Every path is spent: the next pick is this shed.
     Shed(u16, Option<u64>),
+    /// A health probe's one member, not yet taken.
+    Probe(Member),
 }
 
 /// The attempt in flight.
@@ -253,6 +292,8 @@ pub struct EgressFarEnd<'e> {
     egress: &'e Egress,
     route: UnitRoute,
     walk: Mutex<Walk>,
+    /// The member a health probe is pinned to; `None` for a unit's walk.
+    probe_of: Option<DestinationId>,
 }
 
 fn exhausted(shed: &Shed) -> Pick {
@@ -363,7 +404,7 @@ impl EgressFarEnd<'_> {
         if live.spent && !live.ended {
             e.breaker.refund_budget(live.member.destination);
         }
-        if !live.answered {
+        if !live.answered && self.probe_of.is_none() {
             e.journal.abandoned(&live.record);
         }
         drop(live.permit.take());
@@ -383,7 +424,7 @@ impl EgressFarEnd<'_> {
         w: &mut Walk,
         pool: &str,
         member: Member,
-        permit: Permit,
+        permit: Option<Permit>,
         probe: Option<u64>,
         degraded: bool,
     ) -> Pick {
@@ -405,7 +446,7 @@ impl EgressFarEnd<'_> {
         w.live = Some(Live {
             pool: pool.to_string(),
             member,
-            permit: Some(permit),
+            permit,
             probe,
             conn: None,
             record,
@@ -448,7 +489,7 @@ impl EgressFarEnd<'_> {
             .find(|m| m.destination == picked.destination)?
             .clone();
         let probe = picked.take_probe_epoch();
-        Some(self.take(w, &pool.name, member, picked.permit, probe, !primary))
+        Some(self.take(w, &pool.name, member, Some(picked.permit), probe, !primary))
     }
 
     /// The shed for `pool`: refuse, with the wait its own members justify.
@@ -480,6 +521,11 @@ impl EgressFarEnd<'_> {
                     return exhausted(&Shed::request_timeout());
                 }
                 match w.phase.clone() {
+                    Phase::Probe(member) => {
+                        // ONE member: a probe that brings no answer has nowhere to fail over to.
+                        w.phase = Phase::Shed(503, None);
+                        return self.take(&mut w, "", member, None, None, false);
+                    }
                     Phase::Shed(status, retry_after) => {
                         return exhausted(&Shed {
                             status,
@@ -571,7 +617,7 @@ impl EgressFarEnd<'_> {
                 .try_acquire(m.destination)
                 .map(|p| ((*m).clone(), p))
         })?;
-        Some(self.take(w, &pool.name, member, permit, None, true))
+        Some(self.take(w, &pool.name, member, Some(permit), None, true))
     }
 
     /// The bounded wait for a slot on a member passed over AT CAPACITY, then the breaker re-asked
@@ -620,7 +666,7 @@ impl EgressFarEnd<'_> {
                         &mut w,
                         &pool.name,
                         member.clone(),
-                        permit,
+                        Some(permit),
                         admit.probe_epoch,
                         true,
                     );
@@ -646,19 +692,21 @@ impl EgressFarEnd<'_> {
         if let Some(live) = w.live.as_mut() {
             let now = e.clock.now_secs();
             live.probe = None;
-            let pool = Self::metric_pool(&live.pool, &live.member).to_string();
-            if e.breaker.observe(
-                &live.pool,
-                live.member.destination,
-                Outcome::Transient { retry_after: None },
-                now,
-                token,
-            ) {
-                e.telemetry.breaker_trip(&pool, live.member.destination);
+            let outcome = Outcome::Transient { retry_after: None };
+            if let Some(destination) = self.probe_of {
+                // A probe's transport failure is a transient on every cell (1.5.5).
+                e.breaker.probed(destination, outcome, now, token);
+            } else {
+                let pool = Self::metric_pool(&live.pool, &live.member).to_string();
+                let destination = live.member.destination;
+                if e.breaker
+                    .observe(&live.pool, destination, outcome, now, token)
+                {
+                    e.telemetry.breaker_trip(&pool, destination);
+                }
+                e.telemetry.upstream_failure(&pool, destination, label);
+                e.telemetry.failover(&pool, label);
             }
-            e.telemetry
-                .upstream_failure(&pool, live.member.destination, label);
-            e.telemetry.failover(&pool, label);
         }
         self.settle(&mut w);
         fail_over()
@@ -751,8 +799,11 @@ impl EgressFarEnd<'_> {
         // to a host nobody configured: refused before the record, the auth call or the dial, and
         // nothing is recorded against the member. Then 1. the dispatch record, durable BEFORE the
         // dial; when it cannot be written nothing was recorded either. Neither has anything to
-        // abandon.
-        if !request.target.starts_with(b"/") || e.journal.dispatched(&record).is_err() {
+        // abandon. A probe moves no money and dispatches nothing a recovery would settle: it
+        // writes no record.
+        if !request.target.starts_with(b"/")
+            || (self.probe_of.is_none() && e.journal.dispatched(&record).is_err())
+        {
             let mut w = self.lock();
             if let Some(live) = w.live.as_mut() {
                 live.answered = true;
@@ -810,7 +861,9 @@ impl EgressFarEnd<'_> {
                 .map(|l| Self::metric_pool(&l.pool, &l.member).to_string())
                 .unwrap_or_default()
         };
-        e.telemetry.upstream_attempt(&pool, destination);
+        if self.probe_of.is_none() {
+            e.telemetry.upstream_attempt(&pool, destination);
+        }
         // 3. The connector: the judged, pinned dial and the framer's encode.
         let opened = e.conns.open(
             e.caller,
@@ -974,6 +1027,25 @@ impl EgressFarEnd<'_> {
             return fail_over();
         };
         live.answered = true;
+        if let Some(destination) = self.probe_of {
+            // THE PROBE'S ANSWER, classified as organic traffic is, recorded on every cell of its
+            // member; the plane is handed the first piece as the whole answer and the rest is
+            // never read.
+            let outcome = if matches!(status.class, Some(WireStatusClass::Success) | None) {
+                Outcome::Success
+            } else {
+                e.breaker.classify(destination, status).outcome
+            };
+            e.breaker.probed(destination, outcome, now, token);
+            live.ended = true;
+            self.settle(&mut w);
+            return FarPiece {
+                bytes,
+                status: far_status,
+                last: true,
+                ..FarPiece::default()
+            };
+        }
         let pool = Self::metric_pool(&live.pool, &live.member).to_string();
         let destination = live.member.destination;
         if matches!(status.class, Some(WireStatusClass::Success) | None) {

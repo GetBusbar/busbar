@@ -33,6 +33,7 @@ mod epoch;
 mod far_end;
 mod money;
 mod needs;
+mod probe;
 mod route;
 pub mod serve;
 
@@ -63,6 +64,7 @@ pub use far_end::{
 };
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
+pub use probe::PlaneProbes;
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
 
 use crate::auth::CallerRefKey;

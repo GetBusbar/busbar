@@ -466,3 +466,24 @@ fn the_root_breaker_observes_into_the_kernels_own_cells() {
         "the root adapter answers with the trip the kernel recorded"
     );
 }
+
+/// A HEALTH PROBE through the adapter (K7): its answer reaches every cell of the member under the
+/// pools' policy. A client fault leaves a member parked in every pool parked; a 2xx recovers it.
+#[test]
+fn a_probe_answer_reaches_every_cell_of_the_member() {
+    let breaker = adapter_for("pool");
+    let dest = DestinationId::new(21);
+    let t = route_token();
+    assert!(breaker.observe("pool", dest, Outcome::HardDown, 0, &t));
+    assert!(breaker.suppressing(dest, 0));
+
+    breaker.probed(dest, Outcome::RecordNothing, 0, &t);
+    assert!(
+        breaker.suppressing(dest, 0),
+        "a client fault records nothing"
+    );
+
+    breaker.probed(dest, Outcome::Success, 0, &t);
+    assert!(!breaker.suppressing(dest, 0), "the probe recovered it");
+    assert!(breaker.ready("pool", dest, 0, &t));
+}

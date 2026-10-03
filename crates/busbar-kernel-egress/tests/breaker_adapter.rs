@@ -200,6 +200,21 @@ impl Breaker for BreakerAdapter {
         )
     }
 
+    fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
+        self.0.suppressing(destination, now)
+    }
+
+    fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>) {
+        let cfg = self.1.clone();
+        self.0.probed(
+            destination,
+            map_outcome_to_breaker(outcome),
+            &move |_| Some(cfg.clone()),
+            now,
+            token,
+        );
+    }
+
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
         self.0.release_probe(pool, destination, epoch, now);
     }

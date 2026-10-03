@@ -26,9 +26,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, VERDICT_RETRY,
+    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE, EMIT_DONE,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS,
+    PIECE_LAST, PIECE_OUT_TEXT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -39,6 +39,7 @@ use tokio::sync::watch;
 use super::cancel::{Buried, CancelBill, Checkpoint};
 use super::{blob, BufferCaps, HeadFields, PlaneDriver, UnitState, NO_FIELD, NO_SPAN, ZERO_UNIT};
 use crate::host_records::Acked;
+use crate::slice::takes_lease;
 use crate::teller::UnitCtx;
 
 /// One piece of the far end's reply.
@@ -548,6 +549,12 @@ impl<'u> Pumping<'u> {
         self.bufs.caller_ref = caller_ref.to_vec();
     }
 
+    /// Whether the unit moves money: a tick unit (a health probe) is zero-billed and draws no
+    /// lease, §1's exempt origins.
+    fn billed(&self) -> bool {
+        takes_lease(self.ctx.origin, self.ctx.kernel_verb_only)
+    }
+
     /// The unit reached its end: its ticket goes back.
     pub(crate) fn finish(&mut self) {
         self.ended = true;
@@ -668,7 +675,8 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             };
             // THE ATTEMPT PIECE, then the caller's body the kernel kept, re-pushed on every attempt.
             // With no member for the first attempt there is no ATTEMPT piece: the body alone, which
-            // a plane may answer itself (a local answer); otherwise the unit has nowhere to go.
+            // a plane may answer itself (a local answer); otherwise the unit has nowhere to go. A
+            // health probe has no caller: its ATTEMPT piece alone asks for the probe request.
             let attempt = Piece {
                 from: FROM_KERNEL,
                 flags: 0,
@@ -684,7 +692,11 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 src: Src::Body,
                 ..attempt
             };
-            let pieces: &[Piece] = if far_bound { &[attempt, body] } else { &[body] };
+            let pieces: &[Piece] = match (far_bound, run.bufs.claim == CLAIM_PROBE) {
+                (true, true) => &[attempt],
+                (true, false) => &[attempt, body],
+                (false, _) => &[body],
+            };
             let local = {
                 let mut toward = Toward::FarEnd(&mut request);
                 for piece in pieces {
@@ -788,7 +800,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             };
             let bufs = &run.bufs;
             let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
-            let checkpoint = if units.is_empty() {
+            let checkpoint = if units.is_empty() || !run.billed() {
                 Checkpoint::Continue
             } else {
                 let mut st = run.lock();
@@ -834,7 +846,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         // answered is the unit's serving member, the one 1.5.5 ledgered and metered
                         // the response under (v1.5.5 `crates/busbar/src/proxy/usage.rs`
                         // `ledger_and_meter`: "`lane` is the SERVING lane"). A local answer has none.
-                        if !bufs.member.is_empty() {
+                        if !bufs.member.is_empty() && run.billed() {
                             let model = String::from_utf8_lossy(&bufs.member);
                             self.driver.money.served(run.ctx, &model, &bufs.provider);
                         }
