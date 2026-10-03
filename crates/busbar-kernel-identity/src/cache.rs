@@ -86,8 +86,7 @@ pub struct Sha256Digest;
 #[cfg(feature = "sha256")]
 impl CredentialDigest for Sha256Digest {
     fn digest(&self, credential: &[u8]) -> String {
-        use sha2::Digest as _;
-        hex::encode(sha2::Sha256::digest(credential))
+        hex::encode(ring::digest::digest(&ring::digest::SHA256, credential).as_ref())
     }
 }
 

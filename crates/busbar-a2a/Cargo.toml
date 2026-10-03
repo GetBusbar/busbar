@@ -86,8 +86,8 @@ a2a-pb = { workspace = true }
 a2a-lf = { workspace = true }
 tower = { workspace = true }
 ed25519-dalek = { workspace = true }
-hmac = { workspace = true }
-sha2 = { workspace = true }
+# SHA-256 card digests and the pushback HMAC, on ring (the one crypto backend).
+ring = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true }
@@ -135,6 +135,8 @@ test-support = [    "busbar-kernel/test-support",
 ]
 
 [dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
+sha2 = { workspace = true }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
 # Test-only crates the A2A plane's own `test-support` suite names. These were reachable when the plane

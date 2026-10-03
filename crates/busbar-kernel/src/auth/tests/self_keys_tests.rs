@@ -270,7 +270,6 @@ fn refresh_invalidates_old_token() {
 
 #[test]
 fn hmac_sig_token_rejected_bad_signature() {
-    use hmac::{Hmac, KeyInit, Mac};
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &SEED,
         crate::governance::signing::DEFAULT_KID,
@@ -285,9 +284,10 @@ fn hmac_sig_token_rejected_bad_signature() {
     let (payload_b64, _sig_b64) = body.split_once('.').unwrap();
     // 64-byte HMAC (SHA-512) so it PARSES as a signature and reaches the (failing) crypto check,
     // proving rejection is BadSignature, not merely Malformed length.
-    let mut mac = <Hmac<sha2::Sha512>>::new_from_slice(&SEED).unwrap();
-    mac.update(b"user:vk_deadbeef#0");
-    let forged_sig = mac.finalize().into_bytes();
+    let forged_sig = ring::hmac::sign(
+        &ring::hmac::Key::new(ring::hmac::HMAC_SHA512, &SEED),
+        b"user:vk_deadbeef#0",
+    );
     use base64::Engine;
     let forged = format!(
         "bbk_{}.{}",

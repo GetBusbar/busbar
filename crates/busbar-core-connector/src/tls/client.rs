@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
-use sha2::Digest as _;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 use crate::tls::install_crypto_provider;
@@ -147,11 +146,11 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
         let key_info = subject_public_key_info(end_entity.as_ref()).ok_or_else(|| {
             rustls::Error::General("peer certificate carries no readable key".into())
         })?;
-        let digest = sha2::Sha256::digest(key_info);
+        let digest = ::ring::digest::digest(&::ring::digest::SHA256, key_info);
         if self
             .pins
             .iter()
-            .any(|pin| pin.as_slice() == digest.as_slice())
+            .any(|pin| pin.as_slice() == digest.as_ref())
         {
             Ok(verified)
         } else {

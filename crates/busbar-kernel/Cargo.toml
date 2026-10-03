@@ -145,8 +145,6 @@ webpki-roots = { workspace = true }
 http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-sha2 = { workspace = true }
-hmac = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
 ed25519-dalek = { workspace = true }
@@ -273,6 +271,8 @@ test-support = ["dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-ho
 timing = ["dep:libc"]
 
 [dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
+sha2 = { workspace = true }
 # THE PLANE CRATES, pulled in `test-support` so busbar-core's OWN cross-plane integration tests
 # (`src/tests/tests.rs`) can build and downcast the REAL, externally-linked planes instead of the
 # former `#[path]` dual-compile of their sources. This is a DEV-dependency back-edge: busbar-mcp /

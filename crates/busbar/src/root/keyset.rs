@@ -33,7 +33,6 @@ use busbar_contract::caps::{DurableWrite, Grant, StepName};
 use busbar_kernel::registry::{bootstrap, BootstrapVerdict};
 use busbar_kernel_audit::{AuditSigningKey, AuditVerifyingKey};
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, RecordClass};
-use sha2::{Digest, Sha256};
 
 use crate::root::durability::Durability;
 
@@ -45,7 +44,7 @@ pub const KEYSET_FILE: &str = "deployment-keyset";
 #[must_use]
 pub fn fingerprint_of(key: &AuditVerifyingKey) -> [u8; 32] {
     let raw = hex::decode(key.public_key_hex()).unwrap_or_default();
-    Sha256::digest(raw).into()
+    busbar_kernel_ledger::digest::sha256(&raw)
 }
 
 /// [`fingerprint_of`] a signing key's public half.

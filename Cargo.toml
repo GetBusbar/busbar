@@ -152,7 +152,6 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 futures = "0.3"
 getrandom = "0.3"
 hex = "0.4.3"
-hmac = "0.13.0"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
@@ -288,7 +287,11 @@ serde_urlencoded = "0.7"
 # `serde_yaml::from_str` call site unchanged. Renaming here states the substitution once for the
 # whole workspace instead of re-arguing it in each member.
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
-sha2 = "0.11.0"
+# 0.10, the line every dependency that carries RustCrypto ships (oauth-as, sha1 via axum/tungstenite).
+# busbar's own digests and MACs are on ring (the one crypto backend); sha2 stays only where ring
+# would be a new backend in a plugin's closure (busbar-contract) and as the independent witness the
+# tests compare ring's bytes against.
+sha2 = "0.10"
 smallvec = "1"
 # Raw socket options for the thread-per-core data plane: each per-worker listener sets SO_REUSEPORT
 # so the kernel load-balances connections across the per-worker `TcpListener`s. Binary-only boot seam;
@@ -365,6 +368,11 @@ tungstenite = { version = "0.29", default-features = false }
 # under reqwest's re-export alias, and the egress-symmetry sweep spells the dependency honestly.
 # Already in the lock (reqwest, a2a-lf and friends all resolve it).
 url = "2"
+# THE IDNA BACKEND SELECTOR `idna` itself documents: 1.1.x maps Unicode hostnames through the small
+# unicode-rs crates (unicode-normalization, unicode-bidi) instead of ICU4X's ~20-crate stack, which
+# `url` -> `idna` otherwise links into the binary only for this. UTS #46 processing is unchanged.
+# Pinned exactly: the selection is the version number. Declared by the binary crate (`busbar`).
+idna_adapter = "=1.1.0"
 zeroize = "1"
 
 # ── BUSBAR'S OWN CRATES, AS A PLUGIN REPO NAMES THEM ─────────────────────────────────────────────

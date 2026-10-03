@@ -14,7 +14,7 @@
 //! one of its parts has been read and verified — a body whose first three parts landed and whose
 //! fourth was torn away is not a shorter record, it is an absent one.
 
-use sha2::{Digest as _, Sha256};
+use ring::digest::{Context, SHA256};
 
 /// How long one frame is, header and payload together. The record cap the contract pins.
 pub const FRAME_BYTES: usize = 512;
@@ -264,7 +264,9 @@ pub(crate) fn encode_legacy(record: &Record) -> Vec<[u8; FRAME_BYTES]> {
 
 /// The header check a version-2 frame carries over its fixed header fields.
 fn header_check(frame: &[u8; FRAME_BYTES]) -> [u8; 4] {
-    let digest: [u8; 32] = Sha256::digest(&frame[0..HEADER_CHECKED_BYTES]).into();
+    let mut hasher = Context::new(&SHA256);
+    hasher.update(&frame[0..HEADER_CHECKED_BYTES]);
+    let digest = digest32(hasher);
     [digest[0], digest[1], digest[2], digest[3]]
 }
 
@@ -363,10 +365,17 @@ fn read_header(frame: &[u8; FRAME_BYTES]) -> Result<(FrameHeader, u16), FrameErr
 /// The digest a frame carries: over the header up to the digest field, then over the payload area.
 /// The digest field itself is skipped, which is what lets it be filled in afterwards.
 fn frame_digest(frame: &[u8; FRAME_BYTES]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
+    let mut hasher = Context::new(&SHA256);
     hasher.update(&frame[0..DIGEST_OFFSET]);
     hasher.update(&frame[FRAME_HEADER_BYTES..]);
-    hasher.finalize().into()
+    digest32(hasher)
+}
+
+/// A finished SHA-256 (ring, the one crypto backend) as the 32 bytes the frame and the journal store.
+pub(crate) fn digest32(hasher: Context) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hasher.finish().as_ref());
+    out
 }
 
 /// Read one frame back: its header, and the payload bytes it really carries.

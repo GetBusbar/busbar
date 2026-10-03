@@ -31,7 +31,8 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-sha2 = { workspace = true }
+# The one digest (`digest::sha256`), on ring (the one crypto backend).
+ring = { workspace = true }
 # `serde`, for ONE type: an open meter class's configured rate (`cost::UnitRate`, #83a O1 — the
 # rate-card representation lives with the card). Its exact-decimal `Deserialize` and its two-form
 # `Serialize` are written by hand (no derive, no float): the config text a rate is read from. The
@@ -41,6 +42,8 @@ sha2 = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
+sha2 = { workspace = true }
 # The folded `cost` module's rate-conversion agreement test cross-checks against the budget crate's
 # `RateNanos` (former busbar-unit-cost dev-dep on busbar-unit-admission, #36). Dev-only, so the
 # budget -> ledger production edge is not made cyclic.

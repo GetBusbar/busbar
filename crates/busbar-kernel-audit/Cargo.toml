@@ -35,10 +35,13 @@ test-support = []
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-sha2 = { workspace = true }
+# The chain digest (SHA-256), on ring (the one crypto backend).
+ring = { workspace = true }
 ed25519-dalek = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
+sha2 = { workspace = true }
 # The published bodies are JSON; the tests parse them rather than trusting the renderer.
 serde_json = { workspace = true }
