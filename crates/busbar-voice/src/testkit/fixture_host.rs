@@ -110,6 +110,9 @@ struct Inner {
     count_cap: Option<i64>,
     /// Every count `meter_ledger` landed, per key, per `(lane, class)`.
     rows: BTreeMap<String, BTreeMap<(String, String), u64>>,
+    /// Every session count `meter_ledger` landed on a plane's fee lane, per key: the METERING ROW's
+    /// session count, which a fee refund never touches.
+    session_rows: BTreeMap<String, u64>,
     /// Every series row `meter_series` wrote, per key, as `(model, provider)`, in order.
     series: BTreeMap<String, Vec<(String, String)>>,
     /// Every request a plane reported through `request_finished`, in order.
@@ -230,6 +233,15 @@ impl FixtureHost {
     #[must_use]
     pub fn ledger_usage(&self, key_id: &str) -> Option<LedgerUsage> {
         self.lock().ledger.get(key_id).copied()
+    }
+
+    /// Every session count the kernel's account landed for `key_id` on the plane's fee lane: the
+    /// METERING ROW's session count. A fee refund gives a count back on the budget book
+    /// ([`LedgerUsage::sessions`]) and leaves this row in place, as v1.5.5's fee refund left its row
+    /// (TODO 17(b)): a failed open reads one here and none there.
+    #[must_use]
+    pub fn session_rows(&self, key_id: &str) -> u64 {
+        self.lock().session_rows.get(key_id).copied().unwrap_or(0)
     }
 
     /// Every request reported through `request_finished`, in order.
@@ -609,6 +621,8 @@ impl BudgetHost for FixtureHost {
             let mut inner = self.lock();
             let entry = inner.ledger.entry(key.id.clone()).or_default();
             entry.sessions = entry.sessions.saturating_add(n);
+            let row = inner.session_rows.entry(key.id.clone()).or_default();
+            *row = row.saturating_add(n);
             return;
         }
         let tokens: u64 = usage.usage_units.values().sum();

@@ -152,22 +152,55 @@ async fn each_served_session_counts_one_session_and_an_unserved_or_refused_open_
     assert_eq!(sessions(&dry), 0, "a refused open counts nothing");
 }
 
-/// Q17-6 (ARCHITECT ruling R4): a session whose durable open fails never opened, so it charges no
-/// `fees.per_session`. The fee counts only when a session is served, so nothing was counted.
+/// TODO 17(b) (ARCHITECT R4): a session whose durable open fails never opened, so it keeps no
+/// `fees.per_session`. The kernel's account counted the fee AT THE OPEN, under the same dry check and
+/// before the durable open; the failed durable open gives that count back on the budget book, exactly
+/// once, and the metering row keeps it. A kept session served beforehand on the same key proves the
+/// refund takes back one fee and not two. RED with the fee counted at `served()`: the open counted
+/// nothing, so the metering row read the kept session alone.
 #[tokio::test]
 async fn a_failed_durable_open_gives_back_its_session_fee() {
+    let host = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
+    let healthy = crate::runtime::build_runtime_hosted(
+        &runtime(Arc::new(DurableHandleEngine::new())),
+        Arc::clone(&host) as Arc<dyn EngineHost>,
+    );
+    let meter = crate::runtime::TurnMeter::new(
+        Arc::clone(&host) as Arc<dyn EngineHost>,
+        key(),
+        "streaming-server",
+        crate::OPENAI_REALTIME,
+    );
+    let (core, handle) = crate::topology::begin_session(
+        &healthy,
+        crate::ir::codec::OpenAiRealtimeCodec,
+        "acct-meter",
+        "call-kept",
+        None,
+        crate::runtime::Carrier::sideband(),
+        Some(meter),
+        5,
+    )
+    .expect("the kept session opens");
+    crate::runtime::session::serve_with_sweep(core, async {}).await;
+    handle.finish(5);
+
     let engine = Arc::new(DurableHandleEngine::new());
     engine.set_sink(Arc::new(super::mount_tests::MemStore::down()));
     let rt = runtime(engine);
-    let host = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
     let status = open(&host, &rt, "call-down").await;
     assert!(
         status.is_server_error(),
         "a durable open that cannot land is refused, got {status}"
     );
     assert_eq!(
+        host.session_rows(&key().id),
+        2,
+        "the failed open counted its session fee at the open, under the dry check"
+    );
+    assert_eq!(
         host.ledger_usage(&key().id).map_or(0, |u| u.sessions),
-        0,
-        "a session that never opened charges no session fee"
+        1,
+        "the failed durable open's fee is given back exactly once; the kept session's stays"
     );
 }

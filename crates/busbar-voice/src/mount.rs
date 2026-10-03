@@ -1321,6 +1321,17 @@ async fn mint_route(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> axum::resp
 async fn sdp_route(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> axum::response::Response {
     serve(ctx, Ingress::Sdp).await
 }
+/// A DIALED LEG WHOSE PROVIDER DIAL FAILED: nothing to relay the client's frames to. Settle the
+/// just-opened durable row terminal and evict it at `now`, then drop the proxy rather than serve a
+/// client socket with no upstream — fail closed, no orphaned row. The handle has no drop path of its
+/// own. The session was never served, so no session fee was counted.
+pub(crate) fn settle_undialed<C>(proxy: crate::topology::telephony::TelephonyProxy<C>, now: u64)
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+{
+    proxy.handle.finish(now);
+}
+
 /// THE INBOUND WS-ACCEPT FN for the browser-sideband / telephony / Gemini-Live media legs — what
 /// replaces the `501` stub, moving the WS legs onto the neutral inbound WS-accept seam. Generic over
 /// the dialect `codec` (the second-dialect route): [`voice_ws_arrivals`] instantiates it once per dialect
@@ -1502,12 +1513,8 @@ where
                                     .await;
                                 }
                                 Err(e) => {
-                                    // The dial failed: nothing to relay client frames to. Settle the
-                                    // just-opened durable row terminal and evict it, then drop the
-                                    // proxy rather than serve a client socket with no upstream — fail closed, no
-                                    // orphaned row. The handle has no drop path of its own. The
-                                    // session was never served, so no session fee was counted.
-                                    proxy.handle.finish(unix_secs(&*teardown_clock));
+                                    // The dial failed: nothing to relay client frames to.
+                                    settle_undialed(proxy, unix_secs(&*teardown_clock));
                                     tracing::warn!(
                                         error = %redact_url_credentials(&e.to_string()),
                                         dialect,
