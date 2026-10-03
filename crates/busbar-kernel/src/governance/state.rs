@@ -1855,7 +1855,11 @@ impl GovState {
                 let max_window = 31 * super::SECS_PER_DAY;
                 map.retain(|id, c| {
                     if c.window_start != 0 {
-                        return c.window_start.saturating_add(max_window) > now;
+                        // A DIRTY cell still owes the store a delta (its live window's, or a rolled
+                        // window's parked under it): it waits for its write whatever its age. The
+                        // flusher's failure arm re-creates a removed cell at its OLD window to hold
+                        // that delta, and through a long outage that cell is past the horizon.
+                        return c.dirty || c.window_start.saturating_add(max_window) > now;
                     }
                     // The all-time window never rolls, so age these by last use instead. The
                     // `group:` exemption is NARROW, and exactly as narrow as its own rationale: a

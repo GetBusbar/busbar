@@ -1814,6 +1814,53 @@ fn a_store_outage_across_a_window_roll_retries_the_old_windows_delta() {
     assert_eq!(minute_row(store.as_ref(), bucket, w1), (1, 1, 0, 0));
 }
 
+/// REV-406 note 4: a cell holding a delta it still owes the store is never aged out by the sweep.
+///
+/// A rolled window's write that fails after its cell was removed (a key or group delete landing
+/// while the write was in flight) re-creates the cell at the OLD window to hold the delta for the
+/// next tick (`flush_budgets`' failure arm). Through a long store outage that cell is older than the
+/// sweep's 31-day horizon, and the sweep used to drop it on age alone, parked delta and all, so the
+/// old window's durable row never received its counts. A dirty cell now waits for its write.
+#[test]
+fn a_stale_cell_still_owing_the_store_survives_the_sweep_and_is_written() {
+    let store = Arc::new(FlakyStore::new());
+    let g = GovState::new(store.clone(), None).expect("store constructs");
+    let w = 1_700_000_040;
+    let now = w + 32 * super::SECS_PER_DAY;
+    let window = crate::governance::budget_window("minute", w);
+    let owed = "group:gone@minute";
+    // The re-created cell, exactly as the failure arm leaves it: fresh at the old window, the
+    // window's delta parked under it, dirty. It shares the admitting key's shard.
+    {
+        let mut map = g.budget.write("vk_sweep_owed");
+        let mut cell = BudgetCell::fresh(window);
+        cell.park(
+            window,
+            UsageDelta {
+                requests: 1,
+                billable_requests: 1,
+                ..UsageDelta::default()
+            },
+        );
+        cell.dirty = true;
+        map.insert(owed.to_string(), cell);
+    }
+    // The key's next admission runs this shard's sweep (post-increment semantics).
+    g.budget.sweep_ticker_for("vk_sweep_owed").store(
+        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    g.try_admit(&minute_fee_model(), &key("vk_sweep_owed", None), "", now)
+        .expect("the key admits");
+    g.flush_budgets();
+
+    assert_eq!(
+        minute_row(store.as_ref(), owed, w),
+        (1, 1, 0, 0),
+        "the old window's parked counts reach its durable row"
+    );
+}
+
 /// MONEY-AUDIT F-1, the in-flight arm: a roll that lands while the old window's write is in flight
 /// parks everything past the baseline, that write included. The write then lands, so the parked
 /// copy of it is taken back: W's row holds the W counts exactly once.
