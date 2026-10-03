@@ -100,8 +100,8 @@ fn durable(app: &std::sync::Arc<crate::test_support::BuiltApp>, bucket: &str) ->
 /// A kernel seal for the length of one test, and the step token the kernel's `Units::admit` row
 /// seals the door's verdict with.
 fn tokens() -> (KernelSeal, Pass<Admit>) {
-    let seal = KernelSeal::acquire_for_kernel();
-    let unit = Pass::mint(&seal);
+    let seal = busbar_kernel::test_support::tokens::seal();
+    let unit = busbar_kernel::test_support::tokens::pass();
     (seal, unit)
 }
 

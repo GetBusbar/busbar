@@ -270,7 +270,11 @@ counts can trend to zero at their own pace."""
 # drains at D3).
 # LOWERED 996 -> 980 at the measurement by DEL-REQLOG (reqlog_dispatch_tests and the chain reads in
 # unit/tests/{audit,chain}.rs deleted).
-busbar-llm = 980
+# RAISED 980 -> 1027 at the measurement by #372 (token-sealed B, lane-gg-token-helper): the llm tests
+# no longer mint their own tokens (a mint is legal only in the kernel) and take them from
+# `busbar_kernel::test_support::tokens`, 47 added `busbar_kernel::` lines across the engine and unit
+# tests (RESOLVE c4, ARCHITECT to re-read).
+busbar-llm = 1027
 busbar-mcp = 185
 busbar-a2a = 98
 busbar-voice = 43
@@ -472,6 +476,10 @@ max_sites = 0
 # owner's. PARK, with the recommendation: move the rule-spec literals out of Rust source into a data
 # file this gate does not walk, which removes the self-match instead of excusing it — a
 # specification that is not compiled cannot be mistaken for a call site by anything.
+# DONE 2026-10-02 (GATE-GREEN, ARCHITECT Q-GG2): the literals live in
+# `crates/busbar-contract/src/caps/fixtures/lint_rules.txt`, which lint_rules.rs reads with include_str!.
+# The construction selftest plants a real `Pass::mint(` in that fixtures directory and requires this row
+# to report it, so the move hides no mint.
 #
 # The key stays, empty, because an absent key and an empty list read the same to `list_of` and only
 # one of them is a decision somebody made.
@@ -949,15 +957,10 @@ kernel-facing trait as each is written. NOT every `pub trait` in a busbar-unit-*
 these — most are internal ports (a header reader, a journal sink) a unit crate defines to keep its \
 own tests fast, never the thing a plugin would implement to BE the unit — so the check is scoped to \
 the explicit list below, maintained by the owner as each unit's sealed shape lands."""
-# Ratchet: Admission is not sealed yet (tracked debt); Breaker is. Tightens to 0 when Admission is
-# sealed too.
-max_unsealed = 1
+# Ratchet: 0. The one unsealed trait, `Admission`, left with busbar-kernel-budget (deleted whole,
+# ARCHITECT ruling 2026-09-30): its admission stack had no production caller.
+max_unsealed = 0
 # crate, trait, file (relative to repo root) — the unit's own kernel-facing trait.
-[rules.sealed-unit-traits.traits.admission]
-crate = "busbar-kernel-budget"
-file = "crates/busbar-kernel-budget/src/lib.rs"
-trait = "Admission"
-
 [rules.sealed-unit-traits.traits.breaker]
 crate = "busbar-kernel-breaker"
 file = "crates/busbar-kernel-breaker/src/lib.rs"
@@ -1250,33 +1253,32 @@ known_sites = [
 # confining anything. `confined_to_paths` is the same scope resolved against this tree —
 # crate-relative paths, matched as prefixes, so only the files actually named are excused. An empty
 # `confined_to` (and an empty or absent `confined_to_paths`) means banned everywhere.
-# Every symbol below also excuses `crates/busbar-contract/src/caps/fixtures/lint_rules.rs`: that
-# file is the RULE-SPEC DATA this whole scan reads (its own header says "This file is DATA, not
-# surface... the specification"), so its literal escape-symbol strings self-match the scanner. Not a
-# reviewed exception to the RULE (there is no runtime hold there to escape) — the file is data ABOUT
-# the rule, not code the rule is checking.
+# The fixture's rule-spec literals used to self-match this scan, so every symbol below excused
+# `crates/busbar-contract/src/caps/fixtures/lint_rules.rs`. STRUCK 2026-10-02 (GATE-GREEN, ARCHITECT
+# Q-GG2): the literals moved to `caps/fixtures/lint_rules.txt`, a data file no scan walks, so the
+# Rust file holds none and the excuse is gone. Every symbol is again banned everywhere it says.
 [rules.hold-escapes.symbols.forget]
 symbol = "mem::forget"
 confined_to = ""
-confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+confined_to_paths = []
 because = "a forgotten hold is a unit that was admitted and never settled"
 
 [rules.hold-escapes.symbols.manually-drop]
 symbol = "ManuallyDrop"
 confined_to = ""
-confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+confined_to_paths = []
 because = "the same as forgetting, spelled differently"
 
 [rules.hold-escapes.symbols.box-leak]
 symbol = "Box::leak"
 confined_to = ""
-confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+confined_to_paths = []
 because = "a leaked hold never reaches the exit path"
 
 [rules.hold-escapes.symbols.process-abort]
 symbol = "process::abort"
 confined_to = ""
-confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+confined_to_paths = []
 because = "aborting skips every exit path at once; the node drains instead"
 
 [rules.hold-escapes.symbols.assert-unwind-safe]
@@ -1297,13 +1299,13 @@ confined_to = "kernel/src/teller"
 # loop that SURVIVED, and it is already on this list in its own right. Repointing the struck entry
 # at it would be inventing coverage for a scope that no longer exists; the substrate teller's
 # AssertUnwindSafe went away with its code. The remaining paths already confine the live loop.
-confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/timing/mod.rs", "crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/timing/mod.rs"]
 because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar_kernel::timing's holdless atexit dump)"
 
 [rules.hold-escapes.symbols.join-abort]
 symbol = "JoinHandle::abort"
 confined_to = ""
-confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+confined_to_paths = []
 because = "an aborted task loses its unit's end; the sweep is the second exit, not abort"
 
 # ── 25. unit-no-wall-clock ───────────────────────────────────────────────────────────────────────

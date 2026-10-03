@@ -681,7 +681,6 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     // settle path onto a real journal, come back off it in the order they were written — which
     // is the ordering the record is FOR, and which does not exist if the second field is the
     // first one copied.
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
@@ -695,7 +694,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let who = PrincipalId::new("acct:node");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
         let ledger_token =
-            busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal);
+            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::WriteMoney>();
         let accrual =
             busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
         let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
@@ -704,7 +703,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
             &who,
             arrived,
             None,
-            &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
+            &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
             posted,
         )
         .expect("the memory-buffered journal takes it");
@@ -1080,7 +1079,6 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         "this plane's door opens the kernel's hold at zero; the spend is the governance ledger's"
     );
 
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
@@ -1096,7 +1094,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         &who,
         Arrived::at(EPOCH * 1_000, 0),
         None,
-        &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
         posted,
     )
     .expect("the memory-buffered journal takes it");
@@ -1104,7 +1102,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let window =
-        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, EPOCH);
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, EPOCH);
     let figures = durability.ledger.book().get(&balance(&who), window);
     assert_eq!(figures.overdraft_carried_out, 0);
     let replayed = durability
@@ -1252,7 +1250,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     site.audited(
         UnitKey::new(51),
         facts,
-        Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
+        busbar_kernel::test_support::tokens::pass(),
     );
     let before = records();
     site.post(&ctx(51), ended);
@@ -3884,7 +3882,7 @@ fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_
     let durability = node.durability.lock().expect("unpoisoned");
     let key = balance(&PrincipalId::new("vk_refused"));
     let window =
-        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, at.secs());
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, at.secs());
     assert_eq!(
         durability.ledger.book().get(&key, window).settled,
         0,
@@ -4246,7 +4244,10 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .store()
         .get_usage(
             &key.id,
-            busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_TOTAL, EPOCH),
+            busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_TOTAL,
+                EPOCH,
+            ),
         )
         .expect("the governance ledger reads");
     let classes = ledger
@@ -4613,7 +4614,7 @@ fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
     let durability = node.durability.lock().expect("unpoisoned");
     let key = balance(&PrincipalId::new("vk_undeclared"));
     let window =
-        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, at.secs());
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, at.secs());
     assert_eq!(durability.ledger.book().get(&key, window).settled, 0);
     assert!(durability.settled_read(&key, window).is_err());
     drop(durability);

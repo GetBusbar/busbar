@@ -44,7 +44,3 @@ serde = { workspace = true }
 [dev-dependencies]
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
-# The folded `cost` module's rate-conversion agreement test cross-checks against the budget crate's
-# `RateNanos` (former busbar-unit-cost dev-dep on busbar-unit-admission, #36). Dev-only, so the
-# budget -> ledger production edge is not made cyclic.
-busbar-kernel-budget = { path = "../busbar-kernel-budget" }

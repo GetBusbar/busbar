@@ -3,7 +3,6 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_contract::caps::KernelSeal;
 use busbar_contract::WireStatus;
 use busbar_kernel_egress::ports::Disposition;
 
@@ -13,7 +12,7 @@ use busbar_kernel_egress::ports::Disposition;
 /// production adapter above never mints one of its own — it forwards the borrow its caller
 /// lent it).
 fn route_token() -> Pass<Route> {
-    Pass::mint(&KernelSeal::acquire_for_kernel())
+    busbar_kernel::test_support::tokens::pass()
 }
 
 /// A gRPC upstream's trailers-only `UNAVAILABLE`, at the production adapter's own width: the

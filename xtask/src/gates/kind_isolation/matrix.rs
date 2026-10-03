@@ -3979,7 +3979,7 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-ledger` carries a live cell; it
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-breaker` carries a live cell; it
     // measures nothing the moment the crate stops being one.
     //
     // RE-TARGETED TWICE. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
@@ -3991,15 +3991,18 @@ pub fn selftest<'a>(
     // kills it exactly as it did the old ones. Re-targeted a third time: the subject was
     // `busbar-kernel-scope × transport`, whose every hit was an `http` spelling that
     // [`COLLIDING_INSTANCE_WORDS`] no longer counts, so that row went dead on the real tree.
+    // Re-targeted a fourth time: the subject was `busbar-kernel-ledger × kernel`, whose last hit was
+    // the dev-dependency on the deleted `busbar-kernel-budget` (DEL-BUDGET-R), so that row went dead
+    // on the real tree and was struck.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-kernel-ledger/Cargo.toml");
+    ov.remove("crates/busbar-kernel-breaker/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &["dead-cell", "busbar-kernel-ledger \u{d7} kernel"],
+        &["dead-cell", "busbar-kernel-breaker \u{d7} plane"],
     ));
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind

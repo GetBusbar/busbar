@@ -2,21 +2,10 @@
 # One line per finding: <row>\t<tag>\t<subject>\t<figure>. The `--posture` run excuses exactly these,
 # at or below these figures, and reds anything new or higher. Written ONLY by
 # `cargo xtask gate <gate> --posture --write-standing`, which strikes and lowers and never adds.
-kind-isolation:deps	unlisted-dep-edge	cleanliness -> contract	1
-kind-isolation:deps	unlisted-dep-edge	cleanliness -> kernel	2
 kind-isolation:deps	unlisted-dep-edge	cleanliness -> plugin-tooling	1
-kind-isolation:deps	unlisted-dep-edge	kernel -> kernel	3
-kind-isolation:deps	unlisted-dep-edge	legacy -> contract	1
 kind-isolation:deps	unlisted-dep-edge	legacy -> plane	2
-kind-isolation:deps	unlisted-dep-edge	plugin-tooling -> contract	1
 kind-isolation:deps	unlisted-transitional	crates/busbar-llm	1
-kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> kernel	1
 kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> legacy	3
-kind-isolation:test-deps	unlisted-dep-edge	kernel -> contract	1
 kind-isolation:test-deps	unlisted-dep-edge	legacy -> cleanliness	2
 kind-isolation:test-deps	unlisted-dep-edge	legacy -> plane	1
-kind-isolation:test-deps	unlisted-dep-edge	plugin-tooling -> contract	1
-kind-isolation:test-deps	unlisted-dep-edge	root -> cleanliness	1
-kind-isolation:test-deps	unlisted-dep-edge	root -> contract	1
-kind-isolation:test-deps	unlisted-dep-edge	root -> legacy	3
 kind-isolation:test-deps	unlisted-transitional	crates/busbar-llm	1
