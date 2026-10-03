@@ -53,7 +53,7 @@ use std::task::Poll;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use crate::a2a::config::AgentsCfg;
-use crate::arrival::{self, Decision, Dialect};
+use crate::arrival::{self, Dialect, Disposition};
 use crate::door::{self, Line};
 use crate::relay::{self, Answer, Relay, Settled};
 use crate::task_door::{kind_index, Via};
@@ -86,7 +86,7 @@ pub const MAX_UNITS: usize = 4096;
 #[derive(Debug)]
 pub struct Unit {
     /// The arrival, decided.
-    pub decision: Decision,
+    pub disposition: Disposition,
     /// The agent a `/a2a/agents/{agent_id}` target names.
     pub agent: Option<String>,
     /// The section of the newest generation when it arrived.
@@ -476,7 +476,7 @@ slot!(
             Line::Framed | Line::Open => return unserved(&mut out),
         };
         let fields = input.fields();
-        let decision = arrival::decide(envelope.as_deref().unwrap_or(body), |name| {
+        let disposition = arrival::decide(envelope.as_deref().unwrap_or(body), |name| {
             fields
                 .iter()
                 .find(|f| {
@@ -486,10 +486,10 @@ slot!(
                 })
                 .and_then(|f| f.field(|f| &f.value).as_str().ok())
         });
-        if let Decision::Refused(refusal) = &decision {
+        if let Disposition::Refused(refusal) = &disposition {
             return refused(&mut out, refusal);
         }
-        let Some(op) = decision.op_class().and_then(door::op_class_index) else {
+        let Some(op) = disposition.op_class().and_then(door::op_class_index) else {
             return unserved(&mut out);
         };
         out.set(|o| &o.op_class, op);
@@ -501,7 +501,7 @@ slot!(
             Some(_) => None,
         };
         let generation = plane.newest();
-        let hop = hop_of(&decision, agent.is_some(), request.clone());
+        let hop = hop_of(&disposition, agent.is_some(), request.clone());
         // A relayed request to an addressed agent: its held card decides the skill now, and a card
         // the request does not fit refuses it, as the engine's catalogue does.
         let skill = match (&hop, &request, &agent) {
@@ -514,7 +514,7 @@ slot!(
             _ => None,
         };
         let unit = Unit {
-            decision,
+            disposition,
             agent,
             section: plane.generations.current(),
             hop,
@@ -534,18 +534,22 @@ slot!(
 /// (`request` is its envelope). A verb the plane answers itself, a stream, and an arrival on another
 /// line have no hop here. TRANSITIONAL: the HTTP+JSON line's relayed answers are re-framed once
 /// the relay serves that line.
-fn hop_of(decision: &Decision, addressed: bool, request: Option<serde_json::Value>) -> Option<Hop> {
+fn hop_of(
+    disposition: &Disposition,
+    addressed: bool,
+    request: Option<serde_json::Value>,
+) -> Option<Hop> {
     use crate::ops::{relay_class, OP_AGENT_CARD, OP_MESSAGE_SEND};
-    match decision {
-        Decision::Request { row, id, version } if row.op == OP_AGENT_CARD => {
+    match disposition {
+        Disposition::Request { row, id, version } if row.op == OP_AGENT_CARD => {
             addressed.then(|| Hop::of(id.clone(), version, request))
         }
-        Decision::Request { row, id, version }
+        Disposition::Request { row, id, version }
             if !row.multi_frame && crate::local::verb_of(row.method).is_none() =>
         {
             Some(Hop::task(id.clone(), version, request?))
         }
-        Decision::Unlisted {
+        Disposition::Unlisted {
             method,
             id,
             version,

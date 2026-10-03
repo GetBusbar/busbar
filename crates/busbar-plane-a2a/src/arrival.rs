@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE ARRIVAL ON THE JSON-RPC LINE, decided once and purely: a reader over the request's head
-//! fields and the body in, a [`Decision`] out. The door's `arrive` states the decision in the
+//! fields and the body in, a [`Disposition`] out. The door's `arrive` states the disposition in the
 //! plane ABI's words, and its `refusal` renders a refused one ([`render`]); this module is the
-//! decision and the words, so both are tested without a door.
+//! disposition and the words, so both are tested without a door.
 //!
 //! The order is the served engine's (`busbar-a2a` `receive::invoke_inner`, then the shared
 //! JSON-RPC sequence it runs). The steps before it are the kernel's: whether the plane is present,
@@ -235,7 +235,7 @@ fn status_name_of_http(status: u32) -> &'static str {
 
 /// What one arrival on the JSON-RPC line is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
+pub enum Disposition {
     /// A request whose method the vocabulary classes.
     Request {
         /// Its row.
@@ -263,18 +263,18 @@ pub enum Decision {
     Refused(Refusal),
 }
 
-impl Decision {
+impl Disposition {
     /// The operation class an admitted arrival is a unit of: its row's, or for a method the
     /// vocabulary does not list, the class the engine relays it as ([`crate::ops::relay_class`]).
     /// `None` for a refused arrival.
     #[must_use]
     pub fn op_class(&self) -> Option<busbar_contract::ids::OpClassId> {
         match self {
-            Decision::Request { row, .. } => Some(row.op),
-            Decision::Unlisted { method, .. } | Decision::Notice { method } => {
+            Disposition::Request { row, .. } => Some(row.op),
+            Disposition::Unlisted { method, .. } | Disposition::Notice { method } => {
                 Some(ops::relay_class(method))
             }
-            Decision::Refused(_) => None,
+            Disposition::Refused(_) => None,
         }
     }
 }
@@ -353,31 +353,31 @@ pub fn origin_refusal<'a>(field: impl Fn(&str) -> Option<&'a str>) -> Result<(),
 
 /// DECIDE ONE ARRIVAL on the JSON-RPC line. `field` reads a request head field by its lower-case
 /// name (the first, as sent; one that is not UTF-8 reads as absent).
-pub fn decide<'a>(body: &[u8], field: impl Fn(&str) -> Option<&'a str> + Copy) -> Decision {
+pub fn decide<'a>(body: &[u8], field: impl Fn(&str) -> Option<&'a str> + Copy) -> Disposition {
     if let Err(refusal) = origin_refusal(field) {
-        return Decision::Refused(refusal);
+        return Disposition::Refused(refusal);
     }
     let version = match head_refusal(field) {
         Ok(v) => v,
-        Err(refusal) => return Decision::Refused(refusal),
+        Err(refusal) => return Disposition::Refused(refusal),
     };
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return Decision::Refused(Refusal::unnamed(STATUS_BAD_REQUEST, CODE_PARSE, NOT_JSON));
+        return Disposition::Refused(Refusal::unnamed(STATUS_BAD_REQUEST, CODE_PARSE, NOT_JSON));
     };
     match busbar_contract::jsonrpc::read(&value) {
-        Err(invalid) => Decision::Refused(Refusal {
+        Err(invalid) => Disposition::Refused(Refusal {
             status: STATUS_BAD_REQUEST,
             id: (!invalid.id.is_null()).then_some(invalid.id),
             code: invalid.code,
             message: invalid.message.to_string(),
         }),
         Ok(busbar_contract::jsonrpc::Envelope::Notification { method }) => {
-            Decision::Notice { method }
+            Disposition::Notice { method }
         }
         Ok(busbar_contract::jsonrpc::Envelope::Request { id, method }) => {
             match ops::row_for(&method) {
-                Some(row) => Decision::Request { row, id, version },
-                None => Decision::Unlisted {
+                Some(row) => Disposition::Request { row, id, version },
+                None => Disposition::Unlisted {
                     method,
                     id,
                     version,

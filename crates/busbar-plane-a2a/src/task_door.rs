@@ -26,7 +26,7 @@ use busbar_contract::abi::sdk::conn::{Connector, Host};
 use busbar_contract::abi::sdk::{Instance, Keyed, Lent, Out, ServiceError, Services};
 use serde_json::Value;
 
-use crate::arrival::{Decision, JSON_MEDIA_TYPE};
+use crate::arrival::{Disposition, JSON_MEDIA_TYPE};
 use crate::local::{self, LocalVerb, Reach};
 use crate::plane_door::A2aDoor;
 use crate::records::HELD_KINDS;
@@ -173,9 +173,9 @@ fn claim_sweep(swept: &Keyed<(), u64>, now: u64) -> bool {
 }
 
 /// The local verb a unit arrived as.
-fn verb_of(decision: &Decision) -> Option<LocalVerb> {
-    match decision {
-        Decision::Request { row, .. } => local::verb_of(row.method),
+fn verb_of(disposition: &Disposition) -> Option<LocalVerb> {
+    match disposition {
+        Disposition::Request { row, .. } => local::verb_of(row.method),
         _ => None,
     }
 }
@@ -191,7 +191,7 @@ pub fn on_piece(
     let (verb, rest, composed) = plane.units.with(&unit, |u| {
         let u = u?;
         Some((
-            verb_of(&u.decision)?,
+            verb_of(&u.disposition)?,
             std::mem::take(&mut u.pass.rest),
             u.envelope.clone(),
         ))
