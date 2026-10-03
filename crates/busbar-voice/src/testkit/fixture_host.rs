@@ -606,6 +606,22 @@ impl BudgetHost for FixtureHost {
     fn cost_model_unpriced(&self, _model: &str) -> bool {
         false
     }
+    // The kernel's session-fee refund, on the plane's fee lane: one session count back on the budget
+    // book, floored; the metering row keeps its count (`session_rows`), as the engine's refund does.
+    fn meter_refund_fee(
+        &self,
+        _pin: &MeterPin,
+        key: &VirtualKey,
+        _pool: &str,
+        _plane: &str,
+        _fee_unit: &str,
+        _now: u64,
+    ) {
+        let mut inner = self.lock();
+        if let Some(entry) = inner.ledger.get_mut(&key.id) {
+            entry.sessions = entry.sessions.saturating_sub(1);
+        }
+    }
     fn meter_ledger(
         &self,
         _pin: &MeterPin,

@@ -28,11 +28,12 @@ fn key() -> busbar_contract::records::VirtualKey {
     }
 }
 
-/// Q17-6 (a): through the engine's own host, an opened account counts no session fee until its
-/// session is served; served, it counts exactly one, however many serving sites mark it; and an
-/// account that is never served (its provider dial, mint or broker failed) charges nothing.
+/// TODO 17(b) (ARCHITECT R4): through the engine's own host, each open counts its session fee AT
+/// THE OPEN; a failed open's refund gives back exactly its own fee on the budget book, once however
+/// often it is asked; a served session's fee is final, and marking it served from every serving site
+/// counts nothing more.
 #[test]
-fn a_session_fee_counts_once_when_served_and_never_for_an_unserved_open() {
+fn a_failed_open_refunds_its_session_fee_exactly_once_and_a_served_one_keeps_it() {
     // The key is registered: the usage read answers only for a key the store holds.
     let store = Arc::new(crate::governance::MemoryStore::new());
     busbar_contract::records::RecordStore::put_key(&*store, &key()).expect("key stored");
@@ -56,12 +57,21 @@ fn a_session_fee_counts_once_when_served_and_never_for_an_unserved_open() {
             .spend_cents
     };
     let (kept, failed) = (open(), open());
-    assert_eq!(spend(), 0, "an opened session is not yet a served one");
+    assert_eq!(spend(), 80, "two opens, each fee counted at the open");
     kept.served();
     kept.served();
-    assert_eq!(spend(), 40, "one served session, one fee, counted once");
-    drop(failed);
-    assert_eq!(spend(), 40, "the session that never served charged nothing");
+    assert_eq!(spend(), 80, "serving counts nothing more");
+    kept.refund_open();
+    assert_eq!(spend(), 80, "a served session's fee is final");
+    failed.refund_open();
+    failed.refund_open();
+    assert_eq!(
+        spend(),
+        40,
+        "the failed open's fee is back exactly once; the kept one stays"
+    );
+    failed.served();
+    assert_eq!(spend(), 40, "a refunded open stays refunded");
 }
 
 /// A card whose group `g` holds a day budget of 50 and whose plane `sp` charges

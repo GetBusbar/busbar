@@ -387,9 +387,14 @@ where
     };
 
     let handle = rt.bind_session(owner.clone(), call_id.clone());
-    // A durable open that fails leaves a session that never opened: no session fee was counted
-    // (the fee counts when the session is served, `SessionCore::served`), so none is owed back.
-    handle.open(now).map_err(StartError::Durable)?;
+    // A durable open that fails leaves a session that never opened: its counted session fee is
+    // given back (TODO 17(b), ARCHITECT R4) before the refusal.
+    if let Err(e) = handle.open(now) {
+        if let Some(metering) = metering {
+            metering.refund_open();
+        }
+        return Err(StartError::Durable(e));
+    }
 
     // ONE ADMIN-AUDIT ROW for this governed mutation — fired exactly once (this is the single `Ok`
     // construction point below every early `?` return above), no-op on a runtime with no bound host

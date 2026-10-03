@@ -112,18 +112,23 @@ async fn a_served_sessions_turn_lands_the_planes_counts_on_the_presenting_key() 
     assert_eq!(rows.len(), 2, "only the classes the turn carried");
 }
 
-/// #47 `streams.fees.per_session` (OWNER RULING Q32): each session SERVED counts ONE session on the
-/// presenting key — through the one metering path, a count and never a figure — and a refused open
-/// counts none. Q17-6 (a): an open the route could not serve (no provider composed here, so the mint
-/// answers `501`) never opened, and counts none either. What a session costs is the kernel's read of
-/// the plane's fees.
+/// #47 `streams.fees.per_session` (OWNER RULING Q32): each session the kernel's account opens and
+/// serves keeps ONE session on the presenting key's budget book — through the one metering path, a
+/// count and never a figure — and a refused open counts none. An open the route could not serve (no
+/// provider composed here, so the mint answers `501`) is a failed open: its fee is given back (TODO
+/// 17(b)), so the book keeps none for it. What a session costs is the kernel's read of the plane's
+/// fees.
 #[tokio::test]
-async fn each_served_session_counts_one_session_and_an_unserved_or_refused_open_counts_none() {
+async fn each_served_session_keeps_one_session_and_a_failed_or_refused_open_keeps_none() {
     let rt = runtime(Arc::new(DurableHandleEngine::new()));
     let sessions = |host: &FixtureHost| host.ledger_usage(&key().id).map_or(0, |u| u.sessions);
     let room = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
     open(&room, &rt, "call-one").await;
-    assert_eq!(sessions(&room), 0, "a mint with no provider served nothing");
+    assert_eq!(
+        sessions(&room),
+        0,
+        "a mint with no provider served nothing, so its fee is back"
+    );
     let hosted =
         crate::runtime::build_runtime_hosted(&rt, Arc::clone(&room) as Arc<dyn EngineHost>);
     for call in ["call-two", "call-three"] {

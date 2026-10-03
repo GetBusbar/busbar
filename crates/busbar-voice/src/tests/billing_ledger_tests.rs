@@ -195,15 +195,14 @@ fn streams_fees_per_request_refuses_and_per_session_boots_and_charges() {
         "streaming-server",
         crate::OPENAI_REALTIME,
     );
-    let session = meter
+    let _session = meter
         .open("gpt-realtime")
         .expect("opens")
         .expect("governed");
-    session.served();
     let sessions = host.ledger_usage(&key.id).expect("a ledger").sessions;
     assert_eq!(
         sessions, 1,
-        "one served session, one count on the plane's fee lane"
+        "one opened session, one count on the plane's fee lane"
     );
     let fee_lane = format!("{}{PLANE_LANE_SEP}", crate::PLANE_KEY);
     let price = |fees: &config::PlaneFeesMap| {

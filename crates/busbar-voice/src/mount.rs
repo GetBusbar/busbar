@@ -799,7 +799,12 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             meter,
             now,
         ) {
-            Ok(_proxy) => sideband_pending(),
+            // The HTTP telephony open serves nothing: the media leg is the WS-accept seam's. A `501`
+            // is a failed open, so the session fee its open counted is given back.
+            Ok(proxy) => {
+                proxy.core().refund_open();
+                sideband_pending()
+            }
             Err(e) => start_refusal(&e),
         },
         Ingress::Gemini => sideband_pending(),
@@ -813,8 +818,10 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             meter,
             now,
         ) {
-            // (4) THE SERVING LEG, past a clean governed open. The session fee counts only when the
-            // pass answers success: a mint or broker that failed served nothing (Q17-6 (a)).
+            // (4) THE SERVING LEG, past a clean governed open. A pass that answers success served the
+            // session; any other answer — a failed mint or SDP broker, an unreachable provider, a
+            // `501` with nothing composed to serve it — is a failed open, and the session fee its
+            // open counted is given back (TODO 17(b), ARCHITECT R4).
             Ok((core, handle)) => {
                 let resp = match ingress {
                     Ingress::Mint => serve_mint(provider, handle.owner(), &session_cfg).await,
@@ -825,6 +832,8 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
                 };
                 if resp.status().is_success() {
                     core.served();
+                } else {
+                    core.refund_open();
                 }
                 resp
             }
@@ -1324,11 +1333,13 @@ async fn sdp_route(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> axum::respo
 /// A DIALED LEG WHOSE PROVIDER DIAL FAILED: nothing to relay the client's frames to. Settle the
 /// just-opened durable row terminal and evict it at `now`, then drop the proxy rather than serve a
 /// client socket with no upstream — fail closed, no orphaned row. The handle has no drop path of its
-/// own. The session was never served, so no session fee was counted.
+/// own. The session never served, so the session fee its open counted is given back first (TODO
+/// 17(b), ARCHITECT R4).
 pub(crate) fn settle_undialed<C>(proxy: crate::topology::telephony::TelephonyProxy<C>, now: u64)
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
 {
+    proxy.core().refund_open();
     proxy.handle.finish(now);
 }
 
