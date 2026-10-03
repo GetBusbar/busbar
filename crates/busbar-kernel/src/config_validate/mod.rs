@@ -2051,6 +2051,7 @@ pub fn metadata_denylist_entries() -> Vec<String> {
     .collect()
 }
 
+pub mod deal;
 /// Enumerating every secret reference in the resolved config, and the two-layer guard that makes
 /// forgetting one impossible rather than merely discouraged. Its own module because the guard is a
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
