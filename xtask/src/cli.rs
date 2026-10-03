@@ -42,6 +42,8 @@ usage:
   cargo xtask plugin-gates <depwall|netban|cdeps|imports|parity|bothways|declares|selftest> <args...>
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
+  cargo xtask method-inventory (--write | --check | --selftest)
+  cargo xtask pin-missing-cells [--write]
   cargo xtask conformance record --suite <id>|--all [--recording <dir>] [--out <dir>]
   cargo xtask dialect wire [--write | --diff] <dialect|all>
   cargo xtask dialect wire --diff-files <old.wire.json> <new.wire.json>
@@ -77,6 +79,8 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "install-sizes",
     "ship",
     "proof-manifest",
+    "method-inventory",
+    "pin-missing-cells",
     "txn-fence",
     "loom",
 ];
@@ -178,6 +182,18 @@ pub fn main(args: &[String]) -> i32 {
         // THE PLUGIN FLEET'S GATES (depwall, netban, cdeps, imports, parity, bothways, declares,
         // selftest): pure functions over cargo metadata, nm output and the two lockfiles. Not a gate.
         Some("plugin-gates") => crate::fleet::plugin_gates::main(&args[1..]),
+        // THE METHOD-INVENTORY GENERATOR and THE MISSING-QUEUE PINNER. Neither is a gate: a human
+        // runs them and reads the diff. `method-inventory` WRITES `qa/method-inventory.json` from
+        // the pinned rmcp and a2a-pb sources; `pin-missing-cells` rewrites
+        // `qa/method-coverage.missing`. `crates/busbar/tests/method_coverage.rs` is the gate.
+        Some("method-inventory") => match open_ctx() {
+            Ok(cx) => crate::method_inventory::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        Some("pin-missing-cells") => match open_ctx() {
+            Ok(cx) => crate::pin_missing_cells::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
         // THE TRANSACTION COMPILE FENCE. Not a gate: it COMPILES busbar-kernel under a cfg and
         // passes only when that build fails for its three named reasons.
         Some("txn-fence") => crate::txn_fence::main(&args[1..]),

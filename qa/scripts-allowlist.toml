@@ -244,11 +244,6 @@ class = "oracle-driver"
 reason = "the plane subject rig the oracle drives (rigs.rs, plane_subject.rs) and teller-steps cites: moves into busbar-release-oracle, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
 
 [[script]]
-path = "scripts/method-inventory.py"
-class = "port"
-reason = "generator for a qa/ file a test reads, run by hand: becomes a `cargo xtask` generator"
-
-[[script]]
 path = "scripts/no-plugins-gate.sh"
 class = "port"
 reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
@@ -262,11 +257,6 @@ reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes t
 path = "scripts/pgo-drift-check.sh"
 class = "port"
 reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
-
-[[script]]
-path = "scripts/pin-missing-cells.py"
-class = "port"
-reason = "generator for a qa/ file a test reads, run by hand: becomes a `cargo xtask` generator"
 
 [[script]]
 path = "scripts/plane-config-noun-gate.sh"
