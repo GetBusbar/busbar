@@ -255,7 +255,7 @@ fn the_1_5_5_keys_keep_their_meaning() {
 fn a_provider_carve_out_admits_only_for_its_own_url_host() {
     let g = Guard::from_config(&Destinations {
         block_private_addresses: true,
-        provider_allow: vec![
+        url_allow: vec![
             (
                 "https://IMDS-Proxy.test./v1".into(),
                 vec!["169.254.169.254".into()],
@@ -296,7 +296,7 @@ fn a_provider_carve_out_admits_only_for_its_own_url_host() {
 fn a_commit_republishes_the_metadata_lists() {
     let carved = Destinations {
         block_private_addresses: true,
-        provider_allow: vec![(
+        url_allow: vec![(
             "https://imds-proxy.test".into(),
             vec!["169.254.169.254".into()],
         )],
@@ -421,7 +421,7 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     );
     let carved = Guard::from_config(&Destinations {
         block_private_addresses: true,
-        provider_allow: vec![(
+        url_allow: vec![(
             "https://imds-proxy.test".into(),
             vec!["169.254.169.254".into()],
         )],
@@ -459,7 +459,7 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
         block_private_addresses: true,
         allow: vec!["db.test".into()],
         legacy_allow: vec!["169.254.169.254".into(), "db.test".into()],
-        provider_allow: vec![(
+        url_allow: vec![(
             "https://db.test".into(),
             vec!["169.254.169.254".into(), "db.test".into()],
         )],
