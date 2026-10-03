@@ -909,9 +909,14 @@ pub fn validate_abi(
     match (supported.first(), supported.last()) {
         (Some(&floor), Some(&max)) if m.abi_version >= floor && m.abi_version <= max => {}
         (Some(&floor), Some(&max)) => {
+            // Below the floor is a plugin built against an older contract: say what fixes it.
+            let rebuild = match m.abi_version < floor {
+                true => format!(" — {}", crate::dispatch::load::REBUILD),
+                false => String::new(),
+            };
             return Err(format!(
                 "manifest abi_version {} is not supported for kind '{}' by this binary (supported \
-                 range v{floor}..=v{max})",
+                 range v{floor}..=v{max}){rebuild}",
                 m.abi_version, m.kind
             ));
         }

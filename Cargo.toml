@@ -72,10 +72,10 @@ busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev 
 busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
-busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f" }
+busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "b10cd35eaec72969ac2b40dea379194d655daca9" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "b10cd35eaec72969ac2b40dea379194d655daca9" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "1df4b10d12764fef89966b9c9bd007f5d481f6ed" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "1df4b10d12764fef89966b9c9bd007f5d481f6ed" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
 # crate's door on the secret axis; the kernel's test build stands their `resolve` in. One rev each.
 busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "6f9f398e59c9414f27fa9ecb44c8e46412418ffa" }

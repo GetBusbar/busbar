@@ -133,6 +133,10 @@ pub struct RootInstall {
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
     /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
     pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,
+    /// The export axis: every `kind: export` row, opened on the export kind's ABI by the root over
+    /// the process's one dispatcher (ARCHITECT ruling 2026-09-29, the opener seam). `None` = no
+    /// export module resolves.
+    pub export_axis: Option<&'static dyn busbar_contract::export_calls::ExportAxis>,
 }
 
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
@@ -146,8 +150,8 @@ pub type HookAxisBuild =
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
-/// stand-in store (which claims the default) as the default, and the shipped secret sources as the
-/// secret axis.
+/// stand-in store (which claims the default) as the default, the shipped secret sources as the
+/// secret axis, and the test axis for the exports.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
     stores: &[fixture_store::linked::STORE],
@@ -157,6 +161,7 @@ const STAND_IN: RootInstall = RootInstall {
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
+    export_axis: Some(&crate::test_support::export_axis::STAND_IN),
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,

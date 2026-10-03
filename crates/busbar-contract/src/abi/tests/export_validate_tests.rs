@@ -358,3 +358,128 @@ fn deliver_null_error_faults() {
         red(Rule::NullWithCount, "deliver.error")
     );
 }
+
+// ── the Statement tail ─────────────────────────────────────────────────────────────────────────
+
+fn tail(streams: &[u8], routes: &[Route]) -> Tail {
+    Tail {
+        head: crate::abi::mechanism::door::KindTailHead {
+            size: core::mem::size_of::<Tail>() as u32,
+            _reserved: 0,
+        },
+        streams: streams.as_ptr(),
+        streams_len: streams.len(),
+        routes: routes.as_ptr(),
+        routes_len: routes.len(),
+    }
+}
+
+fn s(v: &'static str) -> AbiStr {
+    AbiStr {
+        ptr: v.as_ptr(),
+        len: v.len(),
+    }
+}
+
+fn route(path: &'static str, method: &'static str, auth: u32) -> Route {
+    Route {
+        path: s(path),
+        method: s(method),
+        auth,
+        _reserved: 0,
+    }
+}
+
+#[test]
+fn a_well_formed_tail_passes() {
+    let routes = [route("/metrics", "GET", super::super::ROUTE_AUTH_KEY)];
+    let t = tail(&[0], &routes);
+    assert_eq!(check_tail(&t), Ok(()));
+    assert_eq!(check_tail_entries(&[0, 1], &routes), Ok(()));
+}
+
+#[test]
+fn a_tail_list_counted_behind_null_faults() {
+    let mut t = tail(&[], &[]);
+    t.streams = std::ptr::null();
+    t.streams_len = 1;
+    assert_eq!(check_tail(&t), red(Rule::NullWithCount, "tail.streams"));
+    let mut t = tail(&[], &[]);
+    t.routes = std::ptr::null();
+    t.routes_len = 1;
+    assert_eq!(check_tail(&t), red(Rule::NullWithCount, "tail.routes"));
+}
+
+#[test]
+fn a_tail_with_more_streams_than_exist_faults() {
+    let many = [0u8; 10];
+    assert_eq!(
+        check_tail(&tail(&many, &[])),
+        red(Rule::OverMax, "tail.streams_len")
+    );
+}
+
+#[test]
+fn a_tail_with_too_many_routes_faults() {
+    let routes: Vec<Route> = (0..65).map(|_| route("/metrics", "GET", 0)).collect();
+    assert_eq!(
+        check_tail(&tail(&[], &routes)),
+        red(Rule::OverMax, "tail.routes_len")
+    );
+}
+
+#[test]
+fn a_stream_byte_outside_the_frozen_list_faults() {
+    assert_eq!(
+        check_tail_entries(&[9], &[]),
+        red(Rule::UnknownCode, "tail.streams.code")
+    );
+}
+
+#[test]
+fn a_repeated_stream_faults() {
+    assert_eq!(
+        check_tail_entries(&[1, 1], &[]),
+        red(Rule::Contradiction, "tail.streams.repeat")
+    );
+}
+
+#[test]
+fn a_route_text_counted_behind_null_faults() {
+    let mut r = route("/metrics", "GET", 0);
+    r.path.ptr = std::ptr::null();
+    assert_eq!(
+        check_tail_entries(&[], &[r]),
+        red(Rule::NullWithCount, "tail.routes.path")
+    );
+    let mut r = route("/metrics", "GET", 0);
+    r.method.ptr = std::ptr::null();
+    assert_eq!(
+        check_tail_entries(&[], &[r]),
+        red(Rule::NullWithCount, "tail.routes.method")
+    );
+}
+
+#[test]
+fn a_route_path_not_rooted_faults() {
+    assert_eq!(
+        check_tail_entries(&[], &[route("metrics", "GET", 0)]),
+        red(Rule::Missing, "tail.routes.path.root")
+    );
+}
+
+#[test]
+fn a_route_without_a_method_faults() {
+    assert_eq!(
+        check_tail_entries(&[], &[route("/metrics", "", 0)]),
+        red(Rule::Missing, "tail.routes.method.empty")
+    );
+}
+
+#[test]
+fn a_route_auth_outside_its_vocabulary_faults() {
+    assert_eq!(
+        check_tail_entries(&[], &[route("/metrics", "GET", 3)]),
+        red(Rule::UnknownCode, "tail.routes.auth")
+    );
+}

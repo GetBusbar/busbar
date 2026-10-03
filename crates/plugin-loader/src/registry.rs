@@ -69,15 +69,16 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // (`hook_door::HookRows`) on the hook kind's memory ABI; one whose manifest states none is
         // refused there. The payload schema range is the manifest's (C21 narrows it).
         "hook" => &[1, busbar_contract::abi::cold::hook::HOOK_ABI_VERSION],
-        // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
-        // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
-        // vocabulary and REMOVED `audit` — an auditor is a projection made of other streams, not a
-        // data type of its own — so a v1 sink that declared `audit` no longer has a stream to
-        // declare, and v1 is not accepted here.
-        // v3 (DECISIONS #85) wraps the response in the observability envelope; v2 answers bare. BOTH
-        // load — the decoder accepts either shape and they are disjoint — so the FLOOR stays at the
-        // 1.5.3 vocabulary version and the envelope landing refuses no published sink.
-        "export" => &[2, busbar_contract::abi::cold::export::EXPORT_ABI_VERSION],
+        // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds. 1.6.0
+        // (THE DESIGN §11.8, ABI-b6): the export kind speaks its MEMORY ABI, version
+        // `abi::export::ABI_VERSION` (3), and nothing older: a 1.5.5 JSON-contract sink (2) is
+        // refused at scan naming the rebuild. M6-COLD-DELETE: the not-yet-ported cold sinks state
+        // the same number (the cold `EXPORT_ABI_VERSION` is 3 too) and are told apart at open by
+        // their missing door (`export_axis`).
+        "export" => &[
+            busbar_contract::abi::export::ABI_VERSION,
+            busbar_contract::abi::export::ABI_VERSION,
+        ],
         // A `kind: plane` plugin is a protocol plane delivered as a `cdylib` and driven over the
         // HOT-tier `#[repr(C)]` `PlaneDecl` vtable (`busbar_contract::abi::hot`) — NOT the six-symbol JSON
         // `call` wire the five cold kinds share. Its per-kind PAYLOAD axis is the AIRLOCK MINOR

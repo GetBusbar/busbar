@@ -74,6 +74,13 @@ pub struct OpsHead {
 }
 
 /// `validate`'s `in`.
+///
+/// THE VALIDATE REFUSAL, every kind (ARCHITECT ruling 2026-09-29): the settings blob is exactly the
+/// operator's section, so the plugin cannot name its instance; the HOST composes the refusal words.
+/// A FAILED `validate`'s error text may hold several lines separated by `\n` (none empty, no
+/// leading or trailing `\n`: [`check_validate_refusal`]). The host splits them; a line whose first
+/// path segment is `settings` is instance-relative and reads `<kind-section>.<instance>.<line>`;
+/// any other line is the plugin's own sentence, verbatim ([`refusal_lines`]).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ValidateIn {
@@ -218,3 +225,60 @@ pub struct ReleaseIn {
     /// The lease an `out` handed the host.
     pub lease: u64,
 }
+
+/// The first path segment of a refusal line: its text up to the first `.`, `:`, `[` or space.
+fn first_segment(line: &str) -> &str {
+    line.split(['.', ':', '[', ' ']).next().unwrap_or("")
+}
+
+/// A FAILED `validate`'s error text, as the rule on [`ValidateIn`] states it: not empty, no empty
+/// line, no leading or trailing `\n`.
+///
+/// # Errors
+///
+/// [`Rule::Missing`](super::check::Rule::Missing) naming the arm.
+pub fn check_validate_refusal(text: &[u8]) -> Result<(), super::check::Fault> {
+    use super::check::{fault, Rule};
+    if text.is_empty() {
+        return Err(fault(Rule::Missing, "validate.error.empty"));
+    }
+    if text.first() == Some(&b'\n') {
+        return Err(fault(Rule::Missing, "validate.error.leading_newline"));
+    }
+    if text.last() == Some(&b'\n') {
+        return Err(fault(Rule::Missing, "validate.error.trailing_newline"));
+    }
+    if text.windows(2).any(|w| w == b"\n\n") {
+        return Err(fault(Rule::Missing, "validate.error.empty_line"));
+    }
+    Ok(())
+}
+
+/// THE HOST'S RENDERING of a validate refusal for `instance` of `section` (the kind's configuration
+/// section: `export`, `secrets`, …), one configuration error per line, in order.
+///
+/// # Examples
+/// ```
+/// use busbar_contract::abi::mechanism::lifecycle::refusal_lines;
+/// assert_eq!(
+///     refusal_lines("export", "metrics", "settings: missing field `buffer_seconds`"),
+///     vec!["export.metrics.settings: missing field `buffer_seconds`"],
+/// );
+/// assert_eq!(
+///     refusal_lines("export", "metrics", "a whole sentence\nsettings.x: bad"),
+///     vec!["a whole sentence", "export.metrics.settings.x: bad"],
+/// );
+/// ```
+#[must_use]
+pub fn refusal_lines(section: &str, instance: &str, text: &str) -> Vec<String> {
+    text.split('\n')
+        .map(|line| match first_segment(line) == "settings" {
+            true => format!("{section}.{instance}.{line}"),
+            false => line.to_string(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[path = "../tests/validate_refusal_tests.rs"]
+mod tests;
