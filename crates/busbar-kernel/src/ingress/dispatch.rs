@@ -41,6 +41,7 @@ pub(crate) async fn protocol_dispatch(
         body,
         gov,
         consumed: consumed.map(|c| c.0),
+        app: Arc::clone(&app),
     };
     let crate::plane_driver::serve::DataRequest {
         method,
@@ -49,6 +50,7 @@ pub(crate) async fn protocol_dispatch(
         body,
         gov,
         consumed,
+        ..
     } = match crate::plane_driver::serve::claimed(offered) {
         Ok(answer) => return answer.await,
         Err(back) => *back,

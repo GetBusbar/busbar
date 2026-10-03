@@ -58,7 +58,8 @@ use busbar_contract::abi::plane::{
     AdminRoute, ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops,
     OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail,
     RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED, AUDIT_NONE,
-    AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END,
+    AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN,
+    EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
     INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
     PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE,
@@ -372,14 +373,26 @@ static DOOR: Shared<Door> = Shared(Door {
     ops: &OPS.0 as *const Ops as *const OpsHead,
 });
 
-static CLAIMS: Shared<[Claim; 1]> = Shared([Claim {
-    verb: s(b"POST"),
-    target: s(b"/call"),
-    carrier: s(b"inbound"),
-    flags: 0,
-    refusal_dialect: 0,
-    _pad: 0,
-}]);
+/// The claims: every path under `/call` for POST, and `/open`, a claim that takes no inbound
+/// credential (an anonymous unit, never billed).
+static CLAIMS: Shared<[Claim; 2]> = Shared([
+    Claim {
+        verb: s(b"POST"),
+        target: s(b"/call"),
+        carrier: s(b"inbound"),
+        flags: 0,
+        refusal_dialect: 0,
+        _pad: 0,
+    },
+    Claim {
+        verb: s(b"POST"),
+        target: s(b"/open"),
+        carrier: s(b"inbound"),
+        flags: CLAIM_OPEN | CLAIM_EXACT,
+        refusal_dialect: 0,
+        _pad: 0,
+    },
+]);
 
 /// The admin routes the snapshot publishes, served through `serve`: an audited admin route, and a
 /// public one the kernel's admin table never serves.
@@ -531,7 +544,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             _reserved: 0,
             generation: i.open.generation,
             claims: &CLAIMS.0 as *const Claim,
-            claims_len: 1,
+            claims_len: 2,
             admin_routes: ADMIN_ROUTES.0.as_ptr(),
             admin_routes_len: ADMIN_ROUTES.0.len(),
             openapi: NO_BLOB,
@@ -729,6 +742,15 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                     .unwrap_or(0);
                 me.tick_every_ms.store(ms, Ordering::SeqCst);
                 vec![estimate(0, ms)]
+            }
+            b"/open" => {
+                // The open claim routes directly over the section's `m`.
+                o.route = ROUTE_DIRECT;
+                o.pool = AbiStr {
+                    ptr: b"m".as_ptr(),
+                    len: 1,
+                };
+                vec![estimate(0, i.body.len as u64)]
             }
             t if t.starts_with(b"/call/pool:") || t.starts_with(b"/call/direct:") => {
                 // The route the target names (ARCHITECT Q-SW6/Q-FL3): `pool:<pool>` or

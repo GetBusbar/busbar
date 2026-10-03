@@ -119,7 +119,9 @@ fn cause(end: &End) -> Option<ReasonCode> {
     }
 }
 
-impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller> PlaneUnits<'_, S, F, C> {
+impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
+    PlaneUnits<'_, S, F, C>
+{
     /// THE SESSION, after `open_unit` admitted its unit: `token` and `sealed` are what the
     /// admission handed back. Both sides run until the session ends; `Ok` when it ended on its
     /// own (the caller's side ended, or the plane said its reply was done), else why it ended.

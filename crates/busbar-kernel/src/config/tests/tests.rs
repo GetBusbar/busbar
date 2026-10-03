@@ -3919,9 +3919,20 @@ fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
     let sections = deploy.door_sections();
     let a: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
     let raw: serde_yaml::Value = serde_yaml::from_str("greeting: hi").unwrap();
-    assert_eq!(sections.get("neutral_section"), Some(&a), "kept as written, fees lifted off");
-    assert_eq!(sections.get(RAW_SECTION), Some(&raw), "the raw carrier's too");
-    assert!(deploy.plane_raw.get("neutral_section").is_none(), "never raw-carried");
+    assert_eq!(
+        sections.get("neutral_section"),
+        Some(&a),
+        "kept as written, fees lifted off"
+    );
+    assert_eq!(
+        sections.get(RAW_SECTION),
+        Some(&raw),
+        "the raw carrier's too"
+    );
+    assert!(
+        deploy.plane_raw.get("neutral_section").is_none(),
+        "never raw-carried"
+    );
 }
 
 /// The top-level section [`RAW_SECTION_PLANE`] declares — and does NOT own the grammar of.

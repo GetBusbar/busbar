@@ -368,6 +368,10 @@ pub trait DriverSteps: Units {
     /// (`None` = none named) as a pool or directly (`route`, `ROUTE_*`). Called once, when decode
     /// proceeds.
     fn decoded(&self, _ctx: &UnitCtx, _op: OpClassId, _route: u8, _pool: Option<&[u8]>) {}
+
+    /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
+    /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
+    fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
 }
 
 /// A refusal or failure the plane rendered, for the caller.
@@ -719,6 +723,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
             .and_then(|d| classes.get(d.op_class as usize).copied());
         if let (Some(op), Some(d)) = (op, decoded.as_ref()) {
             self.steps.decoded(ctx, op, d.route, d.pool.as_deref());
+            self.steps.expected(ctx, &d.expected);
         }
         self.lock().decoded = decoded;
         op.map_or_else(

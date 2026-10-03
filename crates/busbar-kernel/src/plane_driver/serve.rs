@@ -423,6 +423,9 @@ pub struct DataRequest {
     pub gov: crate::governance::GovCtx,
     /// The credentials the auth gate consumed; a door strips them before a plane sees the head.
     pub consumed: Option<ConsumedCredentials>,
+    /// The generation serving the request: its cost model, governance book and groups, which the
+    /// door's money steps admit and settle the unit by (THE DESIGN §7).
+    pub app: std::sync::Arc<crate::state::App>,
 }
 
 /// A claimed request's answer.

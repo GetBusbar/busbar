@@ -24,6 +24,17 @@ use serde::Deserialize as _;
 /// another.
 pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
 
+/// THE RESERVED `pools` SUB-KEY of a plane's section (#47, POOLS-VERBS): its named pools, each a list
+/// of the section's own entries under `members`. Core-owned: the kernel reads it, the plane never.
+pub const RESERVED_POOLS_KEY: &str = "pools";
+
+/// THE RESERVED `models` MAP of a model-serving plane's section (the uniform model-serving map,
+/// owner config-model ruling 2026-09-19): where present, its keys are the section's entries.
+pub const RESERVED_MODELS_KEY: &str = "models";
+
+/// A pool's member list, inside its [`RESERVED_POOLS_KEY`] entry.
+pub const POOL_MEMBERS_KEY: &str = "members";
+
 /// One plane's top-level section, split into its two reserved knobs and its registrations.
 ///
 /// Insertion-ordered, because catalogue construction and every operator-facing listing read it and a

@@ -114,6 +114,13 @@ pub struct ServedFacts {
     pub op_classes: Vec<&'static str>,
     /// The tail's `audit_kind`.
     pub audit_kind: &'static str,
+    /// The tail's billable classes, in order: a unit count's `class` indexes them (the money
+    /// steps ledger each count under its class name, THE DESIGN §7).
+    pub billable_classes: Vec<&'static str>,
+    /// The tail's fee units, each also one of [`Self::billable_classes`]: the plane's report of
+    /// whether a unit incurred its fee (THE DESIGN §7, "the plane reports ... whether a fee unit was
+    /// incurred").
+    pub fee_units: Vec<&'static str>,
 }
 
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
@@ -168,6 +175,14 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .map(|c| kept(c.op))
                 .collect(),
             audit_kind: kept(tail.audit_kind),
+            billable_classes: listed(tail.billable_classes, tail.billable_classes_len)
+                .into_iter()
+                .map(|c| kept(c.class))
+                .collect(),
+            fee_units: listed(tail.fee_units, tail.fee_units_len)
+                .into_iter()
+                .map(kept)
+                .collect(),
         },
     })
 }
