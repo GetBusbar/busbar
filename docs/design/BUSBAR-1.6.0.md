@@ -3307,8 +3307,9 @@ branches live on GitHub so CI runs the pipeline).
 
 **Ship and stop** (ARCHITECT 2026-10-02, supersedes every polling instruction). When a slice is
 ready, run one command from the lane's worktree:
-`cargo xtask ship "<PR title>" [--body <file>]`. It refuses any branch that is not `lane-*`,
-merges `origin/predev` in, runs the local pre-flight, commits what the pre-flight changed (tracked
+`busbar-release ship "<PR title>" [--body <file>]` (the release CLI, `bin/busbar-release` in a clone
+of GetBusbar/busbar-release; OWNER 2026-10-02: every release tool lives there, and `cargo xtask
+ship` is gone). It refuses any branch that is not `lane-*`, merges `origin/predev` in, runs the local pre-flight, commits what the pre-flight changed (tracked
 files only), pushes, opens or reuses the PR into `predev` and turns on auto-merge. Then STOP: no
 polling of CI, PRs or Latchkey, no sleep loops. A red or conflicted PR comes back to the owning
 lane as a new task; fix it, ship again, stop again.
