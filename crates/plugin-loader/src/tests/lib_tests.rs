@@ -4,24 +4,13 @@
 //! Tests for `crates/plugin-loader/src/lib.rs`.
 
 use super::*;
-
-/// The golden artifact names this crate's tests locate on disk, read from
-/// `tests/fixtures/plugin_artifacts.txt` (data, not code: the loader names no plugin instance).
-const PLUGIN_ARTIFACTS: &str = include_str!("../../tests/fixtures/plugin_artifacts.txt");
-
-/// One artifact name from [`PLUGIN_ARTIFACTS`], by key. Panics on a missing key: a fixture that
-/// lost a row must fail the test that needed it, never hand it an empty name.
-pub(crate) fn artifact(key: &str) -> &'static str {
-    PLUGIN_ARTIFACTS
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .find_map(|l| {
-            let (k, v) = l.split_once('=')?;
-            (k.trim() == key).then(|| v.trim())
-        })
-        .unwrap_or_else(|| panic!("tests/fixtures/plugin_artifacts.txt has no `{key}` row"))
-}
+// The fake-call store harness and the artifact table live in `crate::test_support`, which the
+// kernel's minting tests reach too (feature `test-support`); this crate's tests name them here.
+pub(crate) use crate::test_support::artifact;
+use crate::test_support::{
+    dyn_proof_store_with_fake_call_at_abi, fake_call, fake_call_answer, fake_free,
+    store_proof_candidate, store_proof_plugin_path, FAKE_CALL_HANDLE,
+};
 
 /// The REAL `kind: store` cdylib the loader-MECHANISM tests below dlopen (TOCTOU-safe loading,
 /// hot-swap coexistence, staged-file lifecycle, denylist-fallback classification — never
@@ -916,94 +905,6 @@ fn linux_from_bytes_load_touches_no_disk() {
 // `list_denylist` → `transport_call_status` → classification path runs end to end). We swap ONLY the
 // `call` fn pointer; the real `open`/`free`/`close`/handle from the loaded store fixture stay valid.
 
-/// (status, body) the fake `busbar_call` returns for the NEXT call.
-///
-/// PROCESS-GLOBAL, not `thread_local!`, and that is a correctness requirement rather than a style
-/// choice: `busbar_call` runs on a loader-owned worker thread (see `ffi_thread`), never on the
-/// caller's, so a thread-local set by the test would be invisible to the fake and it would answer
-/// `(STATUS_OK, b"")` — decoding as "EOF while parsing a value", which is how this fixture failed
-/// when the worker pool landed. A real plugin may not assume caller-thread affinity either, so the
-/// fake should not model one.
-///
-/// The `Mutex` here guards the VALUE, and nothing more. It does NOT make "set, then call" atomic:
-/// a test that sets the answer and then makes the call has released this lock in between, so a
-/// second test's setup lands in the gap and the first test's call reads the second test's answer.
-/// The claim it used to carry is what [`FAKE_CALL_IN_USE`] actually provides.
-static FAKE_CALL: std::sync::Mutex<(i32, &'static [u8])> = std::sync::Mutex::new((STATUS_OK, b""));
-
-/// What makes the fake a per-test instrument rather than a shared variable: a test that touches the
-/// fake takes this and does not give it back until the test is over, so its answer is still the one
-/// standing when its calls arrive.
-///
-/// Held for the TEST, not for the `with` closure. The set and the call it answers are separate
-/// statements in every one of these tests, and the whole defect is another test's set landing
-/// between them — a lock released at the end of `set` closes no gap at all. libtest runs each test
-/// on its own thread and drops that thread's locals when the test ends, which is exactly the extent
-/// wanted: the next test to reach for the fake waits for this one to finish.
-static FAKE_CALL_IN_USE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-thread_local! {
-    /// This test's hold on the fake, taken on first use and released when the test's thread ends.
-    static FAKE_CALL_HOLD: std::cell::RefCell<Option<std::sync::MutexGuard<'static, ()>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Set the answer the fake `busbar_call` gives next. Named `with`-style so the call sites that used
-/// the `thread_local!` API read the same.
-struct FakeCall;
-impl FakeCall {
-    fn with<R>(&self, f: impl FnOnce(&FakeCallCell) -> R) -> R {
-        FAKE_CALL_HOLD.with(|held| {
-            let mut held = held.borrow_mut();
-            if held.is_none() {
-                *held = Some(FAKE_CALL_IN_USE.lock().unwrap_or_else(|p| p.into_inner()));
-            }
-        });
-        f(&FakeCallCell)
-    }
-}
-struct FakeCallCell;
-impl FakeCallCell {
-    fn set(&self, v: (i32, &'static [u8])) {
-        *FAKE_CALL.lock().unwrap_or_else(|p| p.into_inner()) = v;
-    }
-}
-
-/// The answer the fake is currently holding, read WITHOUT taking [`FAKE_CALL_IN_USE`].
-///
-/// `busbar_call` runs on a loader-owned worker thread, which is not the test's thread and must
-/// never queue behind a test's hold on the fake — that would be the calls waiting on the very lock
-/// that exists to keep them answering the right test.
-fn fake_call_answer() -> (i32, &'static [u8]) {
-    *FAKE_CALL.lock().unwrap_or_else(|p| p.into_inner())
-}
-
-#[allow(non_upper_case_globals)]
-const FAKE_CALL_HANDLE: FakeCall = FakeCall;
-
-/// A fake `busbar_call`: allocate a buffer holding the chosen body and return the chosen status.
-/// Mimics the plugin side (plugin allocates, engine frees via `busbar_free`).
-unsafe extern "C-unwind" fn fake_call(
-    _handle: *mut c_void,
-    _req: *const u8,
-    _req_len: usize,
-    out: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
-    let (status, body) = fake_call_answer();
-    if body.is_empty() {
-        *out = std::ptr::null_mut();
-        *out_len = 0;
-    } else {
-        // Allocate with the SAME shape `fake_free` frees: a boxed slice leaked to a raw ptr.
-        let boxed: Box<[u8]> = body.to_vec().into_boxed_slice();
-        let len = boxed.len();
-        *out = Box::into_raw(boxed) as *mut u8;
-        *out_len = len;
-    }
-    status
-}
-
 /// The harness's own guard, and the reason every fake-call test below can be trusted: while one
 /// test is using the fake, another test's setup does not land on it.
 ///
@@ -1031,13 +932,6 @@ fn a_test_using_the_fake_call_keeps_its_answer_until_it_is_finished() {
         STATUS_PANIC,
         "the answer a test set must be the answer its own calls read"
     );
-}
-
-/// Free a buffer `fake_call` allocated (reconstruct the boxed slice and drop it).
-unsafe extern "C-unwind" fn fake_free(ptr: *mut u8, len: usize) {
-    if !ptr.is_null() && len != 0 {
-        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
-    }
 }
 
 /// Build a `DynStore` whose `call` is `fake_call`, reusing a real loaded store's `Library`/handle/
@@ -1600,50 +1494,6 @@ pub(crate) fn n_list_call_principals(
     s.list_plane_record_parents("call")
 }
 
-/// The store both-ways proof's cdylib for the tests below that need a real `kind: store` image to
-/// stage and wire (never store-specific durability). Under `CI` a missing cdylib is a HARD failure:
-/// it is this crate's own dev-dependency, so `cargo test` always builds it, and its absence means a
-/// broken pipeline rather than a machine without a sibling checkout.
-fn store_proof_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = store_proof_candidate();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the store both-ways proof's cdylib is not built under CI: `cargo test` must build {} \
-             (checked both the uplifted target dir and target/deps). Refusing to silently skip the \
-             over-the-ABI coverage of the kind:store dlopen seam.",
-            super::both_ways::fixture("store").0
-        );
-    }
-    candidate
-}
-
-/// The store both-ways proof's cdylib (`[package.metadata.busbar.both-ways]` `store`), if built —
-/// the newest of the uplifted `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>`
-/// output (a scoped `cargo test -p` only produces the latter). No CI policy here; the callers own that.
-fn store_proof_candidate() -> Option<std::path::PathBuf> {
-    newest_cdylib(super::both_ways::fixture("store").0)
-}
-
-/// The newest built `cdylib` of `crate_snake` in this target dir: the uplifted `<profile_dir>/<name>`
-/// copy or the raw `<profile_dir>/deps/<name>` output, whichever was written last.
-fn newest_cdylib(crate_snake: &str) -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let profile_dir = exe.parent()?.parent()?;
-    let name = plugin_library_filename(crate_snake);
-    let uplifted = profile_dir.join(&name);
-    let raw = profile_dir.join("deps").join(&name);
-    [uplifted, raw]
-        .into_iter()
-        .filter_map(|p| {
-            std::fs::metadata(&p)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|mtime| (p, mtime))
-        })
-        .max_by_key(|(_, mtime)| *mtime)
-        .map(|(p, _)| p)
-}
-
 /// A `SampleTask` with every field set to something distinguishable, so a round trip that drops or
 /// transposes a field fails rather than passing on a mostly-empty row.
 pub(crate) fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
@@ -1819,27 +1669,6 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
 /// [`dyn_store_with_fake_call`], which is pinned to the sibling sqlite fixture.
 fn dyn_proof_store_with_fake_call() -> Option<DynStore> {
     dyn_proof_store_with_fake_call_at_abi(busbar_contract::abi::cold::ABI_VERSION)
-}
-
-/// [`dyn_proof_store_with_fake_call`] bound to a chosen payload schema, so a test can hold the
-/// PUBLISHED one (v2) rather than the schema this binary was built against.
-fn dyn_proof_store_with_fake_call_at_abi(abi_version: u32) -> Option<DynStore> {
-    let path = store_proof_plugin_path()?;
-    let bytes = std::fs::read(&path).expect("read the in-tree store proof's cdylib");
-    let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-example")
-        .expect("stage the in-tree store proof for the fake-call harness");
-    let mut raw = wire_up_raw(
-        lib,
-        "{}",
-        "fake-call-example".to_string(),
-        abi_kind::STORE,
-        abi_kind::STORE,
-        Some(staged),
-    )
-    .expect("wire up raw");
-    raw.call = fake_call;
-    raw.free = fake_free;
-    Some(DynStore::new(raw, abi_version))
 }
 
 /// Run `op` against a store whose seam returns `(status, body)`, once per shape.

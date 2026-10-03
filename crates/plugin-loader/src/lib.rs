@@ -67,6 +67,12 @@ mod stage;
 pub mod store_adapter;
 pub mod store_v3;
 pub mod tarball;
+/// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
+/// Compiled for this crate's tests and under the `test-support` feature, which only
+/// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
 pub mod transport;
 pub mod transport_adapter;
 

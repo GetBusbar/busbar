@@ -3,13 +3,7 @@
 
 //! The batteries.
 
-mod bounds;
-mod corruption_verdict;
 mod fixtures;
-mod idempotence;
 mod journal_chain;
-mod kill_at_every_offset;
 mod no_disk;
-mod poison;
 mod record_layout;
-mod restart_after_a_roll;

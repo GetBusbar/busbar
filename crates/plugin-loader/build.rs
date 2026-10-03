@@ -65,6 +65,13 @@ fn main() {
         if let (true, Some((kind, krate))) = (in_table, code.split_once('=')) {
             let kind = kind.trim().trim_matches('"');
             let snake = krate.trim().trim_matches('"').replace('-', "_");
+            // The row's cdylib crate name as `BUSBAR_BOTH_WAYS_<KIND>`, for the `test-support`
+            // harness (`src/test_support.rs`), which is compiled without the dev-dependencies the
+            // table above names and so reaches its fixture's artifact by this name alone.
+            println!(
+                "cargo:rustc-env=BUSBAR_BOTH_WAYS_{}={snake}",
+                kind.to_uppercase().replace('-', "_")
+            );
             if HOT_KINDS.contains(&kind) {
                 hot.push_str(&format!("    (\"{kind}\", \"{snake}\"),\n"));
             } else if DOOR_ROWS.contains(&kind) {

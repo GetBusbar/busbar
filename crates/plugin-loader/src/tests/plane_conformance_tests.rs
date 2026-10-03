@@ -41,7 +41,7 @@ use busbar_contract::abi::AbiPreamble;
 use busbar_plugin_example_plane::PLANE_DECL as COMPILED_IN;
 
 /// Locate the REAL `busbar-plane-example` cdylib built into this workspace's target dir (uplifted or
-/// under `deps`, newest wins). Mirrors `store_proof_plugin_path()` in `lib_tests.rs`.
+/// under `deps`, newest wins). Mirrors `store_proof_plugin_path()` in `test_support.rs`.
 fn plane_example_cdylib() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;

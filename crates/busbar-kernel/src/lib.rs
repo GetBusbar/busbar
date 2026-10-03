@@ -259,6 +259,10 @@ pub mod operation {
     pub use busbar_contract::operation::*;
 }
 
+// The kernel member crates' minting tests (ARCHITECT ruling A): minting is legal only here.
+#[cfg(test)]
+#[path = "tests/members/mod.rs"]
+mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;

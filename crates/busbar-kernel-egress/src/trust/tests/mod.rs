@@ -11,7 +11,6 @@ mod guard_tests;
 mod net_tests;
 mod order_tests;
 mod swrr_tests;
-mod unit_tests;
 
 use crate::trust::guard::PoolView;
 use crate::trust::lane::{BreakerView, LaneTable, Unavailable};
