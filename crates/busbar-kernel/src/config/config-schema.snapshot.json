@@ -471,7 +471,7 @@
         },
         "oauth_as": {
           "optional": true,
-          "type": "crate::oauth_as::config::OauthAsCfg"
+          "type": "serde_yaml::Value"
         },
         "per_request_fee": {
           "optional": true,
