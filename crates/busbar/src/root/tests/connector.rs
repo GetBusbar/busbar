@@ -181,6 +181,9 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         "security:\n  allow_metadata_hosts: [169.254.169.254]\n",
     );
     let judge = dest_judge(&boot);
+    // The boot path's own step: the guard goes behind the egress-trust capability, which is what
+    // hears a commit (no other test in this binary installs one).
+    crate::root::connector::install_egress_trust(judge.clone());
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         None,
