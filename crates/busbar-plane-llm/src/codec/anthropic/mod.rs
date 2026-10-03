@@ -1030,6 +1030,12 @@ fn write_anthropic_stop_details(
 }
 
 fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
+    // THE SEARCH-RESULT SLOT (`IrBlock::search_result`): a caller's RAG passage read from a
+    // Converse `searchResult` (or from an Anthropic `search_result` whose parked raw block is not
+    // here, the splice in `write_message` having taken it first) re-emits as the native block.
+    if let Some(sr) = block.as_search_result() {
+        return write_search_result(&sr, block);
+    }
     match block {
         crate::codec::ir::IrBlock::Text {
             text,
@@ -1473,6 +1479,36 @@ fn attachment_is_sendable(block: &crate::codec::ir::IrBlock) -> bool {
         }
         _ => true,
     }
+}
+
+/// A native `search_result` block from the search-result slot: `source`, `title`, the passage as
+/// one text part, the caller's `citations` switch verbatim, and the block's cache breakpoint.
+fn write_search_result(
+    sr: &crate::codec::ir::IrSearchResultParts<'_>,
+    block: &crate::codec::ir::IrBlock,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        keys::TYPE.to_string(),
+        serde_json::json!(BLOCK_TYPE_SEARCH_RESULT),
+    );
+    obj.insert(keys::SOURCE.to_string(), serde_json::json!(sr.source));
+    obj.insert(keys::TITLE.to_string(), serde_json::json!(sr.title));
+    obj.insert(
+        keys::CONTENT.to_string(),
+        serde_json::json!([{ (keys::TYPE): keys::TEXT, (keys::TEXT): sr.body }]),
+    );
+    if let Some(cfg) = sr.citations_config {
+        obj.insert(keys::CITATIONS.to_string(), cfg.clone());
+    }
+    if let crate::codec::ir::IrBlock::Text {
+        cache_control: Some(cc),
+        ..
+    } = block
+    {
+        obj.insert(CACHE_CONTROL.to_string(), write_cache_control(cc));
+    }
+    serde_json::Value::Object(obj)
 }
 
 fn write_message(
