@@ -260,24 +260,22 @@ pub fn admission(key: Option<&Arc<VirtualKey>>, open: bool) -> Admission {
 /// principal bound to a group this node does not have are over budget; every count cap (requests,
 /// tokens of any tier, the in-flight gauge) is a rate limit. A rolling window's wait rides along.
 fn refusal_for(blocked: &LimitBlocked) -> Refusal {
+    let waited = |refusal: Refusal, retry_after: &Option<u64>| match retry_after
+        .and_then(|s| u32::try_from(s).ok())
+    {
+        Some(secs) => refusal.retry_after(secs),
+        None => refusal,
+    };
     match blocked {
         LimitBlocked::Disabled(_) => Refusal::new(ReasonCode::GroupFrozen),
         LimitBlocked::MissingGroup(_) => Refusal::new(ReasonCode::OverBudget),
         LimitBlocked::Limit {
-            metric,
+            metric: "budget",
             retry_after,
             ..
-        } => {
-            let reason = if *metric == "budget" {
-                ReasonCode::OverBudget
-            } else {
-                ReasonCode::RateLimited
-            };
-            let refusal = Refusal::new(reason);
-            match retry_after.and_then(|s| u32::try_from(s).ok()) {
-                Some(secs) => refusal.retry_after(secs),
-                None => refusal,
-            }
+        } => waited(Refusal::new(ReasonCode::OverBudget), retry_after),
+        LimitBlocked::Limit { retry_after, .. } => {
+            waited(Refusal::new(ReasonCode::RateLimited), retry_after)
         }
     }
 }
