@@ -72,6 +72,7 @@ pub mod tarball;
 /// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
+#[path = "tests/test_support.rs"]
 pub mod test_support;
 pub mod transport;
 pub mod transport_adapter;

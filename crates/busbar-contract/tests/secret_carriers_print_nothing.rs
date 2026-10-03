@@ -7,8 +7,8 @@
 //! this tree cannot see. The guarantee has to be the type's, not the caller's discipline.
 //!
 //! The one-time placeholder (`SecretOnce`) is minted by the verbs unit and nowhere else
-//! (construction `token-sealed:secret-once-mint`), so what it prints is proved beside that unit:
-//! `busbar-core-admin/src/tests/secret_once_tests.rs`.
+//! (construction `token-sealed:secret-once-mint`), so what it prints is proved beside that unit, in
+//! its `secret_once_tests`.
 
 use busbar_contract::UpstreamAddress;
 

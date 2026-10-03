@@ -21,7 +21,7 @@ const STORE_PROOF_CRATE: &str = env!("BUSBAR_BOTH_WAYS_STORE");
 
 /// The golden artifact names this crate's tests locate on disk, read from
 /// `tests/fixtures/plugin_artifacts.txt` (data, not code: the loader names no plugin instance).
-const PLUGIN_ARTIFACTS: &str = include_str!("../tests/fixtures/plugin_artifacts.txt");
+const PLUGIN_ARTIFACTS: &str = include_str!("../../tests/fixtures/plugin_artifacts.txt");
 
 /// One artifact name from [`PLUGIN_ARTIFACTS`], by key. Panics on a missing key: a fixture that
 /// lost a row must fail the test that needed it, never hand it an empty name.

@@ -2,68 +2,57 @@
 # One line per finding: <row>\t<tag>\t<subject>\t<figure>. The `--posture` run excuses exactly these,
 # at or below these figures, and reds anything new or higher. Written ONLY by
 # `cargo xtask gate <gate> --posture --write-standing`, which strikes and lowers and never adds.
-kind-isolation:deps	unlisted-dep-edge	cleanliness -> contract	1
-kind-isolation:deps	unlisted-dep-edge	cleanliness -> kernel	2
 kind-isolation:deps	unlisted-dep-edge	cleanliness -> plugin-tooling	1
-kind-isolation:deps	unlisted-dep-edge	kernel -> kernel	3
-kind-isolation:deps	unlisted-dep-edge	legacy -> contract	1
 kind-isolation:deps	unlisted-dep-edge	legacy -> plane	2
-kind-isolation:deps	unlisted-dep-edge	plugin-tooling -> contract	1
 kind-isolation:deps	unlisted-transitional	crates/busbar-llm	1
-kind-isolation:matrix	unlisted-cell	busbar × legacy	85
-kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
-kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	350
-kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	33
-kind-isolation:matrix	unlisted-cell	busbar-core-admin × hooks	11
-kind-isolation:matrix	unlisted-cell	busbar-core-admin × kernel	74
-kind-isolation:matrix	unlisted-cell	busbar-core-admin × legacy	19
-kind-isolation:matrix	unlisted-cell	busbar-core-admin × plane	71
-kind-isolation:matrix	unlisted-cell	busbar-core-admin × plugin-tooling	92
-kind-isolation:matrix	unlisted-cell	busbar-core-admin × transport	12
-kind-isolation:matrix	unlisted-cell	busbar-core-connector × cleanliness	2
+kind-isolation:matrix	unlisted-cell	busbar × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	1
+kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	1
+kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	1
+kind-isolation:matrix	unlisted-cell	busbar-core-admin × hooks	1
+kind-isolation:matrix	unlisted-cell	busbar-core-admin × kernel	1
+kind-isolation:matrix	unlisted-cell	busbar-core-admin × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-core-admin × plane	1
+kind-isolation:matrix	unlisted-cell	busbar-core-admin × plugin-tooling	1
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × legacy	1
-kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	7
-kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × kernel	5
-kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × legacy	2
-kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	4
-kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	40
-kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	34
-kind-isolation:matrix	unlisted-cell	busbar-kernel × kernel	187
-kind-isolation:matrix	unlisted-cell	busbar-kernel × legacy	167
-kind-isolation:matrix	unlisted-cell	busbar-kernel × plugin-tooling	128
-kind-isolation:matrix	unlisted-cell	busbar-kernel × store	2
+kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × kernel	1
+kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	1
+kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	1
+kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	1
+kind-isolation:matrix	unlisted-cell	busbar-kernel × kernel	1
+kind-isolation:matrix	unlisted-cell	busbar-kernel × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-kernel × plugin-tooling	1
+kind-isolation:matrix	unlisted-cell	busbar-kernel × store	1
 kind-isolation:matrix	unlisted-cell	busbar-kernel-audit × kernel	1
 kind-isolation:matrix	unlisted-cell	busbar-kernel-egress × legacy	1
-kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × cleanliness	4
-kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × plane	14
-kind-isolation:matrix	unlisted-cell	busbar-llm × kernel	15
-kind-isolation:matrix	unlisted-cell	busbar-llm × legacy	10
-kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	310
-kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	25
-kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × legacy	3
-kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × plane	44
-kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × transport	25
-kind-isolation:matrix	unlisted-cell	busbar-plane-llm × legacy	40
-kind-isolation:matrix	unlisted-cell	busbar-plane-streaming × legacy	32
-kind-isolation:matrix	unlisted-cell	busbar-plugin-example-plane × plane	2
-kind-isolation:matrix	unlisted-cell	busbar-voice × kernel	9
-kind-isolation:matrix	unlisted-cell	busbar-voice × legacy	9
-kind-isolation:matrix	unlisted-edge	cleanliness -> cleanliness	2
-kind-isolation:matrix	unlisted-edge	cleanliness -> hooks	11
-kind-isolation:matrix	unlisted-edge	cleanliness -> kernel	79
-kind-isolation:matrix	unlisted-edge	cleanliness -> legacy	22
-kind-isolation:matrix	unlisted-edge	cleanliness -> plane	93
-kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	92
-kind-isolation:matrix	unlisted-edge	cleanliness -> transport	26
-kind-isolation:matrix	unlisted-edge	hooks -> plane	4
-kind-isolation:matrix	unlisted-edge	kernel -> cleanliness	44
-kind-isolation:matrix	unlisted-edge	kernel -> hooks	34
-kind-isolation:matrix	unlisted-edge	kernel -> legacy	168
-kind-isolation:matrix	unlisted-edge	kernel -> plugin-tooling	128
-kind-isolation:matrix	unlisted-edge	kernel -> store	2
-kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	9
-kind-isolation:matrix	unlisted-edge	root -> cleanliness	205
-kind-isolation:matrix	unlisted-instance	busbar × export	8
+kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × cleanliness	1
+kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × plane	1
+kind-isolation:matrix	unlisted-cell	busbar-llm × kernel	1
+kind-isolation:matrix	unlisted-cell	busbar-llm × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	1
+kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	1
+kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × plane	1
+kind-isolation:matrix	unlisted-cell	busbar-plane-llm × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-plane-streaming × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-plugin-example-plane × plane	1
+kind-isolation:matrix	unlisted-cell	busbar-voice × kernel	1
+kind-isolation:matrix	unlisted-cell	busbar-voice × legacy	1
+kind-isolation:matrix	unlisted-edge	cleanliness -> hooks	1
+kind-isolation:matrix	unlisted-edge	cleanliness -> kernel	2
+kind-isolation:matrix	unlisted-edge	cleanliness -> legacy	3
+kind-isolation:matrix	unlisted-edge	cleanliness -> plane	2
+kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	1
+kind-isolation:matrix	unlisted-edge	hooks -> plane	1
+kind-isolation:matrix	unlisted-edge	kernel -> cleanliness	2
+kind-isolation:matrix	unlisted-edge	kernel -> hooks	1
+kind-isolation:matrix	unlisted-edge	kernel -> legacy	2
+kind-isolation:matrix	unlisted-edge	kernel -> plugin-tooling	1
+kind-isolation:matrix	unlisted-edge	kernel -> store	1
+kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	2
+kind-isolation:matrix	unlisted-edge	root -> cleanliness	1
+kind-isolation:matrix	unlisted-instance	busbar × export	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/benches/hook_path.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/boot_lines_neutrality.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/boot_tls_refusal_once.rs	1
@@ -81,13 +70,7 @@ kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/no_state_persist.rs
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/scrape_shape_1_5_5.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/thread_per_core_serves.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/transport_dropped_in_serves.rs	1
-kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> kernel	1
 kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> legacy	3
-kind-isolation:test-deps	unlisted-dep-edge	kernel -> contract	1
 kind-isolation:test-deps	unlisted-dep-edge	legacy -> cleanliness	2
 kind-isolation:test-deps	unlisted-dep-edge	legacy -> plane	1
-kind-isolation:test-deps	unlisted-dep-edge	plugin-tooling -> contract	1
-kind-isolation:test-deps	unlisted-dep-edge	root -> cleanliness	1
-kind-isolation:test-deps	unlisted-dep-edge	root -> contract	1
-kind-isolation:test-deps	unlisted-dep-edge	root -> legacy	3
 kind-isolation:test-deps	unlisted-transitional	crates/busbar-llm	1
