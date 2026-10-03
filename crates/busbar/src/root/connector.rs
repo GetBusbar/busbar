@@ -106,6 +106,11 @@ pub fn boot(
     dest: Arc<dyn DestJudge>,
     listens: &[&str],
 ) -> &'static Arc<Connector> {
+    // The process's one runtime is the reactor a socket a plugin opens from a dispatcher worker
+    // registers on (`busbar_core_connector::io`).
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        busbar_core_connector::io::install_process_reactor(handle);
+    }
     let built = process::build(
         || entries(doors),
         dest,
