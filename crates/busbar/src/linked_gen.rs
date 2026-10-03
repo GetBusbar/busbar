@@ -89,7 +89,7 @@ const CLAIMS_AXIS: &str = "claims";
 
 /// The secret axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the default
 /// build): each row's entry exports its memory-ABI `door`.
-const SECRET_AXIS: &str = "secrets";
+const SECRET_AXIS: &str = "secret-doors";
 
 /// The auth axis (#2 rule (1), #40): each row's entry (its crate root) exports, at `door::door`, the
 /// memory-ABI door every `kind: auth` plugin exports (the same door its dropped-in build exports as

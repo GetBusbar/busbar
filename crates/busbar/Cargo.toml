@@ -118,9 +118,10 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 # THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
 busbar-store-memory = { path = "../store-memory" }
-# THE SECRET SOURCES (`{ env: VAR }`, `{ file: PATH }`), linked in every build through the `secrets`
-# axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the default build;
-# ARCHITECT 2026-10-02 WIRE-SECRET) and loaded through the one loader only when a reference names one.
+# THE SECRET SOURCES (`{ env: VAR }`, `{ file: PATH }`), linked in every build through the
+# `secret-doors` axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in
+# the default build; ARCHITECT 2026-10-02 WIRE-SECRET) and loaded through the one loader only when a
+# reference names one.
 # They live in their own repos (GetBusbar/busbar-secret-env, GetBusbar/busbar-secret-file) and are
 # pulled at a PINNED rev; the workspace `[patch]` points the busbar crate they name at this tree.
 # The kernel names neither.
@@ -392,7 +393,7 @@ llm-on-driver = "busbar-plane-llm"
 # `auths`: a `kind: auth` plugin's memory-ABI door (`<entry>::door::door`, the one its dropped-in
 # build exports), under its `linked-name` key.
 # `plane-door`: a plane's memory-ABI `door`, bound through the loader's one load (`root::linked`).
-# `secrets`: a `kind: secret` plugin's memory-ABI `door`.
+# `secret-doors`: a `kind: secret` plugin's memory-ABI `door`.
 # `export-doors`: a memory-ABI `kind: export` sink's `NAME`, `ALIAS`, `DECLARES` and `door`.
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
@@ -407,8 +408,8 @@ export-otlp = "export-doors"
 auth-admin-tokens = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
-secret-env = "secrets"
-secret-file = "secrets"
+secret-env = "secret-doors"
+secret-file = "secret-doors"
 transport-tcp = "transport transport-door"
 transport-http = "transport"
 transport-sse = "transport"
