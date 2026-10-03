@@ -715,6 +715,24 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
 
 /// A scratch directory that removes itself, so a failing assertion never leaves a tree behind and
 /// two runs of the same test never read each other's journal.
+/// `BUSBAR_DATA_DIR` IS PROCESS-GLOBAL, and `cargo test` runs this binary's tests on parallel
+/// threads: two boot-book tests that each set it would resolve one directory and write two chains
+/// into one journal, whose replay then fails verification. Every test that sets it does so through
+/// [`data_dir_env`], which holds this lock until the test ends.
+static DATA_DIR_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Set `BUSBAR_DATA_DIR` to `dir` for the rest of the calling test, serialized against every other
+/// test that sets it. The tuple drops in order: the variable is restored, then the lock released.
+fn data_dir_env(dir: &std::path::Path) -> (EnvVarGuard, std::sync::MutexGuard<'static, ()>) {
+    // A test that panicked while holding the lock still restored the variable on unwind.
+    let held = DATA_DIR_ENV
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = EnvVarGuard::capture("BUSBAR_DATA_DIR");
+    std::env::set_var("BUSBAR_DATA_DIR", dir);
+    (guard, held)
+}
+
 struct BookDir(std::path::PathBuf);
 
 impl BookDir {
@@ -813,8 +831,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     // resolves today (there is no `data_dir:` config key yet — see that function's own comment), and
     // it is the SAME accessor the plugin anti-downgrade floor persists under, which is why the boot
     // book reads it through that function rather than probing for itself.
-    let _guard = busbar_kernel::test_support::EnvVarGuard::capture("BUSBAR_DATA_DIR");
-    std::env::set_var("BUSBAR_DATA_DIR", &dir.0);
+    let _env = data_dir_env(&dir.0);
 
     // A REAL APP, off the REAL construction path — `build_app_from_config`, the one boot and config
     // apply both run — so `app.governance` is the store this deployment actually resolved and
@@ -1141,10 +1158,14 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
 /// the store its generation resolved; two reloads then rebuild the generation the way
 /// `config/reload` and `config/apply` do, each over the one before it.
 ///
-/// Two facts, read off the things themselves: (a) the third generation still holds the SAME
+/// Three facts, read off the things themselves: (a) the third generation still holds the SAME
 /// store the boot opened — a reload that reopened it would hand the book's shipper a store no
-/// generation serves; (b) the book's chain carries exactly ONE sealed opening. RED arm: a rebuild
-/// that drops the prior generation's store (`build_app_from_config` ignoring `prior`) fails (a).
+/// generation serves; (b) the book's chain carries exactly ONE sealed opening; (c) Book is
+/// reachable from the boot alone: the crate's one call of `root::boot::book` is `run()`'s, in
+/// `main.rs`, so no reload path can seal a second opening onto the chain — which is what makes (b)
+/// a claim about reloads and not true by construction. RED arms: a rebuild that drops the prior
+/// generation's store (`build_app_from_config` ignoring `prior`) fails (a); a second call of
+/// `root::boot::book` anywhere in the crate's code (a reload that reopens Book) fails (c).
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn one_seal_after_two_reloads() {
@@ -1155,8 +1176,7 @@ fn one_seal_after_two_reloads() {
     }
     busbar_kernel::metrics::init();
     let dir = BookDir::new("two-reloads");
-    let _guard = EnvVarGuard::capture("BUSBAR_DATA_DIR");
-    std::env::set_var("BUSBAR_DATA_DIR", &dir.0);
+    let _env = data_dir_env(&dir.0);
     let cfg = || {
         busbar_kernel::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_ONE_SEAL"),
@@ -1198,6 +1218,62 @@ fn one_seal_after_two_reloads() {
         openings, 1,
         "two reloads must leave exactly the boot's one sealed opening on the book's chain"
     );
+
+    // (c) BOOK IS BOOT-ONLY: every call of `root::boot::book` in the crate's code (comments and the
+    // test modules skipped) is the boot's one, in `main.rs`.
+    let calls = book_call_sites(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    assert_eq!(
+        calls,
+        vec!["main.rs".to_string()],
+        "Book is boot-only: `root::boot::book` must be called once, by the boot in main.rs"
+    );
+}
+
+/// The file (relative to `src`) of every call of the free function `book(` in the crate's non-test
+/// code, however it is reached (`root::boot::book(`, `super::boot::book(`, or a bare `book(` inside
+/// `boot.rs`), one entry per call. Not a call: a method (`.book(`), a longer name (`node_book(`)
+/// and the definition (`fn book(`). A line comment is skipped, and so is every `tests` directory
+/// and `tests.rs`.
+fn book_call_sites(src: &std::path::Path) -> Vec<String> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("the crate's src reads")
+            .map(|e| e.expect("an entry").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if path.is_dir() {
+                if name != "tests" {
+                    walk(root, &path, out);
+                }
+            } else if name.ends_with(".rs") && name != "tests.rs" {
+                let text = std::fs::read_to_string(&path).expect("a source file reads");
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("under src")
+                    .display()
+                    .to_string();
+                for line in text.lines() {
+                    let code = line.split("//").next().unwrap_or_default();
+                    for (at, _) in code.match_indices("book(") {
+                        let before = &code[..at];
+                        let prev = before.chars().next_back();
+                        let ident = prev.is_some_and(|c| c.is_alphanumeric() || c == '_');
+                        if !ident && prev != Some('.') && !before.ends_with("fn ") {
+                            out.push(rel.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(src, src, &mut out);
+    out
 }
 
 /// ITEMS 244, 247, 259 — THREE DOC CLAIMS IN `main.rs` THAT THE CODE BESIDE THEM CONTRADICTED.
