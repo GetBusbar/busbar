@@ -15,11 +15,15 @@
 //!   `spawn_blocking`); a full instance answers [`StoreFailure::Overloaded`] without a crossing;
 //!   a short answer is re-submitted once on the same ticket with the buffers it named.
 //! * [`RecordStore`], the 1.5.5 op set, SYNCHRONOUSLY, for the consumers that have not moved to
-//!   [`StoreCalls`]. M6: this bridge is deleted when no consumer remains. Its calls are
-//!   TICKET-LESS crossings on the caller's thread, exactly where the compiled-in store's direct
-//!   calls ran before, so no call site moves from non-blocking to blocking. A ticket-less op may
-//!   not pend: a store that PENDS on one is FAULT (loud: logged at error, and a debug build
-//!   panics). Remaining consumers: the kernel's governance state and budget flusher
+//!   [`StoreCalls`]. M6: this bridge is deleted when no consumer remains. Every one of its ops is
+//!   SUBMITTED ON A TICKET like a [`StoreCalls`] op, and the synchronous caller waits for the
+//!   completion: a store that answers PENDING (a remote store waiting on its connection) is
+//!   resumed by the dispatcher on its wake and completes the op, never faulted (ARCHITECT ruling
+//!   2026-10-03 on Q-L14-1; THE DESIGN, the plugin ABI). The wait is the caller's, exactly where the
+//!   compiled-in store's direct calls ran before, so no call site moves from non-blocking to
+//!   blocking. Only on a dispatcher's only worker, which cannot run an op while it waits, does an
+//!   op cross ticket-less on the caller's thread, where a PENDING is FAULT (loud: logged at error,
+//!   and a debug build panics). Remaining consumers: the kernel's governance state and budget flusher
 //!   (`busbar-kernel/src/governance/state.rs`), the plane host's record and token ops
 //!   (`busbar-kernel/src/plane_host/`), the admin units, the boot ledger's migration read, and
 //!   the planes' own record legs.
@@ -203,9 +207,63 @@ impl LoadedStore {
 
     // ── the two runners ──────────────────────────────────────────────────────────────────────
 
-    /// THE BRIDGE'S RUNNER: a ticket-less crossing on this thread, the one re-call of a short
-    /// answer, the lease read and released.
+    /// THE BRIDGE'S RUNNER (ARCHITECT ruling 2026-10-03 on Q-L14-1; THE DESIGN, the plugin ABI: every call
+    /// returns Ready or Pending(wake), and slow I/O pends, never a blocking thread): the op is
+    /// SUBMITTED on a ticket exactly as [`StoreCalls`] submits it, and this synchronous caller
+    /// waits for its completion. A store that answers PENDING is resumed by the dispatcher on its
+    /// wake, its crossing never parked; a short answer is re-submitted once on the same ticket.
+    /// Called on one of the dispatcher's own workers (whose thread cannot run the op while it
+    /// waits), the op goes to another worker; on a dispatcher with that worker alone it crosses
+    /// ticket-less on this thread ([`LoadedStore::inline`]).
     fn now<R: Req>(&self, r: &mut R) -> Ran<R::O> {
+        let s = r.slot();
+        let Some(worker) = self.bridge_worker() else {
+            return self.inline(r);
+        };
+        let Some(ticket) = self.dispatcher.mint(worker) else {
+            return Ran::host(Outcome::Refused, r.out());
+        };
+        let _recycle = Recycle(&self.dispatcher, ticket);
+        let (class, deadline) = deadline_of(s);
+        let mut regrown = false;
+        loop {
+            let frame = Frame::new(r.input(), r.out());
+            // Settled before it is dropped, so the drop cancels nothing.
+            let done = self
+                .dispatcher
+                .submit(&self.plugin, ticket, s, frame, class, deadline)
+                .wait_done();
+            let out = done.frame.as_ref().map_or_else(|| r.out(), |f| f.out);
+            if done.short && !regrown {
+                regrown = true;
+                r.grow(&out);
+                continue;
+            }
+            return Ran {
+                outcome: done.outcome,
+                out,
+                error: done.error,
+                lease: done.lease,
+            };
+        }
+    }
+
+    /// The worker the bridge submits to: the next in turn, never the calling thread's own; `None`
+    /// when the calling thread is the dispatcher's only worker.
+    fn bridge_worker(&self) -> Option<u32> {
+        let workers = self.dispatcher.workers().max(1);
+        let next = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
+        match self.dispatcher.current_worker() {
+            None => Some(next),
+            Some(_) if workers == 1 => None,
+            Some(me) if me == next => Some((next + 1) % workers),
+            Some(_) => Some(next),
+        }
+    }
+
+    /// A ticket-less crossing on this thread, the one re-call of a short answer: the bridge's path
+    /// on a dispatcher's only worker, where a ticketed op could never run.
+    fn inline<R: Req>(&self, r: &mut R) -> Ran<R::O> {
         let s = r.slot();
         let mut f = Frame::new(r.input(), r.out());
         let mut c = self.plugin.call(s, &mut f);
@@ -236,11 +294,7 @@ impl LoadedStore {
             return Ran::host(Outcome::Refused, r.out());
         };
         let _recycle = Recycle(&self.dispatcher, ticket);
-        let class = OPS[(s - LIFECYCLE_SLOTS) as usize].deadline;
-        let deadline = match class {
-            DeadlineClass::WriteBehind => 0,
-            _ => now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64),
-        };
+        let (class, deadline) = deadline_of(s);
         let mut regrown = false;
         loop {
             let frame = Frame::new(r.input(), r.out());
@@ -264,6 +318,17 @@ impl LoadedStore {
     }
 }
 
+/// Op `s`'s deadline class and its deadline: a Call-class op may pend [`CALL_DEADLINE`]; a
+/// WriteBehind op is never cancelled, so it carries none.
+fn deadline_of(s: u32) -> (DeadlineClass, u64) {
+    let class = OPS[(s - LIFECYCLE_SLOTS) as usize].deadline;
+    let deadline = match class {
+        DeadlineClass::WriteBehind => 0,
+        _ => now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64),
+    };
+    (class, deadline)
+}
+
 /// The ticket goes back when the call is over, however it ended.
 struct Recycle<'a>(
     &'a Dispatcher,
@@ -275,18 +340,18 @@ impl Drop for Recycle<'_> {
     }
 }
 
-/// A ticket-less crossing that PENDED on the synchronous bridge faulted the store. Loud: an
-/// error line always, and a debug build panics, so a pending store reached from a synchronous
-/// consumer never goes unseen (the ARCHITECT's condition on the bridge).
+/// A ticket-less crossing ([`LoadedStore::inline`], on a dispatcher's only worker) that PENDED
+/// faulted the store. Loud: an error line always, and a debug build panics, so a pend there never
+/// goes unseen.
 fn pended_on_the_bridge(store: &str, s: u32) {
     tracing::error!(
         store,
         op = <Store as crate::dispatch::Kind>::op_name(s),
-        "a store op faulted on the synchronous bridge; a store that pends is reached through StoreCalls"
+        "a store op faulted on the bridge's ticket-less crossing (the dispatcher's only worker called it)"
     );
     debug_assert!(
         false,
-        "store '{store}' faulted op {s} on the synchronous bridge (a pending op is FAULT there)"
+        "store '{store}' faulted op {s} on the bridge's ticket-less crossing (a pending op is FAULT there)"
     );
 }
 
@@ -782,8 +847,8 @@ macro_rules! run {
     };
 }
 
-/// The typed ops as `async fn`s over a runner; the bridge runs them to completion inline (a
-/// ticket-less crossing never pends), and [`StoreCalls`] awaits them.
+/// The typed ops over a runner: the bridge's `now` (submitted on a ticket and waited for) and
+/// [`StoreCalls`]' `submit` (submitted on a ticket and awaited).
 impl LoadedStore {
     fn reserve_req(op: OpId, epoch: u64, cells: &[Cell<'_>]) -> ReserveReq {
         let cells: Vec<UnitCell> = cells.iter().map(unit_cell).collect();

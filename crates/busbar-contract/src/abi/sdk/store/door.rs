@@ -1426,9 +1426,27 @@ slot!(
 /// [`Safe`](crate::abi::sdk::Safe) slot over `MyStore: StoreSlots`. The Statement names the
 /// store, declares [`DIAG_IDS`], carries the store's tail ([`tail`]) and states its marks
 /// ([`marks`]).
+///
+/// A store that reaches its backend over the host's connections declares its NEEDS, `(transport,
+/// auth)` per need, exactly as every other kind does (THE DESIGN, connections; ARCHITECT ruling
+/// 2026-10-03 on Q-L14-1): `store_door!(MyStore, "my-store", "1.0.0", 64, needs: NEEDS);` with
+/// `NEEDS: &'static [Need]` ([`Need`](crate::abi::host::conn::connector::Need)). The loader then
+/// hands the instance the connector table and declares each need on the host's one connection
+/// table, a need whose `target_from`/`trust_from` names a settings path at `open` and every
+/// `refresh`; a store op on a ticket reaches it through [`Op::connector`](super::Op::connector) and
+/// [`Op::checkout`](super::Op::checkout).
 #[macro_export]
 macro_rules! store_door {
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(,)?) => {
+        $crate::store_door!(@door $store, $name, $version, $max_inflight,
+            ::core::ptr::null::<$crate::abi::host::conn::connector::Need>(), 0);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(,)?) => {
+        const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
+        $crate::store_door!(@door $store, $name, $version, $max_inflight,
+            __BUSBAR_STORE_NEEDS.as_ptr(), __BUSBAR_STORE_NEEDS.len());
+    };
+    (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr) => {
         const __BUSBAR_STORE_TAIL: $crate::abi::store::StoreTail =
             $crate::abi::sdk::store::door::tail::<$store>();
         const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 2] =
@@ -1441,6 +1459,8 @@ macro_rules! store_door {
                 kind_tail: ::core::ptr::from_ref(&__BUSBAR_STORE_TAIL)
                     .cast::<$crate::abi::mechanism::door::KindTailHead>(),
                 marks: $crate::abi::sdk::store::door::marks::<$store>(),
+                needs: $needs,
+                needs_len: $needs_len,
                 ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
             },
             lifecycle: {

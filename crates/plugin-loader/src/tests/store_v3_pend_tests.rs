@@ -542,3 +542,245 @@ fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
         Outcome::Fault
     );
 }
+
+// ── the governance bridge on a ticket (ARCHITECT ruling 2026-10-03 on Q-L14-1) ────────────────
+
+/// A remote store's `list_denylist`: on a ticket it pends once (its round trip in flight) and
+/// answers on the resume; on no ticket it cannot reach its backend at all, so it refuses.
+struct RemoteDenylist;
+
+impl Hooks for RemoteDenylist {
+    fn list_denylist(
+        inner: &MemoryStore,
+        cx: &mut Op<'_>,
+    ) -> Step<busbar_contract::records::RecordStoreResult<Vec<String>>> {
+        if !cx.can_pend() {
+            return Step::Ready(Err(busbar_contract::records::RecordStoreError(
+                "a remote store answers only on a ticket".into(),
+            )));
+        }
+        let mut d = Op::detached();
+        pend_once(
+            cx,
+            || ready(<MemoryStore as StoreSlots>::list_denylist(inner, &mut d)),
+            1_000_000,
+        )
+    }
+}
+
+mod remote_denylist {
+    busbar_contract::store_door!(
+        super::Wrapped<super::RemoteDenylist>,
+        "remote-denylist",
+        "0",
+        64
+    );
+}
+
+/// RED (Q-L14-1 (a)): the kernel's governance store reaches every slot through the synchronous
+/// bridge; a store that answers PENDING there and READY on its wake completes the op, as a
+/// remote store's every round trip must.
+#[test]
+fn a_store_that_pends_then_answers_completes_a_governance_op_on_the_bridge() {
+    let s = open(remote_denylist::door);
+    RecordStore::add_denylist(&s, "alice", "test").expect("the denylist write");
+    assert_eq!(
+        RecordStore::list_denylist(&s).expect("the pended read completes"),
+        vec!["alice".to_string()]
+    );
+}
+
+/// THE HOST'S CONNECTION TABLE, as a store's needs reach it: it serves `tcp`, records each
+/// declaration and each open.
+#[derive(Default)]
+struct Table {
+    slab: busbar_contract::conn::ConnSlab<()>,
+    declared: Mutex<Vec<(u32, String)>>,
+    opened: Mutex<Vec<(u32, String)>>,
+}
+
+impl busbar_contract::conn::Conns for Table {
+    fn open(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        let id = self.slab.insert(caller, need, ())?;
+        self.opened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((need.0, desc.target.to_owned()));
+        Ok(id)
+    }
+    fn write(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn read(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: u64,
+        _: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn wait(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: &[busbar_contract::conn::ConnId],
+        _: u64,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn facts(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn close(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.slab.remove(caller, conn).map(|_| ())
+    }
+}
+
+impl busbar_contract::conn::DeclaredConns for Table {
+    fn declare(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((need.0, spec.transport.clone()));
+        self.slab.declare(owner, need);
+        Ok(())
+    }
+    fn declared(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+    ) -> Option<Result<(), busbar_contract::conn::ConnError>> {
+        self.slab.check_need(owner, need).ok().map(Ok)
+    }
+    fn serves_scheme(&self, transport: &str) -> bool {
+        transport == "tcp"
+    }
+}
+
+/// A store that reaches its backend over one `tcp` need: its `list_denylist` checks out the op's
+/// one connection to the backend and answers what it got.
+struct OverTcp;
+
+impl Hooks for OverTcp {
+    fn list_denylist(
+        _: &MemoryStore,
+        cx: &mut Op<'_>,
+    ) -> Step<busbar_contract::records::RecordStoreResult<Vec<String>>> {
+        let got = match cx.checkout(0, Some("db.internal:5432")) {
+            std::task::Poll::Ready(Ok(stream)) => format!("stream {stream}"),
+            std::task::Poll::Ready(Err(e)) => format!("refused: {e}"),
+            std::task::Poll::Pending => "pending".to_string(),
+        };
+        Step::Ready(Ok(vec![got]))
+    }
+}
+
+const NO_TEXT: busbar_contract::abi::mechanism::call::AbiStr =
+    busbar_contract::abi::mechanism::call::AbiStr {
+        ptr: std::ptr::null(),
+        len: 0,
+    };
+
+/// One outbound `tcp` need, its target named by the store.
+const TCP: &[busbar_contract::abi::host::conn::connector::Need] =
+    &[busbar_contract::abi::host::conn::connector::Need {
+        direction: busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND,
+        egress_class: 0,
+        transport: busbar_contract::abi::sdk::door::abi_str("tcp"),
+        auth: NO_TEXT,
+        target_from: NO_TEXT,
+        trust_from: NO_TEXT,
+        details: crate::dispatch::NO_BLOB,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    }];
+
+mod over_tcp {
+    busbar_contract::store_door!(
+        super::Wrapped<super::OverTcp>,
+        "over-tcp",
+        "0",
+        64,
+        needs: super::TCP
+    );
+}
+
+/// RED (Q-L14-1 (b)): a store whose door declares a `tcp` need is handed the connector, its need
+/// declared on the host's connection table, exactly as every other kind; its op on the bridge
+/// checks out a stream there.
+#[test]
+fn a_store_declaring_a_tcp_need_receives_a_connector() {
+    let table = Arc::new(Table::default());
+    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let conns: Arc<dyn busbar_contract::conn::DeclaredConns> = table.clone();
+    let p = load_linked::<Store>(
+        &LinkedRow::of(over_tcp::door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: Some(conns),
+        },
+    )
+    .expect("the door loads");
+    let s = LoadedStore::open(p, d, b"{}", mint).expect("it opens");
+    assert_eq!(
+        *table.declared.lock().expect("declared"),
+        vec![(0, "tcp".to_string())],
+        "the need is declared on the host's table under its Statement index"
+    );
+    let got = RecordStore::list_denylist(&s).expect("the op answers");
+    assert!(
+        got.len() == 1 && got[0].starts_with("stream "),
+        "the op checked out a stream over the connector: {got:?}"
+    );
+    assert_eq!(
+        *table.opened.lock().expect("opened"),
+        vec![(0, "db.internal:5432".to_string())]
+    );
+}
+
+/// A store door with no needs states none: the Statement the base arm builds is unchanged.
+#[test]
+fn a_store_door_without_needs_states_none() {
+    // SAFETY: the SDK's `'static` door and Statement.
+    let st = unsafe { *(*remote_denylist::door()).statement };
+    assert!(st.needs.is_null());
+    assert_eq!(st.needs_len, 0);
+    // SAFETY: as above.
+    let st = unsafe { *(*over_tcp::door()).statement };
+    assert_eq!(st.needs_len, 1);
+}
