@@ -6,7 +6,9 @@ name: Promote
 # predev lands through GitHub's merge queue (OWNER 2026-10-02): `merge_group` runs the same two
 # required jobs on the queue's merge commit, judged no worse than the base the queue built it on.
 on: [pull_request, merge_group]
-concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: true }
+# The predev->dev PR's head IS predev, so every predev merge re-runs its hop: that run is never
+# cancelled (it is the 6-hourly measurement), only the newest pending one waits behind it.
+concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: "${{ github.base_ref != 'dev' }}" }
 permissions: { contents: read }
 env:
   RELEASE_REF: 8799f794fe8dd6c87a5be57c5c1dd0c8a17b25b9
