@@ -36,6 +36,11 @@ fn hot_crates() -> Vec<String> {
     out
 }
 
+/// Whether `line` names `krate` by a path or a `use`.
+fn names(line: &str, krate: &str) -> bool {
+    line.contains(&format!("{krate}::")) || line.contains(&format!("::{krate} "))
+}
+
 fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for e in std::fs::read_dir(dir).expect("read dir").flatten() {
         let p = e.path();
@@ -63,7 +68,7 @@ fn nothing_names_a_hot_fixtures_rlib_so_none_is_linked() {
         let uses = |text: &str| {
             text.lines()
                 .filter(|l| !l.trim_start().starts_with("//"))
-                .any(|l| l.contains(&format!("{krate}::")) || l.contains(&format!("::{krate} ")))
+                .any(|l| names(l, krate))
         };
         assert!(!uses(&generated), "both_ways.rs names {krate}");
         for f in &files {
@@ -83,11 +88,11 @@ fn nothing_names_a_hot_fixtures_rlib_so_none_is_linked() {
 /// THE RED ARM, KEPT: the matcher the guard uses refuses the line that would link the crate.
 #[test]
 fn the_guard_sees_a_line_that_names_the_crate() {
-    let krate = "busbar_transport_tcp_plugin";
-    let uses = |l: &str| l.contains(&format!("{krate}::")) || l.contains(&format!("::{krate} "));
-    assert!(uses(
-        "pub(crate) use ::busbar_transport_tcp_plugin as transport_fixture;"
+    let krate = hot_crates().remove(0);
+    assert!(names(
+        &format!("pub(crate) use ::{krate} as alias;"),
+        &krate
     ));
-    assert!(uses("let d = busbar_transport_tcp_plugin::door;"));
-    assert!(!uses("let d = something_else::door;"));
+    assert!(names(&format!("let d = {krate}::door;"), &krate));
+    assert!(!names("let d = something_else::door;", &krate));
 }
