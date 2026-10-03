@@ -19,12 +19,10 @@ kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	6
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	3
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	5
 kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
-# FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02): approved rises; the plane-door both-ways proof's wire literals (the https:// vendor URL and the grammar's own http:// sentence) in crates/plugin-loader/src/tests/plane_door_conformance_tests.rs, under option (e)'s grant.
-kind-isolation:matrix	measurement-disagreement	busbar-plugin-loader × transport	2
 kind-isolation:matrix	ratchet	busbar × cleanliness	205
 kind-isolation:matrix	ratchet	busbar × hooks	13
 kind-isolation:matrix	ratchet	busbar-a2a × legacy	12
-kind-isolation:matrix	ratchet	busbar-a2a × plane	2726
+kind-isolation:matrix	ratchet	busbar-a2a × plane	2723
 kind-isolation:matrix	ratchet	busbar-contract × plane	195
 kind-isolation:matrix	ratchet	busbar-kernel × transport	189
 kind-isolation:matrix	ratchet	busbar-kernel-budget × kernel	26
@@ -37,18 +35,18 @@ kind-isolation:matrix	ratchet	busbar-plane-llm × plane	591
 kind-isolation:matrix	ratchet	busbar-plane-llm × transport	592
 kind-isolation:matrix	ratchet	busbar-plane-mcp × legacy	11
 kind-isolation:matrix	ratchet	busbar-plugin-loader × hooks	3
-# FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02): approved rises; the plane-door both-ways proof moved into the loader (option (c)/(e)): loader × plane +2 over predev's measure (62 -> 64), loader × transport 14 (its claim/carrier words and wire URLs); busbar-plane-a2a × legacy 13, × plane 76, × transport 109 drain at FOLD-A2A slice 8 (busbar-a2a deleted).
-kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	64
-kind-isolation:matrix	ratchet	busbar-plugin-loader × transport	14
-kind-isolation:matrix	ratchet	busbar-plane-a2a × legacy	13
-kind-isolation:matrix	ratchet	busbar-plane-a2a × plane	76
-kind-isolation:matrix	ratchet	busbar-plane-a2a × transport	109
+# FOLD-A2A, owner Q77 conformed (BUSBAR-1.6.0 #2 OWNER-LOCKED witness, step (4)): loader × plane 62 -> 65 is the three manifest lines of the a2a plane door's both-ways witness (crates/plugin-loader/Cargo.toml:246 the path dev-dependency, :287 its [package.metadata.busbar.both-ways] `plane-door` row). Not a move; re-armed only at the FINAL ledger pass after the architect audit (Q77 answer). Only goes down.
+kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	65
+# FOLD-A2A, Q77-PENDING (a), a MOVE (TODO P3 / M5 PLANE-FOLD a2a; ruling "config-schema two homes"): the a2a door's code moved out of busbar-a2a into busbar-plane-a2a, and 21 lines of it name the crate it came from (manifest notes, module docs, test headers). busbar-a2a × plane falls 2726 -> 2723 and × contract 350 -> 335 in the same lane. EXPIRES at FOLD-A2A slice 9 (busbar-a2a deleted). Re-armed only at the FINAL ledger pass (Q77 answer). Only goes down.
+kind-isolation:matrix	ratchet	busbar-plane-a2a × legacy	21
+# FOLD-A2A, Q77-PENDING (a), a MOVE: the agent card, skill fit, SSE and surface code moved out of busbar-a2a carry the A2A wire's own `streaming`/`streams` member names (35 hits: capabilities.streaming, message/stream) and the moved `agents:` grammar its 3 `mcp` mentions; the door's arrival, plane_door and task_door files name their own `arrival::Decision` (51 hits) (what `arrive` decided for a request), which the matrix reads as the decisions plane's noun: NEW door code, not a move, filed as QUESTIONS Q-FOLD-A2A-KI (measurement class or rename) and not reworded to pass the matcher. 26 -> 89, measured. Re-armed only at the FINAL ledger pass (Q77 answer). Only goes down.
+kind-isolation:matrix	ratchet	busbar-plane-a2a × plane	89
 kind-isolation:matrix	ratchet	busbar-store-memory × plane	6
 kind-isolation:matrix	ratchet	busbar-voice × contract	122
 kind-isolation:matrix	ratchet	busbar-voice × plane	871
 kind-isolation:matrix	unlisted-cell	busbar × legacy	85
 kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
-kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	350
+kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	335
 kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	33
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × hooks	11
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × kernel	74
