@@ -22,6 +22,7 @@
 //! short-buffer answer never reaches the store and is never recorded (the S1 addendum).
 
 pub mod door;
+pub mod wire;
 
 use crate::abi::sdk::conn::Host;
 use crate::abi::store::OpId;

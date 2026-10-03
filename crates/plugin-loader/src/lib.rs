@@ -81,6 +81,8 @@ pub mod tarball;
 #[doc(hidden)]
 #[path = "tests/test_support.rs"]
 pub mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod tcp_conns;
 pub mod transport;
 pub mod transport_adapter;
 

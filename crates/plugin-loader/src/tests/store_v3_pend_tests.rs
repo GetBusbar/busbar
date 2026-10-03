@@ -926,3 +926,118 @@ fn an_unreachable_backend_fails_the_load_with_the_stores_message() {
         )
     );
 }
+
+// ── a store op's body as a future over its one raw connection (store SDK `wire`) ──────────────
+
+/// A store whose `list_denylist` is a wire protocol: it connects to the backend its settings name
+/// (`{"addr": ...}`), sends a line and answers the line the backend sends back.
+struct OverWire;
+
+static WIRE_ADDR: Mutex<String> = Mutex::new(String::new());
+
+impl Hooks for OverWire {
+    fn list_denylist(
+        _: &MemoryStore,
+        cx: &mut Op<'_>,
+    ) -> Step<busbar_contract::records::RecordStoreResult<Vec<String>>> {
+        use busbar_contract::abi::sdk::store::wire::{drive, Wire};
+        let addr = WIRE_ADDR
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        drive(cx, move |w: Wire| {
+            Box::pin(async move {
+                let err = |e: busbar_contract::abi::sdk::conn::ConnFailure| {
+                    busbar_contract::records::RecordStoreError(format!("over-wire: {e}"))
+                };
+                w.connect(0, Some(&addr)).await.map_err(err)?;
+                w.write_all(b"hello\n").await.map_err(err)?;
+                loop {
+                    if let Some(line) = w.input(|i| {
+                        let at = i.iter().position(|b| *b == b'\n')?;
+                        let line: Vec<u8> = i.drain(..=at).collect();
+                        Some(String::from_utf8_lossy(&line[..at]).into_owned())
+                    }) {
+                        return Ok(vec![line]);
+                    }
+                    if w.fill().await.map_err(err)? == 0 {
+                        return Err(busbar_contract::records::RecordStoreError(
+                            "over-wire: the backend closed".into(),
+                        ));
+                    }
+                }
+            })
+        })
+    }
+}
+
+mod over_wire {
+    busbar_contract::store_door!(
+        super::Wrapped<super::OverWire>,
+        "over-wire",
+        "0",
+        64,
+        needs: super::TCP
+    );
+}
+
+/// A backend that answers each line, after `delay`, as `echo <line>`, in two writes (so the op's
+/// reads pend, and a reply arrives in pieces).
+fn line_backend(delay: Duration) -> String {
+    use std::io::{BufRead, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = l.local_addr().expect("addr").to_string();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(s) = s else { return };
+            std::thread::spawn(move || {
+                let mut r = std::io::BufReader::new(s.try_clone().expect("clone"));
+                let mut w = s;
+                let mut line = String::new();
+                while r.read_line(&mut line).is_ok_and(|n| n > 0) {
+                    std::thread::sleep(delay);
+                    let _ = w.write_all(b"echo ");
+                    let _ = w.flush();
+                    std::thread::sleep(delay);
+                    let _ = w.write_all(format!("{}\n", line.trim_end()).as_bytes());
+                    line.clear();
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// The store's wire body runs across PENDING entries over the host's connection table (a real
+/// TCP backend that answers late, in two pieces) and answers the backend's reply.
+#[test]
+fn a_wire_body_pends_on_its_reads_and_answers_the_backends_reply() {
+    let addr = line_backend(Duration::from_millis(30));
+    *WIRE_ADDR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = addr;
+    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
+        Arc::new(crate::tcp_conns::TcpConns::new(d.conn_waker()));
+    let p = load_linked::<Store>(
+        &LinkedRow::of(over_wire::door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: Some(conns),
+        },
+    )
+    .expect("the door loads");
+    let s = LoadedStore::open(p, d, b"{}", mint).expect("it opens");
+    assert_eq!(
+        RecordStore::list_denylist(&s).expect("the wire op answers"),
+        vec!["echo hello".to_string()]
+    );
+    // A second op is its own connection, and answers the same.
+    assert_eq!(
+        RecordStore::list_denylist(&s).expect("again"),
+        vec!["echo hello".to_string()]
+    );
+}
