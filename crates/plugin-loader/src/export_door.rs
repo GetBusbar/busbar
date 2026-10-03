@@ -663,3 +663,8 @@ impl ExportCalls for ExportInstance {
 #[cfg(test)]
 #[path = "tests/export_door_tests.rs"]
 mod tests;
+
+/// The export kind's REAL sink through both doors, with the crossings counted exactly (ABI-b4).
+#[cfg(test)]
+#[path = "tests/export_door_conformance_tests.rs"]
+mod conformance_tests;
