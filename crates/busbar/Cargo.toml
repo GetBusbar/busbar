@@ -88,10 +88,9 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # provisioning have somewhere to live that is not a unit and not a plane.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
-# The eight kernel workflow crates (#36).
+# The seven kernel workflow crates (#36).
 busbar-kernel-identity = { path = "../busbar-kernel-identity", features = ["sha256"] }
 busbar-kernel-scope = { path = "../busbar-kernel-scope" }
-busbar-kernel-budget = { path = "../busbar-kernel-budget" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }

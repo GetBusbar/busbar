@@ -5,8 +5,8 @@
 //!
 //! There is ONE of them in the tree now, and this file is what says so.
 //!
-//! There used to be two. This crate's [`nano_rate`] is the pricing law's conversion; the admission
-//! unit carried its own copy inside its rate projection, because that crate named nothing here and
+//! There used to be two. The ledger's [`nano_rate`] is the pricing law's conversion; the admission
+//! door carried its own copy inside its rate projection, because its crate named nothing there and
 //! could not call across. They had to give the same integer for the same configured rate — if they
 //! drifted, a request would be JUDGED at one rate by the door and BILLED at another by the ledger,
 //! silently, with no error and no refusal, just a bill that did not match the decision that produced
@@ -15,7 +15,8 @@
 //! It noticed. A clamp for a finite-but-overflowing rate landed on one copy and not the other, and
 //! the two answered a config typo with too many zeros as "prices at nothing" and "prices at the
 //! largest rate there is". A test that catches a drift is not as good as an arithmetic that cannot
-//! drift, so the admission unit's projection now CALLS this crate's conversion.
+//! drift, so the live door's projection, the kernel's `RateNanos::from_raw`, CALLS the ledger's
+//! conversion.
 //!
 //! What is left is a guard against the second copy coming back. Both sides of every assertion below
 //! are the same function today — and the moment somebody re-forks those three lines to "avoid a
@@ -33,15 +34,21 @@
 //! than read off the implementation, and the agreement assertion rides alongside it as the
 //! second-copy tripwire it was always meant to be.
 
-use busbar_kernel_budget::RateNanos;
+use busbar_contract::billing::RawTierRates;
+use busbar_kernel::cost::RateNanos;
 use busbar_kernel_ledger::cost::{nano_rate, LaneClass, Money, RateCard, NANOS_PER_CENT};
 
-/// The admission unit's conversion, asked for one rate.
+/// The live door's conversion, asked for one rate: the kernel's `RateNanos::from_raw`, the second
+/// reader of the configured decimal.
 ///
 /// Its projection converts all four reserved token rates at once, so the value under test goes into
 /// the first slot and the answer is read back out of it.
 fn admission_nano_rate(micro_per_unit: f64) -> u64 {
-    RateNanos::from_micros_per_token(micro_per_unit, 0.0, 0.0, 0.0).input
+    RateNanos::from_raw(&RawTierRates {
+        input: micro_per_unit,
+        ..RawTierRates::default()
+    })
+    .input
 }
 
 /// A deterministic sequence, written out here rather than taken as a dependency: the cases must be
@@ -91,7 +98,7 @@ fn the_two_conversions_agree_on_ten_thousand_generated_rates() {
 /// ONLY `nano_rate(micro) == admission_nano_rate(micro)`, and its prose declined to settle the
 /// value: *"Whichever way the law resolves that (clamp to zero, or take the saturated value), the
 /// door and the ledger have to resolve it the SAME way."* That is not a check. Both sides are the
-/// same function today — the admission unit's projection CALLS `nano_rate` — so an agreement-only
+/// same function today — the kernel's projection CALLS `nano_rate` — so an agreement-only
 /// row cannot return a NO no matter what the function does, and when the conversion did the wrong
 /// thing at `CEILING_MICRO` below, this row passed. An instrument that cannot produce a NO is not an
 /// instrument. So the expected integer is written down, and the agreement assertion stays where it
@@ -177,7 +184,7 @@ fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
         assert_eq!(
             admission_nano_rate(micro),
             expected,
-            "the admission unit converted {micro:e} to something other than {expected} — a second \
+            "the kernel's projection converted {micro:e} to something other than {expected} — a second \
              copy of the conversion has come back"
         );
     }
@@ -189,7 +196,7 @@ fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
         assert_eq!(
             admission_nano_rate(micro),
             0,
-            "{micro} prices at nothing in the admission unit too"
+            "{micro} prices at nothing in the kernel's projection too"
         );
     }
 }
@@ -218,7 +225,7 @@ fn the_conversion_is_the_integer_the_card_holds() {
             expected,
             "case {case}: the rate moved at {micro} micro-units per unit"
         );
-        // And the admission unit's projection, which is the same one function, still gives that
+        // And the kernel's projection, which is the same one function, still gives that
         // same integer.
         assert_eq!(admission_nano_rate(micro), expected, "case {case}");
     }

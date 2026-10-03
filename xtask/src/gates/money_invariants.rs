@@ -135,7 +135,6 @@ const SEAL_ALLOWED_ROOTS: &[&str] = &[
     "crates/busbar-contract/",
     "crates/busbar-kernel/",
     "crates/busbar-kernel-ledger/",
-    "crates/busbar-kernel-budget/",
     "crates/busbar/",
 ];
 

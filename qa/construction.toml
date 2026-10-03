@@ -950,15 +950,10 @@ kernel-facing trait as each is written. NOT every `pub trait` in a busbar-unit-*
 these — most are internal ports (a header reader, a journal sink) a unit crate defines to keep its \
 own tests fast, never the thing a plugin would implement to BE the unit — so the check is scoped to \
 the explicit list below, maintained by the owner as each unit's sealed shape lands."""
-# Ratchet: Admission is not sealed yet (tracked debt); Breaker is. Tightens to 0 when Admission is
-# sealed too.
-max_unsealed = 1
+# Ratchet: 0. The one unsealed trait, `Admission`, left with busbar-kernel-budget (deleted whole,
+# ARCHITECT ruling 2026-09-30): its admission stack had no production caller.
+max_unsealed = 0
 # crate, trait, file (relative to repo root) — the unit's own kernel-facing trait.
-[rules.sealed-unit-traits.traits.admission]
-crate = "busbar-kernel-budget"
-file = "crates/busbar-kernel-budget/src/lib.rs"
-trait = "Admission"
-
 [rules.sealed-unit-traits.traits.breaker]
 crate = "busbar-kernel-breaker"
 file = "crates/busbar-kernel-breaker/src/lib.rs"

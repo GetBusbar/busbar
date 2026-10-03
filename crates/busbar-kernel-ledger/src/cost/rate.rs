@@ -97,12 +97,12 @@ pub fn representable_nano_rate(micro_per_unit: f64) -> Option<u64> {
 ///   [`crate::cost::Tally`]'s fold (`Tally::row`), and it is CHECKED: an overflow is
 ///   [`crate::cost::MoneyError::Overflow`], a refusal, never a pin (item 28). There is no spend
 ///   figure on this fold.
-/// - **this fold** sizes a RESERVATION: the budget door's hold (`busbar-kernel-budget`
-///   `Estimate::pre_tier_nanos`), released at settlement and paid by nobody. For a hold, pinning at
-///   the top is the safe reading of an over-the-top size — it can only reserve too much, which the
-///   unit gives straight back — and a refusal would be wrong, because the hold is accounting and
-///   never refuses a unit the decision admitted. It has no other caller: a lane's rates size no
-///   usage report here, because pricing a report is a spend and a spend is `Tally`'s.
+/// - **this fold** sizes a RESERVATION: a hold, released at settlement and paid by nobody. For a
+///   hold, pinning at the top is the safe reading of an over-the-top size — it can only reserve too
+///   much, which the unit gives straight back — and a refusal would be wrong, because the hold is
+///   accounting and never refuses a unit the decision admitted. It has no production caller: the
+///   door that sized its holds with it was deleted with its crate, and a lane's rates size no usage
+///   report here, because pricing a report is a spend and a spend is `Tally`'s.
 ///
 /// A change to overflow or rounding here moves no bill; a change to a bill belongs in `Tally`.
 ///

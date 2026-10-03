@@ -525,6 +525,16 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
          posted);\n    let _ = busbar_contract::caps::SecretOnce::mint(admin, n, unit, \
          target);\n}\n",
     );
+    // Q-GG2: THE CONTRACT'S LINT RULE DATA LEFT RUST SOURCE; THE CONTRACT DID NOT LEAVE THE SCAN.
+    // `caps/fixtures/lint_rules.rs` spelled two constructors as rule-spec literals and stood as two
+    // token-sealed sites; ARCHITECT ruling Q-GG2 moved those literals into `lint_rules.txt`, a data
+    // file the scan never walks. That must not read as "busbar-contract is exempt": a real mint
+    // planted in contract source, in the very fixtures directory the data now sits in, is still a
+    // forged token and the row goes red on it.
+    ov.set(
+        "crates/busbar-contract/src/caps/fixtures/zz_planted_contract_mint.rs",
+        "pub fn planted_contract_mint() {\n    let _ = Pass::mint(seal);\n}\n",
+    );
     r.push(prove_red(
         cx,
         gate,
@@ -562,6 +572,8 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             "`UnitEnd::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:6",
             // The verbs-unit symbol lands on its own sub-row, which prints sites as `path:line`.
             "(ceiling 0): crates/busbar-llm/src/zz_planted_sealed.rs:7",
+            // Q-GG2: a mint in busbar-contract source is caught, data file beside it or not.
+            "`Pass::mint(` at crates/busbar-contract/src/caps/fixtures/zz_planted_contract_mint.rs:2",
         ],
     ));
 

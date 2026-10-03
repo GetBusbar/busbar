@@ -123,7 +123,7 @@ pub struct LegacyFigure {
 /// (`crates/busbar-core-admin/src/verbs.rs:91`), which joins two caller-controlled halves of a
 /// replay key. That helper could not be called from here for two independent reasons: it is
 /// `pub(crate)` to `busbar-core-admin`, and `busbar-core-admin` depends on this crate
-/// (`busbar-core-admin → busbar-api → busbar-kernel-ledger`), so an edge back would be a cycle Cargo
+/// (`busbar-core-admin → busbar-kernel-ledger`), so an edge back would be a cycle Cargo
 /// refuses outright. What is shared is the VOCABULARY, deliberately spelled the same way rather than
 /// as a second length-framing dialect — a tree with two spellings of "length-prefixed" is a tree
 /// where the next composite key picks the wrong one.

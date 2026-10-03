@@ -5,8 +5,12 @@
 //!
 //! Every one of these is handed across the plugin ABI, so the code that might format it is code
 //! this tree cannot see. The guarantee has to be the type's, not the caller's discipline.
+//!
+//! The one-time placeholder (`SecretOnce`) is minted by the verbs unit and nowhere else
+//! (construction `token-sealed:secret-once-mint`), so what it prints is proved beside that unit:
+//! `busbar-core-admin/src/tests/secret_once_tests.rs`.
 
-use busbar_contract::{SecretOnce, UpstreamAddress};
+use busbar_contract::UpstreamAddress;
 
 /// The environment a `stdio` child is spawned under is the node's credential hand-off: the whole
 /// reason the arm names it rather than inheriting it is that inheriting it hands the child every
@@ -70,27 +74,4 @@ fn the_socket_arms_still_print_what_they_carry() {
         printed.contains("10.0.0.7:443") && printed.contains("/pkg.Service/Method"),
         "{printed}"
     );
-}
-
-/// The one-time placeholder's nonce IS the secret: it is the thing the encoded bytes must contain
-/// exactly once, and a reader who has it has what the verb minted.
-#[test]
-fn a_one_time_placeholder_does_not_print_its_nonce() {
-    // A REAL capability token, not a fixture seal: `Pass<Verify>` is one of the two
-    // types this crate implements the sealed `KernelSeal` for (#65).
-    fn seal() -> busbar_contract::caps::Pass<busbar_contract::caps::Verify> {
-        busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
-    }
-
-    let nonce = 0x0dd1_c0ff_ee15_dead_beef_cafe_f00d_1234_u128;
-    let once = SecretOnce::mint(&seal(), nonce, "body.secret");
-    let printed = format!("{once:?}");
-    assert!(
-        !printed.contains(&nonce.to_string()) && !printed.contains(&format!("{nonce:x}")),
-        "a one-time placeholder printed its nonce: {printed}"
-    );
-    // What it DOES say: where the secret is allowed to appear, which is what a mismatch at the
-    // encode step needs to be diagnosable.
-    assert!(printed.contains("body.secret"), "{printed}");
-    assert_eq!(once.nonce(), nonce);
 }

@@ -6,10 +6,10 @@
 //! `settled - reserved + released - overdraft` is the whole of what the identity reads, and it has
 //! to be zero.
 
-use crate::caps::step::MeterClassId;
-use crate::caps::usage::{QuantitySource, UsageLine};
-use crate::caps::*;
-use crate::caps::{Consumption, KernelSeal};
+use busbar_contract::caps::step::MeterClassId;
+use busbar_contract::caps::usage::{QuantitySource, UsageLine};
+use busbar_contract::caps::*;
+use busbar_contract::caps::{Consumption, KernelSeal};
 
 fn settle_without_spend(reserved: u64, priced: u128) -> Posted {
     let seal = KernelSeal::acquire_for_kernel();

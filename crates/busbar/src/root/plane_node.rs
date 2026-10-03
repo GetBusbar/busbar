@@ -442,8 +442,8 @@ impl Node {
         let key = balance(principal);
         let at = crate::root::durability::Settling {
             key: &key,
-            window: busbar_kernel_budget::budget_window(
-                busbar_kernel_budget::window::WINDOW_DAY,
+            window: busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_DAY,
                 arrived.secs(),
             ),
             durability: &self.durability_token,
@@ -477,8 +477,8 @@ impl Node {
         let key = balance(principal);
         let at = crate::root::durability::Settling {
             key: &key,
-            window: busbar_kernel_budget::budget_window(
-                busbar_kernel_budget::window::WINDOW_DAY,
+            window: busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_DAY,
                 arrived.secs(),
             ),
             durability: &self.durability_token,
@@ -1896,8 +1896,8 @@ fn settling_at<'a>(
 ) -> crate::root::durability::Settling<'a> {
     crate::root::durability::Settling {
         key,
-        window: busbar_kernel_budget::budget_window(
-            busbar_kernel_budget::window::WINDOW_DAY,
+        window: busbar_kernel::governance::budget_window(
+            busbar_kernel::governance::WINDOW_DAY,
             arrived.secs(),
         ),
         durability: token,

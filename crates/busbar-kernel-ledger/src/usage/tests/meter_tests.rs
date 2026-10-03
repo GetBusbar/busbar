@@ -306,7 +306,7 @@ fn the_source_conversions_floor_multiply_and_refuse_to_divide_by_nothing() {
 /// Every source in the closed set has a conversion decided for it here, one arm at a time.
 ///
 /// The pass-through sources are listed by name rather than swept up by a wildcard: the wildcard is
-/// what let this set drift before, because a source added to `busbar-caps` inherited "meter the raw
+/// what let this set drift before, because a source added to `busbar-contract` inherited "meter the raw
 /// number" from a catch-all instead of from a decision. Listing them means the compiler asks.
 #[test]
 fn every_source_has_a_decided_conversion() {

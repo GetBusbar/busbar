@@ -1104,7 +1104,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let window =
-        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, EPOCH);
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, EPOCH);
     let figures = durability.ledger.book().get(&balance(&who), window);
     assert_eq!(figures.overdraft_carried_out, 0);
     let replayed = durability
@@ -3884,7 +3884,7 @@ fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_
     let durability = node.durability.lock().expect("unpoisoned");
     let key = balance(&PrincipalId::new("vk_refused"));
     let window =
-        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, at.secs());
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, at.secs());
     assert_eq!(
         durability.ledger.book().get(&key, window).settled,
         0,
@@ -4246,7 +4246,10 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .store()
         .get_usage(
             &key.id,
-            busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_TOTAL, EPOCH),
+            busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_TOTAL,
+                EPOCH,
+            ),
         )
         .expect("the governance ledger reads");
     let classes = ledger
@@ -4613,7 +4616,7 @@ fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
     let durability = node.durability.lock().expect("unpoisoned");
     let key = balance(&PrincipalId::new("vk_undeclared"));
     let window =
-        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, at.secs());
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, at.secs());
     assert_eq!(durability.ledger.book().get(&key, window).settled, 0);
     assert!(durability.settled_read(&key, window).is_err());
     drop(durability);

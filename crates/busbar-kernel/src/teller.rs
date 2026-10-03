@@ -425,7 +425,7 @@ pub trait Units {
     /// The default is a door with no slice to draw against: the hold is sized at what the child
     /// pushed and nothing refuses. A door that keeps the principal's slice draws the hold against
     /// it and refuses a child the slice cannot back, with the budget block it renders for any
-    /// other unit (`busbar_kernel_budget::AdmissionUnit::at_parent_exit`).
+    /// other unit.
     fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
         Ok(accrual.amount())
     }
