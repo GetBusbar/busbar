@@ -284,7 +284,7 @@ impl Source {
             let mut lines: Vec<_> = QUANTILES.map(|q| ("", Some(q.to_string()), at(q))).into();
             lines.push(("_sum", None, d.sum.to_string()));
             lines.push(("_count", None, d.count.to_string()));
-            put(&mut out, SCRAPE_KIND_SUMMARY, &key, lines);
+            put(&mut out, SCRAPE_KIND_SUMMARY, key, lines);
         }
         let help = lock(&self.help);
         let family = |((kind, name), series): ((u8, String), BTreeMap<_, Vec<Sample>>)| Family {
