@@ -316,18 +316,22 @@ impl Shared {
         }
     }
 
-    /// THE FLUSHER: one batch in flight per instance, on one ticket, until the instance is dropped.
+    /// THE FLUSHER: one batch in flight per instance, each on a ticket of its own: minted for the
+    /// batch and recycled once it answered, so the host-service results and connections one
+    /// delivery made (stored under `(ticket, n)`, its handles counting from 0) are forgotten before
+    /// the next delivery counts from 0 again — a second batch never redeems the first's stored
+    /// `establish` or `disk.append`.
     fn flush(self: Arc<Self>) {
-        let mut ticket = None;
         while let Some((stream, lines)) = self.take() {
-            if ticket.is_none() {
-                let n = self.minted.load(Ordering::Relaxed);
-                ticket = self
-                    .dispatcher
-                    .mint((n % u64::from(self.dispatcher.workers().max(1))) as u32);
-            }
+            let n = self.minted.load(Ordering::Relaxed);
+            let ticket = self
+                .dispatcher
+                .mint((n % u64::from(self.dispatcher.workers().max(1))) as u32);
             match ticket {
-                Some(t) => self.deliver(t, stream, &lines),
+                Some(t) => {
+                    self.deliver(t, stream, &lines);
+                    self.dispatcher.recycle(t);
+                }
                 None => tracing::warn!(
                     plugin = %self.plugin.name(),
                     "no ticket could be minted for an export batch; it is dropped"
@@ -335,9 +339,6 @@ impl Shared {
             }
             // The lines' holds are released here: the batch has answered.
             drop(lines);
-        }
-        if let Some(t) = ticket {
-            self.dispatcher.recycle(t);
         }
     }
 }
