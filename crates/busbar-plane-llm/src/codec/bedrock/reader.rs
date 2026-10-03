@@ -399,6 +399,11 @@ impl ProtocolReader for BedrockReader {
                                             crate::codec::ir::IrMediaKind::Video,
                                             video,
                                         ));
+                                    } else if let Some(sr) =
+                                        inner_val.get(super::SEARCH_RESULT_CAMEL)
+                                    {
+                                        // A `searchResult` a tool returned: the search-result slot.
+                                        inner_content.push(super::read_bedrock_search_result(sr));
                                     }
                                 }
                             }
@@ -541,10 +546,19 @@ impl ProtocolReader for BedrockReader {
                                 crate::codec::ir::IrMediaKind::Video,
                                 video,
                             ));
-                        } else if let Some(search_result) = content_val.get(super::SEARCH_RESULT) {
-                            // A retrieved passage maps onto the IR's search-result slot (a cited
-                            // Text block), so it translates rather than vanishing.
-                            msg_content.push(read_search_result_block(search_result));
+                        } else if let Some(sr) = content_val.get(super::SEARCH_RESULT_CAMEL) {
+                            // A caller's `searchResult` (RAG passage): parked verbatim in the same
+                            // splice store as `document` / `video`, so a Bedrock->Bedrock hop re-emits
+                            // the ORIGINAL block, and modelled as the search-result slot for the
+                            // cross-protocol hop (the writer suppresses the modelled copy when the
+                            // stash is present). See the `document` arm for `i` versus `b`.
+                            message_doc_video.push(serde_json::json!({
+                                (keys::M): msg_idx,
+                                (keys::I): block_idx,
+                                (super::B): msg_content.len(),
+                                (keys::BLOCK): { (super::SEARCH_RESULT_CAMEL): sr.clone() },
+                            }));
+                            msg_content.push(super::read_bedrock_search_result(sr));
                         }
                     }
                 }

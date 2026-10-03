@@ -93,7 +93,6 @@ pub mod plane_decisions;
 // The node a plane's units run through: compiled when a linked plane rides the `node` axis, read
 // off the same manifest table the root folds (the generated `linked_axis_node` cfg).
 #[cfg(linked_axis_node)]
-pub mod plane_egress;
 pub mod plane_node;
 pub mod policy;
 pub mod registry;

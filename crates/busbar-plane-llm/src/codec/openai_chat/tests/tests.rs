@@ -5881,7 +5881,8 @@ fn plain_ir_response(
         stop_sequence: None,
         request_echo: None,
         stop_detail: None,
-    }..Default::default()
+        ..Default::default()
+    }
 }
 
 #[test]
