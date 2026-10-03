@@ -6,7 +6,12 @@
 
 use super::*;
 use busbar_contract::caps::KernelSeal;
-use busbar_kernel_audit::AuditSigningKey;
+// All but the signing key are used only by the `root-admin` test below.
+#[cfg_attr(not(feature = "root-admin"), allow(unused_imports))]
+use busbar_kernel_audit::{
+    AuditInputs, AuditSigningKey, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
+    What,
+};
 use busbar_kernel_ledger::{
     checkpoint::{AnchoredHead, CheckpointAnchor},
     legacy::RecordingRows,
@@ -433,9 +438,6 @@ fn verify_names_what_the_boot_reconciliation_found() {
 #[test]
 fn verify_names_a_tampered_retained_audit_record() {
     use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
-    use busbar_kernel_audit::{
-        AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
-    };
     let node_book = crate::root::durability::node_book();
     let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
     let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
