@@ -1,0 +1,743 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE KERNEL STEPS OF A UNIT SERVED THROUGH A PLANE'S DOOR (SERVE-WIRE step 33, the serving slice;
+//! `BUSBAR-1.6.0.md` Part 3 §12 "One unit, step by step", THE DESIGN §7): the steps the kernel
+//! answers around the plane's own seats (decode, route and encode are the plane driver's), one
+//! [`DoorSteps`] per unit. Generic over the plane's tail: it names no plane.
+//!
+//! | step | here |
+//! |---|---|
+//! | arrival | proceeds: the data listener's gates ran before the data door |
+//! | authenticate | the auth gate's verdict (the unit's principal); a unit with no key on a claim that takes a credential is refused (ARCHITECT P3 (a)) |
+//! | verify | the route the plane's `arrive` named, resolved against its section ([`DoorPools`], ARCHITECT Q-SW6/Q-FL3); each member sealed under its (plane key, entry) |
+//! | approve | the caller's grant of the plane's scope kind over the route as named, then its fallback pool |
+//! | admit | `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
+//! | meter | the plane's last far-end-reported counts, as the unit's usage lines (an estimate never bills) |
+//! | audit | the record's facts: the decoded operation class and how the unit finished |
+//!
+//! The money steps (`busbar_kernel::plane_driver::PlaneMoney`) ledger the unit at its end: the
+//! kernel writes what the plane reported, priced at read time against the card in force (money is a
+//! view: `money = f(ledger, ratecard)`).
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
+
+use busbar_contract::abi::plane::{units_bill, UnitCount, ROUTE_DIRECT, ROUTE_POOL};
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Authenticated, Consumption, Decode,
+    Dial, Encode, Grant, Meter, OpClassId, Outcome, Pass, PrincipalId, QuantitySource, ReasonCode,
+    Refusal, Route, SeatVerdict, UsageLine, VerifiedDestination, Verify,
+};
+use busbar_contract::records::VirtualKey;
+use busbar_contract::section::{
+    POOL_MEMBERS_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
+};
+use busbar_contract::MeterClassId;
+use busbar_kernel::config::groups::ExhaustionMode;
+use busbar_kernel::governance::{AdmitGrant, LimitBlocked, PLANE_LANE_SEP};
+use busbar_kernel::plane_driver::{DriverSteps, FeeRefund, PlaneMoney, UnitMoney};
+use busbar_kernel::slice::GroupLeaseSlip;
+use busbar_kernel::state::App;
+use busbar_kernel::teller::{Evidence, UnitCtx, Units};
+
+use crate::root::linked::node::Resolve;
+
+// ── the pools ────────────────────────────────────────────────────────────────────────────────────
+
+/// THE POOLS A DOOR PLANE'S UNITS ROUTE OVER (ARCHITECT Q-SW6, 2026-10-02), read off its section
+/// once per generation: the section's entries (its `models` map's keys in a model-serving section,
+/// else every top-level key but the reserved ones) and its
+/// reserved `pools` sub-key (each named pool's member entries). An arrival names an entry name
+/// (`ArriveOut::pool`); nothing here parses it, it is only looked up.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DoorPools {
+    entries: Vec<String>,
+    pools: BTreeMap<String, Vec<String>>,
+    /// Each pool's `on_exhausted: { fallback_pool }`, where it names one.
+    fallbacks: BTreeMap<String, String>,
+}
+
+/// A resolved route: its pool label (empty for a direct route) and its member entries.
+pub type Routed = (String, Vec<String>);
+
+impl DoorPools {
+    /// The pools `section` states.
+    #[must_use]
+    pub fn of(section: &serde_yaml::Value) -> Self {
+        let Some(map) = section.as_mapping() else {
+            return Self::default();
+        };
+        let key = |k: &serde_yaml::Value| k.as_str().map(str::to_owned);
+        // A model-serving section's entries are its `models` map's; any other section's are its own
+        // top-level registrations.
+        let entries = match map
+            .get(RESERVED_MODELS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+        {
+            Some(models) => models.keys().filter_map(key).collect(),
+            None => map
+                .keys()
+                .filter_map(key)
+                .filter(|k| k != RESERVED_POOLS_KEY && !RESERVED_SECTION_KEYS.contains(&k.as_str()))
+                .collect(),
+        };
+        let pools = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| Some((key(name)?, members(pool))))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fallbacks = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| {
+                        let fallback = pool
+                            .get(ON_EXHAUSTED_KEY)?
+                            .get(FALLBACK_POOL_KEY)?
+                            .as_str()?;
+                        Some((key(name)?, fallback.to_owned()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        DoorPools {
+            entries,
+            pools,
+            fallbacks,
+        }
+    }
+
+    /// The route an arrival named (ARCHITECT Q-SW6 amended by Q-FL3): a POOL route walks the named
+    /// pool's members under its label; a DIRECT route walks the named entry alone under 1.5.5's
+    /// empty pool label. `None` = none named, an unknown name or class.
+    #[must_use]
+    pub fn resolve(&self, class: u8, named: Option<&[u8]>) -> Option<Routed> {
+        let name = std::str::from_utf8(named?).ok()?;
+        match class {
+            ROUTE_POOL => self
+                .pools
+                .get(name)
+                .map(|members| (name.to_owned(), members.clone())),
+            ROUTE_DIRECT => self
+                .entries
+                .iter()
+                .find(|e| *e == name)
+                .map(|e| (String::new(), vec![e.clone()])),
+            _ => None,
+        }
+    }
+
+    /// Every entry the section states, in its order.
+    #[must_use]
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+
+    /// Every named pool and its member entries.
+    #[must_use]
+    pub fn pools(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.pools
+    }
+
+    /// The pool `pool` spills into when its members are spent, where its section names one.
+    #[must_use]
+    pub fn fallback(&self, pool: &str) -> Option<&str> {
+        self.fallbacks.get(pool).map(String::as_str)
+    }
+}
+
+/// A pool's reserved `on_exhausted:` key, and the pool its structured form falls back to (the pools
+/// grammar's own words, `busbar_kernel::config::pools::OnExhaustedCfg`).
+const ON_EXHAUSTED_KEY: &str = "on_exhausted";
+const FALLBACK_POOL_KEY: &str = "fallback_pool";
+
+impl DoorPools {
+    /// WHETHER THE CALLER'S GRANT ADMITS THE ROUTE AS NAMED, judged before its destination (1.5.5's
+    /// order: the pool's grant, then its fallback pool's; an unknown pool is refused by its grant
+    /// first, and only then by its absence). A direct route's grant names its entry. Ungoverned
+    /// (`key` is `None`): nothing to enforce. A plane that states no scope kind has no resource a
+    /// grant names, so it scopes nothing. None named: nothing to judge here (the route's absence
+    /// refuses it).
+    #[must_use]
+    pub fn granted(
+        &self,
+        kind: Option<&str>,
+        key: Option<&VirtualKey>,
+        class: u8,
+        named: Option<&[u8]>,
+    ) -> bool {
+        let Some(key) = key else {
+            return true;
+        };
+        let Some(kind) = kind else {
+            return true;
+        };
+        let Some(name) = named.and_then(|n| std::str::from_utf8(n).ok()) else {
+            return true;
+        };
+        let fallback = (class == ROUTE_POOL)
+            .then(|| self.fallbacks.get(name))
+            .flatten();
+        std::iter::once(name)
+            .chain(fallback.map(String::as_str))
+            .all(|granted| key.scope_allowed(kind, granted))
+    }
+}
+
+/// A pool's member entries: its `members` list, each an entry name or a member naming one.
+fn members(pool: &serde_yaml::Value) -> Vec<String> {
+    pool.get(POOL_MEMBERS_KEY)
+        .and_then(serde_yaml::Value::as_sequence)
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| {
+                    m.as_str()
+                        .or_else(|| m.get("name").and_then(serde_yaml::Value::as_str))
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// THE KEY A DOOR PLANE'S ENTRY IS PRICED, METERED AND ROUTED UNDER (ARCHITECT Q-FL3: "keys the
+/// kernel's state by (plane key, model entry)"; #42/#47 one card per plane): `"<plane>\u{1f}<entry>"`.
+#[must_use]
+pub fn plane_lane(plane: &str, entry: &str) -> String {
+    format!("{plane}{PLANE_LANE_SEP}{entry}")
+}
+
+/// THE EGRESS POOL a resolved route walks: a pool route's own label; a direct route's (plane key,
+/// entry), its one member's own cell (a direct route runs under 1.5.5's empty pool label in its
+/// money rows, and its breaker cell is its entry's).
+#[must_use]
+pub fn egress_pool(plane: &str, routed: &Routed) -> String {
+    match routed {
+        (label, _) if !label.is_empty() => label.clone(),
+        (_, members) => members
+            .first()
+            .map(|m| plane_lane(plane, m))
+            .unwrap_or_default(),
+    }
+}
+
+// ── admission ────────────────────────────────────────────────────────────────────────────────────
+
+/// HOW A UNIT IS ADMITTED (ARCHITECT P3 (a), 2026-10-02).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    /// A keyed unit: admitted and charged on the governance book, its money opened.
+    Keyed,
+    /// No key, on a claim that takes no credential (`CLAIM_OPEN`): admitted with nothing held and
+    /// no money; it never reaches a billed path.
+    Anonymous,
+    /// No key on a claim that takes a credential: never admitted (fail closed).
+    Refused,
+}
+
+/// AN ANONYMOUS UNIT NEVER REACHES A BILLED PATH (ARCHITECT P3 (a)): with no key it is admitted only
+/// on an open claim, and then as anonymous; every other unkeyed unit is refused; a keyed unit is the
+/// only one admitted onto the book.
+#[must_use]
+pub fn admission(key: Option<&Arc<VirtualKey>>, open: bool) -> Admission {
+    match (key, open) {
+        (Some(_), _) => Admission::Keyed,
+        (None, true) => Admission::Anonymous,
+        (None, false) => Admission::Refused,
+    }
+}
+
+/// A blocked admission, as the refusal the plane renders: the rule the budget unit's own door
+/// applies (`busbar_kernel_budget`'s `refusal_for`): a frozen group is frozen; a spend cap and a
+/// principal bound to a group this node does not have are over budget; every count cap (requests,
+/// tokens of any tier, the in-flight gauge) is a rate limit. A rolling window's wait rides along.
+fn refusal_for(blocked: &LimitBlocked) -> Refusal {
+    match blocked {
+        LimitBlocked::Disabled(_) => Refusal::new(ReasonCode::GroupFrozen),
+        LimitBlocked::MissingGroup(_) => Refusal::new(ReasonCode::OverBudget),
+        LimitBlocked::Limit {
+            metric,
+            retry_after,
+            ..
+        } => {
+            let reason = if *metric == "budget" {
+                ReasonCode::OverBudget
+            } else {
+                ReasonCode::RateLimited
+            };
+            let refusal = Refusal::new(reason);
+            match retry_after.and_then(|s| u32::try_from(s).ok()) {
+                Some(secs) => refusal.retry_after(secs),
+                None => refusal,
+            }
+        }
+    }
+}
+
+/// The budget mode a unit of `key` runs under: any governing limit in its group chain that cuts
+/// (`on_exhaustion: cut-stream`) cuts; otherwise the unit finishes (THE DESIGN §7, Budgets).
+fn exhaustion_of(app: &App, key: &VirtualKey) -> ExhaustionMode {
+    let mut limits = Vec::new();
+    let mut seen = Vec::new();
+    let mut at = key.group.clone();
+    while let Some(name) = at {
+        if seen.contains(&name) {
+            break;
+        }
+        let Some(group) = app.groups_registry.get(&name) else {
+            break;
+        };
+        limits.extend(group.limits.iter());
+        at = group.parent.clone();
+        seen.push(name);
+    }
+    ExhaustionMode::governing(limits)
+}
+
+// ── the steps ────────────────────────────────────────────────────────────────────────────────────
+
+/// WHAT A SERVED PLANE STATES THE KERNEL SERVES ITS UNITS BY, read off its Statement tail at bind.
+#[derive(Debug, Clone)]
+pub struct DoorFacts {
+    /// The plane's key: the card its lanes are priced on, and the qualifier of every lane it routes.
+    pub plane: String,
+    /// The grant kind that admits its traffic (its tail's first scope kind); `None` = it states none.
+    pub scope_kind: Option<String>,
+    /// Its billable classes, in its tail's order: a unit count's class indexes them.
+    pub classes: Arc<[String]>,
+    /// The same classes as the meter's class ids.
+    pub meter_classes: Arc<[MeterClassId]>,
+    /// Its fee units, as indices into [`Self::classes`].
+    pub fee_units: Arc<[u32]>,
+    /// Its `audit_kind`: what a unit refused before its decode is audited under.
+    pub audit_kind: OpClassId,
+}
+
+/// What one unit carries between its steps.
+#[derive(Default)]
+struct DoorUnit {
+    op: Option<OpClassId>,
+    /// What its `arrive` named, once decode ran: the route class and the entry.
+    named: Option<(u8, Option<Vec<u8>>)>,
+    /// What its `arrive` expected it to do (its admission estimate).
+    expected: Vec<UnitCount>,
+    routed: Option<Routed>,
+    /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
+    grant: Option<AdmitGrant>,
+    /// Whether the unit's money facts were opened (it was charged).
+    charged: bool,
+}
+
+/// ONE UNIT'S KERNEL STEPS (see the module doc), lent to the plane driver for the unit's life.
+pub struct DoorSteps<'s> {
+    facts: &'s DoorFacts,
+    pools: &'s DoorPools,
+    lanes: Resolve,
+    app: Arc<App>,
+    money: Option<&'s PlaneMoney>,
+    principal: PrincipalId,
+    key: Option<Arc<VirtualKey>>,
+    /// The claim takes no inbound credential (`CLAIM_OPEN`).
+    open: bool,
+    /// The unit's arrival epoch, seconds: the window every charge and refund of it lands in.
+    arrived: u64,
+    unit: Mutex<DoorUnit>,
+}
+
+impl std::fmt::Debug for DoorSteps<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoorSteps")
+            .field("plane", &self.facts.plane)
+            .field("principal", &self.principal)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Who a unit is, as the data door saw it arrive.
+#[derive(Debug, Clone)]
+pub struct DoorCaller {
+    /// The principal the unit is billed to (THE DESIGN §7, Attribution).
+    pub principal: PrincipalId,
+    /// The caller's governance key, when the auth gate resolved one.
+    pub key: Option<Arc<VirtualKey>>,
+    /// The claim it arrived on takes no inbound credential.
+    pub open: bool,
+    /// Its arrival epoch, seconds.
+    pub arrived: u64,
+}
+
+impl<'s> DoorSteps<'s> {
+    /// The steps of one unit of the plane `facts` states, routing over `pools`, sealing each member
+    /// on the lane `lanes` names its (plane key, entry) by, admitted against the generation `app`,
+    /// its money on `money` (`None` = this composition moves no money).
+    #[must_use]
+    pub fn new(
+        facts: &'s DoorFacts,
+        pools: &'s DoorPools,
+        lanes: Resolve,
+        app: Arc<App>,
+        money: Option<&'s PlaneMoney>,
+        caller: DoorCaller,
+    ) -> Self {
+        DoorSteps {
+            facts,
+            pools,
+            lanes,
+            app,
+            money,
+            principal: caller.principal,
+            key: caller.key,
+            open: caller.open,
+            arrived: caller.arrived,
+            unit: Mutex::new(DoorUnit::default()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, DoorUnit> {
+        self.unit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The route the unit resolved to at verify: its pool label and member entries.
+    #[must_use]
+    pub fn routed(&self) -> Option<Routed> {
+        self.lock().routed.clone()
+    }
+
+    /// The key of the plane the unit is of.
+    #[must_use]
+    pub fn plane(&self) -> &str {
+        &self.facts.plane
+    }
+
+    /// Whether the unit was charged (its money facts opened).
+    #[must_use]
+    pub fn charged(&self) -> bool {
+        self.lock().charged
+    }
+
+    /// The pool a unit's charge and refund land on: the plane's own (#47 per-plane fees), the
+    /// route's label qualified by the plane's key (a direct route's label is 1.5.5's empty one).
+    fn charged_pool(&self, label: &str) -> String {
+        plane_lane(&self.facts.plane, label)
+    }
+
+    /// The expected counts under the plane's class names (an estimate's figures, never billed).
+    fn expected_units(&self, expected: &[UnitCount]) -> BTreeMap<String, u64> {
+        let mut units = BTreeMap::new();
+        for u in expected {
+            if let Some(name) = self.facts.classes.get(u.class as usize) {
+                let n = units.entry(name.clone()).or_insert(0u64);
+                *n = n.saturating_add(u.amount);
+            }
+        }
+        units
+    }
+
+    /// THE `$` DOOR for a keyed unit: the governance book's one check-then-charge over the route as
+    /// named, its expected units the estimate (`admission: estimate`) priced at the highest of the
+    /// sealed members; on a pass, its money facts open on the money steps. `Ok(false)` when this
+    /// composition keeps no governance book (nothing is charged, nothing is refunded).
+    fn charge(&self, ctx: &UnitCtx, key: &Arc<VirtualKey>) -> Result<bool, Refusal> {
+        let (Some(gov), Some(money)) = (self.app.governance.as_ref(), self.money) else {
+            return Ok(false);
+        };
+        let (routed, expected) = {
+            let u = self.lock();
+            (u.routed.clone(), u.expected.clone())
+        };
+        let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
+        let pool = self.charged_pool(label);
+        let lanes: Vec<String> = routed
+            .iter()
+            .flat_map(|(_, members)| members)
+            .map(|m| plane_lane(&self.facts.plane, m))
+            .collect();
+        let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
+        let units = self.expected_units(&expected);
+        let grant = gov
+            .try_admit_estimated(&self.app.cost, key, &pool, self.arrived, &models, &units)
+            .map_err(|blocked| refusal_for(&blocked))?;
+        money.open(
+            ctx.key,
+            UnitMoney {
+                key: Arc::clone(key),
+                cost: Arc::clone(&self.app.cost),
+                pool,
+                // The first member until one answers; the money steps take the serving member's
+                // own key when its answer commits (`MoneySeam::served`).
+                model: lanes.first().cloned().unwrap_or_default(),
+                classes: Arc::clone(&self.facts.classes),
+                arrived: self.arrived,
+                mode: exhaustion_of(&self.app, key),
+                fee: FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units)),
+            },
+        );
+        let mut u = self.lock();
+        u.grant = Some(grant);
+        u.charged = true;
+        Ok(true)
+    }
+}
+
+/// The record's facts for a unit of these steps.
+fn facts(op: OpClassId, outcome: &Outcome) -> busbar_contract::AuditFacts {
+    busbar_contract::AuditFacts {
+        op_class: op,
+        finish: if outcome.is_completed() {
+            busbar_contract::FinishClass::Complete
+        } else {
+            busbar_contract::FinishClass::Error
+        },
+    }
+}
+
+impl DriverSteps for DoorSteps<'_> {
+    fn decoded(&self, _ctx: &UnitCtx, op: OpClassId, route: u8, pool: Option<&[u8]>) {
+        let mut u = self.lock();
+        u.op = Some(op);
+        u.named = Some((route, pool.map(<[u8]>::to_vec)));
+    }
+
+    fn expected(&self, _ctx: &UnitCtx, units: &[UnitCount]) {
+        self.lock().expected = units.to_vec();
+    }
+}
+
+impl Units for DoorSteps<'_> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
+        SeatVerdict::proceed(
+            token,
+            busbar_contract::ArrivalRecord {
+                source: String::new(),
+                port: 0,
+                alpn: None,
+                sni: None,
+                peer_cert: None,
+                transport_chain: Vec::new(),
+            },
+        )
+    }
+
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> SeatVerdict<Decode> {
+        // The plane driver's own seat (`arrive`): never reached through these steps.
+        SeatVerdict::refuse(token, Refusal::new(ReasonCode::HandoffMismatch))
+    }
+
+    fn authenticate(
+        &self,
+        token: &Pass<Authenticate>,
+        _ctx: &UnitCtx,
+    ) -> SeatVerdict<Authenticate> {
+        match admission(self.key.as_ref(), self.open) {
+            Admission::Refused => {
+                SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
+            }
+            Admission::Keyed | Admission::Anonymous => {
+                SeatVerdict::proceed(token, Authenticated::Principal(self.principal.clone()))
+            }
+        }
+    }
+
+    fn verify(
+        &self,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
+        _ctx: &UnitCtx,
+        _principal: &PrincipalId,
+    ) -> SeatVerdict<Verify> {
+        // An unknown route seals nothing and is refused at admission, after its grant was judged
+        // (1.5.5's order); the empty set is an answer at this step.
+        let named = self.lock().named.clone();
+        let routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
+        let sealed: Vec<VerifiedDestination> = routed
+            .iter()
+            .flat_map(|(_, members)| members)
+            .filter_map(|member| (self.lanes)(&plane_lane(&self.facts.plane, member)))
+            .map(|lane| VerifiedDestination::seal(trust, lane))
+            .collect();
+        self.lock().routed = routed;
+        SeatVerdict::proceed(token, sealed)
+    }
+
+    fn approve(
+        &self,
+        token: &Pass<Approve>,
+        _ctx: &UnitCtx,
+        _principal: &PrincipalId,
+        _destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Approve> {
+        let (class, named) = self.lock().named.clone().unwrap_or((ROUTE_POOL, None));
+        if self.pools.granted(
+            self.facts.scope_kind.as_deref(),
+            self.key.as_deref(),
+            class,
+            named.as_deref(),
+        ) {
+            SeatVerdict::proceed(token, busbar_contract::ScopeFacts::default())
+        } else {
+            SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied))
+        }
+    }
+
+    fn admit(
+        &self,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        _destinations: &[VerifiedDestination],
+        _leases: &GroupLeaseSlip,
+    ) -> SeatVerdict<Admit> {
+        match admission(self.key.as_ref(), self.open) {
+            Admission::Refused => {
+                return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
+            }
+            Admission::Keyed => {
+                if let Some(key) = self.key.clone() {
+                    if let Err(refusal) = self.charge(ctx, &key) {
+                        return SeatVerdict::refuse(token, refusal);
+                    }
+                }
+            }
+            Admission::Anonymous => {}
+        }
+        // A route its section does not hold: refused here, after its grant and its charge (1.5.5's
+        // order); the charge is refunded at the unit's end.
+        if self.lock().routed.is_none() {
+            return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        }
+        // The door reserves nothing: the unit's hold opens at zero and the money steps ledger what
+        // the plane reported, at its end.
+        SeatVerdict::proceed(
+            token,
+            busbar_kernel::door::admitted_at_zero(admit, principal.clone()),
+        )
+    }
+
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        _ctx: &UnitCtx,
+        _destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Route> {
+        // The plane driver's own seat (the route pump): never reached through these steps.
+        SeatVerdict::refuse(token, Refusal::new(ReasonCode::HandoffMismatch))
+    }
+
+    fn meter(
+        &self,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
+        ctx: &UnitCtx,
+        _provisional: &Outcome,
+        _destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Meter> {
+        // What the unit consumed: the plane's last far-end-reported cumulative counts (an estimate
+        // never bills; a fee unit says whether the fee was incurred and is no usage), one line per
+        // class, summed with checked addition. Nothing here names a rate.
+        let last = self
+            .money
+            .map(|m| m.last_counts(ctx.key))
+            .unwrap_or_default();
+        let mut by_class: BTreeMap<u32, u64> = BTreeMap::new();
+        for u in last.iter().filter(|u| units_bill(u.source)) {
+            if self.facts.fee_units.contains(&u.class) {
+                continue;
+            }
+            let n = by_class.entry(u.class).or_insert(0);
+            match n.checked_add(u.amount) {
+                Some(sum) => *n = sum,
+                None => return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unpriced)),
+            }
+        }
+        let lines: Vec<UsageLine> = by_class
+            .into_iter()
+            .filter(|(_, quantity)| *quantity > 0)
+            .filter_map(|(class, quantity)| {
+                let class = *self.facts.meter_classes.get(class as usize)?;
+                Some(UsageLine {
+                    class,
+                    quantity,
+                    // The figure the plane reported, written as it was told.
+                    source: QuantitySource::Count,
+                    estimated: false,
+                })
+            })
+            .collect();
+        match busbar_contract::caps::Usage::report(usage, lines) {
+            Ok(report) => SeatVerdict::proceed(token, report),
+            Err(_) => SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unpriced)),
+        }
+    }
+
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
+        let op = self.lock().op.unwrap_or(self.facts.audit_kind);
+        SeatVerdict::proceed(token, facts(op, outcome))
+    }
+
+    fn audit_refused(
+        &self,
+        token: &Pass<Audit>,
+        _ctx: &UnitCtx,
+        refusal: &Refusal,
+    ) -> SeatVerdict<Audit> {
+        let op = self.lock().op.unwrap_or(self.facts.audit_kind);
+        let step = refusal
+            .step()
+            .unwrap_or(busbar_contract::caps::StepName::Admit);
+        SeatVerdict::proceed(token, facts(op, &Outcome::Refused(step, refusal.reason())))
+    }
+
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
+        // The plane driver's own seat (the plane renders): never reached through these steps.
+        SeatVerdict::refuse(token, Refusal::new(ReasonCode::HandoffMismatch))
+    }
+
+    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+        Evidence::default()
+    }
+}
+
+/// THE DOOR FACTS of a plane bound through its door: its key, its first scope kind, and its tail's
+/// billable classes and fee units (a fee unit that is no billable class is not one: the tail check
+/// holds `fee_units ⊆ billable_classes`).
+#[must_use]
+pub fn door_facts(
+    plane: &str,
+    scope_kinds: &[&str],
+    classes: &[&'static str],
+    fee_units: &[&str],
+    audit_kind: &'static str,
+) -> DoorFacts {
+    let index: HashMap<&str, u32> = classes.iter().zip(0u32..).map(|(c, i)| (*c, i)).collect();
+    DoorFacts {
+        plane: plane.to_string(),
+        scope_kind: scope_kinds.first().map(|k| (*k).to_string()),
+        classes: classes.iter().map(|c| (*c).to_string()).collect(),
+        meter_classes: classes.iter().map(|c| MeterClassId::new(c)).collect(),
+        fee_units: fee_units
+            .iter()
+            .filter_map(|f| index.get(f).copied())
+            .collect(),
+        audit_kind: OpClassId::new(audit_kind),
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/door_steps.rs"]
+mod tests;

@@ -343,8 +343,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     use busbar_kernel::trust::section::TrustEntry;
     let late = LateServices::new();
     let k = Arc::new(kernel(&[], false));
-    late.install_kernel(Arc::clone(&k), k)
-        .expect("the install");
+    late.install_kernel(Arc::clone(&k), k).expect("the install");
     let k = late.kernel().expect("kept");
     let entry = TrustEntry {
         pin: None,

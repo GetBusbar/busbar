@@ -13,11 +13,11 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use busbar_contract::caps::ReasonCode;
 use busbar_contract::records::PlaneRequestCtx;
+use busbar_kernel::plane_driver::refusal_status;
 use busbar_kernel::plane_driver::serve::{claimed, DataRequest};
-use busbar_kernel::plane_driver::{refusal_status, MoneySeam};
 use busbar_plane_decisions::plane_door::door as jev_door;
 
-use super::planes_tests::{composed_services, NoUnits};
+use super::planes_tests::{composed_services, money};
 use super::{compose_planes, mount};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -35,6 +35,7 @@ fn request(path: &str) -> DataRequest {
         body: Bytes::from_static(b"{}"),
         gov: PlaneRequestCtx { key: None },
         consumed: None,
+        app: busbar_kernel::test_support::TestApp::new().build(),
     }
 }
 
@@ -68,10 +69,8 @@ async fn a_claimed_request_is_answered_by_the_plane_door_through_its_driver() {
         serde_yaml::from_str("models: {jev: {provider: typesafe}}").expect("a section"),
     );
     let late = composed_services();
-    let served = compose_planes(&doors, &dispatcher, &late, &sections, &|| {
-        Arc::new(NoUnits) as Arc<dyn MoneySeam>
-    })
-    .expect("the door plane composes");
+    let served = compose_planes(&doors, &dispatcher, &late, &sections, &money)
+        .expect("the door plane composes");
     mount(served).expect("the data routes mount");
 
     // A path no plane claims comes back whole, for the fallback's own dispatch.

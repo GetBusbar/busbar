@@ -75,6 +75,7 @@ pub mod cli;
 pub mod connector;
 pub mod credentials;
 pub mod dispatch;
+pub mod door_steps;
 pub mod doors;
 pub mod durability;
 pub mod egress_ports;

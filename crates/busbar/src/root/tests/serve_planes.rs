@@ -10,25 +10,40 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use busbar_contract::abi::plane::UnitCount;
+use busbar_kernel::governance::{GovState, MemoryStore};
 use busbar_kernel::host_services::KernelServices;
-use busbar_kernel::plane_driver::{CancelBill, Checkpoint, MoneySeam};
-use busbar_kernel::teller::{Ended, UnitCtx};
+use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
+
+use crate::root::plane_node::NodeEndPost;
 
 use super::{compose_planes, LateServices};
 use crate::root::loader::dispatch::{
     load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, NoSink,
 };
 
-/// No money moves in a composition: nothing runs a unit.
-pub(super) struct NoUnits;
+/// The money steps of a composition: an ungoverned book (a unit that runs here admits nothing that
+/// bills), posting abandoned ends onto the process's one node.
+pub(super) fn money() -> Arc<PlaneMoney> {
+    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("governance"));
+    Arc::new(PlaneMoney::new(gov, post() as Arc<dyn EndPost>))
+}
 
-impl MoneySeam for NoUnits {
-    fn checkpoint(&self, _: &UnitCtx, _: &[UnitCount]) -> Checkpoint {
-        Checkpoint::Continue
+/// The process's one posting site, over its one node.
+pub(super) fn post() -> Arc<NodeEndPost> {
+    Arc::new(NodeEndPost::new(crate::root::plane_node::node()))
+}
+
+/// THE ADMIN TABLE IS THE PROCESS'S ONE: every test that publishes a plane's admin routes holds
+/// this while its plane is published, and withdraws it ([`Published`]) before letting go.
+pub(super) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A published instance, withdrawn from the admin table when the test lets go of it.
+pub(super) struct Published(pub(super) &'static str);
+
+impl Drop for Published {
+    fn drop(&mut self) {
+        busbar_kernel::plane_driver::serve::withdraw(self.0);
     }
-    fn cancelled(&self, _: &UnitCtx, _: &CancelBill) {}
-    fn abandoned(&self, _: &UnitCtx, _: Ended) {}
 }
 
 /// The test plane's example `cdylib` beside this test binary; `None` where a scoped run did not
@@ -50,7 +65,10 @@ fn dropped_path() -> Option<std::path::PathBuf> {
 
 /// The test plane, dropped in and bound on `dispatcher` as `instance`; `None` where its `cdylib`
 /// is not built.
-fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> Option<crate::root::linked::DoorPlane> {
+pub(super) fn bound(
+    instance: &str,
+    dispatcher: &Arc<Dispatcher>,
+) -> Option<crate::root::linked::DoorPlane> {
     let path = dropped_path()?;
     let stated = rendering_of_library(&path)
         .expect("the test plane's library reads")
@@ -74,7 +92,7 @@ pub(super) fn composed_services() -> Arc<LateServices> {
     let late = LateServices::new();
     let kernel = Arc::new(KernelServices::new());
     late.install_kernel(Arc::clone(&kernel), kernel)
-    .expect("installed once");
+        .expect("installed once");
     late
 }
 
@@ -100,6 +118,8 @@ fn admin(path: &str) -> Option<u16> {
 fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-configured";
+    let _one = PUBLISHING.blocking_lock();
+    let _published = Published(instance);
     let Some(plane) = bound(instance, &dispatcher) else {
         eprintln!("skip: the test plane's cdylib is not built in this scoped run");
         return;
@@ -108,10 +128,8 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", serde_yaml::Value::Mapping(Default::default()));
     let late = composed_services();
-    let served = compose_planes(&doors, &dispatcher, &late, &sections, &|| {
-        Arc::new(NoUnits) as Arc<dyn MoneySeam>
-    })
-    .expect("the door plane composes");
+    let served = compose_planes(&doors, &dispatcher, &late, &sections, &money)
+        .expect("the door plane composes");
     assert_eq!(served.planes.len(), 1, "one plane composed");
     let p = &served.planes[0];
     assert_eq!(p.instance, instance);
@@ -121,7 +139,11 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
         .iter()
         .map(|c| (c.verb.as_str(), c.target.as_str()))
         .collect();
-    assert_eq!(claims, [("POST", "/call")], "its open published its claims");
+    assert_eq!(
+        claims,
+        [("POST", "/call"), ("POST", "/open")],
+        "its open published its claims"
+    );
     assert_eq!(
         admin("/items/composed/act"),
         Some(200),
@@ -132,7 +154,6 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
         None,
         "a public route is never on the admin table"
     );
-    busbar_kernel::plane_driver::serve::withdraw(instance);
 }
 
 #[test]
@@ -145,10 +166,8 @@ fn a_door_plane_whose_section_is_absent_stays_unopened() {
     };
     let doors = vec![(instance.to_string(), plane)];
     let late = composed_services();
-    let served = compose_planes(&doors, &dispatcher, &late, &BTreeMap::new(), &|| {
-        Arc::new(NoUnits) as Arc<dyn MoneySeam>
-    })
-    .expect("nothing to compose is not a refusal");
+    let served = compose_planes(&doors, &dispatcher, &late, &BTreeMap::new(), &money)
+        .expect("nothing to compose is not a refusal");
     assert!(served.planes.is_empty(), "LAW 7: no section, no plane");
 }
 
@@ -160,7 +179,7 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
         &dispatcher,
         &LateServices::new(),
         &BTreeMap::new(),
-        &|| Arc::new(NoUnits) as Arc<dyn MoneySeam>,
+        &money,
     )
     .expect("an empty composition");
     assert!(served.planes.is_empty());

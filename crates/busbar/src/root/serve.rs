@@ -23,18 +23,12 @@ use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut, CLAIM_EXACT};
+use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut, CLAIM_EXACT, CLAIM_OPEN};
 use busbar_contract::auth::AuthPrincipal;
-use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival as ArrivalStep, ArrivalRecord, Audit, Authenticate,
-    Authenticated, Canary, Consumption, Decode, Dial, Encode, Grant, Hold, HoldCell, Meter,
-    OpClassId, OriginKind, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, SeatVerdict,
-    Step, VerifiedDestination, Verify,
-};
+use busbar_contract::caps::{OpClassId, Pass, PrincipalId, ReasonCode, Route};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
-use busbar_kernel::door::{admitted_facts, refused_facts, UnitKeyMint};
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
 use busbar_kernel::plane::store::KIND_DEMOTION;
@@ -43,16 +37,15 @@ use busbar_kernel::plane_driver::serve::{
     publish, DataAnswer, DataRequest, ServeRoute, ServeTable,
 };
 use busbar_kernel::plane_driver::{
-    refusal_status, Arrival, BufferCaps, CallerEnd, DriverConfig, FarEnd, FarPiece, HeadFields,
-    MoneySeam, OutboundRequest, Pick, PlaneDriver, Rendered,
-};
-use busbar_kernel::registry::Generation;
-use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
-use busbar_kernel::teller::{
-    run_unit_async, AccrualMeter, Evidence, Kernel, RouteAwait, Run, UnitCtx, Units,
+    refusal_status, Arrival, BufferCaps, CallerEnd, DriverConfig, Egress, EgressFarEnd, FarEnd,
+    FarPiece, HeadFields, MoneySeam, OutboundRequest, Pick, PlaneDriver, PlaneMoney, Rendered,
+    UnitRoute,
 };
 use tokio::sync::{mpsc, oneshot};
 
+use crate::root::door_steps::{
+    door_facts, egress_pool, DoorCaller, DoorFacts, DoorPools, DoorSteps,
+};
 use crate::root::linked::DoorPlane;
 use crate::root::loader::dispatch::kinds::plane::OwnedSnapshot;
 use crate::root::loader::dispatch::plane_calls::PlaneInstance;
@@ -293,7 +286,9 @@ impl HostServices for LateServices {
 // ── the door planes, composed ─────────────────────────────────────────────────────────────────────
 
 /// ONE DOOR PLANE, COMPOSED (TODO U6-U7, ARCHITECT Q-SW4 2026-10-02): its instance, the driver the
-/// kernel serves it through, and the snapshot its `open` published (its claims and admin routes).
+/// kernel serves it through, the snapshot its `open` published (its claims and admin routes), and
+/// what its units are served by: its tail's facts, the pools its section states, its money steps
+/// and its egress.
 pub struct ServedPlane {
     /// The instance's label.
     pub instance: String,
@@ -303,6 +298,15 @@ pub struct ServedPlane {
     pub snapshot: OwnedSnapshot,
     /// The `audit_kind` its tail states: what its units are audited under.
     pub audit_kind: &'static str,
+    /// Its key, scope kind, billable classes and fee units, read off its tail.
+    pub facts: DoorFacts,
+    /// The pools and entries its section states (ARCHITECT Q-SW6).
+    pub pools: DoorPools,
+    /// Its money steps: the same seam its driver reports units, cancel bills and abandoned ends to.
+    pub money: Arc<PlaneMoney>,
+    /// Its egress, sealed for the generation: the kernel's walk over the connector. `None` = none
+    /// composed: every walk of its units is exhausted at once (nothing is dialled).
+    pub egress: Option<Arc<Egress>>,
 }
 
 impl std::fmt::Debug for ServedPlane {
@@ -310,6 +314,7 @@ impl std::fmt::Debug for ServedPlane {
         f.debug_struct("ServedPlane")
             .field("instance", &self.instance)
             .field("snapshot", &self.snapshot)
+            .field("facts", &self.facts)
             .finish_non_exhaustive()
     }
 }
@@ -319,6 +324,10 @@ impl std::fmt::Debug for ServedPlane {
 pub struct Served {
     /// In the order the planes were bound.
     pub planes: Vec<ServedPlane>,
+    /// The posting site the planes' money steps post an abandoned end to, and the units' facts are
+    /// opened on while they run: the process's one node's.
+    #[cfg(linked_axis_node)]
+    pub post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
 }
 
 impl Served {
@@ -356,16 +365,19 @@ pub fn compose_served(
     };
     #[cfg(linked_axis_node)]
     {
-        let post: Arc<dyn busbar_kernel::plane_driver::EndPost> = Arc::new(
-            crate::root::plane_node::NodeEndPost::new(crate::root::plane_node::node()),
-        );
+        let post = Arc::new(crate::root::plane_node::NodeEndPost::new(
+            crate::root::plane_node::node(),
+        ));
+        let site = Arc::clone(&post);
         let money = move || {
-            Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
+            Arc::new(PlaneMoney::new(
                 Arc::clone(&gov),
-                Arc::clone(&post),
-            )) as Arc<dyn MoneySeam>
+                Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+            ))
         };
-        compose_planes(doors, dispatcher, late, sections, &money)
+        let mut served = compose_planes(doors, dispatcher, late, sections, &money)?;
+        served.post = Some(post);
+        Ok(served)
     }
     #[cfg(not(linked_axis_node))]
     {
@@ -388,9 +400,10 @@ pub fn compose_served(
 /// loads iff its section is present) is opened with that section as its settings, and composed:
 /// a [`PlaneInstance`] on `dispatcher` (unit tickets on worker 0, where its driver ticket is
 /// minted), a [`PlaneDriver`] admitted to the kernel's composed services with the plane's tail
-/// facts and a money seam from `money`, and its admin routes published on the admin router's table
-/// (`plane_driver::serve`, K-SERVE). A plane whose section is absent stays bound and unopened, as
-/// before. The data routes are mounted by [`mount`].
+/// facts and the money steps `money` builds for it, the pools its section states, and its admin
+/// routes published on the admin router's table (`plane_driver::serve`, K-SERVE). A plane whose
+/// section is absent stays bound and unopened, as before. No egress is sealed here (see
+/// [`ServedPlane::egress`]). The data routes are mounted by [`mount`].
 ///
 /// # Errors
 ///
@@ -401,7 +414,7 @@ pub fn compose_planes(
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
-    money: &dyn Fn() -> Arc<dyn MoneySeam>,
+    money: &dyn Fn() -> Arc<PlaneMoney>,
 ) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
@@ -411,11 +424,11 @@ pub fn compose_planes(
         .kernel()
         .ok_or("the kernel's host services are not composed")?;
     for (instance, plugin) in doors {
-        let facts = plugin.served();
-        let Some(section) = sections.get(facts.section) else {
+        let served_facts = plugin.served();
+        let Some(section) = sections.get(served_facts.section) else {
             tracing::debug!(
                 instance,
-                section = facts.section,
+                section = served_facts.section,
                 "door plane not configured"
             );
             continue;
@@ -428,7 +441,11 @@ pub fn compose_planes(
         ));
         let config = DriverConfig {
             caps: BufferCaps::default(),
-            op_classes: facts.op_classes.iter().map(|c| OpClassId::new(c)).collect(),
+            op_classes: served_facts
+                .op_classes
+                .iter()
+                .map(|c| OpClassId::new(c))
+                .collect(),
             status_of: refusal_status,
             refusal_statuses: calls.refusal_statuses(),
             caller_refs: None,
@@ -438,12 +455,13 @@ pub fn compose_planes(
             plugin: Arc::from(plugin.name()),
             kind: KindCode::Plane,
         };
+        let plane_money = money();
         let driver = PlaneDriver::new(
             Arc::clone(&calls) as Arc<dyn PlaneCalls>,
             config,
-            money(),
+            Arc::clone(&plane_money) as Arc<dyn MoneySeam>,
             Arc::clone(&kernel),
-            (facts.section, section),
+            (served_facts.section, section),
         )
         .map_err(|e| format!("{instance}: {e}"))?
         .with_records(Arc::clone(&kernel), caller);
@@ -462,7 +480,7 @@ pub fn compose_planes(
         publish(
             ServeTable {
                 instance: instance.clone(),
-                audit_kind: facts.audit_kind.to_string(),
+                audit_kind: served_facts.audit_kind.to_string(),
                 calls,
                 caps: BufferCaps::default(),
                 routes,
@@ -470,11 +488,22 @@ pub fn compose_planes(
             &[],
         )
         .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
+        let declared = plugin.declared();
         served.planes.push(ServedPlane {
             instance: instance.clone(),
             driver: Arc::new(driver),
             snapshot,
-            audit_kind: facts.audit_kind,
+            audit_kind: served_facts.audit_kind,
+            facts: door_facts(
+                plugin.name(),
+                &declared.scope_kinds,
+                &served_facts.billable_classes,
+                &served_facts.fee_units,
+                served_facts.audit_kind,
+            ),
+            pools: DoorPools::of(section),
+            money: plane_money,
+            egress: None,
         });
     }
     Ok(served)
@@ -526,17 +555,17 @@ fn open(plugin: &DoorPlane, section: &serde_yaml::Value) -> Result<OwnedSnapshot
 /// THE DOOR PLANES' DATA ROUTES (SERVE-WIRE P2, TODO U6-U7; ARCHITECT ruling 2026-10-01, option C):
 /// every composed plane's snapshot claims, offered each data request on the data router's fallback
 /// before any other plane reads it ([`busbar_kernel::plane_driver::serve::claimed`]). A claimed
-/// arrival is one unit of that plane, run through the kernel's one loop over the plane's
-/// [`PlaneDriver`], its caller's side an [`IngressCaller`]. A plane is served exactly when it is
-/// composed, so its door row is its serve switch: a fold adds only its door row (spec K5).
+/// arrival is one unit of that plane, driven on the process's one node over the plane's
+/// [`PlaneDriver`] under its kernel steps ([`DoorSteps`]), its caller's side an [`IngressCaller`].
+/// A plane is served exactly when it is composed, so its door row is its serve switch: a fold adds
+/// only its door row (spec K5).
+#[cfg(linked_axis_node)]
 pub struct DataRoutes {
     served: Served,
-    kernel: Kernel,
-    gauge: ConcurrencyGauge,
-    canary: Canary,
-    keys: UnitKeyMint,
+    post: Arc<crate::root::plane_node::NodeEndPost>,
 }
 
+#[cfg(linked_axis_node)]
 impl std::fmt::Debug for DataRoutes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DataRoutes")
@@ -546,34 +575,45 @@ impl std::fmt::Debug for DataRoutes {
 }
 
 /// The data routes [`mount`] mounted, for the process.
+#[cfg(linked_axis_node)]
 static ROUTES: OnceLock<Arc<DataRoutes>> = OnceLock::new();
 
 /// MOUNT the composed planes' data routes, once per process, after their composition
-/// ([`compose_planes`]). A composition that claims no data route mounts nothing, so a build with no
+/// ([`compose_served`]). A composition that claims no data route mounts nothing, so a build with no
 /// door plane serves every request as before.
 ///
 /// # Errors
 ///
-/// The data routes, or another data door, were already mounted.
+/// The data routes, or another data door, were already mounted; or (a build with no node) a plane
+/// claims a route no unit could be driven for.
 pub fn mount(served: Served) -> Result<(), String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
         return Ok(());
     }
-    let routes = Arc::new(DataRoutes {
-        served,
-        kernel: crate::root::kernel::new_kernel(),
-        gauge: ConcurrencyGauge::new(),
-        canary: Canary::new(),
-        keys: UnitKeyMint::default(),
-    });
-    ROUTES
-        .set(routes)
-        .map_err(|_| "the data routes are mounted once".to_string())?;
-    busbar_kernel::plane_driver::serve::mount_data(data_door)
-        .map_err(|_| "a data door is already mounted".to_string())
+    #[cfg(linked_axis_node)]
+    {
+        let post = served.post.clone().unwrap_or_else(|| {
+            Arc::new(crate::root::plane_node::NodeEndPost::new(
+                crate::root::plane_node::node(),
+            ))
+        });
+        ROUTES
+            .set(Arc::new(DataRoutes { served, post }))
+            .map_err(|_| "the data routes are mounted once".to_string())?;
+        busbar_kernel::plane_driver::serve::mount_data(data_door)
+            .map_err(|_| "a data door is already mounted".to_string())
+    }
+    #[cfg(not(linked_axis_node))]
+    {
+        Err(
+            "a door plane's units are driven on the process's node, and this build links none"
+                .to_string(),
+        )
+    }
 }
 
 /// The data door the kernel's fallback asks ([`mount`]).
+#[cfg(linked_axis_node)]
 fn data_door(req: DataRequest) -> Result<DataAnswer, Box<DataRequest>> {
     match ROUTES.get() {
         Some(routes) => routes.claimed(req),
@@ -581,6 +621,7 @@ fn data_door(req: DataRequest) -> Result<DataAnswer, Box<DataRequest>> {
     }
 }
 
+#[cfg(linked_axis_node)]
 impl DataRoutes {
     /// The answer of the plane whose claim `req` matches, or `req` back.
     fn claimed(self: &Arc<Self>, req: DataRequest) -> Result<DataAnswer, Box<DataRequest>> {
@@ -613,7 +654,7 @@ impl DataRoutes {
 
     /// ONE CLAIMED ARRIVAL, SERVED: the caller's head (the credentials the auth gate consumed and
     /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
-    /// resolved; the unit run inside the response, so a caller that goes away drops it.
+    /// resolved; the unit driven inside the response, so a caller that goes away drops it.
     async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DataRequest) -> Response {
         let DataRequest {
             method,
@@ -622,6 +663,7 @@ impl DataRoutes {
             body,
             gov,
             consumed,
+            app,
         } = req;
         if let Some(consumed) = &consumed {
             consumed.strip(&mut headers);
@@ -643,187 +685,185 @@ impl DataRoutes {
             Some(key) => PrincipalId::new(key.id.as_str()),
             None => PrincipalId::new(AuthPrincipal(None).actor_id()),
         };
+        let open = self.served.planes[plane]
+            .snapshot
+            .claims
+            .get(claim as usize)
+            .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
+        let key = gov.key.clone();
         let (caller, reply) = IngressCaller::new();
         let unit = async move {
-            let served = &self.served.planes[plane];
-            let steps = DoorSteps {
-                principal: principal.clone(),
-                audited: OpClassId::new(served.audit_kind),
-            };
-            let units = served.driver.unit(&steps, &NoEgress, &caller, arrival, 0);
-            self.run(&units, principal).await;
-            units.take_rendered()
+            let caller = caller;
+            self.drive(plane, app, principal, key, open, &caller, arrival)
+                .await
         };
         reply.answer(Box::pin(unit)).await
     }
 
-    /// Run one unit through the kernel's one loop, from a zero arrival hold.
-    async fn run<U: Units + RouteAwait>(&self, units: &U, principal: PrincipalId) {
-        let ctx = UnitCtx {
-            key: self.keys.mint(),
-            origin: OriginKind::Client,
-            session: None,
-            generation: Generation::FIRST,
-            admin_listener: false,
-            kernel_verb_only: false,
-        };
-        let cell = HoldCell::new(Hold::open(&self.kernel.admit_token(), principal, 0));
-        let (leases, meter) = (LeaseCell::new(), AccrualMeter::new());
-        let run = Run {
-            cell: &cell,
-            parent: None,
-            leases: &leases,
-            gauge: &self.gauge,
-            canary: &self.canary,
-            meter: &meter,
-        };
-        let _ended = run_unit_async(&self.kernel, units, &ctx, run, units).await;
-    }
-}
-
-/// THE KERNEL'S STEPS FOR A DOOR PLANE'S UNIT on the data door today (TRANSITIONAL,
-/// `1.6.0-QUESTIONS.md` Q-SW-P2): the caller is the one the auth gate resolved, and no destination
-/// is sealed for a door plane yet (its egress and its `$` admission are the plane's serving slice,
-/// TODO step 33), so VERIFY refuses and nothing after it runs: nothing is admitted, held, charged,
-/// metered or dialled. The plane renders the refusal. The plane's own seats (decode, route,
-/// encode) are the driver's.
-struct DoorSteps {
-    principal: PrincipalId,
-    /// What the unit is audited under: the plane's `audit_kind`.
-    audited: OpClassId,
-}
-
-impl busbar_kernel::plane_driver::DriverSteps for DoorSteps {}
-
-/// The refusal of a door plane's unit past authenticate: no destination is sealed.
-fn unsealed<S: Step>(token: &Pass<S>) -> SeatVerdict<S> {
-    SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination))
-}
-
-impl Units for DoorSteps {
-    fn arrival(&self, token: &Pass<ArrivalStep>, _: &UnitCtx) -> SeatVerdict<ArrivalStep> {
-        SeatVerdict::proceed(
-            token,
-            ArrivalRecord {
-                source: String::new(),
-                port: 0,
-                alpn: None,
-                sni: None,
-                peer_cert: None,
-                transport_chain: Vec::new(),
+    /// THE UNIT, on the process's one node (SERVE-WIRE step 33): its kernel steps over the plane's
+    /// tail, pools and money, its far end the plane's egress, driven through the loop by the node's
+    /// borrowed drive; its one line posted there with what it consumed; its money settled on the
+    /// money steps by its caller status (the ledger and the plane's fee rule). What it rendered for
+    /// its caller, when it ended before any byte.
+    #[allow(clippy::too_many_arguments)]
+    async fn drive(
+        &self,
+        plane: usize,
+        app: Arc<busbar_kernel::state::App>,
+        principal: PrincipalId,
+        key: Option<Arc<busbar_contract::records::VirtualKey>>,
+        open: bool,
+        caller: &IngressCaller,
+        arrival: Arrival,
+    ) -> Option<Rendered> {
+        let served = &self.served.planes[plane];
+        let node = crate::root::plane_node::node();
+        let unit = node.mint();
+        let arrived = node.arrived();
+        let steps = DoorSteps::new(
+            &served.facts,
+            &served.pools,
+            node.resolver(),
+            app,
+            Some(&*served.money),
+            DoorCaller {
+                principal: principal.clone(),
+                key,
+                open,
+                arrived: arrived.secs(),
             },
-        )
-    }
-
-    fn decode(&self, token: &Pass<Decode>, _: &UnitCtx) -> SeatVerdict<Decode> {
-        SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
-    }
-
-    fn authenticate(&self, token: &Pass<Authenticate>, _: &UnitCtx) -> SeatVerdict<Authenticate> {
-        SeatVerdict::proceed(token, Authenticated::Principal(self.principal.clone()))
-    }
-
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        _: &Grant<Dial>,
-        _: &UnitCtx,
-        _: &PrincipalId,
-    ) -> SeatVerdict<Verify> {
-        unsealed(token)
-    }
-
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        _: &UnitCtx,
-        _: &PrincipalId,
-        _: &[VerifiedDestination],
-    ) -> SeatVerdict<Approve> {
-        unsealed(token)
-    }
-
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        _: &Grant<Admittance>,
-        _: &UnitCtx,
-        _: &PrincipalId,
-        _: &[VerifiedDestination],
-        _: &GroupLeaseSlip,
-    ) -> SeatVerdict<Admit> {
-        unsealed(token)
-    }
-
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        _: &UnitCtx,
-        _: &[VerifiedDestination],
-    ) -> SeatVerdict<Route> {
-        unsealed(token)
-    }
-
-    fn meter(
-        &self,
-        token: &Pass<Meter>,
-        _: &Grant<Consumption>,
-        _: &UnitCtx,
-        _: &Outcome,
-        _: &[VerifiedDestination],
-    ) -> SeatVerdict<Meter> {
-        unsealed(token)
-    }
-
-    fn audit(&self, token: &Pass<Audit>, _: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        SeatVerdict::proceed(
-            token,
-            admitted_facts(self.audited, None, outcome.is_completed()),
-        )
-    }
-
-    fn audit_refused(&self, token: &Pass<Audit>, _: &UnitCtx, _: &Refusal) -> SeatVerdict<Audit> {
-        SeatVerdict::proceed(token, refused_facts(self.audited))
-    }
-
-    fn encode(&self, token: &Pass<Encode>, _: &UnitCtx, _: &Outcome) -> SeatVerdict<Encode> {
-        SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
-    }
-
-    fn evidence(&self, _: &UnitCtx) -> Evidence {
-        Evidence::default()
+        );
+        let far = DoorFar {
+            egress: served.egress.as_deref(),
+            steps: &steps,
+            unit,
+            far: OnceLock::new(),
+        };
+        let units = served.driver.unit(&steps, &far, caller, arrival, 0);
+        let money = Arc::clone(&served.money);
+        let facts = served.facts.clone();
+        let late: crate::root::linked::node::Late =
+            Box::new(move || report_of(&money, unit, &facts));
+        let _taken = node
+            .drive_borrowed(unit, arrived, &principal, &self.post, &units, late)
+            .await;
+        let rendered = units.take_rendered();
+        let status = rendered
+            .as_ref()
+            .map(|r| r.status)
+            .or_else(|| caller.stated())
+            .unwrap_or_else(|| refusal_status(ReasonCode::PlanePanic));
+        served.money.settle_end(unit, status);
+        rendered
     }
 }
 
-/// A door plane's far end while no egress is sealed for it (TRANSITIONAL, with [`DoorSteps`]):
-/// the walk is exhausted at once. VERIFY refuses first, so no attempt reaches it.
-struct NoEgress;
+/// WHAT A DOOR UNIT CONSUMED, as the node's report (its one line, priced at the card pinned at its
+/// door): the plane's last far-end-reported counts by class name (an estimate never bills; a fee
+/// unit is no usage), whether it incurred its fee, and the key it was served under. `None` for a
+/// unit whose money was never opened (an anonymous or refused unit): its line is the exit's.
+#[cfg(linked_axis_node)]
+fn report_of(
+    money: &PlaneMoney,
+    unit: busbar_contract::UnitKey,
+    facts: &DoorFacts,
+) -> Option<crate::root::linked::node::Reported> {
+    let lane = money.serving(unit)?;
+    let mut usage_units: BTreeMap<String, u64> = BTreeMap::new();
+    let mut fee = 0u32;
+    for u in money
+        .last_counts(unit)
+        .iter()
+        .filter(|u| busbar_contract::abi::plane::units_bill(u.source))
+    {
+        if facts.fee_units.contains(&u.class) {
+            fee = fee.max(u32::from(u.amount > 0));
+            continue;
+        }
+        if let Some(name) = facts.classes.get(u.class as usize) {
+            let n = usage_units.entry(name.clone()).or_insert(0);
+            *n = n.saturating_add(u.amount);
+        }
+    }
+    usage_units.retain(|_, n| *n > 0);
+    Some((busbar_contract::billing::Usage { usage_units }, fee, lane))
+}
 
-impl FarEnd for NoEgress {
+/// A DOOR UNIT'S FAR END: the plane's egress walk over the connector (`EgressFarEnd`), started
+/// once the unit's route is resolved, over the egress pool that route names; with no egress
+/// composed, or no route, the walk is exhausted at once and nothing is dialled.
+#[cfg(linked_axis_node)]
+struct DoorFar<'d, 's> {
+    egress: Option<&'d Egress>,
+    steps: &'d DoorSteps<'s>,
+    unit: busbar_contract::UnitKey,
+    far: OnceLock<Option<EgressFarEnd<'d>>>,
+}
+
+#[cfg(linked_axis_node)]
+impl<'d> DoorFar<'d, '_> {
+    fn far(&self) -> Option<&EgressFarEnd<'d>> {
+        self.far
+            .get_or_init(|| {
+                let egress = self.egress?;
+                let routed = self.steps.routed()?;
+                Some(egress.unit(UnitRoute {
+                    unit: self.unit,
+                    pool: egress_pool(self.steps.plane(), &routed),
+                    ..UnitRoute::default()
+                }))
+            })
+            .as_ref()
+    }
+}
+
+/// The walk's exhaustion terminal when no egress is composed: every path is spent.
+#[cfg(linked_axis_node)]
+fn spent() -> Pick {
+    Pick::Exhausted {
+        status: refusal_status(ReasonCode::NoDestination),
+        retry_after: None,
+    }
+}
+
+#[cfg(linked_axis_node)]
+impl FarEnd for DoorFar<'_, '_> {
     fn member<'a>(
         &'a self,
-        _: &'a Pass<Route>,
-        _: u32,
+        token: &'a Pass<Route>,
+        attempt_no: u32,
     ) -> impl std::future::Future<Output = Pick> + Send + 'a {
-        std::future::ready(Pick::Exhausted {
-            status: refusal_status(ReasonCode::NoDestination),
-            retry_after: None,
-        })
+        async move {
+            match self.far() {
+                Some(far) => far.member(token, attempt_no).await,
+                None => spent(),
+            }
+        }
     }
 
     fn send<'a>(
         &'a self,
-        _: &'a Pass<Route>,
-        _: OutboundRequest,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
     ) -> impl std::future::Future<Output = bool> + Send + 'a {
-        std::future::ready(false)
+        async move {
+            match self.far() {
+                Some(far) => far.send(token, request).await,
+                None => false,
+            }
+        }
     }
 
     fn next<'a>(
         &'a self,
-        _: &'a Pass<Route>,
+        token: &'a Pass<Route>,
     ) -> impl std::future::Future<Output = Option<FarPiece>> + Send + 'a {
-        std::future::ready(None)
+        async move {
+            match self.far() {
+                Some(far) => far.next(token).await,
+                None => None,
+            }
+        }
     }
 }
 
@@ -839,6 +879,8 @@ impl FarEnd for NoEgress {
 pub struct IngressCaller {
     head: Mutex<Option<oneshot::Sender<Head>>>,
     body: mpsc::Sender<Bytes>,
+    /// The status the unit stated its head with; `0` before it did.
+    stated: std::sync::atomic::AtomicU32,
 }
 
 /// A reply head: the status number and the head fields.
@@ -860,13 +902,22 @@ impl IngressCaller {
         let caller = IngressCaller {
             head: Mutex::new(Some(head_tx)),
             body: body_tx,
+            stated: std::sync::atomic::AtomicU32::new(0),
         };
         (caller, IngressReply { head, body })
+    }
+
+    /// The status the unit stated its head with, once it did.
+    #[must_use]
+    pub fn stated(&self) -> Option<u32> {
+        Some(self.stated.load(std::sync::atomic::Ordering::Acquire)).filter(|s| *s != 0)
     }
 }
 
 impl CallerEnd for IngressCaller {
     fn head(&self, status: u32, fields: HeadFields) {
+        self.stated
+            .store(status, std::sync::atomic::Ordering::Release);
         let sender = self
             .head
             .lock()
@@ -977,6 +1028,10 @@ mod tests;
 #[path = "tests/serve_planes.rs"]
 mod planes_tests;
 
-#[cfg(all(test, feature = "plane-decisions"))]
+#[cfg(all(test, feature = "plane-decisions", linked_axis_node))]
 #[path = "tests/serve_door.rs"]
 mod door_tests;
+
+#[cfg(all(test, linked_axis_node))]
+#[path = "tests/serve_money.rs"]
+mod money_tests;
