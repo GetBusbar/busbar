@@ -6,7 +6,7 @@
 //! over. An approval is a change to the section, so it is visible from the generation that carries
 //! it and from no earlier one.
 //!
-//! Pure. What a caller may see is not this module's decision: each listing asks an `admit`
+//! Pure. What a caller may see is not judged in this module: each listing asks an `admit`
 //! predicate, once per grant, with the two grants every capability needs (the server first, then
 //! the capability's published name). The door binds the predicate to the kernel's entitlement
 //! service; a test binds it to a table. The rendering is the served engine's, member for member,

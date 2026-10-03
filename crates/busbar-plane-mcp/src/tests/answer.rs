@@ -33,7 +33,7 @@ fn everyone(_: &str, _: &str) -> bool {
 }
 
 /// A stateless-revision request for `method`, decided as an arrival.
-fn request(method: &str, params: Value) -> (Decision, Value) {
+fn request(method: &str, params: Value) -> (Disposition, Value) {
     let mut params = params;
     params["_meta"] = json!({
         "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,

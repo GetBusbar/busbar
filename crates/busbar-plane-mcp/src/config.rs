@@ -32,8 +32,8 @@
 //! ## The pin is an OBJECT, not a scalar
 //!
 //! The earlier `spki_pin:` scalar spelling contradicted busbar's own admin API, which already
-//! speaks `pin{mechanism,key?}`, and a scalar cannot express the sibling plane's root at all — an
-//! A2A agent is pinned by a JWS issuer key plus a card fingerprint, not by a certificate SPKI. The
+//! speaks `pin{mechanism,key?}`, and a scalar cannot express a sibling plane's root at all — an
+//! agent there is pinned by a JWS issuer key plus a card fingerprint, not by a certificate SPKI. The
 //! object form is canonical, and the mechanism is checked HERE against the material it requires: a
 //! registration cannot claim `cert_spki` and carry nothing to verify with. `unpinned` is spelled
 //! out loud rather than encoded as an absent field, because an operator reading a list of
@@ -43,7 +43,7 @@
 //! ## The server-initiated grants are DENY-BY-DEFAULT, and that is a `Default` impl, not a comment
 //!
 //! `sampling`, `elicitation` and `roots` are grants on the registry entry — an upstream must not be
-//! able to induce busbar to spend busbar's own authority (an LLM completion on busbar's pools and
+//! able to induce busbar to spend busbar's own authority (a model completion on busbar's pools and
 //! budget, a user prompt, a filesystem-root disclosure) that the operator never granted it.
 //! Absent means denied, and it means denied because [`ServerRequestGrants::default`] is three
 //! `false`s — a field an operator forgets to write is a field that grants nothing.
@@ -123,18 +123,18 @@ pub const ASK_METHODS: &[&str] = &[ASK_ELICITATION, ASK_SAMPLING, ASK_ROOTS];
 /// operator-pinned issuer key, the endpoint's certificate SPKI, mutual TLS, or nothing at all —
 /// `pinned_pubkey | cert_spki | mtls | unpinned`.
 ///
-/// ## WHY THE `Mcp` PREFIX, and why it is on THIS one and not on A2A's
+/// ## WHY THE `Mcp` PREFIX, and why it is on THIS one and not on the sibling plane's
 ///
-/// The A2A plane's `PinMechanism` (`busbar_a2a::a2a::config`) is the same concept for the other plane and used to share
+/// A sibling plane's `PinMechanism` is the same concept for that plane and used to share
 /// this bare name. That was survivable only while the config-grammar fingerprint
 /// (then `scripts/config-schema.py`, now `cargo xtask gate config-schema`) did not track this file. Its snapshot is a FLAT map keyed by the
 /// bare Rust ident with no module path, so two `PinMechanism`s occupy one key: the second file read
 /// wins, and the first plane's grammar silently stops being covered. Adding `mcp/config.rs` to the
 /// tracked set with the names still clashing produced exactly that —
-/// `PinMechanism::jws_issuer_key: enum variant REMOVED`, a reported break in the A2A grammar from a
-/// commit that did not touch A2A.
+/// `PinMechanism::jws_issuer_key: enum variant REMOVED`, a reported break in the sibling plane's
+/// grammar from a commit that did not touch that plane.
 ///
-/// The prefix went on the MCP side, not the A2A side, for one reason: A2A's `PinMechanism` is
+/// The prefix went on the MCP side, not the sibling's, for one reason: the sibling's `PinMechanism` is
 /// ALREADY FROZEN in the committed snapshot under that key, and the grammar is additive-only after
 /// 1.5.3 — so renaming it would present to the classifier as a whole-section REMOVAL and would need
 /// a waiver, i.e. laundering a real break to settle a naming argument. This type was in no snapshot
@@ -589,9 +589,9 @@ pub struct ResourceTemplateAllowCfg {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerRequestGrants {
-    /// May this server induce busbar to run an LLM completion on busbar's pools and budget? When
+    /// May this server induce busbar to run a model completion on busbar's pools and budget? When
     /// granted, that completion rides the SAME admission/budget/metering/audit plane as any other
-    /// LLM request — never a free side channel.
+    /// model request — never a free side channel.
     #[serde(default)]
     pub sampling: bool,
     /// May this server ask busbar to solicit user input?
@@ -687,7 +687,7 @@ pub struct RootCfg {
 #[serde(deny_unknown_fields)]
 pub struct SamplingCfg {
     /// The pool or model name the completion is dispatched to, on busbar's own catalogue, resolved
-    /// under the INBOUND caller's grant like any other LLM request.
+    /// under the INBOUND caller's grant like any other model request.
     pub model: String,
     /// The ceiling on one completion's `max_tokens`. The ask's request above it is clamped, not
     /// refused: sampling fewer tokens than asked is conformant, and a hard refusal would hand the
@@ -843,8 +843,8 @@ pub const TRUST_KEYS: &[TrustKeyDecl] = &[
 
 /// THE DEPLOYMENT-WIDE MAX VERIFICATION STALENESS a registration gets when it spells no `verify_ttl:`.
 ///
-/// Deliberately the same `5s` as the sibling A2A plane's `DEFAULT_REVERIFY_TTL` (a2a/config.rs),
-/// because the two are the same decision about the same risk — how long a hash-pinned upstream may
+/// Deliberately the same `5s` as a sibling plane's `DEFAULT_REVERIFY_TTL`,
+/// because the two are the same judgement about the same risk — how long a hash-pinned upstream may
 /// have drifted before the CALL that dispatches to it re-verifies — and an operator who learns the
 /// number on one plane should not find a different one on the other. If a reason ever emerges for
 /// them to differ, it goes in writing next to whichever one moves.
@@ -931,7 +931,7 @@ pub struct McpServerDefCfg {
     /// ## Why it is per SERVER and not one constant
     ///
     /// A deadline is a statement about a particular peer, and the peers genuinely differ: a
-    /// loopback diagnostic answers in milliseconds, an LLM-backed upstream can legitimately take
+    /// loopback diagnostic answers in milliseconds, a model-backed upstream can legitimately take
     /// most of a minute. One number for all of them is either too generous for the first — a
     /// dispatch that hangs holds a concurrency slot the caller already paid for — or too mean for
     /// the second.
@@ -1777,7 +1777,7 @@ fn validate_prompt(at: &str, name: &str, allow: &PromptAllowCfg) -> Result<(), S
     for (i, message) in allow.messages.iter().enumerate() {
         // The schema names exactly two roles. An unrecognised one is refused rather than passed
         // through: a client that does not know the role has no way to place the message, and a
-        // message with no place in a conversation is a message a model reads in the wrong voice.
+        // message with no place in a conversation is a message a model reads in the wrong role.
         if !matches!(message.role.as_str(), "user" | "assistant") {
             return Err(format!(
                 "{at}: `prompts_allow.{name}.messages[{i}].role` is `{}`; a PromptMessage role is \

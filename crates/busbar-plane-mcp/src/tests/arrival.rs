@@ -40,7 +40,7 @@ fn no_fields(_: &str) -> Option<&'static str> {
 #[test]
 fn a_body_that_is_not_json_is_a_parse_error_with_a_null_id() {
     match decide(b"{not json", no_fields) {
-        Decision::Refused(r) => {
+        Disposition::Refused(r) => {
             assert_eq!((r.status, r.code, r.id), (400, -32700, None));
             assert_eq!(r.message, NOT_JSON);
         }
@@ -51,7 +51,7 @@ fn a_body_that_is_not_json_is_a_parse_error_with_a_null_id() {
 #[test]
 fn a_batch_is_refused_by_the_contracts_reader() {
     match decide(b"[]", no_fields) {
-        Decision::Refused(r) => assert_eq!((r.status, r.code), (400, -32600)),
+        Disposition::Refused(r) => assert_eq!((r.status, r.code), (400, -32600)),
         other => panic!("{other:?}"),
     }
 }
@@ -62,7 +62,7 @@ fn a_well_formed_stateless_request_is_its_row() {
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": meta()}}),
     );
     match decide(&b, fields("tools/list")) {
-        Decision::Request { row, id } => {
+        Disposition::Request { row, id } => {
             assert_eq!(row.method, "tools/list");
             assert_eq!(id, json!(1));
         }
@@ -77,7 +77,7 @@ fn an_uncarried_method_is_404_method_not_found() {
         let b =
             body(json!({"jsonrpc": "2.0", "id": 5, "method": method, "params": {"_meta": meta()}}));
         match decide(&b, fields(method)) {
-            Decision::Refused(r) => {
+            Disposition::Refused(r) => {
                 assert_eq!((r.status, r.code, r.id), (404, -32601, Some(json!(5))));
                 assert_eq!(
                     r.message,
@@ -94,7 +94,7 @@ fn an_uncarried_method_is_404_method_not_found() {
 fn the_envelope_checks_precede_the_vocabulary() {
     let b = body(json!({"jsonrpc": "2.0", "id": 5, "method": "tools/nope", "params": {}}));
     match decide(&b, fields("tools/nope")) {
-        Decision::Refused(r) => assert_eq!((r.status, r.code), (400, -32602)),
+        Disposition::Refused(r) => assert_eq!((r.status, r.code), (400, -32602)),
         other => panic!("{other:?}"),
     }
 }
@@ -106,7 +106,7 @@ fn a_notification_is_acknowledged() {
     let b = body(json!({"jsonrpc": "2.0", "method": cancel, "params": {"requestId": 7}}));
     assert_eq!(
         decide(&b, no_fields),
-        Decision::Notice {
+        Disposition::Notice {
             method: cancel.to_string()
         }
     );

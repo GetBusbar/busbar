@@ -37,7 +37,7 @@ use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use std::sync::Arc;
 
 use crate::answer::Answer;
-use crate::arrival::Decision;
+use crate::arrival::Disposition;
 use crate::catalogue::Catalogue;
 use crate::door;
 
@@ -201,7 +201,7 @@ slot!(
 //
 // `arrive` decides what the arrival is ([`crate::arrival::decide`]) and keeps it, with the
 // generation it arrived under, keyed by the unit. `on_piece` answers the caller's body from what
-// the plane holds ([`crate::answer::answer`]) and ends the unit, streaming what does not fit. A
+// the plane holds ([`crate::answer::answer`]) and ends the unit, writing over several calls what does not fit. A
 // refused arrival states its refusal in its own words, which `refusal` renders with its own status.
 
 /// The most units the instance keeps state for at once; past it, the oldest is dropped first.
@@ -212,7 +212,7 @@ struct Unit {
     /// The generation it arrived under.
     catalogue: Option<Arc<Catalogue>>,
     /// What the arrival is.
-    decision: Decision,
+    disposition: Disposition,
     /// The request's `params`.
     params: Option<serde_json::Value>,
     /// Its answer while it is still being written: the status, the bytes, and how many went.
@@ -233,13 +233,13 @@ fn keep<V>(map: &Keyed<u64, V>, cap: usize, key: u64, value: V) {
     });
 }
 
-/// The operation class a decision is counted under: its row's, or the notification class. A
+/// The operation class a disposition is counted under: its row's, or the notification class. A
 /// refused arrival is counted under none.
-fn op_class(decision: &Decision) -> Option<u32> {
-    match decision {
-        Decision::Request { row, .. } => door::op_class_index(row.op),
-        Decision::Notice { .. } => door::op_class_index(crate::ops::OP_NOTIFICATION),
-        Decision::Refused(_) => None,
+fn op_class(disposition: &Disposition) -> Option<u32> {
+    match disposition {
+        Disposition::Request { row, .. } => door::op_class_index(row.op),
+        Disposition::Notice { .. } => door::op_class_index(crate::ops::OP_NOTIFICATION),
+        Disposition::Refused(_) => None,
     }
 }
 
@@ -328,7 +328,7 @@ slot!(
                 NOT_ALLOWED_TEXT.to_string(),
             );
         }
-        let decision = crate::arrival::decide(body, |name| {
+        let disposition = crate::arrival::decide(body, |name| {
             fields
                 .iter()
                 .find(|f| {
@@ -338,10 +338,10 @@ slot!(
                 })
                 .and_then(|f| f.field(|f| &f.value).as_str().ok())
         });
-        if let Decision::Refused(refusal) = &decision {
+        if let Disposition::Refused(refusal) = &disposition {
             return refused(&mut out, refusal.status, refusal_text(refusal));
         }
-        let Some(op_class) = op_class(&decision) else {
+        let Some(op_class) = op_class(&disposition) else {
             return Outcome::Failed;
         };
         out.set(|o| &o.op_class, op_class);
@@ -352,7 +352,7 @@ slot!(
             .and_then(|v| v.get("params").cloned());
         let unit = Unit {
             catalogue: plane.current(),
-            decision,
+            disposition,
             params,
             pending: None,
             ticket: None,
@@ -401,7 +401,7 @@ slot!(
                 // Nothing is visible until the kernel's entitlement answer is bound here.
                 let admit = |_: &str, _: &str| false;
                 let answer = crate::answer::answer(
-                    &unit.decision,
+                    &unit.disposition,
                     unit.params.as_ref(),
                     &catalogue,
                     &admit,

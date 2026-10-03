@@ -3,7 +3,7 @@
 
 //! THE ANSWERS THE PLANE GIVES FROM WHAT IT HOLDS: every request whose answer is the generation's
 //! catalogue or the section's own content, and that reaches no far end. Pure: the arrival's
-//! [`Decision`], the generation's [`Catalogue`] and the caller's `admit` predicate in; the status
+//! [`Disposition`], the generation's [`Catalogue`] and the caller's `admit` predicate in; the status
 //! and the answer's bytes out, or [`Answer::Far`] for a request that is not answered here.
 //!
 //! The answers are the served engine's, byte for byte, including its refusals: a local answer that
@@ -11,7 +11,7 @@
 
 use serde_json::{json, Value};
 
-use crate::arrival::{Decision, Refusal};
+use crate::arrival::{Disposition, Refusal};
 use crate::catalogue::{complete, Catalogue, CACHE_SCOPE, CACHE_TTL_MS};
 use crate::checks::SUPPORTED_PROTOCOL_VERSIONS;
 use crate::codec::{IMPLEMENTED_METHODS, PROTOCOL_VERSION};
@@ -121,19 +121,19 @@ pub fn completion(id: &Value) -> Vec<u8> {
 /// ANSWER ONE ARRIVAL from what the plane holds. `params` is the request body's `params`;
 /// `quarantined` is the live trust verdict for a listed tool.
 pub fn answer(
-    decision: &Decision,
+    disposition: &Disposition,
     params: Option<&Value>,
     catalogue: &Catalogue,
     admit: &impl Fn(&str, &str) -> bool,
     quarantined: impl Fn(&crate::catalogue::ToolEntry) -> bool,
 ) -> Answer {
-    match decision {
-        Decision::Refused(refusal) => Answer::refused(refusal),
-        Decision::Notice { .. } => Answer::Here {
+    match disposition {
+        Disposition::Refused(refusal) => Answer::refused(refusal),
+        Disposition::Notice { .. } => Answer::Here {
             status: STATUS_ACCEPTED,
             body: Vec::new(),
         },
-        Decision::Request { row, id, .. } => {
+        Disposition::Request { row, id, .. } => {
             let op = row.op;
             if op == OP_TOOLS_LIST {
                 Answer::ok(catalogue.tools_list(id, admit, quarantined))

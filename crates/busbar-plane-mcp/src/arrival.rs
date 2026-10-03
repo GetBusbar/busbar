@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! WHAT ONE ARRIVAL IS, decided once and purely: the body and a reader over its head fields in; a
-//! [`Decision`] out. The door's `arrive` states the decision in the plane ABI's words; this module
-//! is the decision itself, so it is tested without a door.
+//! [`Disposition`] out. The door's `arrive` states the disposition in the plane ABI's words; this module
+//! is the disposition itself, so it is tested without a door.
 //!
 //! The order is the served engine's:
 //!
@@ -66,7 +66,7 @@ impl Refusal {
 
 /// What one arrival is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
+pub enum Disposition {
     /// A request this dispatch carries.
     Request {
         /// Its row in the vocabulary.
@@ -84,9 +84,9 @@ pub enum Decision {
 }
 
 /// DECIDE ONE ARRIVAL. `field` reads a request head field by its lower-case name.
-pub fn decide<'a>(body: &[u8], field: impl Fn(&str) -> Option<&'a str>) -> Decision {
+pub fn decide<'a>(body: &[u8], field: impl Fn(&str) -> Option<&'a str>) -> Disposition {
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return Decision::Refused(Refusal {
+        return Disposition::Refused(Refusal {
             status: STATUS,
             id: None,
             code: busbar_contract::jsonrpc::PARSE_ERROR,
@@ -97,7 +97,7 @@ pub fn decide<'a>(body: &[u8], field: impl Fn(&str) -> Option<&'a str>) -> Decis
     let envelope = match busbar_contract::jsonrpc::read(&value) {
         Ok(envelope) => envelope,
         Err(invalid) => {
-            return Decision::Refused(Refusal {
+            return Disposition::Refused(Refusal {
                 status: STATUS,
                 id: (!invalid.id.is_null()).then_some(invalid.id),
                 code: invalid.code,
@@ -108,17 +108,17 @@ pub fn decide<'a>(body: &[u8], field: impl Fn(&str) -> Option<&'a str>) -> Decis
     };
     let (id, method) = match envelope {
         busbar_contract::jsonrpc::Envelope::Notification { method } => {
-            return Decision::Notice { method };
+            return Disposition::Notice { method };
         }
         busbar_contract::jsonrpc::Envelope::Request { id, method } => (id, method),
     };
     let checked = check_request(&value, &method, field);
     if let Err(refused) = checked {
-        return Decision::Refused(Refusal::of(Some(id), refused));
+        return Disposition::Refused(Refusal::of(Some(id), refused));
     }
     match ops::row_for(&method).filter(|row| row.sender == Sender::Client) {
-        Some(row) => Decision::Request { row, id },
-        None => Decision::Refused(Refusal {
+        Some(row) => Disposition::Request { row, id },
+        None => Disposition::Refused(Refusal {
             status: STATUS_NOT_FOUND,
             id: Some(id),
             code: CODE_METHOD_NOT_FOUND,
