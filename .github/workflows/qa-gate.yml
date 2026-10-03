@@ -169,7 +169,7 @@ jobs:
       # So this is not a wall-clock cost: it REMOVES a redundant full build from the critical path
       # and is what makes this job genuinely fast.
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ env.BUILD_ARTIFACT }}
           path: /tmp
@@ -208,7 +208,7 @@ jobs:
         working-directory: busbarAI
         run: ./scripts/qa-gate-run.sh build "$TARBALL"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BUILD_ARTIFACT }}
           path: ${{ env.TARBALL }}
@@ -240,7 +240,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ env.BUILD_ARTIFACT }}
           path: /tmp
@@ -278,7 +278,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ env.BUILD_ARTIFACT }}
           path: /tmp
