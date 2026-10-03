@@ -4733,7 +4733,6 @@ dependencies = [
  "busbar-contract",
  "busbar-core-connector",
  "busbar-plugin-loader",
- "busbar-transport-tcp",
  "busbar-transport-ws",
  "futures",
  "tokio",
@@ -4763,7 +4762,10 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "proc-macro2",
+ "rcgen",
  "ring",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_yaml_ng",

@@ -786,7 +786,102 @@ pub enum IrBlock {
     },
 }
 
+/// THE SEARCH-RESULT SLOT, read back: a caller-supplied RAG passage (Anthropic `search_result`,
+/// Converse `searchResult`; ARCHITECT 2026-10-02, DF-MAP-2) as the parts both wires spell.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrSearchResultParts<'a> {
+    pub source: &'a str,
+    pub title: &'a str,
+    /// The passage text: the block's text parts joined with `\n`, the header line stripped.
+    pub body: &'a str,
+    /// The block's `citations` switch (`{"enabled": bool}`) verbatim, when the caller sent one.
+    pub citations_config: Option<&'a Value>,
+}
+
 impl IrBlock {
+    /// THE SEARCH-RESULT SLOT (ARCHITECT 2026-10-02, DF-MAP-2): one caller-supplied RAG passage —
+    /// Anthropic `search_result`, Converse `searchResult` — modelled as a `Text` block a model of
+    /// any dialect can read (a `title — source` header line, then the passage), carrying ONE
+    /// provenance citation of kind `search_result_location` with no location indices (which is what
+    /// tells it apart from an answer's search-result citation, which always has them). The
+    /// citation's `raw` holds the block's `citations` switch verbatim (`{"enabled": bool}`, spelled
+    /// identically by both wires). A dialect that has the block re-emits it from
+    /// [`IrBlock::as_search_result`]; any other dialect sends the text.
+    pub fn search_result(
+        source: &str,
+        title: &str,
+        body: String,
+        citations_config: Option<Value>,
+        cache_control: Option<CacheControl>,
+    ) -> IrBlock {
+        let header = search_result_header(source, title);
+        let text = if header.is_empty() {
+            body
+        } else if body.is_empty() {
+            header
+        } else {
+            format!("{header}\n{body}")
+        };
+        let citations = if source.is_empty() && title.is_empty() {
+            Vec::new()
+        } else {
+            vec![IrCitation {
+                kind: Some(crate::codec::keys::SEARCH_RESULT_LOCATION.to_string()),
+                title: (!title.is_empty()).then(|| title.to_string()),
+                url: (!source.is_empty()).then(|| source.to_string()),
+                raw: citations_config,
+                ..Default::default()
+            }]
+        };
+        IrBlock::Text {
+            text,
+            cache_control,
+            citations,
+            refusal: false,
+        }
+    }
+
+    /// The search-result slot's parts, or `None` for any other block (see
+    /// [`IrBlock::search_result`]).
+    pub fn as_search_result(&self) -> Option<IrSearchResultParts<'_>> {
+        let IrBlock::Text {
+            text, citations, ..
+        } = self
+        else {
+            return None;
+        };
+        let [c] = citations.as_slice() else {
+            return None;
+        };
+        let provenance_only = c.kind.as_deref() == Some(crate::codec::keys::SEARCH_RESULT_LOCATION)
+            && c.cited_text.is_none()
+            && c.document_index.is_none()
+            && c.start_index.is_none()
+            && c.end_index.is_none()
+            && c.encrypted_index.is_none()
+            && c.domain.is_none()
+            && c.file.is_none();
+        if !provenance_only {
+            return None;
+        }
+        let source = c.url.as_deref().unwrap_or("");
+        let title = c.title.as_deref().unwrap_or("");
+        let header = search_result_header(source, title);
+        let body = if text.as_str() == header {
+            ""
+        } else {
+            text.strip_prefix(header.as_str())
+                .and_then(|t| t.strip_prefix('\n'))
+                .unwrap_or(text)
+        };
+        Some(IrSearchResultParts {
+            source,
+            title,
+            body,
+            citations_config: c.raw.as_ref(),
+        })
+    }
+
     /// Is this block's content OPAQUE to busbar — carried through verbatim, never readable as
     /// plaintext, and therefore never disclosable to an operator's sidecar?
     ///
@@ -2022,4 +2117,14 @@ pub enum IrSignatureOrigin {
     OpenAi,
     /// A non-Claude Bedrock reasoning model's signature.
     BedrockOther,
+}
+
+/// The search-result slot's header line: `title — source`, or whichever of the two is present.
+fn search_result_header(source: &str, title: &str) -> String {
+    match (title.is_empty(), source.is_empty()) {
+        (false, false) => format!("{title} — {source}"),
+        (false, true) => title.to_string(),
+        (true, false) => source.to_string(),
+        (true, true) => String::new(),
+    }
 }

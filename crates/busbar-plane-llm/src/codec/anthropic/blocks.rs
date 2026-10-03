@@ -331,54 +331,19 @@ pub(super) fn read_block(
                         .join("\n")
                 })
                 .unwrap_or_default();
-            // A HEADER naming the result, so the model reading a foreign protocol's plain text can
-            // still tell one retrieved passage from the next and attribute its answer. Built only
-            // from the fields that are present — an empty header would prepend a bare newline.
-            let mut header = String::new();
-            if !title.is_empty() {
-                header.push_str(title);
-            }
-            if !source.is_empty() {
-                if !header.is_empty() {
-                    header.push_str(" — ");
-                }
-                header.push_str(source);
-            }
-            let text = if header.is_empty() {
-                body
-            } else if body.is_empty() {
-                header
-            } else {
-                format!("{header}\n{body}")
-            };
-            let citations = if source.is_empty() && title.is_empty() {
-                Vec::new()
-            } else {
-                vec![crate::codec::ir::IrCitation {
-                    domain: None,
-                    kind: Some(keys::SEARCH_RESULT_LOCATION.to_string()),
-                    cited_text: None,
-                    title: (!title.is_empty()).then(|| title.to_string()),
-                    url: (!source.is_empty()).then(|| source.to_string()),
-                    document_index: None,
-                    start_index: None,
-                    end_index: None,
-                    encrypted_index: None,
-                    // No `raw`: the byte-exact same-protocol path is the sentinel splice above, not
-                    // this citation, and parking an Anthropic SEARCH-RESULT object under a citation's
-                    // `raw` would have the Anthropic writer re-emit it as a CITATION on a
-                    // foreign→Anthropic hop — a different wire shape than the one it came from.
-                    raw: None,
-                    ..Default::default()
-                }]
-            };
+            // THE SEARCH-RESULT SLOT (`IrBlock::search_result`, shared with Converse `searchResult`):
+            // a `title — source` header line so a model reading a foreign protocol's plain text can
+            // tell one passage from the next, the provenance as a `search_result_location` citation
+            // with no location indices, and the block's `citations` switch verbatim in that
+            // citation's `raw`. The Anthropic and Bedrock writers re-emit the native block from it.
             let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
-            Ok(crate::codec::ir::IrBlock::Text {
-                text,
+            Ok(crate::codec::ir::IrBlock::search_result(
+                source,
+                title,
+                body,
+                obj.get(keys::CITATIONS).cloned(),
                 cache_control,
-                citations,
-                refusal: false,
-            })
+            ))
         }
         // A native `redacted_thinking` block carries opaque `data` bytes (Anthropic's encrypted
         // reasoning). Map it onto the same typed IR carrier Bedrock's `redactedContent` uses: a
