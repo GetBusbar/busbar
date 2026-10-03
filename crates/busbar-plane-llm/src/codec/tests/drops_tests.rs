@@ -746,3 +746,35 @@ fn no_dialect_drops_a_path_it_carries() {
         });
     }
 }
+
+/// Every dialect's drop list is sorted ascending, each path once: the walk binary-searches it for
+/// every member of every stream frame (red: a list out of order hides a drop from the walk; the
+/// linear scan it replaced made a Responses stream four times slower to relay).
+#[test]
+fn every_drop_list_is_sorted_for_the_walks_search() {
+    for dialect in [
+        "anthropic",
+        "bedrock",
+        "cohere",
+        "gemini",
+        "openai",
+        "responses",
+    ] {
+        crate::codec::proto_codec::with_reader(dialect, |r| {
+            for (direction, carried) in [
+                ("answer", r.response_carried()),
+                ("stream", r.stream_carried()),
+            ] {
+                let Some(c) = carried else { continue };
+                for pair in c.drops.windows(2) {
+                    assert!(
+                        pair[0] < pair[1],
+                        "{dialect} {direction}: `{}` is not before `{}`",
+                        pair[0],
+                        pair[1]
+                    );
+                }
+            }
+        });
+    }
+}
