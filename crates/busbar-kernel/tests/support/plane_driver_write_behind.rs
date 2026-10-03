@@ -94,9 +94,9 @@ impl Offload for RefusesFirst {
     }
 }
 
-/// Holds every job until the test runs them.
-#[derive(Default)]
-struct Held(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+/// Holds every job until the test runs them; its clones share the jobs.
+#[derive(Default, Clone)]
+struct Held(Arc<Mutex<Vec<Box<dyn FnOnce() + Send>>>>);
 
 impl Held {
     fn run_all(&self) -> usize {
@@ -107,7 +107,7 @@ impl Held {
     }
 }
 
-impl Offload for Arc<Held> {
+impl Offload for Held {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         self.0.lock().unwrap().push(job);
     }
@@ -121,7 +121,7 @@ fn services_over(
 ) -> (Arc<KernelServices>, Arc<MemoryStore>) {
     let store = Arc::new(MemoryStore::new());
     let s = KernelServices::new(HashMap::new(), Arc::new(SystemResolver))
-        .with_records(rows(Arc::clone(&store)), Arc::clone(&store))
+        .with_records(rows(Arc::clone(&store)), store.clone())
         .with_pool(pool);
     let facts = InstanceFacts {
         record_kinds: vec![task()],
@@ -203,8 +203,8 @@ async fn a_write_left_queued_is_flushed_within_one_interval_whatever_the_planes_
 /// that flush, batch after batch, every write answered only once the store took it.
 #[test]
 fn a_burst_past_one_batch_is_carried_by_the_one_flush() {
-    let held = Arc::new(Held::default());
-    let (s, store) = services_over(|m| Arc::new(Rows(m)), Arc::new(Arc::clone(&held)));
+    let held = Held::default();
+    let (s, store) = services_over(|m| Arc::new(Rows(m)), Arc::new(held.clone()));
     let (got, acked) = answers();
     let n = 2 * BATCH_CAP + 1;
     for i in 0..n {
