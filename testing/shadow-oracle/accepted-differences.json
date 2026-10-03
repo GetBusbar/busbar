@@ -2182,7 +2182,7 @@
     {
       "id": "DF-SITES no value is substituted for one the target dialect cannot carry",
       "kind": "improvement",
-      "changelog": "A request translated between LLM dialects no longer has a value substituted for one the target dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead of relabelled png, and a Gemini thinkingBudget -1 (\"the model decides\") is dropped on a target with no such setting instead of sent as the medium effort; each drop is warned and audited by its wire path. A wrong-typed Gemini thinkingBudget or Anthropic image media_type is answered with the caller's own 400 error instead of being translated.",
+      "changelog": "A request translated between LLM dialects no longer has a value substituted for one the target dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead of relabelled `png`, and a Gemini `thinkingBudget: -1` (\"the model decides\") is dropped on a target with no such setting instead of sent as the `medium` effort; each drop is warned and audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is answered with the caller's own 400 error instead of being translated.",
       "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
       "cells": "^llm\\.no-substitution\\|(anthropic|openai|responses|gemini|cohere)\\|(bedrock|openai|responses|anthropic)$",
       "expected_cells": 0,
