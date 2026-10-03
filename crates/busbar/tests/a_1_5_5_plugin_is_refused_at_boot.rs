@@ -9,7 +9,7 @@
 //! payload version: store 2, auth 2, export 2) is dropped into `plugins.dir`, and the boot itself
 //! must stop, before anything serves, with a refusal that names the file, the kind, the version and
 //! the rebuild against the 1.6.0 SDK. (A 1.5.5 hook is WIRE-HOOK's RED; a 1.5.5 secret states the
-//! version the transitional secret wire still speaks, 1.6.0-QUESTIONS.md ABI-b6.)
+//! version the transitional secret wire still speaks; it lands with WIRE-SECRET / M6 COLD-DELETE.)
 //!
 //! RED against a loader that still admits the 1.5.5 floors: the process boots and serves, and the
 //! deadline below expires with no refusal.

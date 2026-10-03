@@ -37,11 +37,13 @@ use std::path::{Path, PathBuf};
 /// JSON-contract plugin states its kind's 1.5.5 version (store 2, auth 1 or 2, export 2) and is
 /// refused at boot, naming the kind, both versions and the rebuild against the 1.6.0 SDK; a plugin
 /// built for a newer version than the host is refused too. Each window is the kind's current
-/// version alone, except store's, which also admits the store door's kind ABI (3): a first-party
-/// store packed against the door (store-sqlite, store-mysql) states 3, the transitional JSON wire 4.
+/// version alone (its v1.5.5 value + 1, THE DESIGN §11.2), except store's, which opens at the store
+/// door's kind ABI (3 = v1.5.5's 2 + 1; store-sqlite and store-mysql declare it) and also admits the
+/// transitional JSON wire's 4, which store-postgres and store-valkey declare until that wire is
+/// deleted at M6 COLD-DELETE.
 /// The hook window is WIRE-HOOK's (its hook axis refuses a manifest with no Statement); secret's
-/// 1.5.5 version equals its transitional JSON wire's, so a 1.5.5 secret plugin is refused when the
-/// secret kind leaves that wire (1.6.0-QUESTIONS.md, ABI-b6).
+/// 1.5.5 version equals its transitional JSON wire's, so the secret half lands with WIRE-SECRET /
+/// M6 COLD-DELETE (TODO ABI-b6).
 pub fn supported_abi(kind: &str) -> &'static [u32] {
     match kind {
         "store" => &[

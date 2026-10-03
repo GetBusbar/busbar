@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::sign::{sign, SigningKey};
+use busbar_contract::abi::mechanism::KindCode;
 
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
@@ -23,6 +24,44 @@ fn supported_abi_is_one_version_per_kind() {
     assert_eq!(supported_abi("secret"), &[cold::SECRET_ABI_VERSION]);
     assert_eq!(supported_abi("auth"), &[cold::AUTH_ABI_VERSION]);
     assert_eq!(supported_abi("export"), &[cold::export::EXPORT_ABI_VERSION]);
+}
+
+/// THE RULE (THE DESIGN §11.2, the plugin ABI lock): each kind's ABI version is its v1.5.5 value + 1.
+/// The v1.5.5 values are read off the v1.5.5 tag (`crates/plugin-abi/src/lib.rs` `ABI_VERSION` 2,
+/// `SECRET_ABI_VERSION` 1, `AUTH_ABI_VERSION` 2; `src/export.rs` `EXPORT_ABI_VERSION` 2;
+/// `src/hook.rs` `HOOK_ABI_VERSION` 1; plane and transport are new in 1.6.0) and written here as
+/// data. Every kind's door version is that + 1, and the scan's window for store, auth and export
+/// opens at it: nothing at or below the v1.5.5 value is admitted. Store's window also closes at the
+/// transitional JSON wire's 4, which store-postgres and store-valkey on dev declare (deleted with
+/// that wire at M6 COLD-DELETE).
+#[test]
+fn each_kinds_accepted_version_is_its_1_5_5_value_plus_one() {
+    const V1_5_5: [(KindCode, u32); 7] = [
+        (KindCode::Store, 2),
+        (KindCode::Secret, 1),
+        (KindCode::Auth, 2),
+        (KindCode::Hook, 1),
+        (KindCode::Export, 2),
+        (KindCode::Plane, 0),
+        (KindCode::Transport, 0),
+    ];
+    for (kind, v155) in V1_5_5 {
+        assert_eq!(kind.abi_version(), v155 + 1, "{kind:?}'s door version");
+    }
+    for (name, v155) in [("store", 2u32), ("auth", 2), ("export", 2)] {
+        let window = supported_abi(name);
+        assert_eq!(
+            window[0],
+            v155 + 1,
+            "{name}'s window opens at its v1.5.5 value + 1"
+        );
+        assert!(
+            window.iter().all(|v| *v > v155),
+            "{name}: no v1.5.5 version is admitted: {window:?}"
+        );
+    }
+    assert_eq!(supported_abi("auth"), &[3]);
+    assert_eq!(supported_abi("export"), &[3]);
 }
 
 /// C21 (ABI-o1, THE DESIGN §11.8): a signed, otherwise-valid artifact stating its kind's 1.5.5
