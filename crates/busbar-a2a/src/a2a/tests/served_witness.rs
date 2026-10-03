@@ -166,7 +166,7 @@ impl RelayTransport for NeverDialled {
         _a: IpAddr,
         _h: &[(String, String)],
         _b: &[u8],
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
         panic!("the transport must never be reached for a refused target");
     }
     fn post_stream(
