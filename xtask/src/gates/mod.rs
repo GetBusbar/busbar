@@ -680,8 +680,16 @@ const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
 const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
 const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
 const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
-const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
-const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
+                                             // RE-ARMED 2026-10-03 (lane-predev-all, run 37150144473's no-default-features shard). #454's crate
+                                             // EXTRACTIONS (`busbar-transport-ws` befd20dc37, and the http/tcp/grpc/a2a wires that are pinned git
+                                             // deps `crates/` no longer holds) grew the per-plant whole-tree scan: more selftest cases now PLANT
+                                             // OR REMOVE a crate — each invalidates the derived-vocabulary matrix memo and forces a full re-scan —
+                                             // so the battery's measured unit count rose. The counts are machine-independent (plants x scan size)
+                                             // and were read off the DENY run's own cost lines; the slack below (1.6x) carries the per-box spread.
+const MEASURED_KIND_ISOLATION: f64 = 319_876.0; // 240 cases; #454 extractions grew the per-plant scan
+const MEASURED_KIND_ISOLATION_SHIP: f64 = 199_904.0; // 137 cases; same cause
+/// The two kind-isolation batteries were re-measured on #454's tree, not the 2026-09-10 sitting.
+const TAKEN_KIND_ISOLATION: &str = "2026-10-03 9c479c0fe9";
 
 // `audit-ledger` IS STRUCK AGAIN, AND THE EXPLANATION IT WAS RE-BASELINED ON WAS WRONG.
 //
@@ -818,15 +826,15 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "kind-isolation",
         measured: MEASURED_KIND_ISOLATION,
         allowed: MEASURED_KIND_ISOLATION * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it.",
+        taken: TAKEN_KIND_ISOLATION,
+        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it. RE-MEASURED on #454's tree: its wire extractions (busbar-transport-ws et al.) turned more cases into crate-planting ones, raising the count.",
     },
     Budget {
         gate: "kind-isolation-ship",
         measured: MEASURED_KIND_ISOLATION_SHIP,
         allowed: MEASURED_KIND_ISOLATION_SHIP * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input.",
+        taken: TAKEN_KIND_ISOLATION,
+        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input. RE-MEASURED on #454's tree for the same cause as its non-ship twin.",
     },
     // `audit-ledger` HAS NO ENTRY HERE. It had one, set from 8 779 units and justified by a
     // register-growth story that measurement refuted; the cost was 128 `rev-list` processes per

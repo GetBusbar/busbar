@@ -993,8 +993,12 @@ pub fn selftest<'a>(
         &[ROW_MATRIX],
         real,
         &[
+            // Presence, not size (owner 2026-10-03): the `unlisted-instance` finding names the
+            // cell, not its count. The green twin above carries the proof that the masked HTTP
+            // words do not count; this red twin's one real `header` reference makes the cell an
+            // instance the ledger does not list.
             "unlisted-instance",
-            "busbar-core-connector \u{d7} auth = 1",
+            "busbar-core-connector \u{d7} auth",
             "planted_header_pick.rs",
         ],
     ));

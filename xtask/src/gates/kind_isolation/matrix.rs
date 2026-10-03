@@ -2669,6 +2669,26 @@ fn plant(cx: &Ctx, rel: &str, body: &str) -> crate::ctx::Overlay {
     ov
 }
 
+/// A TRANSPORT CRATE THAT LEFT THE WORKSPACE, planted back as an empty manifest and library root so
+/// its instance id is transport VOCABULARY again — the same `plant_extracted` move W1 made for the
+/// store and hooks crates (pattern f973e8ee17), here for the wires #454 took out (`busbar-transport-ws`,
+/// befd20dc37) and the ones pinned as git deps that `crates/` never holds (`http`, `tcp`, `grpc`).
+///
+/// The TEST CONTENT stays in the subject the case names ([`FIXTURE_CRATE`], a plane, a dialect
+/// module): this plant only teaches the needle, exactly as [`UNIX_OS_FILE`]'s `busbar-transport-unix`
+/// does, and is never the subject. Used only on a case that expects RED — a green control proves the
+/// mask, and a mask only bites a word that IS a needle, which these crates make a live wire's word
+/// across the whole scan; so the green twin keeps its own, in-tree, un-flooded vocabulary.
+fn with_transport(mut ov: crate::ctx::Overlay, id: &str) -> crate::ctx::Overlay {
+    let dir = format!("crates/busbar-transport-{id}");
+    ov.set(
+        format!("{dir}/Cargo.toml"),
+        format!("[package]\nname = \"busbar-transport-{id}\"\nversion = \"0.0.0\"\n"),
+    );
+    ov.set(format!("{dir}/src/lib.rs"), "//! Fixture.\n".to_string());
+    ov
+}
+
 /// The ledger with one row rewritten, so a case can double a row or knock a whole class out.
 ///
 /// THE SENTENCE THAT USED TO BE HERE WAS THE OPPOSITE OF TRUE. It read: *"a fixture that pins a
@@ -3072,7 +3092,14 @@ pub fn selftest<'a>(
         gate,
         "a real transport `ws` reference in the same dialect module still counts",
         &[ROW_MATRIX],
-        prefix_case(responses_mod, "const PLANTED_CARRIER: &str = \"ws\";"),
+        {
+            // `busbar-transport-ws` left the workspace (befd20dc37), so `ws` is no needle until a
+            // census transport crate teaches it. Plant one (empty) beside the real reference; the
+            // green control above keeps its own in-tree vocabulary so the dialect-prefix mask is
+            // proven, not flooded.
+            let base = prefix_case(responses_mod, "const PLANTED_CARRIER: &str = \"ws\";");
+            move || with_transport(base(), "ws")
+        },
         &transport_raised,
     ));
     report.push(prove_rows_red(
@@ -3080,10 +3107,13 @@ pub fn selftest<'a>(
         gate,
         "an id-prefix literal outside a dialect module still counts",
         &[ROW_MATRIX],
-        prefix_case(
-            "crates/busbar-plane-llm/src/codec/proto_stream.rs",
-            "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
-        ),
+        {
+            let base = prefix_case(
+                "crates/busbar-plane-llm/src/codec/proto_stream.rs",
+                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
+            );
+            move || with_transport(base(), "ws")
+        },
         &transport_raised,
     ));
 
@@ -3119,7 +3149,11 @@ pub fn selftest<'a>(
         fixture_cell(
             cx,
             "transport",
-            &[("wire.rs", "pub const WIRE: &str = \"tcp\";\n")],
+            // `stdio` is the one transport instance still IN the workspace (`busbar-transport-ws`
+            // left in befd20dc37; `http`/`tcp`/`grpc` are pinned git deps). The wire word has to be
+            // a LIVE transport needle for the fixture's cell to measure above zero — an extracted
+            // crate's id would read nothing, exactly the dead cell its green twin below guards.
+            &[("wire.rs", "pub const WIRE: &str = \"stdio\";\n")],
             false,
         ),
         &[
@@ -3138,7 +3172,7 @@ pub fn selftest<'a>(
         fixture_cell(
             cx,
             "transport",
-            &[("wire.rs", "pub const WIRE: &str = \"tcp\";\n")],
+            &[("wire.rs", "pub const WIRE: &str = \"stdio\";\n")],
             true,
         ),
     ));
@@ -3244,7 +3278,10 @@ pub fn selftest<'a>(
                 "crates/busbar-plane-quokka/src/lib.rs",
                 "//! The grpc wire delivers these.\n".to_string(),
             );
-            ov
+            // `grpc` is a pinned git dep, not a `crates/` member, so its id is no needle until a
+            // transport crate of the census teaches it; plant one (empty) so the plane's `grpc` word
+            // is the wire's name again.
+            with_transport(ov, "grpc")
         },
         &["unlisted-cell", "busbar-plane-quokka × transport"],
     ));
@@ -3450,7 +3487,10 @@ pub fn selftest<'a>(
         gate,
         "a crate-rooted path to a `ws` module still counts",
         &[ROW_MATRIX],
-        colliding_fixture(Some(("accept.rs", "pub use crate::ingress::ws::accept;\n"))),
+        with_transport(
+            colliding_fixture(Some(("accept.rs", "pub use crate::ingress::ws::accept;\n"))),
+            "ws",
+        ),
         &["unlisted-cell", &fixture_subject("transport")],
     ));
     report.push(prove_rows_red(
@@ -3458,7 +3498,10 @@ pub fn selftest<'a>(
         gate,
         "the http transport crate's own path still counts",
         &[ROW_MATRIX],
-        colliding_fixture(Some(("dial.rs", "use busbar_transport_http::Dial;\n"))),
+        with_transport(
+            colliding_fixture(Some(("dial.rs", "use busbar_transport_http::Dial;\n"))),
+            "http",
+        ),
         &["unlisted-cell", &fixture_subject("transport")],
     ));
 
@@ -3567,7 +3610,10 @@ pub fn selftest<'a>(
         gate,
         "beside the socket types, the tcp carrier's crate path still counts",
         &[ROW_MATRIX],
-        socket_fixture(Some(("dial.rs", "use busbar_transport_tcp::Carrier;\n"))),
+        with_transport(
+            socket_fixture(Some(("dial.rs", "use busbar_transport_tcp::Carrier;\n"))),
+            "tcp",
+        ),
         &["unlisted-cell", &fixture_subject("transport")],
     ));
     report.push(prove_rows_red(
@@ -3575,7 +3621,10 @@ pub fn selftest<'a>(
         gate,
         "beside the socket types, an identifier naming the tcp carrier (`TcpCarrier`) still counts",
         &[ROW_MATRIX],
-        socket_fixture(Some(("carrier.rs", "pub struct TcpCarrier;\n"))),
+        with_transport(
+            socket_fixture(Some(("carrier.rs", "pub struct TcpCarrier;\n"))),
+            "tcp",
+        ),
         &["unlisted-cell", &fixture_subject("transport")],
     ));
 
@@ -3620,10 +3669,13 @@ pub fn selftest<'a>(
         gate,
         "a `gRPC` spelling the two scanners read differently still makes a transport edge",
         &[ROW_MATRIX],
-        fixture_files(&[(
-            "leak.rs",
-            "// gRPC status codes are not the kernel's business.\n",
-        )]),
+        with_transport(
+            fixture_files(&[(
+                "leak.rs",
+                "// gRPC status codes are not the kernel's business.\n",
+            )]),
+            "grpc",
+        ),
         &["unlisted-cell", &fixture_subject("transport")],
     ));
 

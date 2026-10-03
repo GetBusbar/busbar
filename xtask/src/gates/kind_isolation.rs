@@ -8839,7 +8839,10 @@ impl Gate for KindIsolationGate {
                 "busbar-transport-stdio [dependencies]",
             ],
         ));
-        // …and a dev-edge to a wire the table does NOT name is a wire chosen, not a fixture.
+        // …and a dev-edge to a wire the table does NOT name is a wire chosen, not a fixture. The
+        // declared both-ways fixture is a wire OTHER than the dev-edge, so the dev-edge is a choice:
+        // `busbar-transport-tcp` is the canonical exemplar the ledger names, a pinned git dep that
+        // `crates/` never held, so the both-ways metadata names it without the dev-edge matching it.
         report.push(prove_rows_red(
             cx,
             subject,
@@ -8848,7 +8851,7 @@ impl Gate for KindIsolationGate {
             loader(
                 "",
                 "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }",
-                "busbar-transport-stdio",
+                "busbar-transport-tcp",
             ),
             &[
                 "wire-dependency",
@@ -8859,13 +8862,14 @@ impl Gate for KindIsolationGate {
 
         // A SECOND REGISTRY. Two places compose the same wire, and nothing says which one ran. The
         // plant is a wire the tree holds, composed in a crate the tree holds: it named the http
-        // transport from `busbar-core`, and both left the tree, so the file belonged to no crate and
-        // named no wire.
+        // transport from `busbar-core` and later the `ws` wire, and all of those left the tree, so
+        // the file belonged to no crate and named no wire. `busbar-transport-stdio` is the one wire
+        // still in `crates/`, so the kernel naming its crate path is a real second registration.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-kernel/src/planted_second_registry.rs",
-            "use busbar_transport_ws::WsTransport;\npub fn compose() { let _ = \
-             WsTransport::default(); }\n",
+            "use busbar_transport_stdio::StdioTransport;\npub fn compose() { let _ = \
+             StdioTransport::default(); }\n",
         );
         report.push(prove_rows_red(
             cx,
