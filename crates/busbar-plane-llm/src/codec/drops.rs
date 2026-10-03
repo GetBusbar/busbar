@@ -638,6 +638,9 @@ pub struct Carried {
     pub code: &'static [&'static str],
     /// Paths INSIDE a carried subtree that the dialect's code does not carry (a member of a block
     /// the dialect models, a vendor detail under a member it reads): named like any other drop.
+    /// Sorted ascending: the walk asks it of every member of every stream frame, so it is searched,
+    /// never scanned (Responses lists 763 stream paths; test
+    /// `every_drop_list_is_sorted_for_the_walks_search`).
     pub drops: &'static [&'static str],
 }
 
@@ -666,24 +669,29 @@ fn join(path: &str, step: &str) -> String {
     }
 }
 
+/// The run of the sorted `table` that starts with `prefix` (one contiguous run in a sorted table).
+fn prefixed<'t>(
+    table: &'t [&'static str],
+    prefix: &'t str,
+) -> impl Iterator<Item = &'t &'static str> {
+    let start = table.partition_point(|q| *q < prefix);
+    table[start..]
+        .iter()
+        .take_while(move |q| q.starts_with(prefix))
+}
+
 impl Carried {
-    fn all(&self) -> impl Iterator<Item = &&'static str> {
-        self.map
-            .iter()
-            .chain(self.code.iter())
-            .chain(self.drops.iter())
+    /// The carried rows: the map file's and the code's (a few dozen; scanned).
+    fn rows(&self) -> impl Iterator<Item = &&'static str> {
+        self.map.iter().chain(self.code.iter())
     }
 
     fn cover(&self, path: &str) -> Cover {
-        if self.drops.contains(&path) {
+        if self.drops.binary_search(&path).is_ok() {
             return Cover::Unmapped;
         }
-        let holds_drop = self.drops.iter().any(|d| under(d, path));
-        let carried = self
-            .map
-            .iter()
-            .chain(self.code.iter())
-            .any(|q| path == *q || under(path, q));
+        let holds_drop = prefixed(self.drops, path).any(|d| under(d, path));
+        let carried = self.rows().any(|q| path == *q || under(path, q));
         if carried {
             return if holds_drop {
                 Cover::Above
@@ -691,7 +699,7 @@ impl Carried {
                 Cover::Carried
             };
         }
-        if holds_drop || self.all().any(|q| under(q, path)) {
+        if holds_drop || self.rows().any(|q| under(q, path)) {
             Cover::Above
         } else {
             Cover::Unmapped
@@ -701,7 +709,7 @@ impl Carried {
     /// The objects at `path` are a union keyed by their `type` member (notation A `type=<arm>`).
     fn uses_arms(&self, path: &str) -> bool {
         let arm = join(path, "type=");
-        self.all().any(|q| q.starts_with(&arm))
+        self.rows().any(|q| q.starts_with(&arm)) || prefixed(self.drops, &arm).next().is_some()
     }
 
     /// Whether the walk names the member at `path` (or the member above it that holds it) when an
