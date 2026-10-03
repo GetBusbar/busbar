@@ -483,8 +483,9 @@ impl GovState {
     ///
     /// STRADDLE CASE (mirrors `add_rate_tokens`): `now` is the request's pinned `charged_at` (the
     /// window the request STARTED in), NOT a fresh clock. Per bucket:
-    /// - `window > cell.window_start` → the cell is genuinely stale: reset it to `window`
-    ///   (zeroed), then add.
+    /// - `window > cell.window_start` → the cell is genuinely stale: roll it to `window`
+    ///   (zeroed; the old window's unflushed counts parked under the old window for the flusher),
+    ///   then add.
     /// - `window <= cell.window_start` → same window OR the straddle: credit IN PLACE on the
     ///   live cell (never rewind/zero a newer window's counters). A straddling request's tokens
     ///   attribute to the live window rather than being dropped - bounded to one in-flight
@@ -620,7 +621,7 @@ impl GovState {
         let mut map = self.budget.write(bucket_id);
         let cell = match map.get_mut(bucket_id) {
             Some(c) if window > c.window_start => {
-                *c = BudgetCell::fresh(window);
+                c.roll(window); // the old window's unflushed counts stay owed to it
                 c
             }
             Some(c) => c, // same window or straddle (cell newer-or-equal) → credit in place
@@ -2013,7 +2014,7 @@ impl GovState {
         let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));
         // PASS 2 - CHARGE every bucket (+1 request, dirty) under the SAME held guards: atomic
         // all-or-nothing with the checks above. STRADDLE-SAFE cell resolution (mirrors
-        // `accrue_bucket`): reset ONLY a genuinely stale cell (this window strictly newer); a cell
+        // `accrue_bucket`): roll ONLY a genuinely stale cell (this window strictly newer); a cell
         // holding the SAME or a NEWER window is charged IN PLACE.
         for (bi, bucket) in buckets.iter().enumerate() {
             let gi = guard_for(&guard_shards, shard_idx[bi]);
@@ -2021,7 +2022,7 @@ impl GovState {
             let map = guards[gi].as_deref_mut().expect("guard held");
             let cell = match map.get_mut(bucket.bucket_id) {
                 Some(c) if window > c.window_start => {
-                    *c = BudgetCell::fresh(window);
+                    c.roll(window); // the old window's unflushed counts stay owed to it
                     c
                 }
                 Some(c) => c, // same window or straddle (cell newer) - charge the live cell
@@ -2159,26 +2160,33 @@ impl GovState {
     /// success. With N nodes sharing one store, each node's deltas SUM into the durable record —
     /// where the old absolute `put_usage` overwrite made the record whichever node flushed last.
     ///
+    /// A ROLLED WINDOW'S DELTA ([`BudgetCell::roll`]) is drained with the cell and written under the
+    /// window it was earned in, never the cell's current one.
+    ///
     /// On a store error, log, RE-MARK the cell dirty, and do NOT advance the baseline, so the
     /// unacked delta is retried next tick (at-least-once: an ack lost after the write landed can
     /// double-count at most one flush interval — the honest trade for fleet additivity; the
-    /// in-memory admission cap is unaffected). Snapshotting under the lock but writing off it keeps
-    /// the hot-path lock hold O(dirty). Returns the number of cells flushed.
+    /// in-memory admission cap is unaffected). A rolled window's failed delta is parked back under
+    /// its window, so a store outage across a boundary is retried, not dropped. Snapshotting under
+    /// the lock but writing off it keeps the hot-path lock hold O(dirty). Returns the number of
+    /// deltas flushed.
     pub fn flush_budgets(&self) -> usize {
-        /// Clamp a u64 counter into the signed delta domain.
-        fn signed(v: u64) -> i64 {
-            i64::try_from(v).unwrap_or(i64::MAX)
+        /// The baselines a live cell's delta was taken against: they become the acked baseline on
+        /// success.
+        struct Acked {
+            requests: u64,
+            billable_requests: u64,
+            models: Vec<ModelCell>,
         }
-        /// One dirty cell's snapshot: the PER-MODEL TOKEN delta payload for `Store::add_usage`
-        /// plus the current absolute counters that become the acked baseline on success. No dollar
-        /// figure anywhere - only tokens + requests cross the wire.
+        /// One delta to write: the PER-MODEL TOKEN delta payload for `Store::add_usage`, under the
+        /// window it belongs to. `acked` is `Some` for the cell's live window and `None` for a
+        /// rolled window's parked delta (nothing to advance: the cell moved on). No dollar figure
+        /// anywhere - only tokens + requests cross the wire.
         struct DirtySnap {
             bucket_id: String,
             window: u64,
             delta: UsageDelta,
-            cur_requests: u64,
-            cur_billable_requests: u64,
-            cur_models: Vec<ModelCell>,
+            acked: Option<Acked>,
         }
         // Snapshot dirty cells across ALL shards and clear their flags. One shard is locked at a
         // time (the `write_all` iterator acquires each guard lazily), so a concurrent charge
@@ -2189,39 +2197,23 @@ impl GovState {
                 if !cell.dirty {
                     continue;
                 }
-                // The signed delta-since-last-ack per unit key, summed over a model's ERAS: the
-                // durable row is per model (it carries no era — Q14's wire step), so the eras of one
-                // model are one delta on the wire, byte-identical to an undated cell's.
-                let deltas = cell.models.iter().map(|m| {
-                    // The UNION of unit keys in cur+flushed (freshly accrued, or refunded away).
-                    let keys = m.cur.keys().chain(m.flushed.keys());
-                    let at = |side: &std::collections::BTreeMap<String, u64>, k: &String| {
-                        signed(side.get(k).copied().unwrap_or(0))
-                    };
-                    let d = keys.map(|k| (k.clone(), at(&m.cur, k) - at(&m.flushed, k)));
-                    (&*m.model, d.collect())
-                });
-                let models: Vec<busbar_contract::records::ModelTokensDelta> =
-                    busbar_kernel_ledger::usage::by_lane(deltas, i64::saturating_add)
-                        .into_iter()
-                        .map(|(model, mut usage_units)| {
-                            usage_units.retain(|_, v| *v != 0);
-                            busbar_contract::records::ModelTokensDelta { model, usage_units }
-                        })
-                        .filter(|d| !d.usage_units.is_empty())
-                        .collect();
+                for (window, delta) in std::mem::take(&mut cell.rolled) {
+                    dirty.push(DirtySnap {
+                        bucket_id: id.clone(),
+                        window,
+                        delta,
+                        acked: None,
+                    });
+                }
                 dirty.push(DirtySnap {
                     bucket_id: id.clone(),
                     window: cell.window_start,
-                    delta: UsageDelta {
-                        requests: signed(cell.requests) - signed(cell.flushed_requests),
-                        billable_requests: signed(cell.billable_requests)
-                            - signed(cell.flushed_billable_requests),
-                        models,
-                    },
-                    cur_requests: cell.requests,
-                    cur_billable_requests: cell.billable_requests,
-                    cur_models: cell.models.clone(),
+                    delta: cell.unflushed(),
+                    acked: Some(Acked {
+                        requests: cell.requests,
+                        billable_requests: cell.billable_requests,
+                        models: cell.models.clone(),
+                    }),
                 });
                 cell.dirty = false;
             }
@@ -2241,38 +2233,47 @@ impl GovState {
                 self.store
                     .add_usage(&snap.bucket_id, snap.window, &snap.delta)
             };
+            let mut map = self.budget.write(&snap.bucket_id);
             match outcome {
                 Ok(()) => {
                     flushed += 1;
-                    // Advance the acked baselines - only if the cell still holds the SAME window
-                    // (a rollover since the snapshot reset the cell; its zeroed baselines are
-                    // already correct for the new window).
-                    let mut map = self.budget.write(&snap.bucket_id);
-                    if let Some(cell) = map.get_mut(&snap.bucket_id) {
-                        if cell.window_start == snap.window {
-                            cell.flushed_requests = snap.cur_requests;
-                            cell.flushed_billable_requests = snap.cur_billable_requests;
-                            for s in &snap.cur_models {
-                                let seg = |m: &&mut ModelCell| m.model == s.model && m.era == s.era;
-                                if let Some(mc) = cell.models.iter_mut().find(seg) {
-                                    mc.flushed = s.cur.clone();
-                                }
+                    let (Some(cell), Some(acked)) = (map.get_mut(&snap.bucket_id), snap.acked)
+                    else {
+                        continue;
+                    };
+                    if cell.window_start == snap.window {
+                        // Advance the acked baselines: the cell still holds the window written.
+                        cell.flushed_requests = acked.requests;
+                        cell.flushed_billable_requests = acked.billable_requests;
+                        for s in &acked.models {
+                            let seg = |m: &&mut ModelCell| m.model == s.model && m.era == s.era;
+                            if let Some(mc) = cell.models.iter_mut().find(seg) {
+                                mc.flushed = s.cur.clone();
                             }
                         }
+                    } else if cell.window_start > snap.window {
+                        // The cell rolled while this write was in flight, and the roll parked
+                        // everything past the baseline — this delta included. It has landed now,
+                        // so take it back out of what is parked.
+                        cell.park(snap.window, negated(&snap.delta));
+                        cell.dirty = true;
                     }
                 }
                 Err(e) => {
                     failed += 1;
                     tracing::debug!(bucket = %snap.bucket_id, error = %e, "budget flush failed for bucket; will retry next tick");
                     last_error = Some(e.to_string());
-                    // RE-MARK dirty so the delta is not lost — only if the cell still exists for
-                    // the SAME window (after a rollover the old window's unacked delta is dropped
-                    // with the cell, exactly as the pre-additive flusher behaved).
-                    let mut map = self.budget.write(&snap.bucket_id);
-                    if let Some(cell) = map.get_mut(&snap.bucket_id) {
-                        if cell.window_start == snap.window {
-                            cell.dirty = true;
-                        }
+                    if snap.acked.is_none() {
+                        // A rolled window's delta: parked back under its window for the next tick.
+                        let cell = map
+                            .entry(snap.bucket_id.clone())
+                            .or_insert_with(|| BudgetCell::fresh(snap.window));
+                        cell.park(snap.window, snap.delta);
+                        cell.dirty = true;
+                    } else if let Some(cell) = map.get_mut(&snap.bucket_id) {
+                        // The live window's delta stays in the cell (the baseline did not advance);
+                        // if the cell rolled meanwhile, the roll parked it.
+                        cell.dirty = true;
                     }
                 }
             }
@@ -2439,6 +2440,22 @@ impl GovState {
 /// Non-`group:` ids are never in the set (a key bucket is uncapped by construction).
 fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool {
     cost.bucket_enforces_a_cap(bucket_id)
+}
+
+/// `delta` with every count's sign flipped: what takes an already-written delta back out.
+fn negated(delta: &UsageDelta) -> UsageDelta {
+    UsageDelta {
+        requests: delta.requests.saturating_neg(),
+        billable_requests: delta.billable_requests.saturating_neg(),
+        models: (delta.models.iter())
+            .map(|m| busbar_contract::records::ModelTokensDelta {
+                model: m.model.clone(),
+                usage_units: (m.usage_units.iter())
+                    .map(|(k, v)| (k.clone(), v.saturating_neg()))
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 /// A money figure the one function REFUSED, carried out of a usage read through the read's own
