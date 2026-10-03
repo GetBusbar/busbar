@@ -215,8 +215,13 @@
 # accepted difference on cli|--version). 2815f7a refused that two-line output, so no lane could record an oracle
 # cell on a predev build. The range also carries the golden-guard in-range fix, nextest timeouts and the plane drivers.
 #
+# 2026-10-03 (LAND-ALL, ARCHITECT): moved on to 7b039b65795c (busbar-release dev, merge of #141): `oracle record`
+# FAILs the cells of a variant whose config cannot be written and runs on (it aborted the whole record before), and
+# a capture cell may name its plugins' release line. da60cad9 (above) is an ancestor, so the --version first-line
+# read rides along.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=da60cad9d8fe1e47eaaeab55a9cbf548e81a5072
+release_ref=7b039b65795cb4ce4935c9f32ef3263e65e20f1a
 crate=busbar-release-oracle
 bin=busbar-oracle
