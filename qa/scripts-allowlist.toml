@@ -154,11 +154,6 @@ class = "port"
 reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"
 
 [[script]]
-path = "scripts/fleet/plugin-gates.py"
-class = "port"
-reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"
-
-[[script]]
 path = "scripts/fleet/repin.sh"
 class = "port"
 reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"

@@ -39,6 +39,7 @@ usage:
   cargo xtask loom [<test args>]   (the loom model of the config swap; a run of zero models is red)
   cargo xtask txn-fence   (the transaction compile fence: passes only when the fence fails to compile, for its three reasons)
   cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
+  cargo xtask plugin-gates <depwall|netban|cdeps|imports|parity|bothways|declares|selftest> <args...>
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
   cargo xtask conformance record --suite <id>|--all [--recording <dir>] [--out <dir>]
@@ -64,6 +65,7 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "ledger",
     "audit-verify",
+    "plugin-gates",
     "conformance",
     "loc",
     "root",
@@ -173,6 +175,9 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::proof_manifest::main(cx.root(), &args[1..]),
             Err(code) => code,
         },
+        // THE PLUGIN FLEET'S GATES (depwall, netban, cdeps, imports, parity, bothways, declares,
+        // selftest): pure functions over cargo metadata, nm output and the two lockfiles. Not a gate.
+        Some("plugin-gates") => crate::fleet::plugin_gates::main(&args[1..]),
         // THE TRANSACTION COMPILE FENCE. Not a gate: it COMPILES busbar-kernel under a cfg and
         // passes only when that build fails for its three named reasons.
         Some("txn-fence") => crate::txn_fence::main(&args[1..]),
