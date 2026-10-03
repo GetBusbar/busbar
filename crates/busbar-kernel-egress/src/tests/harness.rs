@@ -425,6 +425,20 @@ impl Breaker for TestBreaker {
         false
     }
 
+    fn suppressing(&self, _destination: DestinationId, _now: u64) -> bool {
+        unreachable!("the walk never asks: the health prober's trigger")
+    }
+
+    fn probed(
+        &self,
+        _destination: DestinationId,
+        _outcome: Outcome,
+        _now: u64,
+        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) {
+        unreachable!("the walk never probes: the health prober does")
+    }
+
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {
         self.record(Recorded::ProbeReleased(
             pool.to_string(),

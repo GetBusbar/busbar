@@ -112,10 +112,10 @@ pub const ROW_DECL_REASON: &str = "package-selectors:declaration-reason";
 /// makes every selector in the tree look dead, which is a defect in the instrument reported as a
 /// defect in the tree.
 pub const UNIVERSE_FLOOR: usize = 40;
-/// The floor under the discovered selector sites. Measured at 54, across 244 covered files, once
-/// the deleted workflows' selectors and then the dead landing/runner scripts left the tree (it read 200 across 245 files before). This is the floor that matters: an empty scan set is the one state in
+/// The floor under the discovered selector sites. Measured at 47, across 243 covered files, once
+/// the deleted workflows' selectors, then the dead landing/runner scripts and the retired qa soak, left the tree (it read 200 across 245 files before). This is the floor that matters: an empty scan set is the one state in
 /// which "every selector resolves" is true and means nothing.
-pub const SITE_FLOOR: usize = 54;
+pub const SITE_FLOOR: usize = 47;
 /// The shortest exemption reason that is a reason rather than a shrug.
 pub const MIN_REASON: usize = 30;
 

@@ -105,8 +105,10 @@ pub const ORACLE_PROSE_CITATION_ALLOW: &[(&str, &str)] = &[
 /// and `the_walk_floors_guard_most_of_their_populations` caught it. The floor sits at 132 — the
 /// re-measured population (158 on 2026-10-01, after `wire_lock/` arrived) less one sixth for files a
 /// split or a fold removes in the normal course — so a walk that lost a SUBTREE fails and a walk
-/// that lost a file does not.
-const SRC_FLOOR: usize = 132;
+/// that lost a file does not. Re-measured 2026-10-03 at 180 files (the xtask ports of the retired
+/// scripts: proof manifest, plugin fleet gates, method inventory, documented claims, deferral
+/// words): the floor is 150, the same one-sixth below the population.
+const SRC_FLOOR: usize = 150;
 
 /// Manifests are found by walking the WHOLE tree; this is the floor under that walk.
 ///

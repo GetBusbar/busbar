@@ -6483,10 +6483,10 @@ impl Gate for KindIsolationGate {
              busbar-plane-llm = { path = \"../../../crates/busbar-plane-llm\" }\n",
         );
         ov.set(
-            "crates/busbar-transport-ws/Cargo.toml",
+            "crates/busbar-transport-stdio/Cargo.toml",
             manifest_plus(
                 cx,
-                "crates/busbar-transport-ws/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 "[dependencies]\nwire-bridge = { path = \"../../xtask/fixtures/wire-bridge\" }\n",
             ),
         );
@@ -6499,7 +6499,7 @@ impl Gate for KindIsolationGate {
             &[
                 "off-tree-reached",
                 "xtask/fixtures/wire-bridge",
-                "busbar-transport-ws",
+                "busbar-transport-stdio",
             ],
         ));
 
@@ -6537,11 +6537,11 @@ impl Gate for KindIsolationGate {
 
         // #40(a) IS A CLOSURE, AND THE PROOF OF THAT IS A CRATE THAT NAMES NOTHING WRONG.
         //
-        // The plant is TWO HOPS: `busbar-transport-ws` grows an edge on `busbar-transport-http`,
+        // The plant is TWO HOPS: `busbar-transport-stdio` grows an edge on `busbar-transport-http`,
         // and `busbar-transport-http` grows one on `busbar-kernel-ledger`. NO MANIFEST OF
-        // `busbar-transport-ws` NAMES THE LEDGER. `:deps` is per-declaration and reports only what
+        // `busbar-transport-stdio` NAMES THE LEDGER. `:deps` is per-declaration and reports only what
         // each manifest wrote, so the one thing it cannot say is the thing #40(a) is about, and
-        // `closure-breach busbar-transport-ws -> busbar-kernel-ledger` is that thing said.
+        // `closure-breach busbar-transport-stdio -> busbar-kernel-ledger` is that thing said.
         //
         // THIS CASE USED TO REPORT `Impossible`: `:closure` is STANDING RED here (plugin crates
         // breach the wall today) and the transition could not be shown while the tree carried the
@@ -6555,8 +6555,8 @@ impl Gate for KindIsolationGate {
             &[closure::ROW_CLOSURE],
             {
                 let mut ov = manifest_plant(
-                    "crates/busbar-transport-ws",
-                    "busbar-transport-ws",
+                    "crates/busbar-transport-stdio",
+                    "busbar-transport-stdio",
                     &["busbar-contract", "busbar-transport-http"],
                 );
                 ov.set(
@@ -6567,9 +6567,9 @@ impl Gate for KindIsolationGate {
             },
             &[
                 "closure-breach",
-                "busbar-transport-ws -> busbar-kernel-ledger",
+                "busbar-transport-stdio -> busbar-kernel-ledger",
                 "TRANSITIVE, 2 hops",
-                "busbar-transport-ws -> busbar-transport-http | busbar-transport-http -> busbar-kernel-ledger",
+                "busbar-transport-stdio -> busbar-transport-http | busbar-transport-http -> busbar-kernel-ledger",
             ],
         ));
 
@@ -6615,17 +6615,21 @@ impl Gate for KindIsolationGate {
                 {
                     let mut ov = Overlay::new();
                     ov.set(
-                        "crates/busbar-transport-ws/Cargo.toml",
+                        "crates/busbar-transport-stdio/Cargo.toml",
                         manifest_plus(
                             cx,
-                            "crates/busbar-transport-ws/Cargo.toml",
+                            "crates/busbar-transport-stdio/Cargo.toml",
                             "target.\"cfg(unix)\".dependencies.wire = { path = \
                              \"../busbar-plane-llm\" }\n",
                         ),
                     );
                     ov
                 },
-                &["unreadable-manifest", "DOTTED KEY", "busbar-transport-ws"],
+                &[
+                    "unreadable-manifest",
+                    "DOTTED KEY",
+                    "busbar-transport-stdio",
+                ],
             ));
 
             // …AND A COMMENTED HEADER IS THE HEADER IT SAYS IT IS. `[target.'cfg(all())'
@@ -6640,10 +6644,10 @@ impl Gate for KindIsolationGate {
                 {
                     let mut ov = Overlay::new();
                     ov.set(
-                        "crates/busbar-transport-ws/Cargo.toml",
+                        "crates/busbar-transport-stdio/Cargo.toml",
                         manifest_plus(
                             cx,
-                            "crates/busbar-transport-ws/Cargo.toml",
+                            "crates/busbar-transport-stdio/Cargo.toml",
                             "[target.'cfg(all())'.dependencies] # extra\nbusbar-plane-llm = { path \
                              = \"../busbar-plane-llm\" }\n",
                         ),
@@ -6651,7 +6655,7 @@ impl Gate for KindIsolationGate {
                     ov
                 },
                 &[
-                    "busbar-transport-ws -> busbar-plane-llm",
+                    "busbar-transport-stdio -> busbar-plane-llm",
                     "is a shipped edge",
                 ],
             ));
@@ -6669,17 +6673,17 @@ impl Gate for KindIsolationGate {
             // What it must not buy is admissibility.
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-transport-ws/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 manifest_plus(
                     cx,
-                    "crates/busbar-transport-ws/Cargo.toml",
+                    "crates/busbar-transport-stdio/Cargo.toml",
                     "[dependencies]\nbusbar-plane-llm = { path = \"../busbar-plane-llm\" }\n",
                 ),
             );
             ov.set(
                 REGISTRY_FILE,
                 format!(
-                    "{}\n\n[[dep]]\nfrom    = \"busbar-transport-ws\"\nto      = \
+                    "{}\n\n[[dep]]\nfrom    = \"busbar-transport-stdio\"\nto      = \
                      \"busbar-plane-llm\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \
                      \"not-allowed\"\ncite    = \"planted by the self-test\"\nwhy     = \"the wire \
                      needs the plane's frame type\"\ndrain   = \"move the frame type into the \
@@ -6695,7 +6699,7 @@ impl Gate for KindIsolationGate {
                 ov,
                 &[
                     "new-forbidden-edge",
-                    "busbar-transport-ws -> busbar-plane-llm",
+                    "busbar-transport-stdio -> busbar-plane-llm",
                     "never introduce one",
                 ],
             ));
@@ -7705,7 +7709,7 @@ impl Gate for KindIsolationGate {
 
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_plane_impl.rs",
+            "crates/busbar-transport-stdio/src/planted_plane_impl.rs",
             "pub struct Wire;\nimpl Plane for Wire {}\n",
         );
         report.push(prove_rows_red(
@@ -7714,7 +7718,7 @@ impl Gate for KindIsolationGate {
             "a wire implementing a plane face",
             &[ROW_FACES],
             ov,
-            &["foreign-entry", "busbar-transport-ws", "Plane"],
+            &["foreign-entry", "busbar-transport-stdio", "Plane"],
         ));
 
         let mut ov = Overlay::new();
@@ -7737,7 +7741,7 @@ impl Gate for KindIsolationGate {
         // answered `None` and the trait was implemented in plain sight.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_qualified.rs",
+            "crates/busbar-transport-stdio/src/planted_qualified.rs",
             "pub struct Wire;\nimpl busbar_contract::Plane for Wire {}\n",
         );
         report.push(prove_rows_red(
@@ -7746,7 +7750,7 @@ impl Gate for KindIsolationGate {
             "a wire implementing a plane face in the QUALIFIED spelling",
             &[ROW_FACES],
             ov,
-            &["foreign-entry", "busbar-transport-ws", "Plane"],
+            &["foreign-entry", "busbar-transport-stdio", "Plane"],
         ));
 
         // …AND THE SAME IMPLEMENTATION UNDER A NAME OF THE AUTHOR'S CHOOSING. The face rule
@@ -7755,7 +7759,7 @@ impl Gate for KindIsolationGate {
         // sight in one line, and a red team walked a transport through it green.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_alias.rs",
+            "crates/busbar-transport-stdio/src/planted_alias.rs",
             "use busbar_contract::plane::Plane as Metered;\npub struct WireA;\nimpl Metered for \
              WireA {}\n",
         );
@@ -7765,7 +7769,7 @@ impl Gate for KindIsolationGate {
             "a wire implementing a plane face under a `use … as` rename",
             &[ROW_FACES],
             ov,
-            &["foreign-entry", "busbar-transport-ws", "Plane"],
+            &["foreign-entry", "busbar-transport-stdio", "Plane"],
         ));
 
         // …AND WHAT `cargo fmt` ITSELF WRITES. A long header wraps, and no LINE of a wrapped one
@@ -7773,7 +7777,7 @@ impl Gate for KindIsolationGate {
         // statement is read as tokens now, and this is the fixture that says so.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_wrapped.rs",
+            "crates/busbar-transport-stdio/src/planted_wrapped.rs",
             "pub struct WireB;\nimpl\n    busbar_contract::plane::Plane\n    for WireB\n{\n}\n",
         );
         report.push(prove_rows_red(
@@ -7782,7 +7786,7 @@ impl Gate for KindIsolationGate {
             "a wire implementing a plane face across a rustfmt-wrapped header",
             &[ROW_FACES],
             ov,
-            &["foreign-entry", "busbar-transport-ws", "Plane"],
+            &["foreign-entry", "busbar-transport-stdio", "Plane"],
         ));
 
         // …AND A BOUND IS NOT AN IMPLEMENTATION. `impl<T: Plane> Local for T` implements `Local`
@@ -7796,7 +7800,7 @@ impl Gate for KindIsolationGate {
         if !self.ship {
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-transport-ws/src/planted_bound.rs",
+                "crates/busbar-transport-stdio/src/planted_bound.rs",
                 "pub trait Local {}\nimpl<T: busbar_contract::plane::Plane> Local for T {}\n",
             );
             report.push(prove_rows_green(
@@ -7849,7 +7853,7 @@ impl Gate for KindIsolationGate {
         // there and is read off the RAW line here.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_smuggle.rs",
+            "crates/busbar-transport-stdio/src/planted_smuggle.rs",
             "#[path = \"../../busbar-plane-llm/src/meta.rs\"]\npub mod smuggled;\n",
         );
         report.push(prove_rows_red(
@@ -7858,7 +7862,7 @@ impl Gate for KindIsolationGate {
             "a cross-crate #[path] module is a dual compile, not a dependency",
             &[ROW_INPUTS],
             ov,
-            &["path-include", "busbar-plane-llm", "busbar-transport-ws"],
+            &["path-include", "busbar-plane-llm", "busbar-transport-stdio"],
         ));
 
         // NOTHING REDIRECTS WHAT CARGO COMPILES. `[patch]` substitutes one crate for another
@@ -7926,10 +7930,10 @@ impl Gate for KindIsolationGate {
         // edge could make this a reach rather than an identity.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/Cargo.toml",
+            "crates/busbar-transport-stdio/Cargo.toml",
             manifest_plus(
                 cx,
-                "crates/busbar-transport-ws/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 "\n[lib]\npath = \"../busbar-plane-llm/src/lib.rs\"\n",
             ),
         );
@@ -7941,7 +7945,7 @@ impl Gate for KindIsolationGate {
             ov,
             &[
                 "foreign-lib-path",
-                "busbar-transport-ws",
+                "busbar-transport-stdio",
                 "busbar-plane-llm",
             ],
         ));
@@ -7975,7 +7979,7 @@ impl Gate for KindIsolationGate {
         // the DIRECTORY instead.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/build.rs",
+            "crates/busbar-transport-stdio/build.rs",
             "fn main() {\n    for e in std::fs::read_dir(\"..\").unwrap() {\n        let f = \
              e.unwrap().path().join(\"src\").join(\"plane.rs\");\n        if f.exists() { let _ = \
              std::fs::read_to_string(&f); }\n    }\n}\n",
@@ -7988,7 +7992,7 @@ impl Gate for KindIsolationGate {
             ov,
             &[
                 "build-script-reach",
-                "busbar-transport-ws",
+                "busbar-transport-stdio",
                 "outside its own crate directory",
             ],
         ));
@@ -7998,7 +8002,7 @@ impl Gate for KindIsolationGate {
         // module, no dependency and no name.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_include.rs",
+            "crates/busbar-transport-stdio/src/planted_include.rs",
             "pub mod smuggled {\n    include!(\"../../busbar-plane-llm/src/meta.rs\");\n}\n",
         );
         report.push(prove_rows_red(
@@ -8007,7 +8011,7 @@ impl Gate for KindIsolationGate {
             "an `include!` of another kind's source is a dual compile",
             &[ROW_INPUTS],
             ov,
-            &["path-include", "busbar-plane-llm", "busbar-transport-ws"],
+            &["path-include", "busbar-plane-llm", "busbar-transport-stdio"],
         ));
 
         // …AND A `CARGO_MANIFEST_DIR` SPLICE IS RESOLVED, NOT GUESSED AT. `quoted_after` took the
@@ -8018,7 +8022,7 @@ impl Gate for KindIsolationGate {
         // stronger than refusing the spelling: the tree already uses this idiom eight times.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_spliced.rs",
+            "crates/busbar-transport-stdio/src/planted_spliced.rs",
             "pub const S: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \
              \"/../busbar-plane-mcp/src/lib.rs\"));\n",
         );
@@ -8032,7 +8036,7 @@ impl Gate for KindIsolationGate {
             &[
                 "build-script-reach",
                 "busbar-plane-mcp",
-                "busbar-transport-ws",
+                "busbar-transport-stdio",
             ],
         ));
 
@@ -8041,7 +8045,7 @@ impl Gate for KindIsolationGate {
         // derive. An input this gate cannot resolve is an input it cannot score, so it fails closed.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_pieces.rs",
+            "crates/busbar-transport-stdio/src/planted_pieces.rs",
             "include!(concat!(\"../../busbar-p\", \"lane-l\", \"lm/src/me\", \"ta.rs\"));\n",
         );
         report.push(prove_rows_red(
@@ -8050,14 +8054,14 @@ impl Gate for KindIsolationGate {
             "an include path spliced out of pieces is refused, not resolved",
             &[ROW_INPUTS],
             ov,
-            &["unresolvable-include", "concat", "busbar-transport-ws"],
+            &["unresolvable-include", "concat", "busbar-transport-stdio"],
         ));
 
         // `OUT_DIR` IS RESOLVED ONLY WHERE A BUILD SCRIPT WROTE IT. A crate with no `build.rs` has
         // no writer for the file, so an `OUT_DIR` splice there names an input nothing scored.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_out_dir.rs",
+            "crates/busbar-transport-stdio/src/planted_out_dir.rs",
             "include!(concat!(env!(\"OUT_DIR\"), \"/linked.rs\"));\n",
         );
         report.push(prove_rows_red(
@@ -8066,7 +8070,7 @@ impl Gate for KindIsolationGate {
             "an OUT_DIR include in a crate with no build script is refused",
             &[ROW_INPUTS],
             ov,
-            &["unresolvable-include", "concat", "busbar-transport-ws"],
+            &["unresolvable-include", "concat", "busbar-transport-stdio"],
         ));
 
         // …AND AN `OUT_DIR` TAIL THAT CLIMBS IS REFUSED EVEN WHERE ONE EXISTS: `..` out of the build
@@ -8112,8 +8116,8 @@ impl Gate for KindIsolationGate {
             subject,
             "a lock file naming an edge no manifest has",
             &[ROW_INPUTS],
-            lock_plus(cx, "busbar-transport-ws", "busbar-plane-llm"),
-            &["lock-drift", "Cargo.lock", "busbar-transport-ws"],
+            lock_plus(cx, "busbar-transport-stdio", "busbar-plane-llm"),
+            &["lock-drift", "Cargo.lock", "busbar-transport-stdio"],
         ));
 
         // A REGISTRY ENTRY FILED UNDER THE WRONG KIND. `plugins.yaml` is what the loader believes,
@@ -8179,10 +8183,10 @@ impl Gate for KindIsolationGate {
         // read.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/Cargo.toml",
+            "crates/busbar-transport-stdio/Cargo.toml",
             manifest_plus(
                 cx,
-                "crates/busbar-transport-ws/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 "\n[features]\nllm-serve = []\n",
             ),
         );
@@ -8192,7 +8196,7 @@ impl Gate for KindIsolationGate {
             "a feature name is vocabulary too",
             &[ROW_INPUTS],
             ov,
-            &["feature-vocab", "llm-serve", "busbar-transport-ws"],
+            &["feature-vocab", "llm-serve", "busbar-transport-stdio"],
         ));
 
         // …AND THE COMPOSITION ROOT'S `root-*` FEATURES ARE THE WRITTEN EXEMPTION. The root is the
@@ -8281,7 +8285,7 @@ impl Gate for KindIsolationGate {
         // THE VOCABULARY, BOTH DIRECTIONS.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_leak.rs",
+            "crates/busbar-transport-stdio/src/planted_leak.rs",
             "pub fn route(a2a_session: u8) -> u8 { let mcp = a2a_session; mcp }\n",
         );
         report.push(prove_rows_red(
@@ -8365,7 +8369,7 @@ impl Gate for KindIsolationGate {
         // exact ceiling. Two rows, two questions; this case answers the narrower one.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-ws/src/planted_prose.rs",
+            "crates/busbar-transport-stdio/src/planted_prose.rs",
             "// this comment names a2a and mcp and voice and llm and admin freely\n\
              /* and so does this block comment: a2a mcp voice */\n\
              pub fn note() -> &'static str { \"a2a mcp voice llm admin\" }\n\
@@ -8429,11 +8433,14 @@ impl Gate for KindIsolationGate {
             "a crate nested under another crate is not a fixture",
             &[ROW_REGISTRY],
             manifest_plant(
-                "crates/busbar-transport-ws/internal/shim",
+                "crates/busbar-transport-stdio/internal/shim",
                 "busbar-plane-shim2",
                 &[],
             ),
-            &["nested-crate", "crates/busbar-transport-ws/internal/shim"],
+            &[
+                "nested-crate",
+                "crates/busbar-transport-stdio/internal/shim",
+            ],
         ));
 
         // A CRATE ON DISK AND OFF THE MEMBERS LIST. One deleted line drops a live, path-depended
@@ -8739,12 +8746,12 @@ impl Gate for KindIsolationGate {
             manifest_plant(
                 "crates/busbar-plane-voice",
                 "busbar-plane-voice",
-                &["busbar-contract", "busbar-transport-ws"],
+                &["busbar-contract", "busbar-transport-stdio"],
             ),
             &[
                 "wire-dependency",
                 "busbar-plane-voice",
-                "busbar-transport-ws",
+                "busbar-transport-stdio",
             ],
         ));
 
@@ -8761,12 +8768,12 @@ impl Gate for KindIsolationGate {
             manifest_plant(
                 "crates/store-memory",
                 "busbar-store-memory",
-                &["busbar-contract", "busbar-transport-ws"],
+                &["busbar-contract", "busbar-transport-stdio"],
             ),
             &[
                 "wire-dependency",
                 "busbar-store-memory",
-                "busbar-transport-ws",
+                "busbar-transport-stdio",
             ],
         ));
 
@@ -8777,7 +8784,7 @@ impl Gate for KindIsolationGate {
             "crates/store-memory/Cargo.toml",
             "[package]\nname = \"busbar-store-memory\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
              busbar-contract = { workspace = true }\n\n[dev-dependencies]\n\
-             busbar-transport-ws = { path = \"../busbar-transport-ws\" }\n",
+             busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }\n",
         );
         report.push(prove_rows_red(
             cx,
@@ -8811,8 +8818,8 @@ impl Gate for KindIsolationGate {
             &[ROW_WIRES],
             loader(
                 "",
-                "busbar-transport-ws = { path = \"../busbar-transport-ws\" }",
-                "busbar-transport-ws",
+                "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }",
+                "busbar-transport-stdio",
             ),
         ));
         // …but the SAME crate as a NORMAL dependency is a wire the loader links into the product…
@@ -8822,14 +8829,14 @@ impl Gate for KindIsolationGate {
             "plugin tooling taking a NORMAL edge on its declared fixture wire",
             &[ROW_WIRES],
             loader(
-                "busbar-transport-ws = { path = \"../busbar-transport-ws\" }",
+                "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }",
                 "",
-                "busbar-transport-ws",
+                "busbar-transport-stdio",
             ),
             &[
                 "wire-dependency",
                 "busbar-plugin-loader",
-                "busbar-transport-ws [dependencies]",
+                "busbar-transport-stdio [dependencies]",
             ],
         ));
         // …and a dev-edge to a wire the table does NOT name is a wire chosen, not a fixture.
@@ -8841,7 +8848,7 @@ impl Gate for KindIsolationGate {
             loader(
                 "",
                 "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }",
-                "busbar-transport-ws",
+                "busbar-transport-stdio",
             ),
             &[
                 "wire-dependency",
@@ -8866,7 +8873,7 @@ impl Gate for KindIsolationGate {
             "a wire composed in a second place",
             &[ROW_WIRES],
             ov,
-            &["second-registration", "busbar-transport-ws"],
+            &["second-registration", "busbar-transport-stdio"],
         ));
 
         // …AND A WIRE COMPOSED IN NO PLACE. "Exactly one" has two sides and the rule read one:

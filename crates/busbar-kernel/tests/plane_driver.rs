@@ -619,6 +619,11 @@ impl PlaneCalls for Double {
         Box::pin(std::future::ready(Some(next)))
     }
 
+    /// The double holds no session: its `drive` names none.
+    fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
+        Box::pin(std::future::ready(Vec::new()))
+    }
+
     /// The client-drop path: an op held on `ticket` is cancelled "on its worker" and answers the
     /// plane kind's timeout outcome with the disposition (or FAULT when the cancel FAULTs).
     fn drop_client(&self, ticket: Ticket) {

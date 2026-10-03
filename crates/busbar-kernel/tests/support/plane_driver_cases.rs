@@ -90,7 +90,7 @@ impl Far {
         }
     }
 
-    fn sent(&self) -> Vec<OutboundRequest> {
+    pub(crate) fn sent(&self) -> Vec<OutboundRequest> {
         self.sent.lock().unwrap().clone()
     }
 }
@@ -224,6 +224,8 @@ pub(crate) struct Book {
     served: Mutex<Vec<(String, String)>>,
     /// The production money steps every call is also handed to, when set.
     forward: Option<Arc<dyn MoneySeam>>,
+    /// Sessions whose one cleanup ran (the book admits every session).
+    pub(crate) sessions_ended: AtomicU64,
 }
 
 impl MoneySeam for Book {
@@ -245,6 +247,14 @@ impl MoneySeam for Book {
 
     fn abandoned(&self, _ctx: &UnitCtx, _ended: Ended) {
         self.abandoned.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn session_opened(&self, _ctx: &UnitCtx) -> Result<(), ReasonCode> {
+        Ok(())
+    }
+
+    fn session_ended(&self, _ctx: &UnitCtx) {
+        self.sessions_ended.fetch_add(1, Ordering::SeqCst);
     }
 
     fn served(&self, ctx: &UnitCtx, model: &str, provider: &str) {
@@ -1425,10 +1435,7 @@ async fn a_fault_disposition_bills_as_cancel_failed() {
 fn open_unit_drives_the_same_steps() {
     for way in ways() {
         let r = rig(way, BufferCaps::default(), Book::default());
-        for (target, want) in [
-            ("/call", SessionOpen::Admitted),
-            ("/refuse", SessionOpen::Refused),
-        ] {
+        for (target, admitted) in [("/call", true), ("/refuse", false)] {
             let (steps, far, caller) = (
                 TestUnits::passing(),
                 Far::new(&["ok"], CHUNKS),
@@ -1453,12 +1460,13 @@ fn open_unit_drives_the_same_steps() {
                 canary: &canary,
                 meter: &meter,
             };
+            let opened = open_unit(&kernel, &units, &ctx(9), run);
             assert_eq!(
-                open_unit(&kernel, &units, &ctx(9), run),
-                want,
+                matches!(opened, SessionOpen::Admitted { .. }),
+                admitted,
                 "{way:?} {target}"
             );
-            if want == SessionOpen::Refused {
+            if !admitted {
                 // The plane's own decode refusal: its status, its code and the unit.
                 assert_eq!(
                     units.take_rendered().unwrap().body,

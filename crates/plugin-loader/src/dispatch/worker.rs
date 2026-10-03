@@ -445,6 +445,44 @@ pub(crate) struct Current {
     detached: bool,
 }
 
+/// THE NAMES A DRIVER TICKET'S READY `drive` ANSWERED (a plane's ready sessions), held for the
+/// host until it collects them ([`Driven::take`]): each once, at most [`Driven::HELD`] at a time
+/// (a plane that names more before the host collects is told nothing new until it wakes again).
+#[derive(Debug, Default)]
+pub(crate) struct Driven {
+    names: Mutex<Vec<u64>>,
+    told: tokio::sync::Notify,
+}
+
+impl Driven {
+    /// The most names held uncollected.
+    const HELD: usize = 1024;
+
+    fn name(&self, names: &[u64]) {
+        let mut held = self.names.lock().unwrap_or_else(|e| e.into_inner());
+        for n in names {
+            if !held.contains(n) && held.len() < Self::HELD {
+                held.push(*n);
+            }
+        }
+        drop(held);
+        if !names.is_empty() {
+            self.told.notify_one();
+        }
+    }
+
+    /// Every name held, once one is; never parks a thread.
+    pub(crate) async fn take(&self) -> Vec<u64> {
+        loop {
+            let names = std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()));
+            if !names.is_empty() {
+                return names;
+            }
+            self.told.notified().await;
+        }
+    }
+}
+
 pub(crate) struct Driver {
     instance: Arc<Instance>,
     /// The kind's own `drive` frame ([`Kind::drive_frame`]); `None` while out on a crossing.
@@ -1005,6 +1043,9 @@ impl Worker {
                 d.pending = false;
                 let budget = env.budgets.of(slot::DRIVE, DeadlineClass::Connection);
                 let (mut st, c) = self.cross(st, &inst, slot::DRIVE, heads, budget)?;
+                if c.outcome == Outcome::Ready {
+                    inst.driven.name(frame.named());
+                }
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {
