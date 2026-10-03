@@ -225,10 +225,6 @@ pub use busbar_kernel_wal::durable;
 pub mod egress;
 pub mod egress_auth;
 pub mod endpoints;
-// The narrow, `pub` re-export facade a plane's own extracted engine reaches DOWN into core through
-// once it lives in its own plane crate (1.6.0 money-path relocation, Phase 0). Pure visibility lift
-// — see the module.
-pub mod engine_facade;
 pub mod export;
 pub mod failover;
 pub mod governance;

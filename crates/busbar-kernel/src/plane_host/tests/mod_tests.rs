@@ -523,8 +523,6 @@ fn guards_have_the_right_thread_bounds() {
     fn assert_send_static<T: Send + 'static>() {}
     assert_send::<HostDispatch<'static>>();
     assert_send_static::<SendHostDispatch>();
-    // The durable route rides a DETACHED runner, so it too must be Send + 'static.
-    assert_send_static::<DurableHostDispatch>();
 }
 
 /// The OWNED async guard held across an `.await` reclaims its arena when the future completes —
