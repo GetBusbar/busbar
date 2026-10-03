@@ -236,9 +236,12 @@ async fn count(calls: &dyn HookCalls, name: &str) -> u64 {
         .unwrap_or_else(|| panic!("status carries no metric {name}: {doc}")) as u64
 }
 
-/// The exact crossings the script makes on the gate: three `decide`s.
-const GATE_DECIDES: u64 = 3;
-/// And on the abstaining instance: one.
+/// The exact `decide` crossings the script makes on the gate: three requests, and the two that
+/// rank answer an order of three candidates against the two the first call's buffer holds, so each
+/// takes the dispatcher's ONE short-buffer re-call (3 + 2). A build that dropped the re-call, or
+/// made it twice, counts otherwise.
+const GATE_DECIDES: u64 = 5;
+/// And on the abstaining instance: one, no re-call.
 const ABSTAIN_DECIDES: u64 = 1;
 
 /// THE SCRIPT over `rows`, one line per answer. The counts it reads are asserted by the caller.
@@ -324,7 +327,7 @@ async fn the_compiled_in_and_the_dropped_in_hook_answer_the_same_request_set_ide
     let (dropped, dropped_counts) = script(&rows(door, Way::Dropped), NAME).await;
     assert_eq!(linked, dropped, "the same table, whichever build");
 
-    // EXACT crossing counts, both builds: the plugin served each `decide` once and no more.
+    // EXACT crossing counts, both builds: the plugin served exactly the crossings sent.
     assert_eq!(linked_counts, [GATE_DECIDES, ABSTAIN_DECIDES]);
     assert_eq!(dropped_counts, [GATE_DECIDES, ABSTAIN_DECIDES]);
 
