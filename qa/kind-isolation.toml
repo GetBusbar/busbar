@@ -791,8 +791,15 @@ cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"`loader` and `abi` are TCB crates, 
 why     = "busbar-plugin-loader names busbar-plugin-example-plane: declared dev in the test graph so plane_conformance_tests can link the compiled-in PLANE_DECL, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the loader and the plugin tooling are outside the kind system (BUSBAR-1.6.0.md THE DESIGN, §2: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
 
-
-
+[[dep]]
+from    = "busbar-plane-decisions"
+to      = "busbar-plugin-loader"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "OWNER 2026-10-03, \"plugins test themselves against busbar\" (ARCHITECT ruling 2026-10-03 11:40Z): a plugin's tests run busbar-plugin-loader's published conformance suite, so the plugin dev-depends on the loader with features = [\"conformance\"]. Landed by cee4ad2d97, which moved the plane's both-ways witness from tests/conformance.rs (the granted witness file) to tests/published_conformance.rs, so `conformance_witness_edges` no longer grants the edge and it is measured."
+why     = "busbar-plane-decisions names busbar-plugin-loader: declared dev in the test graph (features conformance), 1 declaration(s) at this commit, test-only: the edge is absent from every release build. This is the sanctioned conformance pattern, not a new coupling: the edge existed at the base (the loader was already a dev-dependency, for the hand-rolled script) and cee4ad2d97 changed only which suite it runs. The count is TODAY'S MEASUREMENT, exact in both directions. Its two closure consequences, `closure-test-reach busbar-plane-decisions -> busbar-kernel-ledger` and `-> busbar-kernel-wal` (the loader's own closure, linked into the test binary), sit in qa/kind-isolation.standing.txt under the same ruling."
+drain   = "leaves with the plane-decisions extraction (P5 CRATES-14): the plane moves to its own repo and runs the published suite from there, so this dev-dependency is no longer an edge of this workspace."
 
 [[dep]]
 from    = "busbar"

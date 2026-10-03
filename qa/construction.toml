@@ -253,7 +253,13 @@ busbar-llm = 226
 # LOWERED 280 -> 279 by the test-kit naming the kernel's one stand-in for the root's seam bindings
 # (test_support::install_root_seams) where it named the section-list install over two lines.
 # Downward only.
-busbar-mcp = 279
+# RAISED 279 -> 281 (measured at lane-predev-all cd8dde66c2; ARCHITECT-ruled 2026-10-03 11:40Z): commit
+# 26be1926aa (secret: env and file are plugin repos linked by pinned dependency; every reference resolves
+# through the root's secret axis) added two `busbar_kernel::config::secret::resolve_linked_string` calls,
+# one in mcp/upstream.rs and one in mcp/client/stdio.rs (lane lane-dg-auth, lanes/L2-AUTH.md). The two
+# lines are the secret axis replacing the removed busbar-mcp -> env/file secret dependency, not new reach.
+# busbar-mcp is deleted by DEL-MCP (W2), and the row goes with the crate.
+busbar-mcp = 281
 # busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
 # instead of per signature.
 busbar-a2a = 232

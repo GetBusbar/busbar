@@ -245,6 +245,23 @@ impl MoneySeam for Till {
     }
 }
 
+/// The journal, counting every record it is asked to write: a probe writes none.
+#[derive(Default)]
+struct Ledger {
+    dispatched: AtomicU64,
+    abandoned: AtomicU64,
+}
+
+impl Journal for Ledger {
+    fn dispatched(&self, _: &Dispatched) -> Result<(), DurabilityUnavailable> {
+        self.dispatched.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    fn abandoned(&self, _: &Dispatched) {
+        self.abandoned.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 // ── the rig ─────────────────────────────────────────────────────────────────────────────────────
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -255,6 +272,7 @@ const TRIPPED: DestinationId = DestinationId::new(1);
 struct Probing {
     plane: Arc<Prober>,
     till: Arc<Till>,
+    journal: Arc<Ledger>,
     table: Arc<Table>,
     book: Arc<Book>,
     probes: PlaneProbes,
@@ -263,7 +281,9 @@ struct Probing {
 /// The target over `hosts` (see [`rig`]) for a plane `plane` whose tail flags are `tail`, probing
 /// the first member, which is tripped.
 fn probing(hosts: &[(&'static str, Script)], plane: Prober, tail: u32) -> Option<Probing> {
-    let r = rig(hosts, OnExhausted::Status503, None);
+    let mut r = rig(hosts, OnExhausted::Status503, None);
+    let journal = Arc::new(Ledger::default());
+    r.egress.journal = journal.clone();
     r.book.cooldown.lock().unwrap().insert(TRIPPED, u64::MAX);
     let plane = Arc::new(plane);
     let till = Arc::new(Till::default());
@@ -292,6 +312,7 @@ fn probing(hosts: &[(&'static str, Script)], plane: Prober, tail: u32) -> Option
     Some(Probing {
         plane,
         till,
+        journal,
         table: r.table,
         book: r.book,
         probes,
@@ -329,7 +350,30 @@ async fn a_probe_recovers_a_tripped_member() {
     assert_eq!(p.table.words.lock().unwrap()[0].0, PROBE.0);
     assert!(p.book.observed.lock().unwrap().is_empty());
     assert_eq!(p.book.spent.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        p.book.refunded.load(Ordering::SeqCst),
+        0,
+        "a probe spends no budget, so there is none to refund"
+    );
     assert_eq!(p.till.0.load(Ordering::SeqCst), 0, "zero-billed");
+}
+
+/// A probe writes no dispatch record: no `dispatched` line to recover from and no `abandoned`
+/// line to match it, on the answered path and on the no-answer path alike.
+#[tokio::test]
+async fn a_probe_writes_no_dispatch_record() {
+    for script in [Script::Answer(200, None, vec![b"ok"]), Script::Refused] {
+        let p = probing(&[("a.test", script)], Prober::default(), TAIL_PROBES)
+            .expect("the plane declares probes");
+        p.probes.probe(0, TIMEOUT).await;
+        assert_eq!(
+            p.table.opened.lock().unwrap().len(),
+            1,
+            "the probe was sent"
+        );
+        assert_eq!(p.journal.dispatched.load(Ordering::SeqCst), 0);
+        assert_eq!(p.journal.abandoned.load(Ordering::SeqCst), 0);
+    }
 }
 
 /// A client-fault answer is the probe request's fault, not the member's: it records nothing, and
@@ -357,6 +401,9 @@ async fn a_probe_that_brings_no_answer_is_a_transient_and_tries_no_other_member(
         vec![(TRIPPED, Outcome::Transient { retry_after: None })]
     );
     assert_eq!(p.table.opened.lock().unwrap().len(), 1);
+    assert_eq!(p.till.0.load(Ordering::SeqCst), 0, "zero-billed");
+    assert_eq!(p.book.spent.load(Ordering::SeqCst), 0);
+    assert_eq!(p.book.refunded.load(Ordering::SeqCst), 0);
 }
 
 /// A plane that refuses the probe arrival sends nothing, and nothing is recorded.
