@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
+use super::loader::{boot::*, dispatch::ManifestFacts, PluginRegistry};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::preflight::{Fetched, RegistryIn};
@@ -284,22 +284,7 @@ pub fn stages(
         let c = &candidates[s.candidate];
         let facts =
             ManifestFacts::read(&c.stated).map_err(|e| format!("plugin '{}': {e}", c.name))?;
-        let host = facts.kind.abi_version();
-        let refusal =
-            if facts.mechanism_version != busbar_contract::abi::mechanism::MECHANISM_VERSION {
-                Some(LoadError::ManifestMechanism {
-                    stated: facts.mechanism_version,
-                    host: busbar_contract::abi::mechanism::MECHANISM_VERSION,
-                })
-            } else if facts.kind_abi != host {
-                Some(LoadError::ManifestKindAbi {
-                    stated: facts.kind_abi,
-                    host,
-                })
-            } else {
-                None
-            };
-        if let Some(r) = refusal {
+        if let Some(r) = facts.refusal() {
             return Err(format!("plugin '{}' ({}): {r}", c.name, s.instance));
         }
     }

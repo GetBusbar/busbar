@@ -45,7 +45,7 @@ fn admin() -> Grant<AdminVerb> {
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
 fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    let store = dyn_proof_store_with_fake_call_at_abi(crate::registry::STORE_ABI_FLOOR)?;
+    let store = dyn_proof_store_with_fake_call_at_abi(PUBLISHED_STORE_SCHEMA)?;
     Some(StoreAdapter::over_loaded_store(store))
 }
 
@@ -65,8 +65,7 @@ fn slice_request(wanted: u64, epoch: u64) -> SliceRequest {
 #[test]
 fn no_payload_schema_this_binary_can_load_speaks_the_added_operations() {
     let window = crate::registry::supported_abi("store");
-    let (floor, max) = (window[0], window[1]);
-    assert_eq!(floor, 2, "the published store schema is the floor");
+    let (floor, max) = (window[0], window[window.len() - 1]);
     for abi in floor..=max {
         assert!(
             !speaks_new_ops(abi),
@@ -402,7 +401,7 @@ impl TestClock {
 
 /// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
 fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
-    let store = dyn_proof_store_with_fake_call_at_abi(crate::registry::STORE_ABI_FLOOR)?;
+    let store = dyn_proof_store_with_fake_call_at_abi(PUBLISHED_STORE_SCHEMA)?;
     let abi_version = store.abi_version;
     Some(StoreAdapter::with_clock(
         Arc::new(store),
@@ -624,7 +623,7 @@ fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
     };
     assert_eq!(
         adapter.abi_version(),
-        crate::registry::STORE_ABI_FLOOR,
+        PUBLISHED_STORE_SCHEMA,
         "the adapter carries the schema the manifest declared"
     );
     let row = VirtualKey {
@@ -736,8 +735,7 @@ fn a_round_trip_through_the_published_store() {
     let unpacked = tarball::unpack(&bytes).expect("the published tarball unpacks");
     assert_eq!(unpacked.manifest.kind, "store");
     assert_eq!(
-        unpacked.manifest.abi_version,
-        crate::registry::STORE_ABI_FLOOR,
+        unpacked.manifest.abi_version, PUBLISHED_STORE_SCHEMA,
         "the published store is at the published payload schema"
     );
 
@@ -879,7 +877,7 @@ impl busbar_contract::records::RecordStore for NoRows {
 /// by joining; it waits a generous multiple of the park and fails if the read has not answered.
 #[test]
 fn reading_the_shim_state_never_wedges_against_a_concurrent_restore() {
-    let adapter = StoreAdapter::new(Arc::new(NoRows), crate::registry::STORE_ABI_FLOOR);
+    let adapter = StoreAdapter::new(Arc::new(NoRows), PUBLISHED_STORE_SCHEMA);
     // Something to read, so the answer is checked rather than merely arriving.
     adapter
         .slice_store()

@@ -108,6 +108,15 @@ name = "neutral_frame_door"
 path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
+# A PUBLISHED 1.5.5 JSON-CONTRACT PLUGIN, reduced to its entry: a cdylib exporting only the 1.5.5
+# handshake symbol `busbar_abi` and no door. `kind_version_refusal_tests` drops it in as every kind and
+# requires the one loader to refuse it as a 1.5.5 JSON-contract plugin, naming the rebuild (TODO
+# ABI-b6). An example, not a crate: `cargo test` builds it and it never ships.
+[[example]]
+name = "json_contract_1_5_5"
+path = "tests/fixtures/json_contract_1_5_5.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this

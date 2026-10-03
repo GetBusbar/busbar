@@ -1821,6 +1821,11 @@ fn dyn_proof_store_with_fake_call() -> Option<DynStore> {
     dyn_proof_store_with_fake_call_at_abi(busbar_contract::abi::cold::ABI_VERSION)
 }
 
+/// The 1.5.5 store payload schema (v2) the legacy store wire speaks. No loaded plugin states it
+/// since THE DESIGN §11.8 (the registry refuses it at boot); these suites hold the wire until it is
+/// deleted.
+const PUBLISHED_STORE_SCHEMA: u32 = 2;
+
 /// [`dyn_proof_store_with_fake_call`] bound to a chosen payload schema, so a test can hold the
 /// PUBLISHED one (v2) rather than the schema this binary was built against.
 fn dyn_proof_store_with_fake_call_at_abi(abi_version: u32) -> Option<DynStore> {

@@ -7,8 +7,9 @@
 //! [`load_dropped`] checks the manifest's mechanism version BEFORE `dlopen`, opens the library,
 //! finds [`DOOR_SYMBOL`] and runs [`validate`]; [`load_linked`] runs the SAME [`validate`] on a
 //! compiled-in row's door. Both answer the same [`Plugin`]. The door is refused — never guessed,
-//! never a panic — for: a wrong magic, a mechanism or kind ABI version older OR newer than the
-//! host's, an unknown kind or another kind than `K`, a door smaller than the host's, a NULL table,
+//! never a panic — for: a library that is a 1.5.5 JSON-contract plugin (it exports
+//! [`JSON_CONTRACT_SYMBOL`] and no door), a wrong magic, a mechanism or kind ABI version older OR
+//! newer than the host's, an unknown kind or another kind than `K`, a door smaller than the host's, a NULL table,
 //! a table whose `slots`/`size` differ from the host's table of `K`, any NULL slot, or a Statement
 //! that is missing, short, disagrees with the door or points at NULL arrays.
 
@@ -24,7 +25,9 @@ use busbar_contract::abi::mechanism::door::{
 };
 use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 use busbar_contract::abi::mechanism::rendering::{render, RENDERING_MAGIC};
-use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
+use busbar_contract::abi::mechanism::{
+    KindCode, DOOR_MAGIC, DOOR_SYMBOL, JSON_CONTRACT_SYMBOL, MECHANISM_VERSION,
+};
 use busbar_contract::abi::transport::check::check_claim_rows;
 use busbar_contract::abi::transport::TransportTail;
 use libloading::Library;
@@ -74,6 +77,28 @@ impl ManifestFacts {
                 .ok_or_else(|| LoadError::Rendering(format!("it names kind {kind}")))?,
             kind_abi: word(magic + 8),
         })
+    }
+
+    /// THE VERSION REFUSAL these facts earn, for any kind: a mechanism version other than the host's,
+    /// then a kind ABI version other than the host's for the kind they name — older and newer alike
+    /// (THE DESIGN §11.8). The one rule [`load_dropped`] and the boot's Stage 2 apply.
+    #[must_use]
+    pub fn refusal(&self) -> Option<LoadError> {
+        let host = self.kind.abi_version();
+        if self.mechanism_version != MECHANISM_VERSION {
+            Some(LoadError::ManifestMechanism {
+                stated: self.mechanism_version,
+                host: MECHANISM_VERSION,
+            })
+        } else if self.kind_abi != host {
+            Some(LoadError::ManifestKindAbi {
+                kind: self.kind,
+                stated: self.kind_abi,
+                host,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -160,6 +185,8 @@ pub enum LoadError {
     },
     /// The manifest's kind ABI version is not the host's.
     ManifestKindAbi {
+        /// The kind.
+        kind: KindCode,
         /// The manifest's.
         stated: u32,
         /// The host's.
@@ -169,6 +196,11 @@ pub enum LoadError {
     Open(String),
     /// The library exports no door.
     NoDoor(String),
+    /// The library is a 1.5.5 JSON-contract plugin: it exports [`JSON_CONTRACT_SYMBOL`] and no door.
+    JsonContract {
+        /// The kind it was asked for as.
+        kind: KindCode,
+    },
     /// The door function answered NULL.
     NullDoor,
     /// The door's magic is not `BUSBARPL`.
@@ -254,12 +286,21 @@ impl fmt::Display for LoadError {
             Self::ManifestKind { stated, want } => {
                 write!(f, "the manifest states kind {stated:?}, not {want:?}")
             }
-            Self::ManifestKindAbi { stated, host } => write!(
+            Self::ManifestKindAbi { kind, stated, host } => write!(
                 f,
-                "the manifest states kind ABI {stated}; this host speaks {host} — rebuild the plugin against the 1.6.0 SDK"
+                "the manifest states {kind:?} ABI version {stated}; this host speaks {host} — rebuild the plugin against the 1.6.0 SDK"
             ),
             Self::Open(e) => write!(f, "the library did not load: {e}"),
             Self::NoDoor(e) => write!(f, "the library exports no busbar_plugin_door: {e}"),
+            Self::JsonContract { kind } => write!(
+                f,
+                "the library is a 1.5.5 JSON-contract {kind:?} plugin: it exports busbar_abi \
+                 (mechanism version {}) and no busbar_plugin_door; this host speaks mechanism \
+                 version {MECHANISM_VERSION} and {kind:?} ABI version {} — rebuild the plugin \
+                 against the 1.6.0 SDK",
+                MECHANISM_VERSION - 1,
+                kind.abi_version()
+            ),
             Self::NullDoor => f.write_str("the door function answered NULL"),
             Self::Magic(m) => write!(f, "the door's magic {m:#018x} is not BUSBARPL"),
             Self::Mechanism { door, host } => write!(
@@ -446,32 +487,33 @@ fn bind_library<K: Kind>(lib: Lib, stated: &[u8], bind: Bind) -> Result<Plugin<K
         // plain fn pointer, kept valid by `Lib` for as long as any handle to the instance lives.
         unsafe { l.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) }
     };
-    let door = door.map_err(|e| LoadError::NoDoor(e.to_string()))?;
+    let door = door.map_err(|e| no_door::<K>(&lib, e))?;
     Plugin::bind(admitted::<K>(door, stated)?, Some(lib), bind)
+}
+
+/// Why a library with no door is refused: a 1.5.5 JSON-contract plugin, named as one (THE DESIGN
+/// §11.8: no legacy loading), or any other library that is no plugin of this host's.
+fn no_door<K: Kind>(lib: &Lib, missing: libloading::Error) -> LoadError {
+    let l = lib.0.as_ref().expect("an opened library");
+    // SAFETY: the symbol is only looked up, never called; nothing is read through it.
+    match unsafe { l.get::<*const ()>(JSON_CONTRACT_SYMBOL) } {
+        Ok(_) => LoadError::JsonContract { kind: K::CODE },
+        Err(_) => LoadError::NoDoor(missing.to_string()),
+    }
 }
 
 /// The stated rendering's head facts against the host's, before anything is opened.
 fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
     let facts = ManifestFacts::read(stated)?;
-    if facts.mechanism_version != MECHANISM_VERSION {
-        return Err(LoadError::ManifestMechanism {
-            stated: facts.mechanism_version,
-            host: MECHANISM_VERSION,
-        });
-    }
-    if facts.kind != K::CODE {
-        return Err(LoadError::ManifestKind {
+    match facts.refusal() {
+        Some(mechanism @ LoadError::ManifestMechanism { .. }) => Err(mechanism),
+        _ if facts.kind != K::CODE => Err(LoadError::ManifestKind {
             stated: facts.kind,
             want: K::CODE,
-        });
+        }),
+        Some(kind_abi) => Err(kind_abi),
+        None => Ok(()),
     }
-    if facts.kind_abi != K::CODE.abi_version() {
-        return Err(LoadError::ManifestKindAbi {
-            stated: facts.kind_abi,
-            host: K::CODE.abi_version(),
-        });
-    }
-    Ok(())
 }
 
 /// What a staged library turned out to be.

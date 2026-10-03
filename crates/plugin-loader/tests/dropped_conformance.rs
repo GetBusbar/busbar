@@ -475,6 +475,7 @@ fn a_plugin_built_against_another_kind_abi_is_refused() {
     assert_eq!(
         load::<Secret>(&lib, &newer).err(),
         Some(LoadError::ManifestKindAbi {
+            kind: facts.kind,
             stated: host + 1,
             host,
         })
