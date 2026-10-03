@@ -1103,8 +1103,8 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
     )
 }
 
-/// THE MCP PLANE'S CONFORMANCE RIG, BOTH WAYS (BUSBAR-1.6.0.md Part 3 §12 "Proven by": the plane
-/// conformance suite, compiled-in and dropped-in through one table; THE DESIGN §11.4).
+/// THE MCP PLANE'S CONFORMANCE RIG, BOTH WAYS (BUSBAR-1.6.0.md, the plane driver's "Proven by":
+/// the plane conformance suite, compiled-in and dropped-in through one table).
 ///
 /// The linked door (`plane_door::door`) and this crate's dropped-in image (the `mcp_door` example,
 /// the same door behind `export_door!`) are each admitted through the one loader on one
@@ -1590,7 +1590,7 @@ mod both_ways {
             Some("https://busbar.example/mcp")
         );
 
-        // A request answered from what the plane holds: the catalogue's answer, streamed whole.
+        // A request answered from what the plane holds: the catalogue's answer, written whole.
         let a = step(&t, "arrive tools/list");
         assert_eq!(a.outcome, Outcome::Ready);
         assert_eq!(
@@ -1614,7 +1614,7 @@ mod both_ways {
             .expect("a call count");
         assert!(
             calls > 1,
-            "a 32-byte buffer streams the answer over several calls"
+            "a 32-byte buffer takes the answer over several calls"
         );
         let catalogue = busbar_plane_mcp::catalogue::Catalogue::build(
             1,
