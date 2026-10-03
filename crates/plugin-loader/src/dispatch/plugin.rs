@@ -1149,6 +1149,12 @@ impl<K: Kind> Plugin<K> {
         self.inner.faulted.load(Ordering::Acquire)
     }
 
+    /// Whether the Statement declares a need whose target comes from the instance's settings
+    /// (`target_from`), on the connection table it was handed (none without one).
+    pub fn targets_from_settings(&self) -> bool {
+        self.inner.needs.iter().any(|n| !n.target_from.is_empty())
+    }
+
     /// Whether `open` answered READY and `close` has not.
     pub fn is_open(&self) -> bool {
         self.inner.is_open()
