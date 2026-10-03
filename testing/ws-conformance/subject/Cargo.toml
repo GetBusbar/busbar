@@ -4,13 +4,14 @@ version = "0.0.0"
 publish = false
 edition = "2021"
 rust-version = "1.97"
-description = "Autobahn|Testsuite subject: busbar's ws transport composed over tcp, echoing on loopback."
+description = "Autobahn|Testsuite subject: busbar's ws door framed by the connector's own listener, echoing on loopback."
 
-# TESTKIT, NOT PRODUCT PATH. This binary exists only so the Autobahn|Testsuite fuzzingclient has a
-# real busbar transport to point at. It is not shipped, not built by `cargo build --bin busbar`,
-# and carries no plane/protocol meaning of its own -- it composes the SAME
-# chain the root folds: `WsTransport` over the `tcp` door, served over the host's sockets by the
-# connector.
+# TESTKIT, NOT PRODUCT PATH. This binary exists only so the Autobahn|Testsuite fuzzingclient has
+# busbar's real WebSocket framer to point at. It is not shipped and not built by `cargo build --bin
+# busbar`, and it adds no product surface: it uses the connector's EXISTING public listener API
+# (`Listening::bind` with the `ws` door, `poll_accept`, `poll_piece`, `emit`), the one inbound path
+# every busbar socket takes since INBOUND-LISTEN H5, with the door admitted through the root's own
+# doors module (ARCHITECT ruling 2026-10-02, CONFORMANCE-RIGS).
 [[bin]]
 name = "ws-conformance-subject"
 path = "src/main.rs"
@@ -18,10 +19,9 @@ path = "src/main.rs"
 [dependencies]
 busbar-contract = { path = "../../../crates/busbar-contract" }
 busbar-transport-ws = { path = "../../../crates/busbar-transport-ws" }
-busbar-transport-tcp = { workspace = true }
-# The root's transport doors (`crates/busbar/src/root/doors.rs`, mounted by path): the tcp door
-# admitted through the one dispatcher and served over the host's sockets by the connector.
+# The root's transport doors (`crates/busbar/src/root/doors.rs`, mounted by path): the ws door
+# admitted through the one dispatcher, opened, and handed to the connector as its framer table.
 busbar-core-connector = { path = "../../../crates/busbar-core-connector" }
 busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
 futures = { workspace = true }
