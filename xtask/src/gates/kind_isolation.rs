@@ -59,8 +59,8 @@
 //!   at `crates/busbar`, the COMPOSITION ROOT, where the tree hand-wires one file per plane and
 //!   where a plane-named accept loop was landed on a sibling branch, all of it green because
 //!   nothing counted it. This row counts, for EVERY kind and EVERY crate, how many times that crate
-//!   names that kind's derived vocabulary — every `.rs` and `.toml` under it, WHOLE TEXT, comments
-//!   and tests and Cargo features and filenames included — against per-cell ceilings in
+//!   names that kind's derived vocabulary — every `.rs` and `.toml` under it (never `Cargo.toml`, owner 2026-10-03), WHOLE TEXT, comments
+//!   and tests and filenames included — against per-cell ceilings in
 //!   [`REGISTRY_FILE`]'s `[[edge]]`, `[[cell]]` and `[[disagreement]]` tables, exact in both
 //!   directions. See [`matrix`].
 //!

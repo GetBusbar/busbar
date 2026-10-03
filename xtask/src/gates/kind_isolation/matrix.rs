@@ -51,9 +51,8 @@
 //!
 //! ## WHAT IS SCANNED: EVERYTHING, INCLUDING COMMENTS, INCLUDING TESTS
 //!
-//! Every `.rs` and every `.toml` under the crate, whole text — identifiers, string literals, doc
-//! comments, ordinary comments, `#[cfg(feature = …)]` attributes, Cargo dependency names, Cargo
-//! feature names — AND the file's own path, so `root/voice_serve.rs` is a hit before a byte of it
+//! Every `.rs` and every `.toml` under the crate EXCEPT `Cargo.toml`, whole text — identifiers, string literals, doc
+//! comments, ordinary comments, `#[cfg(feature = …)]` attributes — AND the file's own path, so `root/voice_serve.rs` is a hit before a byte of it
 //! is read. Nothing is stripped: a plane named in a doc comment of the kernel is the kernel's
 //! reader being taught a plane, and the incident that motivated this row (`root-voice-serve`, a
 //! plane-named accept loop behind a plane-named feature) named its plane in the filename, the
@@ -63,6 +62,14 @@
 //! naming a plane; the only place tests may legitimately name planes is the composition root's,
 //! because the root's tests drive the assembly — and that is a LISTED cell with a citation and a
 //! ceiling, not a silent `continue` in this file.
+//!
+//! **`Cargo.toml` IS NOT SCANNED (owner 2026-10-03: "Cargo.toml is ignored blanketly from this
+//! check").** The composition root must name every compiled-in plugin crate in its manifest's
+//! dependency and feature lines (owner rule: every plugin can be compiled in or dropped in), so a
+//! manifest name is the mechanism, not coupling. Dependency edges are still policed where they
+//! belong: `kind-isolation:deps`, `:test-deps`, the edge census, `ship-edge` and
+//! `unlisted-dep-edge` read cargo metadata and are unchanged. Every other `.toml` (`qa/*.toml`,
+//! dialect and plugin manifests) is still scanned.
 //!
 //! ## NO SILENT EXEMPTIONS: `qa/kind-isolation.toml` IS THE WHOLE ALLOWANCE
 //!
@@ -503,11 +510,6 @@ fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
 struct Cell {
     /// The HIGHEST of the scanners, never the lowest.
     count: usize,
-    /// The slice of `count` that landed inside a `Cargo.toml`. Manifest edges are already
-    /// governed by `kind-isolation:deps`; `count - manifest` is the SOURCE-only count the
-    /// law0-neutral-instance class measures, so a dependency name does not double-count
-    /// against a ceiling that dependency scanning already owns.
-    manifest: usize,
     by_segments: usize,
     by_windows: usize,
     /// The third scanner: the line as the COMPILER sees it, escapes decoded and adjacent literals
@@ -631,6 +633,10 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     let mut wire_locks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (rel, text) in &files {
         let rel = rel.clone();
+        // OWNER 2026-10-03: "Cargo.toml is ignored blanketly from this check" (see the module doc).
+        if is_cargo_manifest(&rel) {
+            continue;
+        }
         let Some(dir) = owning_dir(&rel) else {
             continue;
         };
@@ -690,9 +696,6 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
             cell.by_decoded += h.by_decoded;
             let n = h.by_segments.max(h.by_windows).max(h.by_decoded);
             cell.count += n;
-            if rel.ends_with("Cargo.toml") {
-                cell.manifest += n;
-            }
             let mut mark = String::new();
             if h.by_segments != h.by_windows {
                 mark.push_str("\t[scanners disagree]");
@@ -710,6 +713,12 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         }
     }
     Ok((matrix, files.len(), skipped))
+}
+
+/// Is `rel` a Cargo manifest, by file name? The matrix does not count these (owner 2026-10-03).
+/// Only the exact name `Cargo.toml`: every other `.toml` is still scanned.
+fn is_cargo_manifest(rel: &str) -> bool {
+    rel == "Cargo.toml" || rel.ends_with("/Cargo.toml")
 }
 
 /// Where the wire locks live, one `<lock>.wire.json` per dialect (see [`crate::wire_lock`]).
@@ -2069,8 +2078,8 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
 
 /// THE LAW 0/1 ARMED CLASS — evaluated UNCONDITIONALLY of the `[[cell]]` ledger: a NEUTRAL
 /// crate's ceiling against [`instance_vocab_kinds`] is 0, and no ratchet row can raise it.
-/// Cargo.toml is excepted (`cell.manifest`) because a manifest edge is already governed by
-/// `kind-isolation:deps`; arming it here too would double-count the same dependency name.
+/// Cargo.toml is not read by the matrix at all (owner 2026-10-03, see [`is_cargo_manifest`]); a
+/// manifest edge is governed by `kind-isolation:deps`.
 ///
 /// `enforced` is the readiness gate: `None` means every `Family::Neutral` crate is checked
 /// (the ship twin, which owes zero everywhere unconditionally); `Some(list)` restricts the
@@ -2085,7 +2094,7 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
         if !is_neutral || !instance_vocab_kinds().contains(kind) {
             continue;
         }
-        let source_count = cell.count - cell.manifest; // Cargo-exempt
+        let source_count = cell.count;
         if source_count == 0 {
             continue;
         }
@@ -3501,25 +3510,42 @@ pub fn selftest<'a>(
         &["busbar-transport-tcp", "plane"],
     ));
 
-    // THE CARGO PROSE FIELDS. `description`, `keywords` and `readme` are shipped to the registry
-    // under the crate's name, and they are read on exactly the same terms as its source.
-    report.push(prove_rows_red(
+    // `Cargo.toml` IS NOT SCANNED (owner 2026-10-03: "Cargo.toml is ignored blanketly from this
+    // check"). The composition root names every compiled-in plugin in its manifest on purpose.
+    // GREEN: a plane named in a dependency line, a feature and a `description` of a transport's
+    // manifest does not move the matrix. RED, beside it: the same name in a `.rs` file still does.
+    report.push(prove_rows_green(
         cx,
         gate,
-        "a plane named in a transport's Cargo `description`/`keywords` -- shipped prose is scanned",
+        "a plane named in a Cargo.toml dependency, feature and description is not counted -- the manifest is the mechanism",
         &[ROW_MATRIX],
         {
             let rel = "crates/busbar-transport-tcp/Cargo.toml";
             let text = cx.read(rel).unwrap_or_default();
-            plant(cx,
+            plant(
+                cx,
                 rel,
-                &text.replacen(
-                    "[package]\n",
-                    "[package]\ndescription = \"the wire the llm plane rides\"\nkeywords = [\"mcp\"]\n",
-                    1,
+                &format!(
+                    "{}\n[features]\nmcp-plane = [\"dep:busbar-plane-mcp\"]\n[dependencies.busbar-plane-mcp]\npath = \"../busbar-plane-mcp\"\noptional = true\n",
+                    text.replacen(
+                        "[package]\n",
+                        "[package]\ndescription = \"the wire the llm plane rides\"\nkeywords = [\"mcp\"]\n",
+                        1,
+                    )
                 ),
             )
         },
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a plane named in a .rs file is still counted -- only Cargo.toml is exempt",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/busbar-transport-tcp/src/names_a_plane.rs",
+            "pub const P: &str = \"busbar-plane-mcp\";\n",
+        ),
         &["busbar-transport-tcp", "plane"],
     ));
 
