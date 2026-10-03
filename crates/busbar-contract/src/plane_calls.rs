@@ -84,6 +84,10 @@ pub struct InstanceDecl {
     pub scope_kinds: Vec<&'static str>,
     /// The per-registration keys the kernel parses for the trust lifecycle.
     pub trust_keys: Vec<crate::plane::TrustKeyDecl>,
+    /// Its chained record kinds, as its tail declares them (each `kind` an index into
+    /// [`InstanceDecl::record_kinds`]): the kernel frames and verifies their chain (Part 3 §12, "Record
+    /// writes ... A record kind the plane declares as chained keeps its declared framing").
+    pub record_chains: Vec<crate::abi::plane::RecordChain>,
 }
 
 /// ONE PLANE INSTANCE'S CALLS, as the kernel's plane driver makes them.

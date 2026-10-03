@@ -595,7 +595,8 @@ impl Node {
     /// future's stack (a plane driver's unit), walked through the loop under this node's in-flight
     /// table, sweep and gauge, its hold on the journal before it runs, as [`Node::answer`] walks a
     /// handed one. `key` is from [`Node::mint`], `arrived` from [`Node::arrived`] (the reading the
-    /// unit's steps charged in); `principal` is whose arrival hold the table enters.
+    /// unit's steps charged in); `principal` is whose arrival hold the table enters; `history` the
+    /// card history pinned at its door, which its one line is priced against.
     ///
     /// Its facts are opened on `post` for the whole drive, so an end the loop's guard reaches for a
     /// caller that went away is posted there (`NodeEndPost`), and the egress walk's dispatch record
@@ -611,9 +612,9 @@ impl Node {
         post: &NodeEndPost,
         units: &U,
         late: Late,
+        history: Option<crate::root::kernel::PinnedHistory>,
     ) -> bool {
         self.sweep(arrived);
-        let history = crate::root::kernel::ROOT_CARD.pin();
         post.open(key, principal.clone(), arrived, history.clone());
         let meter = Arc::new(AccrualMeter::new());
         let hold =
@@ -1889,6 +1890,12 @@ impl NodeEndPost {
         self.open
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The node this site posts onto.
+    #[must_use]
+    pub fn node(&self) -> &Arc<Node> {
+        &self.node
     }
 
     /// Unit `key`'s facts, at its admission.

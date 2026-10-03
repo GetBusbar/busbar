@@ -98,13 +98,35 @@ pub fn attach(
         return;
     };
     let pool = BlockingPool::new(tokio::runtime::Handle::current(), QUEUE_CAP);
-    kernel.attach_pool(Arc::new(pool));
+    if kernel.attach_pool(Arc::new(pool)) {
+        // THE WRITE-BEHIND CADENCE (ruling H2 U10, the root's half): the kernel's record flush
+        // tick, once, for the services' life, beside the pool its flushes run on.
+        let cadence = Arc::clone(&kernel);
+        tokio::spawn(async move { cadence.flushes().await });
+    }
     if let Some(signer) = signer {
         kernel.attach_signer(signer);
     }
     if let Some(owner) = demotion_owner(planes) {
         kernel.attach_demotions(Arc::clone(demotions), owner);
     }
+}
+
+/// How long the graceful shutdown waits for the record write-behind to drain (ruling H2 U10: a hung
+/// store holds no shutdown): five of the kernel's flush intervals.
+pub const RECORD_DRAIN: std::time::Duration =
+    std::time::Duration::from_secs(5 * busbar_kernel::host_records::FLUSH_INTERVAL.as_secs());
+
+/// THE GRACEFUL SHUTDOWN'S RECORD DRAIN (ruling H2 U10, the root's half): every queued plane record
+/// write is flushed before the store closes, waiting up to [`RECORD_DRAIN`]; off any runtime
+/// worker (the drain blocks). `true` when all were written, or no kernel services are composed.
+pub async fn drain_records(late: &LateServices) -> bool {
+    let Some(kernel) = late.kernel() else {
+        return true;
+    };
+    tokio::task::spawn_blocking(move || kernel.drain(RECORD_DRAIN))
+        .await
+        .unwrap_or(false)
 }
 
 /// The section key of the ONE plane that declares the demotion record kind: the plane whose
@@ -307,6 +329,8 @@ pub struct ServedPlane {
     /// Its egress, sealed for the generation: the kernel's walk over the connector. `None` = none
     /// composed: every walk of its units is exhausted at once (nothing is dialled).
     pub egress: Option<Arc<Egress>>,
+    /// The kernel's host services it was admitted to: its units' records are written there.
+    pub kernel: Arc<KernelServices>,
 }
 
 impl std::fmt::Debug for ServedPlane {
@@ -489,6 +513,21 @@ pub fn compose_planes(
         )
         .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
         let declared = plugin.declared();
+        // EVERY REPORTED CLASS IS REGISTERED (THE DESIGN §7): the classes a plane may report are the
+        // ones its tail declares, linked or dropped in, registered once at its composition, so its
+        // units' lines resolve them.
+        let mut registration = crate::root::kernel::new_registration();
+        for class in served_facts
+            .billable_classes
+            .iter()
+            .chain(&served_facts.fee_units)
+        {
+            if registration.key(class).is_none() {
+                return Err(format!(
+                    "{instance}: its class '{class}' cannot join the image's vocabulary"
+                ));
+            }
+        }
         served.planes.push(ServedPlane {
             instance: instance.clone(),
             driver: Arc::new(driver),
@@ -500,10 +539,20 @@ pub fn compose_planes(
                 &served_facts.billable_classes,
                 &served_facts.fee_units,
                 served_facts.audit_kind,
+                served_facts
+                    .keeps
+                    .iter()
+                    .map(|k| busbar_kernel::plane_driver::ResponseKeep {
+                        mode: k.mode,
+                        kept: k.kept.iter().map(|n| (*n).to_string()).collect(),
+                        denied: k.denied.iter().map(|n| (*n).to_string()).collect(),
+                    })
+                    .collect(),
             ),
             pools: DoorPools::of(section),
             money: plane_money,
             egress: None,
+            kernel: Arc::clone(&kernel),
         });
     }
     Ok(served)
@@ -563,6 +612,8 @@ fn open(plugin: &DoorPlane, section: &serde_yaml::Value) -> Result<OwnedSnapshot
 pub struct DataRoutes {
     served: Served,
     post: Arc<crate::root::plane_node::NodeEndPost>,
+    /// The card history a unit is pinned to at its door: the process's (`ROOT_CARD`).
+    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
 }
 
 #[cfg(linked_axis_node)]
@@ -598,7 +649,11 @@ pub fn mount(served: Served) -> Result<(), String> {
             ))
         });
         ROUTES
-            .set(Arc::new(DataRoutes { served, post }))
+            .set(Arc::new(DataRoutes {
+                served,
+                post,
+                pin: || crate::root::kernel::ROOT_CARD.pin(),
+            }))
             .map_err(|_| "the data routes are mounted once".to_string())?;
         busbar_kernel::plane_driver::serve::mount_data(data_door)
             .map_err(|_| "a data door is already mounted".to_string())
@@ -717,7 +772,7 @@ impl DataRoutes {
         arrival: Arrival,
     ) -> Option<Rendered> {
         let served = &self.served.planes[plane];
-        let node = crate::root::plane_node::node();
+        let node = self.post.node();
         let unit = node.mint();
         let arrived = node.arrived();
         let steps = DoorSteps::new(
@@ -731,6 +786,7 @@ impl DataRoutes {
                 key,
                 open,
                 arrived: arrived.secs(),
+                records: Some(Arc::clone(served.kernel.units())),
             },
         );
         let far = DoorFar {
@@ -745,7 +801,15 @@ impl DataRoutes {
         let late: crate::root::linked::node::Late =
             Box::new(move || report_of(&money, unit, &facts));
         let _taken = node
-            .drive_borrowed(unit, arrived, &principal, &self.post, &units, late)
+            .drive_borrowed(
+                unit,
+                arrived,
+                &principal,
+                &self.post,
+                &units,
+                late,
+                (self.pin)(),
+            )
             .await;
         let rendered = units.take_rendered();
         let status = rendered

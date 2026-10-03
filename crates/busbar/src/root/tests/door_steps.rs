@@ -157,12 +157,16 @@ fn the_door_facts_index_the_fee_units_among_the_billable_classes() {
         &["a", "fee", "b"],
         &["fee", "nowhere"],
         "audit",
+        Vec::new(),
     );
     assert_eq!(f.plane, "p");
     assert_eq!(f.scope_kind.as_deref(), Some("grant"));
     assert_eq!(&*f.fee_units, &[1]);
     assert_eq!(f.classes.len(), 3);
-    assert_eq!(super::door_facts("p", &[], &[], &[], "a").scope_kind, None);
+    assert_eq!(
+        super::door_facts("p", &[], &[], &[], "a", Vec::new()).scope_kind,
+        None
+    );
 }
 
 /// A ROUTE'S EGRESS POOL: a pool route walks its own label; a direct route its entry's own cell,
@@ -213,4 +217,60 @@ fn a_blocked_admission_renders_as_the_budget_units_door_does() {
         super::refusal_for(&LimitBlocked::MissingGroup("g".into())).reason(),
         ReasonCode::OverBudget
     );
+}
+
+/// A UNIT'S PRINCIPAL IS ON THE HOST'S UNIT RECORDS FOR ITS LIFE (so a host service the plane calls
+/// inside its crossings, `entitlement.check`, answers for it): written once authenticate passes,
+/// struck when its steps drop; a refused unit writes none.
+#[test]
+fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
+    use busbar_contract::caps::{Authenticate, Pass, PrincipalId};
+    use busbar_kernel::host_units::UnitRecords;
+    use busbar_kernel::teller::{UnitCtx, Units};
+    let facts = super::door_facts("p", &[], &[], &[], "a", Vec::new());
+    let pools = DoorPools::default();
+    let records = std::sync::Arc::new(UnitRecords::default());
+    let key = std::sync::Arc::new(busbar_contract::records::VirtualKey {
+        id: "vk_one".into(),
+        ..Default::default()
+    });
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let ctx = |n: u64| UnitCtx {
+        key: busbar_contract::UnitKey::new(n),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let steps = |caller_key: Option<std::sync::Arc<busbar_contract::records::VirtualKey>>| {
+        super::DoorSteps::new(
+            &facts,
+            &pools,
+            std::sync::Arc::new(|_: &str| None),
+            busbar_kernel::test_support::TestApp::new().build(),
+            None,
+            super::DoorCaller {
+                principal: PrincipalId::new("vk_one"),
+                key: caller_key,
+                open: false,
+                arrived: 0,
+                records: Some(std::sync::Arc::clone(&records)),
+            },
+        )
+    };
+    let keyed = steps(Some(std::sync::Arc::clone(&key)));
+    assert!(records.get(7).is_none(), "nothing before authenticate");
+    let _ = keyed.authenticate(&Pass::<Authenticate>::mint(&seal), &ctx(7));
+    let held = records.get(7).expect("recorded at authenticate");
+    assert_eq!(
+        held.principal.as_ref().map(|k| k.id.as_str()),
+        Some("vk_one")
+    );
+    drop(keyed);
+    assert!(records.get(7).is_none(), "struck when its steps drop");
+
+    let unkeyed = steps(None);
+    let _ = unkeyed.authenticate(&Pass::<Authenticate>::mint(&seal), &ctx(8));
+    assert!(records.get(8).is_none(), "a refused unit writes no record");
 }

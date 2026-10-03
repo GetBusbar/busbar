@@ -442,6 +442,7 @@ fn rig(
                     need: NeedId(0),
                     base_url: format!("https://{host}/v1/"),
                     provider: format!("p{k}"),
+                    keep: super::ResponseKeep::default(),
                     auth: Some(AuthBinding {
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,

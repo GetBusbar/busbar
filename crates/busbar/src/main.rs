@@ -1394,6 +1394,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         let m = gov.flush_metering();
         tracing::info!(flushed = m, "metering rows flushed on shutdown");
     }
+    // THE PLANE RECORD WRITE-BEHIND, drained before the store closes (`root::serve::drain_records`).
+    if !root::serve::drain_records(&late_services).await {
+        tracing::warn!("plane record writes were still queued at shutdown");
+    }
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
     // no side-car state file to flush).

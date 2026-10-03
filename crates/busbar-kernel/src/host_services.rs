@@ -274,6 +274,10 @@ pub struct InstanceFacts {
     pub trust: Vec<(String, TrustEntry)>,
     /// The scope kinds its tail declares: `entitlement.check` answers only for these.
     pub scope_kinds: Vec<String>,
+    /// Its chained record kinds, as its tail declares them (`PlaneTail::record_chains`, each `kind`
+    /// an index into [`InstanceFacts::record_kinds`]): a record write of one is appended to the
+    /// kernel's journal, never put.
+    pub record_chains: Vec<busbar_contract::abi::plane::RecordChain>,
 }
 
 /// Why an instance was not admitted.

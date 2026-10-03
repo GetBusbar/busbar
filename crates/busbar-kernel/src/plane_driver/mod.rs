@@ -82,7 +82,7 @@ use tokio::sync::{watch, Notify};
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberRoute, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    AuthBinding, Egress, EgressFarEnd, MemberRoute, ResponseKeep, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
@@ -244,6 +244,7 @@ impl PlaneDriver {
             }),
             trust: trust.into_iter().collect(),
             scope_kinds: d.scope_kinds.iter().map(|k| (*k).to_string()).collect(),
+            record_chains: d.record_chains.clone(),
         };
         services.admit(&d.label, facts).map_err(|e| e.to_string())?;
         let driver = calls.driver();

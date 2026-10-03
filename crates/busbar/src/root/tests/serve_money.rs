@@ -77,7 +77,11 @@ fn governed(instance: &'static str) -> Option<Governed> {
         .build();
     Some(Governed {
         _published: Published(instance),
-        routes: Arc::new(DataRoutes { served, post }),
+        routes: Arc::new(DataRoutes {
+            served,
+            post,
+            pin: || crate::root::kernel::ROOT_CARD.pin(),
+        }),
         money,
         gov,
         key: Arc::new(key),

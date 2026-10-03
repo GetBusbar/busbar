@@ -121,6 +121,20 @@ pub struct ServedFacts {
     /// whether a unit incurred its fee (THE DESIGN §7, "the plane reports ... whether a fee unit was
     /// incurred").
     pub fee_units: Vec<&'static str>,
+    /// Each need's response-head rule, in Statement need order (`Need::keep_mode`, its kept and
+    /// denied names): what of a far end's head the host hands the plane on that need.
+    pub keeps: Vec<NeedKeep>,
+}
+
+/// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NeedKeep {
+    /// `KEEP_NAMED` or `KEEP_ALL_EXCEPT_DENIED`.
+    pub mode: u32,
+    /// `keep_response_headers`.
+    pub kept: Vec<&'static str>,
+    /// `deny_response_headers`.
+    pub denied: Vec<&'static str>,
 }
 
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
@@ -183,6 +197,20 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(kept)
                 .collect(),
+            keeps: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| NeedKeep {
+                    mode: n.keep_mode,
+                    kept: listed(n.keep_response_headers, n.keep_response_headers_len)
+                        .into_iter()
+                        .map(kept)
+                        .collect(),
+                    denied: listed(n.deny_response_headers, n.deny_response_headers_len)
+                        .into_iter()
+                        .map(kept)
+                        .collect(),
+                })
+                .collect(),
         },
     })
 }
@@ -242,6 +270,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         signing: (!domain.is_empty() && !prefix.is_empty()).then_some((domain, prefix)),
         scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
         trust_keys,
+        record_chains: listed(t.record_chains, t.record_chains_len),
     }
 }
 

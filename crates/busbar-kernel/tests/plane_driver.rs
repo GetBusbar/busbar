@@ -969,6 +969,7 @@ fn declaring() -> Double {
                 default: None,
                 mechanisms: &[],
             }],
+            record_chains: Vec::new(),
         },
         ..Double::default()
     }

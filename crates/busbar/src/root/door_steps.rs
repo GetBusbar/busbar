@@ -319,6 +319,9 @@ pub struct DoorFacts {
     pub fee_units: Arc<[u32]>,
     /// Its `audit_kind`: what a unit refused before its decode is audited under.
     pub audit_kind: OpClassId,
+    /// Each need's response-head rule, in Statement need order: what of a far end's head reaches
+    /// the plane on that need.
+    pub keeps: Vec<busbar_kernel::plane_driver::ResponseKeep>,
 }
 
 /// What one unit carries between its steps.
@@ -334,6 +337,9 @@ struct DoorUnit {
     grant: Option<AdmitGrant>,
     /// Whether the unit's money facts were opened (it was charged).
     charged: bool,
+    /// The key the unit's record was written under on the host's unit records, once authenticate
+    /// passed; it is struck when these steps drop.
+    recorded: Option<u64>,
 }
 
 /// ONE UNIT'S KERNEL STEPS (see the module doc), lent to the plane driver for the unit's life.
@@ -349,6 +355,9 @@ pub struct DoorSteps<'s> {
     open: bool,
     /// The unit's arrival epoch, seconds: the window every charge and refund of it lands in.
     arrived: u64,
+    /// The host's unit records: a host service the plane calls inside the unit's crossings
+    /// (`entitlement.check`) answers for the principal recorded here.
+    records: Option<Arc<busbar_kernel::host_units::UnitRecords>>,
     unit: Mutex<DoorUnit>,
 }
 
@@ -372,6 +381,8 @@ pub struct DoorCaller {
     pub open: bool,
     /// Its arrival epoch, seconds.
     pub arrived: u64,
+    /// The host's unit records the unit's principal is written on while it runs.
+    pub records: Option<Arc<busbar_kernel::host_units::UnitRecords>>,
 }
 
 impl<'s> DoorSteps<'s> {
@@ -397,6 +408,7 @@ impl<'s> DoorSteps<'s> {
             key: caller.key,
             open: caller.open,
             arrived: caller.arrived,
+            records: caller.records,
             unit: Mutex::new(DoorUnit::default()),
         }
     }
@@ -489,6 +501,17 @@ impl<'s> DoorSteps<'s> {
     }
 }
 
+impl Drop for DoorSteps<'_> {
+    /// The unit ended (returned, or its future was dropped): its record leaves the host's unit
+    /// records.
+    fn drop(&mut self) {
+        let recorded = self.lock().recorded.take();
+        if let (Some(records), Some(unit)) = (self.records.as_ref(), recorded) {
+            records.ended(unit);
+        }
+    }
+}
+
 /// The record's facts for a unit of these steps.
 fn facts(op: OpClassId, outcome: &Outcome) -> busbar_contract::AuditFacts {
     busbar_contract::AuditFacts {
@@ -533,16 +556,23 @@ impl Units for DoorSteps<'_> {
         SeatVerdict::refuse(token, Refusal::new(ReasonCode::HandoffMismatch))
     }
 
-    fn authenticate(
-        &self,
-        token: &Pass<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> SeatVerdict<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
         match admission(self.key.as_ref(), self.open) {
             Admission::Refused => {
                 SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
             Admission::Keyed | Admission::Anonymous => {
+                // The unit's verified principal, on the host's unit records for its life: a host
+                // service called inside its crossings answers for it.
+                if let Some(records) = &self.records {
+                    records.admitted(
+                        ctx.key.get(),
+                        busbar_kernel::host_units::UnitRecord {
+                            principal: self.key.clone(),
+                        },
+                    );
+                    self.lock().recorded = Some(ctx.key.get());
+                }
                 SeatVerdict::proceed(token, Authenticated::Principal(self.principal.clone()))
             }
         }
@@ -723,6 +753,7 @@ pub fn door_facts(
     classes: &[&'static str],
     fee_units: &[&str],
     audit_kind: &'static str,
+    keeps: Vec<busbar_kernel::plane_driver::ResponseKeep>,
 ) -> DoorFacts {
     let index: HashMap<&str, u32> = classes.iter().zip(0u32..).map(|(c, i)| (*c, i)).collect();
     DoorFacts {
@@ -735,7 +766,97 @@ pub fn door_facts(
             .filter_map(|f| index.get(f).copied())
             .collect(),
         audit_kind: OpClassId::new(audit_kind),
+        keeps,
     }
+}
+
+// ── the egress ───────────────────────────────────────────────────────────────────────────────────
+
+/// THE EGRESS OF ONE DOOR PLANE, sealed for a generation (`BUSBAR-1.6.0.md` Part 3 §12 "The route
+/// pump": the route step is the kernel's existing egress walk; Part 4 Axis 3 / THE DESIGN §5: the
+/// host owns the allow-list, pin, breaker and meter valves, and the wire is the connector's): the
+/// plane instance `caller`'s connection table `conns` (the connector its needs were declared on),
+/// one member per entry `routes` seals (each named by its (plane key, entry), Q-FL3), a pool per
+/// named pool of its section (its members, its fallback pool) and a pool per entry its direct
+/// routes walk, the breaker under every pool's default ladder, the members' permits, the node's
+/// clock and counters, and `journal` (the write-ahead dispatch record, `$`, ARCHITECT P3 (c)).
+///
+/// # Errors
+///
+/// A named pool whose member entry has no sealed route: the load is refused, naming both.
+pub fn compose_egress(
+    facts: &DoorFacts,
+    pools: &DoorPools,
+    caller: busbar_contract::conn::InstanceId,
+    conns: Arc<dyn busbar_contract::conn::PollConns>,
+    routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
+    journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
+    stream_ceiling_secs: u64,
+) -> Result<busbar_kernel::plane_driver::Egress, String> {
+    use busbar_kernel_egress::{Member, OnExhausted, Pool};
+    let mut members: BTreeMap<String, Member> = BTreeMap::new();
+    let mut sealed = HashMap::new();
+    let mut names = Vec::new();
+    for (entry, id) in pools.entries().iter().zip(0u64..) {
+        let Some(route) = routes.get(entry) else {
+            continue;
+        };
+        // What of the far end's head crosses is the dialled need's own declared rule.
+        let mut route = route.clone();
+        route.keep = facts
+            .keeps
+            .get(route.need.0 as usize)
+            .cloned()
+            .unwrap_or_default();
+        let destination = busbar_contract::dest::DestinationId::new(id);
+        let name = plane_lane(&facts.plane, entry);
+        members.insert(entry.clone(), Member::new(destination, name.clone(), 1));
+        sealed.insert(destination, route);
+        names.push((destination, name));
+    }
+    let mut built: HashMap<String, Pool> = HashMap::new();
+    for (label, entries) in pools.pools() {
+        let list = entries
+            .iter()
+            .map(|e| {
+                members.get(e).cloned().ok_or_else(|| {
+                    format!("pool '{label}' names entry '{e}', which has no sealed route")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut pool = Pool::new(label.clone(), list);
+        if let Some(fallback) = pools.fallback(label) {
+            pool.on_exhausted = OnExhausted::FallbackPool(fallback.to_string());
+        }
+        built.insert(label.clone(), pool);
+    }
+    for member in members.values() {
+        built.insert(
+            member.name.clone(),
+            Pool::new(member.name.clone(), vec![member.clone()]),
+        );
+    }
+    let policy = built.keys().fold(
+        crate::root::adapters::BreakerPolicy::new()
+            .with_default_cell(busbar_kernel::store::pool_breaker_cfg(None)),
+        |policy, pool| {
+            policy.with_pool(pool.as_str(), busbar_kernel::store::pool_breaker_cfg(None))
+        },
+    );
+    Ok(busbar_kernel::plane_driver::Egress {
+        caller,
+        conns,
+        breaker: Arc::new(crate::root::adapters::BreakerAdapter::with_policy(policy)),
+        capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
+        clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
+        journal,
+        telemetry: Arc::new(crate::root::egress_ports::WalkTelemetry::new(names)),
+        floor: busbar_kernel_egress::WeightedFloor::new(),
+        pools: built,
+        routes: sealed,
+        stream_ceiling_secs,
+        error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
+    })
 }
 
 #[cfg(test)]

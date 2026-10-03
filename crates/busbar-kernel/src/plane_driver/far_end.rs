@@ -89,6 +89,35 @@ pub struct MemberRoute {
     /// The provider the member is served by: the metering row's provider column, as 1.5.5's
     /// `lane.provider` (v1.5.5 `crates/busbar/src/proxy/usage.rs` `ledger_and_meter`).
     pub provider: String,
+    /// Which of the far end's response head fields cross to the plane: its need's declared keep
+    /// rule (THE DESIGN §5, "The response head and trailers": the kernel copies only those).
+    pub keep: ResponseKeep,
+}
+
+/// A NEED'S RESPONSE-HEAD RULE, as its Statement declares it (`Need::keep_mode`,
+/// `keep_response_headers`, `deny_response_headers`): the far end's head fields that reach the plane.
+/// The default keeps nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResponseKeep {
+    /// `KEEP_NAMED` or `KEEP_ALL_EXCEPT_DENIED`.
+    pub mode: u32,
+    /// Under `KEEP_NAMED`: the fields kept (lower-case).
+    pub kept: Vec<String>,
+    /// Under `KEEP_ALL_EXCEPT_DENIED`: the fields never kept beyond the kernel's own (lower-case).
+    pub denied: Vec<String>,
+}
+
+impl ResponseKeep {
+    /// Whether the field `name` (lower-case) crosses, the answer's `connection` fields `nominated`
+    /// (`abi::host::conn::connector::keeps_response_field`, the one rule).
+    #[must_use]
+    pub fn keeps<'a>(&self, name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
+        let kept: Vec<&str> = self.kept.iter().map(String::as_str).collect();
+        let denied: Vec<&str> = self.denied.iter().map(String::as_str).collect();
+        busbar_contract::abi::host::conn::connector::keeps_response_field(
+            self.mode, &kept, &denied, name, nominated,
+        )
+    }
 }
 
 /// A member's auth binding: the auth instance, the handle its `open_outbound` answered, the
@@ -918,6 +947,9 @@ impl EgressFarEnd<'_> {
         };
         match piece.kind {
             PieceKind::Completion => Some(self.end(true)),
+            // THE FAR END'S HEAD (HEAD-FIELDS: a framer yields the response head as the FIRST
+            // Fields piece, always): the answer's status, and the head fields its need keeps.
+            PieceKind::Fields if !answered => Some(self.head(token, &piece, &buf[..piece.len])),
             // The far end's fields after its body (trailers): handed to the plane, which decides
             // what they mean (one that reads a trailer status reads it; any other ignores them).
             PieceKind::Fields | PieceKind::HookReply => Some(FarPiece {
@@ -931,6 +963,41 @@ impl EgressFarEnd<'_> {
             })),
             PieceKind::Body => Some(self.first(token, &piece, buf[..piece.len].to_vec())),
         }
+    }
+
+    /// The answer's HEAD: its status judged as the first answer is ([`Self::first`]), and the
+    /// fields of its block the member's need keeps, names lower-case, in the far end's order.
+    fn head(
+        &self,
+        token: &Pass<Route>,
+        piece: &busbar_contract::conn::Piece,
+        block: &[u8],
+    ) -> FarPiece {
+        use busbar_contract::abi::transport::fields::lines;
+        let keep = {
+            let w = self.lock();
+            w.live
+                .as_ref()
+                .and_then(|l| self.egress.routes.get(&l.member.destination))
+                .map(|r| r.keep.clone())
+                .unwrap_or_default()
+        };
+        let nominated: Vec<&[u8]> = lines(block)
+            .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
+            .map(|(_, v)| v)
+            .collect();
+        let head: Vec<(Vec<u8>, Vec<u8>)> = lines(block)
+            .filter_map(|(n, v)| {
+                let name = String::from_utf8_lossy(n).to_ascii_lowercase();
+                keep.keeps(&name, nominated.iter().copied())
+                    .then(|| (name.into_bytes(), v.to_vec()))
+            })
+            .collect();
+        let mut answer = self.first(token, piece, Vec::new());
+        if !answer.fail_over {
+            answer.head = head;
+        }
+        answer
     }
 
     /// A body piece of the answer, under the error-body cap when the answer is a relayed failure.
