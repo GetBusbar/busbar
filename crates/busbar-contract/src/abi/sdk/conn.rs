@@ -23,9 +23,10 @@ use crate::abi::host::conn::connector::{
     StreamIn, UpgradeIn,
 };
 use crate::abi::host::service::{
-    op, ClockNowIn, ClockReading, HostSlots, NeedAdmitIn, ServiceFn, ServiceHead, ServiceOut,
+    op, ClockNowIn, ClockReading, DiskAppendIn, DiskWritten, HostSlots, NeedAdmitIn, ServiceFn,
+    ServiceHead, ServiceOut,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
+use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_OCTETS};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
 
 /// Why a connector service answered without its result.
@@ -62,6 +63,22 @@ impl std::error::Error for ConnFailure {}
 
 /// A connector service's answer.
 pub type Answer<T> = Poll<Result<T, ConnFailure>>;
+
+/// Why a `disk.append` ([`Connector::disk_append`]) did not land its bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskFailure {
+    /// The step that failed when the host answered FAILED (`DISK_OPEN_FAILED` /
+    /// `DISK_APPEND_FAILED`); `0` for any other answer.
+    pub step: u64,
+    /// What the rotation the host ran before the failed append did (`rotated`, `faults`); all zero
+    /// when the host wrote no result.
+    pub rotation: DiskWritten,
+    /// The answer, with the host's text.
+    pub why: ConnFailure,
+}
+
+/// A `disk.append`'s answer.
+pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
 
 /// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
 /// the wake, the connector table and the host services table.
@@ -155,7 +172,8 @@ service_in!(
     ReplyIn,
     RequestIn,
     ClockNowIn,
-    NeedAdmitIn
+    NeedAdmitIn,
+    DiskAppendIn
 );
 
 const fn blank_head() -> ServiceHead {
@@ -256,9 +274,28 @@ impl Connector<'_> {
         &self,
         op: u32,
         f: ServiceFn,
-        mut input: I,
+        input: I,
         handle: CompletionHandle,
     ) -> Answer<ServiceOut> {
+        let (answered, out) = self.cross_out(op, f, input, handle);
+        match answered {
+            Outcome::Ready => Poll::Ready(Ok(out)),
+            Outcome::Pending => Poll::Pending,
+            Outcome::Failed => Poll::Ready(Err(ConnFailure::Failed(host_text(out.error)))),
+            Outcome::Refused => Poll::Ready(Err(ConnFailure::Refused(host_text(out.error)))),
+            Outcome::Fault => Poll::Ready(Err(ConnFailure::Fault)),
+        }
+    }
+
+    /// Cross into service `op` through `f` with `input`, under `handle`: the outcome the host
+    /// returned and the `out` it wrote, whatever the outcome.
+    fn cross_out<I: ServiceIn>(
+        &self,
+        op: u32,
+        f: ServiceFn,
+        mut input: I,
+        handle: CompletionHandle,
+    ) -> (Outcome, ServiceOut) {
         *input.head() = ServiceHead {
             size: std::mem::size_of::<I>() as u32,
             op,
@@ -276,13 +313,7 @@ impl Connector<'_> {
             error: absent(),
         };
         let answered = f(self.host.ctx, std::ptr::from_ref(&input).cast(), &mut out).outcome();
-        match answered {
-            Outcome::Ready => Poll::Ready(Ok(out)),
-            Outcome::Pending => Poll::Pending,
-            Outcome::Failed => Poll::Ready(Err(ConnFailure::Failed(host_text(out.error)))),
-            Outcome::Refused => Poll::Ready(Err(ConnFailure::Refused(host_text(out.error)))),
-            Outcome::Fault => Poll::Ready(Err(ConnFailure::Fault)),
-        }
+        (answered, out)
     }
 
     /// Establish a stream for the declared need `need` (its index), to `target` (`None` = the
@@ -420,6 +451,74 @@ impl Connector<'_> {
             Poll::Ready(r) => r.map(|_| ()),
             // It never pends: a host that says so broke the service's rule.
             Poll::Pending => Err(ConnFailure::Fault),
+        }
+    }
+
+    /// APPEND `bytes` to the local file the host maps this instance's destination `dest_key` to
+    /// (`disk.append`, the host's bounded disk lane, THE DESIGN §11.11 R4): the host owns the path
+    /// and rotates the file by its own rules before the append when it is due. It may pend: a body
+    /// re-issues it with the same `bytes` on resume (the replay rule) and reads the stored answer.
+    /// READY with what the host wrote: the whole of `bytes` landed, and whether the file was rotated
+    /// first. A FAILED answer names its step and still reports the rotation that ran before it.
+    pub fn disk_append(&mut self, dest_key: &str, bytes: &[u8]) -> DiskAnswer {
+        let blank = DiskWritten {
+            size: 0,
+            rotated: 0,
+            faults: 0,
+            _reserved: [0; 2],
+            written: 0,
+        };
+        let fail = |step, rotation, why| {
+            Poll::Ready(Err(DiskFailure {
+                step,
+                rotation,
+                why,
+            }))
+        };
+        // SAFETY: NULL, or the host's services table, valid for the instance's life.
+        let Some(f) = unsafe { self.host.services.as_ref() }.and_then(|s| s.disk_append) else {
+            return fail(0, blank, ConnFailure::Unarmed);
+        };
+        if self.ticket.is_none() {
+            return fail(0, blank, ConnFailure::NoTicket);
+        }
+        let handle = CompletionHandle {
+            ticket: self.ticket,
+            seq: self.issued,
+            _reserved: 0,
+        };
+        self.issued += 1;
+        let mut result = blank;
+        let input = DiskAppendIn {
+            head: blank_head(),
+            dest_key: AbiStr {
+                ptr: dest_key.as_ptr(),
+                len: dest_key.len(),
+            },
+            bytes: Blob {
+                ptr: bytes.as_ptr(),
+                len: bytes.len(),
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            },
+            result: std::ptr::from_mut(&mut result),
+        };
+        let (answered, out) = self.cross_out(op::DISK_APPEND, f, input, handle);
+        let rotation = if result.size as usize == std::mem::size_of::<DiskWritten>() {
+            result
+        } else {
+            blank
+        };
+        match answered {
+            Outcome::Ready => Poll::Ready(Ok(result)),
+            Outcome::Pending => Poll::Pending,
+            Outcome::Failed => fail(
+                out.value,
+                rotation,
+                ConnFailure::Failed(host_text(out.error)),
+            ),
+            Outcome::Refused => fail(0, rotation, ConnFailure::Refused(host_text(out.error))),
+            Outcome::Fault => fail(0, blank, ConnFailure::Fault),
         }
     }
 

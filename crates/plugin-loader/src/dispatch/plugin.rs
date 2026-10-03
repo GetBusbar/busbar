@@ -521,6 +521,48 @@ impl Instance {
         }
     }
 
+    /// Bind each DESTINATION key the instance was granted to the file `settings` (the settings
+    /// `open` or `refresh` hands the plugin) give it, before the plugin sees them: a non-empty path
+    /// under the key, rotated at the `rotate_mb` (the host's rotation key,
+    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it, keeping
+    /// [`busbar_contract::services::DISK_KEEP`] archives. A key the settings leave unset is not
+    /// bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the file.
+    fn bind_destinations(&self, settings: Blob) {
+        let Some(keys) = self.wake.destinations.get() else {
+            return;
+        };
+        let bytes: &[u8] = if settings.ptr.is_null() {
+            &[]
+        } else {
+            // SAFETY: the host's own settings blob, live for the crossing it is handed to.
+            unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
+        };
+        let doc = serde_json::from_slice::<serde_json::Value>(bytes).unwrap_or_default();
+        let rotate_at = doc
+            .get(busbar_contract::services::DISK_ROTATE_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .map(|mb| mb.saturating_mul(1024 * 1024));
+        let bound = keys
+            .iter()
+            .filter_map(|key| {
+                let path = doc.get(key)?.as_str()?;
+                (!path.is_empty() && !path.contains('\0')).then(|| {
+                    busbar_contract::services::DiskDest {
+                        key: key.clone(),
+                        path: path.to_owned(),
+                        rotate_at,
+                        keep: busbar_contract::services::DISK_KEEP,
+                    }
+                })
+            })
+            .collect();
+        *self
+            .wake
+            .bound
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = bound;
+    }
+
     pub(crate) fn leave_lifecycle(&self) {
         self.lifecycle_busy.store(false, Ordering::Release);
     }
@@ -643,7 +685,9 @@ impl Instance {
                 open.err_cap = err_cap;
             }
             // SAFETY: as above.
-            self.declare_targeted(unsafe { (*input.cast::<OpenIn>()).settings });
+            let settings = unsafe { (*input.cast::<OpenIn>()).settings };
+            self.declare_targeted(settings);
+            self.bind_destinations(settings);
         }
         if s == slot::READY {
             // `ready` is handed the same host tables `open` was.
@@ -653,7 +697,9 @@ impl Instance {
         // SAFETY: the host wrote `in.size`; a frame that holds a `RefreshIn` is read as one.
         if s == slot::REFRESH && unsafe { (*input).size } as usize >= size_of::<RefreshIn>() {
             // SAFETY: as above.
-            self.declare_targeted(unsafe { (*input.cast::<RefreshIn>()).settings });
+            let settings = unsafe { (*input.cast::<RefreshIn>()).settings };
+            self.declare_targeted(settings);
+            self.bind_destinations(settings);
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
         // tail field absent), then states its size: the plugin writes at most min(out.size, own).
@@ -1131,6 +1177,14 @@ impl<K: Kind> Plugin<K> {
         };
         bind.dispatcher.adopt(&plugin.inner);
         Ok(plugin)
+    }
+
+    /// GRANT this instance the DESTINATIONS its manifest declares (the settings keys that name a
+    /// file the host appends to for it, `declares.destinations`), before it opens: its `open` and
+    /// `refresh` bind each to the path its settings give, and `disk.append` serves it those only.
+    /// Granted once; a second grant is ignored.
+    pub fn grant_destinations(&self, keys: &[String]) {
+        let _ = self.inner.wake.destinations.set(keys.to_vec());
     }
 
     /// What the kind read from the Statement at bind ([`Kind::context`]), as the kind's type `T`.

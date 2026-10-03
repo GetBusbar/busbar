@@ -228,6 +228,9 @@ impl<'r> ExportRows<'r> {
                     row.first_party(),
                     &row.manifest.declares.metrics,
                 )?;
+                // The destinations its manifest declares: `open` binds each to the path the
+                // operator's settings give it, and `disk.append` serves the instance those only.
+                p.grant_destinations(&row.manifest.declares.destinations);
                 let opened = ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?;
                 Ok(Arc::new(opened))
             }
