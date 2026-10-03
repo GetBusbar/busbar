@@ -22,6 +22,10 @@
 // The config below serves `providers:`/`models:`, so the build must link the plane that takes body
 // ingress — the linked table's answer, never a feature name.
 #![cfg(linked_axis_body_ingress)]
+// The config names `module: prometheus`, the linked scrape sink on the export-doors axis: a build
+// that links no export door (the single-plane rows link only the exports axis) refuses that module at
+// boot ("unknown exporter 'prometheus'"), which is correct product behaviour, not what this measures.
+#![cfg(linked_axis_export_doors)]
 
 mod common;
 
