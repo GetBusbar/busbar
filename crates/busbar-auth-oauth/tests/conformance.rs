@@ -3,10 +3,10 @@
 
 //! **THE PLUGIN TESTS ITSELF, BOTH WAYS** (BUSBAR-1.6.0.md THE DESIGN, §2; §11.4). See
 //! `busbar-auth-header/tests/conformance.rs` for the shared harness shape; this is
-//! `jwt-bearer`/`oauth-client-credentials`'s own script. The token exchange runs over the step
-//! 20-21 seam ([`mint::Wire`]), unwired here (`abi::waker` finds no host connection table), so the
-//! script proves refusal shape and cache bookkeeping; `instance_tests.rs` proves the mint end to
-//! end over a scripted need.
+//! `jwt-bearer`/`oauth-client-credentials`'s own script. The doors are bound with no connection
+//! table here, so the plugin's own needs are not granted and nothing mints: the script proves
+//! refusal shape, the not-ready answer and cache bookkeeping; `instance_tests.rs` proves the mint
+//! over a scripted need and `mint_door.rs` over the one loader and a connection table.
 //!
 //! ## The RED arms stay in the file
 //!
@@ -278,8 +278,8 @@ fn script(p: &Plugin<Auth>) -> Vec<String> {
     t.push(open_outbound(p, "bearer", Some("k"), "{}").0);
     t.push(open_outbound(p, "kerberos", Some("k"), "{}").0);
 
-    // No connection table is wired (the step 20-21 seam): the first mint fails closed, so `fields`
-    // reads the pre-first-mint sentinel.
+    // No connection table is handed: nothing mints, so `fields` is not ready (ticket-less:
+    // REFUSED, never an empty answer).
     t.push(fields(p, oauth, MODE_OWN, z(), (256, 4)));
     t.push(fields(
         p,
@@ -372,7 +372,7 @@ const EXPECTED: &[&str] = &[
      plugin",
     "open_outbound kerberos Failed settings: outbound auth style `kerberos` is not served by this \
      plugin",
-    "fields Ready  ",
+    "fields Refused ",
     "fields Refused ",
     "fields Refused ",
     "ready Ready 0",
@@ -383,7 +383,7 @@ const EXPECTED: &[&str] = &[
     "open_outbound oauth-client-credentials Ready ",
     "retire 1 Ready",
     "after retire fields Refused ",
-    "gen 2 fields Ready  ",
+    "gen 2 fields Refused ",
     "close Ready",
 ];
 

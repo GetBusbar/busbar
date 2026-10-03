@@ -40,6 +40,9 @@ const CREDENTIAL: &str = "oracle-client-0001:oracle:secret:with:colons";
 /// What one open carried: the need, the target, the method, the head target, the fields, the body.
 type Opened = (u32, String, String, String, Vec<(String, String)>, String);
 
+/// Each open's reply, piece by piece, with its bytes.
+type Replies = HashMap<ConnId, VecDeque<(Piece, Vec<u8>)>>;
+
 /// A connection table whose needs are framed: each open is recorded and answered by the token
 /// endpoint's next reply (`expires_in` 2, then 3600), one piece per read.
 #[derive(Default)]
@@ -47,7 +50,7 @@ struct TokenEndpoint {
     slab: ConnSlab<()>,
     declared: Mutex<Vec<(u32, ReadNeed, Option<String>)>>,
     opened: Mutex<Vec<Opened>>,
-    replies: Mutex<HashMap<ConnId, VecDeque<(Piece, Vec<u8>)>>>,
+    replies: Mutex<Replies>,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<u32>) -> Piece {

@@ -390,14 +390,18 @@ fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
 struct TokenEndpoint {
     slab: busbar_contract::conn::ConnSlab<()>,
     declared: std::sync::Mutex<Vec<(u32, u32, Option<String>)>>,
-    opened: std::sync::Mutex<Vec<(u32, String, Vec<u8>, String)>>,
-    replies: std::sync::Mutex<
-        std::collections::HashMap<
-            busbar_contract::conn::ConnId,
-            std::collections::VecDeque<(busbar_contract::conn::Piece, Vec<u8>)>,
-        >,
-    >,
+    opened: std::sync::Mutex<Vec<Opened>>,
+    replies: std::sync::Mutex<Replies>,
 }
+
+/// What one open carried: the need, the target, the head target, the body.
+type Opened = (u32, String, Vec<u8>, String);
+
+/// Each open's reply, piece by piece, with its bytes.
+type Replies = std::collections::HashMap<
+    busbar_contract::conn::ConnId,
+    std::collections::VecDeque<(busbar_contract::conn::Piece, Vec<u8>)>,
+>;
 
 fn reply_piece(kind: busbar_contract::conn::PieceKind, len: usize) -> busbar_contract::conn::Piece {
     use busbar_contract::conn::PieceKind;

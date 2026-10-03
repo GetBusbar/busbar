@@ -1000,12 +1000,25 @@ impl OutboundAuths {
         }
     }
 
-    /// The bind one auth row is loaded under: its needs on the connection table.
+    /// The bind one auth row is loaded under: its needs on the connection table, its diagnostics
+    /// (a mint that failed and will retry) in its own log file under the configured `plugins.logs`
+    /// (THE DESIGN #85).
     fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
+        use crate::root::loader::dispatch::{EnvelopeSink, NoSink};
+        let sink: Arc<dyn EnvelopeSink> = crate::root::linked::plugin_logs()
+            .sink(
+                name,
+                busbar_contract::abi::mechanism::KindCode::Auth,
+                Arc::new(NoSink),
+            )
+            .map_or_else(
+                |_| Arc::new(NoSink) as Arc<dyn EnvelopeSink>,
+                |s| Arc::new(s) as Arc<dyn EnvelopeSink>,
+            );
         crate::root::loader::dispatch::Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
-            sink: Arc::new(crate::root::loader::dispatch::NoSink),
+            sink,
             dispatcher: self.dispatcher.adopter(),
             conns: self.conns.clone(),
         }
