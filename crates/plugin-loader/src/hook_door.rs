@@ -59,6 +59,10 @@ const MAX_INFLIGHT_CAP: u32 = 64;
 pub const QUARANTINE_FIRST: Duration = Duration::from_secs(1);
 /// The longest trial window: each failed trial doubles the window up to this.
 pub const QUARANTINE_MAX: Duration = Duration::from_secs(30);
+/// The first wait for a `max_inflight` unit after a REFUSED submit.
+const SLOT_WAIT_FIRST: Duration = Duration::from_millis(1);
+/// The longest wait between two tries for a `max_inflight` unit: each try doubles it up to this.
+const SLOT_WAIT_MAX: Duration = Duration::from_millis(16);
 
 /// A string the host lends for a call; empty is absent (NULL).
 fn lend(s: &str) -> AbiStr {
@@ -305,6 +309,8 @@ impl Inner {
             now_ns().saturating_add(u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX));
         let mut lent = lent;
         let mut first = true;
+        let mut slot_wait = SLOT_WAIT_FIRST;
+        let mut retried_free = false;
         loop {
             let reply = self.dispatcher.submit_lent(
                 &plugin,
@@ -324,6 +330,29 @@ impl Inner {
             else {
                 return Err(Answered::TimedOut);
             };
+            // THE CAP IS BACKPRESSURE, NOT A LATCH (1.5.5's `MAX_INFLIGHT_HOOK_CALLS`, frozen): an
+            // instance whose `max_inflight` units are all held REFUSES the op and never calls the
+            // plugin. The call waits for a unit under its own budget — the units come back as the
+            // ops holding them return — and fails `TimedOut` on that budget, never at once and never
+            // past it. A refusal with a unit free (one came back since) is tried again once at once;
+            // any other refusal is the plugin's answer.
+            if done.outcome == Outcome::Refused && !plugin.is_faulted() {
+                if plugin.inflight() < plugin.max_inflight() {
+                    if !retried_free {
+                        retried_free = true;
+                        continue;
+                    }
+                } else {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(Answered::TimedOut);
+                    }
+                    tokio::time::sleep(slot_wait.min(left)).await;
+                    slot_wait = (slot_wait * 2).min(SLOT_WAIT_MAX);
+                    retried_free = false;
+                    continue;
+                }
+            }
             let out = done.frame.as_ref().map(|f| f.out);
             if done.short && first {
                 if let Some(grown) = out.as_ref().and_then(&mut regrow) {
