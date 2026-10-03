@@ -6,17 +6,17 @@
 //! Carried over from the previous release's on-exhausted tests. Every literal asserted here — the
 //! status, the kind, the detail, the wait — is the one that shipped, and each is compared against
 //! the constant rather than a retyped copy of it, so a reworded constant fails the test that reads
-//! it rather than passing a test that repeats the same mistake.
+//! it rather than passing a test that repeats the same mistake. Each is the walk's own answer
+//! ([`super::Walker`]); the cases that dispatch also run through the far end where what they
+//! claim is about the member that served.
 
 use super::harness::{ok_frames, Health, Script};
-use super::{member, Node};
+use super::{member, Node, Routed};
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::exhaustion::AT_CAPACITY_RETRY_AFTER_SECS;
 use busbar_kernel_egress::pool::OnExhausted;
 use busbar_kernel_egress::ports::Clock;
-use busbar_kernel_egress::wire::{
-    RouteOutcome, DETAIL_OVERLOADED, KIND_OVERLOADED, STATUS_SERVICE_UNAVAILABLE,
-};
+use busbar_kernel_egress::wire::{DETAIL_OVERLOADED, KIND_OVERLOADED, STATUS_SERVICE_UNAVAILABLE};
 
 /// A pool of `n` members whose every member is suppressed, so the walk finds nowhere to send.
 fn exhausted_pool(n: usize, cooldowns: &[u64]) -> Node {
@@ -43,8 +43,7 @@ fn exhausted_pool(n: usize, cooldowns: &[u64]) -> Node {
 #[test]
 fn the_default_terminal_is_the_shed_and_it_says_the_words_that_shipped() {
     let node = exhausted_pool(2, &[30, 45]);
-    let outcome = node.route("primary");
-    let shed = outcome.shed().expect("a refusal");
+    let shed = node.walker("primary").shed();
     assert_eq!(shed.status, STATUS_SERVICE_UNAVAILABLE);
     assert_eq!(shed.kind, KIND_OVERLOADED);
     assert_eq!(shed.detail, DETAIL_OVERLOADED);
@@ -54,9 +53,8 @@ fn the_default_terminal_is_the_shed_and_it_says_the_words_that_shipped() {
 #[test]
 fn the_shed_advertises_the_soonest_genuine_cooldown() {
     let node = exhausted_pool(3, &[90, 30, 60]);
-    let outcome = node.route("primary");
     assert_eq!(
-        outcome.shed().expect("a refusal").retry_after_secs,
+        node.walker("primary").shed().retry_after_secs,
         Some(30),
         "the client should come back when the first benched member is due to be probed"
     );
@@ -69,17 +67,9 @@ fn a_member_that_is_merely_busy_does_not_mask_a_sibling_in_a_long_cooldown() {
     // not become the minimum.
     node.capacity.set_ceiling(DestinationId::new(1), 1);
     let held = node.capacity.saturate(DestinationId::new(1));
-    node.pools.insert({
-        let mut pool = node.pools.get("primary").unwrap().clone();
-        pool.on_exhausted = OnExhausted::Status503;
-        pool
-    });
+    node.tune("primary", |pool| pool.on_exhausted = OnExhausted::Status503);
 
-    let outcome = node.route("primary");
-    assert_eq!(
-        outcome.shed().expect("a refusal").retry_after_secs,
-        Some(600)
-    );
+    assert_eq!(node.walker("primary").shed().retry_after_secs, Some(600));
     drop(held);
 }
 
@@ -99,22 +89,24 @@ fn a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second() {
         .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
         .collect();
 
-    let outcome = node.route("primary");
     assert_eq!(
-        outcome.shed().expect("a refusal").retry_after_secs,
+        node.walker("primary").shed().retry_after_secs,
         Some(AT_CAPACITY_RETRY_AFTER_SECS),
         "a bare one second reads as retry immediately, which just re-collides with the saturation"
     );
     assert_eq!(AT_CAPACITY_RETRY_AFTER_SECS, 2);
+    assert_eq!(
+        node.route("primary").shed().map(|r| r.retry_after),
+        Some(Some(2)),
+        "and the far end hands the same wait on"
+    );
     drop(held);
 }
 
 #[test]
 fn an_empty_candidate_set_gets_the_floor_too() {
     let node = Node::with_lanes(&[]);
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let token: busbar_contract::caps::Pass<busbar_contract::caps::Route> =
-        busbar_contract::caps::Pass::mint(&seal);
+    let token = super::route_token();
     let wait = busbar_kernel_egress::exhaustion::retry_after_secs(
         node.breaker.as_ref(),
         &[],
@@ -132,8 +124,7 @@ fn an_empty_candidate_set_gets_the_floor_too() {
 fn a_pool_with_no_members_at_all_refuses() {
     let mut node = Node::with_lanes(&[]);
     node.pool("primary", Vec::new());
-    let outcome = node.route("primary");
-    let shed = outcome.shed().expect("a refusal");
+    let shed = node.walker("primary").shed();
     assert_eq!(shed.detail, DETAIL_OVERLOADED);
     assert_eq!(shed.retry_after_secs, None);
 }
@@ -154,25 +145,34 @@ fn spill_node() -> Node {
             ..Health::default()
         },
     );
-    node.transport.script("b", Script::Frames(ok_frames()));
+    node.conns.script("b", Script::Frames(ok_frames()));
     node
 }
 
 #[test]
 fn a_spill_reaches_the_other_pools_healthy_member() {
     let node = spill_node();
+    let taken = node.walker("primary").take();
+    assert_eq!(taken.member.destination, DestinationId::new(1));
+    assert_eq!(taken.pool, "overflow");
+    assert!(taken.degraded, "a spill's dispatch is a degraded one");
+    drop(taken);
+
     let outcome = node.route("primary");
     match outcome {
-        RouteOutcome::Delivered(delivered) => {
+        Routed::Delivered(delivered) => {
             assert_eq!(delivered.destination, DestinationId::new(1));
             assert_eq!(
                 delivered.pool, "overflow",
                 "the outcome is recorded against the pool that actually served it"
             );
-            assert!(delivered.degraded);
         }
         other => panic!("expected the spill to serve, got {other:?}"),
     }
+    assert_eq!(
+        node.breaker.outcomes("overflow", DestinationId::new(1)),
+        vec![busbar_kernel_egress::ports::Outcome::Success]
+    );
 }
 
 #[test]
@@ -191,8 +191,7 @@ fn a_spill_that_comes_back_round_terminates() {
         },
     );
 
-    let outcome = node.route("primary");
-    let shed = outcome.shed().expect("a refusal");
+    let shed = node.walker("primary").shed();
     assert_eq!(shed.detail, DETAIL_OVERLOADED);
 }
 
@@ -203,9 +202,8 @@ fn a_spill_at_an_unconfigured_pool_refuses_with_the_floor() {
         p.on_exhausted = OnExhausted::FallbackPool("nowhere".to_string());
     });
 
-    let outcome = node.route("primary");
     assert_eq!(
-        outcome.shed().expect("a refusal").retry_after_secs,
+        node.walker("primary").shed().retry_after_secs,
         Some(AT_CAPACITY_RETRY_AFTER_SECS)
     );
 }
@@ -236,12 +234,12 @@ fn a_spill_applies_the_target_pools_own_blocklist() {
             ..Health::default()
         },
     );
-    node.transport.script("b", Script::Frames(ok_frames()));
-    node.transport.script("c", Script::Frames(ok_frames()));
+    node.conns.script("b", Script::Frames(ok_frames()));
+    node.conns.script("c", Script::Frames(ok_frames()));
 
     let outcome = node.route("primary");
     assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(2)),
+        matches!(&outcome, Routed::Delivered(d) if d.destination == DestinationId::new(2)),
         "the blocklisted member must be unreachable through the spill: {outcome:?}"
     );
 }
@@ -249,11 +247,10 @@ fn a_spill_applies_the_target_pools_own_blocklist() {
 #[test]
 fn a_spill_carries_the_deadline_across_the_hop() {
     let node = spill_node();
-    let mut ctx = node.request_ctx();
+    let mut walker = node.walker("primary");
     node.clock.advance_secs(node.timeout_secs + 1);
-    let outcome = node.route_with("primary", &mut ctx);
     assert_eq!(
-        outcome.shed().expect("a refusal").detail,
+        walker.shed().detail,
         busbar_kernel_egress::wire::DETAIL_REQUEST_TIMEOUT,
         "a spill is not a fresh request"
     );
@@ -273,7 +270,7 @@ fn least_bad_node() -> Node {
     );
     node.tune("primary", |p| p.on_exhausted = OnExhausted::LeastBad);
     for lane in ["a", "b", "c"] {
-        node.transport.script(lane, Script::Frames(ok_frames()));
+        node.conns.script(lane, Script::Frames(ok_frames()));
     }
     node
 }
@@ -303,10 +300,11 @@ fn the_last_resort_takes_the_soonest_cooldown() {
         },
     );
 
-    let outcome = node.route("primary");
+    let taken = node.walker("primary").take();
+    assert_eq!(taken.member.destination, DestinationId::new(1), "{taken:?}");
     assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1)),
-        "{outcome:?}"
+        taken.degraded,
+        "the last resort's dispatch is a degraded one"
     );
 }
 
@@ -337,10 +335,11 @@ fn the_last_resort_ranks_only_usable_members() {
         },
     );
 
-    let outcome = node.route("primary");
+    let taken = node.walker("primary").take();
+    assert_eq!(taken.member.destination, DestinationId::new(1), "{taken:?}");
     assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1)),
-        "{outcome:?}"
+        taken.degraded,
+        "the last resort's dispatch is a degraded one"
     );
 }
 
@@ -371,11 +370,13 @@ fn the_last_resort_skips_a_saturated_best_member_for_a_free_sibling() {
     node.capacity.set_ceiling(DestinationId::new(0), 1);
     let held = node.capacity.saturate(DestinationId::new(0));
 
-    let outcome = node.route("primary");
-    assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1)),
+    let taken = node.walker("primary").take();
+    assert_eq!(
+        taken.member.destination,
+        DestinationId::new(1),
         "refusing because the single best member is momentarily busy defeats the whole point"
     );
+    drop(taken);
     drop(held);
 }
 
@@ -405,10 +406,11 @@ fn the_last_resort_never_reaches_a_blocklisted_member() {
         },
     );
 
-    let outcome = node.route("primary");
-    assert!(
-        matches!(&outcome, RouteOutcome::Delivered(d) if d.destination == DestinationId::new(2)),
-        "the blocklist is applied before anything reads the membership: {outcome:?}"
+    let taken = node.walker("primary").take();
+    assert_eq!(
+        taken.member.destination,
+        DestinationId::new(2),
+        "the blocklist is applied before anything reads the membership: {taken:?}"
     );
 }
 
@@ -451,8 +453,7 @@ fn the_last_resort_sheds_when_every_member_is_saturated() {
         .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
         .collect();
 
-    let outcome = node.route("primary");
-    let shed = outcome.shed().expect("a refusal");
+    let shed = node.walker("primary").shed();
     assert_eq!(shed.detail, DETAIL_OVERLOADED);
     assert_eq!(shed.retry_after_secs, Some(10));
     drop(held);
@@ -473,7 +474,7 @@ fn queue_node(max_ms: u64) -> Node {
         p.on_exhausted = OnExhausted::Queue { max_ms };
     });
     for lane in ["a", "b"] {
-        node.transport.script(lane, Script::Frames(ok_frames()));
+        node.conns.script(lane, Script::Frames(ok_frames()));
     }
     node
 }
@@ -497,11 +498,9 @@ fn the_wait_sheds_at_once_when_nothing_it_could_wait_for_is_busy() {
         },
     );
 
-    let outcome = node.route("primary");
-    assert_eq!(
-        outcome.shed().expect("a refusal").retry_after_secs,
-        Some(60)
-    );
+    assert_eq!(node.walker("primary").shed().retry_after_secs, Some(60));
+    // v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:191-202`: the pre-check sheds before the
+    // depth gauge is touched.
     assert_eq!(
         *node.telemetry.queue_parks.lock().unwrap(),
         0,
@@ -522,27 +521,23 @@ fn the_wait_dispatches_on_the_member_that_freed_a_slot() {
     let held_a = node.capacity.saturate(DestinationId::new(0));
     node.capacity.saturate_until_waited(DestinationId::new(1));
 
-    let mut ctx = node.request_ctx();
-    let plan = node.route_with("primary", &mut ctx);
+    let taken = node.walker("primary").take();
 
-    assert!(plan.is_delivered(), "{plan:?}");
     assert_eq!(
         *node.telemetry.queue_parks.lock().unwrap(),
         1,
-        "the request reached the answer by parking, not by the ordered walk"
+        "the request reached its member by parking, not by the ordered walk"
     );
-    let RouteOutcome::Delivered(delivered) = &plan else {
-        unreachable!("just asserted delivered");
-    };
     assert_eq!(
-        delivered.destination,
+        taken.member.destination,
         DestinationId::new(1),
-        "the answer came off the member that freed a slot"
+        "the answer comes off the member that freed a slot"
     );
     assert!(
-        delivered.degraded,
+        taken.degraded,
         "an answer served out of the wait terminal is a degraded one"
     );
+    drop(taken);
     assert_eq!(
         *node.telemetry.queue_depth.lock().unwrap(),
         0,
@@ -560,8 +555,7 @@ fn the_wait_sheds_when_no_slot_frees_and_the_gauge_balances() {
         .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
         .collect();
 
-    let outcome = node.route("primary");
-    let shed = outcome.shed().expect("a refusal");
+    let shed = node.walker("primary").shed();
     assert_eq!(shed.detail, DETAIL_OVERLOADED);
     assert_eq!(shed.retry_after_secs, Some(AT_CAPACITY_RETRY_AFTER_SECS));
     assert_eq!(*node.telemetry.queue_parks.lock().unwrap(), 1);
@@ -573,6 +567,8 @@ fn the_wait_sheds_when_no_slot_frees_and_the_gauge_balances() {
     drop(held);
 }
 
+/// v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:212-214`: the depth gauge is RAII, decremented
+/// on every exit including a dropped future.
 #[test]
 fn the_wait_gives_the_depth_gauge_back_when_the_parked_request_is_dropped() {
     let node = queue_node(250);
@@ -584,8 +580,7 @@ fn the_wait_gives_the_depth_gauge_back_when_the_parked_request_is_dropped() {
 
     // Park the request, then walk away from it without ever polling it again — a client that hung
     // up mid-wait. The increment happened; nothing but a drop will run the decrement.
-    let mut ctx = node.request_ctx();
-    node.route_poll_once_then_drop("primary", &mut ctx);
+    node.walker("primary").abandon_wait();
 
     assert_eq!(
         *node.telemetry.queue_parks.lock().unwrap(),
@@ -611,7 +606,13 @@ fn the_wait_is_bounded_by_what_is_left_of_the_walk_and_not_only_by_its_own_setti
 
     // The wait would run forever on its own setting; the walk's remaining budget is the real
     // bound, and the shed proves the wait ended.
-    let outcome = node.route("primary");
-    assert!(outcome.shed().is_some());
+    let started = node.clock.now_millis();
+    let shed = node.walker("primary").shed();
+    assert_eq!(shed.detail, DETAIL_OVERLOADED);
+    assert_eq!(
+        node.clock.now_millis() - started,
+        u128::from(node.timeout_secs * 1000),
+        "the wait ended at the walk's own deadline"
+    );
     drop(held);
 }

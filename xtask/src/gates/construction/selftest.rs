@@ -225,6 +225,9 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 ///   `known_red_deps`, the rule's two review lists.
 /// * every COUNT RATCHET (`ceilings::pins`: the legacy reach and the ports-only figures) pinned to
 ///   what it measures, in both directions.
+/// * `one-pick-site` — `max_sites` pinned to the production pick sites the tree measures, so the
+///   question a plant asks is "is ONE MORE site seen", whatever the sites still draining
+///   (busbar-llm's engine, at LLM-ENGINE-DELETE) leave the count at.
 /// * `ceiling-census` — the base's copy of the ceilings file planted as THIS file.
 ///
 /// NOTHING HERE REACHES THE GATE ITSELF. `cargo xtask gate construction` never sees this overlay;
@@ -309,6 +312,20 @@ fn green_fixture(
             if let Some(t) = ceilings::set_int(&text, &pin.table, &pin.key, row.current) {
                 text = t;
                 cleared.push(pin.row.clone());
+            }
+        }
+    }
+    // ── one-pick-site ───────────────────────────────────────────────────────────────────────────
+    // Q-GG1: the far end walks through the egress unit's one walk, so the kernel's pick sites are
+    // one; busbar-llm's engine still holds two until LLM-ENGINE-DELETE. Pinned to the measurement
+    // in both directions, as a ratcheted ceiling is, so every plant below is the only new site.
+    if let Some(row) = rows.iter().find(|r| r.id == "one-pick-site") {
+        if row.current >= 0 && row.current != row.threshold {
+            if let Some(t) =
+                ceilings::set_int(&text, "rules.one-pick-site", "max_sites", row.current)
+            {
+                text = t;
+                cleared.push(row.id.clone());
             }
         }
     }
@@ -407,6 +424,25 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             "zz_planted_shape.rs",
             "planted_response_escape",
         ],
+    ));
+
+    // Q-GG1 (ARCHITECT ruling a): THE ONE WALK'S PICK IS THE KERNEL'S ONLY ONE. The far end's own
+    // pull walk moved into busbar-kernel-egress as `walk::Walk`, whose `Walk::pick` is the one
+    // production call of the verb in any kernel crate. A second one beside it — a far end that
+    // grows its own pick again, a terminal that re-enters selection itself — is the second
+    // selection policy the rule exists to catch, and the row names it.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel-egress/src/zz_planted_second_pick.rs",
+        "pub fn planted_second_pick() {\n    let _ = pick_among(&input, ctx);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a second lane pick in a kernel crate, beside the one walk's",
+        &["one-pick-site"],
+        ov,
+        &["crates/busbar-kernel-egress/src/zz_planted_second_pick.rs"],
     ));
 
     // request-path-fn-size names its files exactly, so the plant goes into one of them. PREPENDED,

@@ -7,10 +7,12 @@
 //! dropped gives the probe back. A guard that was disarmed — because the dispatch it covers
 //! recorded its own outcome — gives nothing back. And every release is checked against the epoch
 //! captured at the win, so a guard dropped LATE, after a peer has won a newer probe on the same
-//! cell, cannot revert the peer's.
+//! cell, cannot revert the peer's. The cases that route take the probe through the walk and hand
+//! it to the production far end's attempt, which owns it until it records an outcome.
 
 use super::harness::{ok_frames, Health, Script};
 use super::{member, Node};
+use busbar_contract::conn::ConnError;
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::pool::OnExhausted;
 use busbar_kernel_egress::select::ProbeGuard;
@@ -80,7 +82,7 @@ fn a_delivered_answer_hands_the_probe_to_the_outcome_it_recorded() {
             ..Health::default()
         },
     );
-    node.transport.script("a", Script::Frames(ok_frames()));
+    node.conns.script("a", Script::Frames(ok_frames()));
 
     assert!(node.route("primary").is_delivered());
     assert!(
@@ -149,10 +151,8 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
             ..Health::default()
         },
     );
-    node.transport.script(
-        "a",
-        Script::DialError(busbar_contract::transport::wire::TransportError::Refused),
-    );
+    node.conns
+        .script("a", Script::DialError(ConnError::Refused));
 
     assert!(node.route("primary").shed().is_some());
     let log = node.breaker.log.lock().unwrap();
@@ -162,29 +162,69 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
     let released = log
         .iter()
         .position(|e| matches!(e, super::harness::Recorded::ProbeReleased(..)));
+    // Unconditionally, not behind an `if let`: an attempt that won the probe and recorded nothing
+    // would leave the cell half-open — the member excluded from every pick after it — and skipping
+    // the assertion for the absence would report that as a pass.
+    // v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1764-1781`: a transport failure records its
+    // transient (which resolves the probe in the breaker) and releases nothing itself.
     let observed = observed.expect("a failed attempt tells the breaker what happened");
-    // Unconditionally, not behind an `if let`: a guard that was armed and never released leaves
-    // `released` at `None`, and skipping the ordering assertion for the absence would report a
-    // wedged half-open cell — the member excluded from every later pick — as a pass.
-    let released = released.expect("the guard released the probe it armed");
     assert!(
-        observed < released,
-        "the outcome is recorded first, which is what makes the guard's release a safe no-op"
+        released.is_none_or(|released| observed < released),
+        "the outcome is recorded first, which is what makes any release after it a safe no-op: \
+         {log:?}"
+    );
+}
+
+/// An answer the breaker records nothing for — the caller's own fault — resolves no probe, so the
+/// attempt gives back the one it won; 1.5.5 released it on exactly this exit (v1.5.5
+/// `crates/busbar/src/proxy/engine/mod.rs:1900-1912`; the request-too-large exit at `:2131-2138`).
+#[test]
+fn an_answer_that_records_nothing_gives_the_probe_back() {
+    let mut node = Node::with_lanes(&["a"]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
+    node.breaker.set(
+        DestinationId::new(0),
+        Health {
+            cooldown: 30,
+            offers_probe: Some(9),
+            ..Health::default()
+        },
+    );
+    node.conns.script(
+        "a",
+        Script::Frames(vec![super::harness::frame(
+            Some(busbar_contract::transport::wire::WireStatusClass::CallerFault),
+            "bad",
+        )]),
+    );
+
+    assert!(
+        node.route("primary").is_delivered(),
+        "the caller's fault is relayed"
+    );
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![busbar_kernel_egress::ports::Outcome::RecordNothing]
+    );
+    assert_eq!(
+        node.breaker.probe_releases(),
+        vec![("primary".to_string(), DestinationId::new(0), 9)],
+        "a cell must never wedge half-open on an answer that recorded nothing"
     );
 }
 
 // ── the shed paths that dispatch nothing ────────────────────────────────────────────────────────
 //
-// A pick can win the recovery probe and then never reach a dispatch: the walk resolves the picked
-// member against the verified set AFTER the pick, and a member that set does not carry sheds
-// internally. Nothing downstream records an outcome on such a path, so the probe has to come back
-// from the pick itself — otherwise the cell stays half-open and the member is excluded from every
+// A pick can win the recovery probe and then never reach a dispatch: the far end resolves the
+// picked member against its sealed routes AFTER the pick, and a member with no route is not sent.
+// Nothing downstream records an outcome on such a path, so the probe has to come back when the
+// attempt is settled — otherwise the cell stays half-open and the member is excluded from every
 // later pick as a probe already in flight.
 
 #[test]
 fn a_walk_that_sheds_internally_gives_a_won_probe_back() {
     let mut node = Node::with_lanes(&["a"]);
-    // Destination 3 is not in the verified set, so the walk resolves it to nothing and sheds.
+    // Destination 3 has no sealed route, so the far end sends nothing to it.
     node.pool("primary", vec![member(DestinationId::new(3), "ghost")]);
     node.breaker.set(
         DestinationId::new(3),
