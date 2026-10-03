@@ -40,13 +40,17 @@ pub fn registry(
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
-    super::loader::boot::registry(
+    let registry = super::loader::boot::registry(
         Build {
             linked: i.linked,
             scan,
         },
         note,
-    )
+    )?;
+    // The dropped-in secret plugins that state a door join the secret axis (the root's, over the
+    // one dispatcher); a 1.5.x one with no door stays on the cold lane (M6).
+    super::linked::secret_rows().set_dropped(discovered(&registry, |kind| kind == "secret")?);
+    Ok(registry)
 }
 
 /// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
@@ -131,8 +135,20 @@ fn document(path: &std::path::Path) -> Option<serde_json::Value> {
 ///
 /// A stated rendering that does not read back, naming the plugin.
 pub fn discover(registry: &PluginRegistry) -> Result<Vec<Candidate>, String> {
+    discovered(registry, |_| true)
+}
+
+/// [`discover`] over the admitted plugins whose manifest kind `keep` accepts.
+fn discovered(
+    registry: &PluginRegistry,
+    keep: impl Fn(&str) -> bool,
+) -> Result<Vec<Candidate>, String> {
     let mut out = Vec::new();
-    for row in registry.loadable() {
+    for row in registry
+        .loadable()
+        .iter()
+        .filter(|r| keep(&r.manifest.kind))
+    {
         let Some(stated) = row
             .manifest
             .stated_rendering()
