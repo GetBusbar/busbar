@@ -29,6 +29,9 @@ pub fn address_of(authority: &str) -> Option<SocketAddr> {
         .then(|| SocketAddr::from(([127, 0, 0, 1], port)))
 }
 
+/// How long a dialled socket sits idle before the OS probes it (1.5.5's `tcp_keepalive`).
+pub const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Begin a non-blocking connect to `addr`: the socket comes back at once, the connect in flight.
 ///
 /// # Errors
@@ -38,6 +41,10 @@ pub fn connect(addr: SocketAddr) -> io::Result<TcpStream> {
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
     socket.set_nonblocking(true)?;
     socket.set_tcp_nodelay(true)?;
+    // 1.5.5's egress client probed an idle socket after 60 s (`tcp_keepalive(60s)`, v1.5.5
+    // `crates/busbar/src/main.rs`), so a connection a middlebox dropped while it sat in the pool is
+    // found by the probe, not by the next request.
+    socket.set_tcp_keepalive(&socket2::TcpKeepalive::new().with_time(KEEPALIVE_IDLE))?;
     match socket.connect(&addr.into()) {
         Ok(()) => {}
         Err(e) if in_progress(&e) => {}
@@ -89,3 +96,7 @@ pub fn listen(bind: &str) -> io::Result<TcpListener> {
     socket.listen(BACKLOG)?;
     Ok(socket.into())
 }
+
+#[cfg(test)]
+#[path = "tests/socket_tests.rs"]
+mod tests;
