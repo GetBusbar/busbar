@@ -358,7 +358,7 @@ harness = false
 name = "plane_host_vtable_alloc"
 harness = false
 
-# `txn_fence_red` is the rustc cfg `scripts/txn-fence.sh` sets to compile the NEGATIVE compile
+# `txn_fence_red` is the rustc cfg `cargo xtask txn-fence` sets to compile the NEGATIVE compile
 # fence (admin/v1/json/tests/txn_fence.rs). It is a cfg rather than a cargo feature because a
 # feature whose only effect is to break the build makes `--all-features` red for no defect.
 [lints.rust]
