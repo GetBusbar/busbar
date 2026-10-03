@@ -66,6 +66,19 @@ pub(crate) const ROWS_TIER: &[Field] = &[
 
 /// The response wire paths this dialect carries (the drop walk's map).
 pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "candidates[].groundingMetadata.groundingChunks[].web.uri",
+    "candidates[].groundingMetadata.groundingChunks[].web.title",
+    "candidates[].safetyRatings[].category",
+    "candidates[].safetyRatings[].blocked",
+    "promptFeedback.safetyRatings[].category",
+    "promptFeedback.safetyRatings[].blocked",
+    "usageMetadata.promptTokensDetails[].modality",
+    "usageMetadata.promptTokensDetails[].tokenCount",
+    "usageMetadata.candidatesTokensDetails[].modality",
+    "usageMetadata.candidatesTokensDetails[].tokenCount",
+    "usageMetadata.cacheTokensDetails[].modality",
+    "usageMetadata.cacheTokensDetails[].tokenCount",
+    "usageMetadata.serviceTier",
     "usageMetadata.thoughtsTokenCount",
     "usageMetadata.promptTokenCount",
     "usageMetadata.candidatesTokenCount",

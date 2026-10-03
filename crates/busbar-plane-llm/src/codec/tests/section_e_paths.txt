@@ -1,6 +1,7 @@
 # DF-MAP-IR-GAPS section E: every response/stream wire path no dialect code names (handoffs/DF-MAP-irgap.json,
 # base 4f4aa80ee; a `{}` map segment is cut at its parent). A translate attempt's drop walk names each one.
 # Paths a later DF-MAP lane mapped (Gemini avgLogprobs and safety ratings; the Responses stream events themselves, whose members stay listed) are removed: they cross.
+# The answer rows DF-MAP has since mapped (Anthropic and Responses web-search records, Responses file citations and moderation, OpenAI moderation, audio transcript and modality token counts, Gemini cache-token details and served tier) are removed too: they cross, and the members under them that no row carries are on the dialect's drop list.
 anthropic response container.expires_at
 anthropic response container.skills
 anthropic response container.skills[].skill_id
@@ -63,11 +64,9 @@ anthropic response content[].type=web_fetch_tool_result.content.type=web_fetch_r
 anthropic response content[].type=web_fetch_tool_result.content.type=web_fetch_result.retrieved_at
 anthropic response content[].type=web_fetch_tool_result.content.type=web_fetch_tool_result_error
 anthropic response content[].type=web_fetch_tool_result.content.type=web_fetch_tool_result_error.error_code
-anthropic response content[].type=web_search_tool_result
 anthropic response content[].type=web_search_tool_result.caller.type=code_execution_20250825.tool_id
 anthropic response content[].type=web_search_tool_result.caller.type=code_execution_20260120
 anthropic response content[].type=web_search_tool_result.caller.type=code_execution_20260120.tool_id
-anthropic response content[].type=web_search_tool_result.content.error_code
 anthropic response content[].type=web_search_tool_result.content[].encrypted_content
 anthropic response content[].type=web_search_tool_result.content[].page_age
 anthropic stream type=content_block_start.content_block.type=bash_code_execution_tool_result
@@ -266,16 +265,8 @@ gemini response candidates[].urlContextMetadata.urlMetadata[].urlRetrievalStatus
 gemini response modelStatus
 gemini response modelStatus.modelStage
 gemini response modelStatus.retirementTime
-gemini response usageMetadata.cacheTokensDetails
-gemini response usageMetadata.serviceTier
 gemini response usageMetadata.toolUsePromptTokensDetails
 openai response choices[].message.audio.expires_at
-openai response choices[].message.audio.transcript
-openai response moderation.input.type=moderation_results
-openai response moderation.output.type=moderation_results
-openai response usage.completion_tokens_details.text_tokens
-openai response usage.prompt_tokens_details.image_tokens
-openai response usage.prompt_tokens_details.text_tokens
 openai stream moderation.input.type=moderation_results
 openai stream moderation.output.type=moderation_results
 openai stream obfuscation
@@ -661,13 +652,9 @@ responses response instructions[].type=web_search_call.action.type=search
 responses response instructions[].type=web_search_call.action.type=search.queries
 responses response instructions[].type=web_search_call.action.type=search.sources
 responses response max_tool_calls
-responses response moderation.input.type=moderation_result
-responses response moderation.input.type=moderation_result.categories
 responses response moderation.input.type=moderation_result.category_applied_input_types
 responses response moderation.input.type=moderation_result.category_scores
 responses response moderation.input.type=moderation_result.flagged
-responses response moderation.output.type=moderation_result
-responses response moderation.output.type=moderation_result.categories
 responses response moderation.output.type=moderation_result.category_applied_input_types
 responses response moderation.output.type=moderation_result.category_scores
 responses response moderation.output.type=moderation_result.flagged
@@ -903,10 +890,7 @@ responses response output[].type=mcp_call.error.type=mcp_tool_execution_error
 responses response output[].type=mcp_call.server_label
 responses response output[].type=mcp_list_tools
 responses response output[].type=mcp_list_tools.server_label
-responses response output[].type=message.content[].type=output_text.annotations[].type=container_file_citation
 responses response output[].type=message.content[].type=output_text.annotations[].type=container_file_citation.container_id
-responses response output[].type=message.content[].type=output_text.annotations[].type=file_citation
-responses response output[].type=message.content[].type=output_text.annotations[].type=file_path
 responses response output[].type=message.phase
 responses response output[].type=program
 responses response output[].type=program.fingerprint
@@ -1038,14 +1022,10 @@ responses response output[].type=tool_search_output.tools[].type=shell.environme
 responses response output[].type=tool_search_output.tools[].type=shell.environment.type=local.skills[].path
 responses response output[].type=tool_search_output.tools[].type=tool_search
 responses response output[].type=tool_search_output.tools[].type=tool_search.execution
-responses response output[].type=web_search_call
-responses response output[].type=web_search_call.action
 responses response output[].type=web_search_call.action.type=find_in_page
 responses response output[].type=web_search_call.action.type=find_in_page.pattern
 responses response output[].type=web_search_call.action.type=open_page
-responses response output[].type=web_search_call.action.type=search
 responses response output[].type=web_search_call.action.type=search.queries
-responses response output[].type=web_search_call.action.type=search.sources
 responses response prompt.variables
 responses response prompt.version
 responses response prompt_cache_diagnostics

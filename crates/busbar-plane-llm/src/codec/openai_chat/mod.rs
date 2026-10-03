@@ -891,7 +891,6 @@ const STREAM_CODE: &[&str] = &[
 /// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
 const RESPONSE_DROPS: &[&str] = &[
     "choices[].message.audio.expires_at",
-    "choices[].message.audio.transcript",
 ];
 const STREAM_DROPS: &[&str] = &[
     "usage.completion_tokens_details.text_tokens",

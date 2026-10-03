@@ -167,8 +167,15 @@ pub trait TranslateCodec: OperationHandler {
                         dropped_controls.push(path);
                     }
                 }
+                // A writer's drop of a member a control already names by its value
+                // (`tool_choice=none` for `tool_choice`) is that control's drop, recorded once.
                 for path in dropped {
-                    if !dropped_controls.contains(&path) {
+                    let named = dropped_controls.iter().any(|c| {
+                        c == &path
+                            || c.strip_prefix(path.as_str())
+                                .is_some_and(|rest| rest.starts_with('='))
+                    });
+                    if !named {
                         dropped_controls.push(path);
                     }
                 }

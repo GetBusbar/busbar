@@ -2808,20 +2808,16 @@ pub fn selftest<'a>(
 
     // THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324): a dialect module's
     // native item-id prefix (`ws`) is the provider's word; a real transport `ws` still counts.
-    // Every arm runs on the plane crate's transport row re-pinned to its measurement.
+    // The plane crate has no transport cell, so a reference that counts is an `unlisted-cell`.
     let prefix_case = |file: &'static str, line: &'static str| {
         let cx = cx.clone();
         move || {
             let body = cx.read(file).unwrap_or_default();
-            row_at_measurement(&cx, "busbar-plane-llm", "transport").layered(&plant(
-                &cx,
-                file,
-                &format!("{body}\n{line}\n"),
-            ))
+            plant(&cx, file, &format!("{body}\n{line}\n"))
         }
     };
     let responses_mod = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
-    let transport_raised = ["ratchet", "busbar-plane-llm × transport", "RAISED"];
+    let transport_raised = ["unlisted-cell", "busbar-plane-llm \u{d7} transport"];
     report.push(prove_rows_green(
         cx,
         gate,

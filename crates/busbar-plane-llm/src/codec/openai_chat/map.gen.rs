@@ -107,6 +107,13 @@ pub(crate) const ROWS_OPENAI_SAMPLING: &[Field] = &[
 
 /// The response wire paths this dialect carries (the drop walk's map).
 pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "moderation.input.type=moderation_results.results[].categories",
+    "moderation.output.type=moderation_results.results[].categories",
+    "choices[].message.audio.data",
+    "choices[].message.audio.transcript",
+    "usage.prompt_tokens_details.text_tokens",
+    "usage.prompt_tokens_details.image_tokens",
+    "usage.completion_tokens_details.text_tokens",
     "usage.completion_tokens_details.reasoning_tokens",
     "usage.prompt_tokens",
     "usage.completion_tokens",

@@ -1187,9 +1187,7 @@ const RESPONSE_DROPS: &[&str] = &[
     "output[].type=mcp_approval_response",
     "output[].type=mcp_call",
     "output[].type=mcp_list_tools",
-    "output[].type=message.content[].type=output_text.annotations[].type=container_file_citation",
-    "output[].type=message.content[].type=output_text.annotations[].type=file_citation",
-    "output[].type=message.content[].type=output_text.annotations[].type=file_path",
+    "output[].type=message.content[].type=output_text.annotations[].type=container_file_citation.container_id",
     "output[].type=message.phase",
     "output[].type=program",
     "output[].type=program_output",
@@ -1197,7 +1195,9 @@ const RESPONSE_DROPS: &[&str] = &[
     "output[].type=shell_call_output",
     "output[].type=tool_search_call",
     "output[].type=tool_search_output",
-    "output[].type=web_search_call",
+    "output[].type=web_search_call.action.type=find_in_page",
+    "output[].type=web_search_call.action.type=open_page",
+    "output[].type=web_search_call.action.type=search.queries",
 ];
 // The events themselves are carried (the map's stream rows, `STREAM_CODE`); these are the members
 // inside them that no code carries (DF-MAP-IR-GAPS section E).

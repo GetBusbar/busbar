@@ -75,6 +75,18 @@ pub(crate) const ROWS_SAMPLING: &[Field] = &[
 
 /// The response wire paths this dialect carries (the drop walk's map).
 pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "output[].type=web_search_call",
+    "output[].type=web_search_call.id",
+    "output[].type=web_search_call.status",
+    "output[].type=web_search_call.action.type=search.sources[].url",
+    "output[].type=message.content[].type=output_text.annotations[].type=file_citation",
+    "output[].type=message.content[].type=output_text.annotations[].type=file_citation.file_id",
+    "output[].type=message.content[].type=output_text.annotations[].type=file_citation.filename",
+    "output[].type=message.content[].type=output_text.annotations[].type=file_citation.index",
+    "output[].type=message.content[].type=output_text.annotations[].type=container_file_citation",
+    "output[].type=message.content[].type=output_text.annotations[].type=file_path",
+    "moderation.input.type=moderation_result.categories",
+    "moderation.output.type=moderation_result.categories",
     "usage.output_tokens_details.reasoning_tokens",
     "usage.input_tokens",
     "usage.output_tokens",

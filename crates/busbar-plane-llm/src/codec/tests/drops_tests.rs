@@ -478,7 +478,8 @@ fn responses_answer_drops_name_the_wire_path() {
     );
 }
 
-/// DF-MAP-IR-GAPS section E: a Responses answer carrying a hosted-tool item (`web_search_call`)
+/// DF-MAP-IR-GAPS section E: a Responses answer carrying a hosted-tool item the IR has no form for
+/// (`file_search_call`; a `web_search_call` is the IR's hosted web-search record since DF-MAP item 2)
 /// translated to another dialect gives one drop WARN and one audit row naming the wire path. RED
 /// before: the reader warned outside the drop path (no path, no audit row).
 #[test]
@@ -489,7 +490,7 @@ fn responses_hosted_tool_item_is_dropped_on_the_drop_path() {
         if hosted {
             output.insert(
                 0,
-                json!({"type": "web_search_call", "id": "ws_1", "status": "completed"}),
+                json!({"type": "file_search_call", "id": "fs_1", "status": "completed"}),
             );
         }
         json!({"id": "resp_1", "object": "response", "created_at": 1, "model": "m",
@@ -501,7 +502,7 @@ fn responses_hosted_tool_item_is_dropped_on_the_drop_path() {
         "openai",
         answer(true),
         answer(false),
-        &["output[].type=web_search_call"],
+        &["output[].type=file_search_call"],
     );
 }
 

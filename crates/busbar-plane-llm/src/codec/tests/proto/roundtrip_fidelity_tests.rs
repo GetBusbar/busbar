@@ -871,8 +871,14 @@ fn cohere_response_citations_reach_a_foreign_client() {
             }
         }))
         .expect("read");
-    let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
-        panic!("expected a Text block, got {:?}", ir.content[0]);
+    // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
+    // ride the text block's citations.
+    let Some(crate::codec::ir::IrBlock::Text { citations, .. }) = ir
+        .content
+        .iter()
+        .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+    else {
+        panic!("expected a Text block, got {:?}", ir.content);
     };
     assert_eq!(citations.len(), 1, "the citation must reach the IR");
     assert_eq!(citations[0].start_index, Some(0));
@@ -1086,8 +1092,14 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
             "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4, "totalTokenCount": 7}
         }))
         .expect("read");
-    let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
-        panic!("expected a Text block, got {:?}", ir.content[0]);
+    // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
+    // ride the text block's citations.
+    let Some(crate::codec::ir::IrBlock::Text { citations, .. }) = ir
+        .content
+        .iter()
+        .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+    else {
+        panic!("expected a Text block, got {:?}", ir.content);
     };
     assert_eq!(citations.len(), 1, "the grounding source must reach the IR");
     assert_eq!(citations[0].url.as_deref(), Some("https://atlas"));
@@ -1144,8 +1156,14 @@ fn gemini_grounding_chunks_cross_without_support_spans() {
             }]
         }))
         .expect("read");
-    let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
-        panic!("expected a Text block");
+    // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
+    // ride the text block's citations.
+    let Some(crate::codec::ir::IrBlock::Text { citations, .. }) = ir
+        .content
+        .iter()
+        .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+    else {
+        panic!("expected a Text block, got {:?}", ir.content);
     };
     assert_eq!(citations.len(), 2, "both sources must cross: {citations:?}");
     assert_eq!(citations[1].url.as_deref(), Some("https://b"));

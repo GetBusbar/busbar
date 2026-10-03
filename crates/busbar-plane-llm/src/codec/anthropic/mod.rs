@@ -437,7 +437,10 @@ const RESPONSE_DROPS: &[&str] = &[
     "content[].type=tool_use.caller.type=code_execution_20260120",
     "content[].type=tool_use.toolset_name",
     "content[].type=web_fetch_tool_result",
-    "content[].type=web_search_tool_result",
+    "content[].type=web_search_tool_result.caller.type=code_execution_20250825.tool_id",
+    "content[].type=web_search_tool_result.caller.type=code_execution_20260120",
+    "content[].type=web_search_tool_result.content[].encrypted_content",
+    "content[].type=web_search_tool_result.content[].page_age",
 ];
 const STREAM_DROPS: &[&str] = &[
     "type=content_block_start.content_block.type=bash_code_execution_tool_result",
