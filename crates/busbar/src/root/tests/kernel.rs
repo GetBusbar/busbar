@@ -1378,6 +1378,127 @@ fn a_staged_card_whose_change_did_not_commit_never_prices_an_instant() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The book's chain swapped for a memory-buffered one over a store the test flips (refusing at
+/// first, as `refusing` says), answering the flag.
+fn swap_to_switchable_store(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    refusing: bool,
+) -> Arc<std::sync::atomic::AtomicBool> {
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(refusing));
+    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::memory_buffered_to(
+        7,
+        Box::new(SwitchShipper(Arc::clone(&flag))),
+        busbar_kernel::store::now_ms,
+    );
+    flag
+}
+
+/// **A REFUSED STAGE IS IN DOUBT, NOT ABSENT** (REV-309 #1, MONEY-AUDIT D-6). The staged card's
+/// record is chained and the log retains it, so it lands with the next append; a restart then took
+/// it as the newest journalled config card and priced every instant from its staging at a card
+/// neither the configuration nor the live history ever held. The refused stage now withdraws as it
+/// refuses: the card in force goes back behind the staged card at the same instant, and both land
+/// live, so the live history prices as the rebuilt chain does — and the refused record's epoch is
+/// spent.
+///
+/// RED arm: `stage_at` returned the refusal with the live history untouched while the chain held
+/// the staged card — the rebuilt history priced `EARNED_B` at 5,000 against the live 3,000.
+#[test]
+fn a_refused_stage_prices_live_exactly_as_the_rebuilt_chain_does() {
+    let dir = journal_dir("refused-stage");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    let boot = chain_records(&book);
+    let refusing = swap_to_switchable_store(&book, true);
+    assert!(
+        matches!(
+            stage_at(holder, 5.0, APPLIED_B),
+            Err(super::CardRefused::Lost(_))
+        ),
+        "a refused stage refuses the config change, in doubt"
+    );
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    let landed: Vec<_> = boot
+        .iter()
+        .chain(chain_records(&book).iter())
+        .cloned()
+        .collect();
+    let rebuilt = rebuilt_from(&landed);
+    assert_eq!(
+        flat_price_on(&rebuilt, EARNED_B),
+        flat_price_at(holder, EARNED_B),
+        "a restart priced the refused stage's era at a card that was never in force"
+    );
+    assert_eq!(
+        rebuilt.len(),
+        holder.len(),
+        "the live history and the rebuilt one agree entry for entry"
+    );
+
+    // The store answers again: the next change lands behind what the refusal retained.
+    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+    stage_at(holder, 7.0, REBOOT).expect("the journal takes the staged card");
+    assert!(try_apply_at(holder, 7.0, REBOOT + 5).is_ok());
+    let chain: Vec<_> = boot
+        .iter()
+        .chain(chain_records(&book).iter())
+        .cloned()
+        .collect();
+    let epochs = config_epochs(&chain);
+    let mut distinct = epochs.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        epochs.len(),
+        "two config entries on the chain share one policy epoch: {epochs:?}"
+    );
+    let rebuilt = rebuilt_from(&chain);
+    assert_eq!(rebuilt.len(), holder.len());
+    for at in [EARNED_A, EARNED_B, REBOOT, REBOOT_CHANGED] {
+        assert_eq!(
+            flat_price_on(&rebuilt, at),
+            flat_price_at(holder, at),
+            "live and rebuilt disagree at {at}"
+        );
+    }
+    assert_eq!(flat_price_at(holder, REBOOT_CHANGED), Some(7_000));
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A WITHDRAWAL THE JOURNAL LEAVES IN DOUBT STILL LANDS BOTH ENTRIES LIVE** (REV-309 #2). The
+/// put-back is retained behind the staged card and lands with it, so the live history takes both —
+/// otherwise a restart rebuilds staged + put-back while the live node holds neither, and the entry
+/// numbers invoices cite diverge.
+///
+/// RED arm (the PR head): the refused put-back logged and returned with no in-memory append — live
+/// one entry, rebuilt three.
+#[test]
+fn a_withdrawal_the_journal_leaves_in_doubt_still_lands_both_entries_live() {
+    let dir = journal_dir("withdraw-in-doubt");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    let boot = chain_records(&book);
+    let refusing = swap_to_switchable_store(&book, false);
+    stage_at(holder, 5.0, APPLIED_B).expect("the journal takes the staged card");
+    refusing.store(true, std::sync::atomic::Ordering::SeqCst);
+    holder.withdraw_staged(APPLIED_B + 1);
+    let landed: Vec<_> = boot
+        .iter()
+        .chain(chain_records(&book).iter())
+        .cloned()
+        .collect();
+    let rebuilt = rebuilt_from(&landed);
+    assert_eq!(rebuilt.len(), holder.len(), "entry for entry");
+    assert_eq!(flat_price_on(&rebuilt, EARNED_B), Some(3_000));
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A holder that was not armed — every test holder, and a build with no root ledger — rebuilds
 /// nothing and journals nothing; a node with NO data directory keeps the boot card from instant
 /// zero exactly as the previous release did, and writes no card anywhere.

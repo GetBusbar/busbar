@@ -507,7 +507,8 @@ impl RootHistory {
     /// # Errors
     ///
     /// The journal refused the card, or the book's handle is not bound yet: the config change is
-    /// refused whole, so the old configuration and the old card both stay.
+    /// refused whole, so the old configuration and the old card both stay — a refusal the journal
+    /// left in doubt with the card in force journalled back behind the staged one.
     pub fn stage_rates(
         &self,
         rates: &busbar_kernel::rate_apply::RawRates<'_>,
@@ -532,11 +533,12 @@ impl RootHistory {
             policy_epoch,
             form: CardForm::of(rates, &card),
         };
-        self.journal_applied(applied.clone())?;
-        self.resolutions.fetch_max(
-            policy_epoch.saturating_add(1),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        // A refusal the journal left in doubt is withdrawn as it is refused (REV-309 #1): the
+        // staged record is chained and retained, so it lands with the next append, and without the
+        // card in force behind it a restart would price from the staging at a card neither the
+        // configuration nor the live history ever held. A card the log dropped outright never
+        // lands and is put back by nothing: fail closed.
+        self.journal_or_withdraw(applied.clone(), now_ms)?;
         *self.staged.lock().unwrap_or_else(|p| p.into_inner()) = Some(applied);
         Ok(())
     }
