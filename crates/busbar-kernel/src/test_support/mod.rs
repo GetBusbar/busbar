@@ -2125,8 +2125,18 @@ pub fn hook_fixture_statement(cdylib: &std::path::Path) -> String {
 }
 
 /// THE STAND-IN HOOK AXIS: `preflight::RootInstall`'s `hook_axis` in a test build (a test build has
-/// no root). The loader's hook rows over `registry` on one test dispatcher — the rows the root's
-/// axis answers with.
+/// no root). The loader's hook rows over `registry` — the rows the root's axis answers with — on a
+/// dispatcher of their own, of the root's no-boot shape (`root::dispatch::dispatcher`: one worker,
+/// the default budgets).
+///
+/// ONE DISPATCHER PER REGISTRY, NOT ONE PER TEST BINARY. A test binary is many deployments at once,
+/// and the hook fixture's `sleep_ms` cells (the slow-gate deadline tests, the in-flight cap) wedge
+/// their worker past the call budget ON PURPOSE: the watchdog then replaces that worker and settles
+/// every op it held as FAULT (`dispatch::watchdog`, the design's rule for a wedged crossing). On one
+/// shared single-worker dispatcher the NEXT test's ops queued behind that wedge and answered FAULT
+/// (`dlopen_decide_order_and_abstain` red under `cargo test -p busbar-kernel`, green alone and
+/// under nextest's process per test). A registry is one deployment's, so its own dispatcher is the
+/// root's one dispatcher as that deployment sees it, and a wedge stays inside the test that made it.
 ///
 /// # Errors
 /// As the root's: a `kind: hook` row that will not state itself.
@@ -2134,13 +2144,10 @@ pub fn hook_axis_stand_in(
     registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
 ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String> {
     use busbar_plugin_loader::dispatch::{DispatchConfig, Dispatcher};
-    static DISPATCHER: std::sync::OnceLock<std::sync::Arc<Dispatcher>> = std::sync::OnceLock::new();
-    let dispatcher =
-        DISPATCHER.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
     let rows = busbar_plugin_loader::hook_door::HookRows::new(
         crate::preflight::STAND_IN_HOOK_DOORS,
         Some(registry.as_ref()),
-        dispatcher.clone(),
+        std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())),
     )?;
     Ok(std::sync::Arc::new(rows))
 }
