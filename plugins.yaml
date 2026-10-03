@@ -72,6 +72,11 @@
 #                  dirs (`<kind>-<name>/`, `<kind>-<name>-plugin/`), not Cargo.lock and not kept is drift
 #   gitignore      lines the rendered .gitignore carries after the fleet's own [none]
 #   notice         lines the rendered NOTICE carries after the fleet's own (a third-party credit) [none]
+#   retired        the `module:` spellings this plugin answered to in an earlier release and no longer
+#                  does [none]. Each is a `retired.<kind>.<word>` row of the root legacy table
+#                  (`[package.metadata.busbar.legacy]` in crates/busbar/Cargo.toml), beside the plugin's
+#                  `manifest.<alias>` / `asset.<alias>` rows; boot refuses a retired spelling and
+#                  `busbar --migrate-config` rewrites it to the alias (BUSBAR-1.6.0.md §2)
 #   pending_crate  the repo is registered (it exists, it is rendered and seeded by `busbar-release plugin sync`) but its
 #                  crates have not moved in yet [false]. It stays OUT of plugin-registry-check.sh's
 #                  --list feed, so qa-gate and release-check neither clone nor test it; `busbar-release plugin check`
@@ -102,6 +107,29 @@ fleet:
 excluded_repos:
   - hindsight-hook # design docs only — no crate, no workflows, private
   - busbar-hook-headroom # removed from busbar and the site (owner ruling 2026-09-30) — the repo is kept, not a busbar plugin
+
+# THE ROOT LEGACY TABLE'S FROZEN TEXT (BUSBAR-1.6.0.md §2): operator-visible
+# 1.5.5 text naming plugins that are not in the build, which `busbar --migrate-config` and the boot
+# refusals print. These rows, then every entry's `retired:` rows, are the root legacy table,
+# `[package.metadata.busbar.legacy]` (crates/busbar/Cargo.toml), which the composition root hands to the
+# kernel; crates/busbar/src/root/tests/legacy.rs renders it from here and is red on drift (printing the
+# table to paste). Every row cites the v1.5.5 tag line it is verbatim from; a value never changes.
+legacy:
+  # v1.5.5:crates/busbar/src/config/migrate.rs:267 (the legacy marker's "is Valkey — artifact")
+  renamed_display: Valkey
+  # The retired backend's own driver URL scheme, which the rewrite leaves untouched.
+  # v1.5.5:crates/busbar/src/config/migrate.rs:2075
+  retired_url_scheme: redis
+  # 1.4.x governance database. v1.5.5:crates/busbar/src/config/migrate.rs:817, :824, :828
+  gov14_module: sqlite
+  # v1.5.5:crates/busbar/src/config/migrate.rs:30 (DEFAULT_GOVERNANCE_DB_1_4)
+  gov14_db_path: busbar-governance.db
+  # v1.5.5:crates/busbar/src/config/migrate.rs:836
+  gov14_busy_timeout_key: sqlite_busy_timeout_ms
+  # v1.5.5:crates/busbar/src/config/migrate.rs:843
+  gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
+  # v1.5.5:crates/busbar/src/config_validate/mod.rs:1656 (the empty `store.module` refusal)
+  module_examples: "sqlite | postgres | valkey"
 
 plugins:
   - repo: busbar-store-mysql
@@ -153,6 +181,8 @@ plugins:
     busbar_checkout: true
     extra_test: "cargo test -p busbar-store-valkey --locked -- --ignored --test-threads=1"
     declares: "store-valkey/declares.json"
+    # The 1.5.3 rename. v1.5.5:crates/busbar/src/config/mod.rs:1057 (RETIRED_STORE_MODULES_1_5_3)
+    retired: [redis, busbar-store-redis, busbar-store-redis-plugin]
   - repo: busbar-secret-vault
     kind: secret
     alias: vault

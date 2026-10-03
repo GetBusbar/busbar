@@ -10,6 +10,8 @@ pub mod overlay;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub mod groups;
+/// The root legacy table the composition root hands in, and the one rewrite over it.
+pub mod legacy;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
 pub mod migrate_export;

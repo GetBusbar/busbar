@@ -265,6 +265,9 @@ fn register_protocols() {
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
 fn register_planes() {
+    // The root legacy table, before the first configuration read (the dropped-plugin scan below
+    // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
+    root::legacy::install();
     // The linked store and hook rows onto the kernel's cold-kind axis, with the default store the
     // store rows declare, and its auth rows onto the auth axis, before anything resolves one.
     root::linked::register_stores(&LINKED);

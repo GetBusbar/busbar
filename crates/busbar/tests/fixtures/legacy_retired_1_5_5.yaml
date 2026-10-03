@@ -1,0 +1,18 @@
+# THE 1.5.5 BYTES a retired `store.module:` spelling meets, verbatim: `busbar --migrate-config`'s
+# change line and the boot/`--validate` 1.x marker, one entry per retired word. Rendered from the
+# v1.5.5 format strings (v1.5.5:crates/busbar/src/config/migrate.rs:263-272, :2075-2085) over the
+# v1.5.5 constants (v1.5.5:crates/busbar/src/config/mod.rs STORE_MODULE_VALKEY, _NAME, _ASSET_STEM).
+# The root tests hold the 1.6.0 output to them; a value here never changes.
+retired:
+  - word: redis
+    module: valkey
+    change: "store.module: redis -> valkey (the first-party store plugin for this backend was RENAMED in 1.5.3: artifact `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-valkey`. Install the renamed tarball — the old one no longer answers to any name in this config. Your `settings.url` is UNCHANGED: `redis://` is the driver's own URL scheme, not a busbar name.)"
+    marker: "`store.module: redis` (RENAMED 1.5.3 → `valkey`; the first-party store plugin is Valkey — artifact `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-valkey`. The old name/alias resolve against NOTHING, so this would fail at boot with a generic unresolved-plugin error; run `busbar --migrate-config`)"
+  - word: busbar-store-redis
+    module: valkey
+    change: "store.module: busbar-store-redis -> valkey (the first-party store plugin for this backend was RENAMED in 1.5.3: artifact `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-valkey`. Install the renamed tarball — the old one no longer answers to any name in this config. Your `settings.url` is UNCHANGED: `redis://` is the driver's own URL scheme, not a busbar name.)"
+    marker: "`store.module: busbar-store-redis` (RENAMED 1.5.3 → `valkey`; the first-party store plugin is Valkey — artifact `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-valkey`. The old name/alias resolve against NOTHING, so this would fail at boot with a generic unresolved-plugin error; run `busbar --migrate-config`)"
+  - word: busbar-store-redis-plugin
+    module: valkey
+    change: "store.module: busbar-store-redis-plugin -> valkey (the first-party store plugin for this backend was RENAMED in 1.5.3: artifact `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-valkey`. Install the renamed tarball — the old one no longer answers to any name in this config. Your `settings.url` is UNCHANGED: `redis://` is the driver's own URL scheme, not a busbar name.)"
+    marker: "`store.module: busbar-store-redis-plugin` (RENAMED 1.5.3 → `valkey`; the first-party store plugin is Valkey — artifact `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-valkey`. The old name/alias resolve against NOTHING, so this would fail at boot with a generic unresolved-plugin error; run `busbar --migrate-config`)"
