@@ -183,10 +183,15 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # links. On the export kind's MEMORY ABI (`export_axis_tests`): the prometheus sink (the recorder
 # snapshot's render), the OTLP trace sink and the request-log webhook sink, each LINKED by its logic
 # crate's `door` and DROPPED IN as its `-plugin` crate's `cdylib` (built under `deps/`, hashed; never
-# linked here: that crate exports `busbar_plugin_door` from its rlib too). The request-log FILE sink
-# is door-only at its pin and appends through the host's disk lane: busbar tests no plugin (owner Q7,
-# CONF-SUITE-DEL), and its both-doors conformance is its own repo's. Their busbar-contract resolves
-# to this tree through the workspace `[patch]` table.
+# linked here: that crate exports `busbar_plugin_door` from its rlib too). The same two doors of the
+# request-log FILE sink (host-written destinations through the host's `disk.append`) and of the
+# request-log WEBHOOK sink (host-carried POSTs, raised diagnostics) are THE #11 TEST
+# (`export_conformance_tests`, ARCHITECT ruling EXP2-PROOF 2026-10-03: the spec's working proof of the
+# plugin model). The file sink's `-plugin` crate takes its `dropped-in` feature, so its cdylib exports
+# the door (its rlib is never named here). Their busbar-contract resolves to this tree through the
+# workspace `[patch]` table.
+busbar-export-file = { workspace = true }
+busbar-export-file-plugin = { workspace = true, features = ["dropped-in"] }
 busbar-export-webhook = { workspace = true }
 busbar-export-webhook-plugin = { workspace = true }
 busbar-export-prometheus = { workspace = true }

@@ -1236,6 +1236,15 @@ mod tests;
 #[path = "tests/loader_seam_tests.rs"]
 mod loader_seam_tests;
 
+/// DECISIONS #11's real test: ONE crate built both ways must be observationally identical. Declared
+/// at the crate root rather than under `export` because it is not a test OF the export seam — it is
+/// a test of the equivalence the two build shapes are supposed to have, and the export kind is
+/// merely the first one with real plugins that can prove it (ARCHITECT ruling EXP2-PROOF
+/// 2026-10-03: the spec's working proof of the plugin model, on the export kind's door registries).
+#[cfg(test)]
+#[path = "tests/export_conformance_tests.rs"]
+mod export_conformance_tests;
+
 /// The cold kinds' both-ways harness (DECISIONS #2 rule (1)): one plugin registered through the
 /// linked door and the dropped-in door, its rows and its opened instance compared.
 #[cfg(test)]

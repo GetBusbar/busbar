@@ -64,6 +64,9 @@ pub struct ExportRows<'r> {
     logs: Option<&'r PluginLogConfig>,
     /// The host's one connection table: an OPENED instance's needs are declared on it.
     conns: Option<Arc<dyn DeclaredConns>>,
+    /// Where an OPENED instance's #85 envelope goes (its metrics, diagnostics and log records);
+    /// `None` = discarded. Under `plugins.logs` it is the log sink's own downstream.
+    envelope: Option<Arc<dyn EnvelopeSink>>,
 }
 
 impl std::fmt::Debug for ExportRows<'_> {
@@ -82,6 +85,7 @@ impl<'r> ExportRows<'r> {
             dispatcher,
             logs: None,
             conns: None,
+            envelope: None,
         }
     }
 
@@ -99,6 +103,14 @@ impl<'r> ExportRows<'r> {
         self
     }
 
+    /// Each opened instance's #85 envelope goes to `envelope` (behind its log sink, when
+    /// [`Self::with_logs`] gave one).
+    #[must_use]
+    pub fn with_envelope(mut self, envelope: Arc<dyn EnvelopeSink>) -> Self {
+        self.envelope = Some(envelope);
+        self
+    }
+
     fn row(&self, module: &str) -> Option<&'r LoadablePlugin> {
         self.registry.resolve_export(module)
     }
@@ -108,9 +120,13 @@ impl<'r> ExportRows<'r> {
     /// is judged); one opened to deliver binds with both.
     fn load(&self, row: &LoadablePlugin, label: &str, opening: bool) -> Result<Door, String> {
         let name = &row.manifest.name;
+        let envelope = || -> Arc<dyn EnvelopeSink> {
+            self.envelope.clone().unwrap_or_else(|| Arc::new(NoSink))
+        };
         let sink: Arc<dyn EnvelopeSink> = match (opening, self.logs) {
-            (true, Some(logs)) => Arc::new(logs.sink(label, KindCode::Export, Arc::new(NoSink))?),
-            _ => Arc::new(NoSink),
+            (true, Some(logs)) => Arc::new(logs.sink(label, KindCode::Export, envelope())?),
+            (true, None) => envelope(),
+            (false, _) => Arc::new(NoSink),
         };
         let bind = Bind {
             instance: Arc::from(label),
