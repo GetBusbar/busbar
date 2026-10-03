@@ -4,11 +4,11 @@
 //! THE STREAMING PLANE'S DOOR: the one function a compiled-in row holds and a dropped-in image
 //! exports (`examples/streaming_door.rs`), and everything it states and answers.
 //!
-//! The composition root links [`door`] on its `plane-door` axis under the streaming fold's
-//! development-only switch `streaming-on-driver` (`BUSBAR-1.6.0.md` Part 3, section 12, "The
-//! switch") and binds it through the loader's one load beside the dropped-in plane doors. The
-//! default build links no streaming door, and with the switch on the `busbar-voice` row still serves
-//! every streaming route until the serve path hands this door the arrivals it takes.
+//! The composition root links [`door`] on its `plane-door` axis under this fold's development-only
+//! switch (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch") and binds it through the loader's one
+//! load beside the dropped-in plane doors. The default build links no door of this plane, and with
+//! the switch on the legacy row still serves every route until the serve path hands this door the
+//! arrivals it takes.
 //!
 //! ## What the plane states once
 //!
@@ -35,7 +35,7 @@
 //! A one-request door (the mint, the SDP offer, the metadata document) answers its pieces through
 //! a [`RequestUnit`] the instance keeps by the kernel's unit key, built at the unit's first piece
 //! over the newest live generation's session params and audience. Its answer's bytes are paid into
-//! the reply buffer across `more = 1` re-calls (`busbar_contract::abi::sdk::piece`). A session
+//! the reply buffer across `more = 1` re-calls ([`crate::piece`]). A session
 //! door's pieces are refused: the kernel's driver serves request units only.
 
 use std::collections::BTreeMap;
@@ -43,6 +43,7 @@ use std::mem::size_of;
 use std::ptr;
 use std::sync::Mutex;
 
+use crate::piece::{self, Owed};
 use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{
@@ -60,7 +61,6 @@ use busbar_contract::abi::plane::{
     SHAPE_PIECEWISE, UNITS_ESTIMATED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
-use busbar_contract::abi::sdk::piece::{self, Owed};
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::plane::{PER_SESSION, TOKEN_FAMILY};

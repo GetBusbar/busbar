@@ -366,7 +366,7 @@ fn the_manifest_links_a_plane_through_its_door() {
 /// EVERY PLANE'S DEVELOPMENT-ONLY SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): each `plane-door`
 /// row whose feature is not in `default` links its plane's memory-ABI door when that feature is on,
 /// and the default build links none of those doors, so the shipped binary serves each plane as it
-/// did until that plane's flip. The streaming fold's `streaming-on-driver` is one such row.
+/// did until that plane's flip.
 #[test]
 fn every_plane_switch_links_its_door_and_the_default_build_does_not() {
     let manifest = read("Cargo.toml");
@@ -399,7 +399,7 @@ fn every_plane_switch_links_its_door_and_the_default_build_does_not() {
         switches
             .iter()
             .any(|(feature, _)| feature == "streaming-on-driver"),
-        "the streaming fold's switch is not a plane-door row: {switches:?}"
+        "the fold's switch is not a plane-door row: {switches:?}"
     );
     let doors_of = |on: &dyn Fn(&str) -> bool| {
         let (src, _) = linked_source(&manifest, on);

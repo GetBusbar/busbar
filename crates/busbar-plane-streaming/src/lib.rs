@@ -58,6 +58,8 @@ pub mod driven;
 pub mod governed;
 pub mod meta;
 pub mod open_calls;
+/// What an `on_piece` answer owes the reply buffer across re-calls, and the one settle of its buffers.
+mod piece;
 pub mod provider;
 pub mod register;
 pub mod request_unit;
