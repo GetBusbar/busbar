@@ -241,7 +241,9 @@ impl Connector<'_> {
         let Some(f) = f else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
-        if self.ticket.is_none() {
+        // A service on no ticket may not pend: `close` never does, so it is made on none (an
+        // instance closing its kept connections as it goes).
+        if self.ticket.is_none() && op != service::CLOSE {
             return Poll::Ready(Err(ConnFailure::NoTicket));
         }
         let seq = self.issued;

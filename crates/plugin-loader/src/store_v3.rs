@@ -377,6 +377,15 @@ fn deadline_of(s: u32) -> (DeadlineClass, u64) {
     (class, deadline)
 }
 
+impl Drop for LoadedStore {
+    /// The handle is the instance's owner: dropping it (a reload's retired store, a test's) closes
+    /// the instance, so what it holds (its kept connections) goes with it.
+    fn drop(&mut self) {
+        let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
+        let _ = self.plugin.call(life::CLOSE, &mut f);
+    }
+}
+
 /// The ticket goes back when the call is over, however it ended.
 struct Recycle<'a>(
     &'a Dispatcher,

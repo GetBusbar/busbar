@@ -459,3 +459,176 @@ fn a_tls_upgrade_without_trust_is_refused() {
     let e = ping_of(&s).expect_err("no TLS without trust");
     assert!(e.0.contains("wire-store: "), "{e:?}");
 }
+
+// ── a bound over the dial AND the handshake (VALKEY-TIMEOUT: 1.5.5 bounded both) ───────────────
+
+/// Host services offering the clock alone (the dispatcher's own timebase), refusing the rest.
+struct ClockOnly;
+
+impl busbar_contract::services::HostServices for ClockOnly {
+    fn now(&self) -> busbar_contract::services::Reading {
+        busbar_contract::services::Reading {
+            wall_ns: 0,
+            mono_ns: crate::dispatch::now_ns(),
+        }
+    }
+    fn dest_judge(
+        &self,
+        _: &str,
+        _: u32,
+        _: bool,
+        _: Option<busbar_contract::services::Later>,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn records_get(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: &str,
+        _: &[u8],
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn records_list(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: busbar_contract::services::RecordsList,
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn records_claim(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: &str,
+        _: &[u8],
+        _: u64,
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn sign(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: &[u8],
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused("no")
+    }
+    fn trust_sight(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: &str,
+        _: &str,
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn trust_due(
+        &self,
+        _: &busbar_contract::services::Caller,
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused("no")
+    }
+    fn trust_verify(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: &str,
+        _: &[u8],
+        _: &[u8],
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused("no")
+    }
+    fn entitlement_check(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: Option<u64>,
+        _: &str,
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused("no")
+    }
+    fn random_fill(&self, _: u64) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused("no")
+    }
+    fn records_secret(
+        &self,
+        _: &str,
+        _: &str,
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+}
+
+/// A store whose connect is bounded by 200 ms over the dial and the handshake.
+struct BoundedHandshake;
+
+static SILENT_TARGET: Mutex<String> = Mutex::new(String::new());
+
+impl Hooks for BoundedHandshake {
+    fn list_denylist(_: &MemoryStore, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+        static POOL: LazyLock<Arc<Pool>> = LazyLock::new(|| Pool::new(1));
+        let target = SILENT_TARGET
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        drive_kept(cx, &POOL, move |w| {
+            Box::pin(async move {
+                w.bound(200);
+                w.connect_timed(0, Some(&target), 200)
+                    .await
+                    .map_err(|e| failed(&e))?;
+                handshake(&w, false).await?;
+                w.unbound();
+                line(&w, "ping").await.map(|l| vec![l])
+            })
+        })
+    }
+}
+
+mod bounded_handshake {
+    busbar_contract::store_door!(
+        crate::store_v3::wrap::Wrapped<super::BoundedHandshake>,
+        "wire-store",
+        "0",
+        64,
+        needs: super::TCP
+    );
+}
+
+/// RED (VALKEY-TIMEOUT): a backend that accepts and never answers the handshake fails the op at
+/// the store's connect bound, as a timeout, not at the op's deadline.
+#[test]
+fn a_bound_covers_the_handshake_after_the_dial() {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    *SILENT_TARGET.lock().expect("target") = l.local_addr().expect("addr").to_string();
+    // Accept and hold, saying nothing.
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for s in l.incoming() {
+            held.push(s);
+        }
+    });
+    let d = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        Arc::new(ClockOnly),
+    ));
+    let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
+        Arc::new(TcpConns::new(d.conn_waker()));
+    let p = load_linked::<Store>(
+        &LinkedRow::of(bounded_handshake::door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: Some(conns),
+        },
+    )
+    .expect("the door loads");
+    let s = LoadedStore::open(p, d, b"{}", mint).expect("it opens");
+    let t = std::time::Instant::now();
+    let e = ping_of(&s).expect_err("the handshake never answers");
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    assert!(e.0.contains("deadline passed"), "{e:?}");
+}

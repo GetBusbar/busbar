@@ -157,18 +157,26 @@ fn dial(target: &str, timeout_ms: u64) -> Result<Sock, ConnError> {
     let s = if timeout_ms == 0 {
         TcpStream::connect(target).map_err(|_| ConnError::Refused)?
     } else {
-        let addr = target
+        // Every address the name resolves to, in order, as the connector tries them.
+        let addrs: Vec<_> = target
             .to_socket_addrs()
-            .ok()
-            .and_then(|mut a| a.next())
-            .ok_or(ConnError::Refused)?;
-        TcpStream::connect_timeout(&addr, Duration::from_millis(timeout_ms)).map_err(|e| {
-            if matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) {
-                ConnError::Timeout
-            } else {
-                ConnError::Refused
+            .map_err(|_| ConnError::Refused)?
+            .collect();
+        let mut last = ConnError::Refused;
+        let mut got = None;
+        for addr in addrs {
+            match TcpStream::connect_timeout(&addr, Duration::from_millis(timeout_ms)) {
+                Ok(s) => {
+                    got = Some(s);
+                    break;
+                }
+                Err(e) if matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
+                    last = ConnError::Timeout;
+                }
+                Err(_) => {}
             }
-        })?
+        }
+        got.ok_or(last)?
     };
     s.set_nodelay(true).map_err(|e| io(&e))?;
     s.set_nonblocking(true).map_err(|e| io(&e))?;

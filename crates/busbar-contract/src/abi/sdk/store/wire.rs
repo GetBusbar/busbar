@@ -77,6 +77,9 @@ struct State {
     unfit: bool,
     /// What the body keeps with the connection.
     session: Option<Box<dyn Any + Send>>,
+    /// [`Wire::bound`]'s milliseconds, and the host-clock instant they run out at once anchored.
+    bound_ms: u32,
+    bound_at: Option<u64>,
     /// Bytes the body wrote that the connector has not taken yet.
     out: Vec<u8>,
     /// Bytes read that the body has not consumed yet.
@@ -143,6 +146,21 @@ impl Wire {
     /// The connector's failure.
     pub async fn reconnect(&self) -> Result<(), ConnFailure> {
         self.ask(Ask::Reconnect).await.map(|_| ())
+    }
+
+    /// BOUND every wire call from the next one on by `ms` milliseconds in all (`0` = unbound): once
+    /// they have passed on the host's clock, a call fails with the connection's timeout and the
+    /// connection is not kept. A store's connect timeout over its dial AND its handshake (1.5.5
+    /// bounded both); [`Wire::unbound`] after the handshake.
+    pub fn bound(&self, ms: u32) {
+        let mut st = self.state();
+        st.bound_ms = ms;
+        st.bound_at = None;
+    }
+
+    /// Lift [`Wire::bound`].
+    pub fn unbound(&self) {
+        self.bound(0);
     }
 
     /// Whether the connection was established by an earlier op and kept: its handshake is done.
@@ -431,7 +449,23 @@ fn run<T: 'static>(
         let Some(ask) = ask else {
             panic!("a store op's wire body awaited something other than its wire");
         };
-        match serve(cx, &running, &ask, &mut buf) {
+        let bound = bound_check(cx, &running.wire);
+        let served = match bound {
+            Bound::Passed => Served::Answer(Err(ConnFailure::Failed(
+                crate::conn::ConnError::Timeout.text().to_owned(),
+            ))),
+            _ => serve(cx, &running, &ask, &mut buf),
+        };
+        let served = match (served, bound) {
+            // A pend under a bound comes back at the bound at the latest.
+            (Served::Pending { wake_at_ns }, Bound::Until(at))
+                if wake_at_ns == 0 || wake_at_ns > at =>
+            {
+                Served::Pending { wake_at_ns: at }
+            }
+            (s, _) => s,
+        };
+        match served {
             Served::Answer(a) => {
                 let mut st = running.wire.state();
                 if a.is_err() || matches!((&ask, &a), (Ask::Read, Ok(0))) {
@@ -463,6 +497,40 @@ fn finish<T>(cx: &mut Op<'_>, running: &Running<T>) {
         l.kept = true;
         running.wire.state().conn = None;
         pool.give_back(Idle { conn, session }, cx.host().copied());
+    }
+}
+
+/// Where the body's [`Wire::bound`] stands.
+#[derive(Debug, Clone, Copy)]
+enum Bound {
+    None,
+    Until(u64),
+    Passed,
+}
+
+/// Anchor and check the wire's bound on the host's clock (no clock: unbounded).
+fn bound_check(cx: &mut Op<'_>, wire: &Wire) -> Bound {
+    let (ms, at) = {
+        let st = wire.state();
+        (st.bound_ms, st.bound_at)
+    };
+    if ms == 0 {
+        return Bound::None;
+    }
+    let now = cx.connector().ok().and_then(|mut c| match c.clock_now() {
+        Poll::Ready(Ok(r)) => Some(r.mono_ns),
+        _ => None,
+    });
+    let Some(now) = now else { return Bound::None };
+    let at = at.unwrap_or_else(|| {
+        let at = now.saturating_add(u64::from(ms) * 1_000_000);
+        wire.state().bound_at = Some(at);
+        at
+    });
+    if now >= at {
+        Bound::Passed
+    } else {
+        Bound::Until(at)
     }
 }
 
