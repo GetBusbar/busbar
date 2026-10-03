@@ -41,11 +41,6 @@ item = "sigv4"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel-identity/src/egress_auth/tests.rs"
-item = "sigv4"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel-identity/src/ingress_sigv4.rs"
 item = "sigv4"
 

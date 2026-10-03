@@ -85,6 +85,22 @@ pub use sign::{
     CHECKPOINT_SIGNATURE_DOMAIN, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN,
 };
 
+/// TEST ONLY: the minimum the kernel's own tests reach that is not public API. They live in the
+/// kernel because they mint the tokens sealing takes; the items they drive stay `pub(crate)` here.
+/// Compiled only under the `test-support` feature, which only the kernel's dev-dependency turns on;
+/// never in a shipped build.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod test_support {
+    use crate::{AuditRecord, HeadHistory};
+
+    /// Take the head as it stands after one sealed record: delegates to the crate-private
+    /// `HeadHistory::observe`, so a test can drive a history without sealing a record per step.
+    pub fn observe(history: &mut HeadHistory, record: &AuditRecord) {
+        history.observe(record);
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/mod.rs"]
 mod tests;

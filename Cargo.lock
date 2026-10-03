@@ -327,7 +327,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
- "busbar-kernel-budget",
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
@@ -791,8 +790,6 @@ dependencies = [
  "busbar-contract",
  "ed25519-dalek",
  "ring",
- "serde_json",
- "sha2",
  "zeroize",
 ]
 
@@ -802,14 +799,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "httpdate",
-]
-
-[[package]]
-name = "busbar-kernel-budget"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-kernel-ledger",
 ]
 
 [[package]]
@@ -839,7 +828,6 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-kernel-budget",
  "ring",
  "serde",
  "sha2",

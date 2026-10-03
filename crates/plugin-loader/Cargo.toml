@@ -23,6 +23,12 @@ pack = ["dep:jsonschema"]
 # The auth axis's TEST STAND-IN (`auth_axis::stand_in`): a build with no composition root opens its
 # auth rows on a dispatcher of its own. A test double, so it never ships: a dependent crate's
 # `test-support` forwards here.
+#
+# It also gates `test_support`, the fake-call store harness, for the store adapter's minted-token
+# tests in busbar's integration suite (`crates/busbar/tests/store_adapter_verb_seam.rs`; the verb
+# seam takes a `Grant<AdminVerb>`). Enabled from busbar's [dev-dependencies] and busbar-kernel's own
+# `test-support`; never by a shipped build. Adds no dependency: the harness locates the store
+# both-ways proof's cdylib by the name `build.rs` exports, and the dependent's own graph builds it.
 test-support = []
 # THE PUBLISHED CONFORMANCE SUITE (`src/conformance/`, TODO ABI-b4): every real plugin repo's own
 # `tests/conformance.rs` names this crate as a dev-dependency with this feature, at the busbar commit

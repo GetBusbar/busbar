@@ -345,6 +345,8 @@ struct Bearer {
     callers: Mutex<Vec<Option<Vec<u8>>>>,
     /// Never answers on the spot, and its submitted call never answers at all.
     stall: std::sync::atomic::AtomicBool,
+    /// Refuses to field the attempt.
+    refuse: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
     /// The point each call was made at and the body it lent.
     points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
@@ -382,6 +384,9 @@ impl OutboundAuth for Bearer {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.stall.load(Ordering::SeqCst) {
             return None;
+        }
+        if self.refuse.load(Ordering::SeqCst) {
+            return Some(Fields::Refused);
         }
         self.callers.lock().unwrap().push(
             r.caller_credential
@@ -652,11 +657,17 @@ async fn a_529_fails_over_with_its_retry_after() {
     );
 }
 
-/// STEP 24, member-401: a withdrawn credential takes the member down (HardDown), and fails over.
+/// STEP 24, member-401 (1.5.5 `route.failover|fb|member-401`: ONE egress, the 401 to the caller,
+/// the member hard-down in every pool): a rejected key takes the member down (HardDown) and the
+/// answer is relayed to the plane, whose verdict renders it — it is NOT failed over, so the next
+/// member is never tried and no fallback pool is spilled into.
 #[tokio::test]
-async fn a_401_takes_the_member_down_and_fails_over() {
+async fn a_401_takes_the_member_down_and_is_relayed_to_the_plane() {
     let r = rig(
-        &[("a.test", Script::Answer(401, None, vec![b"no"]))],
+        &[
+            ("a.test", Script::Answer(401, None, vec![b"no"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
         OnExhausted::Status503,
         None,
     );
@@ -672,10 +683,61 @@ async fn a_401_takes_the_member_down_and_fails_over() {
         }
     );
     assert!(far.send(&t, request()).await);
-    assert!(far.next(&t).await.expect("a piece").fail_over);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over, "a hard-down is the plane's to render: {p:?}");
+    assert_eq!(p.status, Some((401, 2)));
+    assert_eq!(p.bytes, b"no", "the answer reaches the plane as it came");
     assert_eq!(
         *r.book.observed.lock().unwrap(),
         vec![(DestinationId::new(1), Outcome::HardDown)]
+    );
+    assert_eq!(
+        r.table.opened.lock().unwrap().len(),
+        1,
+        "one egress: the next member is never dialled"
+    );
+}
+
+/// A PASSTHROUGH member's 401 is the caller's own key failing (1.5.5's attempt classifier): nothing
+/// is recorded against the member, and the answer is relayed to the plane as it came.
+#[tokio::test]
+async fn a_passthrough_members_401_records_nothing_and_is_relayed() {
+    // m0 (own credential) is overloaded and fails over; m1 is the rig's passthrough member.
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(529, None, vec![b"busy"])),
+            ("b.test", Script::Answer(401, None, vec![b"your key"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        caller_credential: Some(b"caller-key".to_vec().into()),
+        ..route()
+    });
+    let Pick::Member { passthrough, .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(!passthrough);
+    assert!(far.send(&t, request()).await);
+    assert!(far.next(&t).await.expect("a piece").fail_over);
+    let Pick::Member { passthrough, .. } = far.member(&t, 2).await else {
+        panic!("a second member")
+    };
+    assert!(passthrough);
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over, "{p:?}");
+    assert_eq!(p.status, Some((401, 2)));
+    assert_eq!(p.bytes, b"your key");
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )],
+        "the passthrough member's rejected key records nothing"
     );
 }
 
@@ -924,6 +986,29 @@ async fn a_stalled_auth_call_is_bounded_by_the_attempt_cap() {
     assert!(r.book.observed.lock().unwrap().is_empty());
 }
 
+/// A request whose auth fields cannot be assembled is never sent and records nothing against the
+/// member: the binding's refusal is not the destination's fault (the push attempt's
+/// could-not-be-assembled case, on the far end's one assembly step).
+#[tokio::test]
+async fn an_attempt_whose_auth_refuses_records_nothing_against_the_member() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.auth.refuse.store(true, Ordering::SeqCst);
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(!far.send(&t, request()).await);
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 1, "the one auth call");
+    assert!(r.table.opened.lock().unwrap().is_empty(), "nothing dialled");
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "nothing recorded against the member"
+    );
+}
+
 /// The head the framer encodes carries the auth values: it wipes them when it drops.
 #[test]
 fn the_head_wipes_its_auth_values() {
@@ -1119,15 +1204,15 @@ async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
     assert!(far.next(&t).await.expect("a piece").fail_over);
     let w = far.lock();
     assert!(
-        w.ctx.is_excluded(DestinationId::new(1)),
+        w.walk.ctx().is_excluded(DestinationId::new(1)),
         "the member that refused"
     );
     assert!(
-        !w.ctx.is_excluded(DestinationId::new(2)),
+        !w.walk.ctx().is_excluded(DestinationId::new(2)),
         "a blocklisted member is not the exclusion's to record"
     );
     assert!(
-        !w.ctx.is_excluded(DestinationId::new(3)),
+        !w.walk.ctx().is_excluded(DestinationId::new(3)),
         "a larger window stays in the walk"
     );
 }

@@ -16,9 +16,7 @@
 //! what #66 removes.
 
 use super::*;
-use crate::cost::{
-    LaneClass, RateCard, MICROS_PER_CENT, NANOS_PER_CENT, NANOS_PER_MICRO, STANDARD_TIER_BP,
-};
+use crate::cost::{History, LaneClass, RateCard, MICROS_PER_CENT, NANOS_PER_CENT, NANOS_PER_MICRO};
 
 /// **THE SCALE IS A CONSTANT, NOT A CHOICE.** Ten million nano-units to one minor unit, which is
 /// the divisor every 1.5.5 cent projection used — so every figure that release produced comes out
@@ -139,24 +137,4 @@ fn an_absent_card_prices_tokens_at_nothing_and_still_posts_its_fee() {
     let fee_only = price_ledger(&slice, &History::opening(with_fee, 0))
         .expect("billing off still posts the flat fee");
     assert_eq!(fee_only.to_decimal_string(), "0.120000");
-}
-
-/// The read posture and the settlement posture agree on a priced card, and the whole answer is the
-/// one scale applied once. The same figures the deleted file asserted for its USD read.
-#[test]
-fn a_priced_card_reads_and_settles_at_the_one_scale() {
-    // 1000 units at 2.0 micro-units each is 2_000_000 nano-units; three minor units of fee is
-    // 30_000_000 nano-units at ten million a minor unit.
-    let card = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 2.0)], 3);
-    let report = usage(&[(INPUT, 1_000)]);
-    let read = priced(&card, "m", &report, 1, STANDARD_TIER_BP);
-    assert_eq!(read.pre_tier_nanos, 2_000_000 + 30_000_000);
-    assert_eq!(minor(&read), 3);
-    assert!(read.unpriced_classes().is_empty());
-
-    let history = History::opening(card, 0);
-    let posting = Posting::from_usage("m", &report, 1, STANDARD_TIER_BP, 0, 0);
-    let settled = crate::cost::price_fail_closed(&history.current(), &posting)
-        .expect("a fully priced card settles");
-    assert_eq!(settled.priced_nanos, read.priced_nanos);
 }

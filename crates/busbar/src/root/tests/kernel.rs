@@ -304,7 +304,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
         std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
         crate::root::units_admin::open_door(),
     );
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
     let ctx = UnitCtx {
         key: busbar_contract::ids::UnitKey::new(9),
         origin: busbar_contract::caps::OriginKind::Client,
@@ -319,7 +319,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     );
     let admin_read = busbar_contract::ids::OpClassId::new("admin_read");
 
-    let token: Pass<Audit> = Pass::mint(&seal);
+    let token: Pass<Audit> = busbar_kernel::test_support::tokens::pass();
     let refused = units
         .audit_refused(
             &token,
@@ -335,7 +335,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     );
     assert_eq!(refused.finish, busbar_contract::FinishClass::Error);
 
-    let token: Pass<Audit> = Pass::mint(&seal);
+    let token: Pass<Audit> = busbar_kernel::test_support::tokens::pass();
     let ended = units
         .audit(&token, &ctx, &Outcome::Completed)
         .into_result(&seal)
@@ -758,14 +758,13 @@ fn settle(
     amount: u64,
     arrived_ms: u64,
 ) {
-    use busbar_contract::caps::{DurableWrite, HoldAccrual, KernelSeal, Posted, WriteMoney};
-    let seal = KernelSeal::acquire_for_kernel();
-    let money = Grant::<WriteMoney>::mint(&seal);
+    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, WriteMoney};
+    let money = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
     let posted = Posted::settle_late(
         HoldAccrual::after_terminal(PrincipalId::new(name), amount, &money),
         &money,
     );
-    let token = Grant::<DurableWrite>::mint(&seal);
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     let key = bucket(name);
     book.lock()
         .expect("the book")
@@ -1319,7 +1318,7 @@ impl busbar_kernel_wal::SegmentFactory for BreakableDisk {
 /// the card in force prices on. Answering it as in doubt would publish an entry no chain will hold.
 #[test]
 fn a_rate_card_the_log_drops_outright_is_never_published() {
-    use busbar_contract::caps::{DurableWrite, KernelSeal};
+    use busbar_contract::caps::DurableWrite;
     let dir = journal_dir("dropped-apply");
     let holder = process_holder();
     apply_at(holder, 3.0, BOOT_A);
@@ -1340,7 +1339,7 @@ fn a_rate_card_the_log_drops_outright_is_never_published() {
     failing.store(true, std::sync::atomic::Ordering::SeqCst);
     // The disk goes: the write in flight poisons the segment (retained, owed), and from here no
     // fresh segment opens.
-    let token = Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel());
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     assert!(book
         .lock()
         .expect("the book")
@@ -1760,7 +1759,7 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_back_dated_correction_survives_a_restart() {
-    use busbar_contract::caps::{DurableWrite, KernelSeal};
+    use busbar_contract::caps::DurableWrite;
     const CORRECTED: (u64, u64) = (0, 86_400_000);
     /// A unit the day after the corrected window.
     const OUTSIDE: u64 = 86_400_000 + EARNED_B;
@@ -1790,7 +1789,7 @@ fn a_back_dated_correction_survives_a_restart() {
         // (sealing the corrected card), then the append.
         let journal = crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&book),
-            Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel()),
+            busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
         );
         holder
             .amend(
@@ -1870,10 +1869,10 @@ fn seal_correction(
     nanos: u64,
     rebase: impl FnOnce(super::CorrectionBase) -> super::CorrectionBase,
 ) -> busbar_kernel_ledger::cost::HistorySeq {
-    use busbar_contract::caps::{DurableWrite, KernelSeal};
+    use busbar_contract::caps::DurableWrite;
     let journal = crate::root::units_admin::AmendmentJournal::new(
         Arc::clone(book),
-        Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel()),
+        busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
     );
     holder
         .amend(

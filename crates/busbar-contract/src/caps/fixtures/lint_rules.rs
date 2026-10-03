@@ -6,8 +6,9 @@
 // This file is DATA, not surface. Everything in it exists because Rust cannot express the rule: a
 // hold has to be consumed by exactly one function, Rust has no linear types, so `std::mem::forget`
 // will always compile. Rather than pretend otherwise, the rules the compiler cannot carry are
-// written down here and the workspace's source scan reads them. The scan is the enforcement; this
-// file is the specification, and a test in this crate keeps it from going empty or stale.
+// written down in `lint_rules.txt` and the workspace's source scan enforces them. The scan is the
+// enforcement; the data is the specification, and a test in this crate keeps it from going empty
+// or stale.
 //
 // The scan's shape is deliberately dull: for each entry, a literal substring search over the Rust
 // sources of the crates named by the entry's scope, with one reviewed allow-list of exceptions. No
@@ -15,6 +16,11 @@
 //
 // It lives under `fixtures/` rather than under `src/` because a plugin author never names any of
 // it; it is included into the crate's test module and nowhere else.
+//
+// The rule DATA is not in this file. It is `lint_rules.txt` beside it (ARCHITECT ruling Q-GG2): the
+// list has to spell the constructors it confines, and as Rust source those spellings were read by
+// the construction gate's `token-sealed` scan as forged mints. As data the gate never walks, they
+// are what they always were, a specification. This file keeps the types and the parser.
 
 /// One rule the compiler cannot enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,68 +42,64 @@ pub enum LintScope {
     ConfinedTo(&'static str),
 }
 
+/// The rule data, verbatim. See the module header for why it is not Rust source.
+const DATA: &str = include_str!("lint_rules.txt");
+
+/// The data's records, comments and blank lines skipped, each split into its ` | ` fields.
+fn records() -> impl Iterator<Item = Vec<&'static str>> {
+    DATA.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.split(" | ").map(str::trim).collect())
+}
+
+/// The rules of one list (`hold-escape` or `seal-site`), in file order.
+fn list(name: &str) -> Vec<LintRule> {
+    records()
+        .filter(|f| f.first() == Some(&"rule") && f.get(1) == Some(&name))
+        .map(|f| {
+            assert_eq!(f.len(), 5, "a rule line has five fields: {f:?}");
+            let scope = match f[2] {
+                "banned" => LintScope::BannedEverywhere,
+                other => LintScope::ConfinedTo(
+                    other
+                        .strip_prefix("confined:")
+                        .unwrap_or_else(|| panic!("unknown scope {other:?}")),
+                ),
+            };
+            LintRule {
+                symbol: f[3],
+                scope,
+                because: f[4],
+            }
+        })
+        .collect()
+}
+
 /// The ways a hold could be made to disappear without a posting. Every one of them compiles; none
 /// of them is ever correct, because a hold that vanishes is money that vanishes.
-pub const HOLD_ESCAPES: &[LintRule] = &[
-    LintRule {
-        symbol: "mem::forget",
-        scope: LintScope::BannedEverywhere,
-        because: "a forgotten hold is a unit that was admitted and never settled",
-    },
-    LintRule {
-        symbol: "ManuallyDrop",
-        scope: LintScope::BannedEverywhere,
-        because: "the same as forgetting, spelled differently",
-    },
-    LintRule {
-        symbol: "Box::leak",
-        scope: LintScope::BannedEverywhere,
-        because: "a leaked hold never reaches the exit path",
-    },
-    LintRule {
-        symbol: "process::abort",
-        scope: LintScope::BannedEverywhere,
-        because: "aborting skips every exit path at once; the node drains instead",
-    },
-    LintRule {
-        symbol: "AssertUnwindSafe",
-        scope: LintScope::ConfinedTo("kernel/src/teller"),
-        because: "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one \
-                  place and nothing else may use it",
-    },
-    LintRule {
-        symbol: "JoinHandle::abort",
-        scope: LintScope::BannedEverywhere,
-        because: "an aborted task loses its unit's end; the sweep is the second exit, not abort",
-    },
-];
+pub fn hold_escapes() -> Vec<LintRule> {
+    list("hold-escape")
+}
 
 /// The symbols that decide who may build a capability at all. Each is a crate boundary Rust cannot
 /// police, so each is one audited name.
-pub const SEAL_SITES: &[LintRule] = &[
-    LintRule {
-        symbol: "KernelSeal::acquire_for_kernel",
-        scope: LintScope::ConfinedTo("kernel/src"),
-        because: "the seal is what mints every token; only the kernel may obtain one",
-    },
-    LintRule {
-        symbol: "Grant::<Recover>::mint(",
-        scope: LintScope::ConfinedTo("recovery"),
-        because: "it materialises a hold from a journal record with no admission behind it, so \
-                  only the recovery path may name it; the capability crate that declares it is the \
-                  one reviewed exception, and the gate names that exception by file",
-    },
-    LintRule {
-        // The take is spelled on a `HoldCell` value rather than through the type, so the literal
-        // that finds every take site is the exit token the take demands.
-        symbol: "take(&Grant::<Exit>::mint(",
-        scope: LintScope::ConfinedTo("kernel/src"),
-        because: "there are three take sites -- the exit path and a child unit's end in the \
-                  teller, and the sweep in the tick -- all in the kernel, and no fourth anywhere",
-    },
-];
+pub fn seal_sites() -> Vec<LintRule> {
+    list("seal-site")
+}
 
 /// Everything the scan enforces, in one list.
-pub fn all() -> impl Iterator<Item = &'static LintRule> {
-    HOLD_ESCAPES.iter().chain(SEAL_SITES.iter())
+pub fn all() -> impl Iterator<Item = LintRule> {
+    hold_escapes().into_iter().chain(seal_sites())
+}
+
+/// The symbols the join test requires the rule list to keep naming.
+pub fn expected() -> Vec<&'static str> {
+    records()
+        .filter(|f| f.first() == Some(&"expect"))
+        .map(|f| {
+            assert_eq!(f.len(), 2, "an expect line has two fields: {f:?}");
+            f[1]
+        })
+        .collect()
 }

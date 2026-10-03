@@ -17,6 +17,13 @@ pub fn admitted_at_zero(admit_token: &Grant<Admittance>, principal: PrincipalId)
     Admission::Own(Hold::open(admit_token, principal, 0))
 }
 
+/// A unit's arrival hold: the hold it carries into the in-flight table before it reaches the door.
+/// It reserves nothing, since a unit refused at the gate spent nothing, and it opens only with the
+/// admittance grant the kernel lends for this call.
+pub fn arrival_hold(principal: PrincipalId, admit_token: &Grant<Admittance>) -> Hold {
+    Hold::open(admit_token, principal, 0)
+}
+
 /// THE NODE'S ONE UNIT-KEY ALLOCATOR, from 1. A unit's identity is the kernel's to mint: a plane
 /// that needs a key for a table it keeps (a served session's open calls) takes it from here.
 #[derive(Debug, Default)]

@@ -53,6 +53,9 @@ pub mod mint;
 pub mod posture;
 pub mod rate;
 pub mod refusal;
+/// The verbs unit's test-only `SecretOnce` mint (ARCHITECT ruling B): `cfg(test)` or `test-support` only.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod verb;
 pub mod verbs;
 pub mod versions;
@@ -217,3 +220,9 @@ mod key_revoke_tombstone_tests;
 #[cfg(test)]
 #[path = "tests/core_moved_tests.rs"]
 mod core_moved_tests;
+
+// The one-time secret placeholder's read-back, moved here from busbar-contract: `SecretOnce::mint(`
+// is spelled only in this crate, the verbs unit's home (`token-sealed:secret-once-mint`).
+#[cfg(test)]
+#[path = "tests/secret_once_tests.rs"]
+mod secret_once_tests;

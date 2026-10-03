@@ -4,23 +4,18 @@
 //! What the pool does AFTER the walk finds nowhere to send.
 //!
 //! Nothing in this module is a second selection loop and nothing here decides who is healthy. The
-//! spill re-enters the same pick against another pool; the wait parks for a bounded time and then
-//! re-asks the same admission every path asks; the last-resort route is the ONE documented breaker
-//! bypass in the unit and it says so by owning no probe; and the shed is a refusal with an honest
-//! wait computed from the pool's own members. Every one of the four dispatches through the same
-//! attempt the walk runs, and each maps its result the degraded way: an upstream's own answer is
-//! relayed to the client as it came, and only an attempt that produced no answer at all moves on
-//! to the next member.
+//! spill re-enters the walk's one pick against another pool; the wait parks for a bounded time and
+//! then re-asks the same admission every path asks; the last-resort route is the ONE documented
+//! breaker bypass in the unit and it says so by owning no probe; and the shed is a refusal with an
+//! honest wait computed from the pool's own members. The walk ([`crate::walk::Walk`]) runs them in
+//! that order and marks every dispatch they make degraded: an upstream's own answer is relayed to
+//! the client as it came, and only an attempt that produced no answer at all moves on.
 
 use busbar_contract::caps::{Pass, Route};
 
-use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
-use crate::pool::{Member, OnExhausted, Pool};
-use crate::ports::{Breaker, DestinationId, Permit, Telemetry, Unavailable};
-use crate::race;
-use crate::select::{pick_among, PickInput, ProbeGuard, RequestCtx};
-use crate::walk::RouteRequest;
-use crate::wire::{RouteOutcome, Shed};
+use crate::pool::{Member, Pool};
+use crate::ports::{Breaker, Permit};
+use crate::walk::WalkPorts;
 
 /// The wait a shed advertises when nothing else justifies a longer one, in whole seconds.
 ///
@@ -64,214 +59,8 @@ pub fn retry_after_secs(
         .max(1)
 }
 
-/// The shed: refuse, with the wait the pool's own members justify.
-pub fn handle_status_503(
-    breaker: &dyn Breaker,
-    members: &[Member],
-    pool: &str,
-    now: u64,
-    token: &Pass<Route>,
-) -> RouteOutcome {
-    RouteOutcome::Refused(Shed::overloaded(retry_after_secs(
-        breaker, members, pool, now, token,
-    )))
-}
-
-/// Run this pool's terminal.
-///
-/// The visited mark is taken HERE, before the terminal is even looked up, because this is the one
-/// point every pool's exhaustion flows through. Marking it inside the spill would only mark the
-/// pool being spilled INTO, so a chain that came back round to its origin would not be recognised
-/// on the second hop and would walk the origin's members a second time before terminating.
-pub async fn handle_exhaustion_for_pool<'a>(
-    request: &RouteRequest<'a>,
-    ctx: &mut RequestCtx,
-    pool: &Pool,
-    members: &[Member],
-) -> RouteOutcome {
-    ctx.mark_pool_visited(&pool.name);
-    let now = request.clock.now_secs();
-    match &pool.on_exhausted {
-        OnExhausted::Status503 => {
-            handle_status_503(request.breaker, members, &pool.name, now, request.token)
-        }
-        OnExhausted::FallbackPool(target) => {
-            Box::pin(handle_fallback_pool(request, ctx, target)).await
-        }
-        OnExhausted::LeastBad => handle_least_bad(request, ctx, pool, members).await,
-        OnExhausted::Queue { max_ms } => handle_queue(request, ctx, pool, members, *max_ms).await,
-    }
-}
-
-/// One degraded dispatch: the same attempt the walk runs, in the degraded posture, mapped the
-/// degraded way.
-///
-/// `Ok` is an answer for the client — a delivered body, a relayed upstream refusal, or a bail
-/// before anything was sent. `Err` means the upstream produced no answer at all, which is the only
-/// case in which a degraded caller may try another member.
-///
-/// The probe arrives as its guard, not as a bare epoch, so the resolution shed below — a member the
-/// verified set does not carry — gives it back on the way out instead of wedging the cell.
-#[allow(clippy::too_many_arguments)]
-async fn dispatch_degraded<'a>(
-    request: &RouteRequest<'a>,
-    ctx: &RequestCtx,
-    pool: &Pool,
-    member: &Member,
-    permit: Permit,
-    mut probe: Option<ProbeGuard<'_>>,
-) -> Result<RouteOutcome, ()> {
-    let Some(dest) = request.destination(member.destination) else {
-        return Ok(RouteOutcome::Refused(Shed::internal()));
-    };
-    let probe_epoch = probe.as_mut().map(ProbeGuard::take_epoch);
-    let now = request.clock.now_secs();
-    let metric_pool = if pool.name.is_empty() {
-        member.name.as_str()
-    } else {
-        pool.name.as_str()
-    };
-    let outcome = attempt(AttemptInput {
-        hop: Hop {
-            breaker: request.breaker,
-            token: request.token,
-            capacity: request.capacity,
-            journal: request.journal,
-            egress_auth: request.egress_auth,
-            clock: request.clock,
-            telemetry: request.telemetry,
-            transport: request.transport,
-            plane: request.plane,
-            keys: request.keys,
-            dest,
-            destination: member.destination,
-            pool: &pool.name,
-            metric_pool,
-            leg: request.leg,
-            attempt_no: u32::MAX,
-            attempt_timeout_ms: member.attempt_timeout_ms,
-            wants_stream: request.wants_stream,
-            remaining_secs: ctx.remaining_secs(now),
-            stream_ceiling_secs: request.stream_ceiling_secs,
-            lane_field: request.lane_field,
-            stream: request.stream,
-            degraded: true,
-        },
-        permit,
-        probe_epoch,
-        unit: request.unit,
-        ctx: request.ctx,
-    })
-    .await;
-    match outcome {
-        AttemptOutcome::Delivered(delivered) => Ok(RouteOutcome::Delivered(delivered)),
-        AttemptOutcome::Bail(shed) => Ok(RouteOutcome::Refused(shed)),
-        // The upstream answered and the breaker was told: relay that answer as it came.
-        AttemptOutcome::Failed {
-            relay: Some(delivered),
-            ..
-        } => Ok(RouteOutcome::Delivered(delivered)),
-        // Nothing came back at all: the caller may try the next member, so this is a failover.
-        AttemptOutcome::Failed {
-            relay: None,
-            err_type,
-            ..
-        } => {
-            request.telemetry.failover(metric_pool, err_type);
-            Err(())
-        }
-    }
-}
-
-// ── the spill ───────────────────────────────────────────────────────────────────────────────────
-
-/// Send the request to another pool's healthy member, with multi-level chains and a loop guard.
-///
-/// A spill target is an independent pool, and everything that follows from that is here: it
-/// re-applies its OWN blocklist, because the primary pool's says nothing about it; when it is
-/// itself exhausted it consults its OWN terminal, which is what makes a chain work; and a chain
-/// that comes back round to a pool this request has already been through terminates with the shed
-/// rather than recursing.
-async fn handle_fallback_pool<'a>(
-    request: &RouteRequest<'a>,
-    ctx: &mut RequestCtx,
-    target: &str,
-) -> RouteOutcome {
-    // The deadline travels across hops. A spill is not a fresh request.
-    if ctx.expired(request.clock.now_secs()) {
-        return RouteOutcome::Refused(Shed::request_timeout());
-    }
-
-    // The loop guard: if this request already routed through this pool, stop.
-    if ctx.is_pool_visited(target) {
-        return handle_status_503(
-            request.breaker,
-            &[],
-            target,
-            request.clock.now_secs(),
-            request.token,
-        );
-    }
-
-    let Some(pool) = request.pools.get(target) else {
-        // The target is not configured: the shed, with the empty-set floor.
-        return handle_status_503(
-            request.breaker,
-            &[],
-            target,
-            request.clock.now_secs(),
-            request.token,
-        );
-    };
-    let members = pool.admissible_members();
-
-    // Mark before re-entering, so a chain that comes back here is recognised.
-    ctx.mark_pool_visited(target);
-
-    loop {
-        let now = request.clock.now_secs();
-        if ctx.expired(now) {
-            return RouteOutcome::Refused(Shed::request_timeout());
-        }
-
-        // The spill selects with the plain weighted floor by design: a ranking hook applies to the
-        // PRIMARY pool, where it shapes the normal choice. A spill is already the degraded
-        // overflow path, so it is not re-ranked over the members it spilled into.
-        let pick = pick_among(
-            &PickInput {
-                breaker: request.breaker,
-                capacity: request.capacity,
-                floor: request.floor,
-                pool: &pool.name,
-                members: &members,
-                affinity: None,
-                preference: None,
-                now,
-                token: request.token,
-            },
-            ctx,
-        );
-        let Some(pick) = pick else {
-            // The spill target is itself exhausted: consult ITS terminal. The visited set is what
-            // guarantees this recursion ends.
-            return Box::pin(handle_exhaustion_for_pool(request, ctx, pool, &members)).await;
-        };
-        let Some(member) = members.iter().find(|m| m.destination == pick.destination) else {
-            return RouteOutcome::Refused(Shed::internal());
-        };
-        ctx.exclude(pick.destination);
-
-        match dispatch_degraded(request, ctx, pool, member, pick.permit, pick.probe).await {
-            Ok(outcome) => return outcome,
-            // No answer at all: try the next member of this pool.
-            Err(()) => continue,
-        }
-    }
-}
-
-// ── the last resort ─────────────────────────────────────────────────────────────────────────────
-
-/// Send to the member with the soonest cooldown even though it is suppressed.
+/// THE LAST RESORT: the member with the soonest cooldown and a free slot, even though it is
+/// suppressed.
 ///
 /// This is the ONE documented breaker bypass in the unit, and two details of it matter.
 ///
@@ -281,211 +70,29 @@ async fn handle_fallback_pool<'a>(
 /// defeats the whole point of a last resort. Members that are dead or out of budget are filtered
 /// first, so their zero cooldown never sorts them to the front.
 ///
-/// It owns NO probe and passes none, so no guard is built at all. Handing it the cell's current
-/// epoch instead would be actively unsafe: if the cell is half-open because a peer legitimately
-/// won the probe, that epoch is the PEER's, and an owner-checked release keyed on it would revert
-/// the peer's live probe.
-async fn handle_least_bad<'a>(
-    request: &RouteRequest<'a>,
-    ctx: &RequestCtx,
+/// It owns NO probe and the walk passes none on: handing it the cell's current epoch instead would
+/// be actively unsafe, since a half-open cell's epoch may be a PEER's, and an owner-checked release
+/// keyed on it would revert the peer's live probe.
+pub fn least_bad(
+    ports: &WalkPorts<'_>,
     pool: &Pool,
-    members: &[Member],
-) -> RouteOutcome {
-    let now = request.clock.now_secs();
+    token: &Pass<Route>,
+) -> Option<(Member, Permit)> {
+    let now = ports.clock.now_secs();
+    let members = pool.admissible_members();
     let mut ranked: Vec<&Member> = members
         .iter()
-        .filter(|m| request.breaker.admissible(m.destination))
+        .filter(|m| ports.breaker.admissible(m.destination))
         .collect();
     ranked.sort_by_key(|m| {
-        request
+        ports
             .breaker
-            .cooldown_remaining(&pool.name, m.destination, now, request.token)
+            .cooldown_remaining(&pool.name, m.destination, now, token)
     });
-
-    let mut dispatch: Option<(&Member, Permit)> = None;
-    for member in ranked {
-        if let Some(permit) = request.capacity.try_acquire(member.destination) {
-            dispatch = Some((member, permit));
-            break;
-        }
-    }
-    let Some((member, permit)) = dispatch else {
-        // Nothing usable at all, or every usable member is at capacity: no degraded dispatch is
-        // possible, so shed.
-        return handle_status_503(request.breaker, members, &pool.name, now, request.token);
-    };
-
-    match dispatch_degraded(request, ctx, pool, member, permit, None).await {
-        Ok(outcome) => outcome,
-        Err(()) => handle_status_503(
-            request.breaker,
-            members,
-            &pool.name,
-            request.clock.now_secs(),
-            request.token,
-        ),
-    }
-}
-
-// ── the wait ────────────────────────────────────────────────────────────────────────────────────
-
-/// One parked waiter's place in the depth gauge, given back on drop.
-///
-/// The increment and the decrement sit either side of an await, and a future that is dropped
-/// part-way — a client that hung up while its request was parked — runs no code between them. A
-/// plain pair of calls therefore leaks a phantom waiter into the gauge on every abandoned request,
-/// and the gauge is what an operator reads to decide the pool is saturated. Tying the decrement to
-/// a drop makes the balance hold on every exit there is, including the one nobody writes.
-struct QueuedGuard<'a> {
-    telemetry: &'a dyn Telemetry,
-    pool: &'a str,
-}
-
-impl<'a> QueuedGuard<'a> {
-    /// Count one waiter in.
-    fn park(telemetry: &'a dyn Telemetry, pool: &'a str) -> Self {
-        telemetry.queued(pool, 1);
-        Self { telemetry, pool }
-    }
-}
-
-impl Drop for QueuedGuard<'_> {
-    fn drop(&mut self) {
-        self.telemetry.queued(self.pool, -1);
-    }
-}
-
-/// Wait a bounded time for a slot to free, dispatch on the member that freed one, else shed.
-///
-/// It lives here, in the terminal, and never inside the pick — selection stays non-blocking, so
-/// "no unbounded await in the pick path" is a structural fact rather than a rule to remember.
-///
-/// Waiting only helps if some member was passed over because it was AT CAPACITY: a held slot can
-/// drop. If every exclusion was dead, out of budget, suppressed or a lost probe race, nothing will
-/// free a slot and waiting is pointless, so the shed comes now.
-///
-/// Winning a slot proves capacity, not admission. The winner's breaker is re-asked — it may have
-/// tripped while the request was parked — and only then is anything dispatched. A member whose
-/// cell opened while queued can never be served by waiting longer, so it is dropped from the wait
-/// set and the wait continues on the rest against the SAME deadline, which is why a re-entry can
-/// never extend the budget.
-async fn handle_queue<'a>(
-    request: &RouteRequest<'a>,
-    ctx: &mut RequestCtx,
-    pool: &Pool,
-    members: &[Member],
-    max_ms: u64,
-) -> RouteOutcome {
-    // Dedup by member: the affinity fast path may have recorded a member the rest of the pick
-    // recorded again, which is deliberate and documented in the order.
-    let mut waiting: Vec<DestinationId> = Vec::new();
-    for (destination, reason) in ctx.excluded_reasons() {
-        if matches!(reason, Unavailable::AtCapacity { .. }) && !waiting.contains(destination) {
-            waiting.push(*destination);
-        }
-    }
-    if waiting.is_empty() {
-        return handle_status_503(
-            request.breaker,
-            members,
-            &pool.name,
-            request.clock.now_secs(),
-            request.token,
-        );
-    }
-
-    // The bound is the lesser of what the operator allowed and what the walk has left, in
-    // milliseconds so a sub-second bound is representable and a budget near a second boundary does
-    // not collapse to zero. It is captured ONCE, as an absolute point, so a re-entry after a
-    // won-but-suppressed slot waits against the same bound.
-    let started = request.clock.now_millis();
-    let bound_ms = max_ms.min(ctx.remaining_ms(started));
-
-    let _parked = QueuedGuard::park(request.telemetry, &pool.name);
-    queue_wait(request, ctx, pool, members, &mut waiting, started, bound_ms).await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn queue_wait<'a>(
-    request: &RouteRequest<'a>,
-    ctx: &RequestCtx,
-    pool: &Pool,
-    members: &[Member],
-    waiting: &mut Vec<DestinationId>,
-    started: u128,
-    bound_ms: u64,
-) -> RouteOutcome {
-    loop {
-        if waiting.is_empty() {
-            return handle_status_503(
-                request.breaker,
-                members,
-                &pool.name,
-                request.clock.now_secs(),
-                request.token,
-            );
-        }
-        let spent = request.clock.now_millis().saturating_sub(started);
-        let left = bound_ms.saturating_sub(u64::try_from(spent).unwrap_or(u64::MAX));
-
-        // The deadline is polled FIRST: if the bound has passed the request sheds even when a slot
-        // becomes free in the same instant. Never block past the budget.
-        let won = race::deadline_first(
-            request.capacity.acquire_any(waiting),
-            request.clock.sleep(left),
-        )
-        .await;
-
-        let (destination, permit) = match won {
-            Ok(Some(pair)) => pair,
-            // The bound passed, or every queue is closed: shed with the same honest wait the
-            // immediate shed would have used.
-            Ok(None) | Err(race::Elapsed) => {
-                return handle_status_503(
-                    request.breaker,
-                    members,
-                    &pool.name,
-                    request.clock.now_secs(),
-                    request.token,
-                )
-            }
-        };
-
-        // Capacity is held but the breaker has not been passed. Ask it — and only it — on the
-        // member that freed a slot. A probe won here is owned by the dispatch, exactly as on every
-        // other path.
-        let now = request.clock.now_secs();
-        match request.breaker.try_admit(&pool.name, destination, now) {
-            Ok(admit) => {
-                // Guarded from the win, so the resolution shed below returns it rather than
-                // leaving the cell half-open with nothing to record an outcome against.
-                let probe = admit.probe_epoch.map(|epoch| {
-                    ProbeGuard::new(request.breaker, &pool.name, destination, epoch, now)
-                });
-                let Some(member) = members.iter().find(|m| m.destination == destination) else {
-                    drop(permit);
-                    return RouteOutcome::Refused(Shed::internal());
-                };
-                return match dispatch_degraded(request, ctx, pool, member, permit, probe).await {
-                    Ok(outcome) => outcome,
-                    Err(()) => handle_status_503(
-                        request.breaker,
-                        members,
-                        &pool.name,
-                        request.clock.now_secs(),
-                        request.token,
-                    ),
-                };
-            }
-            Err(_) => {
-                // The member's cell opened, or it lost a probe race, while the request was parked.
-                // Give the slot back — never hold one on a member nothing will be sent to — and
-                // drop it from the wait set: waiting cannot make a suppressed member serveable,
-                // and dropping it also stops a tight re-acquire spin on the slot just released.
-                drop(permit);
-                waiting.retain(|d| *d != destination);
-                continue;
-            }
-        }
-    }
+    ranked.into_iter().find_map(|m| {
+        ports
+            .capacity
+            .try_acquire(m.destination)
+            .map(|p| ((*m).clone(), p))
+    })
 }
