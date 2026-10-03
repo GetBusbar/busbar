@@ -56,6 +56,13 @@ fn main() {
                 ));
             }
             // A second proof of one kind is keyed `<kind>-<proof>`; its alias is that key as an ident.
+            // A HOT kind's row gets NO alias: nothing names its crate, so the test binary never
+            // links its rlib. The row is a dev-dependency only so cargo BUILDS its cdylib, and a
+            // `-plugin` crate's rlib exports `busbar_plugin_door` (`export_door!`), which two
+            // doors in one fat-LTO unit make "symbol multiply defined". Naming the crate would link it.
+            if HOT_KINDS.contains(&kind) {
+                continue;
+            }
             let alias = kind.replace('-', "_");
             crates.push_str(&format!(
                 "// The `{kind}` both-ways fixture crate.\n\
