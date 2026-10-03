@@ -41,6 +41,10 @@ pub struct TokenUsage {
     pub input_text: Option<u64>,
     pub input_audio: Option<u64>,
     pub input_image: Option<u64>,
+    /// Every OPEN class the reader counted beside the token split (a turn's billed searches), keyed
+    /// by the class the plane declares and ledgered verbatim beside the reserved four (#71). A zero
+    /// count is not carried.
+    pub open_units: std::collections::BTreeMap<String, u64>,
 }
 
 /// The billable item produced for one response. Priced by the 1.3 engine via an exhaustive match.

@@ -7,13 +7,21 @@ use super::IrError;
 use crate::codec::keys;
 use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 
-/// ANTHROPIC'S USAGE COUNTS, AS DATA (#42). The four totals come first: a truncated-body recovery
-/// reads only those (`USAGE[..4]`). Then the 5m/1h cache-creation TIER SPLIT — SLICES of
-/// `cache_creation_input_tokens`, never additions to it, but two separate tiers — the
-/// separately-metered `server_tool_use.web_search_requests`, and the thinking slice of
-/// `output_tokens` (attribution: already counted inside the output total, so a lenient read).
-/// The buffered response and both stream frames (`message_start`, `message_delta`) read the same
-/// table, so one request never reports the split at `stream: false` and loses it at `stream: true`.
+/// ANTHROPIC'S USAGE COUNTS, AS DATA (#42). The four totals come first. Then the 5m/1h
+/// cache-creation TIER SPLIT — SLICES of `cache_creation_input_tokens`, never additions to it, but
+/// two separate tiers — the separately-metered `server_tool_use.web_search_requests`, and the
+/// thinking slice of `output_tokens` (attribution: already counted inside the output total, so a
+/// lenient read). The buffered response, both stream frames (`message_start`, `message_delta`) and a
+/// truncated-body recovery read the same table, so one request never reports a count at
+/// `stream: false` and loses it at `stream: true` or on a cut body.
+///
+/// WHERE EACH COUNT IS LEDGERED (MONEY-AUDIT A-F1; the census over the pinned wire lock,
+/// `testing/llm-conformance/wire/anthropic.wire.json`, is `usage_census_tests`): the four totals are
+/// the reserved token classes; `web_search_requests` is the open class `search_units` (one billed
+/// search each, `IrUsage::to_token_usage`). The 5m/1h tiers ride inside `cache_write`, whose rate
+/// card holds one rate (the per-TTL split is escalated, A-F1). `thinking_tokens` is inside
+/// `output_tokens`. `web_fetch_requests` is no unit: Anthropic charges no per-fetch fee, the fetched
+/// content bills as the input tokens it already is.
 pub(super) const USAGE: &[UsageCount] = &[
     (CountSlot::Input, CountRead::Zero(&[keys::INPUT_TOKENS])),
     (CountSlot::Output, CountRead::Zero(&[keys::OUTPUT_TOKENS])),

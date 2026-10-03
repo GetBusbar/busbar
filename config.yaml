@@ -412,7 +412,8 @@ pools:
 # configured model needs an entry (--validate prints a paste-ready stub otherwise), AND every
 # billable class the LLM plane declares must be configured on some entry — the four reserved
 # *_utok tiers below count as configured just by the card's presence (an omitted tier is 0), but
-# the open `search_units` class (a rerank's billed search units) is NOT reserved and needs an
+# the open `search_units` class (billed searches: a rerank's search units, an Anthropic turn's web
+# searches) is NOT reserved and needs an
 # explicit `units: { search_units: <rate> }` on at least one entry; `0` makes it free but still
 # counts as configured. A card silent about a declared class fails boot naming it. Keys are the
 # CONFIG model names above.

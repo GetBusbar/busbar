@@ -251,8 +251,8 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
         // THE CLASSES THIS PLANE LEDGERS (#71): the four reserved token tiers every dialect reports,
-        // and a rerank's billed search units (the one open class a codec counts). A present card
-        // must configure all five (Q29/Q35).
+        // and billed searches (the one open class a codec counts: a rerank's search units, an
+        // Anthropic turn's web searches). A present card must configure all five (Q29/Q35).
         billable_classes: &[
             BillableClass {
                 class: busbar_contract::records::UNIT_INPUT,

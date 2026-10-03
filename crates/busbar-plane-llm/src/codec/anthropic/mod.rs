@@ -1669,6 +1669,10 @@ mod field_carry_tests;
 mod usage_float_tests;
 
 #[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;
+
+#[cfg(test)]
 #[path = "tests/ir_mapping_q57_tests.rs"]
 mod ir_mapping_q57_tests;
 

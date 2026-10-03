@@ -94,12 +94,16 @@ pub const TRUNCATED_TAIL_BYTES_PER_TOKEN: u64 = 4;
 
 /// Project the IR's normalized usage into the neutral name-keyed [`busbar_contract::billing::Usage`]
 /// carrier: the four reserved units (`input`/`output`/`cache_read`/`cache_write`) as canonical map
-/// keys. Readers normalize `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the
-/// mapping is direct: cache-creation is the `cache_write` unit. Zero tiers are omitted so the map
-/// stays sparse (no-zero-entry).
+/// keys, and every open class the reader counted beside them (`TokenUsage::open_units`, a turn's
+/// billed searches) under its declared class. Readers normalize `input_tokens` to UNCACHED and keep
+/// the cache fields ADDITIVE, so the mapping is direct: cache-creation is the `cache_write` unit.
+/// Zero counts are omitted so the map stays sparse (no-zero-entry).
 #[must_use]
 pub fn tier_usage(u: &busbar_contract::billing::TokenUsage) -> busbar_contract::billing::Usage {
-    let mut usage_units = std::collections::BTreeMap::new();
+    let mut usage_units: std::collections::BTreeMap<String, u64> = (u.open_units.iter())
+        .filter(|(_, n)| **n != 0)
+        .map(|(class, n)| (class.clone(), *n))
+        .collect();
     for (k, v) in [
         (busbar_contract::records::UNIT_INPUT, u.input),
         (busbar_contract::records::UNIT_OUTPUT, u.output),
