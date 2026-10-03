@@ -3085,7 +3085,7 @@ autoscaler" confusion.
 
 | Branch | Rule | CI |
 |---|---|---|
-| `predev` | **permanent WIP.** Every in-flight session lands here and forks from here. | Pull requests only; `promote.yml` `preflight` + `hop` are the required checks and the verdict is "no worse than base" (see "How work lands" below). |
+| `predev` | **permanent WIP.** Every in-flight session lands here and forks from here. | Pull requests only, landed through GitHub's merge queue; `promote.yml` `preflight` + `hop` are the required checks on both the pull request (the fast pre-check) and the merge group (the full plan, the proof of record), and the verdict is "no worse than base" (see "How work lands" below). |
 | `dev` | **release-train-write-only.** "Next version's WIP, nowhere near done." | full `ci.yml` |
 | `qa` | promotion target. **The one release build happens here** — the PGO build that ships, tested for real. | full CI + the real-media matrix |
 | `main` | **a push here cuts a release** — tag, GitHub Release, container promotion, `latest` moved. Irreversible. **`main` never compiles:** it tags and publishes the artifacts, by digest, that `qa` built and verified. | release orchestration |
@@ -3256,8 +3256,14 @@ branches live on GitHub so CI runs the pipeline).
 2. Changes reach `predev` and `dev` **only by pull request**. The ruleset on both requires the two
    jobs of `.github/workflows/promote.yml`, `preflight` and `hop`; no direct push, no force-push, no
    deletion. `dev` moves only through the promote engine.
-3. The promote run on the PR is the proof of record. Its verdict is "no worse than base": a PR may
-   not add a red. A local Latchkey run is for iteration only.
+3. predev lands through GitHub's merge queue (OWNER 2026-10-02). The MERGE-GROUP run is the proof of
+   record: the full plan (every gate, every build/test step, the money oracle forced, conformance
+   produced at judge time and judged absolutely per #68) on the queue's merge commit, judged "no worse
+   than base" against the base the queue built it on; its report becomes the base of the commit it
+   lands. The PULL-REQUEST run is the fast pre-check a PR must pass to enter the queue: the gates and
+   `build:check`, `build:clippy`, `build:dlopen-cdylibs`, `test:workspace`, with no oracle and no
+   conformance (ARCHITECT ruling 2026-10-02, the hop split). Neither may add a red. A local Latchkey
+   run is for iteration only.
 4. A `$` (money-touching) change is its own PR, never bundled with anything else.
 5. On merge the branch is deleted (OWNER 2026-10-01, BRANCH LIFETIME: "as soon as merged into
    predev get rid of the branch").
