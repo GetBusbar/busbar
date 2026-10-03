@@ -83,6 +83,16 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 "messages[].content[].document.source.text" = { prim = "text" }
 "messages[].content[].guardContent.text.text" = { prim = "text" }
 "messages[].content[].toolResult.content[].document.citations" = { prim = "citations" }
+"messages[].content[].searchResult.source" = { prim = "source" }
+"messages[].content[].searchResult.title" = { prim = "title" }
+"messages[].content[].searchResult.content" = { prim = "content" }
+"messages[].content[].searchResult.content[].text" = { prim = "text" }
+"messages[].content[].searchResult.citations" = { prim = "citations" }
+"messages[].content[].toolResult.content[].searchResult.source" = { prim = "source" }
+"messages[].content[].toolResult.content[].searchResult.title" = { prim = "title" }
+"messages[].content[].toolResult.content[].searchResult.content" = { prim = "content" }
+"messages[].content[].toolResult.content[].searchResult.content[].text" = { prim = "text" }
+"messages[].content[].toolResult.content[].searchResult.citations" = { prim = "citations" }
 "messages[].content[].toolResult.content[].document.context" = { prim = "context" }
 "messages[].content[].toolResult.content[].document.source.content" = { prim = "content" }
 "messages[].content[].toolResult.content[].document.source.text" = { prim = "text" }
@@ -128,14 +138,6 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 # Paths no row maps although another dialect maps a field of the same name under the same
 # parent (`dialect-candidates`): each says why it has no equivalent here.
 [unmapped.request]
-"messages[].content[].searchResult.content" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
-"messages[].content[].searchResult.source" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
-"messages[].content[].searchResult.title" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
-"messages[].content[].toolResult.content[].searchResult.content" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
-"messages[].content[].toolResult.content[].searchResult.source" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
-"messages[].content[].toolResult.content[].searchResult.title" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
-"messages[].content[].searchResult.content[].text" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
-"messages[].content[].toolResult.content[].searchResult.content[].text" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
 
 # Controls beyond the rows. `requestMetadata` (validated per entry), `top_k` (either spelling) and
 # the hosted tool kinds are the writer's own code. Converse has no penalties, seed or candidate
