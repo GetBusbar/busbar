@@ -510,7 +510,7 @@ impl Plane {
         let door = Door::of(claim)?;
         let generations = lock(&self.generations);
         let (cfg, g) = generations.last()?;
-        let unit = RequestUnit::new(
+        let unit = RequestUnit::open(
             door,
             cfg.session.clone(),
             caller_ref,

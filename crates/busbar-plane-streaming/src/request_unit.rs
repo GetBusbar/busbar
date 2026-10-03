@@ -78,11 +78,12 @@ pub struct RequestUnit {
 }
 
 impl RequestUnit {
-    /// A unit on `door`, minting over the `locked` session params, naming the caller by
-    /// `caller_ref` (the kernel's reference, never the principal) and answering the metadata
+    /// Open the plane's state for one kernel unit on `door` (the unit's identity is the kernel's;
+    /// the door keys this state by it): minting over the `locked` session params, naming the caller
+    /// by `caller_ref` (the kernel's reference, never the principal) and answering the metadata
     /// document for `audience`. `None` for a door that opens a live session.
     #[must_use]
-    pub fn new(
+    pub fn open(
         door: Door,
         locked: SessionConfig,
         caller_ref: Option<String>,
