@@ -634,7 +634,7 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         named.admin_modules = Arc::new(AdminAuthChain {
             modules: HashMap::from([(
                 op.to_string(),
-                Box::new(AnyCredential) as Box<dyn AuthModule>,
+                busbar_kernel::auth::AdminModule::cold(Box::new(AnyCredential)),
             )]),
             operator,
         });
@@ -832,6 +832,70 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
     handle.swap(closed);
     assert_eq!(ask(&node), 401, "and swapping it back closes it");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE DATA-PLANE CHAIN ON THE AUTH AXIS (AUTH-CHAIN-SWITCH, ARCHITECT lane L2-AUTH; THE DESIGN
+/// 11.6): a provider backed by the linked operator door — a REAL plugin on the auth kind's memory
+/// ABI — opened through the root's auth axis is ONE chain position the request path submits and
+/// awaits, lent the request's head and its candidate credential: the right token identifies under
+/// the provider's name, a wrong one is REFUSED, another scheme's grammar and none pass (and the
+/// all-pass chain denies).
+///
+/// Not vacuous: the same door lent NO head (the candidate alone) cannot see the Bearer this plugin
+/// reads off its `authorization` line, and the right token is denied — the head reaches the door.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
+    use busbar_kernel::auth::{AuthMiddleware, ChainHead, ChainVerdict};
+    let op = op();
+    let registry = Arc::new(
+        busbar_kernel::preflight::plugins_preflight(
+            None,
+            None,
+            &config::IdentityProviders::new(),
+            &HashMap::new(),
+            &config::PluginsCfg::default(),
+            &config::ExportCfg::default(),
+        )
+        .expect("the linked rows"),
+    );
+    let digest = busbar_contract::redacted::sha256_hex(TOKEN.as_bytes());
+    let door = crate::root::dispatch::auth_axis(registry)
+        .open(op, "data-door", &serde_json::Value::String(digest))
+        .expect("the linked door opens through the root's auth axis");
+    let auth = Arc::new(AuthMiddleware::from_doors_for_test(vec![(
+        "data-door".to_string(),
+        door,
+    )]));
+    let cache = Arc::new(busbar_kernel::auth_cache::CredentialCache::new());
+    let judged = |token: Option<&str>, head: bool| {
+        let headers = token.map(bearer).unwrap_or_default();
+        let head = match head {
+            true => ChainHead::of_parts("POST", "/v1/chat/completions", &headers),
+            false => ChainHead::default(),
+        };
+        let (auth, cache) = (auth.clone(), cache.clone());
+        let token = token.map(str::to_string);
+        async move {
+            AuthMiddleware::run_chain_on_request_path(&auth, &cache, token, head, None, None).await
+        }
+    };
+    match judged(Some(TOKEN), true).await {
+        ChainVerdict::Identified { module, .. } => assert_eq!(module, "data-door"),
+        other => panic!("the operator token identifies through the door: {other:?}"),
+    }
+    let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
+    for wrong in [Some("not-the-token"), Some(jws), None] {
+        assert_eq!(
+            judged(wrong, true).await,
+            ChainVerdict::Denied,
+            "{wrong:?} is refused or passed, and the chain denies"
+        );
+    }
+    assert_eq!(
+        judged(Some(TOKEN), false).await,
+        ChainVerdict::Denied,
+        "with no head lent the door sees no Bearer line"
+    );
 }
 
 /// A request's head presenting `token` as its Bearer: what the admin chain's dry run judges.

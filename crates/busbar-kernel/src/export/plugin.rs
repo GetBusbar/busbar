@@ -5,12 +5,12 @@
 //! how the sink that module opens is fed (item 141; #2 rule (1): compiled in or dropped in, same
 //! contract, same loading path).
 //!
-//! The axis is the plugin registry's `kind: export` rows (`busbar_plugin_loader::PluginRegistry`):
-//! a row gets there through the registry's ONE registration — the dropped-in door (the plugins
-//! directory's scan) and the linked door (`PluginRegistry::link`, the same boundary the plugin's
-//! `cdylib` exports) both admit through it — and is opened by the registry's one load over either
-//! image. The composition root [`install`]s that registry; the kernel names no module and never asks
-//! which door a row came in by.
+//! The axis is the contract's [`ExportAxis`]: every `kind: export` row the composition root
+//! admitted, compiled in or dropped in through one registration, opened on the export kind's
+//! memory ABI through the process's one dispatcher. The composition root installs it through its
+//! root rows ([`crate::preflight::RootInstall`]); the kernel names no module and no export crate,
+//! holds each opened instance as a contract [`ExportCalls`] handle, and never asks which door a row
+//! came in by.
 //!
 //! From there an instance is an ordinary sink: `resolve_export` accepts its `module:` because the
 //! axis holds it, [`open`] opens it once at boot (restart-to-apply, the posture every built-in PUSH
@@ -27,7 +27,7 @@ use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
 use busbar_contract::abi::cold::endpoint::*;
 use busbar_contract::abi::export::{CheckPhase, ExportStream};
-use busbar_plugin_loader::{DynExport, PluginRegistry};
+use busbar_contract::export_calls::{Delivered, ExportAxis, ExportCalls, ServeRequest};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
@@ -35,50 +35,59 @@ use std::sync::{Arc, OnceLock};
 /// gate and on the sink's declared shed counter — never queued.
 const MAX_INFLIGHT_PLUGIN_DELIVERIES: usize = 64;
 
-/// The export axis: the registry the composition root installed, once, before the configuration
-/// is resolved. Absent (no plugins directory, nothing linked) ⇒ only the built-ins resolve.
-pub(super) static AXIS: OnceLock<&'static PluginRegistry> = OnceLock::new();
-
-/// Install the export axis — the composition root's one write, before the configuration is
-/// resolved. The first install holds.
-pub fn install(registry: &'static PluginRegistry) {
-    let _ = AXIS.set(registry);
+/// The export axis the composition root installed through its root rows
+/// ([`crate::preflight::RootInstall`]), before the configuration is resolved. Absent (no plugins
+/// directory, nothing linked) ⇒ no export module resolves.
+pub(super) fn axis() -> Option<&'static dyn ExportAxis> {
+    crate::preflight::root_rows().export_axis
 }
 
 /// What the axis says of `module` for instance `name` (what `resolve_export` asks of a module that
 /// is not a built-in): `None` when no `kind: export` row names it; else the streams its sink
 /// declares (none when it will not open here) — the projection is resolved against them at
 /// configuration time, as a built-in's is — and the sink's own VALIDATION of the instance's
-/// `settings` (K9a S2), reported verbatim, so a plugin sink's settings errors surface at the same
-/// moment and in the same words a built-in's do.
+/// `settings` (K9a S2), rendered under the instance, so a plugin sink's settings errors surface at
+/// the same moment and in the same words a built-in's do.
 pub(crate) fn probe(
     name: &str,
     module: &str,
     cfg: &Value,
 ) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
-    AXIS.get()?.probe_export(module, name, cfg)
+    let (streams, problems) = axis()?.probe(module, name, cfg)?;
+    let streams = streams.map(|b| streams_of(&b));
+    Some((streams, problems))
+}
+
+/// Stream bytes as the vocabulary's streams (a byte outside it was refused at load).
+fn streams_of(bytes: &[u8]) -> Vec<ExportStream> {
+    bytes
+        .iter()
+        .filter_map(|&b| ExportStream::ALL.get(usize::from(b)).copied())
+        .collect()
 }
 
 /// Whether `module` names a row this build LINKS on the export axis, as opposed to one a plugins
 /// directory dropped in. The unknown-module diagnostic lists these beside the kernel's own modules.
 pub(crate) fn linked(module: &str) -> bool {
-    AXIS.get()
-        .is_some_and(|axis| axis.linked().iter().any(|p| p.manifest.alias == module))
+    axis().is_some_and(|axis| axis.linked(module))
 }
 
 /// Whether `module` names a row the host grants FIRST-PARTY — linked, or dropped in signed by the
 /// release key: the only kind of sink busbar's own `/metrics` is rendered by (#65).
 pub(crate) fn first_party(module: &str) -> bool {
-    let row = AXIS.get().and_then(|axis| axis.resolve(module));
-    row.is_some_and(|p| p.first_party())
+    axis().is_some_and(|axis| axis.first_party(module))
 }
 
 /// The sinks' own checks across every instance of each axis module `cfg` configures, in
 /// configuration order (export ABI minors 8, 9) — run while the configuration is validated, at
 /// `phase` (among its limits' checks, or after them); each line joins `errors` verbatim.
 pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>) {
-    let Some(axis) = AXIS.get() else {
+    let Some(axis) = axis() else {
         return;
+    };
+    let phase = match phase {
+        CheckPhase::Limits => busbar_contract::abi::export::CHECK_PHASE_LIMITS,
+        CheckPhase::Instances => busbar_contract::abi::export::CHECK_PHASE_INSTANCES,
     };
     let mut modules: Vec<&str> = Vec::new();
     for p in &cfg.plugins {
@@ -93,10 +102,7 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
             .filter(|q| q.def.module.trim() == module)
             .map(|q| (q.name.clone(), Value::Object(q.def.settings.clone())))
             .collect();
-        errors.extend(
-            axis.check_export(module, phase, &instances)
-                .unwrap_or_default(),
-        );
+        errors.extend(axis.check(module, phase, &instances).unwrap_or_default());
     }
 }
 
@@ -104,7 +110,7 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
 pub(super) struct PluginSink {
     name: String,
     module: String,
-    sink: Arc<DynExport>,
+    sink: Arc<dyn ExportCalls>,
     pub(super) projection: Projection,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
@@ -159,14 +165,14 @@ pub(super) fn sinks() -> impl Iterator<Item = &'static PluginSink> {
 /// open, or an instance subscribing to a stream its sink does not carry, refuses the boot.
 pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     // No axis ⇒ no instance resolved through it, so there is nothing to open.
-    let Some(axis) = AXIS.get() else {
+    let Some(axis) = axis() else {
         return Ok(());
     };
     let (mut errors, mut opened) = (Vec::new(), Vec::new());
     for p in &cfg.plugins {
         let (name, module, def) = (&p.name, p.def.module.trim(), &p.def);
-        let settings = serde_json::Value::Object(def.settings.clone()).to_string();
-        let opened_sink = axis.open_export(module, &settings);
+        let settings = serde_json::Value::Object(def.settings.clone());
+        let opened_sink = axis.open(module, &format!("export.{name}"), &settings);
         let Ok(sink) = opened_sink.map_err(|e| errors.push(format!("export.{name}: {e}"))) else {
             continue;
         };
@@ -175,7 +181,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         let projection = resolve_projection(
             name,
             module,
-            Some(sink.streams()),
+            Some(&streams_of(sink.streams())),
             def.streams.as_deref(),
             def.fields.as_deref(),
             false,
@@ -184,7 +190,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         opened.push(PluginSink {
             name: name.clone(),
             module: module.to_string(),
-            sink: Arc::new(sink),
+            sink,
             projection,
             admission: OnceLock::new(),
         });
@@ -220,20 +226,19 @@ pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projecti
         };
         let payload = f(s.projection);
         crate::audit::amend::export_read(&s.module, op, &payload);
-        s.sink.deliver_detached(stream, payload, permit);
+        let line = serde_json::to_vec(&*payload).unwrap_or_default();
+        if s.sink.deliver(stream as u8, line, Box::new(permit)) == Delivered::Shed {
+            s.sink.shed();
+        }
     }
 }
 
-/// START every opened sink (export ABI minor 8) — at the moment the host starts its PUSH sinks:
-/// each states whether it takes deliveries this run and its in-flight admission (bound, gate name),
-/// after the host performed any ops it asked for first. A sink that states none — or fails to
-/// answer, which is logged — is fed at the host's default admission.
+/// START every opened sink — at the moment the host starts its PUSH sinks: each states its
+/// admission (whether it takes deliveries this run, its in-flight bound, its gate's name), or none,
+/// and is fed at the host's default admission.
 pub fn start() {
     for s in sinks() {
-        let stated = s.sink.start().unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "export plugin start failed");
-            None
-        });
+        let stated = s.sink.admission();
         if stated.is_some() {
             let _ = s.admission.set(Admission::of(&s.module, stated));
         }
@@ -241,14 +246,16 @@ pub fn start() {
 }
 
 /// The sink opened at boot for the instance `name`, if one was.
-pub(crate) fn opened(name: &str) -> Option<Arc<DynExport>> {
+pub(crate) fn opened(name: &str) -> Option<Arc<dyn ExportCalls>> {
     sinks().find(|s| s.name == name).map(|s| s.sink.clone())
 }
 
-/// Ask every opened sink for its `status`, folded by the loader into this process's recorder —
+/// Ask every opened sink for its `status` — its envelope folds into this process's recorder —
 /// called when `/metrics` renders, on the scrape's blocking thread.
 pub(crate) fn status() {
-    sinks().for_each(|s| s.sink.status());
+    sinks().for_each(|s| {
+        let _ = s.sink.status();
+    });
 }
 
 /// The routes the opened sinks of `cfg`'s instances declared (an instance removed by a config apply
@@ -260,15 +267,40 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> impl Iterator<Item = RouteDecl> + 
             owner: s.name.clone(),
             kind: RouteKind::Export,
             route: route.clone(),
-            dispatch: s.sink.clone(),
+            dispatch: Arc::new(Served(s.sink.clone())),
         })
     })
 }
 
-/// A plugin sink as a route dispatcher: the exchange crosses the ABI (see `DynExport::serve`).
-impl PluginHttpDispatch for DynExport {
+/// A plugin sink as a route dispatcher: the exchange crosses the ABI through `serve`. A sink that
+/// cannot answer is a `502` with no body to the client and a warning naming it to the operator —
+/// the exchange never fails open into a partial response.
+struct Served(Arc<dyn ExportCalls>);
+
+impl PluginHttpDispatch for Served {
     fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse {
-        self.serve(req)
+        let request = ServeRequest {
+            method: &req.method,
+            path: &req.path,
+            query: Some(req.query.as_str()).filter(|q| !q.is_empty()),
+            headers: &req.headers,
+            body: &req.body,
+        };
+        match self.0.serve(&request) {
+            Ok(r) => EndpointResponse {
+                status: r.status,
+                headers: r.headers,
+                body: r.body,
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "export plugin route failed");
+                EndpointResponse {
+                    status: 502,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                }
+            }
+        }
     }
 }
 

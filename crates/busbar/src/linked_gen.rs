@@ -78,6 +78,10 @@ pub(crate) const DOOR_AXIS: &str = "transport-door";
 /// (`crate::root::boot::dropped_planes_of`), so a compiled-in plane is bound through the same table
 /// as a dropped-in one. It needs no `plane` beside it: the door states the plane.
 pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
+/// The export axis on the export kind's MEMORY ABI: each row's crate states its plugin `NAME`,
+/// `ALIAS` and manifest `DECLARES`, and its entry module exports its `door` (`plugin_door!`), the
+/// same door its `cdylib` exports — admitted through the one registration as a door row.
+pub(crate) const EXPORT_DOOR_AXIS: &str = "export-doors";
 
 /// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
 /// the claims it declares (`CLAIMS`); rides on `plane`.
@@ -258,6 +262,7 @@ pub(crate) fn linked_source(
                     || axis == PLANE_DOOR_AXIS
                     || axis == AUTH_AXIS
                     || axis == SECRET_AXIS
+                    || axis == EXPORT_DOOR_AXIS
                     || axis == CLAIMS_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
                     || SEAMS.iter().any(|(a, _)| a == axis),
@@ -381,6 +386,17 @@ pub(crate) fn linked_source(
                     )
                 });
             out.push_str(&format!("({name:?}, {entry}::door::door), "));
+        }
+    }
+    out.push_str("],\n");
+    out.push_str("    export_doors: &[");
+    for ((entry, list), (_, krate)) in linked.iter().zip(&on) {
+        if list.iter().any(|a| a == EXPORT_DOOR_AXIS) {
+            let c = ident(krate);
+            out.push_str(&format!(
+                "crate::root::linked::LinkedDoorExport {{ name: {c}::NAME, alias: {c}::ALIAS, \
+                 declares: {c}::DECLARES, door: {entry}::door }}, "
+            ));
         }
     }
     out.push_str("],\n");

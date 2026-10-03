@@ -46,7 +46,9 @@ use busbar_contract::abi::mechanism::call::{
     SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
-use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, RefreshIn, ValidateIn};
+use busbar_contract::abi::mechanism::lifecycle::{
+    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ValidateIn,
+};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
@@ -288,6 +290,8 @@ pub(crate) struct Instance {
     pub(crate) kind: KindCode,
     name: String,
     slots: Box<[Op]>,
+    /// The door's optional `ready` ([`slot::READY`]); `None` = the instance has none.
+    ready: Option<Op>,
     families: Box<[FamilyShape]>,
     diag_ids: DiagIds,
     ptr: AtomicPtr<c_void>,
@@ -364,9 +368,12 @@ struct LogBudget {
 /// The gate bit `close` holds.
 const CLOSING: u32 = 1 << 31;
 
-/// Whether `slot` is one of the four that never overlap on one instance.
+/// Whether `slot` is one of the five that never overlap on one instance (`ready` among them).
 pub(crate) fn is_lifecycle(s: u32) -> bool {
-    matches!(s, slot::OPEN | slot::REFRESH | slot::RETIRE | slot::CLOSE)
+    matches!(
+        s,
+        slot::OPEN | slot::REFRESH | slot::RETIRE | slot::CLOSE | slot::READY
+    )
 }
 
 impl Instance {
@@ -391,6 +398,11 @@ impl Instance {
         HostCtx {
             ptr: std::ptr::from_ref(self.wake).cast_mut().cast(),
         }
+    }
+
+    /// Whether the door states `ready` ([`slot::READY`]).
+    pub(crate) fn has_ready(&self) -> bool {
+        self.ready.is_some()
     }
 
     pub(crate) fn slot_count(&self) -> u32 {
@@ -522,6 +534,12 @@ impl Instance {
         if self.faulted.load(Ordering::Acquire) || self.is_closed() {
             return Some(Outcome::Fault);
         }
+        if s == slot::READY {
+            // The door's optional tail op: only on an open instance that states it, in a frame
+            // that holds a `ReadyIn`.
+            let fits = self.ready.is_some() && self.is_open() && in_size >= size_of::<ReadyIn>();
+            return (!fits).then_some(Outcome::Refused);
+        }
         if s >= self.slot_count() {
             return Some(Outcome::Refused);
         }
@@ -613,6 +631,11 @@ impl Instance {
             // SAFETY: as above.
             self.declare_targeted(unsafe { (*input.cast::<OpenIn>()).settings });
         }
+        if s == slot::READY {
+            // `ready` is handed the same host tables `open` was.
+            // SAFETY: `refuse` checked the frame holds a `ReadyIn`.
+            unsafe { (*input.cast::<ReadyIn>()).host = &*self.tables.0 };
+        }
         // SAFETY: the host wrote `in.size`; a frame that holds a `RefreshIn` is read as one.
         if s == slot::REFRESH && unsafe { (*input).size } as usize >= size_of::<RefreshIn>() {
             // SAFETY: as above.
@@ -625,7 +648,11 @@ impl Instance {
             std::ptr::write_bytes(out.cast::<u8>(), 0, out_size as usize);
             (*out).size = out_size;
         }
-        let op = self.slots[s as usize];
+        let op = match (s, self.ready) {
+            (slot::READY, Some(ready)) => ready,
+            (slot::READY, None) => return Crossed::host(Outcome::Refused),
+            _ => self.slots[s as usize],
+        };
         self.crossings.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
@@ -686,6 +713,22 @@ impl Instance {
         };
         // A `validate`'s reason is copied: the buffer it was lent goes.
         drop(validate_reason);
+        // THE VALIDATE REFUSAL RULE (`abi::mechanism::lifecycle::check_validate_refusal`): the
+        // host renders a FAILED `validate`'s lines, so malformed lines are FAULT.
+        if s == slot::VALIDATE && outcome == Outcome::Failed {
+            let text = error.as_deref().unwrap_or_default();
+            if let Err(f) = busbar_contract::abi::mechanism::lifecycle::check_validate_refusal(text)
+            {
+                tracing::warn!(
+                    plugin = %self.name,
+                    kind = ?self.kind,
+                    rule = ?f.rule,
+                    field = f.field,
+                    "a validate refusal broke the refusal rule; the op answers FAULT"
+                );
+                return Crossed::host(Outcome::Fault);
+            }
+        }
         match (s, outcome) {
             (slot::OPEN, Outcome::Ready) => {
                 // SAFETY: `refuse` checked the frame holds an `OpenOut`.
@@ -1031,6 +1074,7 @@ impl<K: Kind> Plugin<K> {
                 kind: v.kind,
                 name: String::from_utf8_lossy(name).into_owned(),
                 slots: v.slots,
+                ready: v.ready,
                 families,
                 diag_ids: DiagIds {
                     ptr: st.diag_ids,

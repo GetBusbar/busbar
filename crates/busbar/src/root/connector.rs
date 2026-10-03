@@ -120,9 +120,9 @@ pub fn boot(
         || entries(doors),
         dest,
         &process::own_ports(listens),
-        // No plugin reads a connection through a ticket yet; the kind that first does
-        // (inbound listening) routes its wakes through the dispatcher here.
-        Arc::new(|_| {}),
+        // A plugin reading a connection through a ticket (an export sink's delivery parked on its
+        // collector's reply) is woken through the process's one dispatcher.
+        crate::root::dispatch::dispatcher().conn_waker(),
     );
     let connector = built.unwrap_or_else(|refusal| {
         eprintln!("busbar: the connector did not build: {refusal}");

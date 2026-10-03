@@ -2430,3 +2430,270 @@ fn the_admin_head_hands_the_request_through_as_presented() {
     let names: Vec<&str> = head.lines.iter().map(|l| l.0.as_str()).collect();
     assert_eq!(names, ["authorization", X_ADMIN_TOKEN, "host"]);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// L2-AUTH-1 (ARCHITECT ruling 2026-10-03): a data-plane door that answers no verdict, or whose
+// `max_inflight` is full, is a REJECT on the data plane — 1.5.5's 401, never a pass to the next
+// position and never a new status. (The admin chain keeps its ruled 503.)
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A kind-neutral double of one opened auth instance that answers every `verify` with `verified`
+/// (an overloaded verifier, or one that answered no verdict).
+struct AnswersOnly(busbar_contract::auth_calls::Verified);
+
+/// A `verify` answered before anything crossed.
+struct Answered(Option<busbar_contract::auth_calls::VerifyAnswer>);
+
+impl std::future::Future for Answered {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(self.0.take().expect("polled once"))
+    }
+}
+
+impl busbar_contract::auth_calls::Verifying for Answered {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        self.0.take()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for AnswersOnly {
+    fn name(&self) -> &str {
+        "answers-only"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.0.clone().into())
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(Answered(Some(self.0.clone().into())))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// The chain `[answers-only door, test-groups stand-in]`: the second position identifies
+/// `grp:<role>`, so a first position that PASSED would admit.
+fn door_then_identifier(verified: busbar_contract::auth_calls::Verified) -> AuthMiddleware {
+    let identifier = busbar_plugin_loader::auth_axis::ColdAuth::new(Box::new(TestGroupsModule));
+    AuthMiddleware::from_doors_for_test(vec![
+        (
+            "door".to_string(),
+            std::sync::Arc::new(AnswersOnly(verified)) as std::sync::Arc<dyn AuthCalls>,
+        ),
+        (
+            "test-groups-module".to_string(),
+            std::sync::Arc::new(identifier),
+        ),
+    ])
+}
+
+/// An overloaded door and a door that answered no verdict each STOP the chain denied: the identifier
+/// behind them is never reached (RED if either were read as a pass: the chain would admit).
+#[tokio::test]
+async fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
+    use busbar_contract::auth_calls::Verified;
+    let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
+    for verified in [Verified::Overloaded, Verified::Failed] {
+        let auth = std::sync::Arc::new(door_then_identifier(verified.clone()));
+        let verdict = AuthMiddleware::run_chain_on_request_path(
+            &auth,
+            &cache,
+            Some("grp:admins".into()),
+            ChainHead::default(),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            verdict,
+            ChainVerdict::Denied,
+            "{verified:?} must deny, not pass"
+        );
+    }
+}
+
+/// On the wire: the request an overloaded (or verdict-less) data-plane door refuses is answered
+/// with 1.5.5's 401, byte for byte the refusal an all-pass chain earns — no 503, no new body.
+#[tokio::test]
+async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401() {
+    use crate::test_support::{LaneSpec, MockServer, TestApp};
+    use busbar_contract::auth_calls::Verified;
+    crate::metrics::init();
+    let server = MockServer::new(dp_ok_state()).await;
+    let ask = |auth: AuthMiddleware| {
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url()).api_key("up"),
+            )
+            .pool("pa", &[(0, 1)])
+            .auth(std::sync::Arc::new(auth))
+            .build();
+        async move {
+            let (addr, handle) = dp_serve(app).await;
+            let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
+            let r = reqwest::Client::new()
+                .post(format!("http://{addr}/pa/v1/messages"))
+                .bearer_auth("not-a-credential-anyone-knows")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            let status = r.status().as_u16();
+            let content_type = r
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap_or_default().to_string());
+            let text = r.text().await.unwrap();
+            handle.abort();
+            (status, content_type, text)
+        }
+    };
+    // The 1.5.5 refusal: a configured chain whose every position passed.
+    let all_pass = ask(AuthMiddleware::new_builtin(&chain_cfg(&[
+        "test-groups-module",
+    ])))
+    .await;
+    assert_eq!(all_pass.0, 401, "the all-pass refusal: {all_pass:?}");
+    for verified in [Verified::Overloaded, Verified::Failed] {
+        let refused = ask(door_then_identifier(verified.clone())).await;
+        assert_eq!(
+            refused, all_pass,
+            "{verified:?}: the 1.5.5 401, byte for byte"
+        );
+    }
+    server.shutdown().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// L2-AUTH-4 (ARCHITECT ruling 2026-10-03): admin_auth's EXTERNAL modules open on the auth axis.
+// A door among them is awaited, lent the request's head and 1.5.5's candidate (`bearer.or(header)`),
+// never cached by the kernel, and an overloaded or verdict-less door is the ruled 503.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// An external admin door that identifies `ext:<who>` only when the lent credential is `tok`, and
+/// otherwise answers `otherwise`.
+struct LentCredentialDoor(busbar_contract::auth_calls::Verified);
+
+impl LentCredentialDoor {
+    fn answer(
+        &self,
+        r: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> busbar_contract::auth_calls::VerifyAnswer {
+        use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+        match r.credential.as_ref().map(|c| c.expose_secret().as_slice()) {
+            Some(b"tok") => Verified::Identity(VerifiedIdentity {
+                subject: "ext:who".into(),
+                groups: vec!["ops".into()],
+                ..VerifiedIdentity::default()
+            })
+            .into(),
+            _ => self.0.clone().into(),
+        }
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for LentCredentialDoor {
+    fn name(&self) -> &str {
+        "lent-credential-door"
+    }
+    fn facts(&self) -> u32 {
+        busbar_contract::abi::auth::FACT_CACHEABLE
+    }
+    fn verify_now(
+        &self,
+        r: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.answer(r))
+    }
+    fn verify(
+        &self,
+        r: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(OperatorAnswer(Some(self.answer(&r))))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// An app whose admin chain is the external door `ext-door` alone (opened as a door: not cold).
+fn external_door_app(
+    otherwise: busbar_contract::auth_calls::Verified,
+) -> std::sync::Arc<crate::state::App> {
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["ext-door".to_string()])
+        .build();
+    let mut modules = std::collections::HashMap::new();
+    modules.insert(
+        "ext-door".to_string(),
+        AdminModule {
+            calls: std::sync::Arc::new(LentCredentialDoor(otherwise)),
+            cold: false,
+        },
+    );
+    std::sync::Arc::get_mut(&mut app)
+        .expect("freshly built App Arc is unshared")
+        .admin_modules = std::sync::Arc::new(AdminAuthChain {
+        modules,
+        operator: Operator::new(crate::config::operator_provider()),
+    });
+    app
+}
+
+/// The external admin door judges the candidate it is lent — the Bearer, else the admin header, as
+/// 1.5.5 handed an external module `bearer.or(header)` — awaited and on the spot; its identity is
+/// never cached by the kernel (R3: a door caches inside itself, even one stating cacheable); an
+/// overloaded door and one with no verdict are the ruled 503, a reject and a pass the 1.5.5 401.
+#[tokio::test]
+async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_ruled_503() {
+    use busbar_contract::auth_calls::Verified;
+    for headers in [
+        admin_headers(Some("tok"), None),
+        admin_headers(None, Some("tok")),
+    ] {
+        let app = external_door_app(Verified::Reject);
+        assert!(matches!(
+            run_admin_chain(&app, "GET", "/", &headers, false).await,
+            Ok((ChainVerdict::Identified { ref module, .. }, _)) if module == "ext-door"
+        ));
+        assert!(matches!(
+            admin_door(&app, "GET", "/", &headers),
+            AdminDoor::Identified(..)
+        ));
+        assert_eq!(
+            app.credential_cache.flush_all(),
+            0,
+            "the kernel caches no door's verdict"
+        );
+    }
+    let wrong = admin_headers(Some("not-tok"), None);
+    for (otherwise, want) in [
+        (Verified::Reject, Ok(())),
+        (Verified::Pass, Ok(())),
+        (Verified::Overloaded, Err(AdminUnavailable::Overloaded)),
+        (Verified::Failed, Err(AdminUnavailable::Outage)),
+    ] {
+        let app = external_door_app(otherwise.clone());
+        let got = run_admin_chain(&app, "GET", "/", &wrong, false).await;
+        match want {
+            Ok(()) => assert!(
+                matches!(got, Ok((ChainVerdict::Denied, None))),
+                "{otherwise:?}: the 1.5.5 refusal"
+            ),
+            Err(why) => assert_eq!(got.err(), Some(why), "{otherwise:?}: the ruled 503"),
+        }
+    }
+}

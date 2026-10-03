@@ -852,7 +852,7 @@ pub struct PluginRollbackView {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AuthView {
     /// Ordered auth-chain module names (`[]` = open front door).
-    pub chain: Vec<&'static str>,
+    pub chain: Vec<String>,
     /// `"own"` (busbar signs egress with its configured key) or `"passthrough"` (forward the caller's
     /// credential upstream).
     pub upstream_credentials: &'static str,

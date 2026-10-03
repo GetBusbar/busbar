@@ -101,6 +101,9 @@ impl Dispatched {
                 opened.outcome
             ));
         }
+        // DISCOVERY AT BOOT (ARCHITECT 2026-10-02): a door that states `ready` is awaited here,
+        // after its `open` and before any listener binds; its refusal refuses the boot.
+        plugin.ready(dispatcher(), super::loader::dispatch::ready::READY_DEADLINE)?;
         let facts = DoorFacts {
             name: plugin.name().to_owned(),
             claims: stated.claims,

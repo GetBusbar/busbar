@@ -407,7 +407,7 @@ pub fn dropped_planes(
 pub fn dropped_from_config(
     linked: &Linked,
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
-    let rows = linked_exports(linked.exports).unwrap_or_else(|refusal| {
+    let rows = linked_exports(linked.exports, linked.export_doors).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
     });

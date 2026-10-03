@@ -18,7 +18,7 @@
 
 use oauth_as::registration::{ClientMetadata, RegistrationFailure};
 
-use busbar_kernel::oauth_as::config::{AsIdentity, OauthAsCfg};
+use crate::config::{AsIdentity, OauthAsCfg};
 
 use crate::plane::AsPlane;
 

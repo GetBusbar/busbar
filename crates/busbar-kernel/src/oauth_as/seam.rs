@@ -16,15 +16,21 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use super::config::AsIdentity;
 use crate::core_routes::CoreRouter;
+use busbar_contract::SecretRef;
 
 /// The plane's runtime-build entry point (the type of [`AsPlaneSeam::build`]), named as an alias so
 /// the fn-pointer signature reads once here rather than inline in the struct field. Behaviour is
 /// identical to the inline type; the alias exists only to keep the field legible (and satisfy
 /// `clippy::type_complexity`).
-type AsPlaneBuildFn =
-    fn(&AsIdentity, Option<&str>, Vec<String>) -> Result<Arc<dyn Any + Send + Sync>, String>;
+type AsPlaneBuildFn = fn(
+    &serde_yaml::Value,
+    Vec<(String, String)>,
+    Vec<String>,
+) -> Result<Arc<dyn Any + Send + Sync>, String>;
+
+/// The plane's config check (the type of [`AsPlaneSeam::check`]).
+type AsPlaneCheckFn = fn(&serde_yaml::Value) -> Result<Vec<(String, SecretRef)>, String>;
 
 /// One RFC 9449 s7 presentation at a protected resource: the request line, the token from
 /// `Authorization: DPoP <token>`, and the one `DPoP` proof header.
@@ -36,17 +42,32 @@ pub struct DpopPresentation {
     pub proof: String,
 }
 
+/// An `oauth_as:` block its owner has ACCEPTED ([`AsPlaneSeam::check`]), carried by `RootCfg`: the
+/// opaque block itself, and the secret references the owner listed in it. `resolve` makes one only
+/// from a block that passed, so holding one means the owner already validated it.
+#[derive(Debug)]
+pub struct CheckedAsBlock {
+    pub block: serde_yaml::Value,
+    pub secret_refs: Vec<(String, SecretRef)>,
+}
+
 /// The plane's DPoP verification (the type of [`AsPlaneSeam::verify_dpop`]).
 type AsDpopVerifyFn =
     fn(&Arc<dyn Any + Send + Sync>, DpopPresentation) -> Pin<Box<dyn Future<Output = bool> + Send>>;
 
 /// The functions core calls through this seam. Every field type here is either core-owned
-/// (`AsIdentity`, `CoreRouter`) or fully type-erased (`Arc<dyn Any + Send + Sync>`), so the seam
-/// itself names no `busbar_core_oauth2` item.
+/// (`CoreRouter`, `SecretRef`), an opaque config value, or fully type-erased
+/// (`Arc<dyn Any + Send + Sync>`), so the seam itself names no `busbar_core_oauth2` item and the
+/// kernel never names the `oauth_as:` config types.
 pub struct AsPlaneSeam {
-    /// Build the plane's runtime object for one config generation, from the VALIDATED identity
-    /// (`busbar_kernel::oauth_as::config::AsIdentity` — stays in core; see the module doc on
-    /// `crate::oauth_as`), the resolved signing-key material (`None` ⇒ an ephemeral key), and this
+    /// Hand the opaque `oauth_as:` block to its owner at config resolve: the owner parses and
+    /// validates it (refusing with its own text) and returns every secret reference the block
+    /// carries as `(config path, reference)`, so `--validate` and boot can resolve them.
+    pub check: AsPlaneCheckFn,
+
+    /// Build the plane's runtime object for one config generation, from the opaque `oauth_as:`
+    /// block (the owner re-derives its identity), the resolved secrets keyed by the paths
+    /// [`Self::check`] reported (an unresolved signing key means an ephemeral one), and this
     /// deployment's protected-resource audiences (RFC 8707 `allowed_resources`). Also spawns the
     /// plane's own expired-record sweeper, mirroring what `appbuild.rs` did inline before the
     /// extraction — the seam owns the whole "how do I come alive" act, not just allocation.

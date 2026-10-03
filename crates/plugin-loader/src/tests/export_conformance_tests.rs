@@ -41,7 +41,7 @@
 //! registry of its own — and shows the two builds diverging. A test that only ever passes cannot tell you what
 //! it is protecting you from.
 
-use super::both_ways::{export_fixture, export_otlp_fixture, export_webhook_fixture};
+use super::both_ways::{export_fixture, export_webhook_fixture};
 use super::*;
 use busbar_contract::abi::cold::export::{ExportRequest, ExportResponse, HostResult, Rotation};
 use busbar_contract::abi::export::ExportStream;
@@ -1040,71 +1040,6 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
     assert!(refused.contains("BUSBAR-7072"), "{refused}");
 }
 
-/// **K9a S6 — THE RECORDER SNAPSHOT, BOTH WAYS.** A recorder exposition in the host recorder's own
-/// shape — counters, a gauge with escaped label values, a quantile summary, a bucketed histogram —
-/// read into the snapshot and handed to the prometheus sink (the `export-scrape` row) registered
-/// through the LINKED door and the DROPPED-IN door: each renders it back BYTE FOR BYTE under the
-/// text exposition's content type, in the sink's stable order (every counter, then every gauge,
-/// then every histogram/summary, name-sorted within a kind, as v1.5.5 renders them), the same
-/// either way. RED ARM, in the same test: a sink over the wire that predates the op renders
-/// nothing (the host keeps serving its own exposition).
-#[test]
-fn a_sink_renders_the_recorder_snapshot_byte_identically_through_either_door() {
-    let exposition = crate::scrape::tests::EXPOSITION;
-    let manifest = super::both_ways::statement(
-        "export",
-        "s6-fixture",
-        "s6-fixture",
-        busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
-    );
-    let render = |registry: &PluginRegistry| {
-        let sink = registry.open_export("s6-fixture", "{}").expect("opens");
-        let families = crate::scrape::snapshot(exposition).expect("the snapshot reads");
-        let (content_type, body) = sink.scrape(families).expect("the sink renders");
-        serde_json::json!({ "content_type": content_type, "body": body }).to_string()
-    };
-    let Some([linked, dropped]) =
-        super::both_ways::both_doors_of("export-scrape", manifest.clone(), render, String::clone)
-    else {
-        eprintln!("skip: the prometheus sink's cdylib is not built");
-        return;
-    };
-    // The sink renders the snapshot LOSSLESSLY in its stable order — counters, then gauges, then
-    // histograms/summaries, by name within a kind (the recorder hands them over in hash order,
-    // which differs from boot to boot): every family of the exposition, byte for byte, and
-    // nothing else.
-    let family = |block: &&str| {
-        let typed = block.lines().find_map(|l| l.strip_prefix("# TYPE "));
-        let mut parts = typed.unwrap_or_default().split(' ');
-        let name = parts.next().unwrap_or_default().to_string();
-        let rank = match parts.next() {
-            Some("counter") => 0,
-            Some("gauge") => 1,
-            _ => 2,
-        };
-        (rank, name)
-    };
-    let mut blocks: Vec<&str> = exposition.split_terminator("\n\n").collect();
-    blocks.sort_by_key(family);
-    let expected = serde_json::json!({
-        "content_type": "text/plain; version=0.0.4",
-        "body": blocks.iter().map(|b| format!("{b}\n\n")).collect::<String>(),
-    });
-    assert_eq!(
-        linked.1,
-        expected.to_string(),
-        "the render is the snapshot, byte for byte, in its stable order"
-    );
-    assert_eq!(linked, dropped, "both doors render the same");
-
-    // RED ARM: the pre-minor-6 wire renders nothing.
-    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export-scrape").1);
-    let mut sink = registry.open_export("s6-fixture", "{}").expect("opens");
-    sink.raw.call = unsupported_call;
-    let families = crate::scrape::snapshot(exposition).expect("the snapshot reads");
-    assert!(sink.scrape(families).is_err());
-}
-
 /// **K9c — START, CHECK AND ADMIT, BOTH WAYS.** The export row's FILE sink (which takes the SDK's
 /// defaults for both ops)
 /// starts live at the host's default admission and has nothing to check, identically through
@@ -1316,9 +1251,8 @@ fn a_carrier_that_implements_no_policy_but_the_open_web_refuses_the_rest() {
 }
 
 /// **K9e-2 — A DECLARED EGRESS POLICY IS GRANTED TO A FIRST-PARTY SINK ONLY, AND EVERY REQUEST THE
-/// SINK ASKS FOR MEETS IT.** The OTLP trace sink (the `export-otlp` row), its manifest stating the
-/// declaration it ships (`egress: collector`, its own `declares.json`), linked, opens under
-/// it, and its admission and its carried requests are judged under that policy (this binary's
+/// SINK ASKS FOR MEETS IT.** A cold sink (the `export-webhook` row), its manifest stating the
+/// `egress: collector` declaration, linked, opens under it, and its admission and its carried requests are judged under that policy (this binary's
 /// carrier implements only the open web, so both are refused with the policy's name — the proof
 /// the policy, not the open web, reached the carrier). RED ARMS: the same declaration from a third
 /// party refuses the open, naming the policy; and a sink that declares none is judged under the
@@ -1342,9 +1276,7 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
         serde_json::to_value(crate::sign::Declares::default()).expect("encode"),
         serde_json::json!({})
     );
-    let shipped = serde_json::from_str::<crate::sign::Declares>(export_otlp_fixture::DECLARES)
-        .expect("the sink's declaration parses");
-    assert_eq!(shipped.egress, EgressPolicy::Collector);
+    let shipped = collector;
     let declaring = |name: &str| {
         let mut m = super::both_ways::statement(
             "export",
@@ -1357,7 +1289,7 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
     };
     let registry = super::both_ways::linked(
         declaring("k9e2-collector"),
-        super::both_ways::fixture("export-otlp").1,
+        super::both_ways::fixture("export-webhook").1,
     );
     let sink = registry
         .open_export("k9e2-collector", "{}")
@@ -1388,9 +1320,9 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
     }
 
     // RED ARM 1: a third party declaring the same policy is refused at open, naming it.
-    let (crate_snake, _) = super::both_ways::fixture("export-otlp");
+    let (crate_snake, _) = super::both_ways::fixture("export-webhook");
     let Some(path) = super::both_ways::cdylib(crate_snake) else {
-        eprintln!("skip: the OTLP sink's cdylib is not built");
+        eprintln!("skip: the webhook sink's cdylib is not built");
         return;
     };
     let lib = std::fs::read(path).expect("read the cdylib");
@@ -1415,7 +1347,7 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
             "k9e2-open-web",
             busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
         ),
-        super::both_ways::fixture("export-otlp").1,
+        super::both_ways::fixture("export-webhook").1,
     )
     .open_export("k9e2-open-web", "{}")
     .expect("opens");

@@ -321,10 +321,7 @@ async fn consent_screen(
 /// `Path={issuer}/` is the same mistake wearing a prefix. Two cookies of one name at two disjoint
 /// paths is unambiguous by construction: no request path can match both, so no request ever carries
 /// two of them, and [`super::consent::session_id`] never has to choose.
-pub(super) fn session_cookies(
-    identity: &busbar_kernel::oauth_as::config::AsIdentity,
-    id: &str,
-) -> [String; 2] {
+pub(super) fn session_cookies(identity: &crate::config::AsIdentity, id: &str) -> [String; 2] {
     // `Secure` follows the ISSUER'S SCHEME rather than being unconditional. Unconditional would be
     // the stricter-looking choice and it would break the `http://` deployment outright — a browser
     // discards a `Secure` cookie arriving over plain HTTP, so the flow would fail exactly as it did

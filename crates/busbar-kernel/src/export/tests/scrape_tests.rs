@@ -8,15 +8,18 @@
 use super::*;
 use crate::config::{resolve_export, ExportDefs};
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
+use busbar_contract::export_calls::ExportAxis;
 
 /// The export axis THIS test binary resolves `export:` against: the neutral rows, and the scrape
 /// sink (`prometheus`) LINKED ahead of them as the composition root links it — the configuration
 /// layer asks its answers to know it is the scrape sink. Every test here that resolves an `export:`
 /// block installs it first (the first install holds).
 pub(crate) fn installed_axis() {
-    let (name, alias, _, entry) = busbar_export_prometheus::linked::EXPORT;
-    let linked = busbar_plugin_loader::LinkedPlugin::first_party("export", name, alias, entry);
-    crate::test_support::export_axis::install_export_axis_with(vec![linked]);
+    crate::test_support::export_axis::install_first_party_door(
+        busbar_export_prometheus::NAME,
+        busbar_export_prometheus::ALIAS,
+        busbar_export_prometheus::door::door,
+    );
 }
 
 /// The `export:` block with one `module: prometheus` instance named `metrics`, resolved against
@@ -119,14 +122,13 @@ fn dispatch_renders_prometheus_exposition() {
 /// serves its own bytes under its own type.
 #[test]
 fn the_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
-    let (name, alias, _, entry) = busbar_export_prometheus::linked::EXPORT;
-    let axis = busbar_plugin_loader::PluginRegistry::empty()
-        .link(vec![busbar_plugin_loader::LinkedPlugin::first_party(
-            "export", name, alias, entry,
-        )])
-        .expect("linked");
-    let sink = axis
-        .open_export("prometheus", r#"{"buffer_seconds":60}"#)
+    installed_axis();
+    let sink = crate::test_support::export_axis::STAND_IN
+        .open(
+            "prometheus",
+            "export.metrics",
+            &serde_json::json!({"buffer_seconds": 60}),
+        )
         .expect("the scrape sink opens");
     // Listed in the sink's stable order — every counter, then every gauge, then every
     // histogram/summary (v1.5.5's own renderer drains its maps in that fixed order), name-sorted
@@ -146,27 +148,33 @@ fn the_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
                busbar_request_duration_seconds_sum 0.75\n\
                busbar_request_duration_seconds_count 2\n\
                \n";
-    let families = busbar_plugin_loader::scrape::snapshot(own).expect("the text snapshots");
-    let (content_type, body) = sink.scrape(families).expect("the sink renders");
-    assert_eq!(content_type, crate::metrics::PROMETHEUS_CONTENT_TYPE);
-    assert_eq!(body, own, "the scrape is the recorder's bytes, back");
+    let families = busbar_contract::export_calls::parse_families(own).expect("the text snapshots");
+    let body = sink.scrape(&families).expect("the sink renders");
+    assert_eq!(
+        body,
+        own.as_bytes(),
+        "the scrape is the recorder's bytes, back"
+    );
     let header = |r: &EndpointResponse| r.headers[0].1.clone();
-    let served = busbar_plugin_loader::scrape::exposition(Some(&sink), Some(own.into()), "x/own");
-    assert_eq!((served.status, header(&served)), (200, content_type));
+    let content_type = crate::metrics::PROMETHEUS_CONTENT_TYPE;
+    let served = exposition(Some(&*sink), Some(own.into()), content_type);
+    assert_eq!(
+        (served.status, header(&served)),
+        (200, content_type.to_string())
+    );
     assert_eq!(
         served.body,
         own.as_bytes(),
         "the host serves the sink's rendering"
     );
     let orphan = "busbar_orphan_sample 1\n";
-    let served =
-        busbar_plugin_loader::scrape::exposition(Some(&sink), Some(orphan.into()), "x/own");
+    let served = exposition(Some(&*sink), Some(orphan.into()), "x/own");
     assert_eq!(
         (header(&served), served.body),
         ("x/own".to_string(), orphan.as_bytes().to_vec()),
         "a sample outside a typed family is not snapshotted: the host serves its own text"
     );
-    let refused = busbar_plugin_loader::scrape::exposition(Some(&sink), None, "x/own");
+    let refused = exposition(Some(&*sink), None, "x/own");
     assert_eq!(
         (refused.status, refused.headers, refused.body),
         (

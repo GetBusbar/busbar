@@ -608,6 +608,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "tokio",
  "tracing",
 ]
@@ -634,7 +635,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=02f463307f9820faedda131467dcfaa83b25df78#02f463307f9820faedda131467dcfaa83b25df78"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=b10cd35eaec72969ac2b40dea379194d655daca9#b10cd35eaec72969ac2b40dea379194d655daca9"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -646,15 +647,16 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=02f463307f9820faedda131467dcfaa83b25df78#02f463307f9820faedda131467dcfaa83b25df78"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=b10cd35eaec72969ac2b40dea379194d655daca9#b10cd35eaec72969ac2b40dea379194d655daca9"
 dependencies = [
+ "busbar-contract",
  "busbar-export-otlp",
 ]
 
 [[package]]
 name = "busbar-export-prometheus"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f#0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1df4b10d12764fef89966b9c9bd007f5d481f6ed#1df4b10d12764fef89966b9c9bd007f5d481f6ed"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -664,8 +666,9 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f#0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1df4b10d12764fef89966b9c9bd007f5d481f6ed#1df4b10d12764fef89966b9c9bd007f5d481f6ed"
 dependencies = [
+ "busbar-contract",
  "busbar-export-prometheus",
 ]
 
@@ -995,7 +998,9 @@ dependencies = [
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-file-plugin",
+ "busbar-export-otlp",
  "busbar-export-otlp-plugin",
+ "busbar-export-prometheus",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook-plugin",
  "busbar-kernel-ledger",
