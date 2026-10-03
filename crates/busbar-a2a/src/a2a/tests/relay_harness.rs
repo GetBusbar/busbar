@@ -677,6 +677,28 @@ pub(super) async fn harness_priced(
     .await
 }
 
+/// [`harness_priced`]'s money on a deployment whose agent definitions, `agent_pools:` and caller
+/// grant are the test's: the caller's key in group `g` carrying `limits`, the node's card `card`.
+pub(super) async fn harness_priced_pooled(
+    outcome: Outcome,
+    granted: &[&str],
+    defs: &[(&str, &str)],
+    pools: &[(&str, &[&str])],
+    limits: Vec<LimitCfg>,
+) -> Harness {
+    harness_core(
+        outcome,
+        false,
+        granted,
+        None,
+        defs,
+        pools,
+        false,
+        Some((None, limits)),
+    )
+    .await
+}
+
 /// The node's card map exactly as boot builds it from config text: core lifts `agents.rate_card`
 /// off the section (the plane never sees it, #43) and composes it beside the flat card.
 pub(super) fn composed_card(yaml: &str) -> Option<Card> {
