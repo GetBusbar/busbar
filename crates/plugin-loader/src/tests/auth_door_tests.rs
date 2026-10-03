@@ -216,7 +216,11 @@ async fn a_lent_credential_is_judged_and_a_wrong_one_refused() {
         ("good", alice()),
         ("other", answered(Verified::Pass)),
     ] {
-        assert_eq!(a.verify_now(&lent(credential)), Some(want.clone()), "{credential}");
+        assert_eq!(
+            a.verify_now(&lent(credential)),
+            Some(want.clone()),
+            "{credential}"
+        );
         let submitted = Box::into_pin(a.verify(lent(credential))).await;
         assert_eq!(submitted, want, "{credential} submitted");
     }

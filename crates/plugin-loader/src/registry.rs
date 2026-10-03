@@ -125,10 +125,7 @@ impl LoadablePlugin {
     /// Whether this row opens IN PROCESS ([`LinkedEntry::Store`]) rather than over the C ABI —
     /// such a row is handed no configuration across a boundary, so there is none to resolve for it.
     pub fn in_process(&self) -> bool {
-        matches!(
-            self.entry,
-            Some(LinkedEntry::Store { .. })
-        )
+        matches!(self.entry, Some(LinkedEntry::Store { .. }))
     }
 
     /// M6-COLD-DELETE: whether this row is a LINKED cold boundary (`BUSBAR_COLD_ENTRY`).
@@ -590,6 +587,21 @@ impl PluginRegistry {
             }),
             None => Err(no_door()),
         }
+    }
+
+    /// M6-COLD-DELETE: whether the `kind: auth` row `name_or_alias` resolves to opens on the COLD
+    /// auth lane — a linked `BUSBAR_COLD_ENTRY`, or a dropped-in library with no door and no
+    /// Statement (`crate::auth_axis::AuthRows` opens such a row through its `ColdAuth`) — rather
+    /// than on the auth kind's memory ABI. A cold row's `verify` is a synchronous call that may
+    /// block: its caller keeps it off an async worker.
+    ///
+    /// # Errors
+    /// No row resolves to `name_or_alias`, or it is not `kind: auth`, in [`Self::open_auth`]'s words.
+    /// A name only a door's Statement alias answers resolves to no row here: the auth axis answers it.
+    pub fn auth_row_is_cold(&self, name_or_alias: &str) -> Result<bool, String> {
+        let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
+        Ok(p.door().is_none()
+            && (p.image_is_cold_linked() || matches!(p.manifest.stated_rendering(), Ok(None))))
     }
 
     /// Open an AUTH plugin resolved by name or alias: verifies the resolved plugin's `kind` is `auth`,

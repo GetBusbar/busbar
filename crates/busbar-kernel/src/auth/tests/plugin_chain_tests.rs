@@ -294,6 +294,7 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
         &Default::default(),
     )
     .expect("preflight resolves the kind:auth plugin");
+    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -373,6 +374,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
         "preflight resolves the kind:auth plugin, whose manifest declares `audience` as a \
                  root-level x-busbar-secret field",
     );
+    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -440,6 +442,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
         &Default::default(),
     )
     .expect("preflight resolves the kind:auth plugin");
+    let registry = std::sync::Arc::new(registry);
 
     // The real load through the middleware — resolve → open_auth → box → chain.
     let mw = AuthMiddleware::new(
@@ -532,6 +535,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         &Default::default(),
     )
     .expect("preflight");
+    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -668,6 +672,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         &crate::test_support::trust_policy(&strict).unwrap(),
     )
     .expect("scan succeeds; the untrusted plugin is merely skipped");
+    let registry = std::sync::Arc::new(registry);
     let mw_err = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -727,6 +732,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &crate::test_support::trust_policy(&plugins).unwrap(),
     )
     .expect("scan");
+    let registry = std::sync::Arc::new(registry);
     let mw_err = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -789,6 +795,7 @@ fn keys_module_is_not_a_plugin_ref() {
         &Default::default(),
     )
     .expect("keys needs no plugin");
+    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -847,7 +854,7 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
                 hold: std::time::Duration::from_secs(3),
             }) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ true,
+        /* offload = */ true,
     ));
     let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
 
@@ -862,6 +869,7 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
             &auth,
             &cache,
             Some("tok".into()),
+            crate::auth::ChainHead::default(),
             None,
             None,
         )
@@ -897,7 +905,7 @@ fn an_in_process_chain_is_not_offloaded() {
             "test-groups-module".to_string(),
             Box::new(crate::auth::TestGroupsModule) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     ));
     let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -912,6 +920,7 @@ fn an_in_process_chain_is_not_offloaded() {
             &auth,
             &cache,
             Some("grp:admins".into()),
+            crate::auth::ChainHead::default(),
             None,
             None,
         )
@@ -993,7 +1002,7 @@ fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
             "cacheable-pass".to_string(),
             Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
@@ -1030,7 +1039,7 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
                 Box::new(CacheableReject) as Box<dyn crate::auth::AuthModule>,
             ),
         ],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
@@ -1063,7 +1072,7 @@ fn pass_churn_cannot_evict_an_identity() {
             "cacheable-pass".to_string(),
             Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
     let now = 1_000_000u64;
@@ -1113,7 +1122,7 @@ fn an_identified_chain_still_caches_the_leading_pass() {
                 Box::new(CacheableIdentify) as Box<dyn crate::auth::AuthModule>,
             ),
         ],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
@@ -1187,7 +1196,7 @@ fn a_credential_hit_within_ttl_does_not_extend_the_cache_entrys_lifetime() {
                 calls: calls.clone(),
             }) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
     let t0 = 1_000_000u64;
