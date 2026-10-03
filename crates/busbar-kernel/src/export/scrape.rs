@@ -1,36 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST'S SCRAPE — how the well-known `/metrics` is served now that the exposition is an export
-//! sink's (`module: prometheus` is a row of the export axis, linked or dropped in).
+//! THE HOST'S SCRAPE — how the well-known `/metrics` is served: the exposition is an export
+//! plugin's, a row of the export axis, linked or dropped in.
 //!
 //! What stays the host's is what only the host can hold: the recorder every emit site writes
 //! ([`crate::metrics`]), its scrape-time gauges, and the route. The SCRAPE SINK — the instance whose
 //! sink carries the `metrics` stream and which subscribes to it ([`crate::config::PluginExportSettings`])
-//! — is handed the recorder's SNAPSHOT (`ExportRequest::Scrape`) and the host serves the exposition
-//! it renders. On every scrape, on the route's blocking thread: with the recorder installed, the
-//! scrape-time gauges are refreshed from the LIVE `App` and every export-axis sink's `status` is
-//! folded (the recorder then holds everything it will report); then [`exposition`] answers — the
-//! sink's rendering of the snapshot, the recorder's own text when the sink cannot render, or `503`
+//! — is handed the recorder's SNAPSHOT ([`crate::metrics::snapshot`]) and the host serves the
+//! exposition it renders; the kernel renders none of its own. On every scrape, on the route's
+//! blocking thread: with the recorder installed, the scrape-time gauges are refreshed from the LIVE
+//! `App` and every export-axis sink's `status` is folded (the recorder then holds everything it will
+//! report); then [`exposition`] answers — the sink's rendering, `502` when no sink renders, or `503`
 //! while the recorder is not installed
 //! (its install runs on a background thread, and every data-plane listener accepts the moment its
 //! own bind completes, so a scrape can land first).
+
+// D4 STAGED (TODO step 26): this route, and the content type below, leave the kernel for the scrape
+// sink's own inbound listener need once boot serves a plugin's inbound need (THE DESIGN §3 "Inbound
+// listeners"; QUESTIONS Q133).
 
 use crate::config::ExportCfg;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
 use busbar_contract::abi::cold::endpoint::*;
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
+use busbar_contract::export_calls::ExportCalls;
 use std::sync::Arc;
 
 /// The well-known exposition path — the one export route outside `/exports/<name>/*`
 /// ([`crate::plugin_routes`]'s confinement), because external tooling expects it at a fixed place.
 pub(crate) const METRICS_PATH: &str = "/metrics";
 
+/// Which sink renders, asked on every scrape.
+pub(crate) type SinkOf = Box<dyn Fn() -> Option<Arc<dyn ExportCalls>> + Send + Sync>;
+
 /// The scrape dispatcher.
 struct Scrape {
-    /// The instance name of the sink that renders, looked up among the sinks opened at boot on
-    /// every scrape; `None` when nothing renders but the recorder itself (a test app).
-    sink: Option<String>,
+    /// The sink that renders: in production the one opened at boot for the scrape sink's instance;
+    /// `None` = no sink renders (every scrape is a `502`).
+    sink: SinkOf,
 }
 
 impl Scrape {
@@ -40,10 +48,7 @@ impl Scrape {
             crate::metrics::refresh_scrape_gauges(app);
             super::plugin::status();
         }
-        let sink = self.sink.as_deref().and_then(super::plugin::opened);
-        let own = installed.then(crate::metrics::render);
-        let own_type = crate::metrics::PROMETHEUS_CONTENT_TYPE;
-        exposition(sink.as_deref(), own, own_type)
+        exposition((self.sink)().as_deref(), crate::metrics::snapshot())
     }
 }
 
@@ -64,20 +69,20 @@ impl PluginHttpDispatch for Scrape {
     }
 }
 
-/// THE HOST'S SCRAPE ANSWER (K9d): `own` — the recorder's text exposition, served as
-/// `content_type` (the host's, 1.5.5's bytes) — rendered by `sink` through the export kind's
-/// `scrape` from its snapshot, as a `200`. With no sink, or one that cannot render (text the
-/// snapshot cannot place, a sink failing to answer — each logged), the answer is `own` itself, the
-/// bytes the snapshot would have been read from: a scrape never goes dark because a renderer did.
-/// No `own` (the recorder is not installed yet, or its install failed) is REFUSED — `503`,
-/// `Retry-After: 1` — never answered `200` with nothing: "not ready, retry" and "nothing to say"
-/// must be distinguishable on the wire.
+/// The exposition's content type, 1.5.5's bytes.
+pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4";
+
+/// THE HOST'S SCRAPE ANSWER (K9d): the recorder's `families` rendered by `sink` through the export
+/// kind's `scrape`, served `200` as [`CONTENT_TYPE`]. No `families` (the recorder is not installed
+/// yet, or its install failed) is REFUSED — `503`, `Retry-After: 1` — never answered `200` with
+/// nothing: "not ready, retry" and "nothing to say" must be distinguishable on the wire. No sink, or
+/// one that does not render, is a `502` with no body and a warning to the operator, as a plugin
+/// route that cannot answer is: the host has no exposition of its own to fall back to.
 pub(crate) fn exposition(
-    sink: Option<&dyn busbar_contract::export_calls::ExportCalls>,
-    own: Option<String>,
-    content_type: &str,
+    sink: Option<&dyn ExportCalls>,
+    families: Option<Vec<busbar_contract::export_calls::Family>>,
 ) -> EndpointResponse {
-    let Some(own) = own else {
+    let Some(families) = families else {
         let headers = vec![("retry-after".to_string(), "1".to_string())];
         return EndpointResponse {
             status: 503,
@@ -85,19 +90,23 @@ pub(crate) fn exposition(
             body: Vec::new(),
         };
     };
-    let rendered = sink.and_then(|sink| {
-        let families = busbar_contract::export_calls::parse_families(&own)
-            .map_err(|e| tracing::warn!(error = %e, "the recorder's exposition did not snapshot"))
-            .ok()?;
-        sink.scrape(&families)
-            .map_err(|e| tracing::warn!(error = %e, "the scrape sink did not render"))
-            .ok()
-    });
-    let body = rendered.unwrap_or_else(|| own.into_bytes());
-    EndpointResponse {
-        status: 200,
-        headers: vec![("content-type".to_string(), content_type.to_string())],
-        body,
+    let rendered = sink
+        .ok_or_else(|| "no scrape sink is open".to_string())
+        .and_then(|sink| sink.scrape(&families));
+    match rendered {
+        Ok(body) => EndpointResponse {
+            status: 200,
+            headers: vec![("content-type".to_string(), CONTENT_TYPE.to_string())],
+            body,
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "the scrape sink did not render");
+            EndpointResponse {
+                status: 502,
+                headers: Vec::new(),
+                body: Vec::new(),
+            }
+        }
     }
 }
 
@@ -106,12 +115,14 @@ pub(crate) fn exposition(
 /// mounted, as it was unmounted when metrics were off).
 pub(crate) fn route_decl(cfg: &ExportCfg) -> Option<RouteDecl> {
     let sink = cfg.plugins.iter().find(|p| p.scrape)?;
-    Some(decl(sink.def.module.trim(), Some(sink.name.clone())))
+    let name = sink.name.clone();
+    let sink_of: SinkOf = Box::new(move || super::plugin::opened(&name));
+    Some(decl(sink.def.module.trim(), sink_of))
 }
 
 /// `GET /metrics` behind the data plane's key — the route 1.5.5 served — owned by `owner` and
-/// rendered by the sink opened for the instance `sink`.
-pub(crate) fn decl(owner: &str, sink: Option<String>) -> RouteDecl {
+/// rendered by the sink `sink` answers with.
+pub(crate) fn decl(owner: &str, sink: SinkOf) -> RouteDecl {
     let (path, method, auth) = (METRICS_PATH.to_string(), RouteMethod::Get, RouteAuth::Key);
     let route = Route { path, method, auth };
     let (owner, dispatch) = (owner.to_string(), Arc::new(Scrape { sink }));

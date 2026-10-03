@@ -92,11 +92,12 @@ fn metrics_served_via_endpoint_registration() {
     );
 }
 
-/// With nothing to render but the recorder, a scrape is a `200` Prometheus text exposition with the
-/// canonical content type. `metrics::init()` installs synchronously in tests, so the recorder is
-/// installed before the scrape regardless of test order (an uninstalled one answers `503`).
+/// THE KERNEL RENDERS NO EXPOSITION (D4, TODO step 26). RED: with the recorder installed and no
+/// sink to render it, `/metrics` is a `502` with no body — the host never serves bytes of its own
+/// (before D4 it answered `200` with the recorder's own text). The control: the same scrape through
+/// a sink is a `200` of that sink's bytes under the exposition's content type.
 #[test]
-fn dispatch_renders_prometheus_exposition() {
+fn without_a_sink_the_kernel_serves_no_exposition() {
     crate::metrics::init();
     let req = EndpointRequest {
         method: "GET".into(),
@@ -105,21 +106,35 @@ fn dispatch_renders_prometheus_exposition() {
         headers: vec![],
         body: vec![],
     };
-    let resp = decl("metrics", None).dispatch.handle_http(&req);
+    let resp = decl("metrics", Box::new(|| None))
+        .dispatch
+        .handle_http(&req);
+    assert_eq!(
+        (resp.status, resp.headers, resp.body),
+        (502, vec![], vec![]),
+        "no sink renders: the kernel has no exposition of its own to serve"
+    );
+    let resp = crate::test_support::export_axis::lines_scrape_route()
+        .dispatch
+        .handle_http(&req);
     assert_eq!(resp.status, 200);
+    assert_eq!(
+        resp.headers,
+        vec![("content-type".to_string(), CONTENT_TYPE.to_string())]
+    );
+    let snapshot = crate::metrics::snapshot().expect("the recorder is installed");
     assert!(
-        resp.headers
-            .iter()
-            .any(|(k, v)| k == "content-type" && v.contains("text/plain")),
-        "the exposition carries the Prometheus content type"
+        resp.body.starts_with(b"# "),
+        "the sink's rendering of a non-empty snapshot ({} families)",
+        snapshot.len()
     );
 }
 
 /// THE SINK RENDERS THE RECORDER'S BYTES BACK: the linked scrape sink, handed the snapshot of an
 /// exposition carrying every family type the recorder writes (a HELP-less counter, labels with
 /// escapes, a histogram, a quantile summary), answers exactly those bytes, and the host serves that
-/// answer. And the RED arm: text the snapshot cannot place is never rendered from — the host
-/// serves its own bytes under its own type.
+/// answer. And the RED arms: a sink that does not render is a `502`, never the host's own bytes;
+/// no recorder yet is a `503`.
 #[test]
 fn the_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
     installed_axis();
@@ -155,26 +170,52 @@ fn the_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
         own.as_bytes(),
         "the scrape is the recorder's bytes, back"
     );
-    let header = |r: &EndpointResponse| r.headers[0].1.clone();
-    let content_type = crate::metrics::PROMETHEUS_CONTENT_TYPE;
-    let served = exposition(Some(&*sink), Some(own.into()), content_type);
+    let served = exposition(Some(&*sink), Some(families.clone()));
     assert_eq!(
-        (served.status, header(&served)),
-        (200, content_type.to_string())
+        (served.status, served.headers[0].1.clone()),
+        (200, CONTENT_TYPE.to_string())
     );
     assert_eq!(
         served.body,
         own.as_bytes(),
         "the host serves the sink's rendering"
     );
-    let orphan = "busbar_orphan_sample 1\n";
-    let served = exposition(Some(&*sink), Some(orphan.into()), "x/own");
+    struct Fails;
+    impl busbar_contract::export_calls::ExportCalls for Fails {
+        fn streams(&self) -> &[u8] {
+            &[]
+        }
+        fn routes(&self) -> &[Route] {
+            &[]
+        }
+        fn deliver(
+            &self,
+            _: u8,
+            _: Vec<u8>,
+            _: Box<dyn Send>,
+        ) -> busbar_contract::export_calls::Delivered {
+            busbar_contract::export_calls::Delivered::Shed
+        }
+        fn scrape(&self, _: &[busbar_contract::export_calls::Family]) -> Result<Vec<u8>, String> {
+            Err("faulted".into())
+        }
+        fn status(&self) -> Option<Vec<u8>> {
+            None
+        }
+        fn serve(
+            &self,
+            _: &busbar_contract::export_calls::ServeRequest<'_>,
+        ) -> Result<busbar_contract::export_calls::Served, String> {
+            Err("no route".into())
+        }
+    }
+    let failed = exposition(Some(&Fails), Some(families));
     assert_eq!(
-        (header(&served), served.body),
-        ("x/own".to_string(), orphan.as_bytes().to_vec()),
-        "a sample outside a typed family is not snapshotted: the host serves its own text"
+        (failed.status, failed.headers, failed.body),
+        (502, vec![], vec![]),
+        "a sink that does not render: a 502, never the host's own text"
     );
-    let refused = exposition(Some(&*sink), None, "x/own");
+    let refused = exposition(Some(&*sink), None);
     assert_eq!(
         (refused.status, refused.headers, refused.body),
         (

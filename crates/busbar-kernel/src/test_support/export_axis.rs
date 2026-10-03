@@ -159,3 +159,78 @@ pub fn install_first_party_door(
         "export", name, alias, door,
     )]);
 }
+
+/// THE TEST VIEW of a scrape snapshot: each family's `# HELP` (when it has one) and `# TYPE` lines,
+/// its samples as `name{labels} value`, and a blank line — the layout every test that asserts on an
+/// observation by line reads. A test's own view, never served: what an operator scrapes is the
+/// export plugin's rendering.
+#[must_use]
+pub fn lines(families: &[busbar_contract::export_calls::Family]) -> String {
+    let mut out = String::new();
+    for f in families {
+        if let Some(help) = &f.help {
+            out.push_str(&format!("# HELP {} {help}\n", f.name));
+        }
+        let kind = busbar_contract::export_calls::type_word(f.kind).unwrap_or("untyped");
+        out.push_str(&format!("# TYPE {} {kind}\n", f.name));
+        for s in &f.samples {
+            let labels: Vec<String> = s
+                .labels
+                .iter()
+                .map(|(k, v)| format!("{k}=\"{v}\""))
+                .collect();
+            let set = if labels.is_empty() {
+                String::new()
+            } else {
+                format!("{{{}}}", labels.join(","))
+            };
+            out.push_str(&format!("{}{set} {}\n", s.name, s.value));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// A NEUTRAL scrape sink for a test app's `/metrics` (a test app has no `export:` block): it
+/// renders the snapshot as [`lines`], carries nothing and serves nothing.
+#[derive(Debug)]
+pub struct LinesSink;
+
+impl busbar_contract::export_calls::ExportCalls for LinesSink {
+    fn streams(&self) -> &[u8] {
+        &[]
+    }
+    fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
+        &[]
+    }
+    fn deliver(
+        &self,
+        _: u8,
+        _: Vec<u8>,
+        _: Box<dyn Send>,
+    ) -> busbar_contract::export_calls::Delivered {
+        busbar_contract::export_calls::Delivered::Shed
+    }
+    fn scrape(
+        &self,
+        families: &[busbar_contract::export_calls::Family],
+    ) -> Result<Vec<u8>, String> {
+        Ok(lines(families).into_bytes())
+    }
+    fn status(&self) -> Option<Vec<u8>> {
+        None
+    }
+    fn serve(
+        &self,
+        _: &busbar_contract::export_calls::ServeRequest<'_>,
+    ) -> Result<busbar_contract::export_calls::Served, String> {
+        Err("the test scrape sink serves no route".into())
+    }
+}
+
+/// The scrape route of a test app, rendered by [`LinesSink`].
+pub(crate) fn lines_scrape_route() -> crate::plugin_routes::RouteDecl {
+    let sink: std::sync::Arc<dyn busbar_contract::export_calls::ExportCalls> =
+        std::sync::Arc::new(LinesSink);
+    crate::export::scrape::decl("metrics", Box::new(move || Some(sink.clone())))
+}

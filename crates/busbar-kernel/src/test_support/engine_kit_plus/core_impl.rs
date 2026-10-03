@@ -5,7 +5,7 @@
 //! (`busbar_kernel::test_support::engine_kit_plus`), on the SAME fixture types the base kit is
 //! implemented for ([`CoreEngineKit`], `TestApp`, `App`): every verb is a thin delegate to the fixture
 //! builder, the built App's own tables (`planes`, `plane_breakers`, the data route table view) or the
-//! process-wide service (`metrics::render`, the prometheus exporter, `tls::install_crypto_provider`,
+//! process-wide service (`metrics::render`, the scrape route, `tls::install_crypto_provider`,
 //! the built-in secret resolver, the named-map chassis) a plane's tests used to name directly. A
 //! plane's test tree binds [`CORE_ENGINE_KIT`](crate::test_support::engine_kit::CORE_ENGINE_KIT) once as
 //! `&'static dyn EngineTestKitPlus` and reaches both kits through it.
@@ -29,7 +29,7 @@ impl EngineTestKitPlus for CoreEngineKit {
     }
 
     fn scrape_exposition(&self) -> (u16, String) {
-        let resp = crate::export::scrape::decl("metrics", None)
+        let resp = crate::test_support::export_axis::lines_scrape_route()
             .dispatch
             .handle_http(&busbar_contract::abi::cold::endpoint::EndpointRequest {
                 method: "GET".into(),

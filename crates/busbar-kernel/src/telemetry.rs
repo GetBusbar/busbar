@@ -24,10 +24,10 @@
 //!   config re-interns the same label sets to the SAME slots, so counts accumulate monotonically
 //!   across generations.
 //! * **One aggregator** — [`flush_to_recorder`] runs at scrape time (called from
-//!   `metrics::render()`): it sums every thread's cells per slot and pushes the DELTA since the last
-//!   flush into the process-global `metrics-exporter-prometheus` recorder. The exposition is
-//!   rendered by the SAME recorder as before, so metric names, labels, HELP/TYPE lines, and
-//!   formatting are byte-identical to the pre-bank output. Histogram slots buffer raw samples
+//!   `metrics::snapshot()`): it sums every thread's cells per slot and pushes the DELTA since the
+//!   last flush into the process-global recorder (`metrics::source`). The snapshot is read from the
+//!   SAME recorder as before, so metric names, labels, HELP text and values are identical to the
+//!   pre-bank output. Histogram slots buffer raw samples
 //!   per thread and drain them into the recorder at flush, so the summary/quantile rendering is
 //!   unchanged too (samples are just delivered at scrape time instead of request time).
 //!
@@ -939,8 +939,8 @@ pub mod drain_serial {
 }
 
 /// THE aggregator: sum every thread's cells per slot and push the delta since the last flush into
-/// the process-global Prometheus recorder. Called from `metrics::render()` so every scrape (and
-/// every test that reads the exposition) observes up-to-date bank totals. Deltas (not absolutes)
+/// the process-global recorder. Called from `metrics::snapshot()` so every scrape (and every test
+/// that reads the snapshot) observes up-to-date bank totals. Deltas (not absolutes)
 /// so banked series compose additively with anything the macro fallback paths emitted on the same
 /// series. No-op until the recorder is installed — a handle minted before install would bind to
 /// the no-op recorder forever (same contract as the handle cache in `metrics.rs`).
