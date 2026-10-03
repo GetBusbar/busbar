@@ -25,6 +25,9 @@ pub mod loopback_http;
 /// An in-memory `metrics` recorder + exposition render, for asserting this plane's counter emits.
 pub mod metrics_capture;
 
+/// One phone call over the telephony proxy, the caller speaking Twilio Media Streams.
+pub mod telephony;
+
 /// THIS PLANE'S SERVED-LEG WITNESSES — `(capability key, [(loop step or core capability, witness)])`.
 ///
 /// What a test binary that links this crate without naming it runs through ITS registered session

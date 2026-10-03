@@ -44,8 +44,6 @@ use crate::runtime::{Carrier, SessionCore, TurnMeter, VoiceRuntime};
 use crate::testkit::fixture_host::FixtureHost;
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::{begin_session, dial_provider, stream_breaker_key, DialProviderError};
-use futures::channel::mpsc::unbounded;
-use futures::StreamExt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -389,8 +387,8 @@ async fn a_dry_key_is_refused_at_the_open_past_the_gate() -> u64 {
     3
 }
 
-/// ROUTE (the session plane's shape): a served session relays the provider's audio down to the client
-/// and the client's audio up to the provider.
+/// ROUTE (the session plane's shape): a served telephony call relays the provider's audio down to the
+/// caller and the caller's audio up to the provider, the caller speaking the carrier's envelope.
 async fn a_served_session_relays_both_directions() -> u64 {
     let host = Arc::new(FixtureHost::new());
     let rt = hosted(&host);
@@ -405,50 +403,18 @@ async fn a_served_session_relays_both_directions() -> u64 {
     )
     .unwrap_or_else(|e| panic!("the served door opens the telephony session: {e}"));
 
-    let (prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
-    let (prov_out_tx, mut prov_out_rx) = unbounded::<Vec<u8>>();
-    let (cli_in_tx, cli_in_rx) = unbounded::<Vec<u8>>();
-    let (cli_out_tx, mut cli_out_rx) = unbounded::<Vec<u8>>();
-    prov_in_tx
-        .unbounded_send(
-            serde_json::to_vec(&serde_json::json!({
-                "type": "response.output_audio.delta", "delta": "AAAA"
-            }))
-            .expect("serializes"),
-        )
-        .expect("queued");
-    cli_in_tx
-        .unbounded_send(
-            serde_json::to_vec(&serde_json::json!({
-                "type": "input_audio_buffer.append", "audio": "BBBB"
-            }))
-            .expect("serializes"),
-        )
-        .expect("queued");
-    drop(prov_in_tx);
-    drop(cli_in_tx);
-    proxy
-        .run(prov_in_rx, prov_out_tx, cli_in_rx, cli_out_tx)
-        .await;
-
-    let kinds = |frames: Vec<Vec<u8>>| -> Vec<String> {
-        frames
-            .iter()
-            .filter_map(|f| serde_json::from_slice::<serde_json::Value>(f).ok())
-            .filter_map(|v| v["type"].as_str().map(str::to_string))
-            .collect()
-    };
-    cli_out_rx.close();
-    let down = kinds(cli_out_rx.by_ref().collect().await);
-    prov_out_rx.close();
-    let up = kinds(prov_out_rx.by_ref().collect().await);
+    let legs = crate::testkit::telephony::place_call(proxy, &[0x7f; 160]).await;
     assert!(
-        down.contains(&"response.output_audio.delta".to_string()),
-        "the provider's audio reached the client: {down:?}"
+        legs.to_caller.iter().any(|v| v["event"] == "media"),
+        "the provider's audio reached the client: {:?}",
+        legs.to_caller
     );
     assert!(
-        up.contains(&"input_audio_buffer.append".to_string()),
-        "the client's audio reached the provider: {up:?}"
+        legs.to_far_end
+            .iter()
+            .any(|v| v["type"] == "input_audio_buffer.append"),
+        "the client's audio reached the provider: {:?}",
+        legs.to_far_end
     );
     1
 }

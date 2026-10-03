@@ -14,6 +14,13 @@
 //! the downlink-facing [`VoiceSession`] (tool results / barge-in cancel) and the [`UplinkForwarder`]
 //! (client audio → upstream) — so it is funnelled through one channel into a single writer. The client
 //! socket's write side is the downlink, driven by the session [`Carrier`].
+//!
+//! THE CARRIER'S ENVELOPE. The telephony leg's caller speaks Twilio Media Streams, not the realtime
+//! dialect: every caller frame is read through the envelope ([`TwilioBridge::from_caller`]), so its
+//! `media` audio reaches the far end as an uplink append and is counted, and its `stop` (or a frame
+//! the envelope refuses) ends the call; every frame bound for the caller is rewritten into the
+//! envelope ([`TwilioBridge::to_caller`]). The Gemini Live leg rides the same proxy with no envelope:
+//! its caller speaks the far end's own dialect.
 
 use crate::ir::codec::{DuplexReader, DuplexWriter};
 use crate::ir::config::SessionConfig;
@@ -22,11 +29,13 @@ use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, UplinkForwarder, VoiceSession};
 use crate::runtime::VoiceRuntime;
+use crate::topology::twilio::{CallerStep, TwilioBridge};
 use crate::topology::{begin_session, StartError};
 use busbar_kernel::ingress::byte_duplex::serve_messages;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
+use futures::future::{ready, Either};
 use futures::{Sink, Stream, StreamExt};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// THE LOCKED CONFIG for a telephony leg: `g711_ulaw` on BOTH the input and output audio formats so the
 /// 8 kHz µ-law carrier passes straight through with no resample. Callers overlay their own
@@ -58,6 +67,9 @@ pub struct TelephonyProxy<C> {
     upstream_tx: UnboundedSender<Vec<u8>>,
     /// The client-write (downlink) funnel receiver, fed by the session carrier.
     downlink_rx: UnboundedReceiver<Vec<u8>>,
+    /// The carrier's envelope on the caller's side: `Some` on the telephony leg, `None` on a leg
+    /// whose caller speaks the far end's dialect.
+    envelope: Option<Arc<Mutex<TwilioBridge>>>,
 }
 
 /// BEGIN a telephony proxy: lock the `g711`-based config, open the governed session (kernel account +
@@ -104,6 +116,7 @@ where
         upstream_rx,
         upstream_tx,
         downlink_rx,
+        envelope: Some(Arc::default()),
     })
 }
 
@@ -117,6 +130,9 @@ where
 /// `governed` is the served door's own binding — the node's open-call table and the identifier this
 /// session is known to it by — and it is carried straight through to the post-admit open, so a
 /// dialed proxy is governed on exactly the terms the other two served legs are.
+///
+/// `twilio` puts the telephony carrier's envelope on the caller's side (the telephony leg); the
+/// Gemini Live leg passes `false`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn open_admitted_telephony<C>(
     rt: &VoiceRuntime,
@@ -127,6 +143,7 @@ pub(crate) fn open_admitted_telephony<C>(
     meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
     governed: Option<crate::runtime::GovernedSession>,
+    twilio: bool,
 ) -> Result<TelephonyProxy<C>, StartError>
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
@@ -158,6 +175,7 @@ where
         upstream_rx,
         upstream_tx,
         downlink_rx,
+        envelope: twilio.then(Arc::default),
     })
 }
 
@@ -203,9 +221,47 @@ where
             upstream_rx,
             upstream_tx,
             downlink_rx,
+            envelope,
         } = self;
 
         let carrier = core.carrier().clone();
+
+        // The carrier's envelope, both ways. Caller frames are read through it: audio goes on as the
+        // far end's uplink append, the call's `stop` or a refused frame ends the session (the carrier
+        // closes, so the far end's leg ends with it), and everything else carries nothing upstream.
+        // Frames bound for the caller are rewritten into it; one it has no event for is dropped.
+        let (client_in, downlink_rx) = match envelope {
+            None => (Either::Left(client_in), Either::Left(downlink_rx)),
+            Some(bridge) => {
+                let ender = carrier.clone();
+                let up = Arc::clone(&bridge);
+                let client_in = client_in
+                    .scan((), move |_, frame| {
+                        let step = up
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .from_caller(&frame);
+                        ready(match step {
+                            CallerStep::Audio(w) => Some(Some(w.0.to_vec())),
+                            CallerStep::Nothing => Some(None),
+                            CallerStep::Stop | CallerStep::Refused => {
+                                ender.hard_close();
+                                None
+                            }
+                        })
+                    })
+                    .filter_map(ready);
+                let downlink = downlink_rx.filter_map(move |frame| {
+                    ready(
+                        bridge
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .to_caller(&frame),
+                    )
+                });
+                (Either::Right(Box::pin(client_in)), Either::Right(downlink))
+            }
+        };
 
         // The two writer drains run as detached tasks (their receivers/sinks are `Send + 'static`).
         // Each ends when ITS funnel's last sender drops — provider-write when both serve legs finish,

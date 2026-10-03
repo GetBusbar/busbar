@@ -31,8 +31,6 @@ use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
 use busbar_kernel::plane::store::PlaneStore;
 use busbar_kernel::plane_host::EngineHost;
-use futures::channel::mpsc::unbounded;
-use futures::StreamExt;
 use std::sync::{Arc, Mutex};
 
 const PUBLIC_URL: &str = "https://gw.example.com";
@@ -414,57 +412,23 @@ async fn duplex_session_runs_in_process_through_the_gauntlet_after_hydrate() {
     )
     .expect("the open-pass gauntlet admits and the session opens");
 
-    // (3) HANDLER: drive the session over the neutral pump with an in-process MOCK PEER — four
+    // (3) HANDLER: drive one phone call over the neutral pump with an in-process MOCK PEER — four
     // in-memory channels stand in for the provider socket and the client socket. No live provider.
-    let (prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
-    let (prov_out_tx, mut prov_out_rx) = unbounded::<Vec<u8>>();
-    let (cli_in_tx, cli_in_rx) = unbounded::<Vec<u8>>();
-    let (cli_out_tx, mut cli_out_rx) = unbounded::<Vec<u8>>();
+    let legs = crate::testkit::telephony::place_call(proxy, &[0x7f; 160]).await;
 
-    prov_in_tx
-        .unbounded_send(
-            serde_json::to_vec(&serde_json::json!({
-                "type":"response.output_audio.delta","delta":"AAAA"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-    cli_in_tx
-        .unbounded_send(
-            serde_json::to_vec(&serde_json::json!({
-                "type":"input_audio_buffer.append","audio":"BBBB"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-    drop(prov_in_tx);
-    drop(cli_in_tx);
-
-    proxy
-        .run(prov_in_rx, prov_out_tx, cli_in_rx, cli_out_tx)
-        .await;
-
-    // Downlink: the provider's audio reached the client. Uplink: the client's audio reached the provider.
-    cli_out_rx.close();
-    let mut downlink = Vec::new();
-    while let Some(f) = cli_out_rx.next().await {
-        let v: serde_json::Value = serde_json::from_slice(&f).unwrap();
-        downlink.push(v["type"].as_str().unwrap().to_string());
-    }
+    // Uplink: the caller's audio reached the provider. Downlink: the provider's audio reached the
+    // caller, in the carrier's own envelope.
     assert!(
-        downlink.contains(&"response.output_audio.delta".to_string()),
-        "the governed session relayed provider downlink audio to the client: {downlink:?}"
+        legs.to_far_end
+            .iter()
+            .any(|v| v["type"] == "input_audio_buffer.append"),
+        "the governed session relayed client uplink audio to the provider: {:?}",
+        legs.to_far_end
     );
-
-    prov_out_rx.close();
-    let mut uplink = Vec::new();
-    while let Some(f) = prov_out_rx.next().await {
-        let v: serde_json::Value = serde_json::from_slice(&f).unwrap();
-        uplink.push(v["type"].as_str().unwrap().to_string());
-    }
     assert!(
-        uplink.contains(&"input_audio_buffer.append".to_string()),
-        "the governed session relayed client uplink audio to the provider: {uplink:?}"
+        legs.to_caller.iter().any(|v| v["event"] == "media"),
+        "the governed session relayed provider downlink audio to the client: {:?}",
+        legs.to_caller
     );
 }
 

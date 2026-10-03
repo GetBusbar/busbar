@@ -41,8 +41,13 @@ fn runtime() -> VoiceRuntime {
 
 /// A presenting key's meter over a governed fixture host whose budget view is capped at `cap` counts.
 fn meter_capped(cap: i64) -> TurnMeter {
+    meter_on(&Arc::new(FixtureHost::new().governed().with_count_cap(cap)))
+}
+
+/// The presenting key `vk`'s meter over `host`.
+fn meter_on(host: &Arc<FixtureHost>) -> TurnMeter {
     TurnMeter::new(
-        Arc::new(FixtureHost::new().governed().with_count_cap(cap)),
+        host.clone(),
         busbar_contract::records::VirtualKey {
             id: "vk".to_string(),
             ..Default::default()
@@ -58,36 +63,154 @@ fn json_frame(v: serde_json::Value) -> Vec<u8> {
 
 // ── Topology B: the thin telephony proxy relays both directions ─────────────────────────────────
 
+/// The caller's audio is counted in the class's own seconds and nothing else: what the governed host
+/// ledgered under `audio_seconds_in` for the presenting key `vk`.
+fn audio_seconds_in(host: &FixtureHost) -> Option<u64> {
+    host.ledger_rows("vk")
+        .iter()
+        .find(|((_, class), _)| class == "audio_seconds_in")
+        .map(|(_, n)| *n)
+}
+
+/// THE TELEPHONY LEG SPEAKS THE CARRIER'S ENVELOPE (1.6.0-TODO.md, "the caller's audio is silently
+/// discarded, and the call still settles usage"). The caller's Twilio `media` reaches the far end as
+/// the realtime dialect's uplink append, byte for byte, and is counted; the far end's audio reaches
+/// the caller as a Twilio `media` frame on the call's stream; the caller's `stop` ends the call while
+/// the far end's socket is still open. Every caller frame used to go to the realtime codec, which
+/// reads no Twilio event, so the far end heard nothing and the session billed one-way output.
 #[tokio::test]
-async fn telephony_proxy_relays_both_directions() {
+async fn a_telephony_caller_is_heard_counted_and_answered_in_the_carriers_envelope() {
     let rt = runtime();
-    // g711 end-to-end: 8 kHz µ-law passes straight through, no resample.
-    let cfg = g711_config();
+    let host = Arc::new(FixtureHost::new().governed());
+    let proxy = begin_telephony(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct-1",
+        "call-9",
+        g711_config(),
+        Some(meter_on(&host)),
+        1,
+    )
+    .expect("telephony begins");
+    // Three seconds of 8 kHz µ-law from the caller (24 000 bytes of 0x7f, which base64 spells as
+    // `f39/` 8 000 times); the far end's short reply is the call driver's own.
+    let spoken = vec![0x7f_u8; 24_000];
+
+    let legs = crate::testkit::telephony::place_call(proxy, &spoken).await;
+
+    let appended: Vec<&serde_json::Value> = legs
+        .to_far_end
+        .iter()
+        .filter(|v| v["type"] == "input_audio_buffer.append")
+        .collect();
     assert_eq!(
-        cfg.output_audio_format,
-        Some(crate::ir::media::AudioFormat::G711Ulaw)
+        appended
+            .iter()
+            .map(|v| v["audio"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>(),
+        vec!["f39/".repeat(8_000)],
+        "the caller's audio reached the far end once, unchanged: {:?}",
+        legs.to_far_end
     );
-    let proxy = begin_telephony(&rt, OpenAiRealtimeCodec, "acct-1", "call-9", cfg, None, 1)
-        .expect("telephony begins");
+    assert!(
+        legs.to_far_end.iter().all(|v| v.get("event").is_none()),
+        "no Twilio frame reached the far end: {:?}",
+        legs.to_far_end
+    );
+    let heard = crate::topology::twilio::TwilioEnvelope::encode_media(
+        crate::testkit::telephony::STREAM_SID,
+        crate::testkit::telephony::FAR_END_AUDIO,
+    );
+    assert_eq!(
+        legs.to_caller,
+        vec![serde_json::from_slice::<serde_json::Value>(&heard).expect("the envelope is JSON")],
+        "the caller heard the far end in the carrier's envelope, and nothing else"
+    );
+    assert_eq!(
+        audio_seconds_in(&host),
+        Some(3),
+        "the caller's three seconds are ledgered when the call ends"
+    );
+}
+
+/// A frame on the telephony leg that is not the carrier's shape (here, the realtime dialect's own
+/// append) is refused: the call ends at once, nothing reaches the far end, and nothing is counted.
+#[tokio::test]
+async fn a_telephony_frame_not_in_the_carriers_shape_ends_the_call_unheard() {
+    let rt = runtime();
+    let host = Arc::new(FixtureHost::new().governed());
+    let proxy = begin_telephony(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct-1",
+        "call-refused",
+        g711_config(),
+        Some(meter_on(&host)),
+        1,
+    )
+    .expect("telephony begins");
+    let (_prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
+    let (prov_out_tx, mut prov_out_rx) = unbounded::<Vec<u8>>();
+    let (cli_in_tx, cli_in_rx) = unbounded::<Vec<u8>>();
+    let (cli_out_tx, _cli_out_rx) = unbounded::<Vec<u8>>();
+    cli_in_tx
+        .unbounded_send(json_frame(serde_json::json!({
+            "type": "input_audio_buffer.append", "audio": "A".repeat(16_000)
+        })))
+        .unwrap();
+
+    // Both sockets stay open: only the refusal can end the call.
+    let ended = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        proxy.run(prov_in_rx, prov_out_tx, cli_in_rx, cli_out_tx),
+    )
+    .await;
+    assert!(ended.is_ok(), "the refused frame ended the call");
+
+    prov_out_rx.close();
+    let mut up = Vec::new();
+    while let Some(f) = prov_out_rx.next().await {
+        up.push(serde_json::from_slice::<serde_json::Value>(&f).unwrap_or_default());
+    }
+    assert!(
+        !up.iter().any(|v| v["type"] == "input_audio_buffer.append"),
+        "nothing the caller sent reached the far end: {up:?}"
+    );
+    assert_eq!(audio_seconds_in(&host), None, "nothing was counted");
+}
+
+/// The Gemini Live leg rides the same proxy with no envelope: its caller speaks the far end's own
+/// dialect, so frames cross both ways unchanged.
+#[tokio::test]
+async fn a_leg_with_no_envelope_relays_the_far_ends_dialect_both_ways() {
+    let rt = runtime();
+    let proxy = crate::topology::telephony::open_admitted_telephony(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct-1",
+        "call-dialect",
+        g711_config(),
+        None,
+        1,
+        None,
+        false,
+    )
+    .expect("the leg opens");
 
     let (prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
     let (prov_out_tx, mut prov_out_rx) = unbounded::<Vec<u8>>();
     let (cli_in_tx, cli_in_rx) = unbounded::<Vec<u8>>();
     let (cli_out_tx, mut cli_out_rx) = unbounded::<Vec<u8>>();
-
-    // The provider emits a downlink audio frame → it must reach the client.
     prov_in_tx
         .unbounded_send(json_frame(serde_json::json!({
             "type":"response.output_audio.delta","delta":"AAAA"
         })))
         .unwrap();
-    // The client (phone) sends an uplink audio frame → it must reach the provider.
     cli_in_tx
         .unbounded_send(json_frame(serde_json::json!({
             "type":"input_audio_buffer.append","audio":"BBBB"
         })))
         .unwrap();
-    // EOF both sockets so the proxy returns cleanly.
     drop(prov_in_tx);
     drop(cli_in_tx);
 
@@ -95,7 +218,6 @@ async fn telephony_proxy_relays_both_directions() {
         .run(prov_in_rx, prov_out_tx, cli_in_rx, cli_out_tx)
         .await;
 
-    // Downlink: the client received the provider's audio.
     cli_out_rx.close();
     let mut downlink = Vec::new();
     while let Some(f) = cli_out_rx.next().await {
@@ -104,10 +226,8 @@ async fn telephony_proxy_relays_both_directions() {
     }
     assert!(
         downlink.contains(&"response.output_audio.delta".to_string()),
-        "provider downlink audio reached the client: {downlink:?}"
+        "the far end's audio reached the caller: {downlink:?}"
     );
-
-    // Uplink: the provider received the client's forwarded audio append.
     prov_out_rx.close();
     let mut uplink = Vec::new();
     while let Some(f) = prov_out_rx.next().await {
@@ -116,7 +236,7 @@ async fn telephony_proxy_relays_both_directions() {
     }
     assert!(
         uplink.contains(&"input_audio_buffer.append".to_string()),
-        "client uplink audio reached the provider: {uplink:?}"
+        "the caller's audio reached the far end: {uplink:?}"
     );
 }
 
