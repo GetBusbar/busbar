@@ -531,23 +531,25 @@ fn value_of(f: &Field, req: &IrRequest) -> Option<Value> {
 /// The warn of a row dropped under its condition. Its fields are the slot's own (a static field
 /// name per slot, as the writers always spelled them).
 fn warn_drop(d: &DropIf, slot: Slot, req: &IrRequest) {
+    use crate::codec::drops::{member, writer_drop};
+    let diag = &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS;
     match slot {
         // Thinking runs at temperature 1: omitting exactly 1 changes nothing and is not warned.
         Slot::Temperature if req.temperature == Some(1.0) => {}
         Slot::Temperature if d.value => {
-            tracing::warn!(temperature = ?req.temperature, "{}", d.warn);
+            writer_drop!(member(slot.name()), diag, [temperature = ?req.temperature,], "{}", d.warn);
         }
         Slot::TopP if d.value => {
             if let Some(top_p) = req.top_p {
-                tracing::warn!(top_p, "{}", d.warn);
+                writer_drop!(member(slot.name()), diag, [top_p,], "{}", d.warn);
             }
         }
         Slot::TopK if d.value => {
             if let Some(top_k) = req.top_k {
-                tracing::warn!(top_k, "{}", d.warn);
+                writer_drop!(member(slot.name()), diag, [top_k,], "{}", d.warn);
             }
         }
-        _ => tracing::warn!("{}", d.warn),
+        _ => writer_drop!(member(slot.name()), diag, [], "{}", d.warn),
     }
 }
 
@@ -580,18 +582,26 @@ pub fn write_fields(table: Table, req: &IrRequest, egress: Egress, out: &mut Map
         }
         if let (Some(c), Some(n)) = (&f.clamp, v.as_f64()) {
             let (clamped, changed) = clamp(n, c.min, c.max);
+            // A clamp keeps its behaviour and always warns, on the one drop path.
+            let at = crate::codec::drops::member(f.slot.name());
+            let diag = &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS;
             if changed && c.parameter {
-                tracing::warn!(
-                    requested_temperature = n,
-                    clamped_temperature = clamped,
-                    parameter = "temperature",
+                crate::codec::drops::writer_drop!(
+                    at,
+                    diag,
+                    [
+                        requested_temperature = n,
+                        clamped_temperature = clamped,
+                        parameter = "temperature",
+                    ],
                     "{}",
                     c.warn
                 );
             } else if changed {
-                tracing::warn!(
-                    requested_temperature = n,
-                    clamped_temperature = clamped,
+                crate::codec::drops::writer_drop!(
+                    at,
+                    diag,
+                    [requested_temperature = n, clamped_temperature = clamped,],
                     "{}",
                     c.warn
                 );

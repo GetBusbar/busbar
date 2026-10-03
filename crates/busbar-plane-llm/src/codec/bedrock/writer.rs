@@ -140,8 +140,10 @@ impl ProtocolWriter for BedrockWriter {
         caps: &LaneCaps,
     ) -> serde_json::Value {
         if req.reasoning.is_some() && !bedrock_model_is_claude(model) {
-            tracing::warn!(
-                model,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::REASONING,
+                &crate::codec::diagnostics::IR_DROP_REASONING,
+                [model,],
                 "dropping cross-protocol reasoning/thinking ask on Bedrock egress: the lane model \
                  is not a Claude model, and Converse's `thinking` field is Claude's spelling"
             );
@@ -301,11 +303,13 @@ impl ProtocolWriter for BedrockWriter {
                         // Every neutral field was empty, so there is no member to put in the union
                         // and an empty `{}` would be a malformed frame. Drop it, but say so.
                         None => {
-                            tracing::warn!(
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::TEXT,
+                                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                [],
                                 "dropping a streamed citation on a bedrock egress: it carried no \
                                  title, url, quoted text or resolvable character location, so there \
-                                 is no populated member for the Converse `citation` delta union"
-                            );
+                                 is no populated member for the Converse `citation` delta union");
                             None
                         }
                     }
@@ -491,12 +495,13 @@ impl ProtocolWriter for BedrockWriter {
                         .collect();
                     if cits.is_empty() {
                         if !citations.is_empty() {
-                            tracing::warn!(
-                                dropped = citations.len(),
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::TEXT,
+                                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                [dropped = citations.len(), ],
                                 "dropping citation(s) on a bedrock response egress: none carried a \
                                  title, url, quoted text or resolvable character location, so there \
-                                 is no populated member for the Converse `Citation` shape"
-                            );
+                                 is no populated member for the Converse `Citation` shape");
                         }
                         content_arr.push(serde_json::json!({ (keys::TEXT): text }));
                     } else {
@@ -891,7 +896,10 @@ impl BedrockWriter {
                         }
                     }
                     b @ crate::codec::ir::IrBlock::Text { .. } if b.is_citation_carrier() => {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::TEXT,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "dropping citations with no text on Bedrock egress: blank text is \
                              rejected (COH-17)"
                         );
@@ -946,8 +954,17 @@ impl BedrockWriter {
                                 // decodes). Preserve the actual content instead of collapsing it to
                                 // the constant string `"{}"`: a JSON-string Text-equivalent or a
                                 // structured result that arrives via the IR is re-encoded faithfully.
-                                // A provider-run tool's record has no tool-result content form.
-                                crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
+                                // A provider-run tool's record has no tool-result content form:
+                                // dropped on the drop path, never silently.
+                                crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
+                                    crate::codec::drops::writer_drop!(
+                                        crate::codec::drops::HOSTED_TOOL,
+                                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                        [],
+                                        "dropping a hosted tool record inside a Bedrock toolResult: \
+                                         Converse has no form for it"
+                                    );
+                                }
                                 crate::codec::ir::IrBlock::Json(value) => {
                                     // A structured-json tool-result block re-emits as a native
                                     // `{"json": <value>}` block, restoring same-protocol fidelity.
@@ -986,9 +1003,11 @@ impl BedrockWriter {
                                 // carry no result data; omit them entirely (with a trace) rather than
                                 // emitting a misleading placeholder block.
                                 crate::codec::ir::IrBlock::Thinking { .. } => {
-                                    tracing::warn!(
-                                        "dropping non-representable Thinking block inside a Bedrock toolResult"
-                                    );
+                                    crate::codec::drops::writer_drop!(
+                                        crate::codec::drops::THINKING,
+                                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                        [],
+                                        "dropping non-representable Thinking block inside a Bedrock toolResult");
                                 }
                                 // Converse's `ToolResultContentBlock` union is
                                 // {json, text, image, document, video} — the SAME document/video
@@ -1051,11 +1070,12 @@ impl BedrockWriter {
                             )
                         );
                         if foreign && signature.is_some() {
-                            tracing::warn!(
-                                origin = ?signature_origin,
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::THINKING,
+                                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                [origin = ?signature_origin, ],
                                 "dropping a reasoning signature on Bedrock egress: another model \
-                                 family minted it"
-                            );
+                                 family minted it");
                         }
                         let signature = if foreign { &None } else { signature };
                         content_arr.push(bedrock_reasoning_block(text, signature, *redacted));
@@ -1205,7 +1225,10 @@ impl BedrockWriter {
             // A lane whose Claude model cannot switch thinking off (`LaneCaps::thinking_always_on`)
             // rejects `{type:"disabled"}`: omitted with a warn.
             Some(crate::codec::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::REASONING,
+                    &crate::codec::diagnostics::IR_DROP_REASONING,
+                    [],
                     "omitting reasoning OFF on Bedrock egress: this lane's model cannot switch \
                      thinking off (thinking_always_on) and rejects thinking.type \"disabled\""
                 );
@@ -1229,22 +1252,22 @@ impl BedrockWriter {
                 let budget = cap.map_or(want, |c| want.min(c));
                 if budget >= 1024 {
                     if budget != want {
-                        tracing::warn!(
-                            requested_budget = want,
-                            clamped_budget = budget,
-                            max_tokens = ?req.max_tokens,
-                            "thinking budget clamped to fit under maxTokens on Bedrock egress"
-                        );
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::REASONING,
+                            &crate::codec::diagnostics::IR_DROP_REASONING,
+                            [requested_budget = want, clamped_budget = budget, max_tokens = ?req.max_tokens, ],
+                            "thinking budget clamped to fit under maxTokens on Bedrock egress");
                     }
                     thinking = Some(
                         serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
                     );
                 } else {
-                    tracing::warn!(
-                        max_tokens = ?req.max_tokens,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::REASONING,
+                        &crate::codec::diagnostics::IR_DROP_REASONING,
+                        [max_tokens = ?req.max_tokens, ],
                         "dropping reasoning ask on Bedrock egress: maxTokens leaves no room for the \
-                         1024-token thinking minimum"
-                    );
+                         1024-token thinking minimum");
                 }
             }
         }
@@ -1322,16 +1345,20 @@ impl BedrockWriter {
                     output_config.entry(super::TEXT_FORMAT).or_insert(tf);
                 }
                 Some(_) => {
-                    tracing::warn!(
-                        parameter = keys::RESPONSE_FORMAT,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::RESPONSE_FORMAT,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [parameter = keys::RESPONSE_FORMAT,],
                         "dropping response_format on Bedrock egress: the lane does not declare \
                          native structured outputs (`native_structured_output`), and Converse \
                          rejects `outputConfig.textFormat` on a model without them"
                     );
                 }
                 None => {
-                    tracing::warn!(
-                        parameter = keys::RESPONSE_FORMAT,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::RESPONSE_FORMAT,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [parameter = keys::RESPONSE_FORMAT,],
                         "dropping response_format on Bedrock egress: Converse's \
                          `outputConfig.textFormat` models only a JSON schema, and this directive \
                          carries none (schema-less JSON mode or plain text)"
@@ -1443,10 +1470,12 @@ impl BedrockWriter {
                                     | crate::codec::ir::IrToolChoice::Tool { .. }
                             ) =>
                     {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::TOOL_CHOICE,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "downgrading forced/targeted toolChoice to auto on Bedrock egress: not \
-                             compatible with thinking"
-                        );
+                             compatible with thinking");
                         tool_config.insert(
                             super::TOOL_CHOICE_CAMEL.to_string(),
                             serde_json::json!({(keys::AUTO): {}}),
@@ -1459,15 +1488,20 @@ impl BedrockWriter {
                     // so it degrades to omitting `toolChoice` (the backend applies its own default,
                     // which may still call a tool). Previously SILENT; warn so it is observable.
                     None => {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::TOOL_CHOICE,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "dropping tool_choice=None: Bedrock Converse has no 'do not call a tool' \
-                             directive, so toolChoice is omitted and the backend may still call a tool"
-                        );
+                             directive, so toolChoice is omitted and the backend may still call a tool");
                     }
                 }
             }
         } else if req.tool_choice.is_some() {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::TOOL_CHOICE,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping tool_choice with no accompanying tools: Bedrock Converse rejects a \
                  toolConfig whose toolChoice has no tools array, so it is omitted"
             );
@@ -1484,7 +1518,10 @@ impl BedrockWriter {
         // Egress: Bedrock Converse models no parallelism control. `is_some()` gates this
         // to requests that actually carried the flag (owner decision 4: no per-request noise).
         if req.parallel_tool_calls.is_some() {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::PARALLEL_TOOL_CALLS,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping parallel_tool_calls on Bedrock egress: Converse has no parallelism \
                  control, so the backend's default parallelism applies"
             );
@@ -1524,7 +1561,12 @@ impl BedrockWriter {
         }
         if let Some(top_k) = req.top_k.filter(|_| {
             if thinking_emitted {
-                tracing::warn!("omitting top_k on Bedrock egress: not compatible with thinking");
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TOP_K,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
+                    "omitting top_k on Bedrock egress: not compatible with thinking"
+                );
             }
             !thinking_emitted
         }) {

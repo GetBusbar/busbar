@@ -284,11 +284,13 @@ impl ProtocolWriter for AnthropicWriter {
             // `tools == []` and `tool_choice` still set. Drop with a warn rather than a guaranteed
             // 400 — this is the SAME guard the parallelism carry just below already applies.
             if !out.contains_key(keys::TOOLS) {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TOOL_CHOICE,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping tool_choice on Anthropic egress: Anthropic rejects a tool_choice with \
                      no tools array (likely because the hosted tools that carried it were stripped \
-                     on the cross-protocol seam)"
-                );
+                     on the cross-protocol seam)");
             } else {
                 let mut tc_val = write_anthropic_tool_choice(tc);
                 if let (Some(parallel), Some(map)) =
@@ -355,12 +357,13 @@ impl ProtocolWriter for AnthropicWriter {
                         );
                     }
                     None => {
-                        tracing::warn!(
-                            parameter = keys::RESPONSE_FORMAT,
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::RESPONSE_FORMAT,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [parameter = keys::RESPONSE_FORMAT, ],
                             "dropping schema-less JSON mode on Anthropic egress: structured outputs \
                              require a JSON schema and the Messages API has no schema-less JSON mode \
-                             (lossy-by-target)"
-                        );
+                             (lossy-by-target)");
                     }
                 }
             }
@@ -444,7 +447,10 @@ impl ProtocolWriter for AnthropicWriter {
             // rejects `{type:"disabled"}`: the ask is omitted with a warn and the
             // model thinks at its default.
             Some(crate::codec::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::REASONING,
+                    &crate::codec::diagnostics::IR_DROP_REASONING,
+                    [],
                     "omitting reasoning OFF on Anthropic egress: this lane's model cannot switch \
                      thinking off (thinking_always_on) and rejects thinking.type \"disabled\""
                 );
@@ -495,12 +501,11 @@ impl ProtocolWriter for AnthropicWriter {
                 let budget = cap.map_or(want, |c| want.min(c));
                 if budget >= 1024 {
                     if budget != want {
-                        tracing::warn!(
-                            requested_budget = want,
-                            clamped_budget = budget,
-                            max_tokens = ?req.max_tokens,
-                            "thinking budget clamped to fit under max_tokens"
-                        );
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::REASONING,
+                            &crate::codec::diagnostics::IR_DROP_REASONING,
+                            [requested_budget = want, clamped_budget = budget, max_tokens = ?req.max_tokens, ],
+                            "thinking budget clamped to fit under max_tokens");
                     }
                     out.insert(
                         keys::THINKING.to_string(),
@@ -508,11 +513,12 @@ impl ProtocolWriter for AnthropicWriter {
                     );
                     thinking_emitted = true;
                 } else {
-                    tracing::warn!(
-                        max_tokens = ?req.max_tokens,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::REASONING,
+                        &crate::codec::diagnostics::IR_DROP_REASONING,
+                        [max_tokens = ?req.max_tokens, ],
                         "dropping reasoning ask on Anthropic egress: max_tokens leaves no room for \
-                         the 1024-token thinking minimum"
-                    );
+                         the 1024-token thinking minimum");
                 }
             }
             None => {}
@@ -535,11 +541,12 @@ impl ProtocolWriter for AnthropicWriter {
             {
                 let ty = tc.get(keys::TYPE).and_then(|t| t.as_str());
                 if ty == Some(keys::ANY) || ty == Some(keys::TOOL) {
-                    tracing::warn!(
-                        tool_choice = ?ty,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::TOOL_CHOICE,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [tool_choice = ?ty, ],
                         "downgrading forced/targeted tool_choice to 'auto' on Anthropic egress: \
-                         not compatible with thinking"
-                    );
+                         not compatible with thinking");
                     tc.insert(keys::TYPE.to_string(), serde_json::json!(keys::AUTO));
                     tc.remove(keys::NAME); // `name` is only valid on `{type:"tool"}`
                 }
@@ -1034,7 +1041,10 @@ impl ProtocolWriter for AnthropicWriter {
             .filter_map(|block| match block {
                 crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. } => {
-                    tracing::warn!(
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::IMAGE,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [],
                         "dropping image/attachment output block on Anthropic response egress: an \
                          Anthropic assistant message has no image or document response block"
                     );

@@ -226,6 +226,12 @@ pub trait ProtocolReader: Send + Sync {
     fn stream_keyed_by_event(&self) -> bool {
         false
     }
+
+    /// How the dialect spells each IR content-block kind (`("image", "type=image_url")`), for a
+    /// dropped block's warn.
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
 }
 
 pub trait ProtocolWriter: Send + Sync {

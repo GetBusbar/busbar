@@ -1485,6 +1485,10 @@ impl ProtocolReader for BedrockReader {
     fn stream_keyed_by_event(&self) -> bool {
         true
     }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
 }
 
 #[cfg(test)]

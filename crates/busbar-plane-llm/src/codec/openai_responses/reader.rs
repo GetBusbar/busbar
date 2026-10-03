@@ -1877,6 +1877,10 @@ impl ProtocolReader for ResponsesReader {
             drops: super::STREAM_DROPS,
         })
     }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
 }
 
 /// Synthesize a deterministic, non-empty `call_…` tool-call id for a RESPONSE function-call whose

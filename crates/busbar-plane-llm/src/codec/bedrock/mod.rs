@@ -575,6 +575,17 @@ const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
 ];
 
 /// The Converse answer content grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    (crate::codec::drops::kind::TEXT, keys::TEXT),
+    (crate::codec::drops::kind::IMAGE, keys::IMAGE),
+    (crate::codec::drops::kind::DOCUMENT, keys::DOCUMENT),
+    (crate::codec::drops::kind::VIDEO, VIDEO),
+    (crate::codec::drops::kind::THINKING, REASONING_CONTENT),
+    (crate::codec::drops::kind::TOOL_USE, TOOL_USE_CAMEL),
+    (crate::codec::drops::kind::TOOL_RESULT, TOOL_RESULT),
+];
+
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
     at: &["output", "message", "content[]"],
     tag: None,
@@ -788,7 +799,10 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
         // corrupt the block. Drop with a warn.
         crate::codec::ir::IrImageSource::Url(_)
         | crate::codec::ir::IrImageSource::Vendor { .. } => {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::IMAGE,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping image with no Bedrock Converse projection (URL or foreign vendor ref)"
             );
             None
@@ -1029,7 +1043,10 @@ fn bedrock_media_content_block(
         }
         crate::codec::ir::IrMediaKind::Video => (VIDEO, bedrock_video_format(source)?),
         crate::codec::ir::IrMediaKind::Audio => {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::AUDIO,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping audio attachment on Bedrock egress: Converse has `document` and `video` \
                  content blocks and NO audio block, so there is no native slot; the block is NOT \
                  emitted"
@@ -1046,8 +1063,10 @@ fn bedrock_media_content_block(
         }
         crate::codec::ir::IrImageSource::Url(_)
         | crate::codec::ir::IrImageSource::Vendor { .. } => {
-            tracing::warn!(
-                media_kind = kind.as_str(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::block(kind.as_str()),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [media_kind = kind.as_str(),],
                 "dropping attachment on Bedrock egress: Converse has no arbitrary-URL source and \
                  cannot resolve a foreign vendor file handle; the block is NOT emitted"
             );
@@ -1081,8 +1100,10 @@ fn bedrock_media_content_block(
             );
         }
     } else if citations.is_some() || context.is_some() {
-        tracing::warn!(
-            media_kind = kind.as_str(),
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::DOCUMENT,
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [media_kind = kind.as_str(),],
             "dropping attachment citations/context on Bedrock egress: Converse carries them on a \
              document block only"
         );
@@ -1109,12 +1130,13 @@ fn bedrock_document_format(source: &crate::codec::ir::IrImageSource) -> Option<&
         APPLICATION_VND_MS_EXCEL => XLS,
         APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_SPREADSHEETML_SHEET => XLSX,
         other => {
-            tracing::warn!(
-                media_type = %other,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::DOCUMENT,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [media_type = %other, ],
                 "dropping document attachment on Bedrock egress: the mime type is not a member of \
                  Converse's DocumentFormat union {{pdf,csv,doc,docx,xls,xlsx,html,txt,md}} and AWS \
-                 rejects anything else; the block is NOT emitted"
-            );
+                 rejects anything else; the block is NOT emitted");
             return None;
         }
     };
@@ -1140,11 +1162,12 @@ fn bedrock_video_format(source: &crate::codec::ir::IrImageSource) -> Option<&'st
         Some("x-matroska") | Some(MKV) => MKV,
         Some("3gpp") => THREE_GP,
         _ => {
-            tracing::warn!(
-                media_type = %media_type,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::VIDEO,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [media_type = %media_type, ],
                 "dropping video attachment on Bedrock egress: the mime type is not a member of \
-                 Converse's VideoFormat union; the block is NOT emitted"
-            );
+                 Converse's VideoFormat union; the block is NOT emitted");
             return None;
         }
     };
@@ -1697,19 +1720,21 @@ fn write_bedrock_request_metadata(pairs: &[(String, String)]) -> Option<serde_js
     let mut out = serde_json::Map::new();
     for (k, v) in pairs {
         if !bedrock_request_metadata_fits(k, 1) || !bedrock_request_metadata_fits(v, 0) {
-            tracing::warn!(
-                key = %k,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::METADATA,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [key = %k, ],
                 "dropping a metadata entry on Bedrock egress: Converse requestMetadata keys and \
-                 values are at most 256 characters of [a-zA-Z0-9 whitespace :_@$#=/+,-.]"
-            );
+                 values are at most 256 characters of [a-zA-Z0-9 whitespace :_@$#=/+,-.]");
             continue;
         }
         if out.len() == REQUEST_METADATA_MAX_ENTRIES && !out.contains_key(k) {
-            tracing::warn!(
-                key = %k,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::METADATA,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [key = %k, ],
                 "dropping a metadata entry on Bedrock egress: Converse requestMetadata holds at \
-                 most 16 entries"
-            );
+                 most 16 entries");
             continue;
         }
         out.insert(k.clone(), serde_json::json!(v));

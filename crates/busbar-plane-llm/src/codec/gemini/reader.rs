@@ -1618,6 +1618,10 @@ impl ProtocolReader for GeminiReader {
             drops: super::RESPONSE_DROPS,
         })
     }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
 }
 
 #[cfg(test)]

@@ -220,7 +220,10 @@ pub(super) fn write_hosted_tool(
                 );
             }
             if search.max_uses.is_some() || !search.blocked_domains.is_empty() {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TOOLS,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "responses writer: the web_search tool models no `max_uses` / \
                      `blocked_domains`; dropping them and keeping the tool (lossy-by-target)"
                 );
@@ -232,8 +235,10 @@ pub(super) fn write_hosted_tool(
             (keys::CONTAINER): { (keys::TYPE): keys::AUTO }
         })),
         crate::codec::ir::IrHostedTool::WebFetch(_) => {
-            tracing::warn!(
-                hosted_tool = tool.kind_str(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::TOOLS,
+                &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+                [hosted_tool = tool.kind_str(),],
                 "responses writer: /v1/responses has no hosted URL-fetch tool; dropping it \
                  (lossy-by-target)"
             );

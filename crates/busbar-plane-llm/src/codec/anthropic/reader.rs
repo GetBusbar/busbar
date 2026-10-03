@@ -219,6 +219,10 @@ impl ProtocolReader for AnthropicReader {
         })
     }
 
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
     /// IR-18: a `signature_delta` on the Anthropic wire is Claude's.
     fn stream_signature_origin(
         &self,

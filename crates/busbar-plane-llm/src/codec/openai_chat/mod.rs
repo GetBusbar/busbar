@@ -736,9 +736,10 @@ fn media_part_from_ir(
                     (keys::INPUT_AUDIO): { (keys::DATA): data, (keys::FORMAT): format }
                 })),
                 None => {
-                    tracing::warn!(
-                        media_kind = AUDIO,
-                        mime = media_type.as_str(),
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::AUDIO,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [media_kind = AUDIO, mime = media_type.as_str(),],
                         "dropping audio attachment on OpenAI Chat egress: input_audio.format is a \
                          closed {{wav, mp3}} enum and this mime maps to neither; the block is NOT \
                          emitted (deliberately absent, not an invalid format the API would 400 on)"
@@ -770,13 +771,14 @@ fn media_part_from_ir(
             Some(serde_json::json!({ (keys::TYPE): FILE, (FILE): serde_json::Value::Object(file) }))
         }
         _ => {
-            tracing::warn!(
-                media_kind = kind.as_str(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::block(kind.as_str()),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [media_kind = kind.as_str(), ],
                 "dropping attachment on OpenAI Chat egress: this dialect has content parts for \
                  inline audio (`input_audio`) and files (`file`) only — a video block, or an \
                  attachment carried as a bare URL or a foreign vendor handle, has no part to go in. \
-                 The block is NOT emitted (it is deliberately absent, not replaced by empty text)"
-            );
+                 The block is NOT emitted (it is deliberately absent, not replaced by empty text)");
             None
         }
     }
@@ -821,6 +823,16 @@ const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Bl
 }];
 
 /// The Chat answer content-part grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    (crate::codec::drops::kind::TEXT, "type=text"),
+    (crate::codec::drops::kind::IMAGE, "type=image_url"),
+    (crate::codec::drops::kind::DOCUMENT, "type=file"),
+    (crate::codec::drops::kind::AUDIO, "type=input_audio"),
+    (crate::codec::drops::kind::TOOL_USE, "tool_calls[]"),
+    (crate::codec::drops::kind::TOOL_RESULT, "role=tool"),
+];
+
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
     at: &["choices[]", "message", "content[]"],
     tag: Some(keys::TYPE),
