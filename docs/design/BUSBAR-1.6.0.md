@@ -618,8 +618,8 @@ loopback, link-local and cloud-metadata addresses after resolution (resolve and 
 pinned address), and an allowlist of hosts and CIDRs is always allowed. Every scattered check
 (`net_guard`, the SSRF helpers, per-plugin checks) is deleted in favour of it. The default-true change
 from 1.5.5 is signed off (a provider or IdP on an internal DNS name is now refused unless allowlisted);
-the allowlist is the escape hatch. This subsumes the class rows above wherever they allow a private
-address: such a target is reached through the allowlist. QUESTIONS Q130, Q131.
+the allowlist is the escape hatch. ~~This subsumes the class rows above wherever they allow a private
+address: such a target is reached through the allowlist.~~ ARCHITECT ruling (via DEV-COMPLETE), CRATES-14: the `operator-infrastructure` class (databases, vault, ldap) is governed by the §5 egress-class table (owner 2026-09-27): private, loopback and plaintext allowed; pinned; cloud metadata hosts refused. The 'refused unless allowlisted' default applies to the provider and IdP egress classes only. QUESTIONS Q130, Q131.
 
 **`/metrics` is not in core.** `/metrics` and `/metrics/hooks` are listener needs of the prometheus
 export plugin, fed by a kind-neutral snapshot service. The path, the 503 boot window, the
