@@ -2141,12 +2141,13 @@ mod plugin_proof_tests;
 #[path = "tests/auth_conformance_tests.rs"]
 mod auth_conformance_tests;
 
-/// `kind: auth` through both doors on the memory ABI, VERIFY VERDICTS: the token cases driven to
-/// every verdict (identify, reject, pass) over a second real auth plugin, one row and one answer
-/// either way.
+/// THE AUTH KIND'S CONFORMANCE SUITE (TODO ABI-b4): both operations — inbound verify and outbound
+/// sign — each over the real plugin that serves it, linked and dropped in through the same table,
+/// compared on the transcript, the envelope and the exact crossings, with a divergent door as the
+/// RED arm of each comparison.
 #[cfg(test)]
-#[path = "tests/auth_verify_conformance_tests.rs"]
-mod auth_verify_conformance_tests;
+#[path = "tests/auth_door_conformance_tests.rs"]
+mod auth_door_conformance_tests;
 
 /// The dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
 /// arm per mechanism rule.

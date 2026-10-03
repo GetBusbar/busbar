@@ -1431,6 +1431,16 @@ why     = "busbar-plugin-loader names busbar-store-memory: declared dev in the t
 drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `store` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-auth-header"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5), and TODO ABI-b4 (one conformance suite per kind, the shipped compiled-in build and the dropped-in build through the same table). ARCHITECT 2026-09-25 (K5 residue): \"the export precedent's admission applies to every kind's fixture\"; qa/kind-isolation.toml gets a [[dep]] row per fixture citing #2 steps (4)/(5). The fixture is the crate plugin-loader's own [package.metadata.busbar.both-ways] names for `auth-sign`: the auth kind's SIGN operation (DECISIONS #3: verify and the outbound per-request fields are two operations of one kind), whose only serving plugins are staged in-tree. `plugin-tooling -> auth` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar-plugin-loader names busbar-auth-header: declared dev in the test graph so auth_door_conformance_tests can link the COMPILED-IN sign proof (its rlib's `door`) and compare it against the same door DROPPED IN (the `auth_sign_door` example cdylib), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the plugin's extraction to its own repo (KERNEL<>PLUGINS step 40) turns this into a pinned git dev-dependency like the verify row's; until then none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the auth kind's sign proof."
+
+[[dep]]
 from    = "busbar-core-admin"
 to      = "busbar-contract"
 half    = "shipped"

@@ -102,6 +102,15 @@ name = "store_broken_door"
 path = "tests/fixtures/store_broken_door.rs"
 crate-type = ["cdylib"]
 
+# THE AUTH KIND'S SIGN PROOF, DROPPED IN (`auth_door_conformance_tests`, TODO ABI-b4): the `auth-sign`
+# both-ways row's `door` behind the plugin shape's one `export_door!` line, written by `build.rs`
+# from that row so no source here names the plugin. An example, not a crate: `cargo test` builds it
+# and it never ships.
+[[example]]
+name = "auth_sign_door"
+path = "tests/fixtures/auth_sign_door.rs"
+crate-type = ["cdylib"]
+
 # THE NEUTRAL FRAME DOOR: a transport door that frames the host's socket (an identity framer under a
 # neutral claim, `frame`), for every test that needs a socket-framing door beside its binary: this
 # crate's `transport_door_tests`, the connector's `universal_needs` and the root's registry fold.
@@ -217,8 +226,17 @@ busbar-auth-oidc-plugin = { workspace = true }
 # offline); this one runs the token cases to every verdict — the accepted token IDENTIFIES, a wrong
 # one is REJECTED, another scheme's token and no credential PASS — on both doors, on the auth kind's
 # memory ABI (ARCHITECT 2026-09-30, AUTH-DOOR Q1): its `rlib`'s `door::door` is the linked door, its
-# cdylib (built under `deps/`, hashed) the dropped-in one.
+# cdylib (built under `deps/`, hashed) the dropped-in one. `auth_door_conformance_tests` drives its
+# VERIFY operation, the auth kind's inbound half (TODO ABI-b4).
 busbar-auth-admin-tokens-plugin = { workspace = true }
+# The `kind: auth` SIGN both-ways proof (the `auth-sign` row below), the auth kind's outbound half
+# (DECISIONS #3: inbound verify and the outbound per-request fields are two OPERATIONS of one kind;
+# TODO ABI-b4): the in-tree outbound-styles plugin, staged here until its extraction (no plugin
+# serves both operations). Its `rlib`'s `door` is the linked door; its dropped-in door is the
+# `auth_sign_door` example below — the same `door` behind the one exported symbol, since the crate
+# exports that symbol only under a feature this test build must not turn on (the linked fixtures
+# here define it too).
+busbar-auth-header = { path = "../busbar-auth-header" }
 # The libraries the plugin-logging witness logs through from inside a call (`log_witness_plugin`).
 h2 = { workspace = true }
 log = { workspace = true }
@@ -263,6 +281,7 @@ auth = "busbar-auth-oidc-plugin"
 # A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the
 # test reaches the row by that whole key (`both_doors_of`), never by the plugin's name.
 auth-verify = "busbar-auth-admin-tokens-plugin"
+auth-sign = "busbar-auth-header"
 # A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
 # emits only its crate alias and its cdylib name for this row. It is also the one wire crate this
 # crate may take a (dev) edge on — kind-isolation's transport-registration rule reads this row.

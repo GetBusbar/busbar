@@ -845,7 +845,7 @@ run_phase_b() {
         ;;
       admin-tokens)
         # Declared `none`: an admin_auth: module, never an /auth/token issuer. Its verdicts are proven
-        # both ways by busbar-plugin-loader's auth_verify_conformance_tests and its repo's conformance.
+        # both ways by busbar-plugin-loader's auth_door_conformance_tests and its repo's conformance.
         note "'${P_ALIAS}' declares no /auth/token direction (admin_auth: only) — nothing to exchange."
         ;;
       *)
