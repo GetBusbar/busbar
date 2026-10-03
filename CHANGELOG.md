@@ -543,11 +543,6 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   said); 1.5.5 passed the request through.
 - 1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a
   message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).
-- A hook that wedged is no longer lost until restart: it is quarantined, backed off from 1 s doubling
-  to 30 s, and then given one trial call on a fresh instance, and a successful trial returns it to
-  service. 1.5.5 had no quarantine to exit.
-- When the auth verifier is overloaded, a request is answered `503` rather than queued without bound;
-  1.5.5 had no such shed.
 
 ### Deprecated env vars still honoured
 
