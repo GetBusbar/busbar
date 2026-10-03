@@ -539,6 +539,9 @@ impl RateCard {
     /// named cell has no PRESENT card to land on — the flat card or the plane's own card is absent
     /// (billing off, #42) — or names no lane: a correction cannot switch a plane's billing on, which
     /// would turn every unit it serves into a refusal for the classes the correction is silent about.
+    ///
+    /// A corrected cell is priced, so it leaves [`Self::refused_cells`] of the card it lands on;
+    /// every refused cell the correction does not name stays listed.
     pub fn corrected(
         &self,
         cells: impl IntoIterator<Item = (LaneClass, u64)>,
@@ -560,6 +563,10 @@ impl RateCard {
             if !target.present {
                 return None;
             }
+            // A corrected cell is priced now, so it is no longer one the configuration refused.
+            target
+                .refused
+                .retain(|r| !(r.lane == lane && r.class == cell.class));
             target
                 .prices
                 .entry(lane.to_string())
@@ -642,9 +649,10 @@ impl RateCard {
         }
     }
 
-    /// The one placement of a configured rate into a cell, used by the constructor alone: a card is
-    /// built whole and has no mutator, so no second path can move a price after it is resolved
-    /// (#66: no second denomination a rate could be derived through).
+    /// The one placement of a configured rate into a cell, used by the constructor alone. A card is
+    /// built whole; the one other path that sets a cell is [`Self::corrected`], which builds a NEW
+    /// card from a signed correction's integer rates (#79) and never touches a card in force (#66:
+    /// no second denomination a rate could be derived through).
     ///
     /// A value the card cannot represent leaves the cell UNPRICED (and records it in
     /// [`Self::refused_cells`]) — it never sets a zero the operator did not configure (item 22).
@@ -684,8 +692,8 @@ impl RateCard {
     /// pass every guard, and then have the missing entry read as zero. That is silent under-billing — fail-open, the one outcome this module refuses
     /// everywhere else (#42 `BUSBAR-1.6.0.md:367`: *"a hit class not priced ⇒ REFUSE (money-sacred,
     /// never a silent 0)"*). #66 removed the second axis, so the hole is GONE rather than guarded:
-    /// every constructor takes the fee by value, nothing replaces it afterwards, and there is no
-    /// key that could be absent. A fee CONFIGURED at nothing is #77(5)'s (`:420`) explicit zero row —
+    /// every constructor takes the fee by value, only a signed correction ([`Self::corrected`]) names a
+    /// new one on a new card, and there is no key that could be absent. A fee CONFIGURED at nothing is #77(5)'s (`:420`) explicit zero row —
     /// legitimately free, and distinguishable from a silence because a silence can no longer exist.
     ///
     /// THE SPELLING THAT DEFAULTED IS STILL GONE. `per_request_fee(&self)` used to answer

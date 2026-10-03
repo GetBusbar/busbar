@@ -396,7 +396,7 @@ impl RootHistory {
             return None;
         };
         let held = std::mem::take(held);
-        let refused: Vec<CorrectionRefused> = Vec::new();
+        let mut refused: Vec<CorrectionRefused> = Vec::new();
         let mut opening: Option<CardEntryDraft> = None;
         let mut rest: Vec<JournalledCard> = Vec::new();
         let mut newest: Option<CardForm> = None;
@@ -443,16 +443,21 @@ impl RootHistory {
                 JournalledCard::Applied(applied) => applied.draft(),
                 JournalledCard::Amended(draft) => draft,
                 // The correction over the history as it stood when it was sealed — the same prefix
-                // the live append resolved it against.
-                JournalledCard::Corrected(correction, _sealed_over) => {
-                    match correction.draft_over(history.current()) {
-                        Some((_, draft)) => draft,
-                        None => {
-                            tracing::error!(
-                                effective_from = correction.effective_from,
-                                "a journalled rate correction has no single card in force for its \
-                                 window on the rebuilt history; it is not applied"
-                            );
+                // the live append resolved it against, checked against the entry it names. A
+                // prefix that does not hold that entry refuses it, by name (#79).
+                JournalledCard::Corrected(correction, sealed_over) => {
+                    match correction.rebuild_over(history.current(), sealed_over) {
+                        Ok(draft) => draft,
+                        Err(cause) => {
+                            let finding = CorrectionRefused {
+                                effective_from: correction.effective_from,
+                                effective_until: correction.effective_until,
+                                appended_at: correction.appended_at,
+                                sealed_over,
+                                cause,
+                            };
+                            tracing::error!("{finding}");
+                            refused.push(finding);
                             continue;
                         }
                     }
@@ -1083,6 +1088,37 @@ impl Correction {
                 author: self.author.clone(),
             },
         ))
+    }
+
+    /// **A JOURNALLED CORRECTION, REBUILT AT A RESTART** (#79): the entry [`Self::draft_over`]
+    /// appends over `view`, ONLY where `view` holds the entry the correction was sealed over —
+    /// the entry numbered `sealed_over.seq`, the one card pricing the whole window, holding the card
+    /// whose digest the record carries. Anything else is the [`BaseMismatch`] that names it, and
+    /// nothing is rebuilt over a card no operator signed.
+    ///
+    /// # Errors
+    ///
+    /// The first way `view` fails `sealed_over`, in the order [`BaseMismatch`] lists them.
+    pub fn rebuild_over(
+        &self,
+        view: busbar_kernel_ledger::cost::HistoryView<'_>,
+        sealed_over: CorrectionBase,
+    ) -> Result<busbar_kernel_ledger::cost::CardEntryDraft, BaseMismatch> {
+        let held = u64::try_from(view.entries().len()).unwrap_or(u64::MAX);
+        if held <= sealed_over.seq.get() {
+            return Err(BaseMismatch::MissingBase);
+        }
+        let base = view
+            .sole_entry_over(self.effective_from, self.effective_until)
+            .ok_or(BaseMismatch::OtherBase(None))?;
+        if base.seq() != sealed_over.seq {
+            return Err(BaseMismatch::OtherBase(Some(base.seq())));
+        }
+        if base.card().digest() != sealed_over.card_digest {
+            return Err(BaseMismatch::BaseDigest);
+        }
+        let (_, draft) = self.draft_over(view).ok_or(BaseMismatch::NoCardForCells)?;
+        Ok(draft)
     }
 }
 
