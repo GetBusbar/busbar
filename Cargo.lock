@@ -950,6 +950,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin-example-plane",
  "busbar-store-memory",
+ "busbar-transport-tcp",
  "busbar-transport-tcp-plugin",
  "ed25519-dalek",
  "flate2",

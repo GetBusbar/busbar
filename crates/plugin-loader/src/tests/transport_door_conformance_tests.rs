@@ -37,12 +37,13 @@ use busbar_contract::abi::transport::{
 };
 
 use super::door_both_ways::{self as both, close, input, line, octets, open, output, same};
-use crate::both_ways::{cdylib, transport_fixture};
+use crate::both_ways::cdylib;
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::transport::{Transport, TransportFacts};
 use crate::dispatch::{
     load_dropped, load_linked, Frame, InFrame, LinkedRow, LoadError, OutFrame, Plugin,
 };
+use busbar_transport_tcp::linked as tcp;
 use std::sync::atomic::Ordering;
 
 /// The shipped plugin's cdylib crate, by its Cargo name.
@@ -383,7 +384,7 @@ fn exact(who: &str, r: &Run<'_>, counted: u64, expected: u64) -> Result<(), Stri
 
 #[test]
 fn a_linked_and_a_dropped_in_tcp_door_frame_identically() {
-    let door = transport_fixture::linked::door;
+    let door = tcp::door;
     let linked = both::linked::<Transport>(door);
     let path = cdylib(CDYLIB).unwrap_or_else(|| {
         panic!("the {CDYLIB} cdylib is not built: this is the dropped-in door's proof")
@@ -393,10 +394,7 @@ fn a_linked_and_a_dropped_in_tcp_door_frame_identically() {
     // The Statement each leg's registry view reads: the same claims, the same role.
     let facts = |p: &Plugin<Transport>| p.context::<TransportFacts>().cloned().expect("its tail");
     assert_eq!(facts(&linked.plugin), facts(&dropped.plugin));
-    assert_eq!(
-        facts(&linked.plugin).claims,
-        [transport_fixture::linked::KEY]
-    );
+    assert_eq!(facts(&linked.plugin).claims, [tcp::KEY]);
     assert_eq!(linked.plugin.name(), dropped.plugin.name());
 
     let a = script(&linked.plugin);
@@ -463,7 +461,7 @@ fn a_linked_and_a_dropped_in_tcp_door_frame_identically() {
 /// is refused with the number it saw.
 #[test]
 fn a_miscount_is_seen() {
-    let linked = both::linked::<Transport>(transport_fixture::linked::door);
+    let linked = both::linked::<Transport>(tcp::door);
     let r = script(&linked.plugin);
     let counted = crossings(&linked.plugin);
     assert_eq!(counted, CROSSINGS);
@@ -498,7 +496,7 @@ fn a_miscount_is_seen() {
 /// door's own kind) and dropped in (by the stated kind, before the library is opened).
 #[test]
 fn the_tcp_door_asked_for_as_another_kind_is_refused_both_ways() {
-    let door = transport_fixture::linked::door;
+    let door = tcp::door;
     let want = (KindCode::Transport, KindCode::Hook);
     let row = LinkedRow::of(door).expect("the door states itself");
     let linked = both::linked::<Transport>(door);
