@@ -13,20 +13,31 @@
 //!   resolver answers a public and an internal address together and lets the connect pick).
 //!   The caller then dials exactly an address judged here (resolve, pin, dial the pin).
 //!
-//! Per address, in order: the allowlist (`advanced.allow_destinations`, and the 1.5.5 carve-outs
-//! that still load) admits; then the extra refusals (`security.blocked_metadata_hosts`); then cloud
-//! metadata is refused, whatever `block_private_addresses` says; then, where
-//! `block_private_addresses` holds and the destination came from request data or the network
-//! ([`PRIVATE_REFUSED_IN`]; a destination the operator configured is trusted, owner Q7), every
-//! private address (`busbar_contract::net::ip_is_internal`: RFC 1918, loopback, link-local, CGNAT,
+//! Per address, in order: the allowlist (`advanced.allow_destinations`) admits; in the provider
+//! class only, the 1.5.5 metadata carve-outs admit (below); then the extra refusals
+//! (`security.blocked_metadata_hosts`); then cloud metadata is refused, whatever
+//! `block_private_addresses` says; then, where `block_private_addresses` holds and the dial's class
+//! refuses private addresses ([`PRIVATE_REFUSED_IN`]: the provider class, and a destination from
+//! request data or the network), every private address (`busbar_contract::net::ip_is_internal`: RFC 1918, loopback, link-local, CGNAT,
 //! unique-local, unspecified and the rest of that list).
 //! A HOST allowlist entry never admits a metadata answer (owner Q8): it is how internal DNS is
 //! admitted, and it must not become a way to reach IMDS by a rebinding answer. An IP or CIDR entry
 //! that covers a metadata address does admit it, because it names it.
 //!
+//! THE 1.5.5 CARVE-OUTS (ARCHITECT ruling on #413, DEST-GUARD) speak for provider dials only, as
+//! they did in 1.5.5, where they were read for a provider's own URLs and nowhere else: a provider's
+//! `allow_metadata_hosts` admits only for a host that provider's own URLs name (`base_url`,
+//! `token_url`), `security.allow_metadata_hosts` and `security.allow_all_metadata` for any provider
+//! dial. No other class (the default class, open-web, loopback-allowed, operator infrastructure)
+//! admits metadata through any carve-out; operator infrastructure refuses it whatever they say.
+//! The carve-outs and the extra refusals are re-read at every config commit
+//! ([`Guard::publish`]); the allowlist and `block_private_addresses` are fixed at boot.
+//!
 //! The ranges and names are `busbar_contract::net`'s, read only here.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use busbar_contract::abi::host::conn::connector;
 use busbar_contract::abi::host::service::{
@@ -38,23 +49,38 @@ use busbar_contract::net::{
 };
 use busbar_kernel::config::Destinations;
 
-/// THE DEFAULT POLICY, ONE TABLE (OWNER ruling Q7, 2026-10-02: operator infrastructure EXEMPT):
-/// the egress classes whose dials the private address refusal holds for. A destination the
-/// operator writes into config is trusted (every configured URL and plugin connection: the
-/// `provider` and `operator-infrastructure` classes, a
-/// `loopback-allowed` need, and any need whose target its config names, see
-/// [`crate::Connector`]); the refusal holds for destinations that come from request data or the
-/// network (a caller- or plane-named target: the default class, `open-web`). Cloud metadata is
+/// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
+/// for (where `block_private_addresses` holds; the allowlist is the escape hatch).
+///
+/// - `provider` (THE DESIGN §5 destination guard, OWNER DESTINATION GUARD and Q130 (B), scoped by
+///   the ARCHITECT ruling CRATES-14: "the 'refused unless allowlisted' default applies to the
+///   provider and IdP egress classes only"): a provider dial, its configured `base_url` included, is
+///   refused a private or loopback address unless `advanced.allow_destinations` names it.
+/// - the default class and `open-web`: a destination from request data or the network.
+///
+/// Not here: `operator-infrastructure` (THE DESIGN §5 egress-class table, owner 2026-09-27:
+/// private, loopback and plaintext allowed; pinned) and `loopback-allowed`. Cloud metadata is
 /// refused in every class whatever this table says, a configured NAME rebinding to it included,
-/// unless an IP/CIDR allowlist entry names it.
-pub const PRIVATE_REFUSED_IN: &[u32] = &[connector::EGRESS_DEFAULT, connector::EGRESS_OPEN_WEB];
+/// unless an IP/CIDR allowlist entry names it (or, for a provider dial only, a 1.5.5 carve-out).
+pub const PRIVATE_REFUSED_IN: &[u32] = &[
+    connector::EGRESS_DEFAULT,
+    connector::EGRESS_PROVIDER,
+    connector::EGRESS_OPEN_WEB,
+];
+
+/// The classes a need whose config names its target is lifted out of, to operator infrastructure:
+/// the request-data classes. Never `provider`: a provider dial is refused a private address unless
+/// allowlisted whether or not its config names the target (ARCHITECT ruling CRATES-14).
+const LIFTED_WHEN_CONFIGURED: &[u32] = &[connector::EGRESS_DEFAULT, connector::EGRESS_OPEN_WEB];
 
 /// The class a dial's address is judged under: a need's own, or (its target named by its config,
-/// `configured`) the operator's own destination, trusted as operator infrastructure (OWNER Q7).
+/// `configured`, in a request-data class) the operator's own destination, judged as operator
+/// infrastructure (THE DESIGN §5 egress-class table, owner-signed 2026-09-27). A provider need
+/// keeps its class.
 #[must_use]
 pub fn judged_class(class: u32, configured: bool) -> u32 {
     let trusted = connector::EGRESS_OPERATOR_INFRASTRUCTURE;
-    if configured && PRIVATE_REFUSED_IN.contains(&class) {
+    if configured && LIFTED_WHEN_CONFIGURED.contains(&class) {
         trusted
     } else {
         class
@@ -254,17 +280,70 @@ fn masked(ip: IpAddr, len: u8) -> IpAddr {
     }
 }
 
-/// THE GUARD, built once from a deployment's [`Destinations`].
+/// The 1.5.5 metadata lists one config commit states: the carve-outs (read in the provider class
+/// only) and the extra refusals.
+#[derive(Debug, Default)]
+struct Metadata {
+    /// `security.allow_all_metadata`: every metadata address and extra refusal lifted, for a
+    /// provider dial.
+    allow_all: bool,
+    /// `security.allow_metadata_hosts`: carve-outs for every provider dial.
+    every_provider: Vec<Entry>,
+    /// Each provider's own `allow_metadata_hosts`, keyed by the host its URLs name (the union,
+    /// where two providers name one host).
+    by_host: HashMap<String, Vec<Entry>>,
+    /// `security.blocked_metadata_hosts`.
+    blocked: Vec<Entry>,
+}
+
+impl Metadata {
+    fn from_config(d: &Destinations) -> Metadata {
+        let mut by_host: HashMap<String, Vec<Entry>> = HashMap::new();
+        for (url, own) in &d.provider_allow {
+            // The one http(s) URL reader; a URL it cannot read names no host, so carves nothing.
+            if let Ok((_, host, _, _)) = busbar_kernel::net_guard::split_url(url) {
+                by_host
+                    .entry(norm(&host))
+                    .or_default()
+                    .extend(own.iter().filter_map(|e| legacy(e)));
+            }
+        }
+        Metadata {
+            allow_all: d.allow_all_metadata,
+            every_provider: d.legacy_allow.iter().filter_map(|e| legacy(e)).collect(),
+            by_host,
+            blocked: d.blocked.iter().filter_map(|e| legacy(e)).collect(),
+        }
+    }
+
+    /// Whether a carve-out lifts the refusal of `name` (normalized) answering `addr` (`None`: the
+    /// name itself) under `class`: in the provider class only, `allow_all`, or an entry of the
+    /// every-provider list or of the providers that name `name` that names the host or the
+    /// address.
+    fn lifts(&self, name: &str, addr: Option<IpAddr>, class: u32) -> bool {
+        if class != connector::EGRESS_PROVIDER {
+            return false;
+        }
+        let own = self.by_host.get(name).map_or(&[][..], Vec::as_slice);
+        self.allow_all
+            || self
+                .every_provider
+                .iter()
+                .chain(own)
+                .any(|e| e.names(name) || addr.is_some_and(|a| e.covers(a)))
+    }
+}
+
+/// THE GUARD, built at boot from a deployment's [`Destinations`]; its metadata lists are
+/// re-published at every config commit ([`Guard::publish`]), and every clone reads the lists in
+/// force now.
 #[derive(Debug, Clone)]
 pub struct Guard {
     block_private: bool,
-    allow_all_metadata: bool,
     /// `advanced.allow_destinations`.
     allow: Vec<Entry>,
-    /// The 1.5.5 carve-outs: a NAME here admits its metadata answer, as 1.5.5's did.
-    legacy: Vec<Entry>,
-    /// `security.blocked_metadata_hosts`.
-    blocked: Vec<Entry>,
+    /// The 1.5.5 metadata lists in force, replaced whole at a commit.
+    metadata: Arc<RwLock<Arc<Metadata>>>,
 }
 
 impl Default for Guard {
@@ -272,10 +351,8 @@ impl Default for Guard {
     fn default() -> Self {
         Guard {
             block_private: true,
-            allow_all_metadata: false,
             allow: Vec::new(),
-            legacy: Vec::new(),
-            blocked: Vec::new(),
+            metadata: Arc::default(),
         }
     }
 }
@@ -290,16 +367,30 @@ impl Guard {
     pub fn from_config(d: &Destinations) -> Result<Guard, String> {
         Ok(Guard {
             block_private: d.block_private_addresses,
-            allow_all_metadata: d.allow_all_metadata,
             allow: d
                 .allow
                 .iter()
                 .enumerate()
                 .map(|(i, e)| strict(i, e))
                 .collect::<Result<_, _>>()?,
-            legacy: d.legacy_allow.iter().filter_map(|e| legacy(e)).collect(),
-            blocked: d.blocked.iter().filter_map(|e| legacy(e)).collect(),
+            metadata: Arc::new(RwLock::new(Arc::new(Metadata::from_config(d)))),
         })
+    }
+
+    /// A config commit: the metadata lists `d` states (the carve-outs and the extra refusals)
+    /// replace the ones in force, for every clone of this guard and every judgement after it, as
+    /// 1.5.5 re-read them at every reload. The allowlist and `block_private_addresses` are boot's.
+    pub fn publish(&self, d: &Destinations) {
+        let lists = Arc::new(Metadata::from_config(d));
+        *self
+            .metadata
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = lists;
+    }
+
+    /// The metadata lists in force now.
+    fn metadata(&self) -> Arc<Metadata> {
+        Arc::clone(&self.metadata.read().unwrap_or_else(PoisonError::into_inner))
     }
 
     fn refuses_private(&self, class: u32) -> bool {
@@ -322,16 +413,13 @@ impl Guard {
                 addr: None,
             })
         };
+        let m = self.metadata();
         let allowed = self.allow.iter().any(|e| e.names(&name));
-        let carved = self.legacy.iter().any(|e| e.names(&name));
-        if METADATA_HOSTS.iter().any(|m| name == *m)
-            && !(self.allow_all_metadata || allowed || carved)
-        {
+        let lifted = allowed || m.lifts(&name, None, class);
+        if METADATA_HOSTS.iter().any(|h| name == *h) && !lifted {
             return refuse(DEST_METADATA);
         }
-        if self.blocked.iter().any(|e| e.names(&name))
-            && !(self.allow_all_metadata || allowed || carved)
-        {
+        if m.blocked.iter().any(|e| e.names(&name)) && !lifted {
             return refuse(DEST_METADATA);
         }
         if is_alternate_ipv4_encoding(&name) {
@@ -344,7 +432,7 @@ impl Guard {
         // The `localhost` family RFC 6761 reserves to loopback (the metadata names were decided
         // above).
         let loopback_name = name == "localhost" || name.ends_with(".localhost");
-        if loopback_name && self.refuses_private(class) && !(allowed || carved) {
+        if loopback_name && self.refuses_private(class) && !allowed {
             return refuse(DEST_INTERNAL);
         }
         Ok(None)
@@ -372,16 +460,16 @@ impl Guard {
     /// One address `host` stands for, in the order the module header states.
     fn judge_address(&self, host: &str, addr: IpAddr, class: u32) -> Result<(), Refusal> {
         let name = norm(host);
+        let m = self.metadata();
         let metadata = ip_is_cloud_metadata(&addr);
         let listed = |l: &[Entry]| l.iter().any(|e| e.covers(addr));
         let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));
-        // `allow_all_metadata` is 1.5.5's nuclear override: every metadata address and every
-        // extra blocked one admitted.
+        // The 1.5.5 carve-outs, a provider dial's only (`Metadata::lifts`): a NAME there admits
+        // its metadata answer, as 1.5.5's did; `allow_all_metadata` admits every metadata address
+        // and every extra blocked one.
         let admitted = listed(&self.allow)
-            || listed(&self.legacy)
-            || ((metadata || listed(&self.blocked)) && self.allow_all_metadata)
-            || (metadata && named(&self.legacy))
-            || (!metadata && (named(&self.allow) || named(&self.legacy)));
+            || m.lifts(&name, Some(addr), class)
+            || (!metadata && named(&self.allow));
         if admitted {
             return Ok(());
         }
@@ -392,7 +480,7 @@ impl Guard {
                 addr: Some(addr),
             })
         };
-        if metadata || listed(&self.blocked) {
+        if metadata || listed(&m.blocked) {
             return refuse(DEST_METADATA);
         }
         if self.refuses_private(class) && ip_is_internal(&addr) {

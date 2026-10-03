@@ -193,6 +193,11 @@ impl DestJudge for GuardJudge {
                 reason: r.to_string(),
             })
     }
+
+    /// A config commit re-publishes the guard's metadata lists ([`Guard::publish`]).
+    fn destinations_applied(&self, d: &Destinations) {
+        self.guard.publish(d);
+    }
 }
 
 /// THE DIAL JUDGE the one Connector holds (spec section 5, "Dialing only what the kernel

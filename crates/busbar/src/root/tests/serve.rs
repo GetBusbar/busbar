@@ -175,10 +175,22 @@ fn dest_judge_asks_the_deployments_one_guard() {
         svc::DEST_NO_HOST,
         "a class the guard does not know dials nothing"
     );
-    // `allow_all_metadata` is 1.5.5's nuclear override: the metadata guard is fully disabled, the
-    // operator's additions and the metadata address alike; with it off the address stays refused.
+    // `allow_all_metadata` is 1.5.5's nuclear override: for a provider dial the metadata guard is
+    // fully disabled, the operator's additions and the metadata address alike; every other class
+    // still refuses; with it off the address stays refused.
     let open = kernel(&["metadata.corp.example"], true);
-    let admitted = |dest| verdict(&open, dest, DEFAULT_EGRESS_CLASS).value;
+    let provider = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+    let admitted = |dest| verdict(&open, dest, provider).value;
+    assert_eq!(
+        verdict(
+            &open,
+            "https://169.254.169.254/latest/meta-data/",
+            DEFAULT_EGRESS_CLASS
+        )
+        .value,
+        svc::DEST_METADATA,
+        "allow_all_metadata speaks for provider dials only"
+    );
     assert_eq!(
         admitted("https://metadata.corp.example/"),
         svc::DEST_ALLOWED

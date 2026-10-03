@@ -97,6 +97,40 @@ pub trait DestJudge: Send + Sync {
     ///
     /// The refusal of the first refused address.
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal>;
+    /// A config commit: the deployment's destinations are now `d`. A judge that re-reads its
+    /// metadata lists at every commit (as 1.5.5 did) takes them from here; the default keeps what
+    /// it was built with.
+    fn destinations_applied(&self, d: &crate::config::Destinations) {
+        let _ = d;
+    }
+}
+
+/// The process's destination judges that hear every config commit
+/// ([`install_dest_judge_commits`]), held weakly: a judge dropped stops hearing.
+static COMMIT_LISTENERS: Mutex<Vec<std::sync::Weak<dyn DestJudge>>> = Mutex::new(Vec::new());
+
+/// Install `judge` as one that hears every config commit ([`DestJudge::destinations_applied`]):
+/// the root's one, at boot, before the boot build commits.
+pub fn install_dest_judge_commits(judge: &Arc<dyn DestJudge>) {
+    COMMIT_LISTENERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Arc::downgrade(judge));
+}
+
+/// Raise a config commit: every installed judge still alive hears `d`. Called at the commit
+/// (`InstalledLimits::keep`), so a rejected apply leaves the lists in force.
+pub(crate) fn destinations_applied(d: &crate::config::Destinations) {
+    let live: Vec<Arc<dyn DestJudge>> = {
+        let mut held = COMMIT_LISTENERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.retain(|j| j.strong_count() > 0);
+        held.iter().filter_map(std::sync::Weak::upgrade).collect()
+    };
+    for judge in live {
+        judge.destinations_applied(d);
+    }
 }
 
 /// A destination judge's refusal of an answer: the `DEST_*` verdict and the guard's sentence.
