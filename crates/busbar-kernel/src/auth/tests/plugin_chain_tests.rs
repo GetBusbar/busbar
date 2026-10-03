@@ -593,6 +593,7 @@ fn admin_modules_rebuilt_on_reload() {
         &crate::test_support::trust_policy(&plugins).unwrap(),
     )
     .expect("scan succeeds");
+    let registry = std::sync::Arc::new(registry);
     let mut cfg = AuthCfg::default_none();
     let mut entry = AuthChainEntry::bare("admin-oidc");
     entry.settings = settings();

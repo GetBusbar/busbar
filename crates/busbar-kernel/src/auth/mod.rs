@@ -323,12 +323,36 @@ static ADMIN_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
 /// this snapshot was built from named it (an admin-API chain swap reuses this value). Held behind an
 /// `Arc` on the `App` snapshot.
 pub struct AdminAuthChain {
-    /// The resolved EXTERNAL admin modules, keyed by provider name: each is a loaded plugin whose
-    /// call can block (FFI/JWKS/introspection), so each awaited call is offloaded off the reactor.
-    pub modules: std::collections::HashMap<String, Box<dyn AuthModule>>,
+    /// The resolved EXTERNAL admin modules, keyed by provider name: each a `kind: auth` instance the
+    /// auth axis opened on the one dispatcher (L2-AUTH-4, ARCHITECT 2026-10-03): a door is awaited,
+    /// a cold-lane plugin (M6-COLD-DELETE) is offloaded off the reactor ([`AdminModule::cold`]).
+    pub modules: std::collections::HashMap<String, AdminModule>,
     /// The operator credential, as the auth axis answers it, and the providers it answers for: a
     /// provider is the operator credential by its module, never by its name ([`Operator`]).
     pub operator: Operator,
+}
+
+/// ONE EXTERNAL ADMIN MODULE: the instance the auth axis opened for an `admin_auth:` provider.
+pub struct AdminModule {
+    /// The opened instance.
+    pub calls: std::sync::Arc<dyn AuthCalls>,
+    /// M6-COLD-DELETE: a 1.5.5-shaped module behind the cold adapter (a cold-lane plugin, or an
+    /// in-process test stand-in). Its `verify` is a synchronous call that may block, so an awaited
+    /// admin walk offloads it, bounded ([`ADMIN_OFFLOAD_MAX_INFLIGHT`]), and the admin chain caches
+    /// its verdicts as 1.5.5 did. A memory-ABI door is awaited on the dispatcher and caches inside
+    /// itself (THE DESIGN 11.11 R3): the kernel keeps no verdict of it.
+    pub cold: bool,
+}
+
+impl AdminModule {
+    /// An in-process 1.5.5-shaped module (a test stand-in) as an external admin module: behind the
+    /// cold adapter, offloaded and cached as a cold plugin is.
+    pub fn cold(module: Box<dyn AuthModule>) -> Self {
+        Self {
+            calls: std::sync::Arc::new(busbar_plugin_loader::auth_axis::ColdAuth::new(module)),
+            cold: true,
+        }
+    }
 }
 
 pub use busbar_kernel_identity::{
@@ -386,12 +410,13 @@ impl AdminAuthChain {
     /// silently-dropped module. Runs at boot AND reload (inside `build_app_from_config`).
     pub fn build(
         cfg: &AuthCfg,
-        registry: &busbar_plugin_loader::PluginRegistry,
+        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
-        let mut modules: std::collections::HashMap<String, Box<dyn AuthModule>> =
+        let mut modules: std::collections::HashMap<String, AdminModule> =
             std::collections::HashMap::new();
         let op = crate::config::operator_provider();
+        let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.admin_auth {
             match entry.module.as_str() {
                 // The operator credential is opened beside the chain ([`open_operator`]).
@@ -405,17 +430,41 @@ impl AdminAuthChain {
                     let resolved =
                         crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
                             .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
-                    let cfg_json = serde_json::Value::Object(resolved).to_string();
-                    let module = registry.open_auth(other, &cfg_json).map_err(|e| {
+                    let refused = |e: String| {
                         format!(
                             "auth.admin_auth provider '{name}' (module '{other}') could not be \
                              loaded as a `kind: auth` plugin: {e}"
                         )
-                    })?;
+                    };
+                    // ON THE AUTH AXIS (L2-AUTH-4): the build's rows over the one dispatcher, the
+                    // axis the data-plane chain and the operator credential open through.
+                    let axis = match &axis {
+                        Some(axis) => axis.clone(),
+                        None => {
+                            let opened =
+                                crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
+                                    refused(format!("no `kind: auth` plugin answers to '{other}'"))
+                                })?;
+                            axis.insert(opened).clone()
+                        }
+                    };
+                    // The row's lane, refused in the registry's own words when it names no auth
+                    // row; a name only a door's Statement alias answers is the axis's (a door).
+                    let cold = match registry.auth_row_is_cold(other) {
+                        Ok(cold) => cold,
+                        Err(_) if axis.answers(other) => false,
+                        Err(e) => return Err(refused(e)),
+                    };
+                    // The host label is unique per opened instance: the admin chain's provider,
+                    // apart from a data-plane provider of the same name.
+                    let label = format!("admin_auth.{name}");
+                    let calls = axis
+                        .open(other, &label, &serde_json::Value::Object(resolved))
+                        .map_err(refused)?;
                     // KEYED BY PROVIDER NAME (1.5.3): `run_admin_chain` dispatches by the same name
                     // `admin_chain` lists and `role_bindings.<name>` binds, so two named providers
                     // sharing one module stay distinct admin identities.
-                    modules.insert(name.to_string(), module);
+                    modules.insert(name.to_string(), AdminModule { calls, cold });
                 }
             }
         }
@@ -1207,7 +1256,9 @@ async fn run_admin_chain(
         // The operator credential is NEVER cached (caching a microsecond compare only widens the
         // rotation window); external admin modules are the cache's case.
         let operator = app.admin_modules.operator.is(name);
-        let cacheable = !operator;
+        // A door caches inside itself (THE DESIGN 11.11 R3): only a cold module's verdict is the
+        // kernel's to cache, as 1.5.5 cached every external admin module.
+        let cacheable = !operator && app.admin_modules.modules.get(name).is_none_or(|m| m.cold);
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
             if let Some(outcome) = app.credential_cache.get(name, cred, now) {
                 match outcome {
@@ -1262,11 +1313,22 @@ async fn run_admin_chain(
             }
             // An EXTERNAL `kind: auth` admin plugin, resolved at load into `app.admin_modules`
             // (keyed by config name — the same `name` this loop iterates).
-            other => match external_admin_module(app, other, bearer.or(header), probe).await {
-                Ok(v) => v,
-                // Its offload could not start or finish in time, or it panicked: fail closed.
-                Err(()) => return Ok((ChainVerdict::Denied, None)),
-            },
+            other => {
+                // The external module is lent the request's head and the candidate 1.5.5 handed
+                // it (`bearer.or(header)`).
+                let mut request = admin_head(method, target, headers, now);
+                request.credential = bearer
+                    .or(header)
+                    .map(|c| busbar_contract::redacted::Redacted::new(c.as_bytes().to_vec()));
+                match external_admin_module(app, other, request, probe).await {
+                    Ok(v) => v,
+                    // Its offload could not start or finish in time, it panicked, or a probe could
+                    // not answer on the spot: fail closed.
+                    Err(AdminModuleFailure::Denied) => return Ok((ChainVerdict::Denied, None)),
+                    // A door that is overloaded or answered no verdict: the ruled 503.
+                    Err(AdminModuleFailure::Unavailable(why)) => return Err(why),
+                }
+            }
         }
         // A name with no resolved module (impossible after a successful boot — the build fails
         // closed on an unresolvable name) is a `Pass`, loudly.
@@ -1329,32 +1391,55 @@ async fn run_admin_chain(
     Ok((ChainVerdict::Denied, None))
 }
 
-/// The PROBE arm of [`external_admin_module`]: a cold admin module's `authenticate`, called on the
-/// caller's own thread. Only the synchronous [`admin_door`] reaches it (it polls the walk once with
-/// `probe` set, never on the reactor's await path), so the call stays in a plain `fn`, as the
-/// synchronous admin walk had it; the awaited arm offloads instead.
-fn probe_admin_module(module: &dyn AuthModule, credential: Option<&str>) -> AuthVerdict {
-    module.authenticate(credential)
+/// Why an external admin module answered no verdict the walk can use.
+enum AdminModuleFailure {
+    /// Its offload could not start or finish in time, it panicked, or a probe could not answer on
+    /// the spot: the chain denies, fail-closed, as 1.5.5 denied.
+    Denied,
+    /// A door that is overloaded or answered no verdict: the chain cannot be judged (the ruled 503,
+    /// ARCHITECT 2026-09-30 AUTH-DOOR Q1, kept for the admin chain 2026-10-03).
+    Unavailable(AdminUnavailable),
 }
 
-/// One EXTERNAL cold admin module's verdict over `credential`; `None` when no module is resolved
-/// under `name`. Awaited, a module's `authenticate` — a synchronous FFI call that can do blocking
-/// JWKS/introspection I/O — runs on the blocking pool under its OWN [`ADMIN_OFFLOAD_PERMITS`]
-/// budget (separate from the data plane's), so a slow admin IdP never parks a reactor worker.
-/// `probe`: it runs inline (the sync [`admin_door`]). FAIL-CLOSED: a permit that cannot be acquired
-/// in time, a call that does not finish in time, and a panicking plugin (join error) are all `Err`,
-/// which the walk answers `Denied`, never an admit.
+/// An external admin module's `verify` answer as the admin walk reads it: a verdict, or the chain
+/// cannot be judged. A cold module never answers `Overloaded` or `Failed` (its failure is a Reject,
+/// as 1.5.5's was); only a door does.
+fn admin_verdict_of(answer: VerifyAnswer) -> Result<AuthVerdict, AdminModuleFailure> {
+    match answer.verified {
+        Verified::Overloaded => Err(AdminModuleFailure::Unavailable(
+            AdminUnavailable::Overloaded,
+        )),
+        Verified::Failed => Err(AdminModuleFailure::Unavailable(AdminUnavailable::Outage)),
+        _ => Ok(chain_verdict_of(answer)),
+    }
+}
+
+/// One EXTERNAL admin module's verdict over `request` (its candidate lent); `None` when no module is
+/// resolved under `name`. Awaited, a COLD module's `verify` — a synchronous FFI call that can do
+/// blocking JWKS/introspection I/O — runs on the blocking pool under its OWN
+/// [`ADMIN_OFFLOAD_PERMITS`] budget (separate from the data plane's), so a slow admin IdP never parks
+/// a reactor worker; a DOOR is submitted on the dispatcher and awaited. `probe` (the sync
+/// [`admin_door`]): each answers on the spot (`verify_now`), and a door that must wait cannot, so the
+/// probe fails closed. FAIL-CLOSED: a permit that cannot be acquired in time, a call that does not
+/// finish in time, and a panicking plugin (join error) are all `Denied`, never an admit.
 async fn external_admin_module(
     app: &crate::state::App,
     name: &str,
-    credential: Option<&str>,
+    request: VerifyRequest,
     probe: bool,
-) -> Result<Option<AuthVerdict>, ()> {
+) -> Result<Option<AuthVerdict>, AdminModuleFailure> {
     let Some(module) = app.admin_modules.modules.get(name) else {
         return Ok(None);
     };
     if probe {
-        return Ok(Some(probe_admin_module(module.as_ref(), credential)));
+        return match module.calls.verify_now(&request) {
+            Some(answer) => admin_verdict_of(answer).map(Some),
+            None => Err(AdminModuleFailure::Denied),
+        };
+    }
+    if !module.cold {
+        let answer = Box::into_pin(module.calls.verify(request)).await;
+        return admin_verdict_of(answer).map(Some);
     }
     // Warn-once transition latch: a saturated admin offload persists per request until the wedged
     // plugin recovers. Warn on the transition; hold the rest at debug; reset on a fresh permit.
@@ -1383,17 +1468,15 @@ async fn external_admin_module(
                      returning. Denying (fail-closed) rather than admitting unverified."
                 );
             }
-            return Err(());
+            return Err(AdminModuleFailure::Denied);
         }
     };
-    let modules = app.admin_modules.clone();
-    let name = name.to_string();
-    let credential = credential.map(String::from);
+    let calls = module.calls.clone();
     let joined = tokio::task::spawn_blocking(move || {
-        let verdict = modules
-            .modules
-            .get(&name)
-            .map(|m| m.authenticate(credential.as_deref()));
+        // A cold module answers on the spot; no answer is a failure, fail-closed as 1.5.5's Reject.
+        let verdict = calls
+            .verify_now(&request)
+            .map_or(AuthVerdict::Reject, chain_verdict_of);
         // Release the permit when the blocking work is DONE, not when the awaiting future is dropped
         // — a request that timed out (below) must not hand its slot to another while the plugin
         // thread it started is still wedged.
@@ -1407,7 +1490,7 @@ async fn external_admin_module(
     match tokio::time::timeout(ADMIN_OFFLOAD_WAIT, joined).await {
         Ok(Ok(v)) => {
             ADMIN_CHAIN_STALLED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-            Ok(v)
+            Ok(Some(v))
         }
         // Join error (the plugin panicked) or a timeout waiting for it: fail closed. The wedged
         // blocking task keeps its permit until it eventually finishes, bounding the leak.
@@ -1425,7 +1508,7 @@ async fn external_admin_module(
                  denying (fail-closed)."
                 );
             }
-            Err(())
+            Err(AdminModuleFailure::Denied)
         }
     }
 }

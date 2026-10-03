@@ -1298,7 +1298,9 @@ impl TestApp {
         let chain = self
             .admin_modules
             .get_or_insert_with(crate::auth::AdminAuthChain::empty);
-        chain.modules.insert(name.to_string(), module);
+        chain
+            .modules
+            .insert(name.to_string(), crate::auth::AdminModule::cold(module));
         self
     }
 

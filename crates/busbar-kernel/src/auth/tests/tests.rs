@@ -2576,3 +2576,124 @@ async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401
     }
     server.shutdown().await;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// L2-AUTH-4 (ARCHITECT ruling 2026-10-03): admin_auth's EXTERNAL modules open on the auth axis.
+// A door among them is awaited, lent the request's head and 1.5.5's candidate (`bearer.or(header)`),
+// never cached by the kernel, and an overloaded or verdict-less door is the ruled 503.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// An external admin door that identifies `ext:<who>` only when the lent credential is `tok`, and
+/// otherwise answers `otherwise`.
+struct LentCredentialDoor(busbar_contract::auth_calls::Verified);
+
+impl LentCredentialDoor {
+    fn answer(
+        &self,
+        r: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> busbar_contract::auth_calls::VerifyAnswer {
+        use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+        match r.credential.as_ref().map(|c| c.expose_secret().as_slice()) {
+            Some(b"tok") => Verified::Identity(VerifiedIdentity {
+                subject: "ext:who".into(),
+                groups: vec!["ops".into()],
+                ..VerifiedIdentity::default()
+            })
+            .into(),
+            _ => self.0.clone().into(),
+        }
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for LentCredentialDoor {
+    fn name(&self) -> &str {
+        "lent-credential-door"
+    }
+    fn facts(&self) -> u32 {
+        busbar_contract::abi::auth::FACT_CACHEABLE
+    }
+    fn verify_now(
+        &self,
+        r: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.answer(r))
+    }
+    fn verify(
+        &self,
+        r: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(OperatorAnswer(Some(self.answer(&r))))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// An app whose admin chain is the external door `ext-door` alone (opened as a door: not cold).
+fn external_door_app(
+    otherwise: busbar_contract::auth_calls::Verified,
+) -> std::sync::Arc<crate::state::App> {
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["ext-door".to_string()])
+        .build();
+    let mut modules = std::collections::HashMap::new();
+    modules.insert(
+        "ext-door".to_string(),
+        AdminModule {
+            calls: std::sync::Arc::new(LentCredentialDoor(otherwise)),
+            cold: false,
+        },
+    );
+    std::sync::Arc::get_mut(&mut app)
+        .expect("freshly built App Arc is unshared")
+        .admin_modules = std::sync::Arc::new(AdminAuthChain {
+        modules,
+        operator: Operator::new(crate::config::operator_provider()),
+    });
+    app
+}
+
+/// The external admin door judges the candidate it is lent — the Bearer, else the admin header, as
+/// 1.5.5 handed an external module `bearer.or(header)` — awaited and on the spot; its identity is
+/// never cached by the kernel (R3: a door caches inside itself, even one stating cacheable); an
+/// overloaded door and one with no verdict are the ruled 503, a reject and a pass the 1.5.5 401.
+#[tokio::test]
+async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_ruled_503() {
+    use busbar_contract::auth_calls::Verified;
+    for headers in [
+        admin_headers(Some("tok"), None),
+        admin_headers(None, Some("tok")),
+    ] {
+        let app = external_door_app(Verified::Reject);
+        assert!(matches!(
+            run_admin_chain(&app, "GET", "/", &headers, false).await,
+            Ok((ChainVerdict::Identified { ref module, .. }, _)) if module == "ext-door"
+        ));
+        assert!(matches!(
+            admin_door(&app, "GET", "/", &headers),
+            AdminDoor::Identified(..)
+        ));
+        assert_eq!(
+            app.credential_cache.flush_all(),
+            0,
+            "the kernel caches no door's verdict"
+        );
+    }
+    let wrong = admin_headers(Some("not-tok"), None);
+    for (otherwise, want) in [
+        (Verified::Reject, Ok(())),
+        (Verified::Pass, Ok(())),
+        (Verified::Overloaded, Err(AdminUnavailable::Overloaded)),
+        (Verified::Failed, Err(AdminUnavailable::Outage)),
+    ] {
+        let app = external_door_app(otherwise.clone());
+        let got = run_admin_chain(&app, "GET", "/", &wrong, false).await;
+        match want {
+            Ok(()) => assert!(
+                matches!(got, Ok((ChainVerdict::Denied, None))),
+                "{otherwise:?}: the 1.5.5 refusal"
+            ),
+            Err(why) => assert_eq!(got.err(), Some(why), "{otherwise:?}: the ruled 503"),
+        }
+    }
+}

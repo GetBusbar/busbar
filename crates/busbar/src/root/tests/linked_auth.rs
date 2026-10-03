@@ -634,7 +634,7 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         named.admin_modules = Arc::new(AdminAuthChain {
             modules: HashMap::from([(
                 op.to_string(),
-                Box::new(AnyCredential) as Box<dyn AuthModule>,
+                busbar_kernel::auth::AdminModule::cold(Box::new(AnyCredential)),
             )]),
             operator,
         });
