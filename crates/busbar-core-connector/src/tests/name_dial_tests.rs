@@ -483,7 +483,9 @@ fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
         let target = format!("llm.test:{port}");
         let names = || Arc::new(Table(vec![("llm.test", [127, 0, 0, 1].into())]));
         let strict = connector_over(&[], names(), Arc::default());
-        strict.declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target);
+        strict
+            .declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target)
+            .expect("the provider need declares");
         let id = strict
             .open(OWNER, NEED, &OpenDesc::default())
             .expect("a name opens, its judgement pending");
@@ -491,11 +493,13 @@ fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing was dialled");
         let allowed = connector_over(&["llm.test"], names(), Arc::default());
-        allowed.declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target);
+        allowed
+            .declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target)
+            .expect("the provider need declares");
         let id = allowed
             .open(OWNER, NEED, &OpenDesc::default())
             .expect("the allowlisted target opens");
-        assert_eq!(allowed.write(OWNER, id, b"prov", false), Ok(4));
+        assert_eq!(allowed.write(OWNER, id, b"prov", false, false), Ok(4));
         assert_eq!(read_direct(&allowed, id).await.expect("the echo"), b"prov");
         assert_eq!(accepted.load(Ordering::SeqCst), 1);
     });
