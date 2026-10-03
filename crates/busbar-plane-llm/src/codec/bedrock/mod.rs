@@ -74,6 +74,8 @@ const REASONING_CONFIG: &str = "reasoningConfig";
 const REASONING_CONTENT: &str = "reasoningContent";
 const REASONING_TEXT: &str = "reasoningText";
 const REDACTED_CONTENT: &str = "redactedContent";
+/// A Converse `searchResult` content block (request content and `toolResult` content).
+const SEARCH_RESULT_CAMEL: &str = "searchResult";
 const SEARCH_RESULT_INDEX: &str = "searchResultIndex";
 const SEARCH_RESULT_LOCATION_CAMEL: &str = "searchResultLocation";
 const SERVICE_UNAVAILABLE_EXCEPTION: &str = "serviceUnavailableException";
@@ -832,6 +834,51 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
 /// `s3Location` document/video/image source, which names an S3 object in the CALLER's AWS account
 /// and is meaningless to any other backend.
 const VENDOR_NAME: &str = "bedrock";
+
+/// A Converse `searchResult` block (`{source, title, content: [{text}], citations: {enabled}}`) ->
+/// THE SEARCH-RESULT SLOT (`IrBlock::search_result`), the same slot an Anthropic `search_result`
+/// reads into, so the passage and its provenance translate both ways. The text parts join with
+/// `\n` in wire order; the `citations` switch rides verbatim.
+fn read_bedrock_search_result(sr: &serde_json::Value) -> crate::codec::ir::IrBlock {
+    let source = sr.get(keys::SOURCE).and_then(|v| v.as_str()).unwrap_or("");
+    let title = sr.get(keys::TITLE).and_then(|v| v.as_str()).unwrap_or("");
+    let body = sr
+        .get(keys::CONTENT)
+        .and_then(|v| v.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get(keys::TEXT).and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    crate::codec::ir::IrBlock::search_result(
+        source,
+        title,
+        body,
+        sr.get(keys::CITATIONS).cloned(),
+        None,
+    )
+}
+
+/// The search-result slot -> a Converse `{"searchResult": {...}}` content block (the inverse of
+/// [`read_bedrock_search_result`]): the passage as one text part, the `citations` switch verbatim.
+fn write_bedrock_search_result(
+    sr: &crate::codec::ir::IrSearchResultParts<'_>,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(keys::SOURCE.to_string(), serde_json::json!(sr.source));
+    obj.insert(keys::TITLE.to_string(), serde_json::json!(sr.title));
+    obj.insert(
+        keys::CONTENT.to_string(),
+        serde_json::json!([{ (keys::TEXT): sr.body }]),
+    );
+    if let Some(cfg) = sr.citations_config {
+        obj.insert(keys::CITATIONS.to_string(), cfg.clone());
+    }
+    serde_json::json!({ (SEARCH_RESULT_CAMEL): obj })
+}
 
 /// Read a native Converse `document` / `video` block body into an [`crate::codec::ir::IrBlock::Media`].
 ///
@@ -2502,3 +2549,8 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+/// The search-result slot: Converse `searchResult` <-> Anthropic `search_result` (DF-MAP-2).
+#[cfg(test)]
+#[path = "tests/search_result_slot_tests.rs"]
+mod search_result_slot_tests;
