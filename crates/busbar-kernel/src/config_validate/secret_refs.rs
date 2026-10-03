@@ -191,13 +191,13 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     // references it carries (`resolve` kept them on the accepted block), walking its validated
     // identity with an exhaustive destructure there, so a new secret-bearing field is a compile
     // error in that crate.
-    if let Some(checked) = oauth_as {
-        refs.extend(
-            checked
-                .secret_refs
-                .iter()
-                .map(|(path, key)| (path.clone(), key)),
-        );
+    // Destructured exhaustively, so a field added to the accepted block is a compile error here.
+    if let Some(crate::oauth_as::seam::CheckedAsBlock {
+        block: _,
+        secret_refs,
+    }) = oauth_as
+    {
+        refs.extend(secret_refs.iter().map(|(path, key)| (path.clone(), key)));
     }
 
     for (name, p) in providers {
