@@ -209,8 +209,14 @@
 # recorded the 46 owed new cells committed beside this pin. Its other 69 additions are the 1.6.0-only cells that
 # accepted-gaps.json says the 1.5.5 golden cannot owe, so they are not committed.
 #
+# 2026-10-02 (lane oracle-pin-bump): moved 2815f7a -> da60cad9d8fe (busbar-release dev; the same sha promote.yml
+# RELEASE_REF moves to in busbar #433, so CI and lane proofs run ONE engine). 68aec44: `fetch-plugin` takes the
+# release line from the FIRST line of `busbar --version` (1.6.0 prints a `build:` line after it, the owner-signed
+# accepted difference on cli|--version). 2815f7a refused that two-line output, so no lane could record an oracle
+# cell on a predev build. The range also carries the golden-guard in-range fix, nextest timeouts and the plane drivers.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=2815f7aba5f623ba5ecb6846a1da70f47e2e4360
+release_ref=da60cad9d8fe1e47eaaeab55a9cbf548e81a5072
 crate=busbar-release-oracle
 bin=busbar-oracle
