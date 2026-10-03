@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::*;
 use crate::abi::host::service::{
-    DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES, TRUST_NEW,
-    TRUST_SAME,
+    ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, MAX_RANDOM_FILL, NOT_ENTITLED,
+    SERVICES, TRUST_NEW, TRUST_SAME,
 };
 use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::ticket::Ticket;
@@ -711,5 +711,352 @@ fn trust_verify_failures_are_errors() {
     assert_eq!(
         services(&old).trust_verify(handle(), "peer", b"ok", b"", &mut buf),
         Err(ServiceError::Unserved)
+
+// ── records.get, records.list, records.claim ──────────────────────────────────────────────────
+
+/// The record [`keeps`] holds, under key `k1`.
+const KEPT: &[u8] = b"approved";
+
+/// The records [`lists`] holds, in key order.
+const LISTED: [(&[u8], &[u8]); 3] = [(b"t/1", b"one"), (b"t/2", b""), (b"t/3", b"three")];
+
+/// Write `rows` (key then value per record, one span each, `key` absent when `keyless`) into the
+/// caller's `into`, READY with `value`, or answer FAILED with what it needs when they are short.
+fn write_rows(
+    into: ServiceBufs,
+    rows: &[(&[u8], &[u8])],
+    value: u64,
+    keyless: bool,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    let need = rows.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
+    // SAFETY: the wrapper's live buffers and a live `out`.
+    unsafe {
+        if into.cap < need || into.spans_cap < rows.len() {
+            (*out).needed_bytes = need as u64;
+            (*out).needed_items = rows.len() as u64;
+            return answer(out, Outcome::Failed, 0, 0, 0);
+        }
+        let mut at = 0;
+        for (n, (k, v)) in rows.iter().enumerate() {
+            std::ptr::copy_nonoverlapping(k.as_ptr(), into.buf.add(at), k.len());
+            std::ptr::copy_nonoverlapping(v.as_ptr(), into.buf.add(at + k.len()), v.len());
+            let key = if keyless {
+                Span {
+                    offset: SPAN_ABSENT,
+                    len: 0,
+                }
+            } else {
+                Span {
+                    offset: at as u32,
+                    len: k.len() as u32,
+                }
+            };
+            *into.spans.add(n) = ItemSpan {
+                key,
+                value: Span {
+                    offset: (at + k.len()) as u32,
+                    len: v.len() as u32,
+                },
+            };
+            at += k.len() + v.len();
+        }
+        answer(out, Outcome::Ready, value, at as u64, rows.len() as u64)
+    }
+}
+
+/// A store holding [`KEPT`] under `k1` of kind `approval`; `slow` pends; any other key is absent.
+extern "C" fn keeps(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `RecordsGetIn` naming its live texts.
+    let i = unsafe { input.cast::<RecordsGetIn>().read_unaligned() };
+    // SAFETY: as above.
+    let (kind, key) = unsafe {
+        (
+            std::slice::from_raw_parts(i.kind.ptr, i.kind.len),
+            std::slice::from_raw_parts(i.key.ptr, i.key.len),
+        )
+    };
+    match (kind, key) {
+        (b"approval", b"k1") => write_rows(i.into, &[(&b""[..], KEPT)], FOUND, true, out),
+        (_, b"slow") => answer(out, Outcome::Pending, 0, 0, 0),
+        _ => answer(out, Outcome::Ready, ABSENT, 0, 0),
+    }
+}
+
+/// A store that answers FOUND but writes no record.
+extern "C" fn finds_nothing(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    answer(out, Outcome::Ready, FOUND, 0, 0)
+}
+
+/// A store listing [`LISTED`] (tombstones dropped) after the `in`'s `after`, at most its `limit`;
+/// an `after` sent absent (NULL) lists from the first, one sent present lists after it. Kind
+/// `keyless` answers its records without keys.
+extern "C" fn lists(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `RecordsListIn` naming its live texts.
+    let i = unsafe { input.cast::<RecordsListIn>().read_unaligned() };
+    // SAFETY: as above; `after` is read only when present.
+    let (kind, prefix, after) = unsafe {
+        (
+            std::slice::from_raw_parts(i.kind.ptr, i.kind.len),
+            std::slice::from_raw_parts(i.prefix.ptr, i.prefix.len),
+            (!i.after.ptr.is_null()).then(|| std::slice::from_raw_parts(i.after.ptr, i.after.len)),
+        )
+    };
+    let limit = if i.limit == 0 {
+        usize::MAX
+    } else {
+        i.limit as usize
+    };
+    let rows: Vec<_> = LISTED
+        .iter()
+        .copied()
+        .filter(|(k, v)| !v.is_empty() && k.starts_with(prefix))
+        .filter(|(k, _)| after.is_none_or(|a| *k > a))
+        .take(limit)
+        .collect();
+    write_rows(i.into, &rows, 0, kind == b"keyless", out)
+}
+
+/// How many claims [`claims`] ran, and whether `k1` is claimed.
+static CLAIMS_RUN: AtomicU8 = AtomicU8::new(0);
+static K1_CLAIMED: AtomicU8 = AtomicU8::new(0);
+
+/// A claim store: `k1` is won by the first claim and taken after; `slow` pends.
+extern "C" fn claims(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    CLAIMS_RUN.fetch_add(1, Ordering::SeqCst);
+    // SAFETY: the wrapper hands a `RecordsClaimIn` naming its live key.
+    let i = unsafe { input.cast::<RecordsClaimIn>().read_unaligned() };
+    // SAFETY: as above.
+    let key = unsafe { std::slice::from_raw_parts(i.key.ptr, i.key.len) };
+    if key == b"slow" {
+        return answer(out, Outcome::Pending, 0, 0, 0);
+    }
+    let won = K1_CLAIMED.swap(1, Ordering::SeqCst) == 0;
+    answer(
+        out,
+        Outcome::Ready,
+        if won { CLAIM_WON } else { CLAIM_TAKEN },
+        0,
+        0,
+    )
+}
+
+/// THE RECORDS WRAPPERS (K-RECORDS; TODO step 3b H2 records): `records.get` answers the record as
+/// a view into the caller's buffer, absent as `None`, a short buffer as the size to re-call with,
+/// and pends only on a ticket; a FOUND without its record broke the rule.
+#[test]
+fn records_get_views_the_record_and_answers_absent_as_none() {
+    let t = HostSlots {
+        records_get: Some(keeps),
+        ..table(None)
+    };
+    let s = services(&t);
+    let mut short = [0u8; 3];
+    assert_eq!(
+        s.records_get(ticketed(0), "approval", b"k1", &mut short),
+        Poll::Ready(Err(ServiceError::Short {
+            bytes: KEPT.len() as u64,
+            items: 1
+        }))
+    );
+    let mut buf = [0u8; 16];
+    assert_eq!(
+        s.records_get(ticketed(0), "approval", b"k1", &mut buf),
+        Poll::Ready(Ok(Some(KEPT)))
+    );
+    assert_eq!(
+        s.records_get(ticketed(1), "approval", b"k2", &mut buf),
+        Poll::Ready(Ok(None))
+    );
+    assert_eq!(
+        s.records_get(ticketed(2), "approval", b"slow", &mut buf),
+        Poll::Pending
+    );
+    // PENDING on no ticket breaks the service's rule.
+    assert_eq!(
+        s.records_get(handle(), "approval", b"slow", &mut buf),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    let empty = HostSlots {
+        records_get: Some(finds_nothing),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&empty).records_get(ticketed(0), "approval", b"k1", &mut buf),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    let f = HostSlots {
+        records_get: Some(fails),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&f).records_get(ticketed(0), "approval", b"k1", &mut buf),
+        Poll::Ready(Err(ServiceError::Declined(Outcome::Failed)))
+    );
+    assert_eq!(
+        services(&table(None)).records_get(ticketed(0), "approval", b"k1", &mut buf),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+/// `records.list` answers the records as `(key, value)` views in key order; `after` absent lists
+/// from the first, and a page's last key is the next page's `after`; a record without its key broke
+/// the rule.
+#[test]
+fn records_list_pages_by_the_last_key_and_reports_a_short_one() {
+    let t = HostSlots {
+        records_list: Some(lists),
+        ..table(None)
+    };
+    let s = services(&t);
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
+    assert_eq!(
+        s.records_list(
+            ticketed(0),
+            "task",
+            b"t/",
+            None,
+            0,
+            (&mut buf[..], &mut spans[..])
+        )
+        .map(|r| r.map(|r| r.records().count())),
+        Poll::Ready(Err(ServiceError::Short {
+            bytes: 14,
+            items: 2
+        }))
+    );
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 4]);
+    let Poll::Ready(Ok(page)) = s.records_list(
+        ticketed(0),
+        "task",
+        b"t/",
+        None,
+        1,
+        (&mut buf[..], &mut spans[..]),
+    ) else {
+        panic!("the first page");
+    };
+    assert!(page.records().eq([(&b"t/1"[..], &b"one"[..])]));
+    let after = page.last_key().expect("a key").to_vec();
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 4]);
+    let Poll::Ready(Ok(rest)) = s.records_list(
+        ticketed(1),
+        "task",
+        b"",
+        Some(after.as_slice()),
+        0,
+        (&mut buf[..], &mut spans[..]),
+    ) else {
+        panic!("the next page");
+    };
+    assert!(rest.records().eq([(&b"t/3"[..], &b"three"[..])]));
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 4]);
+    let Poll::Ready(Ok(none)) = s.records_list(
+        ticketed(2),
+        "task",
+        b"u/",
+        None,
+        0,
+        (&mut buf[..], &mut spans[..]),
+    ) else {
+        panic!("an empty page");
+    };
+    assert_eq!(none.records().next(), None);
+    assert_eq!(none.last_key(), None);
+    assert_eq!(
+        s.records_list(
+            ticketed(3),
+            "keyless",
+            b"",
+            None,
+            0,
+            (&mut buf[..], &mut spans[..])
+        )
+        .map(|r| r.map(|r| r.records().count())),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    let p = HostSlots {
+        records_list: Some(pends),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&p)
+            .records_list(
+                ticketed(0),
+                "task",
+                b"",
+                None,
+                0,
+                (&mut buf[..], &mut spans[..])
+            )
+            .map(|r| r.map(|r| r.records().count())),
+        Poll::Pending
+    );
+    assert_eq!(
+        services(&table(None))
+            .records_list(
+                ticketed(0),
+                "task",
+                b"",
+                None,
+                0,
+                (&mut buf[..], &mut spans[..])
+            )
+            .map(|r| r.map(|r| r.records().count())),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+/// `records.claim` is won once and taken after; a claim with no time to live is REFUSED before the
+/// host is called; it pends only on a ticket.
+#[test]
+fn records_claim_is_won_once_and_a_claim_without_a_ttl_never_reaches_the_host() {
+    let t = HostSlots {
+        records_claim: Some(claims),
+        ..table(None)
+    };
+    let s = services(&t);
+    let ran = CLAIMS_RUN.load(Ordering::SeqCst);
+    assert_eq!(
+        s.records_claim(ticketed(0), "approval", b"k1", 0),
+        Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)))
+    );
+    assert_eq!(
+        CLAIMS_RUN.load(Ordering::SeqCst),
+        ran,
+        "never reached the host"
+    );
+    assert_eq!(
+        s.records_claim(ticketed(0), "approval", b"k1", 60_000),
+        Poll::Ready(Ok(true))
+    );
+    assert_eq!(
+        s.records_claim(ticketed(1), "approval", b"k1", 60_000),
+        Poll::Ready(Ok(false))
+    );
+    assert_eq!(
+        s.records_claim(ticketed(2), "approval", b"slow", 60_000),
+        Poll::Pending
+    );
+    assert_eq!(
+        s.records_claim(handle(), "approval", b"slow", 60_000),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    // `7` is neither `CLAIM_WON` nor `CLAIM_TAKEN`.
+    let b = HostSlots {
+        records_claim: Some(breaks),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&b).records_claim(ticketed(0), "approval", b"k1", 1),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    assert_eq!(
+        services(&table(None)).records_claim(ticketed(0), "approval", b"k1", 1),
+        Poll::Ready(Err(ServiceError::Unserved))
     );
 }
