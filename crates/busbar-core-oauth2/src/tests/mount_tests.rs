@@ -37,7 +37,7 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::oauth_as::config::{AsIdentity, OauthAsCfg};
+use crate::config::{AsIdentity, OauthAsCfg};
 use busbar_kernel::test_support::TestApp;
 
 use crate::testkit::{oauth_as_plane, TestAppOauthExt};
@@ -267,6 +267,8 @@ fn an_absent_block_resolves_to_no_authorization_server() {
     // block's absence rather than about `resolve` having quietly stopped reading the field at all.
     // Through the document entry point: `oauth_as:` is a 1.6.0-additive key, LIFTED off the
     // document before the frozen structs parse, so a bare `from_value` never sees it.
+    // `resolve` hands the opaque block to its owner through the seam, so the seam is installed.
+    crate::testkit::install_test_seam();
     let deploy: busbar_kernel::config::DeployCfg =
         busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
             "providers": {},
@@ -276,10 +278,11 @@ fn an_absent_block_resolves_to_no_authorization_server() {
         .expect("a deploy config carrying `oauth_as:` parses");
     let resolved = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("a config carrying a well-formed `oauth_as:` resolves");
-    let identity = resolved
+    let checked = resolved
         .oauth_as
         .as_ref()
-        .expect("`oauth_as:` was written, so the resolved config must carry the identity");
+        .expect("`oauth_as:` was written, so the resolved config must carry the accepted block");
+    let identity = crate::config::identity_of(&checked.block).expect("the accepted block is valid");
     assert_eq!(identity.issuer(), ISSUER);
 }
 

@@ -317,7 +317,7 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         format!("{a2a}/config.rs"),
         // `oauth_as:` — including the `default_grant` CEILING that decides what a self-registered
         // client may ever hold.
-        core_file(cx, &core, "oauth_as/config.rs")?,
+        "crates/busbar-core-oauth2/src/config.rs".to_string(),
         format!("{a2a}/creds.rs"),
         format!("{mcp}/config.rs"),
         // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY

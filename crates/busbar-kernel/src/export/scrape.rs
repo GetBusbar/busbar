@@ -10,9 +10,9 @@
 //! — is handed the recorder's SNAPSHOT (`ExportRequest::Scrape`) and the host serves the exposition
 //! it renders. On every scrape, on the route's blocking thread: with the recorder installed, the
 //! scrape-time gauges are refreshed from the LIVE `App` and every export-axis sink's `status` is
-//! folded (the recorder then holds everything it will report); then
-//! `busbar_plugin_loader::scrape::exposition` answers — the sink's rendering of the snapshot, the
-//! recorder's own text when the sink cannot render, or `503` while the recorder is not installed
+//! folded (the recorder then holds everything it will report); then [`exposition`] answers — the
+//! sink's rendering of the snapshot, the recorder's own text when the sink cannot render, or `503`
+//! while the recorder is not installed
 //! (its install runs on a background thread, and every data-plane listener accepts the moment its
 //! own bind completes, so a scrape can land first).
 
@@ -43,7 +43,7 @@ impl Scrape {
         let sink = self.sink.as_deref().and_then(super::plugin::opened);
         let own = installed.then(crate::metrics::render);
         let own_type = crate::metrics::PROMETHEUS_CONTENT_TYPE;
-        busbar_plugin_loader::scrape::exposition(sink.as_deref(), own, own_type)
+        exposition(sink.as_deref(), own, own_type)
     }
 }
 
@@ -61,6 +61,43 @@ impl PluginHttpDispatch for Scrape {
         _req: &EndpointRequest,
     ) -> EndpointResponse {
         self.serve(Some(app))
+    }
+}
+
+/// THE HOST'S SCRAPE ANSWER (K9d): `own` — the recorder's text exposition, served as
+/// `content_type` (the host's, 1.5.5's bytes) — rendered by `sink` through the export kind's
+/// `scrape` from its snapshot, as a `200`. With no sink, or one that cannot render (text the
+/// snapshot cannot place, a sink failing to answer — each logged), the answer is `own` itself, the
+/// bytes the snapshot would have been read from: a scrape never goes dark because a renderer did.
+/// No `own` (the recorder is not installed yet, or its install failed) is REFUSED — `503`,
+/// `Retry-After: 1` — never answered `200` with nothing: "not ready, retry" and "nothing to say"
+/// must be distinguishable on the wire.
+pub(crate) fn exposition(
+    sink: Option<&dyn busbar_contract::export_calls::ExportCalls>,
+    own: Option<String>,
+    content_type: &str,
+) -> EndpointResponse {
+    let Some(own) = own else {
+        let headers = vec![("retry-after".to_string(), "1".to_string())];
+        return EndpointResponse {
+            status: 503,
+            headers,
+            body: Vec::new(),
+        };
+    };
+    let rendered = sink.and_then(|sink| {
+        let families = busbar_contract::export_calls::parse_families(&own)
+            .map_err(|e| tracing::warn!(error = %e, "the recorder's exposition did not snapshot"))
+            .ok()?;
+        sink.scrape(&families)
+            .map_err(|e| tracing::warn!(error = %e, "the scrape sink did not render"))
+            .ok()
+    });
+    let body = rendered.unwrap_or_else(|| own.into_bytes());
+    EndpointResponse {
+        status: 200,
+        headers: vec![("content-type".to_string(), content_type.to_string())],
+        body,
     }
 }
 

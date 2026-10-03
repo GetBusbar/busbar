@@ -309,6 +309,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         dispatcher: Adopter::unwatched(),
         conns: None,
         max_inflight_cap: 8,
+        opening: None,
     })
     .expect("every selected instance binds");
     assert_eq!(loaded.bound.len(), selected.len());
@@ -353,6 +354,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
         dispatcher: Adopter::unwatched(),
         conns: None,
         max_inflight_cap: 8,
+        opening: None,
     })
     .unwrap_err();
     assert!(err.starts_with("door: ") && err.contains("repack"), "{err}");
@@ -765,5 +767,121 @@ fn a_candidate_carries_its_statements_needs() {
     assert_eq!(
         c.needs,
         vec![need(DIRECTION_INBOUND, "scheme-a", "ingress")]
+    );
+}
+
+/// The secret kind's resolver, for the boot witnesses: an `env` reference to `OIDC_SECRET`
+/// resolves to the auth witness's secret; anything else does not resolve.
+struct Resolver;
+
+impl busbar_contract::secret::SecretResolve for Resolver {
+    fn resolve(&self, r: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+        use crate::dispatch::ready::ready_plugins::auth;
+        match r.env_var() {
+            Some("OIDC_SECRET") => Ok(auth::SECRET.to_vec()),
+            _ => Err(format!("{} is not set", r.describe())),
+        }
+    }
+
+    fn resolve_string(&self, r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
+        self.resolve(r)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    }
+}
+
+/// Boot one auth instance `oidc` of the witness `door` named `name`, its settings block `settings`
+/// (JSON), through the one load with its opening: the number of instances bound, or the refusal.
+fn boot_auth(door: DoorFn, name: &str, settings: &str) -> Result<usize, String> {
+    use crate::dispatch::{DispatchConfig, Dispatcher};
+    let d = Dispatcher::new(DispatchConfig::default());
+    let c = Candidate::linked(door).expect("the auth witness states itself");
+    assert_eq!(c.kind, KindCode::Auth);
+    let root = kind_of(KindCode::Auth)
+        .root_key()
+        .expect("auth has a root key");
+    let plan = doc(&format!(
+        r#"{{"{root}": {{"oidc": {{"module": "{name}", "settings": {settings}}}}}}}"#
+    ));
+    let cands = [c];
+    let selected = select(&Uses::of(&plan), &cands);
+    assert_eq!(selected.len(), 1, "the auth entry selects the witness");
+    let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
+    load(&LoadRequest {
+        candidates: &cands,
+        selected: &selected,
+        logs: &logs,
+        metrics: Arc::new(NoSink),
+        dispatcher: d.adopter(),
+        conns: None,
+        max_inflight_cap: 8,
+        opening: Some(Opening {
+            doc: &plan,
+            dispatcher: &d,
+            secrets: &Resolver,
+        }),
+    })
+    .map(|l| l.bound.len())
+}
+
+/// DISCOVERY AT BOOT (ARCHITECT 2026-10-02): the one load OPENS every auth instance it binds and
+/// awaits its `ready` before it answers, so before any listener binds. RED: an auth door whose
+/// `ready` errs refuses the boot with the plugin's own text, named by its instance (1.5.5 refused
+/// the boot when discovery failed). The GREEN twin boots.
+#[test]
+fn red_an_auth_door_whose_ready_errs_refuses_the_boot_with_its_text() {
+    use crate::dispatch::ready::ready_plugins::auth::{with_ready, NAME};
+    assert_eq!(
+        boot_auth(
+            with_ready::door,
+            NAME,
+            r#""err:discovery: the issuer answered 503""#
+        ),
+        Err(
+            "oidc: plugin 'ready-auth-witness' ready failed: discovery: the issuer answered 503"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        boot_auth(with_ready::door, NAME, r#""pend""#),
+        Ok(1),
+        "a ready that pends boots after its wake"
+    );
+    assert_eq!(
+        boot_auth(with_ready::door, NAME, r#""ok""#),
+        Ok(1),
+        "the GREEN twin boots"
+    );
+}
+
+/// THE DECLARED SECRETS AT AUTH OPEN (ARCHITECT 2026-10-02): an auth door that declares a secret
+/// reference is handed it RESOLVED, through the secret kind, as its `OpenIn::secrets` entry — and
+/// the reference is gone from its settings. RED before the resolver: it was handed an empty list
+/// and its open refused. A reference that will not resolve refuses the boot, naming the key.
+#[test]
+fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
+    use crate::dispatch::ready::ready_plugins::auth::{with_secret, SECRET_NAME};
+    assert_eq!(
+        boot_auth(
+            with_secret::door,
+            SECRET_NAME,
+            r#"{"issuer": "https://idp", "client_secret": {"env": "OIDC_SECRET"}}"#
+        ),
+        Ok(1)
+    );
+    let unresolved = boot_auth(
+        with_secret::door,
+        SECRET_NAME,
+        r#"{"client_secret": {"env": "NOT_SET"}}"#,
+    )
+    .unwrap_err();
+    assert!(
+        unresolved.starts_with("oidc: settings.client_secret: the secret did not resolve"),
+        "{unresolved}"
+    );
+    let unset = boot_auth(with_secret::door, SECRET_NAME, "{}").unwrap_err();
+    assert_eq!(
+        unset,
+        "oidc: plugin 'secret-auth-witness' open failed: 1 secret(s) handed, not the resolved \
+         client_secret"
     );
 }

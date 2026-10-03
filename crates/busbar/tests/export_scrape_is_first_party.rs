@@ -65,7 +65,7 @@ fn free_port() -> u16 {
 
 /// `lib` packed UNSIGNED as a third-party `kind: export` tarball.
 fn write_third_party(dir: &Path, lib: &[u8]) {
-    let bytes = common::plugins::pack("export", THIRD_PARTY, lib, "acme");
+    let bytes = common::plugins::pack_stated("export", THIRD_PARTY, lib, "acme");
     std::fs::write(dir.join("plugins").join("tp.tar.gz"), bytes).unwrap();
 }
 

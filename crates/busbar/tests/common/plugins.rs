@@ -20,6 +20,7 @@
 use busbar_contract::abi::export::ExportStream;
 use busbar_plugin_loader::{
     dispatch::{
+        kinds::export::{Export, ExportFacts},
         kinds::transport::{Transport, TransportFacts},
         load_dropped, load_linked, rendering_of_library, Bind, DispatchConfig, Dispatcher,
         LinkedRow, NoSink, Plugin,
@@ -235,22 +236,37 @@ pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
     })
 }
 
-/// An in-tree export `cdylib` that loads as a sink carrying exactly the `metrics` stream, found by
-/// what it carries rather than by name.
+/// An in-tree export door `cdylib` that loads as a sink carrying exactly the `metrics` stream,
+/// found by what it carries rather than by name.
 pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
+    static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
+    let d = ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()));
     libraries().into_iter().find_map(|p| {
-        let bytes = std::fs::read(&p).ok()?;
-        let sink = load_export_from_bytes(&bytes, "{}", "probe", "export").ok()?;
-        (sink.streams() == [ExportStream::Metrics]).then_some(bytes)
+        let stated = rendering_of_library(&p).ok()??;
+        let bind = Bind {
+            instance: std::sync::Arc::from("probe"),
+            max_inflight_cap: 64,
+            sink: std::sync::Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: None,
+        };
+        let plugin = load_dropped::<Export>(&p, &stated, bind).ok()?;
+        let metrics = [ExportStream::Metrics as u8];
+        (plugin.context::<ExportFacts>()?.streams == metrics)
+            .then(|| std::fs::read(&p).ok())
+            .flatten()
     })
 }
 
-/// The export sink `lib` (loaded as `name`) handed `exposition` read into the recorder snapshot, as
-/// the host hands a sink serving `/metrics` its scrape: the `(content type, body)` it renders.
+/// The COLD export sink `lib` (loaded as `name`) handed `exposition` read into the recorder
+/// snapshot, as the host hands a sink serving `/metrics` its scrape: the `(content type, body)` it
+/// renders (M6-COLD-DELETE, with the cold export lane).
 pub fn render_snapshot(lib: &[u8], name: &str, exposition: &str) -> (String, String) {
-    let families = scrape::snapshot(exposition).expect("the snapshot reads");
+    let families =
+        busbar_contract::export_calls::parse_families(exposition).expect("the snapshot reads");
     let sink = load_export_from_bytes(lib, "{}", name, "export").expect("the sink loads");
-    sink.scrape(families).expect("the sink renders")
+    sink.scrape(scrape::cold_families(&families))
+        .expect("the sink renders")
 }
 
 /// THE NEUTRAL FRAME DOOR (the plugin loader's `neutral_frame_door` example): a transport door that

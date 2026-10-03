@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::oauth_as::config::{AsIdentity, OauthAsCfg};
+use crate::config::{AsIdentity, OauthAsCfg};
 #[cfg(test)]
 use busbar_kernel::state::App;
 use busbar_kernel::test_support::TestApp;
@@ -63,7 +63,7 @@ impl TestAppOauthExt for TestApp {
 /// and mount nothing, and every mount/flow test below would silently exercise dead code instead of
 /// the real mount. `std::sync::Once`-guarded because `install_as_plane_seam` panics on a second
 /// registration and every plane-building test calls this via `.oauth_as(cfg)`.
-fn install_test_seam() {
+pub(crate) fn install_test_seam() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(crate::install);
 }

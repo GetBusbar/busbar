@@ -26,8 +26,10 @@ use oauth_as::server::{
 };
 use oauth_as::store::MemoryStorage;
 
-use busbar_kernel::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
-use busbar_kernel::oauth_as::config::AsIdentity;
+use crate::config::AsIdentity;
+use busbar_kernel::diagnostics::{
+    diag_debug, diag_warn, OAUTH_AS_EPHEMERAL_SIGNING_KEY, OAUTH_AS_SWEEP_FAILED,
+};
 
 use super::signer::{RingEs256Key, RingEs256Verifier, RingPs256Verifier};
 
@@ -352,7 +354,7 @@ fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
 
 /// One validated `oauth_as.clients:` key as `oauth-as`'s JWK. `AsIdentity::from_cfg` already
 /// refused every shape but EC P-256 and RSA, so the members read here are present.
-fn public_jwk(k: &busbar_kernel::oauth_as::config::StaticClientJwk) -> oauth_as::jwt::Jwk {
+fn public_jwk(k: &crate::config::StaticClientJwk) -> oauth_as::jwt::Jwk {
     let member = |v: &Option<String>| v.clone().unwrap_or_default();
     if k.kty == "RSA" {
         oauth_as::jwt::Jwk::Rsa {
@@ -436,12 +438,38 @@ pub(crate) fn seam_verify_dpop(
 /// the function pointer `busbar_core_oauth2::install` actually registers; core cannot call
 /// [`AsPlane::build`] directly, since that would name this crate's type from busbar-core.
 pub(crate) fn seam_build(
-    identity: &AsIdentity,
-    key_material: Option<&str>,
+    block: &serde_yaml::Value,
+    secrets: Vec<(String, String)>,
     protected_resources: Vec<String>,
 ) -> Result<Arc<dyn std::any::Any + Send + Sync>, String> {
-    let plane = AsPlane::build(identity.clone(), key_material, protected_resources)
-        .map_err(|e| e.to_string())?;
+    let identity = crate::config::identity_of(block)?;
+    // The resolved signing-key material, handed back by the kernel under the path `check` reported
+    // the reference at. None configured means an ephemeral key, and that is said at `warn`.
+    let key_material = match identity.signing_key() {
+        None => {
+            diag_warn!(
+                OAUTH_AS_EPHEMERAL_SIGNING_KEY,
+                "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
+                 generated. Every token this deployment issues stops verifying when the \
+                 process restarts. Set `oauth_as.signing_key` for anything but a trial."
+            );
+            None
+        }
+        Some(_) => Some(
+            secrets
+                .iter()
+                .find(|(path, _)| path == crate::config::SIGNING_KEY_PATH)
+                .map(|(_, value)| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "{}: the reference was not resolved",
+                        crate::config::SIGNING_KEY_PATH
+                    )
+                })?,
+        ),
+    };
+    let plane =
+        AsPlane::build(identity, key_material, protected_resources).map_err(|e| e.to_string())?;
     let plane = Arc::new(plane);
     // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and it runs
     // when it is called and never otherwise. Spawned here, once per generation — unchanged from the

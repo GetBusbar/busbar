@@ -13853,10 +13853,11 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
 fn linked_export_axis() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let (name, alias, _, entry) = busbar_export_prometheus::linked::EXPORT;
-        busbar_kernel::test_support::export_axis::install_export_axis_with(vec![
-            busbar_plugin_loader::LinkedPlugin::first_party("export", name, alias, entry),
-        ]);
+        busbar_kernel::test_support::export_axis::install_first_party_door(
+            busbar_export_prometheus::NAME,
+            busbar_export_prometheus::ALIAS,
+            busbar_export_prometheus::door::door,
+        );
     });
 }
 

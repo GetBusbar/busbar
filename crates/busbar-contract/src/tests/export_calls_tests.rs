@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The recorder snapshot reader (K9a S6): what it reads, and what it refuses rather than guess.
+//! The recorder snapshot reader (`export_calls::parse_families`, K9a S6): what it reads, and what
+//! it refuses rather than guess.
 
 use super::*;
 
 /// A recorder exposition in the host recorder's own shape: a described counter, an undescribed
 /// counter, a gauge with escaped label values, a quantile summary and a bucketed histogram.
-pub(crate) const EXPOSITION: &str = "\
+const EXPOSITION: &str = "\
 # HELP busbar_requests_total Total ingress requests, by ingress protocol, pool, and outcome
 # TYPE busbar_requests_total counter
 busbar_requests_total{ingress_protocol=\"anthropic\",pool=\"p\",outcome=\"ok\"} 3
@@ -38,10 +39,16 @@ plugin_latency_seconds_count{plugin=\"s\"} 2
 
 #[test]
 fn the_snapshot_reads_every_family_type_in_order_losslessly() {
-    let families = snapshot(EXPOSITION).expect("reads");
+    let families = parse_families(EXPOSITION).expect("reads");
     let shape: Vec<(&str, &str, usize)> = families
         .iter()
-        .map(|f| (f.name.as_str(), f.kind.as_str(), f.samples.len()))
+        .map(|f| {
+            (
+                f.name.as_str(),
+                type_word(f.kind).unwrap_or("?"),
+                f.samples.len(),
+            )
+        })
         .collect();
     assert_eq!(
         shape,
@@ -60,7 +67,7 @@ fn the_snapshot_reads_every_family_type_in_order_losslessly() {
     );
     assert_eq!(families[3].samples[2].value, "0.3120000000000001");
     assert_eq!(families[1].help, None);
-    assert!(snapshot("").expect("an empty recorder").is_empty());
+    assert!(parse_families("").expect("an empty recorder").is_empty());
 }
 
 #[test]
@@ -75,6 +82,6 @@ fn what_the_snapshot_cannot_place_is_refused() {
         "# TYPE x counter\nx 1 1700000000\n\n",
         "# HELP x h\n# TYPE y counter\n\n",
     ] {
-        assert!(snapshot(bad).is_err(), "{bad:?} must be refused");
+        assert!(parse_families(bad).is_err(), "{bad:?} must be refused");
     }
 }

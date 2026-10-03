@@ -346,9 +346,13 @@ fn cold_verdict(v: AuthVerdict) -> Verified {
     }
 }
 
-/// One cold verify: its credential as the cold lane took it. The host's request carries none.
-fn cold_credential(_request: &VerifyRequest) -> Option<String> {
-    None
+/// One cold verify: its credential as the cold lane took it — the candidate the host lent
+/// ([`VerifyRequest::credential`]), as text; `None` = none presented.
+fn cold_credential(request: &VerifyRequest) -> Option<String> {
+    request
+        .credential
+        .as_ref()
+        .map(|c| String::from_utf8_lossy(c.expose_secret()).into_owned())
 }
 
 impl AuthCalls for ColdAuth {
