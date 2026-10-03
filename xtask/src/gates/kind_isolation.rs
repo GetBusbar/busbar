@@ -645,6 +645,52 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("cleanliness", "kernel"),
 ];
 
+/// THE EDGE CLASSES `BUSBAR-1.6.0.md` PART 0 ALLOWS IN RUST SOURCE, which are therefore LISTED
+/// without a row (ARCHITECT ruling 2026-10-02, KI-ZERO Q1: "an edge class the spec ALLOWS is not
+/// an excuse and must not sit in the standing file").
+///
+/// * `cleanliness -> kernel`, `cleanliness -> contract`: admin, oauth2 and the connector are the
+///   compiled-in cleanliness crates, "one-way dep on core" (Part 0 DECISIONS #5; :3780 R2/#37).
+/// * `plugin-tooling -> contract`: the loader names the ABI in the one crate the ABI lives in (#84).
+/// * `root -> cleanliness | contract | kernel | plugin-tooling`: the composition root names and
+///   wires every compiled-in crate (roster definition 1).
+///
+/// A class here owes no `[[dep]]`, `[[edge]]` or `[[cell]]` row: a missing row is not a finding.
+/// A row that exists is still read and compared like any other. Nothing else is touched: every
+/// other class, `cleanliness -> plane` and `kernel -> cleanliness` among them, is still refused
+/// when nobody wrote it down (`spec_allowed_is_exactly_the_part_0_classes`).
+const SPEC_ALLOWED_SOURCE: &[(&str, &str)] = &[
+    ("cleanliness", "contract"),
+    ("cleanliness", "kernel"),
+    ("plugin-tooling", "contract"),
+    ("root", "cleanliness"),
+    ("root", "contract"),
+    ("root", "kernel"),
+    ("root", "plugin-tooling"),
+];
+
+/// The MANIFEST half adds what Part 0 lets only a manifest say: "a Cargo manifest, a feature name, a
+/// build script, and the composition root's dependency list MAY name planes and transports — that is
+/// packaging stating what is in the box". The root's dependency on each plugin kind it links is
+/// that list. Rust source naming a plane or a transport is NOT granted here ([`SPEC_ALLOWED_SOURCE`]).
+const SPEC_ALLOWED_MANIFEST: &[(&str, &str)] = &[
+    ("root", "export"),
+    ("root", "hooks"),
+    ("root", "plane"),
+    ("root", "store"),
+    ("root", "transport"),
+];
+
+/// Is `from -> to` a class Part 0 allows in Rust source (the `:matrix` vocabulary row)?
+pub(super) fn spec_allows_source(from: &str, to: &str) -> bool {
+    SPEC_ALLOWED_SOURCE.contains(&(from, to))
+}
+
+/// Is `from -> to` a class Part 0 allows in a dependency list (the `:deps`/`:test-deps` rows)?
+pub(super) fn spec_allows_manifest(from: &str, to: &str) -> bool {
+    spec_allows_source(from, to) || SPEC_ALLOWED_MANIFEST.contains(&(from, to))
+}
+
 /// The kind `busbar-contract` resolves to — the one sink #40 leaves a plugin.
 pub(super) const CONTRACT_KIND: &str = "contract";
 
@@ -2730,6 +2776,11 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
             continue;
         }
         let Some(row) = listed.get(&(e.from.as_str(), e.to.as_str())) else {
+            // A CLASS PART 0 ALLOWS IS LISTED BY THE SPEC ([`spec_allows_manifest`]), so a missing
+            // row is not a finding. Every other class still owes its row.
+            if spec_allows_manifest(&e.class.0, &e.class.1) {
+                continue;
+            }
             scaffolds.push(dep_row_scaffold(half, e));
             offenders.push(format!(
                 "unlisted-dep-edge\t{} -> {}\t{} -> {} is a {} edge with no `[[dep]]` row in \
@@ -10918,6 +10969,53 @@ mod memo_tests {
                 };
                 assert_eq!(got, want, "line {raw:?}, path {path:?}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod spec_allowed_tests {
+    use super::{spec_allows_manifest, spec_allows_source};
+
+    /// ARCHITECT 2026-10-02 (KI-ZERO Q1): the Part 0 classes are listed by the spec, and NOTHING
+    /// else is. The RED half is the point: every class below must still owe a row.
+    #[test]
+    fn spec_allowed_is_exactly_the_part_0_classes() {
+        for (from, to) in [
+            ("cleanliness", "kernel"),
+            ("cleanliness", "contract"),
+            ("plugin-tooling", "contract"),
+            ("root", "cleanliness"),
+            ("root", "contract"),
+            ("root", "kernel"),
+            ("root", "plugin-tooling"),
+        ] {
+            assert!(spec_allows_source(from, to), "{from} -> {to}");
+            assert!(spec_allows_manifest(from, to), "{from} -> {to}");
+        }
+        // The root's dependency list may name what it links; its Rust source may not.
+        for to in ["plane", "transport", "store", "export", "hooks"] {
+            assert!(spec_allows_manifest("root", to), "root -> {to}");
+            assert!(!spec_allows_source("root", to), "root -> {to} in source");
+        }
+        for (from, to) in [
+            ("cleanliness", "plane"),
+            ("cleanliness", "transport"),
+            ("cleanliness", "hooks"),
+            ("cleanliness", "plugin-tooling"),
+            ("cleanliness", "cleanliness"),
+            ("kernel", "cleanliness"),
+            ("kernel", "plugin-tooling"),
+            ("kernel", "legacy"),
+            ("contract", "kernel"),
+            ("contract", "cleanliness"),
+            ("plane", "cleanliness"),
+            ("plugin-tooling", "kernel"),
+            ("root", "legacy"),
+            ("legacy", "contract"),
+        ] {
+            assert!(!spec_allows_source(from, to), "{from} -> {to}");
+            assert!(!spec_allows_manifest(from, to), "{from} -> {to}");
         }
     }
 }
