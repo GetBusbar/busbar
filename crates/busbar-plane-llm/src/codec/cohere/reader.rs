@@ -1243,6 +1243,20 @@ impl ProtocolReader for CohereReader {
         super::RESPONSE_BLOCKS
     }
 
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::STREAM_PATHS,
+            code: super::STREAM_CODE,
+        })
+    }
+
     fn read_response(
         &self,
         body: &serde_json::Value,

@@ -392,6 +392,200 @@ pub fn note_unmodelled_blocks(grammar: &[Blocks], body: &Value, message: &'stati
     }
 }
 
+/// Run `f` as one more piece of a TRANSLATE attempt that spans calls (a stream, one frame per
+/// call): a path in `seen` was already dropped and warned on this attempt, so it is not warned
+/// again; a path `f` drops for the first time is warned and appended to `seen`, for the audit at
+/// the attempt's end.
+pub fn scope_more<T>(seam: Seam<'_>, seen: &mut Vec<String>, f: impl FnOnce() -> T) -> T {
+    let open = Open {
+        direction: seam.direction,
+        ingress: seam.ingress.to_string(),
+        egress: seam.egress.to_string(),
+        paths: std::mem::take(seen),
+    };
+    let restore = Restore {
+        outer: Some(OPEN.with(|o| o.replace(Some(open)))),
+    };
+    let out = f();
+    *seen = restore.close().map(|o| o.paths).unwrap_or_default();
+    out
+}
+
+/// What a dialect's answers carry in one direction (design F3 "Drops", DF-MAP-IR-GAPS section E):
+/// the wire paths its map file lists (`map`, generated) and the ones its code carries that no row
+/// names (`code`: a structural member, a keepalive, a terminal error). A member of an answer that
+/// is neither, nor under one, does not cross a TRANSLATE attempt, and the walk names it.
+#[derive(Clone, Copy, Debug)]
+pub struct Carried {
+    pub map: &'static [&'static str],
+    pub code: &'static [&'static str],
+}
+
+/// Where a wire path stands against what a dialect carries.
+enum Cover {
+    /// It, or a path above it, is carried: its whole subtree crosses.
+    Carried,
+    /// A carried path lies below it: walk into it.
+    Above,
+    /// Nothing at or below it is carried: it is dropped.
+    Unmapped,
+}
+
+/// `path` lies under `top` (`top.x`, `top[]...`, `top.type=x`).
+fn under(path: &str, top: &str) -> bool {
+    path.len() > top.len()
+        && path.starts_with(top)
+        && matches!(path.as_bytes()[top.len()], b'.' | b'[')
+}
+
+fn join(path: &str, step: &str) -> String {
+    if path.is_empty() {
+        step.to_string()
+    } else {
+        format!("{path}.{step}")
+    }
+}
+
+impl Carried {
+    fn all(&self) -> impl Iterator<Item = &&'static str> {
+        self.map.iter().chain(self.code.iter())
+    }
+
+    fn cover(&self, path: &str) -> Cover {
+        let mut above = false;
+        for q in self.all() {
+            if path == *q || under(path, q) {
+                return Cover::Carried;
+            }
+            above |= under(q, path);
+        }
+        if above {
+            Cover::Above
+        } else {
+            Cover::Unmapped
+        }
+    }
+
+    /// The objects at `path` are a union keyed by their `type` member (notation A `type=<arm>`).
+    fn uses_arms(&self, path: &str) -> bool {
+        let arm = join(path, "type=");
+        self.all().any(|q| q.starts_with(&arm))
+    }
+
+    /// The notation-A path of every member of `body` (read at `root`, `""` for the document's
+    /// root) that this dialect does not carry, the shallowest only, each once, in the order met. A
+    /// `null` member carries nothing and is not named.
+    pub fn unmapped(&self, root: &str, body: &Value) -> Vec<String> {
+        // A frame keyed by its event name: an event the dialect does not carry is named whole, and
+        // one it carries whole names nothing below it.
+        if !root.is_empty() {
+            match self.cover(root) {
+                Cover::Carried => return Vec::new(),
+                Cover::Unmapped => return vec![root.to_string()],
+                Cover::Above => {}
+            }
+        }
+        let mut out = Vec::new();
+        self.walk(body, root, &mut out);
+        out
+    }
+
+    fn walk(&self, v: &Value, path: &str, out: &mut Vec<String>) {
+        fn push(p: String, out: &mut Vec<String>) {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+        match v {
+            Value::Array(items) => {
+                let p = format!("{path}[]");
+                for item in items {
+                    self.walk(item, &p, out);
+                }
+            }
+            Value::Object(obj) => {
+                let arm = obj
+                    .get(crate::codec::keys::TYPE)
+                    .and_then(Value::as_str)
+                    .filter(|_| self.uses_arms(path));
+                let base = match arm {
+                    Some(kind) => {
+                        let b = join(path, &format!("type={kind}"));
+                        match self.cover(&b) {
+                            Cover::Carried => return,
+                            Cover::Unmapped => return push(b, out),
+                            Cover::Above => b,
+                        }
+                    }
+                    None => path.to_string(),
+                };
+                for (key, child) in obj {
+                    if child.is_null() || (arm.is_some() && key == crate::codec::keys::TYPE) {
+                        continue;
+                    }
+                    let p = join(&base, key);
+                    match self.cover(&p) {
+                        Cover::Carried => {}
+                        Cover::Unmapped => push(p, out),
+                        Cover::Above => self.walk(child, &p, out),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The warn of an answer member the caller's dialect has no form for.
+pub const UNMAPPED_ANSWER_MEMBER: &str =
+    "dropping an answer member on the cross-protocol seam: the far end's dialect carries it and \
+     the caller's has no form for it, so it is NOT delivered (nothing is put in its place). Route \
+     the request to a same-protocol lane if the member is load-bearing";
+
+/// Drop, on the open attempt, every member of `body` (read at `root`) that `carried` does not
+/// carry.
+pub fn note_unmapped(carried: &Carried, root: &str, body: &Value) {
+    for path in carried.unmapped(root, body) {
+        note(Dropped::new(
+            path,
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            UNMAPPED_ANSWER_MEMBER,
+        ));
+    }
+}
+
+/// Read ONE far-end stream frame on a TRANSLATE attempt, for either host (the engine's stream
+/// translator, the plane's own crossing; design F7): the far end's `reader` decodes it, and the
+/// drop walk names what the caller's dialect will not get, once per path per STREAM (the paths
+/// already dropped ride `state.dropped`, read for the audit at the stream's end).
+pub fn read_stream_frame(
+    seam: Seam<'_>,
+    reader: &dyn crate::codec::proto_codec::ProtocolReader,
+    event_type: &str,
+    data: &Value,
+    state: &mut crate::codec::ir::StreamDecodeState,
+) -> Vec<crate::codec::ir::IrStreamEvent> {
+    // A same-dialect stream is a relay: its reader is a tap and drops nothing.
+    if seam.ingress == seam.egress {
+        return reader.read_response_events(event_type, data, state);
+    }
+    let mut seen = std::mem::take(&mut state.dropped);
+    let events = scope_more(seam, &mut seen, || {
+        let events = reader.read_response_events(event_type, data, state);
+        if let Some(carried) = reader.stream_carried() {
+            let root = if reader.stream_keyed_by_event() {
+                event_type
+            } else {
+                ""
+            };
+            note_unmapped(&carried, root, data);
+        }
+        events
+    });
+    state.dropped = seen;
+    events
+}
+
 #[cfg(test)]
 #[path = "tests/drops_tests.rs"]
 mod tests;

@@ -317,6 +317,10 @@ const PARKED: &[crate::codec::drops::Parked] = &[
     },
 ];
 
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// The per-modality output split is read into the usage detail. A stream frame is an answer.
+const RESPONSE_CODE: &[&str] = &["usageMetadata.candidatesTokensDetails"];
+
 /// Router-internal shim key the gemini ingress route injects into the request body when the client
 /// sent a streaming `:streamGenerateContent` request WITHOUT `?alt=sse` (so the response must be the
 /// JSON-array streaming format, not SSE). It rides alongside the `model`/`stream` shims. Single

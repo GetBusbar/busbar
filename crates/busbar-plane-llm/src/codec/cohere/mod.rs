@@ -321,6 +321,11 @@ const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::B
 /// promotes, it takes back out of `extra`).
 const PARKED: &[crate::codec::drops::Parked] = &[];
 
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// The prompt-cache hit count is read into the usage.
+const RESPONSE_CODE: &[&str] = &["usage.cached_tokens"];
+const STREAM_CODE: &[&str] = &[];
+
 /// The cohere wire word `texts`, spelled once.
 const TEXTS: &str = "texts";
 

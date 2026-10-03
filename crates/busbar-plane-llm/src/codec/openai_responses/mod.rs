@@ -1086,6 +1086,21 @@ const PARKED: &[crate::codec::drops::Parked] = &[
     },
 ];
 
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// The terminal error and the lifecycle `queued` event are carried by code; the `.done` / part events
+// repeat what the deltas already carried; annotations are read into citations.
+const RESPONSE_CODE: &[&str] = &[];
+const STREAM_CODE: &[&str] = &[
+    "type=error",
+    "type=response.queued",
+    "type=response.function_call_arguments.done",
+    "type=response.reasoning_text.done",
+    "type=response.reasoning_summary_text.done",
+    "type=response.reasoning_summary_part.added",
+    "type=response.reasoning_summary_part.done",
+    "type=response.output_text.annotation.added",
+];
+
 /// Build an IR `Image` block from a Responses `input_image` content object. Prefers an inline
 /// `image_url` (parsed via the shared `parse_image_url` into a `Base64`/`Url` source). Otherwise, an
 /// uploaded-file reference becomes the typed `FileId` source so the writer reconstructs the native

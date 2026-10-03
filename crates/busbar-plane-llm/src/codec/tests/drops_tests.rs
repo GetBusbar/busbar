@@ -568,3 +568,53 @@ fn cohere_answer_drops_name_the_wire_path() {
         &["message.content[].type=x_future"],
     );
 }
+
+// ───────────────────────────── the answer walk ─────────────────────────────
+
+/// The walk names the shallowest member nothing carries, reads a union by its `type` arm where the
+/// map spells arms, treats a carried path as carrying its subtree, and skips a `null`.
+#[test]
+fn the_answer_walk_names_the_shallowest_uncarried_member() {
+    let carried = crate::codec::drops::Carried {
+        map: &[
+            "id",
+            "content",
+            "usage.input_tokens",
+            "type=message_start",
+            "type=content_block_delta.delta.type=text_delta",
+        ],
+        code: &["type=ping"],
+    };
+    let answer = json!({"id": "m", "content": [{"type": "x", "deep": 1}], "container": {"id": "c"},
+        "usage": {"input_tokens": 1, "output_tokens_details": {"t": 1}}, "stop_details": null});
+    assert_eq!(
+        carried.unmapped("", &answer),
+        vec!["container", "usage.output_tokens_details"]
+    );
+    let frame = |v: Value| carried.unmapped("", &v);
+    assert!(frame(json!({"type": "message_start", "message": {"anything": 1}})).is_empty());
+    assert!(frame(json!({"type": "ping"})).is_empty());
+    assert_eq!(frame(json!({"type": "zz", "a": 1})), vec!["type=zz"]);
+    let mut named = frame(json!({"type": "content_block_delta", "index": 0,
+        "delta": {"type": "zz_delta", "x": 1}}));
+    named.sort();
+    assert_eq!(
+        named,
+        vec![
+            "type=content_block_delta.delta.type=zz_delta",
+            "type=content_block_delta.index"
+        ]
+    );
+    // Keyed by the event name: the walk starts at the event.
+    let keyed = crate::codec::drops::Carried {
+        map: &["contentBlockDelta.delta.text"],
+        code: &[],
+    };
+    assert_eq!(
+        keyed.unmapped(
+            "contentBlockDelta",
+            &json!({"delta": {"text": "a", "zz": 1}})
+        ),
+        vec!["contentBlockDelta.delta.zz"]
+    );
+}

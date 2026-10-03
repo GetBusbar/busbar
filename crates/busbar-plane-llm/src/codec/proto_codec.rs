@@ -209,6 +209,23 @@ pub trait ProtocolReader: Send + Sync {
     fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
         &[]
     }
+
+    /// What the dialect's buffered answers carry, for the drop walk (design F3 "Drops"). `None`
+    /// walks nothing.
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        None
+    }
+
+    /// What the dialect's stream frames carry, for the drop walk. `None` walks nothing.
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        None
+    }
+
+    /// The dialect's stream frames are keyed by their event name (the event is the root member of
+    /// its wire paths: Bedrock's `contentBlockDelta.delta...`).
+    fn stream_keyed_by_event(&self) -> bool {
+        false
+    }
 }
 
 pub trait ProtocolWriter: Send + Sync {

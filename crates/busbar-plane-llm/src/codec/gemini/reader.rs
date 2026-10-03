@@ -1597,6 +1597,20 @@ impl ProtocolReader for GeminiReader {
     fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
         super::RESPONSE_BLOCKS
     }
+
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+        })
+    }
 }
 
 #[cfg(test)]

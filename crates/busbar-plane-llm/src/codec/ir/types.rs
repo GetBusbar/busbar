@@ -1562,6 +1562,9 @@ pub enum IrDelta {
 /// the text/thinking blocks are open, and which OpenAI tool_call indices have been opened.
 #[derive(Debug, Clone, Default)]
 pub struct StreamDecodeState {
+    /// The far-end wire paths this stream already dropped on a TRANSLATE attempt, each warned once;
+    /// read for the audit at the stream's end (`codec::drops::read_stream_frame`).
+    pub dropped: Vec<String>,
     pub started: bool,
     pub text_block_open: bool,
     /// The IR block index the Gemini reader assigned to the text block, by order of FIRST appearance

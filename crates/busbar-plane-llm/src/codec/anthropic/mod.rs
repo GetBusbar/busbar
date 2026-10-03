@@ -407,6 +407,12 @@ const PARKED: &[crate::codec::drops::Parked] = &[
     },
 ];
 
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// `stop_details` (the refusal category) is read beside the stop reason; the stream's block index is
+// structure; `ping` is a keepalive and `error` the terminal error, both carried by code.
+const RESPONSE_CODE: &[&str] = &[STOP_DETAILS];
+const STREAM_CODE: &[&str] = &["type=content_block_delta.index", "type=ping", "type=error"];
+
 /// The native Anthropic content-block `type` values [`read_block`] holds whole in the IR; used to
 /// find which raw blocks need parking under [`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`] without
 /// duplicating `read_block`'s parse logic.
