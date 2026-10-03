@@ -150,30 +150,43 @@ async fn an_agents_card_prices_the_bytes_and_a_budget_cap_trips_on_a2a() {
     assert_eq!(h.sent().len(), 1, "the refused call never left");
 }
 
-/// #42 SCOPED TO THE PLANE: a PRESENT `agents.rate_card` silent about the agent the traffic hit
-/// REFUSES — the first hop is served and ledgered, then the door cannot price the bucket and refuses,
-/// and the bucket's usage read fails. Never a silent 0.
-#[tokio::test]
-async fn a_present_agents_card_silent_about_the_agent_refuses() {
+/// #42 SCOPED TO THE PLANE, AT BOOT (#77(5)): a PRESENT `agents.rate_card` silent about an agent
+/// under `agents:` REFUSES the config, naming a paste-ready stub for exactly the agents it misses.
+/// The agent set is config, so the gap is known before any hop: no hop to it is ever served and
+/// ledgered on a lane no card prices (which made every read of the caller's bucket fail, and with it
+/// every plane's budget admission, until the window rolled). A card pricing every agent boots.
+#[test]
+fn a_present_agents_card_silent_about_an_agent_refuses_the_config() {
     crate::testkit::install_test_seams();
-    let h = harness_priced(
-        Outcome::AnswersCorrelated(200, backend_ok()),
-        composed_card("agents:\n  rate_card:\n    agent:payments: { units: { bytes: 10000 } }\n"),
-        vec![per_day(LimitMetric::Budget, 1_000_000)],
-    )
-    .await;
-    let (status, body) = call(&h).await;
-    assert_eq!(status, 200, "call 1 is served: {body}");
-    assert!(bytes_ledgered(&h).is_some_and(|b| b > 0));
-    let (status, body) = call(&h).await;
-    assert_ne!(
-        status, 200,
-        "call 2 is REFUSED: the agents card cannot price the bytes call 1 ledgered: {body}"
+    let resolved = |card: &str| {
+        let text = format!(
+            "providers: {{}}\nmodels: {{}}\nagents:\n  \
+             planner: {{ url: https://planner.example/a2a, pin: {{ mechanism: unpinned }} }}\n  \
+             payments: {{ url: https://payments.example/a2a, pin: {{ mechanism: unpinned }} }}\n  \
+             rate_card:\n{card}"
+        );
+        let deploy = config::deploy_from_yaml_str(&text).expect("the config parses");
+        config::resolve(&deploy, &Default::default()).expect("resolves")
+    };
+    let silent = resolved("    agent:payments: { units: { bytes: 10000 } }\n");
+    assert_eq!(
+        validate(&silent),
+        Err(vec![
+            "agents.rate_card is present but 1 fronted agent has no rate entry (a present card is \
+             AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+             Paste these under agents.rate_card and fill in your rates:\n\n    \
+             agent:planner: { units: { bytes: 0 } }\n"
+                .to_string()
+        ]),
+        "a card silent about `planner` refuses before any hop to it can be ledgered"
     );
-    assert_eq!(h.sent().len(), 1);
-    assert!(
-        group_spend(&h).is_err(),
-        "the usage read refuses rather than reading 0"
+    let complete = resolved(
+        "    agent:payments: { units: { bytes: 10000 } }\n    agent:planner: { units: { bytes: 0 } }\n",
+    );
+    assert_eq!(
+        validate(&complete),
+        Ok(()),
+        "a card pricing every agent boots"
     );
 }
 
