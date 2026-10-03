@@ -38,9 +38,14 @@ fn listed_names(manifest: &str) -> Vec<String> {
         names.push(module);
     }
     for (_, path) in metadata_map(manifest, "package.metadata.busbar.linked-entry") {
-        // `crate::root::<module>` — the module is the name.
-        if let Some(module) = path.rsplit("::").next() {
-            names.push(module.to_string());
+        // `crate::root::<module>` — the module is the name. Any other entry is a path into a linked
+        // crate (`busbar_secret_env::door`): the crate is the name, never its module (`door`).
+        let name = match path.strip_prefix("crate::") {
+            Some(rest) => rest.rsplit("::").next(),
+            None => path.split("::").next(),
+        };
+        if let Some(name) = name {
+            names.push(name.to_string());
         }
     }
     names.sort();
