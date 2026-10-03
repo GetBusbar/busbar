@@ -451,6 +451,14 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
              `ProviderCfg`, which IS walked.",
         ),
     ),
+    (
+        "ProviderRoute",
+        SecretBearing::NotInResolvedConfig(
+            "the composition root's copy of a RESOLVED `ProviderCfg` (`root::door_steps::\
+             provider_routes`), made for a door plane's members after the `ProviderCfg` it copies \
+             was walked; it is never part of `RootCfg`.",
+        ),
+    ),
 ];
 
 /// How [`secret_refs`] accounts for one secret-bearing type. See [`SECRET_BEARING_TYPES`].

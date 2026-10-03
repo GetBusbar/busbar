@@ -69,6 +69,7 @@ fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
         &composed_services(),
         &sections,
         &move || Arc::clone(&one),
+        None,
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));

@@ -392,6 +392,7 @@ pub fn compose_served(
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    reach: &crate::root::door_steps::DoorReach<'_>,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -411,13 +412,17 @@ pub fn compose_served(
                 Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
             ))
         };
-        let mut served = compose_planes(doors, dispatcher, late, sections, &money)?;
+        let egress = DoorEgress {
+            reach,
+            journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+        };
+        let mut served = compose_planes(doors, dispatcher, late, sections, &money, Some(&egress))?;
         served.post = Some(post);
         Ok(served)
     }
     #[cfg(not(linked_axis_node))]
     {
-        let _ = (gov, dispatcher, late);
+        let _ = (gov, dispatcher, late, reach);
         match doors
             .iter()
             .find(|(_, plugin)| sections.contains_key(plugin.served().section))
@@ -431,6 +436,15 @@ pub fn compose_served(
     }
 }
 
+/// WHAT A DOOR PLANE'S EGRESS IS SEALED OVER: how its members are reached ([`DoorReach`]) and the
+/// journal its walk's dispatch records are written to (the node's end post, ARCHITECT P3 (c)).
+pub struct DoorEgress<'a> {
+    /// The process's reach.
+    pub reach: &'a crate::root::door_steps::DoorReach<'a>,
+    /// The write-ahead dispatch record.
+    pub journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
+}
+
 /// THE DOOR PLANES' COMPOSITION (ARCHITECT Q-SW4, 2026-10-02): every plane bound through its door
 /// (`root::linked::door_planes`) whose declared section this deployment writes (LAW 7: a plugin
 /// loads iff its section is present) is opened with that section as its settings, and composed:
@@ -438,19 +452,21 @@ pub fn compose_served(
 /// minted), a [`PlaneDriver`] admitted to the kernel's composed services with the plane's tail
 /// facts and the money steps `money` builds for it, the pools its section states, and its admin
 /// routes published on the admin router's table (`plane_driver::serve`, K-SERVE). A plane whose
-/// section is absent stays bound and unopened, as before. No egress is sealed here (see
-/// [`ServedPlane::egress`]). The data routes are mounted by [`mount`].
+/// section is absent stays bound and unopened, as before. With `egress`, each plane's egress is
+/// sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every walk is
+/// exhausted at once). The data routes are the data router's construction ([`data_routes`]).
 ///
 /// # Errors
 ///
-/// A plane that will not open, publish a snapshot, be admitted or publish its admin routes, named:
-/// the boot refuses it, as it refuses a plane that will not bind.
+/// A plane that will not open, publish a snapshot, be admitted, publish its admin routes or seal
+/// its members' routes, named: the boot refuses it, as it refuses a plane that will not bind.
 pub fn compose_planes(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
+    egress: Option<&DoorEgress<'_>>,
 ) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
@@ -540,30 +556,59 @@ pub fn compose_planes(
                 ));
             }
         }
+        let facts = door_facts(
+            plugin.name(),
+            &declared.scope_kinds,
+            &served_facts.billable_classes,
+            &served_facts.fee_units,
+            served_facts.audit_kind,
+            served_facts
+                .keeps
+                .iter()
+                .map(|k| busbar_kernel::plane_driver::ResponseKeep {
+                    mode: k.mode,
+                    kept: k.kept.iter().map(|n| (*n).to_string()).collect(),
+                    denied: k.denied.iter().map(|n| (*n).to_string()).collect(),
+                })
+                .collect(),
+        );
+        let pools = DoorPools::of(section);
+        // THE EGRESS, SEALED (THE DESIGN §6 steps 2-3): each member's route resolved and its
+        // credential bound by the auth plugin serving its style, over the connector its needs were
+        // declared on.
+        let egress = match egress {
+            Some(egress) => {
+                let routes = crate::root::door_steps::member_routes(
+                    section,
+                    &pools,
+                    &served_facts,
+                    egress.reach,
+                )
+                .map_err(|e| format!("{instance}: {e}"))?;
+                Some(Arc::new(
+                    crate::root::door_steps::compose_egress(
+                        &facts,
+                        &pools,
+                        plugin.instance(),
+                        Arc::clone(&egress.reach.conns),
+                        &routes,
+                        Arc::clone(&egress.journal),
+                        egress.reach.stream_ceiling_secs,
+                    )
+                    .map_err(|e| format!("{instance}: {e}"))?,
+                ))
+            }
+            None => None,
+        };
         served.planes.push(ServedPlane {
             instance: instance.clone(),
             driver: Arc::new(driver),
             snapshot,
             audit_kind: served_facts.audit_kind,
-            facts: door_facts(
-                plugin.name(),
-                &declared.scope_kinds,
-                &served_facts.billable_classes,
-                &served_facts.fee_units,
-                served_facts.audit_kind,
-                served_facts
-                    .keeps
-                    .iter()
-                    .map(|k| busbar_kernel::plane_driver::ResponseKeep {
-                        mode: k.mode,
-                        kept: k.kept.iter().map(|n| (*n).to_string()).collect(),
-                        denied: k.denied.iter().map(|n| (*n).to_string()).collect(),
-                    })
-                    .collect(),
-            ),
-            pools: DoorPools::of(section),
+            facts,
+            pools,
             money: plane_money,
-            egress: None,
+            egress,
             kernel: Arc::clone(&kernel),
         });
     }

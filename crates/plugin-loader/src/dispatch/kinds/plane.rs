@@ -124,6 +124,14 @@ pub struct ServedFacts {
     /// Each need's response-head rule, in Statement need order (`Need::keep_mode`, its kept and
     /// denied names): what of a far end's head the host hands the plane on that need.
     pub keeps: Vec<NeedKeep>,
+    /// Each need's direction and auth element, in Statement need order (`Need::direction`,
+    /// `Need::auth`): what a member's resolved style is matched against at config load.
+    pub need_auths: Vec<(u32, &'static str)>,
+    /// The tail's dialects, in order.
+    pub dialects: Vec<&'static str>,
+    /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index
+    /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this).
+    pub dialect_auth: Vec<(u32, &'static str)>,
 }
 
 /// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
@@ -210,6 +218,18 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                         .map(kept)
                         .collect(),
                 })
+                .collect(),
+            need_auths: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| (n.direction, kept(n.auth)))
+                .collect(),
+            dialects: listed(tail.dialects, tail.dialects_len)
+                .into_iter()
+                .map(kept)
+                .collect(),
+            dialect_auth: listed(tail.dialect_auth, tail.dialect_auth_len)
+                .into_iter()
+                .map(|d| (d.dialect, kept(d.style)))
                 .collect(),
         },
     })

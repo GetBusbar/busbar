@@ -319,6 +319,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-a2a",
  "busbar-auth-admin-tokens-plugin",
+ "busbar-auth-header",
  "busbar-auth-oidc",
  "busbar-auth-oidc-plugin",
  "busbar-contract",

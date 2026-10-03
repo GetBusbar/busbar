@@ -946,6 +946,11 @@ pub fn dropped_from_config(
     Some(REGISTRY.get_or_init(|| registry))
 }
 
+/// The plugin registry [`dropped_from_config`] built and kept, once it has (no rescan).
+pub fn dropped_registry() -> Option<&'static crate::root::loader::PluginRegistry> {
+    REGISTRY.get()
+}
+
 /// The one plugin registry [`dropped_from_config`] builds, held for the process.
 static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();

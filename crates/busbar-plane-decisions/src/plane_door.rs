@@ -42,12 +42,12 @@ use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
-    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, CLAIM_EXACT,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
-    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_OPTIONAL, PRINCIPAL_REQUIRED,
-    ROUTE_DIRECT, SHAPE_WHOLE, UNITS_REPORTED,
+    ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
+    PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
+    CANCEL_ABORTED, CLAIM_EXACT, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    FROM_KERNEL, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
+    PRINCIPAL_OPTIONAL, PRINCIPAL_REQUIRED, ROUTE_DIRECT, SHAPE_WHOLE, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
@@ -102,6 +102,13 @@ const SECTIONS: &[Section] = &[
 ];
 
 const DIALECTS: &[AbiStr] = &[abi_str(tail::DIALECTS[0])];
+
+/// The dialect's default outbound style ([`tail::DIALECT_AUTH`]).
+const DIALECT_AUTH: &[DialectAuth] = &[DialectAuth {
+    dialect: tail::DIALECT_AUTH[0].0,
+    _reserved: 0,
+    style: abi_str(tail::DIALECT_AUTH[0].1),
+}];
 
 const SCOPE_KINDS: &[AbiStr] = &[abi_str(tail::SCOPE_KINDS[0])];
 
@@ -163,8 +170,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     cli_help: NONE,
     dialects: DIALECTS.as_ptr(),
     dialects_len: DIALECTS.len(),
-    dialect_auth: ptr::null(),
-    dialect_auth_len: 0,
+    dialect_auth: DIALECT_AUTH.as_ptr(),
+    dialect_auth_len: DIALECT_AUTH.len(),
     scope_kinds: SCOPE_KINDS.as_ptr(),
     scope_kinds_len: SCOPE_KINDS.len(),
     op_classes: OP_CLASSES.as_ptr(),

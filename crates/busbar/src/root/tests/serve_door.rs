@@ -19,17 +19,17 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use busbar_contract::caps::ReasonCode;
-use busbar_contract::conn::{DeclaredConns, NeedId, PollConns};
+use busbar_contract::conn::{DeclaredConns, PollConns};
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SEP};
-use busbar_kernel::plane_driver::{refusal_status, EndPost, MemberRoute, PlaneMoney};
+use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
 use busbar_plane_decisions::plane_door::door as jev_door;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, money, Published, PUBLISHING};
-use super::{compose_planes, door_routes};
-use crate::root::door_steps::compose_egress;
+use super::{compose_planes, door_routes, DoorEgress};
+use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
     load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
@@ -54,6 +54,9 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
 
 /// The jev plane's one claim, with one model configured.
 const CLAIMED: &str = "/v1/systemone";
+
+/// The provider's credential, as its file holds it.
+const CREDENTIAL: &str = "sk-door-test";
 
 /// The far end's answer: a decision, and the one unit it reports using.
 const ANSWER: &str = r#"{"id":"d-1","decision":"approve","usage":{"units":1}}"#;
@@ -169,7 +172,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         },
     )
     .expect("the linked door binds");
-    let caller = plane.instance();
     let section_key = plane.served().section;
 
     // THE MONEY: a signing governance book with one minted key, the node's book bound.
@@ -204,10 +206,33 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         ))
     };
 
-    // THE COMPOSITION: the door opened with its section (one model), driven, its egress sealed:
-    // the one entry's route is the far end on loopback over the door's one declared need. (Which
-    // need a member dials is resolved from its auth key at config load, `resolve_member_needs`;
-    // the decisions door's one outbound need is need 0.)
+    // THE PROVIDER the one model names, as the deployment configures it: the far end on loopback,
+    // its credential a file reference, no `auth:` (so the decisions dialect's default style).
+    let key_file = std::env::temp_dir().join(format!("busbar-serve-door-{}", std::process::id()));
+    std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
+    let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
+        "{{protocol: jev, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
+        key_file.display()
+    ))
+    .expect("a provider entry");
+    let providers = provider_routes(&std::collections::HashMap::from([(
+        "typesafe".to_string(),
+        provider,
+    )]));
+    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let auths = OutboundAuths::new(Arc::clone(&dispatcher), crate::LINKED.auths, None);
+    let reach = DoorReach {
+        providers: &providers,
+        secrets: &secrets,
+        auths: &auths,
+        conns: Arc::clone(&connector) as Arc<dyn PollConns>,
+        stream_ceiling_secs: 600,
+    };
+
+    // THE COMPOSITION, AS PRODUCTION SEALS IT: the door opened with its section (one model),
+    // driven, and its egress sealed by the composition itself — the member's provider resolved,
+    // its style the dialect's default, its need the one that style names, its credential bound by
+    // the linked auth plugin serving that style. Nothing is sealed by hand.
     let mut sections = BTreeMap::new();
     sections.insert(
         section_key,
@@ -219,30 +244,18 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &composed_services(),
         &sections,
         &plane_money,
+        Some(&DoorEgress {
+            reach: &reach,
+            journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+        }),
     )
-    .expect("the door plane composes");
-    let routes = BTreeMap::from([(
-        "jev".to_string(),
-        MemberRoute {
-            need: NeedId(0),
-            base_url: format!("http://127.0.0.1:{port}"),
-            auth: None,
-            provider: "typesafe".to_string(),
-            keep: busbar_kernel::plane_driver::ResponseKeep::default(),
-        },
-    )]);
+    .expect("the door plane composes, its egress sealed");
+    let _ = std::fs::remove_file(&key_file);
     let composed = &mut served.planes[0];
-    let egress = compose_egress(
-        &composed.facts,
-        &composed.pools,
-        caller,
-        Arc::clone(&connector) as Arc<dyn PollConns>,
-        &routes,
-        Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
-        600,
-    )
-    .expect("the egress seals");
-    composed.egress = Some(Arc::new(egress));
+    assert!(
+        composed.egress.is_some(),
+        "the composition sealed its egress"
+    );
     let money_steps = Arc::clone(&composed.money);
     let plane_key = composed.facts.plane.clone();
     served.post = Some(Arc::clone(&post));
@@ -273,6 +286,11 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     // THE FAR END HEARD THE PLANE'S REQUEST, through the connector.
     let head = heard.recv().await.expect("the far end was dialled");
     assert!(head.starts_with("POST /v1/systemone "), "{head}");
+    assert!(
+        head.lines()
+            .any(|l| l.eq_ignore_ascii_case(&format!("authorization: Bearer {CREDENTIAL}"))),
+        "the member's credential, presented by the auth plugin serving its style: {head}"
+    );
     assert!(
         head.ends_with(r#"{"state":{"amount":7}}"#),
         "the caller's body: {head}"
@@ -347,6 +365,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         &composed_services(),
         &sections,
         &money,
+        None,
     )
     .expect("the door plane composes");
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");

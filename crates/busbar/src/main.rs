@@ -927,6 +927,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .as_ref()
         .map(|a| a.chain.iter().map(|e| e.name.clone()).collect())
         .unwrap_or_default();
+    // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
+    // DESIGN §6 step 2), captured before `cfg` is consumed.
+    let door_providers = root::door_steps::provider_routes(&cfg.providers);
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]
@@ -995,13 +998,31 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
     root::serve::attach(&late_services, signer, &app.demotion_record, &planes);
     // THE DOOR PLANES, COMPOSED (`root::serve::compose_served`): opened, driven and ticked here, once,
-    // their money posted onto the process's one node.
+    // their money posted onto the process's one node, each member's egress sealed over the
+    // deployment's providers, the auth plugins that serve its style (the build's own rows, then
+    // the plugins directory's) and the one connector their needs were declared on.
+    let door_auths = root::door_steps::OutboundAuths::new(
+        root::dispatch::dispatcher(),
+        LINKED.auths,
+        root::linked::dropped_registry(),
+    );
+    let door_reach = root::door_steps::DoorReach {
+        providers: &door_providers,
+        secrets: &*app.secret_resolver,
+        auths: &door_auths,
+        conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
+        stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
+            busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
+            |l| l.upstream_request_timeout_secs,
+        ),
+    };
     let served = root::serve::compose_served(
         app.governance.clone(),
         root::linked::door_planes(),
         &root::dispatch::dispatcher(),
         &late_services,
         &deploy.door_sections(),
+        &door_reach,
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();

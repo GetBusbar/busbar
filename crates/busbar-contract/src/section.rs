@@ -32,6 +32,14 @@ pub const RESERVED_POOLS_KEY: &str = "pools";
 /// owner config-model ruling 2026-09-19): where present, its keys are the section's entries.
 pub const RESERVED_MODELS_KEY: &str = "models";
 
+/// THE PROVIDER an entry of a [`RESERVED_MODELS_KEY`] map names (#49's uniform schema
+/// `{ provider, protocol?/dialect?, ... }`): a `providers:` entry, the connection it is reached over.
+pub const MODEL_PROVIDER_KEY: &str = "provider";
+
+/// THE WIRE-PROTOCOL OVERRIDE of a [`RESERVED_MODELS_KEY`] entry, in the order read (#51: the
+/// model's override if present, else its provider's default protocol).
+pub const MODEL_PROTOCOL_KEYS: &[&str] = &["protocol", "dialect"];
+
 /// A pool's member list, inside its [`RESERVED_POOLS_KEY`] entry.
 pub const POOL_MEMBERS_KEY: &str = "members";
 

@@ -31,7 +31,8 @@ use busbar_contract::caps::{
 };
 use busbar_contract::records::VirtualKey;
 use busbar_contract::section::{
-    POOL_MEMBERS_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
+    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, RESERVED_MODELS_KEY,
+    RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
 };
 use busbar_contract::MeterClassId;
 use busbar_kernel::config::groups::ExhaustionMode;
@@ -855,6 +856,365 @@ pub fn compose_egress(
         stream_ceiling_secs,
         error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
     })
+}
+
+// ── the members' routes (THE DESIGN §6 steps 2-3) ──────────────────────────────────────────────
+
+/// ONE `providers:` ENTRY as a door plane's member reaches it (THE DESIGN §6 step 2; #50, #51): the
+/// `base_url` it dials, its default `protocol`, its credential reference, the `auth:` style it
+/// states (`None` = its plane's dialect default) and the parameters that style is opened with.
+#[derive(Debug, Clone)]
+pub struct ProviderRoute {
+    /// `base_url`, as the operator (or the catalog) spelled it.
+    pub base_url: String,
+    /// The default wire protocol (#51).
+    pub protocol: String,
+    /// `api_key`, a reference; resolved once, at the seal.
+    pub credential: busbar_contract::secret_ref::SecretRef,
+    /// `auth:`, the style it overrides its plane's dialect default with.
+    pub style: Option<String>,
+    /// The style's parameters (`token_url`, `scope`, `subject`, where stated), one JSON object.
+    pub settings: serde_json::Value,
+}
+
+/// The `auth:` spelling of a provider's style override, as config writes it.
+fn style_word(auth: busbar_kernel::config::ProviderAuth) -> &'static str {
+    use busbar_kernel::config::ProviderAuth;
+    match auth {
+        ProviderAuth::Bearer => "bearer",
+        ProviderAuth::ApiKey => "api-key",
+        ProviderAuth::JwtBearer => "jwt-bearer",
+        ProviderAuth::OAuthClientCredentials => "oauth-client-credentials",
+    }
+}
+
+/// THE DEPLOYMENT'S PROVIDERS as door planes' members reach them, by name (the catalog-merged
+/// `providers:` the configuration resolved).
+#[must_use]
+pub fn provider_routes(
+    providers: &HashMap<String, busbar_kernel::config::ProviderCfg>,
+) -> BTreeMap<String, ProviderRoute> {
+    providers
+        .iter()
+        .map(|(name, p)| {
+            let mut settings = serde_json::Map::new();
+            for (key, value) in [
+                ("token_url", &p.token_url),
+                ("scope", &p.scope),
+                ("subject", &p.subject),
+            ] {
+                if let Some(v) = value {
+                    settings.insert(key.to_string(), serde_json::Value::String(v.clone()));
+                }
+            }
+            (
+                name.clone(),
+                ProviderRoute {
+                    base_url: p.base_url.clone(),
+                    protocol: p.protocol.clone(),
+                    credential: p.api_key.clone(),
+                    style: p.auth.map(|a| style_word(a).to_string()),
+                    settings: serde_json::Value::Object(settings),
+                },
+            )
+        })
+        .collect()
+}
+
+/// One auth plugin serving a style: its instance, opened for its outbound styles, and the style as
+/// its tail states it.
+type Serving = (
+    Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+    crate::root::loader::dispatch::kinds::auth::OutboundStyle,
+);
+
+/// THE AUTH PLUGINS A MEMBER'S STYLE MAY BE SERVED BY (THE DESIGN §6 step 3: the auth plugin that
+/// serves the style opens the binding): the build's linked `auths` rows, then the plugins
+/// directory's `kind: auth` rows (compiled-in = dropped-in), each loaded through the loader's one
+/// load on the process's dispatcher. The first whose tail states the style serves it; its instance
+/// is opened once and serves every binding of every style it states.
+pub struct OutboundAuths {
+    dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
+    linked: Vec<busbar_kernel::preflight::LinkedAuth>,
+    dropped: Option<&'static crate::root::loader::PluginRegistry>,
+    opened:
+        Mutex<HashMap<String, Arc<crate::root::loader::dispatch::auth_outbound::OutboundInstance>>>,
+}
+
+impl std::fmt::Debug for OutboundAuths {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutboundAuths")
+            .field(
+                "linked",
+                &self.linked.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl OutboundAuths {
+    /// The auth rows `linked` (the build's) and `dropped` (the plugins directory's), loaded on
+    /// `dispatcher`.
+    #[must_use]
+    pub fn new(
+        dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
+        linked: &[busbar_kernel::preflight::LinkedAuth],
+        dropped: Option<&'static crate::root::loader::PluginRegistry>,
+    ) -> Self {
+        Self {
+            dispatcher,
+            linked: linked.to_vec(),
+            dropped,
+            opened: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The bind one auth row is loaded under.
+    fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
+        crate::root::loader::dispatch::Bind {
+            instance: Arc::from(name),
+            max_inflight_cap: 64,
+            sink: Arc::new(crate::root::loader::dispatch::NoSink),
+            dispatcher: self.dispatcher.adopter(),
+            conns: None,
+        }
+    }
+
+    /// Every auth row's loaded door, linked first, then dropped in. A row that will not load is
+    /// passed over (its own open names why where it is configured).
+    fn rows(
+        &self,
+    ) -> Vec<(
+        String,
+        crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
+    )> {
+        use crate::root::loader::dispatch::kinds::auth::Auth;
+        use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
+        let mut rows = Vec::new();
+        for (name, door) in &self.linked {
+            if let Ok(plugin) =
+                LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, self.bind(name)))
+            {
+                rows.push(((*name).to_string(), plugin));
+            }
+        }
+        let dropped = self.dropped.map_or(&[][..], |r| r.loadable());
+        for row in dropped.iter().filter(|r| r.manifest.kind == "auth") {
+            let name = &row.manifest.name;
+            let Ok(Some(stated)) = row.manifest.stated_rendering() else {
+                continue;
+            };
+            if let Ok(plugin) =
+                load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, self.bind(name))
+            {
+                rows.push((name.clone(), plugin));
+            }
+        }
+        rows
+    }
+
+    /// The auth plugin serving `style`, its instance opened (once per plugin); `None` when no row
+    /// states it.
+    ///
+    /// # Errors
+    ///
+    /// The serving plugin would not open for its outbound styles.
+    pub fn serving(&self, style: &str) -> Result<Option<Serving>, String> {
+        use crate::root::loader::dispatch::auth_outbound::{serves, OutboundInstance};
+        for (name, plugin) in self.rows() {
+            let Some(decl) = serves(&plugin, style) else {
+                continue;
+            };
+            let mut opened = self.opened.lock().unwrap_or_else(|p| p.into_inner());
+            let instance = match opened.get(&name) {
+                Some(instance) => Arc::clone(instance),
+                None => {
+                    let instance = Arc::new(OutboundInstance::open(
+                        plugin,
+                        Arc::clone(&self.dispatcher),
+                        0,
+                    )?);
+                    opened.insert(name, Arc::clone(&instance));
+                    instance
+                }
+            };
+            return Ok(Some((
+                instance as Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+                decl,
+            )));
+        }
+        Ok(None)
+    }
+}
+
+/// WHAT A DOOR PLANE'S MEMBERS ARE REACHED THROUGH, for the process (THE DESIGN §6 steps 2-3, §5):
+/// the deployment's providers, the secret seam their credentials resolve through, the auth plugins
+/// that serve a style, the connector the planes' needs were declared on, and the client-level
+/// ceiling a streamed answer is bounded by.
+pub struct DoorReach<'a> {
+    /// The providers, by name ([`provider_routes`]).
+    pub providers: &'a BTreeMap<String, ProviderRoute>,
+    /// The secret seam.
+    pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
+    /// The auth plugins.
+    pub auths: &'a OutboundAuths,
+    /// The process's connector.
+    pub conns: Arc<dyn busbar_contract::conn::PollConns>,
+    /// Whole seconds.
+    pub stream_ceiling_secs: u64,
+}
+
+impl std::fmt::Debug for DoorReach<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoorReach")
+            .field("provider_names", &self.providers.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A member's entry in its plane's section: the uniform model-serving map's (#49), else nothing.
+fn member_entry<'s>(section: &'s serde_yaml::Value, entry: &str) -> Option<&'s serde_yaml::Value> {
+    section.get(RESERVED_MODELS_KEY)?.get(entry)
+}
+
+/// The text `key` of a member's entry.
+fn entry_text<'s>(entry: &'s serde_yaml::Value, key: &str) -> Option<&'s str> {
+    entry.get(key).and_then(serde_yaml::Value::as_str)
+}
+
+/// THE MEMBERS' ROUTES of one door plane (THE DESIGN §6 steps 2-3, sealed at its composition):
+/// each entry of its section's model-serving map, by the provider it names (#49), is reached at
+/// that provider's `base_url`, under the style the provider's `auth:` states, else the plane's
+/// default for the member's dialect (its entry's `protocol`/`dialect` override, else the
+/// provider's protocol, #51; `dialect_auth`), on the outbound need that style names
+/// ([`busbar_kernel::plane_driver::resolve_member_needs`]), its credential bound by the auth plugin
+/// serving the style (`open_outbound`; the plugin keeps the binding, the route keeps the handle).
+///
+/// # Errors
+///
+/// A member whose provider is not configured, whose style is stated nowhere, whose style no need
+/// (or more than one) names, whose credential does not resolve, or whose style no auth plugin
+/// serves or will bind: the load is refused, naming the member.
+pub fn member_routes(
+    section: &serde_yaml::Value,
+    pools: &DoorPools,
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    reach: &DoorReach<'_>,
+) -> Result<BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_kernel::plane_driver::{resolve_member_needs, AuthBinding, MemberAuth, MemberRoute};
+    struct Resolved<'p> {
+        entry: String,
+        name: String,
+        provider: &'p ProviderRoute,
+        style: String,
+    }
+    let mut resolved = Vec::new();
+    for entry in pools.entries() {
+        let Some(member) = member_entry(section, entry) else {
+            continue;
+        };
+        let name = entry_text(member, MODEL_PROVIDER_KEY)
+            .ok_or_else(|| format!("member '{entry}' names no provider"))?;
+        let provider = reach.providers.get(name).ok_or_else(|| {
+            format!("member '{entry}' names provider '{name}', which is not configured")
+        })?;
+        let dialect = MODEL_PROTOCOL_KEYS
+            .iter()
+            .find_map(|k| entry_text(member, k))
+            .unwrap_or(&provider.protocol);
+        let default = served
+            .dialects
+            .iter()
+            .position(|d| *d == dialect)
+            .and_then(|at| {
+                let at = u32::try_from(at).ok()?;
+                served
+                    .dialect_auth
+                    .iter()
+                    .find(|(d, _)| *d == at)
+                    .map(|(_, style)| (*style).to_string())
+            });
+        let style = provider.style.clone().or(default).ok_or_else(|| {
+            format!(
+                "member '{entry}': provider '{name}' states no `auth:` and its plane declares no \
+                 default style for the dialect '{dialect}'"
+            )
+        })?;
+        resolved.push(Resolved {
+            entry: entry.clone(),
+            name: name.to_string(),
+            provider,
+            style,
+        });
+    }
+    let needs: Vec<ReadNeed> = served
+        .need_auths
+        .iter()
+        .map(|(direction, auth)| ReadNeed {
+            direction: *direction,
+            egress_class: 0,
+            transport: String::new(),
+            auth: (*auth).to_string(),
+            target_from: String::new(),
+            trust_from: String::new(),
+            details: ReadBlob {
+                fmt: 0,
+                flags: 0,
+                bytes: Vec::new(),
+            },
+            timeout_ms: 0,
+        })
+        .collect();
+    let members: Vec<MemberAuth<'_>> = resolved
+        .iter()
+        .map(|r| MemberAuth {
+            member: &r.entry,
+            auth: &r.style,
+        })
+        .collect();
+    let dialled = resolve_member_needs(&needs, &members).map_err(|e| e.to_string())?;
+    let mut routes = BTreeMap::new();
+    for r in resolved {
+        let credential = if r.provider.credential.is_none() {
+            Vec::new()
+        } else {
+            reach
+                .secrets
+                .resolve(&r.provider.credential)
+                .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
+        };
+        let (auth, decl) = reach.auths.serving(&r.style)?.ok_or_else(|| {
+            format!(
+                "member '{}': no linked or dropped-in auth plugin serves the style '{}'",
+                r.entry, r.style
+            )
+        })?;
+        let handle = auth
+            .open_outbound(&r.style, &credential, &r.provider.settings)
+            .map_err(|e| format!("provider '{}' {e}", r.name))?;
+        let need = dialled
+            .get(&r.entry)
+            .copied()
+            .ok_or_else(|| format!("member '{}' dials no need", r.entry))?;
+        routes.insert(
+            r.entry,
+            MemberRoute {
+                need,
+                base_url: r.provider.base_url.clone(),
+                auth: Some(AuthBinding {
+                    auth,
+                    handle,
+                    style_flags: decl.flags,
+                    points: busbar_contract::abi::auth::AuthPoints(decl.points),
+                    passthrough: false,
+                }),
+                provider: r.name,
+                keep: busbar_kernel::plane_driver::ResponseKeep::default(),
+            },
+        );
+    }
+    Ok(routes)
 }
 
 #[cfg(test)]

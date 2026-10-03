@@ -128,7 +128,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", serde_yaml::Value::Mapping(Default::default()));
     let late = composed_services();
-    let served = compose_planes(&doors, &dispatcher, &late, &sections, &money)
+    let served = compose_planes(&doors, &dispatcher, &late, &sections, &money, None)
         .expect("the door plane composes");
     assert_eq!(served.planes.len(), 1, "one plane composed");
     let p = &served.planes[0];
@@ -166,7 +166,7 @@ fn a_door_plane_whose_section_is_absent_stays_unopened() {
     };
     let doors = vec![(instance.to_string(), plane)];
     let late = composed_services();
-    let served = compose_planes(&doors, &dispatcher, &late, &BTreeMap::new(), &money)
+    let served = compose_planes(&doors, &dispatcher, &late, &BTreeMap::new(), &money, None)
         .expect("nothing to compose is not a refusal");
     assert!(served.planes.is_empty(), "LAW 7: no section, no plane");
 }
@@ -180,6 +180,7 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
         &LateServices::new(),
         &BTreeMap::new(),
         &money,
+        None,
     )
     .expect("an empty composition");
     assert!(served.planes.is_empty());

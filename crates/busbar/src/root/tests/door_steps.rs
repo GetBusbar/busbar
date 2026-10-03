@@ -274,3 +274,97 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
     let _ = unkeyed.authenticate(&Pass::<Authenticate>::mint(&seal), &ctx(8));
     assert!(records.get(8).is_none(), "a refused unit writes no record");
 }
+
+// ── the members' routes (THE DESIGN §6 steps 2-3) ──────────────────────────────────────────────
+
+/// The decisions-shaped plane facts: one dialect `d` whose default style is `bearer`, one outbound
+/// need naming `bearer`.
+fn styled() -> crate::root::loader::dispatch::kinds::plane::ServedFacts {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![(DIRECTION_OUTBOUND, "bearer")],
+        dialects: vec!["d"],
+        dialect_auth: vec![(0, "bearer")],
+        ..Default::default()
+    }
+}
+
+fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
+    super::ProviderRoute {
+        base_url: "http://127.0.0.1:9".to_string(),
+        protocol: protocol.to_string(),
+        credential: busbar_contract::secret_ref::SecretRef::none(),
+        style: style.map(str::to_string),
+        settings: serde_json::json!({}),
+    }
+}
+
+/// The routes `section`'s members resolve to over `providers`, or why the load is refused.
+fn resolve(
+    section: &str,
+    providers: &[(&str, super::ProviderRoute)],
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    let section: serde_yaml::Value = serde_yaml::from_str(section).expect("yaml");
+    let providers = providers
+        .iter()
+        .map(|(n, p)| ((*n).to_string(), p.clone()))
+        .collect();
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    let auths = super::OutboundAuths::new(dispatcher, crate::LINKED.auths, None);
+    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let conns: std::sync::Arc<dyn busbar_contract::conn::PollConns> =
+        std::sync::Arc::new(busbar_core_connector::Connector::new());
+    let reach = super::DoorReach {
+        providers: &providers,
+        secrets: &secrets,
+        auths: &auths,
+        conns,
+        stream_ceiling_secs: 1,
+    };
+    super::member_routes(&section, &DoorPools::of(&section), &styled(), &reach)
+}
+
+#[test]
+fn a_member_is_bound_under_its_dialects_default_style_on_the_need_that_style_names() {
+    let routes = resolve("models: {m: {provider: p}}", &[("p", provider("d", None))])
+        .expect("the member resolves");
+    let route = &routes["m"];
+    assert_eq!(route.need.0, 0);
+    assert_eq!(route.provider, "p");
+    assert_eq!(route.base_url, "http://127.0.0.1:9");
+    assert!(
+        route.auth.is_some(),
+        "its credential is bound by the plugin serving `bearer`"
+    );
+}
+
+#[test]
+fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
+    let unknown = resolve("models: {m: {provider: q}}", &[("p", provider("d", None))]);
+    assert!(
+        unknown
+            .as_ref()
+            .is_err_and(|e| e.contains("'m'") && e.contains("'q'")),
+        "{:?}",
+        unknown.err()
+    );
+    // A dialect the plane states no default for, and no `auth:`: no style.
+    let styleless = resolve("models: {m: {provider: p}}", &[("p", provider("x", None))]);
+    assert!(
+        styleless.as_ref().is_err_and(|e| e.contains("no `auth:`")),
+        "{:?}",
+        styleless.err()
+    );
+    // A style no outbound need names.
+    let unmatched = resolve(
+        "models: {m: {provider: p}}",
+        &[("p", provider("d", Some("api-key")))],
+    );
+    assert!(
+        unmatched.as_ref().is_err_and(|e| e.contains("api-key")),
+        "{:?}",
+        unmatched.err()
+    );
+}

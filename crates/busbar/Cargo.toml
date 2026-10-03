@@ -129,6 +129,11 @@ busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 # AUTH-ROW). It lives in its own repo (GetBusbar/busbar-auth-admin-tokens) and is pulled at a PINNED rev; the
 # workspace `[patch]` points the busbar crates it names at this tree. The kernel names no auth module.
 busbar-auth-admin-tokens-plugin = { workspace = true, optional = true }
+# THE OUTBOUND HEADER STYLES (bearer, api-key, x-goog-api-key): the auth plugin a plane's outbound need
+# is bound under when its member's style is one of them (THE DESIGN §6 step 3: the auth plugin that
+# serves the style opens the binding), linked through the `auths` axis under `auth-header`
+# (ARCHITECT Q-L1-AUTH (A), 2026-10-03). Staged in-tree; its only busbar edge is `busbar-contract`.
+busbar-auth-header = { path = "../busbar-auth-header", optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
 # in its own repo (GetBusbar/busbar-export-file) and is pulled at a PINNED rev; the workspace `[patch]`
@@ -206,7 +211,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
 # SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
 # than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
+default = ["auth-admin-tokens", "auth-header", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -318,6 +323,10 @@ test-harness = []
 # operator credential resolves only when a signed tarball of the module is dropped into `plugins/`,
 # and a configured admin token with no row answering it is a boot refusal naming this feature.
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
+# THE OUTBOUND HEADER STYLES' LINKED ROW, DEFAULT ON (ARCHITECT Q-L1-AUTH (A), 2026-10-03): the auth
+# plugin serving a plane need's header style, on the `auths` axis. Off, a member whose style it serves
+# binds only when a signed tarball of the module is dropped into `plugins/`.
+auth-header = ["dep:busbar-auth-header"]
 hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
@@ -349,6 +358,7 @@ export-prometheus = "busbar-export-prometheus"
 export-otlp = "busbar-export-otlp"
 # THE AUTH AXIS: the operator credential's module, under its packaging feature.
 auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
+auth-header = "busbar-auth-header"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
@@ -391,6 +401,7 @@ export-webhook = "exports"
 export-prometheus = "exports"
 export-otlp = "exports"
 auth-admin-tokens = "auths"
+auth-header = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
 transport-tcp = "transport transport-door"
@@ -414,6 +425,7 @@ transport-sse = "busbar_transport_http::linked::sse"
 transport-grpc = "busbar_transport_http::linked::grpc"
 # An auth plugin's entry is its crate root; its memory-ABI door is `<entry>::door::door`.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
+busbar-auth-header = "busbar_auth_header::compiled_in"
 # A plane door row's entry is the module that exports its `door`.
 plane-decisions-door = "busbar_plane_decisions::plane_door"
 llm-on-driver = "busbar_plane_llm::plane_door"
@@ -421,6 +433,7 @@ llm-on-driver = "busbar_plane_llm::plane_door"
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]
 auth-admin-tokens = "admin-tokens"
+auth-header = "busbar-auth-header"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node under the `linked_axis_node` cfg that
