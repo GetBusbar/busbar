@@ -279,7 +279,7 @@ mod pends_on_nothing {
     );
 }
 
-fn mint() -> OpId {
+pub(super) fn mint() -> OpId {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     OpId::from_parts(
         0x9e4d,
@@ -710,14 +710,14 @@ impl Hooks for OverTcp {
     }
 }
 
-const NO_TEXT: busbar_contract::abi::mechanism::call::AbiStr =
+pub(super) const NO_TEXT: busbar_contract::abi::mechanism::call::AbiStr =
     busbar_contract::abi::mechanism::call::AbiStr {
         ptr: std::ptr::null(),
         len: 0,
     };
 
 /// One outbound `tcp` need, its target named by the store.
-const TCP: &[busbar_contract::abi::host::conn::connector::Need] =
+pub(super) const TCP: &[busbar_contract::abi::host::conn::connector::Need] =
     &[busbar_contract::abi::host::conn::connector::Need {
         direction: busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND,
         egress_class: 0,

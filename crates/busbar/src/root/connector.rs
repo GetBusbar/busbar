@@ -136,6 +136,9 @@ pub fn boot(
     })
 }
 
+// TRANSITIONAL: the connector's own I/O thread exists because synchronous governance callers wait
+// on the control runtime's thread (ARCHITECT ruling 2026-10-03 on Q-L16-3, the Q-L16-1 row); drains
+// with that wait (D2/D3; 1.6.0-TODO.md).
 /// THE CONNECTOR'S I/O THREAD: a single-threaded runtime of its own whose reactor drives every
 /// socket a plugin opens from a dispatcher worker, and nothing else. Built once.
 fn io_reactor() -> tokio::runtime::Handle {

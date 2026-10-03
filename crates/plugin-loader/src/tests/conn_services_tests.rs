@@ -197,7 +197,7 @@ fn establish_on(
             },
         },
         need,
-        _reserved: 0,
+        timeout_ms: 0,
         target: abi_str(target),
         within: NONE,
     };
@@ -798,7 +798,7 @@ fn pinned_stream(p: &Plugin<TestKind>, seq: u32, within: &'static str) -> Servic
     let i = EstablishIn {
         head: head_of::<EstablishIn>(service::ESTABLISH, seq),
         need: 0,
-        _reserved: 0,
+        timeout_ms: 0,
         target: abi_str("127.0.0.1:9"),
         within: abi_str(within),
     };

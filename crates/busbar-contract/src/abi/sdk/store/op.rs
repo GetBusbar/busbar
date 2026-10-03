@@ -211,6 +211,17 @@ impl<'a> Op<'a> {
     /// may be PENDING), then the same stream for every later call with the same need and target.
     /// The SDK closes it when the op ends.
     pub fn checkout(&mut self, need: u32, target: Option<&str>) -> Answer<u64> {
+        self.checkout_timed(need, target, 0)
+    }
+
+    /// [`Op::checkout`], its dial bounded by `timeout_ms` (`0` = the need's own timeout, else the
+    /// host's default).
+    pub fn checkout_timed(
+        &mut self,
+        need: u32,
+        target: Option<&str>,
+        timeout_ms: u32,
+    ) -> Answer<u64> {
         if let Some(c) = &self.checkout {
             return std::task::Poll::Ready(if c.need == need && c.target.as_deref() == target {
                 Ok(c.stream)
@@ -224,7 +235,7 @@ impl<'a> Op<'a> {
             Ok(s) => s,
             Err(e) => return std::task::Poll::Ready(Err(e)),
         };
-        let answer = services.establish(need, target, "");
+        let answer = services.establish_timed(need, target, "", timeout_ms);
         drop(services);
         if let std::task::Poll::Ready(Ok(stream)) = answer {
             self.checkout = Some(Checkout {
@@ -234,6 +245,35 @@ impl<'a> Op<'a> {
             });
         }
         answer
+    }
+}
+
+impl Op<'_> {
+    /// The op's ticket.
+    pub(crate) const fn ticket(&self) -> Ticket {
+        self.ticket
+    }
+
+    /// Take the op's connection out of its keeping: it is no longer closed when the op ends (a
+    /// kept connection going back to its instance's set).
+    pub(crate) fn take_checkout(&mut self) -> Option<Checkout> {
+        self.checkout.take()
+    }
+
+    /// Make `c` the op's connection (one drawn from its instance's kept set): closed if the op
+    /// ends without handing it back.
+    pub(crate) fn adopt(&mut self, c: Checkout) {
+        self.checkout = Some(c);
+    }
+
+    /// Close the op's connection now (it is not fit for reuse); the next [`Op::checkout`]
+    /// establishes a fresh one.
+    pub(crate) fn close_checkout(&mut self) {
+        if let Some(c) = self.checkout.take() {
+            if let Ok(mut s) = self.connector() {
+                let _ = s.close(c.stream);
+            }
+        }
     }
 }
 

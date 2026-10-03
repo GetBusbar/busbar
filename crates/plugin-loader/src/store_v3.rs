@@ -1934,5 +1934,9 @@ pub(crate) mod wrap;
 mod pend_tests;
 
 #[cfg(test)]
+#[path = "tests/store_v3_wire_tests.rs"]
+mod wire_tests;
+
+#[cfg(test)]
 #[path = "tests/store_v3_axis_tests.rs"]
 mod axis_tests;

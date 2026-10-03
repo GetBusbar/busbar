@@ -293,10 +293,22 @@ impl Connector<'_> {
     /// `dest.judge` answered, `Judged::within`; `""` = no pin beyond the host's judgement): the
     /// stream. A dial the host's judgement pins outside `within` is refused before any byte leaves.
     pub fn establish(&mut self, need: u32, target: Option<&str>, within: &str) -> Answer<u64> {
+        self.establish_timed(need, target, within, 0)
+    }
+
+    /// [`Connector::establish`], its dial bounded by `timeout_ms` (`0` = the need's own timeout,
+    /// else the host's default): an operator-set connect timeout.
+    pub fn establish_timed(
+        &mut self,
+        need: u32,
+        target: Option<&str>,
+        within: &str,
+        timeout_ms: u32,
+    ) -> Answer<u64> {
         let input = EstablishIn {
             head: blank_head(),
             need,
-            _reserved: 0,
+            timeout_ms,
             target: text(target),
             within: text(Some(within)),
         };

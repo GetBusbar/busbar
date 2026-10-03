@@ -263,6 +263,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             let desc = OpenDesc {
                 target: &target,
                 within: &within,
+                timeout_ms: u64::from(i.timeout_ms),
                 ..OpenDesc::default()
             };
             match table.open(id, NeedId(i.need), &desc) {

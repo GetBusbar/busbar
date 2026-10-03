@@ -222,8 +222,10 @@ pub struct EstablishIn {
     pub head: ServiceHead,
     /// The need, by its index in the plugin's declared needs.
     pub need: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// How long the dial may take, milliseconds; `0` = the need's `timeout_ms`, else the host's
+    /// default (a store's operator-set connect timeout, ARCHITECT ruling 2026-10-03 VALKEY-TIMEOUT).
+    /// Was alignment padding (always `0`): the layout is unchanged.
+    pub timeout_ms: u32,
     /// The target; absent = the need's `target_from`.
     pub target: AbiStr,
     /// Appended: the address set the dial must land on, IP literals joined by
