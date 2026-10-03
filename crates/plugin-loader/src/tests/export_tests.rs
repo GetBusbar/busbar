@@ -4,7 +4,6 @@
 //! Tests for `crates/plugin-loader/src/export.rs`.
 
 use super::*;
-use crate::{stage, wire_up_raw};
 use busbar_contract::abi::cold::{STATUS_OK, STATUS_PANIC, STATUS_UNSUPPORTED};
 use std::ffi::c_void;
 
@@ -59,34 +58,25 @@ unsafe extern "C-unwind" fn fake_free(ptr: *mut u8, len: usize) {
     }
 }
 
-/// Locate the export kind's real sink `cdylib` — the export row of `[package.metadata.busbar.both-ways]`,
-/// reached by KIND, built from its own repo under `deps/` (hashed). Under CI a missing cdylib is a
-/// hard failure rather than a silent skip ([`crate::both_ways::cdylib`] asserts it), so this
-/// coverage of the load seam cannot quietly vanish.
-fn export_sink_path() -> Option<std::path::PathBuf> {
-    let (crate_snake, _) = crate::both_ways::fixture("export");
-    crate::both_ways::cdylib(crate_snake)
-}
+/// Close nothing: the boundary below holds no instance.
+unsafe extern "C-unwind" fn fake_close(_handle: *mut c_void) {}
 
-/// Stage the real export sink (a genuine `Library`, handle and `close`), then splice in the fake
-/// `call`/`free` so the answer to each op is the test's to choose.
-fn raw_with_fake_call() -> Option<RawPlugin> {
-    let path = export_sink_path()?;
-    let bytes = std::fs::read(&path).expect("read the export sink cdylib");
-    let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-export")
-        .expect("stage the export sink cdylib for the fake-call harness");
-    let mut raw = wire_up_raw(
-        lib,
-        "{}",
-        "fake-call-export".to_string(),
-        abi_kind::EXPORT,
-        abi_kind::EXPORT,
-        Some(staged),
-    )
-    .expect("wire up raw");
-    raw.call = fake_call;
-    raw.free = fake_free;
-    Some(raw)
+/// A cold boundary built in the test, with no library mapped (`_lib: None`, the linked door's
+/// shape): [`fake_call`] answers every op and [`fake_free`] frees what it allocated, so the export
+/// seam's own load and decoding are the only subject. OWNER 2026-10-03 (NO TEST PLUGINS): this
+/// replaces the real export sink's `cdylib`, which was staged only to be spliced over.
+fn raw_with_fake_call() -> RawPlugin {
+    RawPlugin {
+        handle: std::ptr::null_mut(),
+        call: fake_call,
+        free: fake_free,
+        close: fake_close,
+        path: "fake-call-export".to_string(),
+        kind: abi_kind::EXPORT,
+        shape: std::sync::atomic::AtomicU8::new(crate::response_shape::UNKNOWN),
+        _lib: None,
+        _backing: None,
+    }
 }
 
 /// A sink that PANICS on the routes query has not said "I carry no HTTP surface" — it has said
@@ -96,10 +86,7 @@ fn raw_with_fake_call() -> Option<RawPlugin> {
 fn a_panic_on_the_routes_query_fails_the_load() {
     // Held BEFORE the load: the load's own queries fold into the process-global log a neighbour reads.
     let _guard = crate::observe::testing::exclusive();
-    let Some(raw) = raw_with_fake_call() else {
-        eprintln!("skip: the export sink cdylib is not built");
-        return;
-    };
+    let raw = raw_with_fake_call();
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_PANIC;
     let loaded = export_from_raw(raw, "fake-call-export");
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_OK;
@@ -119,10 +106,7 @@ fn a_panic_on_the_routes_query_fails_the_load() {
 fn an_unsupported_routes_query_loads_with_no_routes() {
     // Held BEFORE the load: the load's own queries fold into the process-global log a neighbour reads.
     let _guard = crate::observe::testing::exclusive();
-    let Some(raw) = raw_with_fake_call() else {
-        eprintln!("skip: the export sink cdylib is not built");
-        return;
-    };
+    let raw = raw_with_fake_call();
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_UNSUPPORTED;
     let loaded = export_from_raw(raw, "fake-call-export");
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_OK;
@@ -182,11 +166,11 @@ unsafe extern "C-unwind" fn shaped_call(
     STATUS_OK
 }
 
-/// Stage the real cdylib and splice in [`shaped_call`].
-fn raw_with_shaped_call() -> Option<RawPlugin> {
-    let mut raw = raw_with_fake_call()?;
+/// The in-test boundary with [`shaped_call`] answering.
+fn raw_with_shaped_call() -> RawPlugin {
+    let mut raw = raw_with_fake_call();
     raw.call = shaped_call;
-    Some(raw)
+    raw
 }
 
 /// **THE ADAPTER WITNESS, and this is its only possible home.** DECISIONS #85 moved the export
@@ -205,10 +189,7 @@ fn a_pre_envelope_v2_sink_and_an_enveloped_v3_sink_both_load_and_serve() {
     let _guard = crate::observe::testing::exclusive();
     for enveloped in [false, true] {
         *ANSWER_ENVELOPED.lock().unwrap_or_else(|p| p.into_inner()) = enveloped;
-        let Some(raw) = raw_with_shaped_call() else {
-            eprintln!("skip: the export sink cdylib is not built");
-            return;
-        };
+        let raw = raw_with_shaped_call();
         let shape = if enveloped { "v3 enveloped" } else { "v2 bare" };
         let sink = export_from_raw(raw, "adapter-witness")
             .unwrap_or_else(|e| panic!("a {shape} sink must load: {e}"));
@@ -306,10 +287,7 @@ unsafe extern "C-unwind" fn status_call(
 /// `STATUS_UNSUPPORTED`: that is "nothing to report", not a fault, and folds nothing.
 #[test]
 fn status_folds_what_the_sink_reports_and_an_older_sink_reports_nothing() {
-    let Some(mut raw) = raw_with_fake_call() else {
-        eprintln!("skip: the export sink cdylib is not built");
-        return;
-    };
+    let mut raw = raw_with_fake_call();
     raw.call = status_call;
     // Held BEFORE the load, for the same reason as the loads above.
     let guard = crate::observe::testing::exclusive();

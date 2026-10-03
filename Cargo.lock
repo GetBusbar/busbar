@@ -980,7 +980,6 @@ dependencies = [
  "busbar-auth-admin-tokens-plugin",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
- "busbar-export-file-plugin",
  "busbar-export-otlp",
  "busbar-export-otlp-plugin",
  "busbar-export-prometheus",

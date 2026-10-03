@@ -414,7 +414,7 @@ plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gaun
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
 plane-decisions = "plane claims"
-export-file = "exports"
+export-file = "export-doors"
 export-webhook = "exports"
 export-prometheus = "export-doors"
 export-otlp = "export-doors"
@@ -454,6 +454,8 @@ llm-on-driver = "busbar_plane_llm::plane_door"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
 busbar-export-prometheus = "busbar_export_prometheus::door"
 busbar-export-otlp = "busbar_export_otlp::door"
+# The file sink's door is at its logic crate's root (`pub use table::door`).
+busbar-export-file = "busbar_export_file"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]
@@ -538,7 +540,8 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # FILE sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge
 # above, dropped into `plugins/` as the library a tarball of the sink carries. The sink's own
 # both-doors conformance lives in its repo (GetBusbar/busbar-export-file, `tests/conformance.rs`).
-busbar-export-file-plugin = { workspace = true }
+# Built with its `dropped-in` feature: only then does the cdylib export `busbar_plugin_door`.
+busbar-export-file-plugin = { workspace = true, features = ["dropped-in"] }
 # The dropped-in transport proofs (`tests/transport_dropped_in_serves.rs`, the tcp-less boot in
 # `tests/linked_export_sinks_boot_as_their_own_kind.rs`): the tcp transport repo's cdylib crate at the
 # SAME pinned rev as the linked `busbar-transport-tcp` edge above, found in this target dir under

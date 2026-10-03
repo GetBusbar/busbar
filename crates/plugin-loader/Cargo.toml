@@ -183,13 +183,13 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # links. On the export kind's MEMORY ABI (`export_axis_tests`): the prometheus sink (the recorder
 # snapshot's render) and the OTLP trace sink, each LINKED by its logic crate's `door` and DROPPED IN
 # as its `-plugin` crate's `cdylib` (built under `deps/`, hashed; never linked here: that crate
-# exports `busbar_plugin_door` from its rlib too). M6-COLD-DELETE, on the cold lane until their door
-# re-pins (`export_conformance_tests`): the request-log FILE sink (the `export` row — host-written
-# destinations, rotation counters) and the request-log WEBHOOK sink (`export-webhook` — host-carried
-# POSTs, raised diagnostics, its in-flight admission), each a `["cdylib", "rlib"]` crate whose `rlib`
-# gives the test the COMPILED-IN sink (`open`, `dispatch_compiled_in`, `BUSBAR_COLD_ENTRY`). Their
-# busbar-contract resolves to this tree through the workspace `[patch]` table.
-busbar-export-file-plugin = { workspace = true }
+# exports `busbar_plugin_door` from its rlib too). M6-COLD-DELETE, on the cold lane until its door
+# re-pin (`export_conformance_tests`): the request-log WEBHOOK sink (`export-webhook` — host-carried
+# POSTs, raised diagnostics, its in-flight admission), a `["cdylib", "rlib"]` crate whose `rlib`
+# gives the test the COMPILED-IN sink (`open`, `dispatch_compiled_in`, `BUSBAR_COLD_ENTRY`). The
+# request-log FILE sink is door-only at its pin (no cold entry): busbar tests no plugin (owner Q7,
+# CONF-SUITE-DEL), and its both-doors conformance is its own repo's. Their busbar-contract resolves
+# to this tree through the workspace `[patch]` table.
 busbar-export-webhook-plugin = { workspace = true }
 busbar-export-prometheus = { workspace = true }
 busbar-export-prometheus-plugin = { workspace = true }
@@ -264,7 +264,6 @@ libc = { workspace = true }
 # needs its `rlib`, the dropped-in door its `cdylib`.
 [package.metadata.busbar.both-ways]
 store = "busbar-store-memory"
-export = "busbar-export-file-plugin"
 export-webhook = "busbar-export-webhook-plugin"
 auth = "busbar-auth-oidc-plugin"
 # A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the

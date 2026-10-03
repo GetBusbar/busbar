@@ -378,34 +378,6 @@ fn transport_error_classification() {
     assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
 }
 
-/// END-TO-END over the export kind's REAL sink `cdylib` (the export row of
-/// `[package.metadata.busbar.both-ways]` — the request-log file sink, built from its own repo): load
-/// it through the loader (which queries `Streams` once at load), assert it reports `[Logs]`, then
-/// `Deliver` a request-log line and assert the sink acks (an `Ok(())`). This is the exact seam the
-/// engine's observability export consumes: verified bytes in, a `DynExport` out. Under CI a missing
-/// cdylib is a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
-#[test]
-fn load_and_exercise_export_plugin() {
-    use busbar_contract::abi::export::ExportStream;
-    let Some(path) = super::both_ways::cdylib(super::both_ways::fixture("export").0) else {
-        eprintln!("skip: the export sink cdylib is not built");
-        return;
-    };
-    let bytes = std::fs::read(&path).expect("read the export sink cdylib");
-    let sink = export::load_export_from_bytes(&bytes, "{}", "export-sink", "export")
-        .expect("load the export sink over the ABI");
-
-    // Streams was queried once at load and reports exactly [Logs].
-    assert_eq!(sink.streams(), &[ExportStream::Logs]);
-
-    // A delivery for the declared stream acks (Ok).
-    sink.deliver(
-        ExportStream::Logs,
-        &serde_json::json!({"status": 200, "model": "m"}),
-    )
-    .expect("deliver acks");
-}
-
 /// `validate_plugin` must UNLOAD on a plugin worker, not on the caller's thread.
 ///
 /// It `dlopen`s to run the ABI handshake and then has to unmap again. An implicit drop of the
