@@ -52,6 +52,7 @@ use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
     ValidateIn,
 };
+use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::abi_str;
 use crate::abi::sdk::{open_failed, HostBuf, Instance, Lent, LentList, Out, SafeSlot};
@@ -780,7 +781,40 @@ impl<B: StoreSlots> SafeSlot for Validate<B> {
     }
 }
 
-/// `open`: the store opens on its settings.
+/// An `open` whose connect step PENDED: the store [`StoreSlots::open`] answered and the step's op,
+/// kept until `open`'s RESUME on the same ticket. No instance exists yet to park them on, so the
+/// door keeps them, by the host's instance and the ticket ([`OPENING`]).
+struct Opening<B> {
+    store: B,
+    parked: Parked,
+}
+
+/// What `open`s that pended keep across their PENDING answer (any store type, so boxed), by
+/// (the host's instance, the ticket). A fresh `open` on a key drops what an earlier one kept there
+/// (closing its connection): it can no longer be that open's RESUME.
+type Openings = HashMap<(usize, Ticket), Box<dyn std::any::Any + Send>>;
+
+static OPENING: Mutex<Option<Openings>> = Mutex::new(None);
+
+fn opening_take(key: (usize, Ticket)) -> Option<Box<dyn std::any::Any + Send>> {
+    OPENING
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_mut()
+        .and_then(|m| m.remove(&key))
+}
+
+fn opening_keep(key: (usize, Ticket), kept: Box<dyn std::any::Any + Send>) {
+    let old = OPENING
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(key, kept);
+    drop(old);
+}
+
+/// `open`: the store opens on its settings, then runs its connect step
+/// ([`StoreSlots::connect`]), which may pend on `open`'s ticket.
 #[derive(Debug)]
 pub struct Open<B>(PhantomData<B>);
 impl<B: StoreSlots> SafeSlot for Open<B> {
@@ -793,13 +827,47 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
         mut out: Out<'_, OpenOut>,
     ) -> Outcome {
         let host = input.host().map(|h| Host::of(&h));
-        match B::open(input.field(|i| &i.settings).bytes(), host) {
-            Ok(store) => {
+        let ticket = instance.ticket();
+        let key = (host.map_or(0, |h| h.instance_key()), ticket);
+        // Whatever was kept here goes now, unless this entry is its RESUME.
+        let kept = opening_take(key).and_then(|b| b.downcast::<Opening<B>>().ok());
+        let (store, parked) = match (instance.resuming(), kept) {
+            (true, Some(o)) => {
+                let o = *o;
+                (o.store, Some(o.parked))
+            }
+            // A RESUME with nothing kept is FAULT: an open never runs afresh on its RESUME.
+            (true, None) => return Outcome::Fault,
+            (false, _) => match B::open(input.field(|i| &i.settings).bytes(), host) {
+                Ok(store) => (store, None),
+                // No instance exists to hold the reason: it goes into the host's lent reason
+                // buffer.
+                Err(e) => return open_failed(input, &mut out, |o| &o.err_len, &e),
+            },
+        };
+        let mut cx = Op::enter(ticket, host.as_ref(), parked);
+        match store.connect(&mut cx) {
+            Step::Ready(Ok(())) => {
+                // The step's connection closes with its op (`Parked`'s drop).
+                drop(cx.into_parked());
                 instance.open(Served::new(store, host));
                 Outcome::Ready
             }
-            // No instance exists to hold the reason: it goes into the host's lent reason buffer.
-            Err(e) => open_failed(input, &mut out, |o| &o.err_len, &e),
+            Step::Ready(Err(e)) => {
+                drop(cx.into_parked());
+                open_failed(input, &mut out, |o| &o.err_len, &e)
+            }
+            Step::Pending { wake_at_ns } => {
+                // As an op: PENDING needs a ticket, and on 0 a connector service in flight.
+                if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
+                    drop(cx.into_parked());
+                    return Outcome::Fault;
+                }
+                out.raw().head.wake_at_ns = wake_at_ns;
+                let parked = cx.into_parked();
+                opening_keep(key, Box::new(Opening { store, parked }));
+                Outcome::Pending
+            }
         }
     }
 }

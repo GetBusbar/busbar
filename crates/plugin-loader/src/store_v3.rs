@@ -114,7 +114,7 @@ impl LoadedStore {
             .ok_or_else(|| "the store states no tail".to_string())?;
         // `open` is the settings' judge, as it was in 1.5.5: its refusal carries the plugin's own
         // reason (the host's lent reason buffer), which a bare `validate` answer cannot.
-        let mut o = Frame::new(
+        let o = Frame::new(
             OpenIn {
                 head: in_head(),
                 host: std::ptr::null(),
@@ -131,7 +131,7 @@ impl LoadedStore {
                 err_len: 0,
             },
         );
-        let c = plugin.call(life::OPEN, &mut o);
+        let c = Self::open_on_ticket(&plugin, &dispatcher, o);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
@@ -144,6 +144,41 @@ impl LoadedStore {
             next_worker: AtomicU32::new(0),
             mint,
         })
+    }
+
+    /// `open` ON A TICKET (ARCHITECT ruling 2026-10-03 on Q-L16-2; the mechanism: `open` "may
+    /// pend", on the control lane): submitted through the dispatcher and waited for, so a store
+    /// whose connect step ([`busbar_contract::abi::sdk::store::StoreSlots::connect`]) pends on the
+    /// connector is resumed on its wake and completes the open, and an unreachable backend still
+    /// refuses the load at open, in the store's own words. Called on the dispatcher's only worker,
+    /// it crosses ticket-less on this thread (as the bridge does, [`LoadedStore::inline`]).
+    fn open_on_ticket(
+        plugin: &Plugin<Store>,
+        dispatcher: &Dispatcher,
+        mut o: Frame<OpenIn, OpenOut>,
+    ) -> crate::dispatch::Called {
+        let Some(worker) = pick_worker(dispatcher, 0) else {
+            return plugin.call(life::OPEN, &mut o);
+        };
+        let Some(ticket) = dispatcher.mint(worker) else {
+            return crate::dispatch::Called {
+                outcome: Outcome::Refused,
+                error: None,
+                lease: 0,
+                recall: None,
+            };
+        };
+        let _recycle = Recycle(dispatcher, ticket);
+        let deadline = now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64);
+        let done = dispatcher
+            .submit(plugin, ticket, life::OPEN, o, DeadlineClass::Call, deadline)
+            .wait_done();
+        crate::dispatch::Called {
+            outcome: done.outcome,
+            error: done.error,
+            lease: done.lease,
+            recall: None,
+        }
     }
 
     /// The store's own check of `settings`: it PARSES them and never opens a store. `Ok`, or its
@@ -215,6 +250,8 @@ impl LoadedStore {
     /// Called on one of the dispatcher's own workers (whose thread cannot run the op while it
     /// waits), the op goes to another worker; on a dispatcher with that worker alone it crosses
     /// ticket-less on this thread ([`LoadedStore::inline`]).
+    // TRANSITIONAL: the synchronous caller waits on its own thread (ARCHITECT ruling 2026-10-03 on
+    // Q-L16-1); drains when the governance callers move to StoreCalls (D2/D3; 1.6.0-TODO.md).
     fn now<R: Req>(&self, r: &mut R) -> Ran<R::O> {
         let s = r.slot();
         let Some(worker) = self.bridge_worker() else {
@@ -251,18 +288,16 @@ impl LoadedStore {
     /// The worker the bridge submits to: the next in turn, never the calling thread's own; `None`
     /// when the calling thread is the dispatcher's only worker.
     fn bridge_worker(&self) -> Option<u32> {
-        let workers = self.dispatcher.workers().max(1);
-        let next = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
-        match self.dispatcher.current_worker() {
-            None => Some(next),
-            Some(_) if workers == 1 => None,
-            Some(me) if me == next => Some((next + 1) % workers),
-            Some(_) => Some(next),
-        }
+        pick_worker(
+            &self.dispatcher,
+            self.next_worker.fetch_add(1, Ordering::Relaxed),
+        )
     }
 
     /// A ticket-less crossing on this thread, the one re-call of a short answer: the bridge's path
     /// on a dispatcher's only worker, where a ticketed op could never run.
+    // TRANSITIONAL: the one-worker fallback of the bridge's wait (ARCHITECT ruling 2026-10-03 on
+    // Q-L16-1); drains with the bridge (D2/D3; 1.6.0-TODO.md).
     fn inline<R: Req>(&self, r: &mut R) -> Ran<R::O> {
         let s = r.slot();
         let mut f = Frame::new(r.input(), r.out());
@@ -315,6 +350,19 @@ impl LoadedStore {
                 lease: done.lease,
             };
         }
+    }
+}
+
+/// The worker a synchronous waiter submits to: the `turn`th in turn, never the calling thread's
+/// own; `None` when the calling thread is the dispatcher's only worker.
+fn pick_worker(dispatcher: &Dispatcher, turn: u32) -> Option<u32> {
+    let workers = dispatcher.workers().max(1);
+    let next = turn % workers;
+    match dispatcher.current_worker() {
+        None => Some(next),
+        Some(_) if workers == 1 => None,
+        Some(me) if me == next => Some((next + 1) % workers),
+        Some(_) => Some(next),
     }
 }
 

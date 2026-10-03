@@ -597,6 +597,9 @@ struct Table {
     slab: busbar_contract::conn::ConnSlab<()>,
     declared: Mutex<Vec<(u32, String)>>,
     opened: Mutex<Vec<(u32, String)>>,
+    /// Every open is refused (an unreachable backend).
+    refuse: std::sync::atomic::AtomicBool,
+    closed: std::sync::atomic::AtomicUsize,
 }
 
 impl busbar_contract::conn::Conns for Table {
@@ -606,6 +609,9 @@ impl busbar_contract::conn::Conns for Table {
         need: busbar_contract::conn::NeedId,
         desc: &busbar_contract::conn::OpenDesc<'_>,
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        if self.refuse.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(busbar_contract::conn::ConnError::Refused);
+        }
         let id = self.slab.insert(caller, need, ())?;
         self.opened
             .lock()
@@ -652,6 +658,8 @@ impl busbar_contract::conn::Conns for Table {
         caller: busbar_contract::conn::InstanceId,
         conn: busbar_contract::conn::ConnId,
     ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.closed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.slab.remove(caller, conn).map(|_| ())
     }
 }
@@ -783,4 +791,138 @@ fn a_store_door_without_needs_states_none() {
     // SAFETY: as above.
     let st = unsafe { *(*over_tcp::door()).statement };
     assert_eq!(st.needs_len, 1);
+}
+
+// ── open on a ticket, with a connect step (ARCHITECT ruling 2026-10-03 on Q-L16-2) ────────────
+
+/// How many times `PendsInOpen`'s `open` ran.
+static PENDS_IN_OPEN_OPENS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A store whose connect step pends once (its backend's first round trip in flight) and then
+/// answers it reached the backend.
+struct PendsInOpen;
+
+impl Hooks for PendsInOpen {
+    fn open(
+        settings: &[u8],
+        host: Option<busbar_contract::abi::sdk::conn::Host>,
+    ) -> Result<Arc<MemoryStore>, String> {
+        let _ = (settings, host);
+        PENDS_IN_OPEN_OPENS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Arc::new(MemoryStore::new()))
+    }
+    fn connect(_: &MemoryStore, cx: &mut Op<'_>) -> Step<Result<(), String>> {
+        // A remote backend's round trip needs the ticket to pend on.
+        if !cx.can_pend() {
+            return Step::Ready(Err(
+                "pends-in-open reaches its backend only on a ticket".into()
+            ));
+        }
+        pend_once(cx, || Ok(()), 1_000_000)
+    }
+}
+
+mod pends_in_open {
+    busbar_contract::store_door!(super::Wrapped<super::PendsInOpen>, "pends-in-open", "0", 64);
+}
+
+/// RED (Q-L16-2): a store whose connect step PENDS in `open` completes its open (the boot's
+/// store load) on the wake, `open` itself running once, and serves.
+#[test]
+fn a_store_pending_in_open_completes_the_load_and_serves() {
+    let before = PENDS_IN_OPEN_OPENS.load(std::sync::atomic::Ordering::SeqCst);
+    let s = open(pends_in_open::door);
+    assert_eq!(
+        PENDS_IN_OPEN_OPENS.load(std::sync::atomic::Ordering::SeqCst) - before,
+        1,
+        "the RESUME hands back the instance `open` answered; `open` runs once"
+    );
+    RecordStore::add_denylist(&s, "carol", "test").expect("the opened store serves");
+    assert_eq!(
+        RecordStore::list_denylist(&s).expect("it reads back"),
+        vec!["carol".to_string()]
+    );
+}
+
+/// A store whose connect step reaches its backend over its `tcp` need: a checkout at `open`.
+struct ConnectsOverTcp;
+
+impl Hooks for ConnectsOverTcp {
+    fn connect(_: &MemoryStore, cx: &mut Op<'_>) -> Step<Result<(), String>> {
+        match cx.checkout(0, Some("db.internal:5432")) {
+            std::task::Poll::Ready(Ok(_)) => Step::Ready(Ok(())),
+            std::task::Poll::Ready(Err(e)) => Step::Ready(Err(format!(
+                "connects-over-tcp plugin: failed to connect to db.internal:5432: {e}"
+            ))),
+            std::task::Poll::Pending => Step::Pending { wake_at_ns: 0 },
+        }
+    }
+}
+
+mod connects_over_tcp {
+    busbar_contract::store_door!(
+        super::Wrapped<super::ConnectsOverTcp>,
+        "connects-over-tcp",
+        "0",
+        64,
+        needs: super::TCP
+    );
+}
+
+/// `door` loaded over `table` (the host's connection table) and opened.
+fn open_over(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    table: &Arc<Table>,
+) -> Result<LoadedStore, String> {
+    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let conns: Arc<dyn busbar_contract::conn::DeclaredConns> = table.clone();
+    let p = load_linked::<Store>(
+        &LinkedRow::of(door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: Some(conns),
+        },
+    )
+    .expect("the door loads");
+    LoadedStore::open(p, d, b"{}", mint)
+}
+
+/// RED (Q-L16-2): the connect step reaches the backend over the host's connection table at `open`
+/// (a ticketed open; a ticket-less one has no connector), and closes that connection when it
+/// answers.
+#[test]
+fn a_store_connects_over_the_hosts_table_at_open() {
+    let table = Arc::new(Table::default());
+    let s = open_over(connects_over_tcp::door, &table).expect("the reachable backend opens");
+    assert_eq!(
+        *table.opened.lock().expect("opened"),
+        vec![(0, "db.internal:5432".to_string())]
+    );
+    assert_eq!(
+        table.closed.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the connect step's connection is closed when it answers"
+    );
+    RecordStore::add_denylist(&s, "dave", "test").expect("it serves");
+}
+
+/// RED (Q-L16-2): an unreachable backend fails the LOAD, at `open`, in the store's own words.
+#[test]
+fn an_unreachable_backend_fails_the_load_with_the_stores_message() {
+    let table = Arc::new(Table::default());
+    table
+        .refuse
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let err = open_over(connects_over_tcp::door, &table).expect_err("the load fails");
+    assert_eq!(
+        err,
+        format!(
+            "plugin 'connects-over-tcp' open failed: connects-over-tcp plugin: failed to connect \
+             to db.internal:5432: {}",
+            busbar_contract::conn::ConnError::Refused.text()
+        )
+    );
 }
