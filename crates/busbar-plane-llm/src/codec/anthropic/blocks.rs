@@ -331,53 +331,19 @@ pub(super) fn read_block(
                         .join("\n")
                 })
                 .unwrap_or_default();
-            // A HEADER naming the result, so the model reading a foreign protocol's plain text can
-            // still tell one retrieved passage from the next and attribute its answer. Built only
-            // from the fields that are present — an empty header would prepend a bare newline.
-            let mut header = String::new();
-            if !title.is_empty() {
-                header.push_str(title);
-            }
-            if !source.is_empty() {
-                if !header.is_empty() {
-                    header.push_str(" — ");
-                }
-                header.push_str(source);
-            }
-            let text = if header.is_empty() {
-                body
-            } else if body.is_empty() {
-                header
-            } else {
-                format!("{header}\n{body}")
-            };
-            let citations = if source.is_empty() && title.is_empty() {
-                Vec::new()
-            } else {
-                vec![crate::codec::ir::IrCitation {
-                    domain: None,
-                    kind: Some(keys::SEARCH_RESULT_LOCATION.to_string()),
-                    cited_text: None,
-                    title: (!title.is_empty()).then(|| title.to_string()),
-                    url: (!source.is_empty()).then(|| source.to_string()),
-                    document_index: None,
-                    start_index: None,
-                    end_index: None,
-                    encrypted_index: None,
-                    // No `raw`: the byte-exact same-protocol path is the sentinel splice above, not
-                    // this citation, and parking an Anthropic SEARCH-RESULT object under a citation's
-                    // `raw` would have the Anthropic writer re-emit it as a CITATION on a
-                    // foreign→Anthropic hop — a different wire shape than the one it came from.
-                    raw: None,
-                }]
-            };
+            // THE SEARCH-RESULT SLOT (`IrBlock::search_result`, shared with Converse `searchResult`):
+            // a `title — source` header line so a model reading a foreign protocol's plain text can
+            // tell one passage from the next, the provenance as a `search_result_location` citation
+            // with no location indices, and the block's `citations` switch verbatim in that
+            // citation's `raw`. The Anthropic and Bedrock writers re-emit the native block from it.
             let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
-            Ok(crate::codec::ir::IrBlock::Text {
-                text,
+            Ok(crate::codec::ir::IrBlock::search_result(
+                source,
+                title,
+                body,
+                obj.get(keys::CITATIONS).cloned(),
                 cache_control,
-                citations,
-                refusal: false,
-            })
+            ))
         }
         // A native `redacted_thinking` block carries opaque `data` bytes (Anthropic's encrypted
         // reasoning). Map it onto the same typed IR carrier Bedrock's `redactedContent` uses: a
@@ -404,6 +370,10 @@ pub(super) fn read_block(
                 signature_origin: None,
             })
         }
+        // A provider-run web search's results (DF-MAP, ARCHITECT ruling 2026-10-02 item 2): the
+        // IR's hosted-tool record. A `web_search_tool_result_error` content carries its error code
+        // as the record's status and no results.
+        WEB_SEARCH_TOOL_RESULT => Ok(read_web_search_tool_result(obj)),
         // Forward-compatibility: a valid native Anthropic content-block type the IR does not model
         // (e.g. `document`, or a future type Anthropic adds after this build).
         // These appear in legitimate Messages API requests, so the prior `_ => Err(ClientError)`
@@ -503,3 +473,47 @@ pub(super) fn read_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir
         strict,
     })
 }
+
+/// The block type of a provider-run web search's results.
+pub(super) const WEB_SEARCH_TOOL_RESULT: &str = "web_search_tool_result";
+
+/// Anthropic `web_search_tool_result` -> [`crate::codec::ir::IrBlock::HostedToolRecord`].
+fn read_web_search_tool_result(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> crate::codec::ir::IrBlock {
+    let content = obj.get(keys::CONTENT);
+    let results = content
+        .and_then(|c| c.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|r| {
+                    Some(crate::codec::ir::IrSearchResult {
+                        url: r.get(keys::URL)?.as_str()?.to_string(),
+                        title: r
+                            .get(keys::TITLE)
+                            .and_then(|t| t.as_str())
+                            .map(String::from),
+                        snippet: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let status = content
+        .and_then(|c| c.get(ERROR_CODE))
+        .and_then(|e| e.as_str())
+        .map(String::from);
+    crate::codec::ir::IrBlock::HostedToolRecord {
+        kind: crate::codec::ir::IrHostedToolKind::WebSearch,
+        call_id: obj
+            .get(TOOL_USE_ID)
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        status,
+        results,
+    }
+}
+
+/// The error member of a `web_search_tool_result_error` content.
+const ERROR_CODE: &str = "error_code";

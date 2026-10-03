@@ -1382,10 +1382,11 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Append one admin AUDIT record for DURABLE persistence (design: the audit log's durable home is
-    /// the configured store — memory = ephemeral, sqlite/postgres/valkey = durable). The engine keeps
-    /// the hot in-memory hash-chained ring for reads and write-THROUGHs each appended entry here, so a
-    /// hard crash loses ~0 entries and the ring's size bound stops pruning HISTORY (the store keeps it
-    /// all). Append-only, ordered by `seq`; a store never rewrites or recomputes the digest.
+    /// the configured store — an ephemeral store keeps it for the process, a durable one for good;
+    /// this face names neither). The engine keeps the hot in-memory hash-chained ring for reads and
+    /// write-THROUGHs each appended entry here, so a hard crash loses ~0 entries and the ring's
+    /// size bound stops pruning HISTORY (the store keeps it all). Append-only, ordered by `seq`; a
+    /// store never rewrites or recomputes the digest.
     ///
     /// A record arriving on a `seq` that ALREADY HAS ONE is settled by comparing the two:
     /// - byte-identical to the stored record → `Ok(())`. This is the write-through retrying after a

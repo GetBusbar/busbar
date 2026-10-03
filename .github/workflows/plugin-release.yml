@@ -1,5 +1,5 @@
 # plugin-release — build, sign, pack and publish ONE first-party plugin release, for every plugin
-# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `cargo xtask fleet
+# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `busbar-release plugin
 # render <repo>` from plugins.yaml: on a `v*` tag it runs plugin-ci.yml on the tagged commit, then this
 # file, then plugin-consumer-verify.yml, each taken at the busbar commit the repo pins.
 #
@@ -20,9 +20,13 @@
 #                     it published and marked latest.
 #   notify-marketing  the site rebuild dispatch (RELEASE_DISPATCH_TOKEN), loud when unprovisioned.
 #
+# A C plugin (`plugin_lang: c`, plugin-ci.yml's C path) is released the same way: its build step
+# compiles the `c_dir` sources against busbar_plugin.h at the pin with the target's C compiler into
+# the same library path a cargo build would leave, and the same packer signs it.
+#
 # A PRE-RELEASE tag (`vX.Y.Z-dev.N`, cut from a plugin repo's dev branch) runs the same build, sign and
 # pack, but its release is a GitHub pre-release: published, never marked latest, and no site dispatch.
-name: plugin-release
+name: "Plugins: release"
 
 on:
   workflow_call:
@@ -68,6 +72,16 @@ on:
         default: ""
       declares_file:
         description: "Repo-relative path of the plugin's `declares` section (JSON). Empty = none."
+        required: false
+        type: string
+        default: ""
+      plugin_lang:
+        description: "rust | c. `c`: the library is the c_dir sources built from busbar_plugin.h alone."
+        required: false
+        type: string
+        default: "rust"
+      c_dir:
+        description: "plugin_lang c: the repo-relative directory of the plugin's .c sources."
         required: false
         type: string
         default: ""
@@ -169,6 +183,7 @@ jobs:
             plugin
             busbar
       - name: build the cdylib
+        if: inputs.plugin_lang != 'c'
         working-directory: plugin
         shell: bash
         env:
@@ -178,6 +193,25 @@ jobs:
           set -euo pipefail
           lib_flag=""; [ "$LIB_ONLY" = true ] && lib_flag="--lib"
           cargo build --release --locked $lib_flag --target "${{ matrix.target }}" -p "$CRATE"
+      - name: "C: build the library from busbar_plugin.h alone"
+        if: inputs.plugin_lang == 'c'
+        shell: bash
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+          C_DIR: ${{ inputs.c_dir }}
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          out="plugin/target/${target}/release/${{ matrix.libprefix }}${CRATE//-/_}.${{ matrix.libext }}"
+          mkdir -p "$(dirname "$out")"
+          flags=(-std=c11 -Wall -Wextra -Werror -pedantic -O2 -shared -I busbar/crates/busbar-contract/include)
+          case "$target" in
+            x86_64-apple-darwin) cc "${flags[@]}" -fPIC -arch x86_64 -o "$out" "plugin/$C_DIR"/*.c ;;
+            aarch64-apple-darwin) cc "${flags[@]}" -fPIC -arch arm64 -o "$out" "plugin/$C_DIR"/*.c ;;
+            *-windows-msvc) clang "${flags[@]}" --target="$target" -o "$out" "plugin/$C_DIR"/*.c ;;
+            *) cc "${flags[@]}" -fPIC -o "$out" "plugin/$C_DIR"/*.c ;;
+          esac
+          ls -l "$out"
       - name: build busbar-plugin-pack (host build; the packer only reads the cdylib's bytes)
         working-directory: busbar
         shell: bash
