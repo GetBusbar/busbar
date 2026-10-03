@@ -82,6 +82,11 @@
 #                  --list feed, so qa-gate and release-check neither clone nor test it; `busbar-release plugin check`
 #                  skips its crate-shaped checks with that reason (the whole repo while it is empty) and
 #                  goes RED once both crate dirs are in and the flag is stale. Drop it at the move.
+#   lang           rust | c [rust]. `c`: the plugin is C sources in `<kind>-<name>/`, built from
+#                  busbar_plugin.h alone (decision #84); its CI is plugin-ci.yml's C path (build from the
+#                  header at the pin, `dropped_conformance` through load_dropped, RED arm kept), its
+#                  callers pass `plugin_lang: c`, and it has no Cargo workspace. It stays OUT of the
+#                  --list feed (release-check's suite loop runs `cargo test` in a sibling checkout).
 
 # THE FLEET POLICY (`busbar-release plugin check` holds every repo to it; `busbar-release plugin sync` applies it).
 #   busbar_ref  ONE pin for every plugin repo: each repo's `.busbar-ref` is exactly this, every
@@ -519,3 +524,19 @@ plugins:
     # its door lands in it. First release with the core version that pins it.
     released: false
     pending_crate: true
+  - repo: busbar-secret-c
+    kind: secret
+    alias: c
+    crate: busbar-secret-c
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:secret plugin library, written in C from busbar_plugin.h alone: the c secret, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "secret-c/declares.json"
+    # Decision #84's witness (OWNER RULING 2026-10-02: "just another plugin"): a plugin built from
+    # the generated C header alone, created by `busbar-release plugin new secret c --lang c` and
+    # tested by itself through plugin-ci.yml's C path at its pin. First release with the core
+    # version that pins it.
+    released: false
+    lang: c
