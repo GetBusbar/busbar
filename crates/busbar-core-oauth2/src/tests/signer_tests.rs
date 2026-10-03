@@ -181,7 +181,7 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let (x, y) = (b64.encode(&point[1..33]), b64.encode(&point[33..65]));
 
-    let cfg = busbar_kernel::oauth_as::config::OauthAsCfg {
+    let cfg = crate::config::OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
         signing_key: None,
         key_id: None,
@@ -190,8 +190,7 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
         fapi2: false,
         clients: Vec::new(),
     };
-    let identity = busbar_kernel::oauth_as::config::AsIdentity::from_cfg(&cfg)
-        .expect("a valid oauth_as block");
+    let identity = crate::config::AsIdentity::from_cfg(&cfg).expect("a valid oauth_as block");
     let kid = identity.key_id().to_string();
     let (jwks_path, metadata_path) = (
         identity.jwks_path().to_string(),

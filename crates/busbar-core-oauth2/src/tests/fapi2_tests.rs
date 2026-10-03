@@ -29,9 +29,7 @@ use base64::Engine as _;
 use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
 use serde_json::{json, Value};
 
-use busbar_kernel::oauth_as::config::{
-    OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks,
-};
+use crate::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
 use busbar_kernel::test_support::TestApp;
 
 use crate::flow_tests::{location, path_of, percent_decode, query_param, send, Jar};

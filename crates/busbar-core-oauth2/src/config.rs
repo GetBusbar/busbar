@@ -479,6 +479,66 @@ fn is_scope_token(s: &str) -> bool {
             .all(|b| b == 0x21 || (0x23..=0x5B).contains(&b) || (0x5D..=0x7E).contains(&b))
 }
 
-#[cfg(test)]
-#[path = "tests/config_tests.rs"]
-mod config_tests;
+/// THE KERNEL'S ASK, answered here (`busbar_kernel::oauth_as::seam::AsPlaneSeam::check`): the
+/// kernel carries the `oauth_as:` block as an opaque value and hands it to its owner. This parses it
+/// (a malformed or unknown key is refused here), validates it ([`AsIdentity::from_cfg`], the same
+/// refusals with the same text), and returns every secret reference it carries, so the kernel's
+/// `--validate` can resolve them and its boot can resolve the signing key.
+pub(crate) fn seam_check(block: &serde_yaml::Value) -> Result<Vec<(String, SecretRef)>, String> {
+    let identity = identity_of(block)?;
+    Ok(secret_refs(&identity)
+        .into_iter()
+        .map(|(path, key)| (path, key.clone()))
+        .collect())
+}
+
+/// Parse and validate the opaque block into the validated identity.
+pub(crate) fn identity_of(block: &serde_yaml::Value) -> Result<AsIdentity, String> {
+    let cfg: OauthAsCfg =
+        serde_yaml::from_value(block.clone()).map_err(|e| format!("oauth_as: {e}"))?;
+    AsIdentity::from_cfg(&cfg).map_err(|e| e.to_string())
+}
+
+/// Every `SecretRef` the validated `oauth_as:` block carries, as `(config path, reference)`.
+///
+/// THE ES256 SIGNING KEY. `--validate` must be able to resolve it, because the alternative is a
+/// deployment that boots, advertises a JWKS, and fails on the first token request of the day with a
+/// secret module error.
+///
+/// Destructured EXHAUSTIVELY rather than read through `identity.signing_key()`, because the accessor
+/// would keep compiling on the day a second `SecretRef` is added to the validated identity, and that
+/// second secret would then be one `--validate` calls fine and the process fails on at runtime.
+/// Everything below `signing_key` is a derived endpoint path or a policy number, and none of them
+/// can ever carry a credential, but each is named here so that ADDING one is a compile error
+/// somebody has to answer.
+pub(crate) fn secret_refs(identity: &AsIdentity) -> Vec<(String, &SecretRef)> {
+    let AsIdentity {
+        signing_key,
+        // The issuer and the nine paths derived from it. Public by construction: every one of
+        // them is published in the RFC 8414 metadata document.
+        issuer: _,
+        issuer_path: _,
+        metadata_path: _,
+        authorize_path: _,
+        token_path: _,
+        register_path: _,
+        jwks_path: _,
+        consent_path: _,
+        par_path: _,
+        // Policy, not credential: the FAPI 2.0 posture switch, the scope ceiling, the token
+        // lifetime, and the advisory `kid` that appears in every published JWKS entry.
+        fapi2: _,
+        // Operator-provisioned clients: PUBLIC keys only (a configured `d` is a boot refusal).
+        clients: _,
+        default_grant: _,
+        access_token_ttl: _,
+        key_id: _,
+    } = identity;
+    signing_key
+        .iter()
+        .map(|key| (SIGNING_KEY_PATH.to_string(), key))
+        .collect()
+}
+
+/// The config path the signing key's reference is reported under.
+pub(crate) const SIGNING_KEY_PATH: &str = "oauth_as.signing_key";

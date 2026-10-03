@@ -25,7 +25,7 @@ use oauth_as::client::{Client, ClientAuth, ClientId};
 use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
 
-use busbar_kernel::oauth_as::config::OauthAsCfg;
+use crate::config::OauthAsCfg;
 use busbar_kernel::test_support::TestApp;
 
 use crate::testkit::{oauth_as_plane, TestAppOauthExt};
@@ -360,8 +360,8 @@ fn the_jar_refuses_to_send_a_cookie_to_a_sibling_path() {
 /// "`/authorize` gets it" would pass just as happily against `Path=/`.
 #[test]
 fn the_session_cookie_carries_exactly_the_attributes_it_should() {
+    use crate::config::AsIdentity;
     use crate::routes::session_cookies;
-    use busbar_kernel::oauth_as::config::AsIdentity;
 
     for (issuer, secure_expected) in [
         ("https://as.example.com", true),
