@@ -413,6 +413,39 @@ const PARKED: &[crate::codec::drops::Parked] = &[
 const RESPONSE_CODE: &[&str] = &[STOP_DETAILS];
 const STREAM_CODE: &[&str] = &["type=content_block_delta.index", "type=ping", "type=error"];
 
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "content[].type=bash_code_execution_tool_result",
+    "content[].type=code_execution_tool_result",
+    "content[].type=container_upload",
+    "content[].type=server_tool_use.caller.type=code_execution_20250825.tool_id",
+    "content[].type=server_tool_use.caller.type=code_execution_20260120",
+    "content[].type=text_editor_code_execution_tool_result",
+    "content[].type=tool_search_tool_result",
+    "content[].type=tool_use.caller.type=code_execution_20250825.tool_id",
+    "content[].type=tool_use.caller.type=code_execution_20260120",
+    "content[].type=tool_use.toolset_name",
+    "content[].type=web_fetch_tool_result",
+    "content[].type=web_search_tool_result",
+];
+const STREAM_DROPS: &[&str] = &[
+    "type=content_block_start.content_block.type=bash_code_execution_tool_result",
+    "type=content_block_start.content_block.type=code_execution_tool_result",
+    "type=content_block_start.content_block.type=container_upload",
+    "type=content_block_start.content_block.type=server_tool_use.caller.type=code_execution_20250825.tool_id",
+    "type=content_block_start.content_block.type=server_tool_use.caller.type=code_execution_20260120",
+    "type=content_block_start.content_block.type=text_editor_code_execution_tool_result",
+    "type=content_block_start.content_block.type=tool_search_tool_result",
+    "type=content_block_start.content_block.type=tool_use.caller.type=code_execution_20250825.tool_id",
+    "type=content_block_start.content_block.type=tool_use.caller.type=code_execution_20260120",
+    "type=content_block_start.content_block.type=tool_use.toolset_name",
+    "type=content_block_start.content_block.type=web_fetch_tool_result",
+    "type=content_block_start.content_block.type=web_search_tool_result",
+    "type=message_delta.delta.container.expires_at",
+    "type=message_delta.delta.container.skills",
+];
+
 /// The native Anthropic content-block `type` values [`read_block`] holds whole in the IR; used to
 /// find which raw blocks need parking under [`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`] without
 /// duplicating `read_block`'s parse logic.

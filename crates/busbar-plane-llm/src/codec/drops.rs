@@ -419,6 +419,9 @@ pub fn scope_more<T>(seam: Seam<'_>, seen: &mut Vec<String>, f: impl FnOnce() ->
 pub struct Carried {
     pub map: &'static [&'static str],
     pub code: &'static [&'static str],
+    /// Paths INSIDE a carried subtree that the dialect's code does not carry (a member of a block
+    /// the dialect models, a vendor detail under a member it reads): named like any other drop.
+    pub drops: &'static [&'static str],
 }
 
 /// Where a wire path stands against what a dialect carries.
@@ -448,18 +451,30 @@ fn join(path: &str, step: &str) -> String {
 
 impl Carried {
     fn all(&self) -> impl Iterator<Item = &&'static str> {
-        self.map.iter().chain(self.code.iter())
+        self.map
+            .iter()
+            .chain(self.code.iter())
+            .chain(self.drops.iter())
     }
 
     fn cover(&self, path: &str) -> Cover {
-        let mut above = false;
-        for q in self.all() {
-            if path == *q || under(path, q) {
-                return Cover::Carried;
-            }
-            above |= under(q, path);
+        if self.drops.contains(&path) {
+            return Cover::Unmapped;
         }
-        if above {
+        let holds_drop = self.drops.iter().any(|d| under(d, path));
+        let carried = self
+            .map
+            .iter()
+            .chain(self.code.iter())
+            .any(|q| path == *q || under(path, q));
+        if carried {
+            return if holds_drop {
+                Cover::Above
+            } else {
+                Cover::Carried
+            };
+        }
+        if holds_drop || self.all().any(|q| under(q, path)) {
             Cover::Above
         } else {
             Cover::Unmapped
@@ -470,6 +485,24 @@ impl Carried {
     fn uses_arms(&self, path: &str) -> bool {
         let arm = join(path, "type=");
         self.all().any(|q| q.starts_with(&arm))
+    }
+
+    /// Whether the walk names the member at `path` (or the member above it that holds it) when an
+    /// answer carries it: the walk's own decision, asked of one wire path.
+    pub fn names_path(&self, path: &str) -> bool {
+        let cuts = path
+            .char_indices()
+            .filter(|(_, c)| matches!(c, '.' | '['))
+            .map(|(i, _)| i)
+            .chain(std::iter::once(path.len()));
+        for end in cuts {
+            match self.cover(&path[..end]) {
+                Cover::Unmapped => return true,
+                Cover::Carried => return false,
+                Cover::Above => {}
+            }
+        }
+        false
     }
 
     /// The notation-A path of every member of `body` (read at `root`, `""` for the document's

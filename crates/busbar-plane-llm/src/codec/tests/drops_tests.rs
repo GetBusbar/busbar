@@ -584,6 +584,7 @@ fn the_answer_walk_names_the_shallowest_uncarried_member() {
             "type=content_block_delta.delta.type=text_delta",
         ],
         code: &["type=ping"],
+        drops: &[],
     };
     let answer = json!({"id": "m", "content": [{"type": "x", "deep": 1}], "container": {"id": "c"},
         "usage": {"input_tokens": 1, "output_tokens_details": {"t": 1}}, "stop_details": null});
@@ -609,6 +610,7 @@ fn the_answer_walk_names_the_shallowest_uncarried_member() {
     let keyed = crate::codec::drops::Carried {
         map: &["contentBlockDelta.delta.text"],
         code: &[],
+        drops: &[],
     };
     assert_eq!(
         keyed.unmapped(
@@ -617,4 +619,129 @@ fn the_answer_walk_names_the_shallowest_uncarried_member() {
         ),
         vec!["contentBlockDelta.delta.zz"]
     );
+}
+
+/// DF-MAP-IR-GAPS SECTION E (ruled: every unmapped response/stream path is named, no extra
+/// bucket): every wire path of its list is named by the far end's drop walk when an answer carries
+/// it. RED before: the walk did not exist (a buffered answer named blocks and vendor metadata only;
+/// a stream named nothing), and a path inside a coarse carried row (`content` carries the blocks,
+/// not `tool_use.caller`) was never named.
+#[test]
+fn every_section_e_path_is_named_by_the_drop_walk() {
+    let mut missed = Vec::new();
+    let list = include_str!("section_e_paths.txt");
+    for line in list
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let mut it = line.splitn(3, ' ');
+        let (dialect, direction, path) =
+            (it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+        let carried = crate::codec::proto_codec::with_reader(dialect, |r| match direction {
+            "response" => r.response_carried(),
+            _ => r.stream_carried(),
+        })
+        .flatten()
+        .unwrap_or_else(|| panic!("{dialect} {direction}: no answer map"));
+        if !carried.names_path(path) {
+            missed.push(line);
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "{} not named:\n{}",
+        missed.len(),
+        missed.join("\n")
+    );
+}
+
+/// RED ARM of the buffered answer walk, over the whole golden corpus (every `resp_X2Y_*.json` is an
+/// answer written in dialect Y): the walk names nothing a dialect carries. What it does name is
+/// exactly the far end's members no other dialect has: a Responses answer's request echoes and
+/// Anthropic's `usage.output_tokens_details` (never read).
+#[test]
+fn the_answer_walk_names_only_true_drops_over_the_golden_corpus() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codec/tests/proto/golden");
+    let dialect = |letter: u8| match letter {
+        b'a' => "anthropic",
+        b'o' => "openai",
+        b'g' => "gemini",
+        b'b' => "bedrock",
+        b'r' => "responses",
+        b'c' => "cohere",
+        other => panic!("{}", other as char),
+    };
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&dir).expect("golden corpus") {
+        let name = entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        if !name.starts_with("resp_") || !name.ends_with(".json") {
+            continue;
+        }
+        let far = dialect(name.as_bytes()[7]);
+        let Ok(body) = serde_json::from_slice::<Value>(&std::fs::read(dir.join(&name)).unwrap())
+        else {
+            continue;
+        };
+        let carried = crate::codec::proto_codec::with_reader(far, |r| r.response_carried())
+            .flatten()
+            .expect("an answer map");
+        let mut named = carried.unmapped("", &body);
+        named.sort();
+        let true_drops: &[&str] = match far {
+            "responses" => &[
+                "parallel_tool_calls",
+                "temperature",
+                "tool_choice",
+                "tools",
+                "top_p",
+            ],
+            "anthropic" => &["usage.output_tokens_details"],
+            _ => &[],
+        };
+        let expected: Vec<&str> = true_drops
+            .iter()
+            .copied()
+            .filter(|p| {
+                let pointer = format!("/{}", p.replace('.', "/"));
+                body.pointer(&pointer).is_some_and(|v| !v.is_null())
+            })
+            .collect();
+        assert_eq!(named, expected, "{name}");
+        seen += 1;
+    }
+    assert!(seen > 20, "the corpus was read: {seen}");
+}
+
+/// A dialect never lists as dropped a path it carries (a map row or a code-carried path): the walk
+/// would name a member that crosses (red: Responses' stream events and three Gemini answer members
+/// were both carried and listed as drops after DF-MAP mapped them).
+#[test]
+fn no_dialect_drops_a_path_it_carries() {
+    for dialect in [
+        "anthropic",
+        "bedrock",
+        "cohere",
+        "gemini",
+        "openai",
+        "responses",
+    ] {
+        crate::codec::proto_codec::with_reader(dialect, |r| {
+            for (direction, carried) in [
+                ("answer", r.response_carried()),
+                ("stream", r.stream_carried()),
+            ] {
+                let Some(c) = carried else { continue };
+                for d in c.drops {
+                    assert!(
+                        !c.map.contains(d) && !c.code.contains(d),
+                        "{dialect} {direction}: `{d}` is carried and listed as dropped"
+                    );
+                }
+            }
+        });
+    }
 }

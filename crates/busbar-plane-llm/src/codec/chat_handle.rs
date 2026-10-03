@@ -354,13 +354,19 @@ pub fn drop_untranslatable_request(ir: &mut IrRequest, ingress_protocol: &str, b
     drop_request_extra(ir, ingress_protocol);
 }
 
-/// What a TRANSLATE attempt's ANSWER drops: the far end's vendor-scoped response metadata and its
-/// content blocks the far end's reader does not model, each named by its wire path. Both hosts
+/// What a TRANSLATE attempt's ANSWER drops: the far end's vendor-scoped response metadata, its
+/// content blocks the far end's reader does not model, and every other member the far end's dialect
+/// does not carry (the answer walk), each named by its wire path. Both hosts
 /// call this one function inside a [`drops::scope`].
 pub fn drop_untranslatable_response(egress_protocol: &str, body: &Value) {
     crate::codec::dialect::drop_untranslatable_response_metadata(egress_protocol, body);
     super::proto_codec::with_reader(egress_protocol, |r| {
-        drops::note_unmodelled_blocks(r.response_blocks(), body, drops::UNMODELLED_ANSWER_BLOCK)
+        drops::note_unmodelled_blocks(r.response_blocks(), body, drops::UNMODELLED_ANSWER_BLOCK);
+        // Every other member of the answer the caller's dialect does not get (DF-MAP-IR-GAPS
+        // section E: no extra bucket), walked against what the far end's dialect carries.
+        if let Some(carried) = r.response_carried() {
+            drops::note_unmapped(&carried, "", body);
+        }
     });
 }
 

@@ -875,6 +875,18 @@ const STREAM_CODE: &[&str] = &[
     "service_tier",
 ];
 
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "choices[].message.audio.expires_at",
+    "choices[].message.audio.transcript",
+];
+const STREAM_DROPS: &[&str] = &[
+    "usage.completion_tokens_details.text_tokens",
+    "usage.prompt_tokens_details.image_tokens",
+    "usage.prompt_tokens_details.text_tokens",
+];
+
 /// Read one OpenAI-format content part: `None` for a part kind this reader does not model, which
 /// is dropped — nothing is put in its place.
 fn read_openai_part(
