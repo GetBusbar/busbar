@@ -33,6 +33,12 @@
 //! security posture of the 1.5.5-era MCP stdio client is kept exactly — no shell, an absolute path
 //! only, `env_clear()` before anything the destination declared is set — so a child inherits
 //! nothing the deployment did not write down.
+//!
+//! ## The connector's door
+//!
+//! [`door`] is this row as a memory-ABI LINE FRAMER: the host's connector spawns the program a
+//! plane's stdio need names (its settings' `{command, args, env}`), owns the child, and frames its
+//! pipes through this door, one frame per line.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -40,6 +46,7 @@
 mod carrier;
 mod claims;
 mod conn;
+pub mod door;
 mod meta;
 mod transport;
 
@@ -80,6 +87,10 @@ pub mod linked {
     pub fn build(_: Option<Arc<dyn Transport>>, _: &TransportSettings) -> Arc<dyn Transport> {
         Arc::new(StdioTransport::new())
     }
+
+    /// THE MEMORY-ABI DOOR the host's connector frames a program's pipes with (the `transport-door`
+    /// axis): the line framer.
+    pub use crate::door::door;
 }
 
 #[cfg(test)]

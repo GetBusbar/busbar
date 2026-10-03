@@ -61,7 +61,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
-    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB,
+    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
 use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -175,6 +175,8 @@ struct DeclaredNeed {
     /// with that CA added on top (spec section 5, the host connector: "an extra trusted root added
     /// on top of the public roots, as in 1.5.5"); `None` = the connector's default trust.
     tls: Option<Arc<rustls::ClientConfig>>,
+    /// The program the need's `target_from` resolved to: every open spawns it.
+    program: Option<busbar_contract::conn::Program>,
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
@@ -426,6 +428,52 @@ impl Connector {
                 egress_class,
                 declared_target: declared_target.map(str::to_owned),
                 tls,
+                program: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// THE PROGRAM NEED: `owner`'s outbound `need` dials `program` (its pipes, framed by the entry
+    /// serving `transport`). Carried only in the operator-infrastructure class (the operator wrote
+    /// the program into config), with no auth style (no credential rides a pipe), over an entry
+    /// that frames a byte stream directly (it composes over nothing, as a framer over the host's
+    /// socket does).
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] for anything else; any earlier record of the need is dropped.
+    fn record_program(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        program: &busbar_contract::conn::Program,
+    ) -> Result<(), ConnError> {
+        let served = {
+            let view = self.transports.read().expect("transports");
+            view.serving(&spec.transport)
+                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
+        };
+        let carried = spec.direction == DIRECTION_OUTBOUND
+            && spec.egress_class == EGRESS_OPERATOR_INFRASTRUCTURE
+            && spec.auth.is_empty()
+            && program.command.starts_with('/');
+        let Some((door, alpn)) = served.filter(|_| carried) else {
+            self.over.lock().expect("needs").remove(&(owner, need));
+            return Err(ConnError::Refused);
+        };
+        self.slab.declare(owner, need);
+        self.over.lock().expect("needs").insert(
+            (owner, need),
+            DeclaredNeed {
+                door,
+                alpn,
+                egress_class: spec.egress_class,
+                declared_target: None,
+                tls: None,
+                program: Some(program.clone()),
             },
         );
         Ok(())
@@ -837,6 +885,21 @@ impl DeclaredConns for Connector {
     fn serves_scheme(&self, transport: &str) -> bool {
         Connector::serves_scheme(self, transport)
     }
+
+    fn declare_program(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        program: &busbar_contract::conn::Program,
+    ) -> Result<(), ConnError> {
+        let answer = self.record_program(owner, need, spec, program);
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .insert((owner, need), (spec.clone(), answer));
+        answer
+    }
 }
 
 impl Conns for Connector {
@@ -854,6 +917,7 @@ impl Conns for Connector {
             egress_class,
             declared_target,
             tls,
+            program,
         } = self
             .over
             .lock()
@@ -861,6 +925,38 @@ impl Conns for Connector {
             .get(&(caller, need))
             .cloned()
             .ok_or(ConnError::Refused)?;
+        // A PROGRAM NEED spawns the program its config names, and nothing else: an open naming a
+        // target of its own is refused. No address is judged: no network is dialled.
+        if let Some(program) = program {
+            if !desc.target.is_empty() {
+                return Err(ConnError::Refused);
+            }
+            let dial = Dial {
+                target: program.command.clone(),
+                tls: None,
+                alpn,
+                open_timeout: DEFAULT_OPEN_TIMEOUT,
+                opening: Some((
+                    desc.fields
+                        .iter()
+                        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                        .collect(),
+                    desc.body.to_vec(),
+                )),
+                head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+            };
+            let conn = Connection::spawn(door, &program, dial).map_err(|f| map(&f))?;
+            return self.slab.insert(
+                caller,
+                need,
+                Held {
+                    conn: Mutex::new(Some(conn)),
+                    judging: Mutex::new(None),
+                    rest: Mutex::new((None, Vec::new(), false)),
+                    reason: Mutex::new(None),
+                },
+            );
+        }
         // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
         // `target_from`).
         let target = match (desc.target, declared_target.as_deref()) {

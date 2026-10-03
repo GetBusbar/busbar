@@ -3,7 +3,10 @@
 
 //! COMPOSE: one connection, `socket -> [TLS] -> framer` (`BUSBAR-1.6.0.md` THE DESIGN, §5), dialled
 //! ([`Connection::dial`], the framing begun on `SIDE_DIAL`) or accepted ([`Connection::accepted`],
-//! the server-side mirror: TLS as the server, the framing begun on `SIDE_ACCEPT`).
+//! the server-side mirror: TLS as the server, the framing begun on `SIDE_ACCEPT`); or a PROGRAM's
+//! pipes ([`Connection::spawn`]: `child stdin/stdout -> framer`), the child spawned here with no
+//! shell and only the environment its settings state, and killed when the connection closes or is
+//! dropped.
 //!
 //! The socket is the host's, non-blocking, its readiness on the dialling worker's reactor
 //! ([`crate::io`]); connection security is `rustls` driven sans-IO here, with the protocol offer
@@ -117,10 +120,24 @@ enum Phase {
     Failed(Failure),
 }
 
+/// What a connection's bytes ride: the host's socket, or a program's pipes.
+enum Wire {
+    Socket(Registered<TcpStream>),
+    Program(Box<Pipes>),
+}
+
+/// A spawned program: the child the connection owns, and the host's ends of the two pipes that
+/// are its input and its output, on the calling worker's reactor.
+struct Pipes {
+    child: tokio::process::Child,
+    stdin: tokio::net::unix::pipe::Sender,
+    stdout: tokio::net::unix::pipe::Receiver,
+}
+
 /// One composed connection.
 pub struct Connection {
     door: Arc<dyn FramerDoor>,
-    sock: Registered<TcpStream>,
+    wire: Wire,
     target: String,
     /// `SIDE_DIAL` | `SIDE_ACCEPT`.
     side: u32,
@@ -320,7 +337,7 @@ impl Planned {
         };
         Ok(Connection {
             door,
-            sock,
+            wire: Wire::Socket(sock),
             target: dial.target,
             side: SIDE_DIAL,
             tls,
@@ -342,6 +359,91 @@ impl Planned {
 }
 
 impl Connection {
+    /// SPAWN `program` and frame its pipes through `door` (a byte-stream framer): no shell, its
+    /// absolute path executed with its arguments and ONLY the environment it states, its input and
+    /// output the connection, its error output the host's; the child killed when the connection
+    /// closes or is dropped. The framing begins at once (`SIDE_DIAL`), with `dial`'s opening message and
+    /// head words; the dial's target names the program for the framer, never its environment.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] for a command that is not an absolute path; [`Failure::Failed`] off a
+    /// worker or when the program cannot be spawned.
+    pub fn spawn(
+        door: Arc<dyn FramerDoor>,
+        program: &busbar_contract::conn::Program,
+        dial: Dial,
+    ) -> Result<Self, Failure> {
+        if !program.command.starts_with('/') {
+            return Err(Failure::Refused(
+                "a program is spawned by its absolute path only".into(),
+            ));
+        }
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(Failure::Failed(reactor::NOT_ON_A_WORKER.into()));
+        }
+        // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
+        // The child's error output is the host's own (a spawned command inherits it).
+        let (child_reads, host_writes) = std::io::pipe().map_err(failed)?;
+        let (host_reads, child_writes) = std::io::pipe().map_err(failed)?;
+        // The command (and the child's ends of the pipes it holds) is dropped with this statement,
+        // so the child sees the end of its input when the host closes its end.
+        let child = tokio::process::Command::new(&program.command)
+            .args(&program.args)
+            .env_clear()
+            .envs(program.env.iter().map(|(k, v)| (k, v)))
+            .stdin(child_reads)
+            .stdout(child_writes)
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(failed)?;
+        let stdin =
+            tokio::net::unix::pipe::Sender::from_owned_fd(host_writes.into()).map_err(failed)?;
+        let stdout =
+            tokio::net::unix::pipe::Receiver::from_owned_fd(host_reads.into()).map_err(failed)?;
+        let established = Established {
+            offered_name: None,
+            agreed_protocol: None,
+            claim: door.facts().claims.first().map(|c| (*c).to_owned()),
+        };
+        let mut conn = Self {
+            door,
+            wire: Wire::Program(Box::new(Pipes {
+                child,
+                stdin,
+                stdout,
+            })),
+            target: dial.target,
+            side: SIDE_DIAL,
+            tls: None,
+            upgraded: false,
+            framing: None,
+            established,
+            phase: Phase::Connecting,
+            out: VecDeque::new(),
+            inbox: VecDeque::new(),
+            opening: dial.opening,
+            head_words: dial.head_words,
+            early: Vec::new(),
+            open_deadline: None,
+            framer_deadline: None,
+            sleep: None,
+            _slot: None,
+        };
+        conn.begin()?;
+        Ok(conn)
+    }
+
+    /// The process id of the program a spawned connection runs; `None` for a socket, or once the
+    /// child was reaped.
+    #[must_use]
+    pub fn program_id(&self) -> Option<u32> {
+        match &self.wire {
+            Wire::Program(p) => p.child.id(),
+            Wire::Socket(_) => None,
+        }
+    }
+
     /// Take `stream`, accepted by a listener, on the calling worker's reactor: server TLS first when
     /// `accept.tls` is set (bounded by the handshake timeout, the protocol agreed off
     /// `accept.alpn`), then the framing begun on `SIDE_ACCEPT`. `slot` is the listener's hold,
@@ -377,7 +479,7 @@ impl Connection {
         };
         let mut conn = Self {
             door,
-            sock,
+            wire: Wire::Socket(sock),
             target: String::new(),
             side: SIDE_ACCEPT,
             tls,
@@ -631,7 +733,12 @@ impl Connection {
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut moved = false;
         if matches!(self.phase, Phase::Connecting) {
-            match socket::poll_connected(&self.sock, cx) {
+            let connected = match &self.wire {
+                Wire::Socket(sock) => socket::poll_connected(sock, cx),
+                // A spawned program's pipes are open from the spawn.
+                Wire::Program(_) => Poll::Ready(Ok(())),
+            };
+            match connected {
                 Poll::Ready(Ok(())) => {
                     moved = true;
                     if self.tls.is_some() {
@@ -658,7 +765,13 @@ impl Connection {
         let mut moved = false;
         while !self.out.is_empty() {
             let (a, _) = self.out.as_slices();
-            match self.sock.poll_io(Direction::Write, cx, |mut s| s.write(a)) {
+            let wrote = match &mut self.wire {
+                Wire::Socket(sock) => sock.poll_io(Direction::Write, cx, |mut s| s.write(a)),
+                Wire::Program(p) => {
+                    tokio::io::AsyncWrite::poll_write(Pin::new(&mut p.stdin), cx, a)
+                }
+            };
+            match wrote {
                 Poll::Ready(Ok(0)) => return Err(Failure::Closed),
                 Poll::Ready(Ok(n)) => {
                     self.out.drain(..n);
@@ -674,10 +787,15 @@ impl Connection {
     /// Read what the socket has, and hand it on.
     fn read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut buf = [0_u8; READ_CHUNK];
-        match self
-            .sock
-            .poll_io(Direction::Read, cx, |mut s| s.read(&mut buf))
-        {
+        let read = match &mut self.wire {
+            Wire::Socket(sock) => sock.poll_io(Direction::Read, cx, |mut s| s.read(&mut buf)),
+            Wire::Program(p) => {
+                let mut into = tokio::io::ReadBuf::new(&mut buf);
+                tokio::io::AsyncRead::poll_read(Pin::new(&mut p.stdout), cx, &mut into)
+                    .map_ok(|()| into.filled().len())
+            }
+        };
+        match read {
             Poll::Ready(Ok(0)) => {
                 self.feed(&[], true)?;
                 Ok(true)
@@ -885,6 +1003,10 @@ impl Connection {
         }
         let waker = std::task::Waker::noop();
         let _ = self.flush(&mut Context::from_waker(waker));
+        // A program is the connection's own: it ends with it.
+        if let Wire::Program(p) = &mut self.wire {
+            let _ = p.child.start_kill();
+        }
     }
 }
 

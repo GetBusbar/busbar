@@ -62,7 +62,7 @@ impl Offload for Inline {
     }
 }
 
-const KIND: RecordSchemaId = RecordSchemaId::new("task");
+const KIND: RecordSchemaId = RecordSchemaId::new("job");
 
 fn caller(instance: &str) -> Caller {
     Caller {
@@ -134,9 +134,7 @@ fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
 
 /// Open a handle as unit `unit` of "inst": its handle and reference.
 fn open(r: &Rig, unit: u64, record: &[u8]) -> (u64, Vec<u8>) {
-    let s = run(|l| {
-        r.s.work_open(&caller("inst"), Some(unit), "task", record, l)
-    });
+    let s = run(|l| r.s.work_open(&caller("inst"), Some(unit), "job", record, l));
     assert_eq!((s.outcome, s.error), (Outcome::Ready, ""), "opened");
     assert!(s.value >= 1, "a handle is never 0");
     assert_eq!(s.spans.len(), 1);
@@ -230,7 +228,7 @@ fn the_bound_refuses_an_open_and_never_evicts_a_live_handle() {
     );
     let (h1, r1) = open(&r, 1, b"a");
     let (_, r2) = open(&r, 1, b"b");
-    let third = run(|l| r.s.work_open(&caller("inst"), Some(1), "task", b"c", l));
+    let third = run(|l| r.s.work_open(&caller("inst"), Some(1), "job", b"c", l));
     assert_eq!(
         (third.outcome, third.error),
         (Outcome::Refused, refusal::AT_BOUND)
@@ -239,7 +237,7 @@ fn the_bound_refuses_an_open_and_never_evicts_a_live_handle() {
     assert_eq!(find(&r, "inst", 1, &r1).value, h1);
     assert_ne!(find(&r, "inst", 1, &r2).value, svc::ABSENT);
     // The bound is per instance.
-    let elsewhere = run(|l| r.s.work_open(&caller("other"), Some(1), "task", b"c", l));
+    let elsewhere = run(|l| r.s.work_open(&caller("other"), Some(1), "job", b"c", l));
     assert_eq!(elsewhere.outcome, Outcome::Ready);
     // A settled handle no longer counts against it.
     let _ = run(|l| r.s.work_settle(&caller("inst"), h1, b"done", l));
@@ -306,7 +304,7 @@ fn a_handle_is_found_and_resumed_after_a_restart() {
     assert_eq!((resumed.outcome, resumed.value), (Outcome::Ready, 0));
     assert_eq!(state_and_record(&resumed), (WORK_LIVE, b"park".to_vec()));
     // The earlier process's live handles count against the bound.
-    let refused = run(|l| after.s.work_open(&caller("inst"), Some(1), "task", b"z", l));
+    let refused = run(|l| after.s.work_open(&caller("inst"), Some(1), "job", b"z", l));
     assert_eq!(
         (refused.outcome, refused.error),
         (Outcome::Refused, refusal::AT_BOUND)
@@ -354,7 +352,7 @@ fn an_open_is_refused_before_anything_is_written() {
             r.s.work_open(
                 &caller("inst"),
                 Some(1),
-                "task",
+                "job",
                 &[0; MAX_WORK_RECORD + 1],
                 l,
             )
@@ -363,11 +361,11 @@ fn an_open_is_refused_before_anything_is_written() {
     );
     // No unit in flight, or no unit at all.
     refused(
-        run(|l| r.s.work_open(&caller("inst"), Some(99), "task", b"r", l)),
+        run(|l| r.s.work_open(&caller("inst"), Some(99), "job", b"r", l)),
         refusal::NO_UNIT,
     );
     refused(
-        run(|l| r.s.work_open(&caller("inst"), None, "task", b"r", l)),
+        run(|l| r.s.work_open(&caller("inst"), None, "job", b"r", l)),
         refusal::NO_UNIT,
     );
     refused(
@@ -389,7 +387,7 @@ fn a_row_round_trips_and_a_tombstone_reads_as_nothing() {
     let w = Work {
         instance: Arc::clone(&instance),
         reference: [9; 16],
-        kind: "task".into(),
+        kind: "job".into(),
         owner: owner_of(Some("alice")),
         live: false,
         opened_ms: 5,

@@ -1196,7 +1196,7 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     let record = b"rec";
     let open = svc::WorkOpenIn {
         head: head(op::WORK_OPEN, TICKET, 0, size_of::<svc::WorkOpenIn>()),
-        kind: text("task"),
+        kind: text("job"),
         record: blob(record),
         into: bufs(&mut buf, &mut spans),
     };
@@ -1269,7 +1269,7 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     assert_eq!(
         seen,
         vec![
-            ("work.open", "Some(7) task rec".to_string()),
+            ("work.open", "Some(7) job rec".to_string()),
             ("work.find", "Some(8) ref".to_string()),
             ("work.settle", "5 done".to_string()),
             ("work.resume", "Some(9) 5".to_string()),

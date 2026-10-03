@@ -431,7 +431,7 @@ transport-http = "transport connector-door"
 transport-sse = "transport"
 transport-ws = "transport"
 transport-grpc = "transport transport-door"
-transport-stdio = "transport"
+transport-stdio = "transport transport-door"
 plane-decisions-door = "plane-door"
 llm-on-driver = "plane-door"
 

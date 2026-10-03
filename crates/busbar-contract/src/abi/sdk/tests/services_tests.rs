@@ -1121,7 +1121,7 @@ fn the_work_wrappers_read_the_reference_and_the_found_record() {
         value: Span { offset: 0, len: 0 },
     };
     let (mut buf, mut spans) = ([0u8; 8], [empty; 1]);
-    let opened = s.work_open(handle, "task", b"r", &mut buf, &mut spans);
+    let opened = s.work_open(handle, "job", b"r", &mut buf, &mut spans);
     assert_eq!(
         opened,
         Poll::Ready(Ok(Opened {
@@ -1148,7 +1148,7 @@ fn the_work_wrappers_read_the_reference_and_the_found_record() {
     let none = table(None);
     let (mut buf, mut spans) = ([0u8; 8], [empty; 1]);
     assert_eq!(
-        services(&none).work_open(handle, "task", b"r", &mut buf, &mut spans),
+        services(&none).work_open(handle, "job", b"r", &mut buf, &mut spans),
         Poll::Ready(Err(ServiceError::Unserved))
     );
 }

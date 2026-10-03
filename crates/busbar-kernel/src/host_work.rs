@@ -56,8 +56,7 @@ pub struct WorkBounds {
 }
 
 impl Default for WorkBounds {
-    /// The legacy work registries' bounds (`busbar-mcp` `tasks.rs`, `busbar-a2a` `taskstore.rs`):
-    /// 4096 retained, a terminal one kept five minutes.
+    /// The legacy work registries' bounds: 4096 retained, a settled one kept five minutes.
     fn default() -> Self {
         WorkBounds {
             max_live: 4096,
