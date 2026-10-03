@@ -304,6 +304,53 @@ impl HistoryView<'_> {
         (base_reaches_end && !outranked).then_some(base)
     }
 
+    /// **THE BOUNDARY OF A CORRECTION THAT WOULD CUT INSIDE A ROW** (OWNER ruling #32, 2026-09-29),
+    /// or `None` when neither
+    /// does.
+    ///
+    /// A metering row aggregates one `bucket_ms` bucket (a UTC day) per price era, and it is priced
+    /// at ONE instant: its own first one, `max(bucket start, era)`, where the era is the
+    /// `effective_from` of the entry in force when it accrued. A correction boundary strictly inside
+    /// a row's span moves the whole row or none of it: a `from` past the row's first instant leaves
+    /// the in-window part at the old card (the correction is a silent no-op), and an `until` past it
+    /// reprices the row's out-of-window part. So a boundary `b` cuts when:
+    ///
+    /// - `b` is before `stored_before` (rows holding instants at or after `b` may already be stored)
+    ///   and the row in force at `b` starts before it — `b` is neither a bucket start nor the
+    ///   `effective_from` of the entry in force at `b`, appended no later than `b` (so every unit
+    ///   from `b` on accrued under it);
+    /// - or `b` is the window's `until` and the row the units after the window will accrue into
+    ///   starts inside the window: it would price at the correction although every unit in it is
+    ///   outside.
+    ///
+    /// A `from` at or after `stored_before` cuts nothing: every unit from it on accrues under the
+    /// correction's own era, which starts at `from`.
+    pub fn correction_cut(
+        &self,
+        from: u64,
+        until: Option<u64>,
+        stored_before: u64,
+        bucket_ms: u64,
+    ) -> Option<u64> {
+        let row_start = |b: u64| {
+            let entry = self.entry_at(b);
+            let era = entry.map_or(0, CardEntry::effective_from);
+            let bucket_start = b - b % bucket_ms.max(1);
+            let on_time = entry.is_none_or(|e| e.appended_at <= b || b == bucket_start);
+            (bucket_start.max(era), on_time)
+        };
+        let stored_cut = |b: u64| {
+            let (start, on_time) = row_start(b);
+            b < stored_before && (start < b || !on_time)
+        };
+        if stored_cut(from) {
+            return Some(from);
+        }
+        let until = until?;
+        let (after, _) = row_start(until);
+        (stored_cut(until) || (from <= after && after < until)).then_some(until)
+    }
+
     /// The snapshot this view is.
     pub fn seq(&self) -> HistorySeq {
         self.at

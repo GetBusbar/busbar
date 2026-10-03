@@ -1512,6 +1512,10 @@ fn amend_rate_history_effect(
     // correction resolves part of it — or a cell on a plane whose billing is off has no one card to
     // correct: a correction that cannot say what it corrects is malformed (`Validation`, 400), and
     // nothing is recorded or appended. Split it at the boundary and sign each part.
+    //
+    // A CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS REFUSED (OWNER ruling #32, 2026-09-29): a
+    // metering row is one UTC day per price era priced at its own first instant, so a boundary
+    // inside one reprices the whole row or none of it. Refused the same way, before anything is recorded.
     if history.is_empty() {
         return Err(GovernanceError::NotFound);
     }
@@ -1566,6 +1570,15 @@ fn amend_rate_history_effect(
         .map_err(|refused| match refused {
             crate::root::kernel::AmendRefused::NoHistory => GovernanceError::NotFound,
             crate::root::kernel::AmendRefused::NoSoleCard => GovernanceError::Validation,
+            crate::root::kernel::AmendRefused::CutsRow(boundary) => {
+                tracing::warn!(
+                    boundary,
+                    "amend_rate_history refused: the correction's boundary falls inside a metering \
+                     row (a UTC day per price era) and would reprice all of it or none of it; \
+                     correct from a UTC day boundary or the start of the card in force"
+                );
+                GovernanceError::Validation
+            }
             crate::root::kernel::AmendRefused::Seal(e) => e,
         })?;
 

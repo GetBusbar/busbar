@@ -1752,15 +1752,18 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
 /// **A SIGNED BACK-DATED CORRECTION SURVIVES A RESTART** (#79). `amend_rate_history` journals its
 /// record ahead of its append (item 30), and the boot's rebuild reads it back as the entry it
 /// appended. Card A prices [`FLAT_LANE`] at 3; a million tokens arrive at 10,000 ms; a correction
-/// signed at 20,000 ms reprices `[5,000, 15,000)` at 4. After a restart the rebuilt book prices that
-/// unit at the correction, 4,000,000,000 nano-units, and a unit outside the window stays at A.
+/// signed at 20,000 ms reprices `[0, 86,400,000)` (one whole UTC day, #32) at 4. After a restart
+/// the rebuilt book prices that unit at the correction, 4,000,000,000 nano-units, and a unit the
+/// next day, outside the window, stays at A.
 /// Before the rebuild read corrections, a restart dropped it: the history was the boot card alone
 /// and the same unit replayed at 3,000,000,000.
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_back_dated_correction_survives_a_restart() {
     use busbar_contract::caps::{DurableWrite, KernelSeal};
-    const CORRECTED: (u64, u64) = (5_000, 15_000);
+    const CORRECTED: (u64, u64) = (0, 86_400_000);
+    /// A unit the day after the corrected window.
+    const OUTSIDE: u64 = 86_400_000 + EARNED_B;
     const SIGNED_AT: u64 = 20_000;
     let dir = journal_dir("amended");
     {
@@ -1781,7 +1784,7 @@ fn a_back_dated_correction_survives_a_restart() {
             FLAT_LANE,
             1_000_000,
             3_000_000_000,
-            EARNED_B,
+            OUTSIDE,
         );
         // The effect half of the verb, as `amend_rate_history_effect` runs it: the record first
         // (sealing the corrected card), then the append.
@@ -1957,7 +1960,7 @@ fn holds_a_correction(holder: &RootHistory) -> bool {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
-    const CORRECTED: (u64, u64) = (25_000, 35_000);
+    const CORRECTED: (u64, u64) = (APPLIED_B, 86_400_000);
     const SIGNED_AT: u64 = 36_000;
     let dir = journal_dir("missing-base");
     {
@@ -2009,7 +2012,7 @@ fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_whose_base_digest_differs_refuses_the_correction() {
-    const CORRECTED: (u64, u64) = (5_000, 15_000);
+    const CORRECTED: (u64, u64) = (0, 86_400_000);
     const SIGNED_AT: u64 = 20_000;
     let dir = journal_dir("base-digest");
     let sealed_over = {
@@ -2052,7 +2055,7 @@ fn a_restore_whose_base_digest_differs_refuses_the_correction() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_over_the_sealed_base_rebuilds_the_identical_card() {
-    const CORRECTED: (u64, u64) = (5_000, 15_000);
+    const CORRECTED: (u64, u64) = (0, 86_400_000);
     const SIGNED_AT: u64 = 20_000;
     let dir = journal_dir("sealed-base");
     let (live_seq, live_card) = {
