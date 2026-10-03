@@ -2142,29 +2142,33 @@ async fn admitted(
     ) {
         Ok(f) => f,
         Err(refusal) => {
-            return refusal.map(|resp| *resp).unwrap_or_else(|| {
-                // `Err(Some(..))` was audited `rejected` inside `hop_facts`; this arm (the pinned
-                // member's registration is gone) had no record at all.
-                charge.refused(engine_host.as_ref());
-                // A card fetch opened no task, so a hop that cannot be set up is a plain `502`, not
-                // an `end_task` (via `fail_task`) against a row that never existed.
-                if card_fetch {
-                    return super::rpcerror::respond(
-                        &rpc_id,
-                        super::rpcerror::A2aError::InvalidAgentResponse,
-                        "the extended agent card could not be fetched",
-                    );
-                }
-                fail_task(
-                    &engine_host,
-                    &seam,
+            // Either arm is a hop refused before the socket, so either gives the admission's fee
+            // back (Q35). `Err(Some(..))` is the egress refusal for a re-targeted or pinned member,
+            // already audited `rejected` inside `hop_facts`: it refunds and writes no second record.
+            if let Some(resp) = refusal {
+                charge.refund(engine_host.as_ref());
+                return *resp;
+            }
+            // This arm (the pinned member's registration is gone) had no record at all.
+            charge.refused(engine_host.as_ref());
+            // A card fetch opened no task, so a hop that cannot be set up is a plain `502`, not an
+            // `end_task` (via `fail_task`) against a row that never existed.
+            if card_fetch {
+                return super::rpcerror::respond(
                     &rpc_id,
-                    &task_id,
-                    &request_id,
-                    now,
-                    502,
-                )
-            });
+                    super::rpcerror::A2aError::InvalidAgentResponse,
+                    "the extended agent card could not be fetched",
+                );
+            }
+            return fail_task(
+                &engine_host,
+                &seam,
+                &rpc_id,
+                &task_id,
+                &request_id,
+                now,
+                502,
+            );
         }
     };
 
