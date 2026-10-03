@@ -1189,7 +1189,7 @@ impl ProtocolReader for BedrockReader {
                 // total made the same turn's bill reconcilable buffered and not reconcilable
                 // streamed.
                 let usage_val = data.get(keys::USAGE);
-                let usage = match read_bedrock_usage(usage_val) {
+                let mut usage = match read_bedrock_usage(usage_val) {
                     Ok(usage) => usage,
                     Err(refusal) => {
                         out.push(IrStreamEvent::Error(refusal));
@@ -1199,6 +1199,9 @@ impl ProtocolReader for BedrockReader {
                 // The guardrail policy units ride the same frame's `trace`, as they do buffered.
                 warn_guardrail_units(data);
 
+                if let Some(tier) = read_served_tier(data) {
+                    usage.detail.service_tier = Some(tier);
+                }
                 out.push(IrStreamEvent::MessageDelta {
                     stop_reason: state.pending_stop_reason.take(),
                     stop_sequence: state.pending_stop_sequence.take(),
@@ -1404,7 +1407,10 @@ impl ProtocolReader for BedrockReader {
         let usage_obj = obj.get(keys::USAGE);
         // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens` — rides the same table
         // as the totals (see `USAGE`). Absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-        let usage = read_bedrock_usage(usage_obj)?;
+        let mut usage = read_bedrock_usage(usage_obj)?;
+        if let Some(tier) = read_served_tier(body) {
+            usage.detail.service_tier = Some(tier);
+        }
         // The guardrail policy units AWS bills beside the tokens ride `trace`, not `usage`.
         warn_guardrail_units(body);
 

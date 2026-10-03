@@ -6708,3 +6708,38 @@ fn status_word_golden() {
         assert_eq!(message, word, "an absent signal falls back to the name");
     }
 }
+
+/// DF-MAP gap 2: the tier that SERVED a Converse answer (`serviceTier.type`) is read into the usage
+/// attribution, buffered and streamed, and written back on a Converse answer. RED arm: the reader
+/// never read it, so the served tier was lost.
+#[test]
+fn the_served_tier_is_read_and_written() {
+    let answer = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 3, "outputTokens": 1, "totalTokens": 4},
+        "serviceTier": {"type": "priority"}
+    });
+    let resp = BedrockReader.read_response(&answer).expect("reads");
+    assert_eq!(resp.usage.detail.service_tier.as_deref(), Some("priority"));
+    let writer = BedrockWriter;
+    let written = writer.write_response(&resp);
+    assert_eq!(written["serviceTier"]["type"], "priority");
+
+    let mut state = crate::codec::ir::StreamDecodeState::default();
+    let events: Vec<_> = [
+        serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
+        serde_json::json!({"type": "metadata", "usage": {"inputTokens": 3, "outputTokens": 1},
+            "serviceTier": {"type": "flex"}}),
+    ]
+    .into_iter()
+    .flat_map(|data| BedrockReader.read_response_events("", &data, &mut state))
+    .collect();
+    let tier = events.iter().find_map(|e| match e {
+        crate::codec::ir::IrStreamEvent::MessageDelta { usage, .. } => {
+            usage.detail.service_tier.clone()
+        }
+        _ => None,
+    });
+    assert_eq!(tier.as_deref(), Some("flex"));
+}

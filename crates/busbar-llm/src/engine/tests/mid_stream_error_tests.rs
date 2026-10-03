@@ -1,6 +1,6 @@
 use super::{
     client_fault_kind, extract_error_message, is_stream_content_type, mid_stream_error_bytes,
-    strip_router_shim_keys, strip_same_protocol_model_shim, MID_STREAM_GENERIC_DETAIL,
+    strip_router_shim_keys, MID_STREAM_GENERIC_DETAIL,
 };
 use busbar_contract::upstream::StatusClass;
 use serde_json::{json, Value};
@@ -288,8 +288,8 @@ fn test_is_stream_content_type() {
 /// `strip_router_shim_keys` removes the NEVER-NATIVE shim keys on every branch: the gemini
 /// JSON-array key for ALL egress, and `stream` for path-model gemini/bedrock EGRESS (gated
 /// on egress, not ingress, so the writer-authored `stream` survives for a body-model backend). It
-/// does NOT remove `model` (that is `strip_same_protocol_model_shim`'s job, on the same-protocol
-/// branch only) so a cross-protocol hop keeps the authoritative model `rewrite_model` installs.
+/// does NOT remove `model`, so a cross-protocol hop keeps the authoritative model `rewrite_model`
+/// installs.
 #[test]
 fn test_strip_router_shim_keys() {
     crate::testkit::install_test_seams();
@@ -326,24 +326,6 @@ fn test_strip_router_shim_keys() {
     );
 }
 
-/// `strip_same_protocol_model_shim` removes the body `model` for same-protocol gemini/bedrock
-/// passthrough (model rides the URL there), and is a no-op for body-model ingress.
-#[test]
-fn test_strip_same_protocol_model_shim() {
-    crate::testkit::install_test_seams();
-    let mut v = json!({"model": "p", "messages": []});
-    strip_same_protocol_model_shim(&mut v, "gemini");
-    assert!(
-        v.get("model").is_none(),
-        "gemini same-protocol: model stripped"
-    );
-    assert!(v.get("messages").is_some());
-
-    let mut v = json!({"model": "gpt-4o"});
-    strip_same_protocol_model_shim(&mut v, "openai");
-    assert_eq!(v["model"], "gpt-4o", "openai model never stripped");
-}
-
 /// A PATH-MODEL ingress (gemini/bedrock)
 /// crossing to a BODY-MODEL egress (openai/anthropic/cohere/responses) must reach the backend WITH
 /// the authoritative egress `model`. The bug: `rewrite_model` ran, then an UNCONDITIONAL strip
@@ -370,9 +352,7 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
         .and_then(|d| d.dialect())
         .expect("openai codec registered")
         .rewrite_model_if_needed(&mut v, "gpt-4o");
-    if ingress == egress {
-        strip_same_protocol_model_shim(&mut v, ingress);
-    }
+    assert_ne!(ingress, egress);
     assert_eq!(
         v["model"], "gpt-4o",
         "cross-protocol egress body MUST carry the authoritative model (the critical fix)"
@@ -386,26 +366,22 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
         "gemini array key stripped cross-protocol"
     );
 
-    // Same-protocol gemini→gemini: model rides the URL, so the body must NOT carry `model` even
-    // though the gemini writer's rewrite_model re-inserts one — the same-protocol strip runs after.
-    // `stream` IS stripped here because the EGRESS is gemini (path-model: stream rides the URL).
-    let mut v = json!({"model": "router-placeholder", "stream": true, "contents": []});
-    let ingress = "gemini";
-    let egress = "gemini";
-    strip_router_shim_keys(&mut v, egress);
-    busbar_kernel::proto::decl_for(crate::proto_codec::PROTO_GEMINI)
-        .and_then(|d| d.dialect())
-        .expect("gemini codec registered")
-        .rewrite_model_if_needed(&mut v, "gemini-1.5-pro");
-    if ingress == egress {
-        strip_same_protocol_model_shim(&mut v, ingress);
-    }
-    assert!(
-        v.get("model").is_none(),
-        "same-protocol gemini passthrough must NOT leak a body model (rides the URL)"
-    );
-    assert!(
-        v.get("stream").is_none(),
-        "shim stream stripped for path-model (gemini) egress"
+    // Same-protocol gemini→gemini: the relay removes the `model` and `stream` the arrival spliced
+    // in (both ride the URL) with byte splices, so the far end reads the caller's own bytes.
+    let caller = br#"{ "contents": [ ], "z" : 1.0 }"#;
+    let carried = br#"{"model":"router-placeholder","stream":true, "contents": [ ], "z" : 1.0 }"#;
+    let far = crate::engine::xchg::shaping::FarShape {
+        dialect: crate::proto_codec::PROTO_GEMINI,
+        wire_model: "gemini-1.5-pro",
+        default_max_tokens: None,
+        prompt_caching: false,
+        caps: Default::default(),
+        path_base: None,
+    };
+    let relayed = crate::engine::xchg::attempt::relay_request(far, "application/json", carried);
+    assert_eq!(
+        relayed.bytes.as_ref(),
+        caller.as_slice(),
+        "same-protocol gemini relay sends the caller's bytes, no body model or stream"
     );
 }

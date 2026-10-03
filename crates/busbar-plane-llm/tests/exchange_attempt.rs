@@ -78,6 +78,17 @@ fn the_wire_model_is_written_when_it_differs() {
     assert!(!r.pristine);
     let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
     assert_eq!(v["model"], "gpt-4o");
+    // Only the governed member moves: key order, spacing and number spelling stay the caller's.
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"z":1.50, "model":"gpt-alias","messages":[],"a":{"y":1,"x":2}}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt-alias").expect("built");
+    assert_eq!(
+        r.body,
+        br#"{"z":1.50, "model":"gpt-4o","messages":[],"a":{"y":1,"x":2}}"#
+    );
 }
 
 #[test]
@@ -305,13 +316,19 @@ fn a_member_the_generation_does_not_hold_is_the_callers_500() {
 }
 
 #[test]
-fn the_pristine_ask_splices_after_the_opening_brace_and_falls_back_to_a_parse() {
-    let out = try_inject_stream_include_usage_pristine(br#" {"a":1}"#.to_vec()).expect("asked");
+fn the_usage_ask_is_a_splice_after_the_opening_brace_or_in_place() {
+    let out = try_inject_stream_include_usage(br#" {"a":1}"#.to_vec()).expect("asked");
     assert_eq!(out, br#" {"stream_options":{"include_usage":true},"a":1}"#);
-    let out = try_inject_stream_include_usage_pristine(br#"{"stream_options":null}"#.to_vec())
-        .expect("asked");
+    let out =
+        try_inject_stream_include_usage(br#"{"stream_options":null}"#.to_vec()).expect("asked");
     assert_eq!(out, br#"{"stream_options":{"include_usage":true}}"#);
-    let out = try_inject_stream_include_usage_pristine(b"[1]".to_vec()).expect("unchanged");
+    let out = try_inject_stream_include_usage(br#"{"z":1, "stream_options":{"b":2}}"#.to_vec())
+        .expect("asked");
+    assert_eq!(
+        out,
+        br#"{"z":1, "stream_options":{"include_usage":true,"b":2}}"#
+    );
+    let out = try_inject_stream_include_usage(b"[1]".to_vec()).expect("unchanged");
     assert_eq!(out, b"[1]");
     assert!(try_inject_stream_include_usage(br#"{"stream_options":"x"}"#.to_vec()).is_err());
 }
@@ -357,4 +374,34 @@ fn a_signed_dialects_attempt_carries_no_query_yet() {
         with_caller_query("bedrock", "/model/m/converse", "trace=1"),
         None
     );
+}
+
+/// A path-model same-dialect relay sends the caller's bytes: the `model` and `stream` the arrival
+/// carried for routing come back out by byte splices, so key order, spacing and a member busbar has
+/// never heard of all reach the far end as the caller wrote them (DIALECT FIDELITY).
+#[test]
+fn a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it() {
+    let h = head(&[("content-type", "application/json")]);
+    let body = "{ \"zz_never_heard_of\": {\"b\":1,\"a\":2},\n  \"contents\": [ {\"parts\":[{\"text\":\"hi\"}]} ], \"n\": 1.50 }";
+    let a = arrive(
+        "POST",
+        "/v1beta/models/gemini-pro:streamGenerateContent?alt=sse",
+        &h,
+        body.as_bytes(),
+        &(),
+    )
+    .expect("arrives");
+    let r = build(&a, &h, &shaping(), "p", "gem").expect("built");
+    assert_eq!(String::from_utf8_lossy(&r.body), body);
+}
+
+/// A conversation history carrying a `custom` tool call (a type the IR does not model) is relayed
+/// byte-identical within one dialect.
+#[test]
+fn a_history_with_a_custom_tool_call_relays_byte_identical() {
+    let h = head(&[("content-type", "application/json")]);
+    let body = r#"{"model":"gpt","messages":[{"role":"user","content":"go"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_c","type":"custom","custom":{"name":"grammar","input":"x = 1"}}]},{"role":"tool","tool_call_id":"call_c","content":"ok"}],"tools":[{"type":"custom","custom":{"name":"grammar"}}]}"#;
+    let a = arrived("/v1/chat/completions", &h, body);
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(String::from_utf8_lossy(&r.body), body);
 }

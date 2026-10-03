@@ -47,6 +47,8 @@ const ADDITIONAL_MODEL_REQUEST_FIELDS: &str = "additionalModelRequestFields";
 const ADDITIONAL_MODEL_RESPONSE_FIELDS: &str = "additionalModelResponseFields";
 const CACHE_DETAILS: &str = "cacheDetails";
 const CACHE_POINT: &str = "cachePoint";
+/// The Converse answer's (and the stream `metadata` frame's) served-tier member: `{"type": <tier>}`.
+const SERVICE_TIER_CAMEL: &str = "serviceTier";
 const CACHE_READ_INPUT_TOKENS: &str = "cacheReadInputTokens";
 const CACHE_WRITE_INPUT_TOKENS: &str = "cacheWriteInputTokens";
 const CFG_SCALE: &str = "cfgScale";
@@ -1801,6 +1803,25 @@ fn warn_guardrail_units(holder: &serde_json::Value) {
         "bedrock guardrail policy units are billed by AWS separately from the model's tokens and \
          land in no meter class this plane declares: they are not ledgered"
     );
+}
+
+/// The tier that SERVED a Converse answer (`serviceTier.type`), in the IR's words: the usage
+/// attribution every dialect with a served tier carries (`IrUsageDetail::service_tier`).
+fn read_served_tier(answer: &serde_json::Value) -> Option<String> {
+    crate::codec::carry::read_word(
+        map::WORDS_SERVICE_TIER,
+        answer
+            .get(SERVICE_TIER_CAMEL)
+            .and_then(|t| t.get(keys::TYPE)),
+    )
+}
+
+/// The `serviceTier` member a Converse answer carries for `usage`'s served tier, when the dialect
+/// has a word for it.
+fn served_tier_member(usage: &crate::codec::ir::IrUsage) -> Option<serde_json::Value> {
+    let tier = usage.detail.service_tier.as_deref()?;
+    let word = crate::codec::carry::word_out(map::WORDS_SERVICE_TIER, tier)?;
+    Some(serde_json::json!({ (keys::TYPE): word }))
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.

@@ -27,9 +27,7 @@ pub(crate) mod respond;
 pub(crate) mod send;
 
 #[cfg(test)]
-pub(crate) use assemble::{
-    inject_openai_stream_include_usage, inject_openai_stream_include_usage_pristine,
-};
+pub(crate) use assemble::inject_openai_stream_include_usage;
 pub(crate) use buffered::{translate_response_cross_protocol, BudgetSpendGuard};
 pub(crate) use send::{EgressSendError, SendOutcome};
 
@@ -87,7 +85,6 @@ pub(crate) struct Hop<'a> {
     pub(crate) pool_cell: &'a str,
     pub(crate) cands: &'a [WeightedLane],
     pub(crate) body: &'a Bytes,
-    pub(crate) pristine: bool,
     pub(crate) body_is_json: bool,
     pub(crate) req_content_type: &'a str,
     pub(crate) ingress_protocol: &'a str,
@@ -96,7 +93,6 @@ pub(crate) struct Hop<'a> {
     pub(crate) op: Op,
     pub(crate) wants_stream: bool,
     pub(crate) client_include_usage: bool,
-    pub(crate) client_has_stream_options: bool,
     pub(crate) gemini_json_array: bool,
     pub(crate) caller_token: Option<&'a crate::engine::CallerCredential>,
     pub(crate) upstream_creds: busbar_contract::config::UpstreamCreds,

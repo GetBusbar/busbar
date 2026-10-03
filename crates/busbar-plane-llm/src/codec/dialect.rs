@@ -539,7 +539,7 @@ pub fn strip_top_level_usage_member(json: &str) -> Option<String> {
 
 /// Given `bytes` and the index of an opening `"`, return the index ONE PAST the matching closing
 /// quote, honoring `\`-escapes. `None` if the string is unterminated.
-fn scan_json_string_end(bytes: &[u8], open_quote: usize) -> Option<usize> {
+pub(crate) fn scan_json_string_end(bytes: &[u8], open_quote: usize) -> Option<usize> {
     debug_assert_eq!(bytes[open_quote], b'"');
     let n = bytes.len();
     let mut i = open_quote + 1;
@@ -556,7 +556,7 @@ fn scan_json_string_end(bytes: &[u8], open_quote: usize) -> Option<usize> {
 /// Given `bytes` and the index of the first byte of a JSON value (after any whitespace), return the
 /// index ONE PAST the value, respecting nested objects/arrays and strings. `None` if the value is
 /// malformed/unterminated. Leading whitespace before the value is tolerated.
-fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
+pub(crate) fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
     let n = bytes.len();
     let mut i = start;
     while i < n && bytes[i].is_ascii_whitespace() {

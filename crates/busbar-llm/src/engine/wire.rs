@@ -197,38 +197,17 @@ pub(crate) fn shape_cross_protocol_error(
 ///     the client got a wrong (buffered / mis-framed) response. Gating on egress keeps the writer's
 ///     authoritative `stream` for body-model backends and still strips it for path-model backends
 ///     (where the URL carries the intent and a body `stream` would be a router fingerprint).
-///   - `model` is stripped ONLY on the same-protocol branch (by [`strip_same_protocol_model_shim`],
-///     after `rewrite_model`), never cross-protocol: a body-model egress REQUIRES `model` and
-///     `rewrite_model` installs the authoritative one.
+///   - `model` is never stripped cross-protocol: a body-model egress REQUIRES `model` and
+///     `rewrite_model` installs the authoritative one. Within one dialect the relay
+///     (`xchg::attempt::relay_request`) removes the spliced `model` and `stream` by byte splices.
 ///
 /// The gemini array key is stripped for body-model ingress too (it is never native to any protocol).
 ///
-/// Returns whether the body actually CHANGED (a key was present and removed). This is invalidation
-/// set entries #1 (gemini JSON-array key) and #2 (`stream` for path-model egress) of the request
-/// short-circuit safety contract: a `true` here makes a same-protocol request NON-pristine. A
-/// same-proto request that carries NEITHER of these keys is left byte-for-byte untouched and can
-/// short-circuit to its retained original bytes.
+/// Returns whether the body actually CHANGED (a key was present and removed). It runs on a
+/// translated body only: within one dialect the relay removes the same members by byte splices
+/// (`exchange::attempt::relay_request`).
 #[cfg(test)]
 pub use busbar_plane_llm::codec::wire_shim::strip_router_shim_keys;
-
-/// Remove the SHIM `model` key on the SAME-PROTOCOL gemini/bedrock passthrough path, AFTER
-/// `rewrite_model` has run. On same-protocol gemini/bedrock the model rides the URL, not the body, so
-/// a native Converse / generateContent backend must NOT see a body `model`; but the gemini writer's
-/// `rewrite_model` re-inserts one, so this strip must run AFTER it to remove both the route layer's
-/// shim and the re-inserted copy. NEVER call this on the cross-protocol branch: there the body-model
-/// egress requires the `model` that `rewrite_model` installed. No-op for body-model ingress.
-///
-/// Thin wrapper: dispatches through `ProtocolWriter::has_model_in_url` so the per-protocol decision
-/// (gemini/bedrock → strip; all others → keep) lives in the writer vtable, not in this agnostic
-/// function. An unknown future url-model protocol only needs an override in its writer.
-///
-/// Returns whether the body actually CHANGED (a `model` key was present and removed). This is
-/// invalidation set entry #4 of the request short-circuit safety contract: on a same-protocol
-/// gemini/bedrock passthrough a body that carried `model` is made NON-pristine (the retained
-/// original carries a `model` the native backend must not see). A same-proto path-model request that
-/// arrived without a body `model` is left untouched and stays pristine.
-#[cfg(test)]
-pub(crate) use crate::engine::xchg::attempt::strip_same_protocol_model_shim;
 
 /// The SINGLE source of truth for shaping an ingress request body into the bytes sent to one egress
 /// lane. Both the hot path ([`forward_with_pool`], per failover hop) and the degraded last-resort
@@ -240,17 +219,17 @@ pub(crate) use crate::engine::xchg::attempt::strip_same_protocol_model_shim;
 ///
 /// `body` is the per-hop parsed request `Value` (the caller owns deriving it fresh from the pristine
 /// body so a failover hop never re-translates a previous hop's egress-shaped body). It is consumed
-/// and the shaped egress bytes are returned. The full step list, in order:
-///   1. CROSS-protocol only (`ingress_protocol != egress`): read_request → `IrReq::prepare_for_egress`
-///      → `ir.extra.clear()` → egress `write_request`. Clearing `extra` at this single seam, before
-///      any writer runs, is what stops every source-protocol-only passthrough key from leaking to a
-///      foreign backend — no individual writer can miss it.
-///   2. Strip the never-native router shim keys (gemini JSON-array key always; `stream` for path-model
-///      EGRESS) on every branch.
+/// and the shaped egress bytes are returned. Within one dialect the body is RELAYED: the caller's
+/// bytes with the governed member splices only (`xchg::attempt::relay_request`), never a
+/// re-serialization. Across dialects, the step list, in order:
+///   1. read_request → `IrReq::prepare_for_egress` → `ir.extra.clear()` → egress `write_request`.
+///      Clearing `extra` at this single seam, before any writer runs, is what stops every
+///      source-protocol-only passthrough key from leaking to a foreign backend — no individual
+///      writer can miss it.
+///   2. Strip the never-native router shim keys (gemini JSON-array key always; `stream` for
+///      path-model EGRESS).
 ///   3. `rewrite_model` installs the authoritative lane model.
-///   4. SAME-protocol only: strip the body `model` shim (path-model gemini/bedrock carry the model in
-///      the URL; a body `model` there is an indistinguishability leak).
-///   5. Serialize to bytes.
+///   4. Serialize to bytes.
 ///
 /// The step list itself is the plane's (`xchg::attempt::translate_request`);
 /// this adapter keeps the engine's side effects around it (the translation counter, the audit
