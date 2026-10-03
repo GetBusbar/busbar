@@ -1102,3 +1102,663 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
         None,
     )
 }
+
+/// THE MCP PLANE'S CONFORMANCE RIG, BOTH WAYS (BUSBAR-1.6.0.md Part 3 §12 "Proven by": the plane
+/// conformance suite, compiled-in and dropped-in through one table; THE DESIGN §11.4).
+///
+/// The linked door (`plane_door::door`) and this crate's dropped-in image (the `mcp_door` example,
+/// the same door behind `export_door!`) are each admitted through the one loader on one
+/// dispatcher and run ONE script through every plane op, each answer read back. The two
+/// transcripts must be identical, step for step, and the linked one must say what the plane's
+/// own pure functions say the door answers: the snapshot is `door::snapshot_spec`'s, a refused
+/// arrival renders the plane's own words at its own status, and a request the plane answers from
+/// what it holds is the catalogue's answer.
+///
+/// RED ARM, kept: the same door with `on_piece` swapped for one that relays the caller's bytes
+/// back instead of answering from the catalogue. Its transcript differs at the answer, so a door
+/// that stopped answering from what the plane holds cannot pass for this one.
+mod both_ways {
+    use std::mem::zeroed;
+    use std::sync::Arc;
+
+    use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::mechanism::lifecycle::{
+        slot as life, CancelIn, CancelOut, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
+    };
+    use busbar_contract::abi::plane::{
+        self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn,
+        PlaneOpenOut, PlaneRefreshOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn,
+        ServeOut, EMIT_DONE, FROM_CALLER, FROM_FAR_END, PIECE_LAST, PRINCIPAL_REQUIRED,
+        REFUSAL_ARRIVE, REFUSAL_GATE,
+    };
+    use busbar_contract::abi::sdk::capture::{CaptureHome, CaptureSlot};
+    use busbar_contract::abi::sdk::door::{abi_str, kind_op};
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+    use busbar_plane_mcp::codec::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, PROTOCOL_VERSION};
+    use busbar_plane_mcp::{door, ops, plane_door};
+    use busbar_plugin_loader::dispatch::kinds::plane::{OwnedSnapshot, Plane};
+    use busbar_plugin_loader::dispatch::{
+        in_head, load_dropped, load_linked, out_head, rendering_of, Bind, DispatchConfig,
+        Dispatcher, Frame, LinkedRow, NoSink, Plugin,
+    };
+    use serde_json::{json, Value};
+
+    fn z<T>() -> T {
+        // SAFETY: every `in`/`out` here is plain C data; all-zero is a valid value of each.
+        unsafe { zeroed() }
+    }
+
+    fn bind(d: &Dispatcher) -> Bind {
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: None,
+        }
+    }
+
+    fn octets(b: &'static [u8]) -> Blob {
+        Blob {
+            ptr: b.as_ptr(),
+            len: b.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        }
+    }
+
+    fn text(b: &'static [u8]) -> AbiStr {
+        AbiStr {
+            ptr: b.as_ptr(),
+            len: b.len(),
+        }
+    }
+
+    fn at(buf: &[u8], s: Span) -> String {
+        String::from_utf8_lossy(&buf[s.offset as usize..(s.offset + s.len) as usize]).into_owned()
+    }
+
+    // ── the fixtures ─────────────────────────────────────────────────────────────────────────────────
+
+    /// One fronted server, the section the door's own tests read.
+    const SECTION: &[u8] =
+        br#"{"fs": {"url": "https://mcp.example/fs", "pin": {"mechanism": "unpinned"}}}"#;
+    /// A registration the grammar refuses: a server id holding the routing-key separator.
+    const BAD_SECTION: &[u8] =
+        br#"{"my_fs": {"url": "https://mcp.example/fs", "pin": {"mechanism": "unpinned"}}}"#;
+    /// The deployment's public base URL the host lends `open`.
+    const PUBLIC_URL: &str = "https://busbar.example";
+
+    /// A stateless-revision `tools/list`.
+    const TOOLS_LIST: &[u8] = br#"{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+    /// A stateless-revision `tools/call`: sent on, never answered from what the plane holds.
+    const TOOLS_CALL: &[u8] = br#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"fs__read_file","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+    /// A notification: acknowledged, never answered.
+    const NOTICE: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    /// A body that is not JSON.
+    const NOT_JSON: &[u8] = b"{not json";
+
+    const fn field(name: &'static str, value: &'static str) -> Field {
+        Field {
+            name: abi_str(name),
+            value: abi_str(value),
+        }
+    }
+
+    const LIST_FIELDS: &[Field] = &[
+        field(H_PROTOCOL_VERSION, PROTOCOL_VERSION),
+        field(H_MCP_METHOD, "tools/list"),
+    ];
+    const CALL_FIELDS: &[Field] = &[
+        field(H_PROTOCOL_VERSION, PROTOCOL_VERSION),
+        field(H_MCP_METHOD, "tools/call"),
+        field(H_MCP_NAME, "fs__read_file"),
+    ];
+
+    /// The route index of `(verb, target)` in the door's route table (its first such row), the claim
+    /// an arrival carries.
+    fn claim(verb: &str, target: &str) -> u32 {
+        let i = door::ROUTES
+            .iter()
+            .position(|r| r.verb == verb && r.target == target)
+            .expect("the door routes it");
+        u32::try_from(i).expect("a small table")
+    }
+
+    // ── one step of the transcript ───────────────────────────────────────────────────────────────────
+
+    /// What one op answered, read back: the outcome, the status it stated, the bytes it wrote and
+    /// the head fields, and anything else the op answers in its own out struct.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Step {
+        what: &'static str,
+        outcome: Outcome,
+        status: u32,
+        reply: Vec<u8>,
+        fields: Vec<(String, String)>,
+        detail: String,
+        snapshot: Option<OwnedSnapshot>,
+    }
+
+    impl Step {
+        fn new(what: &'static str, outcome: Outcome) -> Self {
+            Step {
+                what,
+                outcome,
+                status: 0,
+                reply: Vec::new(),
+                fields: Vec::new(),
+                detail: String::new(),
+                snapshot: None,
+            }
+        }
+    }
+
+    fn arrive(
+        p: &Plugin<Plane>,
+        what: &'static str,
+        unit: u64,
+        (verb, target): (&'static str, &'static str),
+        body: &'static [u8],
+        fields: &'static [Field],
+    ) -> (Step, Option<Vec<u8>>) {
+        let mut a: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
+        (a.input.head, a.out.head) = (in_head(), out_head());
+        a.input.unit = unit;
+        a.input.claim = claim(verb, target);
+        (a.input.method, a.input.target) = (text(verb.as_bytes()), text(target.as_bytes()));
+        a.input.body = octets(body);
+        (a.input.fields, a.input.fields_len) = (fields.as_ptr(), fields.len());
+        let c = p.call(slot::ARRIVE, &mut a);
+        let mut s = Step::new(what, c.outcome);
+        s.status = a.out.refusal_status;
+        s.detail = format!(
+            "op_class={} principal_required={} dialect={} refusal={}",
+            a.out.op_class,
+            a.out.principal_need == PRINCIPAL_REQUIRED,
+            a.out.dialect,
+            a.out.refusal
+        );
+        (s, c.error)
+    }
+
+    /// One `on_piece` of `unit` with a reply buffer of `cap` bytes, then re-called with the same
+    /// `from` and zero bytes while the door answers `more = 1`. The bytes of every call, in order.
+    fn piece(
+        p: &Plugin<Plane>,
+        what: &'static str,
+        unit: u64,
+        from: u32,
+        body: &'static [u8],
+        cap: usize,
+    ) -> Step {
+        let mut reply = vec![0_u8; cap];
+        let mut out = Step::new(what, Outcome::Ready);
+        let mut calls = 0;
+        let mut bytes = body;
+        loop {
+            let mut i: OnPieceIn = z();
+            i.head = in_head();
+            (i.unit, i.from, i.flags, i.bytes) = (unit, from, PIECE_LAST, octets(bytes));
+            (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+            let mut o: OnPieceOut = z();
+            o.head = out_head();
+            let mut f = Frame::new(i, o);
+            let c = p.call(slot::ON_PIECE, &mut f);
+            calls += 1;
+            out.outcome = c.outcome;
+            if f.out.reply_status != 0 {
+                out.status = f.out.reply_status;
+            }
+            out.reply
+                .extend_from_slice(&reply[..usize::try_from(f.out.emitted).expect("small")]);
+            let done = f.out.flags & EMIT_DONE != 0;
+            if c.outcome != Outcome::Ready || f.out.more == 0 || calls > 64 {
+                out.detail = format!("calls={calls} done={done} more={}", f.out.more);
+                return out;
+            }
+            bytes = b"";
+        }
+    }
+
+    fn refusal(
+        p: &Plugin<Plane>,
+        what: &'static str,
+        cause: u32,
+        status: u32,
+        words: &[u8],
+    ) -> Step {
+        let (mut reply, mut fields, mut arena) = ([0_u8; 512], [z::<OutField>(); 2], [0_u8; 64]);
+        let mut r: Frame<RefusalIn, RefusalOut> = Frame::new(z(), z());
+        (r.input.head, r.out.head) = (in_head(), out_head());
+        (r.input.cause, r.input.status) = (cause, status);
+        r.input.text = AbiStr {
+            ptr: words.as_ptr(),
+            len: words.len(),
+        };
+        (r.input.reply_buf, r.input.reply_cap) = (reply.as_mut_ptr(), reply.len());
+        (r.input.fields_buf, r.input.fields_cap) = (fields.as_mut_ptr(), fields.len());
+        (r.input.arena_buf, r.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        let c = p.call(slot::REFUSAL, &mut r);
+        let mut s = Step::new(what, c.outcome);
+        s.status = r.out.status;
+        s.reply = reply[..usize::try_from(r.out.reply_written).expect("small")].to_vec();
+        s.fields = fields[..r.out.fields_written as usize]
+            .iter()
+            .map(|f| (at(&arena, f.name), at(&arena, f.value)))
+            .collect();
+        s
+    }
+
+    /// THE SCRIPT: every plane op, each answer read back.
+    fn script(p: &Plugin<Plane>) -> Vec<Step> {
+        let mut t = Vec::new();
+
+        let mut v = Frame::new(
+            ValidateIn {
+                head: in_head(),
+                settings: octets(BAD_SECTION),
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            out_head(),
+        );
+        t.push(Step::new(
+            "validate refused",
+            p.call(life::VALIDATE, &mut v).outcome,
+        ));
+        v.input.settings = octets(SECTION);
+        t.push(Step::new(
+            "validate",
+            p.call(life::VALIDATE, &mut v).outcome,
+        ));
+
+        let mut i: PlaneOpenIn = z();
+        i.open.head = in_head();
+        (i.open.generation, i.open.settings) = (1, octets(SECTION));
+        i.public_url = text(PUBLIC_URL.as_bytes());
+        let mut o: PlaneOpenOut = z();
+        o.open.head = out_head();
+        let (c, snapshot) = p.open(&mut Frame::new(i, o));
+        let mut s = Step::new("open", c.outcome);
+        s.snapshot = snapshot;
+        t.push(s);
+
+        for (what, op) in [("hydrate", slot::HYDRATE), ("start", slot::START)] {
+            let mut g = Frame::new(
+                GenIn {
+                    head: in_head(),
+                    generation: 1,
+                },
+                out_head(),
+            );
+            t.push(Step::new(what, p.call(op, &mut g).outcome));
+        }
+
+        // A request the plane answers from what it holds, written 32 bytes at a time.
+        let post = ("POST", "/mcp");
+        t.push(arrive(p, "arrive tools/list", 7, post, TOOLS_LIST, LIST_FIELDS).0);
+        t.push(piece(
+            p,
+            "answer tools/list",
+            7,
+            FROM_CALLER,
+            TOOLS_LIST,
+            32,
+        ));
+        // A notification: acknowledged with no body.
+        t.push(arrive(p, "arrive notice", 8, post, NOTICE, &[]).0);
+        t.push(piece(p, "answer notice", 8, FROM_CALLER, NOTICE, 256));
+        // A call the plane sends on: not answered here.
+        t.push(arrive(p, "arrive tools/call", 9, post, TOOLS_CALL, CALL_FIELDS).0);
+        t.push(piece(
+            p,
+            "answer tools/call",
+            9,
+            FROM_CALLER,
+            TOOLS_CALL,
+            256,
+        ));
+        // A far end's piece for a unit the plane answered itself.
+        t.push(arrive(p, "arrive again", 10, post, TOOLS_LIST, LIST_FIELDS).0);
+        t.push(piece(p, "far end", 10, FROM_FAR_END, b"{}", 256));
+
+        // Refused arrivals, each rendered in the plane's own words.
+        let (s, words) = arrive(p, "arrive not json", 11, post, NOT_JSON, &[]);
+        t.push(s);
+        let words = words.unwrap_or_default();
+        t.push(refusal(p, "refusal not json", REFUSAL_ARRIVE, 0, &words));
+        let (s, words) = arrive(p, "arrive GET /mcp", 12, ("GET", "/mcp"), b"", &[]);
+        t.push(s);
+        let words = words.unwrap_or_default();
+        t.push(refusal(p, "refusal GET /mcp", REFUSAL_ARRIVE, 0, &words));
+        let metadata = ("GET", busbar_plane_mcp::claims::DEFAULT_METADATA);
+        t.push(arrive(p, "arrive metadata", 13, metadata, b"", &[]).0);
+        // A refusal the kernel decided (a gate), in the one error envelope.
+        t.push(refusal(p, "refusal gate", REFUSAL_GATE, 403, b"denied"));
+
+        let mut s: Frame<ServeIn, ServeOut> = Frame::new(z(), z());
+        (s.input.head, s.out.head) = (in_head(), out_head());
+        t.push(Step::new("serve", p.call(slot::SERVE, &mut s).outcome));
+        let mut j: Frame<ProjectIn, ProjectOut> = Frame::new(z(), z());
+        (j.input.head, j.out.head) = (in_head(), out_head());
+        t.push(Step::new("project", p.call(slot::PROJECT, &mut j).outcome));
+
+        let mut k = Frame::new(
+            TickIn {
+                head: in_head(),
+                now_ns: 1_000,
+            },
+            TickOut {
+                head: out_head(),
+                next_tick_ns: 7,
+            },
+        );
+        let mut s = Step::new("tick", p.call(life::TICK, &mut k).outcome);
+        s.detail = format!("next={}", k.out.next_tick_ns);
+        t.push(s);
+        let mut x: Frame<CancelIn, CancelOut> = Frame::new(z(), z());
+        (x.input.head, x.out.head) = (in_head(), out_head());
+        let mut s = Step::new("cancel", p.call(life::CANCEL, &mut x).outcome);
+        s.detail = format!("disposition={}", x.out.disposition);
+        t.push(s);
+
+        let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
+        (f.input.head, f.out.head) = (in_head(), out_head());
+        (f.input.generation, f.input.settings) = (2, octets(b""));
+        let (c, snapshot) = p.refresh(&mut f);
+        let mut s = Step::new("refresh", c.outcome);
+        s.snapshot = snapshot;
+        t.push(s);
+
+        let mut g = Frame::new(
+            GenIn {
+                head: in_head(),
+                generation: 1,
+            },
+            out_head(),
+        );
+        t.push(Step::new("retire", p.call(life::RETIRE, &mut g).outcome));
+        let mut e = Frame::new(in_head(), out_head());
+        t.push(Step::new("close", p.call(life::CLOSE, &mut e).outcome));
+        t
+    }
+
+    fn step<'a>(t: &'a [Step], what: &str) -> &'a Step {
+        t.iter()
+            .find(|s| s.what == what)
+            .unwrap_or_else(|| panic!("the script has no `{what}` step"))
+    }
+
+    fn document(bytes: &[u8]) -> Value {
+        serde_json::from_slice(bytes).expect("a JSON document")
+    }
+
+    /// The op class index the door's tail holds for `op`.
+    fn class(op: busbar_contract::ids::OpClassId) -> u32 {
+        door::op_class_index(op).expect("the tail holds it")
+    }
+
+    // ── the doors ────────────────────────────────────────────────────────────────────────────────────
+
+    fn linked(d: &Dispatcher) -> Plugin<Plane> {
+        let row = LinkedRow::of(plane_door::door).expect("the linked door states its Statement");
+        load_linked(&row, bind(d)).expect("the linked door loads")
+    }
+
+    /// This crate's dropped-in image, the `mcp_door` example `cargo test` builds. A missing artifact
+    /// is a failure, never a skip: this test IS the dropped-in door's proof.
+    fn dropped(d: &Dispatcher) -> Plugin<Plane> {
+        let exe = std::env::current_exe().expect("the test binary has a path");
+        let examples = exe
+            .parent()
+            .and_then(|d| d.parent())
+            .expect("target/<profile>")
+            .join("examples");
+        let file = busbar_plugin_loader::plugin_library_filename("mcp_door");
+        let path = [examples.join(&file), examples.join("deps").join(&file)]
+            .into_iter()
+            .find(|p| p.exists())
+            .unwrap_or_else(|| panic!("the mcp_door example ({file}) is not built"));
+        let stated = rendering_of(plane_door::door).expect("the door renders its Statement");
+        load_dropped(&path, &stated, bind(d)).expect("the dropped door loads")
+    }
+
+    #[test]
+    fn the_linked_and_the_dropped_in_door_answer_every_op_the_same() {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let linked = script(&linked(&d));
+        assert_eq!(script(&dropped(&d)), linked, "the dropped-in door");
+    }
+
+    /// The linked transcript is the one the plane's own pure functions say the door answers.
+    #[test]
+    fn the_door_answers_what_the_plane_says() {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let t = script(&linked(&d));
+
+        // Lifecycle: the grammar judges the section; the snapshot is the door's own.
+        assert_eq!(step(&t, "validate refused").outcome, Outcome::Refused);
+        assert_eq!(step(&t, "validate").outcome, Outcome::Ready);
+        let open = step(&t, "open");
+        assert_eq!(open.outcome, Outcome::Ready);
+        let snapshot = open.snapshot.as_ref().expect("open publishes a snapshot");
+        let spec = door::snapshot_spec(Some(PUBLIC_URL));
+        assert_eq!(snapshot.generation, 1);
+        let claims: Vec<_> = snapshot
+            .claims
+            .iter()
+            .map(|c| {
+                (
+                    c.verb.as_str(),
+                    c.target.as_str(),
+                    c.carrier.as_str(),
+                    c.flags,
+                )
+            })
+            .collect();
+        let want: Vec<_> = spec
+            .claims
+            .iter()
+            .map(|c| {
+                (
+                    c.verb.as_str(),
+                    c.target.as_str(),
+                    c.carrier.as_str(),
+                    c.flags,
+                )
+            })
+            .collect();
+        assert_eq!(claims, want, "the claims are the door's routes");
+        assert_eq!(claims.len(), door::ROUTES.len());
+        let admin: Vec<_> = snapshot
+            .admin_routes
+            .iter()
+            .map(|r| (r.verb.as_str(), r.target.as_str(), r.flags))
+            .collect();
+        let want: Vec<_> = spec
+            .admin_routes
+            .iter()
+            .map(|r| (r.verb.as_str(), r.target.as_str(), r.flags))
+            .collect();
+        assert_eq!(admin, want, "the admin routes are the door's");
+        assert_eq!(snapshot.audience, spec.audience);
+        assert_eq!(snapshot.resource_metadata, spec.resource_metadata);
+        assert_eq!(
+            snapshot.audience.as_deref(),
+            Some("https://busbar.example/mcp")
+        );
+
+        // A request answered from what the plane holds: the catalogue's answer, streamed whole.
+        let a = step(&t, "arrive tools/list");
+        assert_eq!(a.outcome, Outcome::Ready);
+        assert_eq!(
+            a.detail,
+            format!(
+                "op_class={} principal_required=true dialect=0 refusal=0",
+                class(ops::OP_TOOLS_LIST)
+            )
+        );
+        let answer = step(&t, "answer tools/list");
+        assert_eq!((answer.outcome, answer.status), (Outcome::Ready, 200));
+        assert!(
+            answer.detail.starts_with("calls=") && answer.detail.ends_with("done=true more=0"),
+            "{}",
+            answer.detail
+        );
+        let calls: usize = answer.detail["calls=".len()..]
+            .split(' ')
+            .next()
+            .and_then(|n| n.parse().ok())
+            .expect("a call count");
+        assert!(
+            calls > 1,
+            "a 32-byte buffer streams the answer over several calls"
+        );
+        let catalogue = busbar_plane_mcp::catalogue::Catalogue::build(
+            1,
+            &door::read_settings(SECTION).expect("the section reads"),
+        );
+        let want = catalogue.tools_list(&json!(9), &|_: &str, _: &str| false, |_| false);
+        assert_eq!(answer.reply, want, "the catalogue's own bytes");
+        assert_eq!(document(&answer.reply)["id"], json!(9));
+
+        // A notification: acknowledged, no body.
+        let a = step(&t, "arrive notice");
+        assert_eq!(a.outcome, Outcome::Ready);
+        assert!(a
+            .detail
+            .starts_with(&format!("op_class={} ", class(ops::OP_NOTIFICATION))));
+        let n = step(&t, "answer notice");
+        assert_eq!(
+            (n.outcome, n.status, n.reply.as_slice()),
+            (Outcome::Ready, 202, &b""[..])
+        );
+
+        // A call the plane sends on is not answered here; nor is a far end's piece.
+        assert_eq!(step(&t, "arrive tools/call").outcome, Outcome::Ready);
+        assert_eq!(step(&t, "answer tools/call").outcome, Outcome::Refused);
+        assert_eq!(step(&t, "far end").outcome, Outcome::Refused);
+
+        // Refused arrivals: the plane's own words at its own status.
+        let a = step(&t, "arrive not json");
+        assert_eq!((a.outcome, a.status), (Outcome::Refused, 400));
+        let r = step(&t, "refusal not json");
+        assert_eq!((r.outcome, r.status), (Outcome::Ready, 400));
+        let body = document(&r.reply);
+        assert_eq!(body["error"]["code"], json!(-32700));
+        assert_eq!(
+            body["error"]["message"],
+            json!(busbar_plane_mcp::arrival::NOT_JSON)
+        );
+        assert_eq!(body["id"], Value::Null);
+
+        let a = step(&t, "arrive GET /mcp");
+        assert_eq!((a.outcome, a.status), (Outcome::Refused, 405));
+        let r = step(&t, "refusal GET /mcp");
+        assert_eq!((r.outcome, r.status), (Outcome::Ready, 405));
+        assert_eq!(r.reply, door::method_not_allowed_body());
+        assert_eq!(r.fields, vec![("allow".to_string(), "POST".to_string())]);
+
+        let a = step(&t, "arrive metadata");
+        assert_eq!((a.outcome, a.status), (Outcome::Refused, 404));
+        assert!(a
+            .detail
+            .ends_with(&format!("refusal={}", plane_door::UNSERVED)));
+
+        let r = step(&t, "refusal gate");
+        assert_eq!((r.outcome, r.status), (Outcome::Ready, 0));
+        let body = document(&r.reply);
+        assert_eq!(
+            body["error"]["code"],
+            json!(busbar_plane_mcp::codec::CODE_REFUSED)
+        );
+        assert_eq!(body["error"]["message"], json!("denied"));
+
+        // The ops the driver does not call on this door yet, and the rest of the lifecycle.
+        for what in ["hydrate", "start", "serve", "project"] {
+            assert_eq!(step(&t, what).outcome, Outcome::Refused, "{what}");
+        }
+        assert_eq!(step(&t, "tick").detail, "next=0");
+        assert_eq!(
+            step(&t, "cancel").detail,
+            format!("disposition={}", plane::CANCEL_ABORTED)
+        );
+        let refresh = step(&t, "refresh");
+        assert_eq!(refresh.outcome, Outcome::Ready);
+        let snapshot = refresh.snapshot.as_ref().expect("refresh publishes");
+        assert_eq!(snapshot.generation, 2);
+        assert_eq!(
+            snapshot.audience, spec.audience,
+            "the base URL `open` was lent"
+        );
+        for what in ["retire", "close"] {
+            assert_eq!(step(&t, what).outcome, Outcome::Ready, "{what}");
+        }
+    }
+
+    // ── the red arm ──────────────────────────────────────────────────────────────────────────────────
+
+    /// A call capture for the hand-built table entry below: one slot per thread, as `plugin_door!`
+    /// expands for a plugin's own image.
+    struct TestCapture;
+    impl CaptureHome for TestCapture {
+        fn with<R>(f: impl FnOnce(&mut CaptureSlot) -> R) -> R {
+            thread_local! {
+                static SLOT: std::cell::RefCell<CaptureSlot> =
+                    std::cell::RefCell::new(CaptureSlot::new());
+            }
+            SLOT.with(|s| f(&mut s.borrow_mut()))
+        }
+    }
+
+    /// An `on_piece` that relays the caller's bytes back instead of answering from the catalogue.
+    struct Echo;
+    impl SafeSlot for Echo {
+        type In = OnPieceIn;
+        type Out = OnPieceOut;
+        type State = ();
+        fn call(
+            _: Instance<'_, ()>,
+            input: Lent<'_, OnPieceIn>,
+            mut out: Out<'_, OnPieceOut>,
+        ) -> Outcome {
+            let bytes = input.field(|i| &i.bytes).bytes();
+            let n = input.reply_buf().stream(bytes);
+            out.set(|o| &o.emitted, n as u64);
+            out.set(|o| &o.reply_status, 200);
+            out.set(|o| &o.flags, EMIT_DONE);
+            Outcome::Ready
+        }
+    }
+
+    /// The mcp door with `on_piece` swapped for [`Echo`].
+    extern "C" fn echo_door() -> *const Door {
+        // SAFETY: the macro's `'static` door and its plane table.
+        let (d, mut ops) = unsafe {
+            let d = &*plane_door::door();
+            (d, *d.ops.cast::<plane::Ops>())
+        };
+        ops.on_piece = kind_op::<plane::Ops, Safe<Echo>, TestCapture, { slot::ON_PIECE }>();
+        let ops: &'static plane::Ops = Box::leak(Box::new(ops));
+        Box::leak(Box::new(Door {
+            ops: std::ptr::from_ref(ops).cast(),
+            ..*d
+        }))
+    }
+
+    #[test]
+    fn red_a_door_that_stops_answering_from_the_catalogue_answers_differently() {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let honest = script(&linked(&d));
+        let row = LinkedRow::of(echo_door).expect("the door states its Statement");
+        let red = script(&load_linked::<Plane>(&row, bind(&d)).expect("the door loads"));
+        let (h, r) = (
+            step(&honest, "answer tools/list"),
+            step(&red, "answer tools/list"),
+        );
+        assert_ne!(r.reply, h.reply, "the answer is where the two differ");
+        assert_ne!(red, honest);
+    }
+}
