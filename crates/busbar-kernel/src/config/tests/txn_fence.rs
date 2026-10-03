@@ -25,12 +25,11 @@
 
 use std::sync::Arc;
 
-use super::{config_transaction, Outcome};
-use crate::admin::v1::contract::AdminError;
+use super::{config_transaction, Outcome, TxnError};
 use crate::state::AppHandle;
 
 /// (1) + (2): the body has no store in scope and `Txn` yields none.
-pub(crate) async fn fence_no_store_in_scope(handle: &Arc<AppHandle>) -> Result<usize, AdminError> {
+pub(crate) async fn fence_no_store_in_scope(handle: &Arc<AppHandle>) -> Result<usize, TxnError> {
     config_transaction(handle, |txn| {
         // ERROR: cannot find value `store` in this scope.
         let n = store.list_keys().unwrap().len();
@@ -42,7 +41,7 @@ pub(crate) async fn fence_no_store_in_scope(handle: &Arc<AppHandle>) -> Result<u
 }
 
 /// (3): the body is synchronous, so it cannot hold the lock across an await.
-pub(crate) async fn fence_no_await_in_body(handle: &Arc<AppHandle>) -> Result<(), AdminError> {
+pub(crate) async fn fence_no_await_in_body(handle: &Arc<AppHandle>) -> Result<(), TxnError> {
     config_transaction(handle, |txn| {
         // ERROR: `await` is only allowed inside `async` functions and blocks.
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;

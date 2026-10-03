@@ -156,7 +156,7 @@ fn admin(routes: &[ServeRoute]) -> impl Iterator<Item = &ServeRoute> {
 /// a path an instance names under another verb answers the admin surface's `405`. The body is read
 /// only for a served route, under the inbound body limit, so an unmatched path answers as before.
 pub async fn answer(req: Request) -> Option<Response> {
-    use crate::admin::v1::contract::{AdminError, ADMIN_PREFIX};
+    use crate::api::ADMIN_PREFIX;
     let uri = req.uri().clone();
     let path = uri.path().strip_prefix(ADMIN_PREFIX).unwrap_or(uri.path());
     let (table, index, name) = {
@@ -179,9 +179,12 @@ pub async fn answer(req: Request) -> Option<Response> {
         match found {
             Some(f) => f,
             None if named => {
-                return Some(crate::admin::v1::json::err_json(
-                    &AdminError::MethodNotAllowed,
-                ))
+                let refused = crate::admin::Refusal::MethodNotAllowed;
+                return Some(crate::router::refusal_response(
+                    refused.status(),
+                    refused.code(),
+                    &refused.message(),
+                ));
             }
             None => return None,
         }

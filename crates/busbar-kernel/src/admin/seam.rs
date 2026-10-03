@@ -24,6 +24,10 @@ pub struct AdminMountSeam {
     /// Mount the admin service's routes onto the router. `busbar-admin` supplies this; only it names
     /// its own `JsonV1` transport, so only it can build the nested router.
     pub mount: fn(axum::Router<Arc<AppHandle>>) -> axum::Router<Arc<AppHandle>>,
+    /// Which mutation budget an `ADMIN_PREFIX`-relative path spends from. The budget is the kernel's
+    /// ([`crate::ratelimit`]); which route belongs to which class is the admin crate's knowledge of
+    /// its own routes (its `rate::classify_path`).
+    pub mutation_class: fn(&str) -> crate::ratelimit::MutationClass,
 }
 
 static SEAM: OnceLock<AdminMountSeam> = OnceLock::new();
@@ -45,5 +49,16 @@ pub(crate) fn mount_admin(router: axum::Router<Arc<AppHandle>>) -> axum::Router<
     match SEAM.get() {
         Some(seam) => (seam.mount)(router),
         None => router,
+    }
+}
+
+/// The mutation budget a relative admin path spends from, through the registered seam. With no
+/// admin crate linked (only the kernel's own test binary) no admin route is mounted, and the gate
+/// still meters every mutation — at the TIGHTEST class, so an unclassified path can never borrow a
+/// roomier budget.
+pub(crate) fn mutation_class(rel: &str) -> crate::ratelimit::MutationClass {
+    match SEAM.get() {
+        Some(seam) => (seam.mutation_class)(rel),
+        None => crate::ratelimit::MutationClass::Config,
     }
 }

@@ -445,14 +445,14 @@ pub struct ConfigDiffView {
 /// audit handler).
 #[derive(Serialize, JsonSchema)]
 pub struct AuditPageView {
-    pub items: Vec<crate::audit_ring::AuditEntry>,
+    pub items: Vec<busbar_kernel::audit_ring::AuditEntry>,
     pub next_cursor: Option<String>,
 }
 
 /// `GET /config/versions`: the cursor-paginated version-history envelope (`{items, next_cursor}`).
 #[derive(Serialize, JsonSchema)]
 pub struct ConfigVersionPageView {
-    pub items: Vec<crate::admin::versions::ConfigVersion>,
+    pub items: Vec<busbar_kernel::admin::versions::ConfigVersion>,
     pub next_cursor: Option<String>,
 }
 

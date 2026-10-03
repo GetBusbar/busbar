@@ -31,8 +31,8 @@ where
     Option::<T>::deserialize(de).map(Some)
 }
 
-use busbar_kernel::admin::v1::contract::taxonomy::Cond;
-use busbar_kernel::admin::v1::contract::AdminError;
+use crate::v1::contract::taxonomy::Cond;
+use crate::v1::contract::AdminError;
 use busbar_kernel::audit_ring as audit;
 use busbar_kernel::config::parse::parse_duration_secs;
 use busbar_kernel::diagnostics::{
@@ -279,7 +279,7 @@ pub(crate) const KEY_RESOURCE_NONE: &str = "key:-";
 /// per-arm remembering. See [`KeyAudit`].
 fn key_err(who: KeyAudit<'_>, e: &AdminError, cond: Cond) -> Response {
     record_key_refusal(who);
-    busbar_kernel::admin::v1::json::err_json_cond(e, cond)
+    crate::v1::json::err_json_cond(e, cond)
 }
 
 /// The audit half of [`key_err`], usable on its own by the one refusal door that cannot name a
@@ -302,7 +302,7 @@ fn record_key_refusal(who: KeyAudit<'_>) {
 /// the client (even an authenticated admin). `op` names the operation for log correlation.
 fn internal_error(op: &str, e: &busbar_kernel::governance::RecordStoreError) -> Response {
     diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = op, error = %e, "admin store operation failed");
-    busbar_kernel::admin::v1::json::err_json(&AdminError::Internal)
+    crate::v1::json::err_json(&AdminError::Internal)
 }
 
 #[cfg(test)]
@@ -313,7 +313,7 @@ mod internal_error_tests;
 //
 // The keys handlers below are mounted ONLY at the canonical `/api/v1/admin/keys*` routes (via the
 // `crate::v1::json::JsonV1` router), and speak the ONE frozen v1 contract
-// (`busbar_kernel::admin::v1::contract`): the `{error:{code,message}}` envelope with the stable code
+// (`crate::v1::contract`): the `{error:{code,message}}` envelope with the stable code
 // enum. The module tree (`transport`, `restart`, `v1`, `keys`) is declared by this crate's `lib.rs`;
 // `planeverbs`/`versions`/`v1::contract`/`v1::json` (envelope primitives) STAYED in busbar-core.
 
@@ -461,7 +461,7 @@ mod reject_overlong_id_tests;
 /// propagate as an `unwrap()` on the request path — map it to a generic 500 (details logged).
 fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
     diag_error!(ADMIN_STORE_TASK_JOIN_FAILED, operation = op, error = %e, "admin store task failed to join");
-    busbar_kernel::admin::v1::json::err_json(&AdminError::Internal)
+    crate::v1::json::err_json(&AdminError::Internal)
 }
 
 /// Journal a claim's first sighting on the node's durable journal (item 271): called exactly once,
@@ -1013,7 +1013,7 @@ pub(crate) async fn create_key(
             if let Some(r) = idem_reservation.as_mut() {
                 r.clear();
             }
-            return busbar_kernel::admin::v1::json::err_json(&e);
+            return crate::v1::json::err_json(&e);
         }
     };
     // NOTE: the `group.provision` audit + version records are written INSIDE the transaction, at
@@ -1326,7 +1326,7 @@ pub(crate) async fn update_key(
         // generic store failure, which carries no condition of its own.
         Err(e @ AdminError::Validation(_)) => key_err(who, &e, Cond::RebindTargetMissing),
         Err(e @ AdminError::Conflict(_)) => key_err(who, &e, Cond::GovernanceOff),
-        Err(e) => busbar_kernel::admin::v1::json::err_json(&e),
+        Err(e) => crate::v1::json::err_json(&e),
     }
 }
 
@@ -1369,15 +1369,15 @@ pub(crate) async fn list_keys(
     // pagination grammar, one limit policy; an unbounded default response is exactly what
     // pagination exists to prevent).
     let limit = match q.get("limit") {
-        None => busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT,
+        None => crate::v1::contract::LIST_LIMIT_DEFAULT,
         Some(v) => match v.parse::<usize>() {
-            Ok(n) => n.clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX),
+            Ok(n) => n.clamp(1, crate::v1::contract::LIST_LIMIT_MAX),
             Err(_) => {
                 return key_err(
                     KeyAudit::Read,
                     &AdminError::Validation(format!(
                         "invalid `limit`: expected an integer (max {})",
-                        busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX
+                        crate::v1::contract::LIST_LIMIT_MAX
                     )),
                     Cond::InvalidQueryValue,
                 )
@@ -1385,7 +1385,7 @@ pub(crate) async fn list_keys(
         },
     };
     let start = match q.get("cursor") {
-        Some(c) => match busbar_kernel::admin::v1::contract::decode_offset_cursor(c) {
+        Some(c) => match crate::v1::contract::decode_offset_cursor(c) {
             Some(n) => n,
             None => {
                 return key_err(
@@ -1465,8 +1465,7 @@ pub(crate) async fn list_keys(
                 .collect();
             // More rows past this page → hand back the next opaque cursor; else None (end of list).
             let end = start.saturating_add(page.len());
-            let next_cursor = (end < total)
-                .then(|| busbar_kernel::admin::v1::contract::encode_offset_cursor(end));
+            let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
             json_response(
                 StatusCode::OK,
                 json!({ "items": page, "next_cursor": next_cursor }),
@@ -1840,7 +1839,7 @@ pub(crate) async fn key_usage(
     })
     .await;
     match res {
-        Ok(Ok(Some((Err(refused), _)))) => busbar_kernel::admin::v1::json::err_json_cond(
+        Ok(Ok(Some((Err(refused), _)))) => crate::v1::json::err_json_cond(
             &crate::v1::service::usage_refusal("key_usage", &refused),
             Cond::Unpriced,
         ),

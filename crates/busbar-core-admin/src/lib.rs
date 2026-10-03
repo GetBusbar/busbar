@@ -12,11 +12,16 @@
 //! and the composition root (`crates/busbar`'s `main`) calls it once, unconditionally — this crate
 //! is a MANDATORY, always-linked sibling, not a plugin.
 //!
-//! What STAYED in busbar-core: `admin::v1::contract` (the frozen `AdminError`/`PATH_*` surface),
-//! `admin::v1::json` (the `err_json`/`ok_json`/`err_json_cond` envelope primitives),
-//! `admin::planeverbs` (`CorePlaneAdminEnvelope`), and `admin::versions` (the `VersionLog` state).
+//! It also owns what used to stay in the kernel (1.6.0-TODO.md PATH TO DEV-GREEN, D4): the frozen
+//! contract (`v1::contract` — `AdminError`, the views, the error taxonomy), the error envelope
+//! framing (`v1::json::envelope`), the plane trust-verb backing ([`planeverbs`]) and the mutation
+//! path classifier ([`rate::classify_path`]). The kernel keeps only its protocol-free verdicts
+//! (`busbar_kernel::admin::refusal`) and the `VersionLog` state.
 
 pub mod keys;
+/// The plane trust-verb surface's admin half: the audit record, the neutral→frozen error boundary
+/// and the self-enveloping verb backing (moved from the kernel, 1.6.0-TODO.md D4).
+pub mod planeverbs;
 pub mod restart;
 pub mod transport;
 pub mod v1;
@@ -70,15 +75,25 @@ pub use verbs::{required_scope, MintOutcome, MintedKeyOutcome, NonceSource, Verb
 #[path = "tests/table_matches_openapi.rs"]
 mod table_matches_openapi;
 
+// The not-found wording and audit naming `planeverbs` derives, driven over every linked plane.
+#[cfg(test)]
+#[path = "tests/planeverbs_cross_plane_tests.rs"]
+mod planeverbs_cross_plane_tests;
+
 pub use v1::service::mark_start;
 
 /// Register this crate's implementation of the admin-service mount seam
-/// (`busbar_kernel::admin::seam::AdminMountSeam`). Called EXACTLY ONCE, by the composition root
-/// (`crates/busbar`'s `main`), unconditionally — the admin API carries no feature flag at the
-/// composition root; it is always mounted.
+/// (`busbar_kernel::admin::seam::AdminMountSeam`: the mount and the mutation-path classifier).
+/// Called EXACTLY ONCE, by the composition root (`crates/busbar`'s `main`), unconditionally — the
+/// admin API carries no feature flag at the composition root; it is always mounted. The
+/// self-enveloping plane-verb backing ([`planeverbs::CorePlaneAdminEnvelope`]) is bound separately,
+/// by the root, for the linked planes whose manifest row declares the `admin-envelope` axis.
 pub fn install() {
     busbar_kernel::admin::seam::install_admin_mount_seam(
-        busbar_kernel::admin::seam::AdminMountSeam { mount: seam_mount },
+        busbar_kernel::admin::seam::AdminMountSeam {
+            mount: seam_mount,
+            mutation_class: rate::classify_path,
+        },
     );
 }
 
@@ -135,6 +150,11 @@ mod test_seams {
                 (seam.install)();
             }
             super::install();
+            // The self-enveloping plane-verb backing the root binds for a plane declaring the
+            // `admin-envelope` axis: this binary links such planes as test-linked rows.
+            busbar_kernel::admin_verbs::install_plane_admin_envelope(
+                &crate::planeverbs::CorePlaneAdminEnvelope,
+            );
         });
     }
 }
@@ -152,7 +172,14 @@ pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
 #[cfg(all(not(test), feature = "test-support"))]
 fn ensure_seam() {
     static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
-    SEAM_ONCE.call_once(install);
+    SEAM_ONCE.call_once(|| {
+        install();
+        // A test-support consumer builds the admin router without a composition root, so it binds
+        // the self-enveloping plane-verb backing the root would bind (first-wins, idempotent).
+        busbar_kernel::admin_verbs::install_plane_admin_envelope(
+            &crate::planeverbs::CorePlaneAdminEnvelope,
+        );
+    });
 }
 
 #[cfg(any(test, feature = "test-support"))]

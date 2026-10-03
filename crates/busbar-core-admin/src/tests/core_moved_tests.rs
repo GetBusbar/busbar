@@ -310,7 +310,7 @@ async fn split_admin_listener_no_double_exposure() {
         code
     }
 
-    let admin_path = format!("{}/keys", busbar_kernel::admin::v1::contract::ADMIN_PREFIX);
+    let admin_path = format!("{}/keys", crate::v1::contract::ADMIN_PREFIX);
     // Admin surface SERVED on the admin plane (valid token ⇒ 200).
     assert_eq!(
         get(admin_router.clone(), &admin_path, Some("admintok")).await,

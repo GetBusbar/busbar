@@ -83,8 +83,8 @@ pub(crate) async fn list_groups(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(crate::v1::contract::LIST_LIMIT_DEFAULT)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -557,7 +557,7 @@ pub(crate) async fn rollback_plugin(
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
-                    &busbar_kernel::admin::v1::contract::PluginRollbackView {
+                    &crate::v1::contract::PluginRollbackView {
                         name: manifest.name,
                         file: req.file,
                         version: manifest.version,
@@ -1745,8 +1745,8 @@ pub(crate) async fn get_audit(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(crate::v1::contract::LIST_LIMIT_DEFAULT)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -1776,8 +1776,8 @@ pub(crate) async fn list_config_versions(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(busbar_kernel::admin::v1::contract::VERSIONS_LIMIT_DEFAULT)
-        .clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(crate::v1::contract::VERSIONS_LIMIT_DEFAULT)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -2136,7 +2136,7 @@ pub(crate) async fn put_auth(
             .filter(|t| !t.is_empty())
             .map(str::to_string);
         let survives = busbar_kernel::auth::dry_run_admin_scope(&next, authz_credential.as_deref(), header_tok.as_deref())
-            .contains(busbar_kernel::admin::v1::contract::Scope::Full);
+            .contains(crate::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
                 "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
@@ -4286,7 +4286,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
 
-    use busbar_kernel::admin::v1::contract::taxonomy;
+    use crate::v1::contract::taxonomy;
 
     // ── THE 4xx RESPONSE SET IS A PROJECTION, NOT PROSE (design D) ────────────────────────────
     // Every body-specific 400 / 403-escalation / 404 / 409 is ENUMERATED from the ONE declaration
@@ -4302,7 +4302,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             continue;
         };
         let rel = path
-            .strip_prefix(busbar_kernel::admin::v1::contract::ADMIN_PREFIX)
+            .strip_prefix(crate::v1::contract::ADMIN_PREFIX)
             .unwrap_or(path)
             .to_string();
         for (method, op) in obj.iter_mut() {
@@ -4335,7 +4335,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     _ => continue,
                 };
                 if let Some(op) = op.as_object_mut() {
-                    let scope = busbar_kernel::admin::v1::contract::required_scope(&m, path);
+                    let scope = crate::v1::contract::required_scope(m.as_str(), path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
                     // Both accepted credential carriers, on every op.
                     op.insert(
@@ -4568,7 +4568,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // response shapes always match what serde serializes. Driven by a table keyed on
     // (relative-path, method, status); `attach` resolves the type to a `#/components/schemas/<T>`
     // ref, records it in `gen`, and writes the `content` block.
-    use busbar_kernel::admin::v1::contract::schema as sview;
+    use crate::v1::contract::schema as sview;
     let mut gen = schemars::generate::SchemaSettings::draft2020_12()
         .with(|s| {
             // OpenAPI 3.1 keeps component schemas under `#/components/schemas`; strip the per-schema
@@ -4674,7 +4674,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }};
     }
 
-    use busbar_kernel::admin::v1::contract::{
+    use crate::v1::contract::{
         AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
         HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
         PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
@@ -4719,7 +4719,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/groups/{name}/usage",
         "get",
         "200",
-        busbar_kernel::admin::v1::contract::GroupUsageView
+        crate::v1::contract::GroupUsageView
     );
     // Auth & credentials.
     typed!("/auth", "get", "200", AuthView);
@@ -4745,7 +4745,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/plugins/rollback",
         "post",
         "200",
-        busbar_kernel::admin::v1::contract::PluginRollbackView
+        crate::v1::contract::PluginRollbackView
     );
     typed!("/usage", "get", "200", UsageView);
     typed!("/config", "get", "200", EffectiveConfigView);

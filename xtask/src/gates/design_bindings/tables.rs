@@ -348,7 +348,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_reshape_oversized_413_passthrough", "non-413 and already-JSON pass through"),
     ]),
     ("PB-62", &[
-        ("test", "crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix", "reads are read-only, mutations full, config/validate and plugins/inspect read-only"),
+        ("test", "crates/busbar-kernel/src/admin/tests/refusal_tests.rs::required_scope_matrix", "reads are read-only, mutations full, config/validate and plugins/inspect read-only"),
         ("test", "required_scope_mutations_are_full", "every mutation requires full"),
         ("test", "openapi_paths_annotate_required_scope", "x-busbar-required-scope equals the enforced scope on every path"),
     ]),

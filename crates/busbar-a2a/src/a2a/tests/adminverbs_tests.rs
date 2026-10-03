@@ -49,6 +49,11 @@ fn install_admin_mount() {
     #[cfg(test)]
     {
         busbar_core_admin::install();
+        // The self-enveloping verb backing the composition root binds for this plane's
+        // `admin-envelope` axis; this crate's own test binary has no root, so it binds it here.
+        busbar_kernel::admin_verbs::install_plane_admin_envelope(
+            &busbar_core_admin::planeverbs::CorePlaneAdminEnvelope,
+        );
         operator_row::for_each_operator_auth_row!(|entry| engine().install_operator_auth_row(entry));
     }
 }

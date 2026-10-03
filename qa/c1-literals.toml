@@ -56,21 +56,6 @@ item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/admin/v1/contract/mod.rs"
-item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/admin/v1/contract/taxonomy.rs"
-item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/admin/v1/contract/taxonomy.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/admin/versions.rs"
 item = "openapi"
 

@@ -172,7 +172,7 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
 /// ITEM 149 — THE GATE AND THE VERB TABLE AGREE ON EVERY ADMIN ROUTE.
 ///
 /// Three answers exist for "what scope does this admin operation need": the live gate's (method,
-/// path) matrix (`busbar_kernel::admin::v1::contract::required_scope`, the 1.5.5 rule the auth
+/// path) matrix (`crate::v1::contract::required_scope`, the 1.5.5 rule the auth
 /// middleware and the admin units' approve step enforce), this table's per-row `read_only`, and the
 /// verbs unit's `verbs::required_scope(verb)`. For every row the closed table declares, all three
 /// must name the same rung. `POST /api/v1/admin/verify` was the one row where they did not: the gate
@@ -199,8 +199,8 @@ fn the_live_gate_and_the_verb_table_agree_on_every_admin_route() {
     let mut disagreements = Vec::new();
     for entry in all_verbs() {
         let method = axum::http::Method::from_bytes(entry.method.as_bytes()).expect("a method");
-        let gate = busbar_kernel::admin::v1::contract::required_scope(&method, entry.path);
-        let gate_read_only = gate == busbar_kernel::admin::v1::contract::Scope::ReadOnly;
+        let gate = crate::v1::contract::required_scope(method.as_str(), entry.path);
+        let gate_read_only = gate == crate::v1::contract::Scope::ReadOnly;
         let unit_read_only =
             crate::verbs::required_scope(kernel_verb(entry)) == crate::verb::VerbScope::ReadOnly;
         if gate_read_only != entry.read_only || gate_read_only != unit_read_only {

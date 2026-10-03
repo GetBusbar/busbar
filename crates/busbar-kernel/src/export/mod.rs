@@ -50,7 +50,7 @@ use std::sync::Arc;
 ///   PUTs the config. The metrics recorder is additionally `OnceLock`-guarded and installed once.
 ///
 /// This is the SAME boot-frozen mechanism already documented for `max_inbound_concurrent` in
-/// [`crate::admin::v1::json::handlers`]'s `reload_to_apply_fields`, and the
+/// the admin crate's `v1::json::handlers::reload_to_apply_fields`, and the
 /// `export:` named map REPORTS it the same way: a mutation that introduces a route path the router
 /// never registered at boot answers with `reload_to_apply` naming that path plus a `note` saying a
 /// restart is required ([`crate::plugin_routes::paths_awaiting_restart`]). The apply is still a no-op

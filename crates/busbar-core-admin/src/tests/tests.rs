@@ -4601,7 +4601,7 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
 #[tokio::test]
 async fn test_admin_v1_openapi_paths_all_resolve() {
     use std::collections::{BTreeMap, BTreeSet};
-    const PREFIX: &str = busbar_kernel::admin::v1::contract::ADMIN_PREFIX;
+    const PREFIX: &str = crate::v1::contract::ADMIN_PREFIX;
     const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
     busbar_kernel::metrics::init();
     crate::ensure_seam();
@@ -4808,7 +4808,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
 /// a contract constant is resolved through the constant's own value; an unknown constant fails
 /// loudly rather than being skipped.
 fn literal_admin_routes(src: &str) -> Vec<(String, String)> {
-    use busbar_kernel::admin::v1::contract as c;
+    use crate::v1::contract as c;
     let consts: [(&str, &str); 5] = [
         ("PATH_HOOKS", c::PATH_HOOKS),
         ("PATH_GROUPS", c::PATH_GROUPS),
@@ -4985,7 +4985,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
     let (addr, handle, client) = spin_up(router).await;
 
     for (rel, _) in crate::v1::json::V1_GET_PATHS {
-        let path = format!("{}{rel}", busbar_kernel::admin::v1::contract::ADMIN_PREFIX);
+        let path = format!("{}{rel}", crate::v1::contract::ADMIN_PREFIX);
         // No token → 401, in the FROZEN v1 envelope (code `unauthorized`) — the most frequent
         // error a tooling consumer hits must branch on the same code seam as every other
         // (previously a protocol-shaped body).
@@ -10125,8 +10125,8 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
     // The scope matrix requires `full` for DELETE /overlay/{section} — a read-only (or
     // hooks-register) principal cannot pass it.
     for section in ["groups", "hooks"] {
-        let scope = busbar_kernel::admin::v1::contract::required_scope(
-            &axum::http::Method::DELETE,
+        let scope = crate::v1::contract::required_scope(
+            axum::http::Method::DELETE.as_str(),
             &format!("/api/v1/admin/overlay/{section}"),
         );
         assert_eq!(
@@ -11550,30 +11550,21 @@ fn test_persist_root_without_an_overlay_errs() {
 fn test_config_settings_scope_matrix() {
     use axum::http::Method;
     assert_eq!(
-        busbar_kernel::admin::v1::contract::required_scope(
-            &Method::PUT,
-            "/api/v1/admin/config/settings"
-        )
-        .as_str(),
+        crate::v1::contract::required_scope(Method::PUT.as_str(), "/api/v1/admin/config/settings")
+            .as_str(),
         "full",
         "PUT /config/settings is a full-scope mutation"
     );
     assert_eq!(
-        busbar_kernel::admin::v1::contract::required_scope(
-            &Method::GET,
-            "/api/v1/admin/config/settings"
-        )
-        .as_str(),
+        crate::v1::contract::required_scope(Method::GET.as_str(), "/api/v1/admin/config/settings")
+            .as_str(),
         "read-only",
         "GET /config/settings is read-only"
     );
     // And `root` is a valid reset section requiring full scope.
     assert_eq!(
-        busbar_kernel::admin::v1::contract::required_scope(
-            &Method::DELETE,
-            "/api/v1/admin/overlay/root"
-        )
-        .as_str(),
+        crate::v1::contract::required_scope(Method::DELETE.as_str(), "/api/v1/admin/overlay/root")
+            .as_str(),
         "full",
         "a root reset is a full-scope mutation"
     );
@@ -13202,14 +13193,14 @@ async fn drive_plugin_inspect_errors() {
 /// cannot be left behind once its emission starts naming its condition, or its declaration is
 /// deleted). The list can only shrink.
 const COND_WITNESS_DEBT: &[(
-    busbar_kernel::admin::v1::contract::taxonomy::MethodTag,
+    crate::v1::contract::taxonomy::MethodTag,
     &str,
-    busbar_kernel::admin::v1::contract::taxonomy::ErrKind,
-    busbar_kernel::admin::v1::contract::taxonomy::Cond,
+    crate::v1::contract::taxonomy::ErrKind,
+    crate::v1::contract::taxonomy::Cond,
 )] = {
-    use busbar_kernel::admin::v1::contract::taxonomy::Cond::*;
-    use busbar_kernel::admin::v1::contract::taxonomy::ErrKind::*;
-    use busbar_kernel::admin::v1::contract::taxonomy::MethodTag::*;
+    use crate::v1::contract::taxonomy::Cond::*;
+    use crate::v1::contract::taxonomy::ErrKind::*;
+    use crate::v1::contract::taxonomy::MethodTag::*;
     &[
         (Delete, "/groups/{name}", Conflict, BaseDefined),
         (Delete, "/groups/{name}", Conflict, BoundKeys),
@@ -13288,7 +13279,7 @@ const COND_WITNESS_DEBT: &[(
 /// machine set-comparison over every operation at once. There is no endpoint left to be next.
 #[tokio::test]
 async fn declared_error_set_is_exactly_what_the_handlers_emit() {
-    use busbar_kernel::admin::v1::contract::taxonomy::declared_errors;
+    use crate::v1::contract::taxonomy::declared_errors;
     // Drive every error path the declaration claims. (Other tests contribute to the same registry;
     // calling the drivers here makes the assertion independent of whether they ran.)
     drive_admin_error_surface().await;
@@ -13318,7 +13309,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
         drive().await;
     }
 
-    let witnessed = busbar_kernel::admin::v1::contract::taxonomy::observed::snapshot();
+    let witnessed = crate::v1::contract::taxonomy::observed::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,
     // Cond) TRIPLE for the emissions that named their condition. Keyed on the NEUTRAL string form the
     // process-wide substrate ledger stores (so a witness produced through EITHER copy of busbar-core —
@@ -13445,11 +13436,8 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
 /// is proven mounted with a documented status, and every router route proven documented
 /// (`test_admin_v1_openapi_paths_all_resolve`), so keying off it closes the loop: router → doc →
 /// this audit.
-fn documented_operations() -> Vec<(
-    String,
-    busbar_kernel::admin::v1::contract::taxonomy::MethodTag,
-)> {
-    use busbar_kernel::admin::v1::contract::taxonomy::MethodTag;
+fn documented_operations() -> Vec<(String, crate::v1::contract::taxonomy::MethodTag)> {
+    use crate::v1::contract::taxonomy::MethodTag;
     let doc: serde_json::Value = serde_json::from_str(&crate::v1::json::openapi_json())
         .expect("the committed openapi.json parses");
     let paths = doc["paths"]
@@ -13458,7 +13446,7 @@ fn documented_operations() -> Vec<(
     let mut ops = Vec::new();
     for (abs, item) in paths {
         let rel = abs
-            .strip_prefix(busbar_kernel::admin::v1::contract::ADMIN_PREFIX)
+            .strip_prefix(crate::v1::contract::ADMIN_PREFIX)
             .unwrap_or(abs);
         for key in item.as_object().into_iter().flatten().map(|(k, _)| k) {
             // `x-*` specification extensions share the path-item object with real operations.
@@ -13477,7 +13465,7 @@ fn documented_operations() -> Vec<(
 
 /// `docs/admin-api.md`'s mutation rate-limit table names the CONFIG-class (10/min) endpoint set by
 /// hand. Until this test existed, nothing tied that prose list to
-/// `ratelimit::classify_mutation` — the classifier that actually decides which budget a request
+/// `rate::classify_path` — the classifier that actually decides which budget a request
 /// spends from. This walks every mutation operation in the committed `openapi.json`
 /// (`documented_operations`, itself a projection nothing can silently drift from), classifies each
 /// one, and requires the resulting CONFIG set to equal the doc's `config` row EXACTLY — under- and
@@ -13485,7 +13473,7 @@ fn documented_operations() -> Vec<(
 /// `declared_error_set_is_exactly_what_the_handlers_emit`.
 #[test]
 fn rate_limit_doc_table_matches_classifier() {
-    use busbar_kernel::admin::v1::contract::taxonomy::MethodTag;
+    use crate::v1::contract::taxonomy::MethodTag;
     // The classifier folds each registered plane's named-map section into the CONFIG class, so the
     // planes must be registered before it is asked — independent of which test ran first.
     crate::ensure_seam();
@@ -13501,7 +13489,7 @@ fn rate_limit_doc_table_matches_classifier() {
     let answered_by_loop = |rel: &str, method: MethodTag| {
         crate::admin_codec::verbs::resolve(
             &method.as_str().to_uppercase(),
-            &format!("{}{rel}", busbar_kernel::admin::v1::contract::ADMIN_PREFIX),
+            &format!("{}{rel}", crate::v1::contract::ADMIN_PREFIX),
         )
         .is_some_and(|row| loop_verbs.contains(row.verb))
     };
@@ -13543,7 +13531,7 @@ fn rate_limit_doc_table_matches_classifier() {
                 method,
                 MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
             ) && !answered_by_loop(rel, *method)
-                && busbar_kernel::ratelimit::classify_mutation(rel)
+                && crate::rate::classify_path(rel)
                     == busbar_kernel::ratelimit::MutationClass::Config
         })
         .collect();
@@ -13552,7 +13540,7 @@ fn rate_limit_doc_table_matches_classifier() {
     let missing_from_code: Vec<_> = doc_config.difference(&code_config).collect();
     assert!(
         missing_from_doc.is_empty() && missing_from_code.is_empty(),
-        "docs/admin-api.md's config-class row has drifted from ratelimit::classify_mutation.\n\
+        "docs/admin-api.md's config-class row has drifted from rate::classify_path.\n\
          In classifier's CONFIG class but not in the doc: {missing_from_doc:?}\n\
          In the doc but not classified CONFIG: {missing_from_code:?}"
     );
@@ -13789,7 +13777,7 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
         match next {
             None => {} // no further page — fine
             Some(c) => {
-                let decoded = busbar_kernel::admin::v1::contract::decode_offset_cursor(c)
+                let decoded = crate::v1::contract::decode_offset_cursor(c)
                     .unwrap_or_else(|| panic!("{label}: cursor did not decode: {c}"));
                 assert!(
                     decoded > 0,

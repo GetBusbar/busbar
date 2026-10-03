@@ -1272,7 +1272,7 @@ async fn list_groups_projects_the_limit_tree() {
     let svc = AdminService::new(app);
 
     let page = svc
-        .list_groups(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
+        .list_groups(0, crate::v1::contract::LIST_LIMIT_DEFAULT)
         .await
         .expect("list ok");
     // BTreeMap order: "team" < "user:bob".
@@ -1329,16 +1329,14 @@ async fn list_groups_is_cursor_paginated() {
         .next_cursor
         .as_deref()
         .expect("more rows remain -> a next_cursor is present");
-    let start2 =
-        busbar_kernel::admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
+    let start2 = crate::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
 
     let p2 = svc.list_groups(start2, 2).await.expect("list ok");
     assert_eq!(p2.items.len(), 2);
     let names: Vec<&str> = p2.items.iter().map(|g| g.name.as_str()).collect();
     assert_eq!(names, vec!["g2", "g3"]);
     let c2 = p2.next_cursor.as_deref().expect("one row remains");
-    let start3 =
-        busbar_kernel::admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
+    let start3 = crate::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
 
     let p3 = svc.list_groups(start3, 2).await.expect("list ok");
     assert_eq!(p3.items.len(), 1, "final page holds the remainder");
@@ -1724,7 +1722,7 @@ async fn get_group_usage_unknown_group_not_found() {
 /// same counts). A downstream FinOps consumer's parser keeps working across the upgrade.
 #[test]
 fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
-    use busbar_kernel::admin::v1::contract::UsageBreakdown;
+    use crate::v1::contract::UsageBreakdown;
     let b = UsageBreakdown {
         tokens_input: 100,
         tokens_output: 40,
@@ -3187,7 +3185,7 @@ mod usage_as_of {
         let err = read_as_of(gov, src, payg, Some(7))
             .await
             .expect_err("a snapshot that does not exist is a refusal");
-        let busbar_kernel::admin::v1::contract::AdminError::Validation(msg) = &err else {
+        let crate::v1::contract::AdminError::Validation(msg) = &err else {
             panic!("expected a client-safe validation refusal, got {err:?}");
         };
         assert!(
@@ -3205,7 +3203,7 @@ mod usage_as_of {
         let err = read_no_source_as_of(gov, payg, Some(0))
             .await
             .expect_err("there is no snapshot of a history that does not exist");
-        let busbar_kernel::admin::v1::contract::AdminError::Validation(msg) = &err else {
+        let crate::v1::contract::AdminError::Validation(msg) = &err else {
             panic!("expected a client-safe validation refusal, got {err:?}");
         };
         assert!(
@@ -3803,7 +3801,7 @@ mod plane_fees_on_admin_usage {
     /// instant — 3 tools calls at 3, 2 pools calls at the flat 5, 4 fee-less plane calls at 0.
     #[test]
     fn the_dated_read_prices_a_planes_row_at_its_own_fee() {
-        use busbar_kernel::admin::v1::contract::UsageBreakdown;
+        use crate::v1::contract::UsageBreakdown;
         let cost = cost();
         let history = busbar_kernel_ledger::cost::History::opening(cost.card().clone(), 0);
         let view = history.current();
@@ -4086,7 +4084,7 @@ mod plane_fees_on_admin_usage {
     /// pools row carrying 1,000,000 search units at 3 micro-units and 1 request at the flat 5.
     #[test]
     fn the_dated_read_prices_a_rows_classes_as_the_fallback_does() {
-        use busbar_kernel::admin::v1::contract::UsageBreakdown;
+        use crate::v1::contract::UsageBreakdown;
         use busbar_kernel_ledger::cost::PER_SESSION;
         let cost = carded_cost(70_000, 3, 40);
         let history = busbar_kernel_ledger::cost::History::opening(cost.card().clone(), 0);

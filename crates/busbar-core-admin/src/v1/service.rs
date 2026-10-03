@@ -21,7 +21,7 @@ use busbar_kernel::diagnostics::{
 };
 use busbar_kernel::state::App;
 
-use busbar_kernel::admin::v1::contract::{
+use crate::v1::contract::{
     AdminAuthView, AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView,
     GroupView, HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView,
     ModelView, NamedDefView, Page, PluginView, PoolDetailView, PoolMemberStatusView,
@@ -1156,7 +1156,7 @@ fn manifest_schema_url_and_error(
     };
     let url = Some(format!(
         "{}/plugins/{name}/schema",
-        busbar_kernel::admin::v1::contract::ADMIN_PREFIX
+        crate::v1::contract::ADMIN_PREFIX
     ));
     match serde_json::from_str::<serde_json::Value>(s) {
         Ok(_) => (url, None),

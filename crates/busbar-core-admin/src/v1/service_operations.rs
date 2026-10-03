@@ -347,8 +347,7 @@ impl AdminService {
         let total = all.len();
         let items: Vec<GroupView> = all.into_iter().skip(start).take(limit).collect();
         let end = start.saturating_add(items.len());
-        let next_cursor =
-            (end < total).then(|| busbar_kernel::admin::v1::contract::encode_offset_cursor(end));
+        let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
         Ok(Page { items, next_cursor })
     }
 
@@ -368,8 +367,8 @@ impl AdminService {
     pub(crate) async fn get_group_usage(
         &self,
         name: &str,
-    ) -> Result<busbar_kernel::admin::v1::contract::GroupUsageView, AdminError> {
-        use busbar_kernel::admin::v1::contract::{GroupBucketUsageView, GroupUsageView};
+    ) -> Result<crate::v1::contract::GroupUsageView, AdminError> {
+        use crate::v1::contract::{GroupBucketUsageView, GroupUsageView};
         let Some(rt) = self.app.cost.group_named(name) else {
             return Err(AdminError::not_found(format!("group `{name}`")));
         };
@@ -874,7 +873,7 @@ impl AdminService {
         &self,
         file: &str,
         tarball: &[u8],
-    ) -> Result<busbar_kernel::admin::v1::contract::PluginInstallView, AdminError> {
+    ) -> Result<crate::v1::contract::PluginInstallView, AdminError> {
         use busbar_plugin_loader::sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
 
         // ── 1. filename sanity: a bare tarball filename ──
@@ -972,7 +971,7 @@ impl AdminService {
             AdminError::Validation(format!("cannot publish plugin into plugins dir: {e}"))
         })?;
 
-        Ok(busbar_kernel::admin::v1::contract::PluginInstallView {
+        Ok(crate::v1::contract::PluginInstallView {
             file,
             name: manifest.name.clone(),
             interface_version: manifest.abi_version,
@@ -1019,7 +1018,7 @@ impl AdminService {
     ///      tarball;
     ///   4. its own dedicated rate bucket (`ratelimit::MutationClass::PluginInspect`), not the
     ///      shared 60/min CRUD bucket and not the unmetered-read bucket — wired in `auth::mod.rs`/
-    ///      `ratelimit::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
+    ///      `rate::classify_path` via `PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
     pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
         use busbar_plugin_loader::sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
@@ -1087,7 +1086,7 @@ impl AdminService {
     pub(crate) fn remove_store_plugin(
         &self,
         file: &str,
-    ) -> Result<busbar_kernel::admin::v1::contract::PluginRemoveView, AdminError> {
+    ) -> Result<crate::v1::contract::PluginRemoveView, AdminError> {
         let file = validate_plugin_filename(file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
@@ -1099,7 +1098,7 @@ impl AdminService {
         // it on the next boot.
         busbar_kernel::durable::remove(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot remove plugin: {e}")))?;
-        Ok(busbar_kernel::admin::v1::contract::PluginRemoveView {
+        Ok(crate::v1::contract::PluginRemoveView {
             file,
             removed: true,
         })
@@ -1112,7 +1111,7 @@ impl AdminService {
     /// next store (re)load, not as a hot swap.
     pub(crate) fn reload_store_plugins(
         &self,
-    ) -> Result<busbar_kernel::admin::v1::contract::PluginReloadView, AdminError> {
+    ) -> Result<crate::v1::contract::PluginReloadView, AdminError> {
         // Reuse the store catalog projection, dropping the compiled-in `memory` head (reload reports
         // only the on-disk dynamic set it reconciled).
         let plugins: Vec<PluginView> = self
@@ -1120,7 +1119,7 @@ impl AdminService {
             .into_iter()
             .filter(|p| p.loader == "dynamic-library")
             .collect();
-        Ok(busbar_kernel::admin::v1::contract::PluginReloadView {
+        Ok(crate::v1::contract::PluginReloadView {
             plugins,
             note:
                 "hot-reloaded the plugin layer LIVE: a new plugin registry and new kind:hook \

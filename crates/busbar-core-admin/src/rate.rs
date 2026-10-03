@@ -16,9 +16,13 @@
 //! crate cannot name that registry. Everything downstream of "which class is this verb" — the
 //! limit values, the fixed window, the sweep, the audit-once signal — is unchanged.
 //!
-//! [`CONFIG_CLASS_RULES`] is a second, independent table from `busbar_kernel::ratelimit`'s own
+//! [`CONFIG_CLASS_RULES`] is a second, independent table from [`PATH_CLASS_RULES`], the one the
+//! kernel's auth middleware classifies an operator-surface PATH with through [`classify_path`]
 //! (item 558) — see that constant's doc for why the two are not collapsed into one, and for the
-//! cross-check test that keeps them from silently drifting apart.
+//! cross-check test that keeps them from silently drifting apart. The path classifier moved here
+//! from `busbar_kernel::ratelimit` (1.6.0-TODO.md D4): which class a route spends from is this
+//! crate's knowledge of its own routes; the kernel keeps the budget and reaches the classifier
+//! through its admin seam.
 
 use crate::verb::KernelVerb;
 use busbar_contract::surface::ADMIN_PREFIX;
@@ -58,7 +62,7 @@ impl ConfigClassRule {
 /// 1.5.5-parity default the root may pass as-is or extend).
 ///
 /// A SECOND, independent table answers the same question on the admin-HTTP path:
-/// `busbar_kernel::ratelimit::classify_mutation` (item 558) — driven from the live plane registry
+/// [`classify_path`] (item 558) — driven from the live plane registry
 /// rather than a literal list, so it sees named-map roots this table does not (`tools`, `agents`).
 /// This crate cannot collapse into that one: it has no `KernelVerb`-shaped input to the kernel's
 /// path classifier, and swapping this table for a call into it would change which class two
@@ -90,6 +94,87 @@ pub const CONFIG_CLASS_RULES: &[ConfigClassRule] = &[
     ConfigClassRule::Prefix("/identity-providers"),
     ConfigClassRule::Prefix("/export"),
 ];
+
+/// The FIXED endpoints of the tight CONFIG class (10/min), as against the roomy CRUD class (60/min).
+///
+/// This table is NOT the whole decision, and it used to say it was ("nothing else decides class
+/// membership", item 558). The one decider is [`classify_path`], and it reads four things in
+/// this order, first answer wins: the `/config/validate` carve-out (CRUD, although this table's
+/// `/config/` prefix covers it), the `/plugins/inspect` carve-out (its own class), every
+/// registry-derived named-map root (CONFIG — one per `NamedMapSection::sections()`, so a plane's
+/// section joins without an edit here), and only then this table. `docs/admin-api.md`'s rate-limit
+/// table is a hand-written restatement of the CONFIG set that FUNCTION produces — kept honest by
+/// `rate_limit_doc_table_matches_classifier` (busbar-core-admin's tests), which classifies every
+/// mutation operation in the committed `openapi.json` through [`classify_path`] and fails if the
+/// CONFIG set differs from the doc's `config` row by one endpoint in either direction; so all four
+/// deciders are inside that check, not only this table.
+///
+/// This is the classifier the kernel's auth middleware runs through the admin seam
+/// (`busbar_kernel::admin::seam`). The admin-VERB path classifies with a SECOND table,
+/// [`CONFIG_CLASS_RULES`]
+/// (`MutationClass::for_verb`), which hardcodes the two core named-map roots and which nothing
+/// compares with this one.
+///
+/// This used to be an inline `if`/`else` boolean expression with the same six clauses — sound,
+/// but a predicate can only answer "is this one in?", never "which ones are in?", so nothing
+/// could enumerate its membership to check it against the doc. A table can be iterated as well as
+/// matched, which is what makes the cross-check test possible at all (the `reload_to_apply`
+/// structural fix, applied here).
+pub const PATH_CLASS_RULES: &[ConfigClassRule] = &[
+    // Whole-config mutations (apply/reload/rollback) — `/config/validate` is a stateless dry-run
+    // carved out below, before this prefix ever matches it.
+    ConfigClassRule::Prefix("/config/"),
+    // The admin auth chain itself — `PUT /admin-auth` (the remount moved it off `/auth`).
+    ConfigClassRule::Exact(crate::v1::contract::PATH_ADMIN_AUTH),
+    // A per-section overlay reset discards a whole section back to base config — a blast-radius
+    // revert (rebuilds the App).
+    ConfigClassRule::Prefix("/overlay/"),
+    // Both PLUGIN SWAP endpoints do a full `rebuild_app_from_disk` + `handle.swap` (identical
+    // blast radius to `config/reload`) — not the 6x-looser CRUD budget. `/plugins` (install/list)
+    // and `/plugins/{file}` (delete) do NOT swap the App, so they are deliberately absent here and
+    // fall through to CRUD.
+    ConfigClassRule::Exact("/plugins/reload"),
+    ConfigClassRule::Exact("/plugins/rollback"),
+    // Restarting ends the process; the 6x looser CRUD budget would be a flood knob.
+    ConfigClassRule::Exact("/restart"),
+];
+
+/// Classify a mutation request's ADMIN_PREFIX-relative path: the two carve-outs, then the
+/// registry-derived named-map roots, then [`PATH_CLASS_RULES`] — in that order. `/config/validate`
+/// is a read-only dry-run that must not contend with the CONFIG budget despite living under
+/// `/config/`, and `/plugins/inspect` is a read-only archive preview that must not contend with
+/// EITHER the CONFIG or the shared CRUD budget — it gets its own `PluginInspect` class.
+pub fn classify_path(rel: &str) -> busbar_kernel::ratelimit::MutationClass {
+    use busbar_kernel::ratelimit::MutationClass;
+    if rel == busbar_kernel::admin::refusal::PATH_CONFIG_VALIDATE {
+        return MutationClass::Crud;
+    }
+    if rel == busbar_kernel::admin::refusal::PATH_PLUGINS_INSPECT {
+        return MutationClass::PluginInspect;
+    }
+    // The GENERIC named-DEFINITION map writes (`/identity-providers`, `/export`, and any registered
+    // plane's own named-map section) each re-run the boot pipeline and swap a whole new `App` — the SAME blast radius as
+    // `/config/reload` and `/plugins/reload`, so they take the CONFIG budget, not the 6x-looser CRUD
+    // one. Derived from the section table rather than listed as literals, so a new section is
+    // classified correctly the moment its variant exists (the `docs/admin-api.md` config row and
+    // `rate_limit_doc_table_matches_classifier` are the paired ledger).
+    // On a path-SEGMENT boundary: `/export` and `/export/{name}` are the section, `/export-keyset`
+    // is not.
+    if busbar_kernel::config::named_map::NamedMapSection::sections()
+        .iter()
+        .any(|s| {
+            rel.strip_prefix(s.path_root().as_ref())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
+    {
+        return MutationClass::Config;
+    }
+    if PATH_CLASS_RULES.iter().any(|rule| rule.matches(rel)) {
+        MutationClass::Config
+    } else {
+        MutationClass::Crud
+    }
+}
 
 /// The ADMIN_PREFIX-relative path for a legacy verb, or `None` for a verb with no fixed path (every
 /// 1.6.0 new verb, and the named non-admin surfaces) — those never match a [`ConfigClassRule`] and
@@ -302,3 +387,7 @@ impl Default for MutationLimiter {
 #[cfg(test)]
 #[path = "tests/rate_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/path_class_tests.rs"]
+mod path_class_tests;

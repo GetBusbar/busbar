@@ -19,8 +19,8 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::json;
 
+use crate::v1::contract::AdminError;
 use crate::v1::json::{delete_group, install_plugin};
-use busbar_kernel::admin::v1::contract::AdminError;
 use busbar_kernel::config::transaction::{config_transaction, Outcome};
 use busbar_kernel::governance::{GovState, MemoryStore};
 use busbar_kernel::state::AppHandle;

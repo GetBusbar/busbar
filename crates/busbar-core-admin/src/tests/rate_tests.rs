@@ -349,7 +349,7 @@ fn the_sweep_drops_only_windows_older_than_the_current_one() {
 }
 
 /// CROSS-CHECK (item 558): this classifier and the kernel's own path classifier
-/// (`busbar_kernel::ratelimit::classify_mutation`) are two separate tables answering the same
+/// ([`crate::rate::classify_path`], which the kernel runs through its admin seam) are two separate tables answering the same
 /// question — which ADMIN_PREFIX-relative paths are CONFIG-class — over the same path strings.
 /// Nothing in production compares them (the admin-verb path never calls the kernel one, and the
 /// kernel path is driven straight from the HTTP layer, never through a `KernelVerb`), so a table
@@ -370,7 +370,7 @@ fn for_verb_agrees_with_the_kernel_path_classifier_for_every_legacy_mutating_ver
         }
         let rel = row.path.strip_prefix("/api/v1/admin").unwrap_or(row.path);
         let admin_class = MutationClass::for_verb(row.verb, CONFIG_CLASS_RULES);
-        let kernel_class = busbar_kernel::ratelimit::classify_mutation(rel);
+        let kernel_class = crate::rate::classify_path(rel);
         assert_eq!(
             admin_class.label(),
             kernel_class.label(),

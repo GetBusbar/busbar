@@ -30,7 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use busbar_kernel::admin::v1::contract::ADMIN_PREFIX;
+use crate::v1::contract::ADMIN_PREFIX;
 use busbar_kernel::config::named_map::NamedMapSection;
 
 /// One served operation: the upper-case HTTP method and the absolute, `{param}`-templated path.

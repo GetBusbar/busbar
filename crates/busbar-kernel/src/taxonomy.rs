@@ -12,7 +12,7 @@
 //! path moves; the constant string VALUES (the wire error-type tokens) are unchanged.
 //!
 //! The admin API itself no longer has an error vocabulary of its own: every admin error — keys
-//! included — is an [`crate::admin::v1::contract::AdminError`] projected by `key_err`/`err_json`
+//! included — is the admin crate's `v1::contract::AdminError`, projected by `key_err`/`err_json`
 //! (design D route 2). The `internal_error`/`conflict_error`/`version_conflict_error` tokens that
 //! used to be re-mapped onto the frozen `code` enum in a second place are gone with it.
 

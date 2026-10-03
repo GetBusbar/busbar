@@ -7,6 +7,10 @@
 //! FAILED attempts count too (anti-enumeration: probing 404s spends the same budget as mutating),
 //! which is why enforcement lives in the auth middleware — before any handler runs. Limit events
 //! are audited.
+//!
+//! This module is the budget: the classes, their limits and the fixed-window counters. WHICH class
+//! an operator-surface path spends from is the admin crate's knowledge of its own routes
+//! (its `rate::classify_path`), reached through [`crate::admin::seam`].
 
 use std::collections::HashMap;
 
@@ -56,97 +60,6 @@ impl MutationClass {
             MutationClass::PluginInspect => "plugin-inspect",
             MutationClass::Forbidden => "forbidden",
         }
-    }
-}
-
-/// One rule in the CONFIG-class blast-radius set. `Exact` matches the whole relative path;
-/// `Prefix` matches every path starting with the string (used for `/config/` and `/overlay/`,
-/// whose membership is a subtree, not a single endpoint).
-enum PathRule {
-    Exact(&'static str),
-    Prefix(&'static str),
-}
-
-/// The FIXED endpoints of the tight CONFIG class (10/min), as against the roomy CRUD class (60/min).
-///
-/// This table is NOT the whole decision, and it used to say it was ("nothing else decides class
-/// membership", item 558). The one decider is [`classify_mutation`], and it reads four things in
-/// this order, first answer wins: the `/config/validate` carve-out (CRUD, although this table's
-/// `/config/` prefix covers it), the `/plugins/inspect` carve-out (its own class), every
-/// registry-derived named-map root (CONFIG — one per `NamedMapSection::sections()`, so a plane's
-/// section joins without an edit here), and only then this table. `docs/admin-api.md`'s rate-limit
-/// table is a hand-written restatement of the CONFIG set that FUNCTION produces — kept honest by
-/// `rate_limit_doc_table_matches_classifier` (busbar-core-admin's tests), which classifies every
-/// mutation operation in the committed `openapi.json` through [`classify_mutation`] and fails if the
-/// CONFIG set differs from the doc's `config` row by one endpoint in either direction; so all four
-/// deciders are inside that check, not only this table.
-///
-/// This is the classifier the admin HTTP middleware runs (`auth` → `classify_mutation`). The
-/// admin-VERB path classifies with a SECOND table, `busbar_core_admin::rate::CONFIG_CLASS_RULES`
-/// (`MutationClass::for_verb`), which hardcodes the two core named-map roots and which nothing
-/// compares with this one.
-///
-/// This used to be an inline `if`/`else` boolean expression with the same six clauses — sound,
-/// but a predicate can only answer "is this one in?", never "which ones are in?", so nothing
-/// could enumerate its membership to check it against the doc. A table can be iterated as well as
-/// matched, which is what makes the cross-check test possible at all (the `reload_to_apply`
-/// structural fix, applied here).
-const CONFIG_CLASS_RULES: &[PathRule] = &[
-    // Whole-config mutations (apply/reload/rollback) — `/config/validate` is a stateless dry-run
-    // carved out below, before this prefix ever matches it.
-    PathRule::Prefix("/config/"),
-    // The admin auth chain itself — `PUT /admin-auth` (the remount moved it off `/auth`).
-    PathRule::Exact(crate::admin::v1::contract::PATH_ADMIN_AUTH),
-    // A per-section overlay reset discards a whole section back to base config — a blast-radius
-    // revert (rebuilds the App).
-    PathRule::Prefix("/overlay/"),
-    // Both PLUGIN SWAP endpoints do a full `rebuild_app_from_disk` + `handle.swap` (identical
-    // blast radius to `config/reload`) — not the 6x-looser CRUD budget. `/plugins` (install/list)
-    // and `/plugins/{file}` (delete) do NOT swap the App, so they are deliberately absent here and
-    // fall through to CRUD.
-    PathRule::Exact("/plugins/reload"),
-    PathRule::Exact("/plugins/rollback"),
-    // Restarting ends the process; the 6x looser CRUD budget would be a flood knob.
-    PathRule::Exact("/restart"),
-];
-
-/// Classify a mutation request's ADMIN_PREFIX-relative path: the two carve-outs, then the
-/// registry-derived named-map roots, then [`CONFIG_CLASS_RULES`] — in that order. `/config/validate`
-/// is a read-only dry-run that must not contend with the CONFIG budget despite living under
-/// `/config/`, and `/plugins/inspect` is a read-only archive preview that must not contend with
-/// EITHER the CONFIG or the shared CRUD budget — it gets its own [`MutationClass::PluginInspect`].
-pub fn classify_mutation(rel: &str) -> MutationClass {
-    if rel == crate::admin::v1::contract::PATH_CONFIG_VALIDATE {
-        return MutationClass::Crud;
-    }
-    if rel == crate::admin::v1::contract::PATH_PLUGINS_INSPECT {
-        return MutationClass::PluginInspect;
-    }
-    // The GENERIC named-DEFINITION map writes (`/identity-providers`, `/export`, and any registered
-    // plane's own named-map section) each re-run the boot pipeline and swap a whole new `App` — the SAME blast radius as
-    // `/config/reload` and `/plugins/reload`, so they take the CONFIG budget, not the 6x-looser CRUD
-    // one. Derived from the section table rather than listed as literals, so a new section is
-    // classified correctly the moment its variant exists (the `docs/admin-api.md` config row and
-    // `rate_limit_doc_table_matches_classifier` are the paired ledger).
-    // On a path-SEGMENT boundary: `/export` and `/export/{name}` are the section, `/export-keyset`
-    // is not.
-    if crate::config::named_map::NamedMapSection::sections()
-        .iter()
-        .any(|s| {
-            rel.strip_prefix(s.path_root().as_ref())
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-        })
-    {
-        return MutationClass::Config;
-    }
-    let is_config = CONFIG_CLASS_RULES.iter().any(|rule| match rule {
-        PathRule::Exact(p) => rel == *p,
-        PathRule::Prefix(p) => rel.starts_with(p),
-    });
-    if is_config {
-        MutationClass::Config
-    } else {
-        MutationClass::Crud
     }
 }
 

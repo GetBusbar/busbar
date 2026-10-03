@@ -53,7 +53,7 @@ fn required_scope_matrix() {
 /// THE PORT IS VERBATIM OR IT IS A SECOND MATRIX WITH A SECOND OPINION.
 ///
 /// Three ways this copy used to differ from the enforced
-/// `busbar_kernel::admin::v1::contract::required_scope` it claims to port, each asserted against
+/// `required_scope` it claims to port (now the kernel's `admin::refusal::required_scope`), each asserted against
 /// the behaviour of the `axum::http::Method`-backed original:
 ///
 /// 1. A NON-CANONICAL VERB IS NOT A READ. `Method`'s equality is case-sensitive (RFC 9110 §9.1):

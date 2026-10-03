@@ -3,14 +3,16 @@
 
 //! Admin API **v1** — the frozen, additive-only surface, as a self-contained version unit.
 //!
-//! The typed views + stable error taxonomy (`contract`) and the JSON envelope PRIMITIVES
-//! (`err_json`/`ok_json`/`err_json_cond`) STAYED in busbar-core (`busbar_kernel::admin::v1`); the rest
-//! of the v1 surface lives here:
+//! The whole v1 surface lives here (the contract and the envelope primitives moved in from the
+//! kernel, 1.6.0-TODO.md D4):
+//!
+//! - [`contract`] — the typed views + the stable error taxonomy, the frozen surface in Rust.
 //!
 //! - [`service`] — the v1 application service: typed operations returning `contract` views/errors,
 //!   over the shared engine (`busbar_kernel::state::App`).
 //! - [`json`] — the JSON-REST wire adapter (`JsonV1`) mounting `/api/v1/admin/*`.
 
+pub mod contract;
 pub mod json;
 mod named_def_views;
 pub mod service;

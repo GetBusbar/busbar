@@ -45,18 +45,21 @@ pub fn fallback_error_response(
     // leaked `{error:{type}}` bodies onto a surface that promises `{error:{code}}`.
     // Boundary-safe: exact root or root + '/'.
     {
-        use crate::admin::v1::contract::{AdminError, API_ROOT};
+        use crate::admin::Refusal;
+        use crate::auth::ADMIN_PATH as API_ROOT;
         if path == API_ROOT || path.starts_with(&format!("{API_ROOT}/")) {
-            let e = if status == axum::http::StatusCode::METHOD_NOT_ALLOWED {
-                AdminError::MethodNotAllowed
+            let refused = if status == axum::http::StatusCode::METHOD_NOT_ALLOWED {
+                Refusal::MethodNotAllowed
             } else if status == axum::http::StatusCode::INTERNAL_SERVER_ERROR {
                 // The request-panic boundary ([`CatchPanicLayer`]) is the one caller that asks for
                 // a 500 here; on the native-API root that is the frozen envelope's own `internal`.
-                AdminError::Internal
+                Refusal::Internal
             } else {
-                AdminError::not_found("resource")
+                Refusal::NotFound {
+                    what: "resource".to_string(),
+                }
             };
-            return crate::admin::v1::json::err_json(&e);
+            return refusal_response(refused.status(), refused.code(), &refused.message());
         }
     }
     // ONE resolver, ONE shaping seam. Each dialect's own vendor-pinned response headers (Bedrock
@@ -64,6 +67,25 @@ pub fn fallback_error_response(
     // through the writer vtable inside `proxy::ingress_error`, so this handler matches the shape
     // the hot path produces and carries no dialect name-branch of its own.
     crate::ingress::native::native_error(planes.ingress_of(path), status, kind, message)
+}
+
+/// FRAME one operator-surface refusal: the status, `application/json`, and the frozen
+/// `{"error":{"code","message"}}` body ([`crate::admin::envelope`]). The kernel's router fallback
+/// answers with it, and the admin crate's `err_json` frames its own taxonomy through it, so the
+/// bytes and the headers are built in one place. An out-of-range status falls back to `500`.
+pub fn refusal_response(status: u16, code: &str, message: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let status = axum::http::StatusCode::from_u16(status)
+        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    (
+        status,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            crate::proxy::APPLICATION_JSON,
+        )],
+        crate::admin::envelope(code, message),
+    )
+        .into_response()
 }
 
 // NOTE: the 404 fallback handler is superseded by `ingress::protocol_dispatch`, which owns the

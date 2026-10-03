@@ -1,5 +1,4 @@
 use super::*;
-use axum::http::Method;
 
 /// GOLDEN WIRE LITERALS: the mount constants pinned byte-for-byte. Everything else in the app
 /// DERIVES paths from these constants (no hand-written absolute path anywhere) — so this pin is
@@ -12,78 +11,6 @@ fn mount_constants_are_the_frozen_wire_literals() {
     assert!(
         ADMIN_PREFIX.starts_with(API_ROOT),
         "the admin prefix hangs off the native-API root"
-    );
-}
-
-/// The authorization matrix, test-locked (1.5.2 scope collapse): reads (+ the two dry-run POSTs)
-/// are read-only, every mutation is full. Unknown methods fail closed to full.
-#[test]
-fn required_scope_matrix() {
-    for path in [
-        "/api/v1/admin/info",
-        "/api/v1/admin/hooks",
-        "/api/v1/admin/keys",
-        "/api/v1/admin/config",
-        "/api/v1/admin/audit",
-    ] {
-        assert_eq!(
-            required_scope(&Method::GET, path),
-            Scope::ReadOnly,
-            "{path}"
-        );
-    }
-    // The two stateless dry-run POSTs stay read-only.
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/config/validate"),
-        Scope::ReadOnly
-    );
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/plugins/inspect"),
-        Scope::ReadOnly
-    );
-    // Every mutation is now full — hooks, keys, config, groups alike.
-    for (method, path) in [
-        (Method::POST, "/api/v1/admin/hooks"),
-        (Method::DELETE, "/api/v1/admin/hooks/my-hook"),
-        (Method::PATCH, "/api/v1/admin/hooks/my-hook/settings"),
-        (Method::POST, "/api/v1/admin/keys"),
-        (Method::DELETE, "/api/v1/admin/keys/vk_123"),
-        (Method::POST, "/api/v1/admin/keys/vk_123/rotate"),
-        (Method::POST, "/api/v1/admin/config/apply"),
-        (Method::POST, "/api/v1/admin/groups"),
-    ] {
-        assert_eq!(
-            required_scope(&method, path),
-            Scope::Full,
-            "{method} {path}"
-        );
-    }
-    assert_eq!(
-        required_scope(&Method::OPTIONS, "/api/v1/admin/hooks"),
-        Scope::Full,
-        "unknown methods fail closed"
-    );
-}
-
-/// Every mutating verb resolves to `Full`, and the read verbs (+ the two dry-run POSTs) to
-/// `ReadOnly`. The narrower `hooks-register`/`mint` requirements are GONE.
-#[test]
-fn required_scope_mutations_are_full() {
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/keys"),
-        Scope::Full
-    );
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/hooks"),
-        Scope::Full
-    );
-    assert_eq!(
-        required_scope(&Method::GET, "/api/v1/admin/keys"),
-        Scope::ReadOnly
-    );
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/config/validate"),
-        Scope::ReadOnly
     );
 }
 

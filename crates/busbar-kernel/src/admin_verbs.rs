@@ -18,7 +18,7 @@
 //!
 //! - [`AdminRouteSpec`] + [`AdminReqCtx`] + [`AdminReply`] are the ROUTE-MOUNT half (ADMIN-3), mirroring
 //!   the data plane's [`crate::plane_routes`]: a plane returns a flat list of `(method, path, scope,
-//!   kind, handler)` specs; the CORE-side adapter (`busbar_kernel::admin::v1::json`) is the single place
+//!   kind, handler)` specs; the admin crate's adapter (its `v1::json`) is the single place
 //!   that still names `Arc<AppHandle>` / `ok_json` / `err_json` / the audit chain. It loads the handle,
 //!   mints the host, builds an [`AdminReqCtx`], awaits the neutral handler, and — for an
 //!   [`AdminVerbKind::Audited`] verb — records the audit row from the [`AdminReply`] the handler
@@ -59,7 +59,7 @@ pub enum PlaneVerbError {
 
 /// ONE PLANE'S REGISTERED-UPSTREAM SURFACE: which plane, how to find one registration, and how to look
 /// at it. Relocated here (ADMIN-2) now that both `resolve` and `look` name only neutral types — the
-/// host seam and [`PlaneVerbError`]. Core re-exports this as `busbar_kernel::admin::planeverbs::PlaneTrust`
+/// host seam and [`PlaneVerbError`]. The admin crate re-exports this as `planeverbs::PlaneTrust`
 /// for `connect`'s bound; a plane's `impl PlaneTrust` names this crate, not core.
 pub trait PlaneTrust: Send + Sync + 'static {
     /// Which plane this surface belongs to, by registry key. Supplies the `404` noun and the audit

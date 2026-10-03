@@ -54,8 +54,8 @@ const AUTH_SCHEME_BEARER: &str = "bearer";
 /// The liveness-probe path, mounted `RouteAuth::None` on every router that serves it (see
 /// [`crate::core_routes`]). One constant so the mount and the reserved-path list cannot drift.
 pub const HEALTHZ_PATH: &str = "/healthz";
-/// The exact `/api` path (the native-API root — every busbar-own surface mounts under it;
-/// see `admin::v1::contract::API_ROOT`). `pub` so the config validator derives its
+/// The exact `/api` path (the native-API root — every busbar-own surface mounts under it; the
+/// admin crate's contract re-exports it as `API_ROOT`). `pub` so the config validator derives its
 /// reserved-name segment from THIS constant rather than a copied literal (see
 /// `config_validate::reserved_admin_name`), which is what keeps the reserved name and the
 /// middleware's `is_admin` boundary from drifting apart.
@@ -1351,11 +1351,8 @@ fn admin_scope_for(
 /// most-frequent error must carry the SAME `{error:{code,message}}` shape tooling branches on;
 /// the data plane keeps protocol-native 401 shaping (`unauthorized_response`).
 fn admin_unauthorized_response() -> Response {
-    let e = crate::admin::v1::contract::AdminError::Unauthorized;
-    let body = serde_json::json!({
-        "error": { "code": e.code(), "message": e.message() }
-    })
-    .to_string();
+    let e = crate::admin::Refusal::Unauthorized;
+    let body = crate::admin::envelope(e.code(), &e.message());
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
@@ -1384,11 +1381,8 @@ fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
 /// A 429 in the frozen admin error envelope — the per-principal mutation budget is spent. Carries
 /// `Retry-After: 60` (the fixed window length): a compliant client backs off without guessing.
 fn rate_limited_response() -> Response {
-    let e = crate::admin::v1::contract::AdminError::RateLimited;
-    let body = serde_json::json!({
-        "error": { "code": e.code(), "message": e.message() }
-    })
-    .to_string();
+    let e = crate::admin::Refusal::RateLimited;
+    let body = crate::admin::envelope(e.code(), &e.message());
     Response::builder()
         .header(
             axum::http::header::RETRY_AFTER,
@@ -1588,7 +1582,7 @@ pub(crate) async fn auth_middleware(
                 // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
                 AdminDoor::Denied => return Err(admin_unauthorized_response()),
             };
-        let required = crate::admin::v1::contract::required_scope(req.method(), &path);
+        let required = crate::admin::required_scope(req.method().as_str(), &path);
         if !scope.allows(required) {
             // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
             // an operator wants to see) — but at most once per (principal, window). The durable
@@ -1632,14 +1626,12 @@ pub(crate) async fn auth_middleware(
             // The CONFIG class (10/min) is the blast-radius set: whole-config mutations AND the
             // admin auth chain itself. Everything else that mutates (hooks, keys, cache flush) is
             // the CRUD class (60/min). Matched RELATIVE to the one contract prefix so this gate
-            // can never drift from the mount grammar. Classification itself lives in
-            // `ratelimit::classify_mutation`, driven by a const table rather than an inline
-            // predicate, so it can be enumerated and cross-checked against
-            // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
-            let rel = path
-                .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
-                .unwrap_or(&path);
-            let class = crate::ratelimit::classify_mutation(rel);
+            // can never drift from the mount grammar. Classification itself is the admin crate's
+            // knowledge of its own routes (its `rate::classify_path`, reached
+            // through the admin seam), driven by a const table so it can be enumerated and
+            // cross-checked against `docs/admin-api.md`'s rate-limit table.
+            let rel = path.strip_prefix(crate::api::ADMIN_PREFIX).unwrap_or(&path);
+            let class = crate::admin::seam::mutation_class(rel);
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())
