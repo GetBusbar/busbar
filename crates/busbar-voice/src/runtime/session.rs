@@ -95,6 +95,24 @@ where
         }
     }
 
+    /// The session is SERVED: the session fee its account counted at the open is final. Every
+    /// socket session is marked by [`serve_with_sweep`], the one loop each serves through; a one-shot
+    /// pass marks it when its answer succeeds. Idempotent.
+    pub fn served(&self) {
+        if let Some(metering) = &self.metering {
+            metering.served();
+        }
+    }
+
+    /// The session's open FAILED after its account counted the session fee — its mint, SDP broker or
+    /// provider dial failed, or its one-shot pass answered anything but success: give the fee back
+    /// (TODO 17(b), ARCHITECT R4), exactly once. A no-op on a served session, or an ungoverned one.
+    pub fn refund_open(&self) {
+        if let Some(metering) = &self.metering {
+            metering.refund_open();
+        }
+    }
+
     /// Bind the hard session wall-clock ceiling (`streams.session_max_secs:`).
     #[must_use]
     pub fn with_session_ceiling(mut self, secs: u32) -> Self {
@@ -217,6 +235,8 @@ where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
     F: std::future::Future<Output = ()>,
 {
+    // The session starts to serve: the fee its open counted is final, and no refund can follow.
+    core.served();
     let sweep = async {
         loop {
             tokio::time::sleep(SWEEP_EVERY).await;
