@@ -140,13 +140,15 @@ fn there_is_no_failover_after_the_first_byte() {
 }
 
 /// A MID-STREAM CUT IS NOT A REFUND (spec Part 2 #62, OWNER-LOCKED; #77(2) "no refunds"): once a
-/// byte of the answer has reached the caller, a cut bills what streamed to the cut point and the
-/// budget unit the success spent stands. The transfer is still recorded as failed, as 1.5.5 did on
-/// a stream cut after its first byte (v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-306`:
-/// the compensating transient, the stream marked ended, nothing refunded).
+/// byte of a STREAMED answer has reached the caller, a cut bills what streamed to the cut point and
+/// the budget unit the success spent stands. The transfer is still recorded as failed, as 1.5.5 did
+/// on a stream cut after its first byte (v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-306`,
+/// the `had_first && is_sse` arm: the compensating transient, the stream marked ended, nothing
+/// refunded).
 #[test]
 fn a_stream_cut_after_its_first_byte_refunds_nothing() {
-    let node = two_lane_pool();
+    let mut node = two_lane_pool();
+    node.wants_stream = true;
     node.conns.script(
         "a",
         Script::Truncated(frame(Some(WireStatusClass::Success), "head")),
@@ -162,6 +164,74 @@ fn a_stream_cut_after_its_first_byte_refunds_nothing() {
         node.breaker.outcomes("primary", DestinationId::new(0)),
         vec![Outcome::Success, Outcome::Transient { retry_after: None }],
         "and the failed transfer is recorded as a compensating transient"
+    );
+}
+
+/// A BUFFERED answer cut mid-transfer delivered nothing to the caller, whatever bytes of its body
+/// had arrived: the unit its head spent is given back, with the compensating transient. 1.5.5's
+/// buffered read refunded through its `budget_guard` on a mid-body transport failure (v1.5.5
+/// `crates/busbar/src/proxy/engine/mod.rs:329-353`), and its non-stream passthrough body refunded
+/// on a post-first-byte non-SSE failure (`crates/busbar/src/proxy/response_body.rs:358-409`). #62
+/// bills what was delivered to the caller; a buffered answer delivered nothing.
+#[test]
+fn a_buffered_answer_cut_after_its_first_byte_refunds_the_budget_unit() {
+    let node = two_lane_pool();
+    assert!(!node.wants_stream, "the caller asked for a buffered answer");
+    node.conns.script(
+        "a",
+        Script::Truncated(frame(Some(WireStatusClass::Success), "head")),
+    );
+
+    assert!(node.route("primary").is_delivered());
+    assert_eq!(
+        node.breaker.budget_net(DestinationId::new(0)),
+        0,
+        "nothing reached the caller, so the unit spent on the head is given back"
+    );
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::Success, Outcome::Transient { retry_after: None }],
+        "and the failed transfer is recorded as a compensating transient"
+    );
+}
+
+/// A client that goes away while a BUFFERED answer is being read takes nothing with it: 1.5.5's
+/// `budget_guard` dropped armed and gave the unit back (v1.5.5
+/// `crates/busbar/src/proxy/engine/mod.rs:229-256`, `BudgetSpendGuard::drop`; the non-stream
+/// passthrough body's `FirstByteBody::drop`, `crates/busbar/src/proxy/response_body.rs:608-617`).
+/// The registered #62 difference moves only a STREAMED answer's cancel. A client that left is not
+/// the member's fault, so nothing is recorded against it.
+#[test]
+fn a_buffered_answer_the_client_cancels_after_its_first_byte_refunds_the_budget_unit() {
+    let node = two_lane_pool();
+    assert!(!node.wants_stream, "the caller asked for a buffered answer");
+    node.conns.script(
+        "a",
+        Script::Drip {
+            replies: vec![
+                frame(Some(WireStatusClass::Success), "head"),
+                frame(Some(WireStatusClass::Success), "more"),
+            ],
+            step_ms: 1_000,
+            complete: true,
+        },
+    );
+
+    assert_eq!(node.cancel_after_first_piece("primary"), b"head");
+    assert_eq!(
+        node.breaker.budget_net(DestinationId::new(0)),
+        0,
+        "nothing reached the caller, so the unit spent on the head is given back"
+    );
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::Success],
+        "the client's leaving records nothing against the member"
+    );
+    assert_eq!(
+        node.conns.closed.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "and its connection is closed"
     );
 }
 

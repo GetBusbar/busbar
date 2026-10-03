@@ -215,7 +215,9 @@ struct Live {
     answered: bool,
     /// One unit of lifetime budget was spent on the success.
     spent: bool,
-    /// A byte of the success's answer reached the plane (its first byte is delivered).
+    /// A byte of the success's STREAMED answer reached the plane, so it is on its way to the
+    /// caller (its first byte is delivered). Never set on a buffered answer: the caller receives
+    /// none of it until the whole body is in.
     delivered: bool,
     /// The answer ended.
     ended: bool,
@@ -346,8 +348,9 @@ impl EgressFarEnd<'_> {
                 e.clock.now_secs(),
             );
         }
-        // A unit dropped mid-answer is a cut: it refunds only when NOTHING streamed (spec Part 2
-        // #62, #77(2); v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-306`).
+        // A unit dropped mid-answer refunds unless a byte of a streamed answer was delivered (spec
+        // Part 2 #62, #77(2); v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-306`). A buffered
+        // answer dropped mid-read refunds, as 1.5.5's `budget_guard` did (`engine/mod.rs:229-256`).
         if live.spent && !live.ended && !live.delivered {
             e.breaker.refund_budget(live.member.destination);
         }
@@ -713,7 +716,7 @@ impl EgressFarEnd<'_> {
                     ..FarPiece::default()
                 };
                 if let Some(live) = self.lock().live.as_mut() {
-                    delivered(live, &piece);
+                    delivered(live, &piece, self.route.wants_stream);
                 }
                 Some(piece)
             }
@@ -732,7 +735,7 @@ impl EgressFarEnd<'_> {
             return piece;
         };
         let piece = cap(live, piece);
-        delivered(live, &piece);
+        delivered(live, &piece, self.route.wants_stream);
         if piece.last {
             // The rest is never read: the connection closes and the member's slot frees.
             self.settle(&mut w);
@@ -744,11 +747,13 @@ impl EgressFarEnd<'_> {
     /// before it completed. A success's head was recorded as a success, but the answer never
     /// arrived intact, so a COMPENSATING transient failure is recorded against the member (v1.5.5
     /// `crates/busbar/src/proxy/response_body.rs:279-306`, `:358-409`). The budget unit its success
-    /// spent is given back ONLY when nothing streamed (no byte reached the plane, 1.5.5's
-    /// pre-first-byte arm and its buffered read, `engine/mod.rs:329-353`). After the first byte a
-    /// cut is NOT a refund: the delivered units settle like any other end (spec Part 2 #62,
-    /// #77(2); `response_body.rs:279-306`). A relayed failure's body that is cut recorded its own
-    /// outcome on its head and is not compensated.
+    /// spent is given back unless a byte of a STREAMED answer was delivered: a stream cut before its
+    /// first byte (1.5.5's pre-first-byte arm, `response_body.rs:358-409`) and a buffered answer cut
+    /// at any point (its buffered read, `engine/mod.rs:329-353`, and its non-stream body's
+    /// post-first-byte arm, `response_body.rs:358-409`) delivered nothing to the caller. After a
+    /// streamed answer's first byte a cut is NOT a refund: the delivered units settle like any
+    /// other end (spec Part 2 #62, #77(2); `response_body.rs:279-306`). A relayed failure's body
+    /// that is cut recorded its own outcome on its head and is not compensated.
     fn cut(&self, token: &Pass<Route>) -> FarPiece {
         let e = self.egress;
         {
@@ -774,8 +779,9 @@ impl EgressFarEnd<'_> {
         let mut w = self.lock();
         if let Some(live) = w.live.as_mut() {
             if !clean && live.spent && !live.delivered {
-                // A delivery that did not complete gives its budget unit back, but only when
-                // nothing streamed: a mid-stream cut is not a refund (spec Part 2 #62, #77(2)).
+                // A delivery that did not complete gives its budget unit back unless a byte of a
+                // streamed answer was delivered: a mid-stream cut is not a refund (spec Part 2 #62,
+                // #77(2)); a buffered answer delivered nothing (v1.5.5 `engine/mod.rs:329-353`).
                 self.egress.breaker.refund_budget(live.member.destination);
             }
             live.spent = false;
@@ -823,7 +829,7 @@ impl EgressFarEnd<'_> {
             // The request owns the probe through the outcome it just recorded.
             live.probe = None;
             live.spent = e.breaker.spend_budget(destination);
-            live.delivered = !bytes.is_empty();
+            live.delivered = self.route.wants_stream && !bytes.is_empty();
             return FarPiece {
                 bytes,
                 status: far_status,
@@ -921,10 +927,12 @@ impl FarEnd for EgressFarEnd<'_> {
 #[path = "tests/far_end_tests.rs"]
 mod tests;
 
-/// Whether `piece`, handed to the plane, delivers a byte of `live`'s SUCCESS answer: from then on
-/// a cut is not a refund (spec Part 2 #62).
-fn delivered(live: &mut Live, piece: &FarPiece) {
-    if live.answered && live.error_left.is_none() && !piece.bytes.is_empty() {
+/// Whether `piece`, handed to the plane, delivers a byte of `live`'s SUCCESS answer to the caller:
+/// from then on a cut is not a refund (spec Part 2 #62). Only a `streamed` answer delivers as it
+/// goes; a buffered one reaches the caller whole or not at all, so every cut of it refunds, as
+/// 1.5.5's buffered read did (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:329-353`).
+fn delivered(live: &mut Live, piece: &FarPiece, streamed: bool) {
+    if streamed && live.answered && live.error_left.is_none() && !piece.bytes.is_empty() {
         live.delivered = true;
     }
 }
