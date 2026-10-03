@@ -34,10 +34,9 @@ use crate::plane_host::journal::PlaneJournalRecord;
 use crate::plane_host::USAGE_RESIDUAL_ACTION;
 use busbar_contract::abi::hot::host::HostCtx;
 use busbar_contract::abi::hot::{
-    Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, StatusClass, POD_VERSION,
+    Framing as AbiFraming, JournalStreamDesc, RawFraming, POD_VERSION,
 };
 use busbar_contract::records::{PlaneSelector, RecordStoreError, RecordStoreResult};
-use core::mem::MaybeUninit;
 
 /// The host-assigned `kind_id` the residual stream is registered under. Distinct from the
 /// `task_event` (1), `call` (2) and admin `audit` (3) streams; process-global.
@@ -211,33 +210,15 @@ fn reframe_residual(scope: &str, body: &[u8]) -> RecordStoreResult<PlaneJournalR
     ))
 }
 
-/// The stream's FFI reframe slot, over the audited [`crate::plane_host::journal::reframe_bridge`]
-/// (so this file stays `deny(unsafe)`).
-extern "C-unwind" fn reframe_residual_ffi(
-    _host: HostCtx,
-    _kind_id: u32,
-    body_ptr: *const u8,
-    body_len: usize,
-    out: *mut MaybeUninit<ReframeOut>,
-    prev_buf: *mut u8,
-    prev_cap: usize,
-    hash_buf: *mut u8,
-    hash_cap: usize,
-    suffix_buf: *mut u8,
-    suffix_cap: usize,
-) -> StatusClass {
-    crate::plane_host::journal::reframe_bridge(
-        body_ptr,
-        body_len,
-        out,
-        prev_buf,
-        prev_cap,
-        hash_buf,
-        hash_cap,
-        suffix_buf,
-        suffix_cap,
-        reframe_residual,
-    )
+/// The stream's decode, served by the ONE in-core reframe slot
+/// [`crate::plane_host::journal::reframe_slot`] (so this file stays `deny(unsafe)` and spells no
+/// FFI slot of its own).
+struct ResidualReframe;
+
+impl crate::plane_host::journal::NativeReframe for ResidualReframe {
+    fn reframe(scope: &str, body: &[u8]) -> RecordStoreResult<PlaneJournalRecord> {
+        reframe_residual(scope, body)
+    }
 }
 
 /// One stored body back into its typed row: the read-back a replay and an auditor use.
@@ -282,7 +263,7 @@ pub(crate) fn register_residual_stream_as(kind_id: u32, app: &Arc<crate::state::
         crate::plane_host::journal::journal_register_capped(
             host,
             &desc as *const JournalStreamDesc,
-            reframe_residual_ffi,
+            crate::plane_host::journal::reframe_slot::<ResidualReframe>,
             MAX_TRACKED_PRINCIPALS,
         );
     });

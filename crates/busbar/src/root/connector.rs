@@ -73,18 +73,15 @@ pub fn entries(doors: &[(&str, DoorFn)]) -> Result<Vec<Entry>, String> {
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built at boot from
-/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load, and installed to hear every config
-/// commit: its metadata lists (`security.*`, `providers.<p>.allow_metadata_hosts`) are re-read at
-/// each one, as 1.5.5 re-read them at every reload. An allowlist entry the guard cannot read
-/// refuses the boot, naming it.
+/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Once [`install_egress_trust`] puts
+/// it behind the egress-trust capability it hears every config commit: its metadata lists
+/// (`security.*`, `providers.<p>.allow_metadata_hosts`) are re-read at each one, as 1.5.5 re-read
+/// them at every reload. An allowlist entry the guard cannot read refuses the boot, naming it.
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
-    let judge = guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
+    guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
         eprintln!("busbar: config errors:\n  - {refusal}");
         std::process::exit(2);
-    });
-    let commits: Arc<dyn DestJudge> = judge.clone();
-    busbar_kernel::host_services::install_dest_judge_commits(&commits);
-    judge
+    })
 }
 
 /// The one guard `d` states, or the refusal naming its bad allowlist entry (`--validate`).
@@ -97,7 +94,8 @@ pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
 }
 
 /// Install the deployment's one destination guard behind the egress-trust capability (ARCHITECT
-/// ruling (C), DEST-GUARD), once, at boot, before any kernel pooled client dials.
+/// ruling (C), DEST-GUARD), once, at boot, before any kernel pooled client dials and before the boot
+/// build commits: every config commit is raised to it there.
 pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
     install_egress_trust_host(Arc::new(GuardedEgressTrust(dest)));
 }

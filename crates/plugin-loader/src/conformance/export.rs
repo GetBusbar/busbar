@@ -391,17 +391,18 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let scrapes = arr("scrape");
     let serves = arr("serve");
     let snapshots: Vec<Snapshot> = scrapes.iter().map(|sc| snapshot(&sc["families"])).collect();
-    let default_instances = serde_json::json!([{ "name": "conformance", "settings": String::from_utf8_lossy(&settings) }]);
-    let instances_in = k
-        .get("check")
-        .and_then(|c| c.get("instances"))
-        .unwrap_or(&default_instances);
-    let instance_settings: Vec<(String, Vec<u8>)> = instances_in
-        .as_array()
-        .map_or(&[][..], Vec::as_slice)
-        .iter()
-        .map(|i| (field(i, "name").to_string(), text(&i["settings"])))
-        .collect();
+    // The script's own `check.instances`, else the one `conformance` instance over the subject's
+    // settings (built as the pair it is read into, never as a JSON body carrying a settings bag).
+    let instance_settings: Vec<(String, Vec<u8>)> =
+        match k.get("check").and_then(|c| c.get("instances")) {
+            Some(list) => list
+                .as_array()
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .map(|i| (field(i, "name").to_string(), text(&i["settings"])))
+                .collect(),
+            None => vec![("conformance".to_string(), settings.clone())],
+        };
     let instances: Vec<CheckInstance> = instance_settings
         .iter()
         .map(|(name, set)| CheckInstance {

@@ -369,11 +369,12 @@ fn the_manifest_links_a_plane_through_its_door() {
     );
 }
 
-/// THE LLM FOLD'S SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): the development-only
-/// `llm-on-driver` feature links the llm plane's memory-ABI door on the `plane-door` axis, and the
-/// default build links no llm door, so the shipped binary serves llm as it did until the flip.
+/// A FOLD'S SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): every development-only
+/// `<plane>-on-driver` feature links its plane's memory-ABI door on the `plane-door` axis, and the
+/// default build links none of those doors, so the shipped binary serves the plane as it did until
+/// the flip. The switches are read off the manifest, so this names no plane.
 #[test]
-fn the_llm_switch_links_the_llm_door_and_the_default_build_does_not() {
+fn every_on_driver_switch_links_its_door_and_the_default_build_does_not() {
     let manifest = read("Cargo.toml");
     let default: Vec<String> = manifest
         .lines()
@@ -384,9 +385,15 @@ fn the_llm_switch_links_the_llm_door_and_the_default_build_does_not() {
         .step_by(2)
         .map(str::to_string)
         .collect();
+    let switches: Vec<String> = manifest
+        .lines()
+        .filter_map(|l| l.trim().split_once(" = ["))
+        .map(|(name, _)| name.trim().to_string())
+        .filter(|name| name.ends_with("-on-driver"))
+        .collect();
     assert!(
-        !default.iter().any(|f| f == "llm-on-driver"),
-        "the development-only switch is in `default`: {default:?}"
+        !switches.is_empty(),
+        "the manifest states no development-only `-on-driver` switch"
     );
     let doors_of = |on: &dyn Fn(&str) -> bool| {
         let (src, _) = linked_source(&manifest, on);
@@ -394,15 +401,21 @@ fn the_llm_switch_links_the_llm_door_and_the_default_build_does_not() {
             .find_map(|l| l.trim().strip_prefix("plane_doors: &[").map(str::to_string))
             .unwrap_or_else(|| panic!("no plane_doors table generated:\n{src}"))
     };
-    let llm_door = "busbar_plane_llm::plane_door::door, ";
-    let switched = doors_of(&|f: &str| f == "llm-on-driver" || default.iter().any(|d| d == f));
-    assert!(
-        switched.contains(llm_door),
-        "`llm-on-driver` links no llm door: plane_doors = [{switched}"
-    );
     let shipped = doors_of(&|f: &str| default.iter().any(|d| d == f));
-    assert!(
-        !shipped.contains(llm_door),
-        "the default build links the llm door: plane_doors = [{shipped}"
-    );
+    for switch in &switches {
+        assert!(
+            !default.iter().any(|f| f == switch),
+            "the development-only switch `{switch}` is in `default`: {default:?}"
+        );
+        let switched = doors_of(&|f: &str| f == switch || default.iter().any(|d| d == f));
+        let added: Vec<&str> = switched
+            .split(", ")
+            .filter(|d| d.ends_with("::plane_door::door") && !shipped.contains(*d))
+            .collect();
+        assert!(
+            !added.is_empty(),
+            "`{switch}` links no door the default build does not: switched = [{switched}, \
+             shipped = [{shipped}"
+        );
+    }
 }
