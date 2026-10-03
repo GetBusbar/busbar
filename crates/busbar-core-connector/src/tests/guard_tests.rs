@@ -200,11 +200,18 @@ fn the_1_5_5_keys_keep_their_meaning() {
     };
     let g = legacy(&["imds.corp.example"], &[], false);
     assert_eq!(
-        g.judge_answer("imds.corp.example", &[ip("169.254.169.254")], EGRESS_PROVIDER),
+        g.judge_answer(
+            "imds.corp.example",
+            &[ip("169.254.169.254")],
+            EGRESS_PROVIDER
+        ),
         Ok(())
     );
     let g = legacy(&[], &[], true);
-    assert_eq!(g.judge_name("metadata.google.internal", EGRESS_PROVIDER), Ok(None));
+    assert_eq!(
+        g.judge_name("metadata.google.internal", EGRESS_PROVIDER),
+        Ok(None)
+    );
     assert_eq!(
         g.judge_answer("x.test", &[ip("169.254.169.254")], EGRESS_PROVIDER),
         Ok(())
@@ -249,8 +256,14 @@ fn a_provider_carve_out_admits_only_for_its_own_url_host() {
     let g = Guard::from_config(&Destinations {
         block_private_addresses: true,
         provider_allow: vec![
-            ("https://IMDS-Proxy.test./v1".into(), vec!["169.254.169.254".into()]),
-            ("https://token.test/oauth".into(), vec!["169.254.169.254".into()]),
+            (
+                "https://IMDS-Proxy.test./v1".into(),
+                vec!["169.254.169.254".into()],
+            ),
+            (
+                "https://token.test/oauth".into(),
+                vec!["169.254.169.254".into()],
+            ),
             ("https://other.test".into(), Vec::new()),
         ],
         ..Destinations::default()
@@ -258,7 +271,11 @@ fn a_provider_carve_out_admits_only_for_its_own_url_host() {
     .unwrap();
     let imds = [ip("169.254.169.254")];
     for host in ["imds-proxy.test", "token.test"] {
-        assert_eq!(g.judge_answer(host, &imds, EGRESS_PROVIDER), Ok(()), "{host}");
+        assert_eq!(
+            g.judge_answer(host, &imds, EGRESS_PROVIDER),
+            Ok(()),
+            "{host}"
+        );
     }
     for host in ["other.test", "unnamed.test"] {
         assert_eq!(
@@ -279,13 +296,19 @@ fn a_provider_carve_out_admits_only_for_its_own_url_host() {
 fn a_commit_republishes_the_metadata_lists() {
     let carved = Destinations {
         block_private_addresses: true,
-        provider_allow: vec![("https://imds-proxy.test".into(), vec!["169.254.169.254".into()])],
+        provider_allow: vec![(
+            "https://imds-proxy.test".into(),
+            vec!["169.254.169.254".into()],
+        )],
         ..Destinations::default()
     };
     let g = Guard::from_config(&carved).unwrap();
     let held = g.clone();
     let imds = [ip("169.254.169.254")];
-    assert_eq!(held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER), Ok(()));
+    assert_eq!(
+        held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER),
+        Ok(())
+    );
     g.publish(&Destinations {
         block_private_addresses: true,
         ..Destinations::default()
@@ -295,7 +318,10 @@ fn a_commit_republishes_the_metadata_lists() {
         Some(DEST_METADATA)
     );
     g.publish(&carved);
-    assert_eq!(held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER), Ok(()));
+    assert_eq!(
+        held.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER),
+        Ok(())
+    );
 }
 
 /// A bad allowlist entry refuses the boot, naming the key, its index and the entry (userinfo
@@ -330,8 +356,8 @@ fn a_bad_entry_is_refused_naming_the_key() {
     assert!(refused("10.0.0.1/8").contains("past its prefix length"));
 }
 
-/// OWNER Q7 (operator infrastructure EXEMPT) is one table: a destination from request data (the
-/// default class, open-web) is refused private; a destination the operator configured (provider,
+/// THE DESIGN §5 egress-class table (owner-signed 2026-09-27) is one table: a destination from
+/// request data (the default class, open-web) is refused private; a destination the operator configured (provider,
 /// operator infrastructure, loopback-allowed) is trusted, private and loopback included, while
 /// cloud metadata, a configured name rebinding to it included, stays refused in every class.
 #[test]

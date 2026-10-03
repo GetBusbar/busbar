@@ -100,8 +100,9 @@ fn every_egress_class_is_judged_by_the_one_guard() {
     }
 }
 
-/// RED (OWNER Q7): under the default, a request-data class (the default class, open-web) refuses a
-/// private and a loopback address unless allowlisted; a configured-destination class (provider,
+/// RED (THE DESIGN §5 egress-class table, owner-signed 2026-09-27): under the default, a
+/// request-data class (the default class, open-web) refuses a private and a loopback address
+/// unless allowlisted; a configured-destination class (provider,
 /// operator infrastructure, loopback-allowed) is trusted with them; metadata is refused in all.
 #[test]
 fn a_private_address_is_refused_for_request_data_unless_allowlisted() {

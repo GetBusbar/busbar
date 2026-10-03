@@ -887,9 +887,10 @@ impl Conns for Connector {
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
         };
         let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
-        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (OWNER Q7: a destination the
-        // operator writes into config is trusted): its address is judged as operator
-        // infrastructure, never under a class that refuses request-data destinations.
+        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (a destination the operator
+        // writes into config is trusted: THE DESIGN §5 egress-class table, owner-signed
+        // 2026-09-27): its address is judged as operator infrastructure, never under a class that
+        // refuses request-data destinations.
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.

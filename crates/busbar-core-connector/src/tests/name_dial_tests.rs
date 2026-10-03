@@ -448,9 +448,9 @@ fn the_same_name_dials_when_allowlisted() {
     });
 }
 
-/// OWNER Q7 (operator infrastructure EXEMPT): the same name, when the need's CONFIG names it
-/// (`target_from`, a store/secret/auth plugin's connection), is the operator's own destination and
-/// dials with no allowlist; the name a plugin names per open (above) stays refused.
+/// THE DESIGN §5 egress-class table, owner-signed 2026-09-27: the same name, when the need's
+/// CONFIG names it (`target_from`, a store/secret/auth plugin's connection), is the operator's own
+/// destination and dials with no allowlist; the name a plugin names per open (above) stays refused.
 #[test]
 fn a_config_named_target_on_loopback_is_trusted() {
     worker().block_on(async {

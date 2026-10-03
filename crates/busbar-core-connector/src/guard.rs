@@ -16,9 +16,9 @@
 //! Per address, in order: the allowlist (`advanced.allow_destinations`) admits; in the provider
 //! class only, the 1.5.5 metadata carve-outs admit (below); then the extra refusals
 //! (`security.blocked_metadata_hosts`); then cloud metadata is refused, whatever
-//! `block_private_addresses` says; then, where
-//! `block_private_addresses` holds and the destination came from request data or the network
-//! ([`PRIVATE_REFUSED_IN`]; a destination the operator configured is trusted, owner Q7), every
+//! `block_private_addresses` says; then, where `block_private_addresses` holds and the destination
+//! came from request data or the network ([`PRIVATE_REFUSED_IN`]; a destination the operator
+//! configured is trusted: THE DESIGN §5 egress-class table, owner-signed 2026-09-27), every
 //! private address (`busbar_contract::net::ip_is_internal`: RFC 1918, loopback, link-local, CGNAT,
 //! unique-local, unspecified and the rest of that list).
 //! A HOST allowlist entry never admits a metadata answer (owner Q8): it is how internal DNS is
@@ -50,19 +50,19 @@ use busbar_contract::net::{
 };
 use busbar_kernel::config::Destinations;
 
-/// THE DEFAULT POLICY, ONE TABLE (OWNER ruling Q7, 2026-10-02: operator infrastructure EXEMPT):
-/// the egress classes whose dials the private address refusal holds for. A destination the
-/// operator writes into config is trusted (every configured URL and plugin connection: the
-/// `provider` and `operator-infrastructure` classes, a
-/// `loopback-allowed` need, and any need whose target its config names, see
+/// THE DEFAULT POLICY, ONE TABLE (BUSBAR-1.6.0.md THE DESIGN §5 egress-class table, owner-signed
+/// 2026-09-27): the egress classes whose dials the private address refusal holds for. A
+/// destination the operator writes into config is trusted (every configured URL and plugin
+/// connection: the `provider` and `operator-infrastructure` classes, a `loopback-allowed` need, and any need whose target its config names, see
 /// [`crate::Connector`]); the refusal holds for destinations that come from request data or the
 /// network (a caller- or plane-named target: the default class, `open-web`). Cloud metadata is
 /// refused in every class whatever this table says, a configured NAME rebinding to it included,
-/// unless an IP/CIDR allowlist entry names it.
+/// unless an IP/CIDR allowlist entry names it (or, for a provider dial only, a 1.5.5 carve-out).
 pub const PRIVATE_REFUSED_IN: &[u32] = &[connector::EGRESS_DEFAULT, connector::EGRESS_OPEN_WEB];
 
 /// The class a dial's address is judged under: a need's own, or (its target named by its config,
-/// `configured`) the operator's own destination, trusted as operator infrastructure (OWNER Q7).
+/// `configured`) the operator's own destination, trusted as operator infrastructure
+/// (THE DESIGN §5 egress-class table, owner-signed 2026-09-27).
 #[must_use]
 pub fn judged_class(class: u32, configured: bool) -> u32 {
     let trusted = connector::EGRESS_OPERATOR_INFRASTRUCTURE;
@@ -368,7 +368,10 @@ impl Guard {
     /// 1.5.5 re-read them at every reload. The allowlist and `block_private_addresses` are boot's.
     pub fn publish(&self, d: &Destinations) {
         let lists = Arc::new(Metadata::from_config(d));
-        *self.metadata.write().unwrap_or_else(PoisonError::into_inner) = lists;
+        *self
+            .metadata
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = lists;
     }
 
     /// The metadata lists in force now.

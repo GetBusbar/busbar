@@ -176,7 +176,10 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
         busbar_kernel::test_support::neutral_fallback_plane(),
     ]);
-    let boot = deployment(&[], "security:\n  allow_metadata_hosts: [169.254.169.254]\n");
+    let boot = deployment(
+        &[],
+        "security:\n  allow_metadata_hosts: [169.254.169.254]\n",
+    );
     let judge = dest_judge(&boot);
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
