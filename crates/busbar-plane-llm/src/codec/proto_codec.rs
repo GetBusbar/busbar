@@ -749,8 +749,8 @@ pub trait StreamFraming: Send {
     }
 
     /// METADATA-METRICS seam (Bedrock ingress). Called in the eventstream-framing branch for each
-    /// emitted frame with the frame's event-type, its just-built data object, and the stream's start
-    /// instant. A native ConverseStream `metadata` frame carries `metrics.latencyMs`; the Bedrock impl
+    /// emitted frame with the frame's event-type, its just-built data object, and the milliseconds
+    /// since the stream's first byte, read off the translator's clock (`None`: timing unavailable). A native ConverseStream `metadata` frame carries `metrics.latencyMs`; the Bedrock impl
     /// injects the elapsed wall-clock into that one frame (omitting `metrics` entirely if timing is
     /// unavailable, rather than emitting a tell-tale `0`), mutating `data` in place. Keeps the wire
     /// event-type literal and the latency shape in the Bedrock module, out of the agnostic translator.
@@ -760,7 +760,7 @@ pub trait StreamFraming: Send {
         &self,
         _event_type: &str,
         _data: &mut serde_json::Value,
-        _started_at: Option<std::time::Instant>,
+        _elapsed_ms: Option<u64>,
     ) {
     }
 

@@ -687,10 +687,14 @@ impl Carried {
     }
 
     fn cover(&self, path: &str) -> Cover {
-        if self.drops.binary_search(&path).is_ok() {
+        // ONE search of the drop list: the run of drops that start with `path` begins with `path`
+        // itself when it is listed (the list is sorted, and `path` sorts before every longer path
+        // it begins), so the exact test and the held-drop test read the same run.
+        let mut run = prefixed(self.drops, path).peekable();
+        if run.next_if(|d| **d == path).is_some() {
             return Cover::Unmapped;
         }
-        let holds_drop = prefixed(self.drops, path).any(|d| under(d, path));
+        let holds_drop = run.any(|d| under(d, path));
         let carried = self.rows().any(|q| path == *q || under(path, q));
         if carried {
             return if holds_drop {
