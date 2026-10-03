@@ -13,10 +13,10 @@ it; `-` means the dialect has no form for it.
 
 | dialect | direction | mapped paths | no-equivalent marks |
 | --- | --- | ---: | ---: |
-| anthropic | request | 66 | 12 |
-| anthropic | response | 15 | 0 |
+| anthropic | request | 75 | 12 |
+| anthropic | response | 20 | 0 |
 | anthropic | stream | 10 | 0 |
-| bedrock | request | 50 | 8 |
+| bedrock | request | 60 | 0 |
 | bedrock | response | 13 | 1 |
 | bedrock | stream | 6 | 0 |
 | cohere | request | 38 | 0 |
@@ -25,7 +25,7 @@ it; `-` means the dialect has no form for it.
 | gemini | request | 41 | 1 |
 | gemini | response | 21 | 1 |
 | openai_chat | request | 70 | 1 |
-| openai_chat | response | 27 | 1 |
+| openai_chat | response | 34 | 1 |
 | openai_chat | stream | 4 | 0 |
 | openai_responses | request | 46 | 5 |
 | openai_responses | response | 28 | 3 |
@@ -43,9 +43,9 @@ it; `-` means the dialect has no form for it.
 | bytes | - | `messages[].content[].image.source.bytes`<br>`messages[].content[].document.source.bytes`<br>`messages[].content[].video.source.bytes` | - | - | - | - |
 | cache_control | `messages[].content[].type=text.cache_control`<br>`messages[].content[].type=image.cache_control`<br>`messages[].content[].type=tool_use.cache_control`<br>`messages[].content[].type=tool_result.cache_control`<br>`messages[].content[].type=document.cache_control` | - | - | - | - | - |
 | call_id | - | - | - | - | - | `input[].type=function_call.call_id`<br>`input[].type=function_call_output.call_id` |
-| citations | `messages[].content[].type=text.citations`<br>`messages[].content[].type=document.citations`<br>`messages[].content[].type=tool_result.content[].type=document.citations` | `messages[].content[].document.citations`<br>`messages[].content[].toolResult.content[].document.citations` | `messages[].role=assistant.citations` | - | - | - |
+| citations | `messages[].content[].type=text.citations`<br>`messages[].content[].type=document.citations`<br>`messages[].content[].type=search_result.citations`<br>`messages[].content[].type=tool_result.content[].type=search_result.citations`<br>`messages[].content[].type=tool_result.content[].type=document.citations` | `messages[].content[].document.citations`<br>`messages[].content[].toolResult.content[].document.citations`<br>`messages[].content[].searchResult.citations`<br>`messages[].content[].toolResult.content[].searchResult.citations` | `messages[].role=assistant.citations` | - | - | - |
 | code_execution_result | - | - | - | `contents[].parts[].codeExecutionResult` | - | - |
-| content | `messages[].content`<br>`messages[].content[].type=document.source.type=content`<br>`messages[].content[].type=tool_result.content`<br>`messages[].content[].type=document.source.type=content.content`<br>`messages[].content[].type=search_result.content`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=content` | `messages[].content`<br>`messages[].content[].toolResult.content`<br>`messages[].content[].document.source.content`<br>`messages[].content[].toolResult.content[].document.source.content` | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=assistant.content` | - | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=function.content`<br>`messages[].role=assistant.content`<br>`messages[].role=developer.content` | `input[].type=reasoning.content` |
+| content | `messages[].content`<br>`messages[].content[].type=document.source.type=content`<br>`messages[].content[].type=tool_result.content`<br>`messages[].content[].type=document.source.type=content.content`<br>`messages[].content[].type=search_result.content`<br>`messages[].content[].type=tool_result.content[].type=search_result.content`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=content` | `messages[].content`<br>`messages[].content[].toolResult.content`<br>`messages[].content[].document.source.content`<br>`messages[].content[].searchResult.content`<br>`messages[].content[].toolResult.content[].searchResult.content`<br>`messages[].content[].toolResult.content[].document.source.content` | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=assistant.content` | - | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=function.content`<br>`messages[].role=assistant.content`<br>`messages[].role=developer.content` | `input[].type=reasoning.content` |
 | context | `messages[].content[].type=document.context`<br>`messages[].content[].type=tool_result.content[].type=document.context` | `messages[].content[].document.context`<br>`messages[].content[].toolResult.content[].document.context` | - | - | - | - |
 | data | `messages[].content[].type=image.source.type=base64.data`<br>`messages[].content[].type=document.source.type=text.data`<br>`messages[].content[].type=document.source.type=base64.data`<br>`messages[].content[].type=redacted_thinking.data` | - | `messages[].role=tool.content[].type=document.document.data` | `contents[].parts[].inlineData.data` | `messages[].role=user.content[].type=input_audio.input_audio.data` | - |
 | detail | - | - | - | - | - | `input[].type=message.content[].type=input_image.detail` |
@@ -99,7 +99,7 @@ it; `-` means the dialect has no form for it.
 | seed | - | - | `seed` | `generationConfig.seed` | `seed` | - |
 | service_tier | `service_tier` | `serviceTier.type` | - | `serviceTier` | `service_tier` | `service_tier` |
 | signature | `messages[].content[].type=thinking.signature` | `messages[].content[].reasoningContent.reasoningText.signature` | - | - | - | - |
-| source | `messages[].content[].type=search_result.source` | - | - | - | - | - |
+| source | `messages[].content[].type=search_result.source`<br>`messages[].content[].type=tool_result.content[].type=search_result.source` | `messages[].content[].searchResult.source`<br>`messages[].content[].toolResult.content[].searchResult.source` | - | - | - | - |
 | speech_config | - | - | - | `generationConfig.speechConfig` | - | - |
 | status | - | `messages[].content[].toolResult.status` | - | - | - | - |
 | stop | `stop_sequences` | `inferenceConfig.stopSequences` | `stop_sequences` | `generationConfig.stopSequences` | `stop` | - |
@@ -108,12 +108,12 @@ it; `-` means the dialect has no form for it.
 | summary | - | - | - | - | - | `reasoning.summary`<br>`input[].type=reasoning.summary` |
 | system | `system` | `system` | `messages[].role=system` | `systemInstruction` | `messages[].role=system` | `instructions` |
 | temperature | `temperature` | `inferenceConfig.temperature` | `temperature` | `generationConfig.temperature` | `temperature` | `temperature` |
-| text | `messages[].content[].type=text.text`<br>`messages[].content[].type=document.source.type=text`<br>`messages[].content[].type=search_result.content[].text`<br>`messages[].content[].type=tool_result.content[].type=search_result.content[].text`<br>`messages[].content[].type=tool_result.content[].type=text.text`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=text` | `messages[].content[].text`<br>`messages[].content[].reasoningContent.reasoningText.text`<br>`messages[].content[].document.source.text`<br>`messages[].content[].guardContent.text.text`<br>`messages[].content[].toolResult.content[].document.source.text`<br>`system[].guardContent.text.text`<br>`messages[].content[].citationsContent.content[].text`<br>`messages[].content[].document.source.content[].text`<br>`messages[].content[].toolResult.content[].document.source.content[].text`<br>`messages[].content[].toolResult.content[].text` | `messages[].role=tool.content[].type=text.text`<br>`messages[].role=user.content[].type=text.text`<br>`messages[].role=system.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text` | `contents[].parts[].text` | `messages[].role=user.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text`<br>`messages[].role=developer.content[].text`<br>`messages[].role=system.content[].text`<br>`messages[].role=tool.content[].text` | `input[].type=message.content[].type=input_text.text`<br>`input[].type=message.content[].type=output_text.text`<br>`input[].type=reasoning.content[].text` |
+| text | `messages[].content[].type=text.text`<br>`messages[].content[].type=document.source.type=text`<br>`messages[].content[].type=search_result.content[].text`<br>`messages[].content[].type=tool_result.content[].type=search_result.content[].text`<br>`messages[].content[].type=tool_result.content[].type=text.text`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=text` | `messages[].content[].text`<br>`messages[].content[].reasoningContent.reasoningText.text`<br>`messages[].content[].document.source.text`<br>`messages[].content[].guardContent.text.text`<br>`messages[].content[].searchResult.content[].text`<br>`messages[].content[].toolResult.content[].searchResult.content[].text`<br>`messages[].content[].toolResult.content[].document.source.text`<br>`system[].guardContent.text.text`<br>`messages[].content[].citationsContent.content[].text`<br>`messages[].content[].document.source.content[].text`<br>`messages[].content[].toolResult.content[].document.source.content[].text`<br>`messages[].content[].toolResult.content[].text` | `messages[].role=tool.content[].type=text.text`<br>`messages[].role=user.content[].type=text.text`<br>`messages[].role=system.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text` | `contents[].parts[].text` | `messages[].role=user.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text`<br>`messages[].role=developer.content[].text`<br>`messages[].role=system.content[].text`<br>`messages[].role=tool.content[].text` | `input[].type=message.content[].type=input_text.text`<br>`input[].type=message.content[].type=output_text.text`<br>`input[].type=reasoning.content[].text` |
 | thinking | `messages[].content[].type=thinking.thinking` | - | `messages[].role=assistant.content[].type=thinking.thinking` | - | - | - |
 | thinking_budget | - | - | - | `generationConfig.thinkingConfig.thinkingBudget` | - | - |
 | thought | - | - | - | `contents[].parts[].thought` | - | - |
 | thought_signature | - | - | - | `contents[].parts[].thoughtSignature` | - | - |
-| title | `messages[].content[].type=document.title`<br>`messages[].content[].type=search_result.title` | - | - | - | - | - |
+| title | `messages[].content[].type=document.title`<br>`messages[].content[].type=search_result.title`<br>`messages[].content[].type=tool_result.content[].type=search_result.title` | `messages[].content[].searchResult.title`<br>`messages[].content[].toolResult.content[].searchResult.title` | - | - | - | - |
 | tool | - | - | `messages[].role=tool` | - | `messages[].role=tool` | - |
 | tool_arguments | `messages[].content[].type=tool_use.input` | `messages[].content[].toolUse.input` | `messages[].role=assistant.tool_calls[].function.arguments` | - | `messages[].role=assistant.tool_calls[].type=function.function.arguments`<br>`messages[].role=assistant.function_call.arguments` | `input[].type=function_call.arguments` |
 | tool_call_id | - | - | `messages[].role=tool.tool_call_id` | - | `messages[].role=tool.tool_call_id` | - |
@@ -130,6 +130,7 @@ it; `-` means the dialect has no form for it.
 | user | `metadata.user_id` | - | `messages[].role=user` | - | `user`<br>`messages[].role=user` | `user` |
 | verbosity | - | - | - | - | `verbosity` | `text.verbosity` |
 | web_search | - | - | - | `tools[].googleSearch` | `web_search_options` | - |
+| web_search_record | `messages[].content[].type=web_search_tool_result`<br>`messages[].content[].type=web_search_tool_result.tool_use_id`<br>`messages[].content[].type=web_search_tool_result.content[].url`<br>`messages[].content[].type=web_search_tool_result.content[].title` | - | - | - | - | - |
 
 ## response
 
@@ -140,6 +141,7 @@ it; `-` means the dialect has no form for it.
 | annotations | - | - | - | - | `choices[].message.annotations` | - |
 | arguments | - | - | - | - | - | `output[].type=function_call.arguments` |
 | audio | - | - | - | - | `choices[].message.audio` | - |
+| audio_output | - | - | - | - | `choices[].message.audio.data`<br>`choices[].message.audio.transcript` | - |
 | audio_tokens | - | - | - | - | `usage.prompt_tokens_details.audio_tokens`<br>`usage.completion_tokens_details.audio_tokens` | - |
 | avg_logprobs | - | - | - | `candidates[].avgLogprobs` | - | - |
 | block_reason | - | - | - | `promptFeedback.blockReason` | - | - |
@@ -183,6 +185,7 @@ it; `-` means the dialect has no form for it.
 | response_id | - | - | - | `responseId` | - | - |
 | role | `role` | `output.message.role` | `message.role` | - | `choices[].message.role` | - |
 | safety_ratings | - | - | - | `candidates[].safetyRatings`<br>`promptFeedback.safetyRatings` | - | - |
+| safety_verdict | - | - | - | - | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | - |
 | search_units | - | - | `usage.billed_units.search_units` | - | - | - |
 | served_tier | `usage.service_tier` | - | - | - | `service_tier` | `service_tier` |
 | status | - | - | - | - | - | `status`<br>`output[].type=message.status`<br>`output[].type=web_search_call.status` |
@@ -196,6 +199,8 @@ it; `-` means the dialect has no form for it.
 | tool_use_prompt_token_count | - | - | - | `usageMetadata.toolUsePromptTokenCount` | - | - |
 | total_tokens | - | `usage.totalTokens` | - | `usageMetadata.totalTokenCount` | `usage.total_tokens` | `usage.total_tokens` |
 | type | `type` | - | - | - | - | - |
+| usage_by_modality | - | - | - | - | `usage.prompt_tokens_details.text_tokens`<br>`usage.prompt_tokens_details.image_tokens`<br>`usage.completion_tokens_details.text_tokens` | - |
+| web_search | `content[].type=web_search_tool_result`<br>`content[].type=web_search_tool_result.tool_use_id`<br>`content[].type=web_search_tool_result.content[].url`<br>`content[].type=web_search_tool_result.content[].title`<br>`content[].type=web_search_tool_result.content.error_code` | - | - | - | - | - |
 | web_search_requests | `usage.server_tool_use.web_search_requests` | - | - | - | - | - |
 
 ## stream
