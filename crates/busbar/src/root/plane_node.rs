@@ -1956,7 +1956,14 @@ fn card_in_force(card: Option<&crate::root::kernel::PinnedHistory>, arrived_ms: 
 /// The arrival seam is a bare `fn` pointer and a bare `fn` cannot capture, so the node it drives is
 /// reached here. One of these exists, it is built on first use, and every handed unit walks through
 /// it.
-static NODE: LazyLock<Node> = LazyLock::new(Node::new);
+static NODE: LazyLock<Arc<Node>> = LazyLock::new(|| Arc::new(Node::new()));
+
+/// The process's one node: the in-flight table and the book every unit it drives settles onto,
+/// shared with the plane drivers' end posting ([`NodeEndPost`]).
+#[must_use]
+pub fn node() -> Arc<Node> {
+    Arc::clone(&NODE)
+}
 
 /// THE PROCESS'S NODE, as the node axis hands it to a plane ([`ROOT_UNIT`]'s `drive`): one handed
 /// unit, driven on the runtime the request arrived on. What goes back is the served response the
@@ -1991,13 +1998,15 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
 ///   boot's own rate resolution is the history's opening entry (see
 ///   [`crate::root::kernel::install_card_repricer`]);
 /// * the node's book is opened for it, and its exit arm is bound to that book ([`bind_book`]) before
-///   any listener binds — without it the arm settles nothing.
+///   any listener binds — without it the arm settles nothing;
+/// * a door plane's driven unit posts its abandoned end onto the node ([`NodeEndPost`]).
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: None,
     drive: Some(drive),
     on_config: Some(|_| crate::root::kernel::install_card_repricer()),
     opens_book: true,
     on_book: Some(|ctx| bind_book(Arc::clone(&ctx.book.durability))),
+    end_post: Some(|| Arc::new(NodeEndPost::new(node()))),
 };
 
 /// [`bind_book`] for a named node and card holder: the holder's journal first, then the node's

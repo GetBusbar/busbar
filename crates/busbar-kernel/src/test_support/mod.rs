@@ -2311,6 +2311,9 @@ pub mod warn_capture;
 
 /// The export axis a test binary's configurations resolve against (K9b).
 pub mod export_axis;
+/// The stand-in secret axis a test build installs in place of the root's.
+pub mod secrets;
+pub use secrets::SecretsStandIn;
 
 /// The durable store double (R-FIX3): plane records that outlive the handle that wrote them, for the
 /// restart and fleet properties of a plane's trust state. Linked only.

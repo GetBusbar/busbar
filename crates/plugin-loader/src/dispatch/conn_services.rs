@@ -35,7 +35,8 @@
 //!
 //! THE REPLAY RULE (`abi::sdk::conn`): the host never runs a service twice. A ticketed service's
 //! answer is kept under its completion handle, and a re-issued handle answers it again without a
-//! second run; the worker forgets a ticket's answers when it recycles the ticket ([`forget`]).
+//! second run; the worker forgets a ticket's answers when it recycles the ticket, and a driver
+//! ticket's when its next tick starts ([`forget`]).
 
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -525,12 +526,15 @@ fn kept(id: InstanceId, h: CompletionHandle, run: impl FnOnce() -> Answer) -> An
     a
 }
 
-/// Forget every answer instance `id` kept under `ticket`: its worker recycled it. Keyed by the
-/// instance as well as the ticket: tickets are minted per dispatcher, so another dispatcher's
-/// instance may hold an identical ticket, and its kept answers are never its neighbour's to drop
-/// (dropping them would make it run a stored establish or write a second time).
-pub(crate) fn forget(id: InstanceId, ticket: Ticket) {
-    kept_answers().remove(&(id, ticket));
+/// Forget every answer instance `id` kept under `ticket` (its worker recycled it, or a driver
+/// ticket's tick started); how many there were. Keyed by the instance as well as the ticket:
+/// tickets are minted per dispatcher, so another dispatcher's instance may hold an identical
+/// ticket, and its kept answers are never its neighbour's to drop (dropping them would make it run
+/// a stored establish or write a second time).
+pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
+    kept_answers()
+        .remove(&(id, ticket))
+        .map_or(0, |issued| issued.len())
 }
 
 /// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.

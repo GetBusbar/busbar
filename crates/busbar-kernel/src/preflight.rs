@@ -130,6 +130,9 @@ pub struct RootInstall {
     pub hook_axis: Option<HookAxisBuild>,
     /// The root's store axis: what boot opens the configured store through.
     pub store_axis: Option<StoreAxisOf>,
+    /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
+    /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
+    pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,
 }
 
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
@@ -143,7 +146,8 @@ pub type HookAxisBuild =
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
-/// stand-in store (which claims the default) as the default.
+/// stand-in store (which claims the default) as the default, and the shipped secret sources as the
+/// secret axis.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
     stores: &[fixture_store::linked::STORE],
@@ -152,6 +156,7 @@ const STAND_IN: RootInstall = RootInstall {
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
     store_axis: Some(crate::test_support::store_axis_stand_in),
+    secret_axis: Some(&crate::test_support::SecretsStandIn),
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,
@@ -216,18 +221,13 @@ pub(crate) fn auth_axis(
 }
 
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
-/// stores, the kernel's own secret modules, the root's hooks — a test build (no root) stands its
+/// stores and the root's hooks — a test build (no root) stands its
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
     let RootInstall { stores, .. } = root_rows();
     let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1).with_store_door(s.4);
-    let own = [
-        config::secret::SECRET_MODULE_ENV,
-        config::secret::SECRET_MODULE_FILE,
-    ];
-    let secrets = own.map(LinkedPlugin::builtin_secret);
-    let rows = stores.iter().map(store).chain(secrets);
+    let rows = stores.iter().map(store);
     let auths = busbar_kernel_identity::operator::linked().iter();
     rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
         .collect()
@@ -269,14 +269,6 @@ pub(crate) fn builtin_ranking(
         crate::hooks::plugin::HookPolicy::policy(calls, name),
         budget,
     ))
-}
-
-/// The build's own secret module `module` names on the secret axis — a linked `kind: secret` row,
-/// opened in process — or `None` when `module` is a plugin the directory must supply.
-pub(crate) fn builtin_secret(
-    module: &str,
-) -> Option<Box<dyn busbar_contract::secret::SecretModule>> {
-    linked().ok()?.open_secret(module, "{}").ok()
 }
 
 /// A configured reference to a `kind` plugin, in the words its refusals use: how it `names` the
@@ -852,7 +844,7 @@ pub(crate) fn validate_secret_module(
     registry: &busbar_plugin_loader::PluginRegistry,
     module: &str,
 ) -> Result<String, String> {
-    if builtin_secret(module).is_some() {
+    if config::secret::is_linked_secret(module) {
         return Err(format!(
             "secrets.{module}: '{module}' is a built-in secret resolver, not a plugin; it takes no \
              module-level configuration. Remove this `secrets:` entry (reference it inline as \
@@ -983,7 +975,7 @@ pub(crate) fn validate_secret_refs(
     cfg: &config::RootCfg,
 ) -> Result<(), String> {
     for (what, r) in config_validate::secret_refs(cfg) {
-        if builtin_secret(&r.module).is_some()
+        if config::secret::is_linked_secret(&r.module)
             // `none` names no module at all — it declares the ABSENCE of a credential — so there is
             // nothing here for the registry to resolve, and it must never be looked up as though a
             // `kind: secret` plugin called `none` could back it. WHERE it is permitted is
@@ -1038,7 +1030,7 @@ pub(crate) fn validate_secret_refs(
 pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), String> {
     let builtins = config::secret::SecretResolver::builtins_only();
     for (what, r) in config_validate::boot_resolved_secret_refs(cfg) {
-        if builtin_secret(&r.module).is_none() {
+        if !config::secret::is_linked_secret(&r.module) {
             // `none` is a declared ABSENCE, not a source: there is nothing to resolve and nothing
             // that can fail. Every other non-built-in module is plugin-backed — the plugin may not
             // be loadable here, and pre-flight covers it.
@@ -1086,6 +1078,8 @@ pub(crate) fn build_secret_resolver(
     // shared `validate_secret_module`/`validate_secret_modules` helpers.
     let mut open_config: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
+    let mut raw_config: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
     // Which `secrets:` block key produced each canonical entry, so an ALIAS/CANONICAL collision can
     // be named precisely.
     let mut claimed_by: std::collections::BTreeMap<String, String> =
@@ -1109,10 +1103,42 @@ pub(crate) fn build_secret_resolver(
         let resolved = config::secret::resolve_settings(&mcfg.settings, &builtins)
             .map_err(|e| format!("secrets.{module} settings: {e}"))?;
         claimed_by.insert(canonical.clone(), module.clone());
-        open_config.insert(canonical, serde_json::Value::Object(resolved).to_string());
+        open_config.insert(
+            canonical.clone(),
+            serde_json::Value::Object(resolved).to_string(),
+        );
+        raw_config.insert(canonical, serde_json::Value::Object(mcfg.settings.clone()));
     }
+    // A dropped-in plugin that states a door opens through the root's secret axis, once per
+    // resolver, over its settings as written: the keys its Statement names as secret references are
+    // resolved through the linked plugins and lent to `open`, never substituted into the settings.
+    let opened: std::sync::Mutex<
+        std::collections::BTreeMap<String, Arc<dyn busbar_contract::secret::SecretCalls>>,
+    > = Default::default();
     Ok(config::secret::SecretResolver::with_plugin(Box::new(
         move |module: &str, settings: &str| -> Result<Vec<u8>, String> {
+            if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
+                let mut opened = opened.lock().unwrap_or_else(|e| e.into_inner());
+                let calls = match opened.get(module) {
+                    Some(c) => c.clone(),
+                    None => {
+                        let raw = registry
+                            .resolve(module)
+                            .and_then(|p| raw_config.get(&p.manifest.name));
+                        let linked = config::secret::SecretResolver::builtins_only();
+                        let c =
+                            axis.open(module, raw.unwrap_or(&serde_json::Value::Null), &|r| {
+                                linked.resolve(r)
+                            })?;
+                        opened.insert(module.to_string(), c.clone());
+                        c
+                    }
+                };
+                return calls
+                    .resolve(settings.as_bytes())
+                    .map(|m| m.expose_secret().clone())
+                    .map_err(|r| r.text);
+            }
             // Canonicalize the referenced module the SAME way, so an alias-vs-name spelling difference
             // between the `secrets:` block and this `SecretRef` still finds the configured open() JSON.
             // A module that does not resolve falls through to `open_secret` below, which produces the

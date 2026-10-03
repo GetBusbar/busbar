@@ -7,6 +7,7 @@
 
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, NonNull};
+use std::sync::LazyLock;
 
 use crate::dispatch::kinds::plane::PlaneFacts;
 use busbar_contract::abi::hook::SignalEntry;
@@ -37,7 +38,7 @@ fn f(rule: Rule, field: &'static str) -> Result<(), Fault> {
 
 /// An answer of `slot` over the test's own `in` and `out`.
 /// The tail bounds every answer here is judged against: four entries in each tail list.
-static FACTS: PlaneFacts = PlaneFacts {
+static FACTS: LazyLock<PlaneFacts> = LazyLock::new(|| PlaneFacts {
     bounds: Bounds {
         op_classes: 4,
         dialects: 4,
@@ -45,10 +46,12 @@ static FACTS: PlaneFacts = PlaneFacts {
         record_kinds: 4,
     },
     refusal_statuses: Vec::new(),
-};
+    declared: Default::default(),
+    served: Default::default(),
+});
 
 fn answer<'a, I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'a> {
-    bare(s, outcome, i, o).with_context(Some(&FACTS))
+    bare(s, outcome, i, o).with_context(Some(&*FACTS))
 }
 
 /// An answer judged with no tail at all.

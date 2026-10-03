@@ -32,7 +32,7 @@ use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{load_linked, Frame, LinkedRow, Plugin};
 
 #[path = "../../tests/fixtures/secret_door_plugin.rs"]
-mod secret_door_plugin;
+pub(crate) mod secret_door_plugin;
 
 /// The material the hit's variable holds.
 const MATERIAL: &str = "s3cr3t-both-ways";

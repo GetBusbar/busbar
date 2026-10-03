@@ -701,11 +701,11 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
 // CAN SEE rather than by what each asserts:
 //
 //   * `the_boot_path_opens_the_configured_directory_and_seals_before_it_settles` drives the REAL
-//     path — a real `App` out of the real `build_app_from_config`, then `open_boot_book`, the exact
+//     path — a real `App` out of the real `build_app_from_config`, then `root::boot::book`, the exact
 //     function `run()` calls. It can see the directory and the chain, so it proves the data
 //     directory is honoured and the ORDER holds.
-//   * `the_boot_book_ships_its_opening_to_the_configured_store` drives `compose_boot_book`, the seam
-//     `open_boot_book` calls, over a store adapter the TEST holds. The shipped count lives on the
+//   * `the_boot_book_ships_its_opening_to_the_configured_store` drives `root::boot::compose_book`, the seam
+//     `root::boot::book` calls, over a store adapter the TEST holds. The shipped count lives on the
 //     adapter, so this is the only vantage point from which "the store's shipper, not the null one"
 //     is observable at all.
 //   * `no_configured_directory_still_opens_nothing_and_writes_nothing` holds the other half of the
@@ -715,6 +715,24 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
 
 /// A scratch directory that removes itself, so a failing assertion never leaves a tree behind and
 /// two runs of the same test never read each other's journal.
+/// `BUSBAR_DATA_DIR` IS PROCESS-GLOBAL, and `cargo test` runs this binary's tests on parallel
+/// threads: two boot-book tests that each set it would resolve one directory and write two chains
+/// into one journal, whose replay then fails verification. Every test that sets it does so through
+/// [`data_dir_env`], which holds this lock until the test ends.
+static DATA_DIR_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Set `BUSBAR_DATA_DIR` to `dir` for the rest of the calling test, serialized against every other
+/// test that sets it. The tuple drops in order: the variable is restored, then the lock released.
+fn data_dir_env(dir: &std::path::Path) -> (EnvVarGuard, std::sync::MutexGuard<'static, ()>) {
+    // A test that panicked while holding the lock still restored the variable on unwind.
+    let held = DATA_DIR_ENV
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = EnvVarGuard::capture("BUSBAR_DATA_DIR");
+    std::env::set_var("BUSBAR_DATA_DIR", dir);
+    (guard, held)
+}
+
 struct BookDir(std::path::PathBuf);
 
 impl BookDir {
@@ -765,7 +783,7 @@ fn empty_opening_plan() -> root::migration::MigrationConfig {
     }
 }
 
-/// THE REAL PATH, END TO END: a real `App`, then `open_boot_book` — the function `run()` calls at
+/// THE REAL PATH, END TO END: a real `App`, then `root::boot::book` — the function `run()` calls at
 /// the line that used to read `node_book()` — against a CONFIGURED data directory.
 ///
 /// Three assertions, in the order the defect broke them:
@@ -813,8 +831,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     // resolves today (there is no `data_dir:` config key yet — see that function's own comment), and
     // it is the SAME accessor the plugin anti-downgrade floor persists under, which is why the boot
     // book reads it through that function rather than probing for itself.
-    let _guard = busbar_kernel::test_support::EnvVarGuard::capture("BUSBAR_DATA_DIR");
-    std::env::set_var("BUSBAR_DATA_DIR", &dir.0);
+    let _env = data_dir_env(&dir.0);
 
     // A REAL APP, off the REAL construction path — `build_app_from_config`, the one boot and config
     // apply both run — so `app.governance` is the store this deployment actually resolved and
@@ -828,7 +845,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     .expect("the app builds over the default memory store");
 
     // THE FUNCTION `run()` CALLS. Not a re-implementation of it, not a recording double of it.
-    let book = open_boot_book(&app);
+    let book = root::boot::book(&app).expect("the boot book opens");
 
     let (on_disk, marker, first_record) = {
         let durability = book
@@ -956,10 +973,10 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     );
 }
 
-/// THE STORE HALF, at the only vantage point it is visible from: `compose_boot_book`, the seam
-/// `open_boot_book` calls, handed a `StoreAdapter` the TEST holds.
+/// THE STORE HALF, at the only vantage point it is visible from: `root::boot::compose_book`, the seam
+/// `root::boot::book` calls, handed a `StoreAdapter` the TEST holds.
 ///
-/// The shipped count and the acknowledged head live on the ADAPTER — `open_boot_book` builds its own
+/// The shipped count and the acknowledged head live on the ADAPTER — `root::boot::book` builds its own
 /// from `gov.store()`, so from outside the real path there is nothing to read them off. This drives
 /// the same seam with an adapter in hand and asserts what that buys: the opening's batch was
 /// OFFERED TO THE CONFIGURED STORE and acknowledged under this node's identity. A `NullShipper` —
@@ -981,7 +998,7 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
     let token = root::kernel::new_kernel().durability_token();
 
     let (durability, _rows, migration) =
-        compose_boot_book(&adapter, Some(dir.0.clone()), &mig, 1_700_000_000, &token)
+        root::boot::compose_book(&adapter, Some(dir.0.clone()), &mig, 1_700_000_000, &token)
             .expect("the boot book composes over the configured directory and an empty store");
 
     assert!(
@@ -1035,7 +1052,7 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
     let token = root::kernel::new_kernel().durability_token();
 
     let (durability, _rows, migration) =
-        compose_boot_book(&adapter, None, &empty_opening_plan(), 1_700_000_000, &token)
+        root::boot::compose_book(&adapter, None, &empty_opening_plan(), 1_700_000_000, &token)
             .expect("a memory-buffered book composes");
 
     assert!(
@@ -1059,7 +1076,7 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
 }
 
 /// THE DEPLOYMENT KEYSET AT THE BOOT SEAM (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect
-/// ruling 2026-09-26): the opening `compose_boot_book` seals is SIGNED with the keyset it bound —
+/// ruling 2026-09-26): the opening `root::boot::compose_book` seals is SIGNED with the keyset it bound —
 /// ephemeral without a directory, cached under it with one — and a restart over a directory whose
 /// keyset file is gone refuses `KeysetMissing` in the refusal's own words, which `die` prints.
 #[test]
@@ -1074,7 +1091,7 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
     let token = root::kernel::new_kernel().durability_token();
 
     // No directory: ephemeral, and the opening is signed and verifies against the node's keyset.
-    let (memory, _rows, migration) = compose_boot_book(
+    let (memory, _rows, migration) = root::boot::compose_book(
         &adapter(),
         None,
         &empty_opening_plan(),
@@ -1095,7 +1112,7 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
 
     // A directory: minted and cached; then the cache is lost and the restart refuses.
     let dir = BookDir::new("keyset");
-    let (first, _rows, _) = compose_boot_book(
+    let (first, _rows, _) = root::boot::compose_book(
         &adapter(),
         Some(dir.0.clone()),
         &empty_opening_plan(),
@@ -1106,7 +1123,7 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
     assert!(first.record.signing_key_id().is_some());
     drop(first);
     std::fs::remove_file(dir.0.join(root::keyset::KEYSET_FILE)).expect("the cache is removed");
-    let refused = compose_boot_book(
+    let refused = root::boot::compose_book(
         &adapter(),
         Some(dir.0.clone()),
         &empty_opening_plan(),
@@ -1133,6 +1150,130 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
         prefix.len() + 64 + suffix.len(),
         "the fingerprint is 64 hex characters: {refused}"
     );
+}
+
+/// STAGE 4 BOOK IS BOOT-ONLY — ONE SEAL AFTER TWO RELOADS (`BUSBAR-1.6.0.md` §3: "Reload runs
+/// stages 1–3 and 5, never Book: the store carries over, and a changed `store:` applies on restart";
+/// its *Proven by* names "RED arms for one seal after two reloads"). Boot opens the one book over
+/// the store its generation resolved; two reloads then rebuild the generation the way
+/// `config/reload` and `config/apply` do, each over the one before it.
+///
+/// Three facts, read off the things themselves: (a) the third generation still holds the SAME
+/// store the boot opened — a reload that reopened it would hand the book's shipper a store no
+/// generation serves; (b) the book's chain carries exactly ONE sealed opening; (c) Book is
+/// reachable from the boot alone: the crate's one call of `root::boot::book` is `run()`'s, in
+/// `main.rs`, so no reload path can seal a second opening onto the chain — which is what makes (b)
+/// a claim about reloads and not true by construction. RED arms: a rebuild that drops the prior
+/// generation's store (`build_app_from_config` ignoring `prior`) fails (a); a second call of
+/// `root::boot::book` anywhere in the crate's code (a reload that reopens Book) fails (c).
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn one_seal_after_two_reloads() {
+    use busbar_kernel_wal::RecordClass;
+
+    for decls in crate::LINKED.protocols {
+        busbar_kernel::proto::register_test_protocols(decls);
+    }
+    busbar_kernel::metrics::init();
+    let dir = BookDir::new("two-reloads");
+    let _env = data_dir_env(&dir.0);
+    let cfg = || {
+        busbar_kernel::test_support::cfg_with_provider_api_key(
+            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_ONE_SEAL"),
+        )
+    };
+
+    let boot = busbar_kernel::test_support::build_once(cfg(), None).expect("the boot builds");
+    let book = root::boot::book(&boot).expect("the boot book opens");
+    let store = boot
+        .governance
+        .clone()
+        .expect("a boot resolves the store its book opens over");
+    let first = busbar_kernel::test_support::build_once(cfg(), Some(&boot)).expect("reload 1");
+    let second = busbar_kernel::test_support::build_once(cfg(), Some(&first)).expect("reload 2");
+
+    // (a) THE STORE CARRIES OVER.
+    assert!(
+        Arc::ptr_eq(
+            second.governance.as_ref().expect("a reload keeps a store"),
+            &store
+        ),
+        "a reload reopened the store: Book is boot-only, and the generation must carry the store \
+         the boot opened"
+    );
+
+    // (b) ONE SEAL.
+    let openings = book
+        .durability
+        .lock()
+        .expect("the book's lock is unpoisoned")
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("and verifies")
+        .iter()
+        .filter(|r| r.class == RecordClass::Migration)
+        .count();
+    assert_eq!(
+        openings, 1,
+        "two reloads must leave exactly the boot's one sealed opening on the book's chain"
+    );
+
+    // (c) BOOK IS BOOT-ONLY: every call of `root::boot::book` in the crate's code (comments and the
+    // test modules skipped) is the boot's one, in `main.rs`.
+    let calls = book_call_sites(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    assert_eq!(
+        calls,
+        vec!["main.rs".to_string()],
+        "Book is boot-only: `root::boot::book` must be called once, by the boot in main.rs"
+    );
+}
+
+/// The file (relative to `src`) of every call of the free function `book(` in the crate's non-test
+/// code, however it is reached (`root::boot::book(`, `super::boot::book(`, or a bare `book(` inside
+/// `boot.rs`), one entry per call. Not a call: a method (`.book(`), a longer name (`node_book(`)
+/// and the definition (`fn book(`). A line comment is skipped, and so is every `tests` directory
+/// and `tests.rs`.
+fn book_call_sites(src: &std::path::Path) -> Vec<String> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("the crate's src reads")
+            .map(|e| e.expect("an entry").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if path.is_dir() {
+                if name != "tests" {
+                    walk(root, &path, out);
+                }
+            } else if name.ends_with(".rs") && name != "tests.rs" {
+                let text = std::fs::read_to_string(&path).expect("a source file reads");
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("under src")
+                    .display()
+                    .to_string();
+                for line in text.lines() {
+                    let code = line.split("//").next().unwrap_or_default();
+                    for (at, _) in code.match_indices("book(") {
+                        let before = &code[..at];
+                        let prev = before.chars().next_back();
+                        let ident = prev.is_some_and(|c| c.is_alphanumeric() || c == '_');
+                        if !ident && prev != Some('.') && !before.ends_with("fn ") {
+                            out.push(rel.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(src, src, &mut out);
+    out
 }
 
 /// ITEMS 244, 247, 259 — THREE DOC CLAIMS IN `main.rs` THAT THE CODE BESIDE THEM CONTRADICTED.

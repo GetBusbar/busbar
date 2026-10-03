@@ -41,7 +41,7 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
-use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RegistryIn, RootInstall};
+use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -68,8 +68,11 @@ pub struct Linked {
     pub hot_planes: &'static [&'static hot::PlaneDecl],
     /// The plane axis, door lane: each linked plane's door (`busbar_plugin_door`), bound through the
     /// one load on the process's dispatcher exactly as the same plane dropped into `plugins/` is
-    /// (see [`load_door_planes`]).
+    /// (see [`crate::root::boot::load_door_planes`]).
     pub plane_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
+    /// The secret axis: each linked secret plugin's door, loaded through the one loader when a
+    /// reference first names it (see [`secret_rows`]).
+    pub secrets: &'static [busbar_contract::abi::mechanism::door::DoorFn],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
@@ -251,6 +254,10 @@ pub struct RootUnit {
     pub opens_book: bool,
     /// Runs once the node's book is open, before any listener binds.
     pub on_book: Option<fn(&BookCtx<'_>)>,
+    /// The posting site a door plane's driven unit posts its abandoned end onto: the node's book
+    /// this unit settles on (`root::serve::compose_planes`' money seam). `None`: this unit keeps no
+    /// such book.
+    pub end_post: Option<fn() -> std::sync::Arc<dyn busbar_kernel::plane_driver::EndPost>>,
 }
 
 /// What a unit's [`RootUnit::on_book`] step is handed: the node's one book and the boot generation.
@@ -294,18 +301,20 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     }
 }
 
-/// THE STORE AND HOOK AXES: the linked store and hook rows onto the kernel's cold-kind axis, with the
-/// default store resolved from the store rows' own claims ([`default_store`]). Two rows claiming the
-/// default refuse the boot (exit 2) before anything resolves a store.
+/// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
+/// with the default store resolved from the store rows' own claims ([`default_store`]), and the
+/// secret axis ([`secret_rows`]). Two rows claiming the default, or a linked secret door that does
+/// not state itself, refuse the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    match default_store(linked.stores) {
-        Ok(default) => busbar_kernel::preflight::install_linked_rows(RootInstall {
+    match default_store(linked.stores).and_then(|d| Ok((d, link_secrets(linked.secrets)?))) {
+        Ok((default, secrets)) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
             default_store_module: default.unwrap_or_default(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
             store_axis: Some(store_axis),
+            secret_axis: Some(secrets),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
@@ -324,9 +333,50 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
         crate::root::connector::the().clone();
     std::sync::Arc::new(crate::root::loader::store_v3::DoorStoreAxis {
         dispatcher: crate::root::dispatch::dispatcher(),
-        logs: plugin_logs().clone(),
+        logs: crate::root::boot::plugin_logs().clone(),
         conns: Some(conns),
         mint: busbar_kernel::door::op_id,
+    })
+}
+
+/// The process's secret plugins (`root::loader::secret_calls::SecretRows`), over the process's one
+/// dispatcher (`root::dispatch`): the linked rows [`register_stores`] adds once, and the dropped-in
+/// ones each registry build replaces (`root::boot::registry`).
+static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
+    std::sync::OnceLock::new();
+
+/// THE SECRET AXIS: the secret plugins this build links, each door's Statement read once (nothing is
+/// loaded until a reference names it). The first call stands.
+///
+/// # Errors
+/// A linked secret door that does not state itself, naming why.
+pub fn link_secrets(
+    doors: &[busbar_contract::abi::mechanism::door::DoorFn],
+) -> Result<&'static crate::root::loader::secret_calls::SecretRows, String> {
+    if let Some(rows) = SECRETS.get() {
+        return Ok(rows);
+    }
+    let mut rows = crate::root::loader::secret_calls::SecretRows::new(
+        crate::root::dispatch::dispatcher,
+        conns,
+    );
+    for door in doors {
+        rows.link(*door)
+            .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
+    }
+    Ok(SECRETS.get_or_init(|| rows))
+}
+
+/// The host's one connection table (`root::connector::the()`), on which a secret plugin that declares
+/// a need is declared and through which it is lent its connector.
+fn conns() -> Option<std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>> {
+    Some(crate::root::connector::the().clone())
+}
+
+/// The secret axis [`register_stores`] installed (an empty one where no root registered).
+pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
+    SECRETS.get_or_init(|| {
+        crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher, conns)
     })
 }
 
@@ -898,217 +948,6 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
     resolve_provider: None,
 };
 
-/// THE PLANES DROPPED INTO `dir`: every tarball the loader's three-phase scan admits under `policy`
-/// whose signed kind is `plane`, loaded over the HOT-tier ABI from its verified bytes, in the scan's
-/// (filename) order. A scan the loader refuses yields no plane here — the plugins preflight reads the
-/// same directory under the same policy later in boot and refuses it there with every problem named;
-/// a trusted plane that will not LOAD is a refusal here, as a linked plane's would be.
-pub fn dropped_planes(
-    dir: &std::path::Path,
-    policy: &crate::root::loader::sign::TrustPolicy,
-) -> Result<Vec<DynPlane>, String> {
-    let Ok(registry) = crate::root::loader::scan_and_validate(dir, policy) else {
-        return Ok(Vec::new());
-    };
-    registry.open_planes(&[]).map(|set| set.hot)
-}
-
-/// THE PLUGINS DROPPED INTO THE CONFIGURED `plugins.dir`, scanned ONCE before any axis is installed —
-/// so before the configuration is parsed, which needs those axes — and kept for the process, whose
-/// dropped-in planes and export modules are opened from it. Only the kernel-owned `plugins:` block is
-/// read, off the same file and environment interpolation the boot load uses; the trust policy and
-/// the persisted first-party floors are resolved as the preflight resolves them. No `plugins:`
-/// block, `enabled: false`, or no readable file: `None`, and the directory is not read. A scan the
-/// loader refuses is `None` here too — the plugins preflight reads the same directory under the same
-/// policy later in boot and refuses it there with every problem named.
-///
-/// The build's LINKED export sinks ([`Linked::exports`], K9b) are registered into the same registry
-/// ahead of the directory's rows, through the one admission (`PluginRegistry::link`) — so the export
-/// axis holds both doors' rows, and a build that links a sink has an axis with no `plugins:` block.
-pub fn dropped_from_config(
-    linked: &Linked,
-) -> Option<&'static crate::root::loader::PluginRegistry> {
-    let rows = linked_exports(linked.exports).unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        std::process::exit(2);
-    });
-    let scanned = scan_configured();
-    if scanned.is_none() && rows.is_empty() {
-        return None;
-    }
-    let registry = scanned.unwrap_or_else(crate::root::loader::PluginRegistry::empty);
-    let registry = registry.link(rows).unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        std::process::exit(2);
-    });
-    // Kept for the process — the export axis and the diagnostics axis read it for as long as it
-    // serves — in the one registry slot boot fills.
-    Some(REGISTRY.get_or_init(|| registry))
-}
-
-/// The one plugin registry [`dropped_from_config`] builds, held for the process.
-static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
-    std::sync::OnceLock::new();
-
-/// The configured `plugins.dir`'s admitted rows (see [`dropped_from_config`]).
-fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
-    let path =
-        crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
-    let raw = std::fs::read_to_string(path).ok()?;
-    let text = busbar_kernel::config::interpolate_env_with(
-        &raw,
-        busbar_kernel::config::EnvSubst::Lenient,
-        &mut Vec::new(),
-    )
-    .ok()?;
-    let doc: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
-    let plugins =
-        serde_yaml::from_value::<busbar_kernel::config::PluginsCfg>(doc.get("plugins")?.clone())
-            .ok()
-            .filter(|p| p.enabled)?;
-    let l = &plugins.logs;
-    let words = (l.dir.as_deref(), l.level.as_deref(), &l.levels);
-    if let Ok(logs) = crate::root::loader::dispatch::PluginLogConfig::from_words(
-        words.0,
-        words.1,
-        words.2,
-        l.rotate_mb,
-        l.keep,
-    ) {
-        let _ = LOGS.set(logs);
-    }
-    plugins.warn_invalid_floors();
-    let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    let build = RegistryIn {
-        linked: Vec::new(),
-        plugins: Some(&plugins),
-        data_dir: data_dir.as_deref(),
-    };
-    crate::root::boot::registry(build, &mut |_| {}).ok()
-}
-
-/// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
-/// plane that states itself through a door is discovered here and bound by [`load_door_planes`] once
-/// the process's dispatcher is built; every HOT-lane plane (M6-HOT-PLANE) is opened here and
-/// returned for the plane axis. A trusted plane that will not state itself or LOAD refuses the boot,
-/// as a linked plane's would.
-pub fn dropped_planes_of(
-    linked: &Linked,
-    dropped: Option<&crate::root::loader::PluginRegistry>,
-) -> Vec<DynPlane> {
-    let set = match dropped {
-        Some(registry) => registry.open_planes(linked.plane_doors),
-        None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
-    };
-    let set = set.unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        std::process::exit(2);
-    });
-    let _ = DOOR_CANDIDATES.set(set.doors);
-    set.hot
-}
-
-/// The door planes [`dropped_planes_of`] discovered, waiting for the dispatcher.
-static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
-    std::sync::OnceLock::new();
-
-/// The door planes [`load_door_planes`] bound, held for the process.
-static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
-
-/// A plane bound through its door.
-pub type DoorPlane =
-    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>;
-
-/// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
-/// ([`crate::root::dispatch::boot`]): every plane [`dropped_planes_of`] discovered, linked and
-/// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
-/// under the configured `plugins.logs`, each declaring its needs on the process's one connection
-/// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
-pub fn load_door_planes() {
-    let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
-    // The process's ONE connection table: a plane that declares a need is declared on it.
-    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
-        crate::root::connector::the().clone();
-    let bound = crate::root::loader::boot::load_planes(
-        doors,
-        plugin_logs(),
-        std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
-        crate::root::dispatch::dispatcher().adopter(),
-        u32::MAX,
-        Some(conns),
-    )
-    .unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        std::process::exit(2);
-    });
-    let _ = DOOR_PLANES.set(bound);
-}
-
-/// The configured `plugins.logs` ([`scan_configured`] reads it), or its defaults.
-static LOGS: std::sync::OnceLock<crate::root::loader::dispatch::PluginLogConfig> =
-    std::sync::OnceLock::new();
-
-pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
-    LOGS.get_or_init(|| {
-        let none = Default::default();
-        crate::root::loader::dispatch::PluginLogConfig::from_words(None, None, &none, None, None)
-            .expect("the plugins.logs defaults resolve")
-    })
-}
-
-/// Every plane bound through its door, by instance name (empty until [`load_door_planes`] runs).
-pub fn door_planes() -> &'static [(String, DoorPlane)] {
-    DOOR_PLANES.get().map_or(&[], Vec::as_slice)
-}
-
-/// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
-/// scanned): every `kind: transport` plugin it admitted, loaded ONCE and held for the process, so the
-/// boot seal folds them beside the linked wires (`crate::root::registry::compose`) and a wire the
-/// data door serves through lives as long as the door. Each image is opened on the lane it speaks: a
-/// memory-ABI door through the one dispatcher, served over the host's sockets
-/// (`crate::root::doors`); a HOT decl through its adapter. A trusted transport that will not LOAD
-/// refuses the boot, as a linked plane's would.
-pub fn dropped_transports() -> crate::root::registry::Dropped {
-    type Held = (
-        Vec<crate::root::loader::DynTransport>,
-        Vec<crate::root::registry::DroppedDoor>,
-    );
-    static WIRES: std::sync::OnceLock<Held> = std::sync::OnceLock::new();
-    let (hot, doors) = WIRES.get_or_init(|| {
-        let Some(registry) = REGISTRY.get() else {
-            return (Vec::new(), Vec::new());
-        };
-        let opened = registry
-            .open_transport_entries(&crate::root::doors::bind())
-            .and_then(|entries| {
-                let doors = entries
-                    .doors
-                    .into_iter()
-                    .map(|plugin| {
-                        let facts = plugin
-                            .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
-                            .cloned()
-                            .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
-                        let key = facts.claims.first().copied().unwrap_or_default();
-                        let composes_over = facts.composes_over;
-                        let wire = crate::root::doors::host_wire(plugin)?;
-                        Ok(crate::root::registry::DroppedDoor {
-                            key,
-                            composes_over,
-                            wire,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok((entries.hot, doors))
-            });
-        opened.unwrap_or_else(|refusal| {
-            eprintln!("busbar: {refusal}");
-            std::process::exit(2);
-        })
-    });
-    crate::root::registry::Dropped { hot, doors }
-}
-
 /// THE EXPORT AXIS: the registry an `export:` instance's `module:` resolves against — every
 /// `kind: export` row the plugin registry's one registration admitted, dropped in here (and, as a
 /// linked export crate lands, linked through `PluginRegistry::link`, the same admission) — installed
@@ -1119,7 +958,7 @@ pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegi
     crate::root::loader::observe::install_host_series(host_series);
     // The host's egress, which every sink's outbound request rides (K9a S5) — whatever else this
     // build links.
-    crate::root::loader::install_egress_carrier(&HostEgressCarrier);
+    crate::root::loader::install_egress_carrier(&crate::root::boot::HostEgressCarrier);
     let Some(registry) = dropped else {
         return;
     };
@@ -1290,191 +1129,6 @@ pub fn register_seams() {
     busbar_kernel::admin_verbs::install_plane_admin_envelope(
         &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
     );
-}
-
-/// THE EGRESS CARRIER (K9a S5): how the host carries an outbound HTTP request a plugin sink asks it
-/// to make — the sink never dials. The request meets the URL policy the sink was GRANTED first
-/// (K9e-2): the open web — the webhook URL policy: https only; loopback, link-local, private, CGNAT
-/// and cloud-metadata targets refused — or, for a first-party sink that declared it, the collector
-/// policy (`root::otlp::collector_policy`: https, or plaintext http to a loopback collector only;
-/// link-local, private, CGNAT and cloud-metadata refused). It then rides the host's egress engine on
-/// the pooled open-web posture the request-log webhook has always POSTed over (webpki trust, system
-/// DNS, the boot environment's proxy tunnel), under the request's own deadline over the exchange up
-/// to the response head. Headers are set in order, a later one replacing an earlier of the same
-/// name; one that is not a valid header is left off. The body is the sink's octets, text or binary.
-/// The answer's status is read back; its body is not read.
-pub struct HostEgressCarrier;
-
-/// The carrier's one client, built on the first request it carries.
-static CARRIER_CLIENT: std::sync::OnceLock<busbar_kernel::proxy::EgressClient> =
-    std::sync::OnceLock::new();
-
-impl HostEgressCarrier {
-    /// The request as the hop sends it — after `policy` — and its deadline; or the refusal.
-    fn prepare(
-        policy: crate::root::loader::EgressPolicy,
-        request: &busbar_contract::abi::cold::export::HttpRequest,
-        body: &[u8],
-    ) -> Result<
-        (CarriedRequest, tokio::time::Instant),
-        busbar_contract::abi::cold::export::HostResult,
-    > {
-        if let Err(refusal) = judge(policy, &request.url, false) {
-            return Err(carried_failure("refused", refusal));
-        }
-        let (Ok(uri), Ok(method)) = (
-            request.url.parse::<axum::http::Uri>(),
-            axum::http::Method::from_bytes(request.method.as_bytes()),
-        ) else {
-            return Err(carried_failure(
-                "request",
-                "target URL does not parse".to_string(),
-            ));
-        };
-        let mut headers = axum::http::HeaderMap::new();
-        for (name, value) in &request.headers {
-            if let (Ok(n), Ok(v)) = (
-                axum::http::header::HeaderName::from_bytes(name.as_bytes()),
-                axum::http::HeaderValue::from_str(value),
-            ) {
-                headers.insert(n, v);
-            }
-        }
-        let body = axum::body::Bytes::copy_from_slice(body);
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_millis(request.timeout_ms);
-        Ok(((method, uri, headers, body), deadline))
-    }
-
-    /// Send a prepared request on the carrier's one client, under its deadline.
-    async fn send(
-        (method, uri, headers, body): CarriedRequest,
-        deadline: tokio::time::Instant,
-    ) -> busbar_contract::abi::cold::export::HostResult {
-        let req = busbar_kernel::egress::engine::request(method, uri, headers, body);
-        let client = CARRIER_CLIENT.get_or_init(|| {
-            busbar_kernel::proxy::build_egress_client(
-                &busbar_kernel::proxy::EgressClientSpec::pooled_webpki(
-                    usize::MAX,
-                    90,
-                    false,
-                    false,
-                ),
-            )
-        });
-        match busbar_kernel::egress::engine::send_bounded(client, req, deadline).await {
-            Ok(answer) => busbar_contract::abi::cold::export::HostResult::Http(
-                busbar_contract::abi::cold::export::HttpResponse {
-                    status: answer.status().as_u16(),
-                    body: String::new(),
-                },
-            ),
-            Err(e) => carried_failure("request", e.into_cause()),
-        }
-    }
-}
-
-/// `policy`'s verdict on `url`: the open web's (the webhook URL policy), or the collector's —
-/// `resolve` adds the collector guard's resolution half, which a sink's start-time admission asks.
-fn judge(
-    policy: crate::root::loader::EgressPolicy,
-    url: &str,
-    resolve: bool,
-) -> Result<(), String> {
-    match policy {
-        crate::root::loader::EgressPolicy::OpenWeb => {
-            busbar_kernel::observability::validate_webhook_url(Some(url.to_string())).map(|_| ())
-        }
-        crate::root::loader::EgressPolicy::Collector => {
-            crate::root::otlp::collector_policy(url, resolve)
-        }
-    }
-}
-
-/// A request the carrier sends: method, target, headers, body.
-type CarriedRequest = (
-    axum::http::Method,
-    axum::http::Uri,
-    axum::http::HeaderMap,
-    axum::body::Bytes,
-);
-
-/// A carried request's failure at `step`.
-fn carried_failure(step: &str, error: String) -> busbar_contract::abi::cold::export::HostResult {
-    busbar_contract::abi::cold::export::HostResult::Failed {
-        step: step.to_string(),
-        error,
-        rotation: None,
-    }
-}
-
-impl crate::root::loader::EgressCarrier for HostEgressCarrier {
-    fn carry(
-        &self,
-        request: &busbar_contract::abi::cold::export::HttpRequest,
-    ) -> busbar_contract::abi::cold::export::HostResult {
-        let open_web = crate::root::loader::EgressPolicy::OpenWeb;
-        self.carry_under(open_web, request, request.body.as_bytes())
-    }
-
-    /// The same hop, awaited by the delivery's task: no thread waits on the far end.
-    fn carry_async(
-        &'static self,
-        request: busbar_contract::abi::cold::export::HttpRequest,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = busbar_contract::abi::cold::export::HostResult> + Send,
-        >,
-    > {
-        let body = request.body.clone().into_bytes();
-        self.carry_under_async(crate::root::loader::EgressPolicy::OpenWeb, request, body)
-    }
-
-    fn admit(&self, url: &str) -> Result<(), String> {
-        self.admit_under(crate::root::loader::EgressPolicy::OpenWeb, url)
-    }
-
-    fn admit_under(
-        &self,
-        policy: crate::root::loader::EgressPolicy,
-        url: &str,
-    ) -> Result<(), String> {
-        judge(policy, url, true)
-    }
-
-    fn carry_under(
-        &self,
-        policy: crate::root::loader::EgressPolicy,
-        request: &busbar_contract::abi::cold::export::HttpRequest,
-        body: &[u8],
-    ) -> busbar_contract::abi::cold::export::HostResult {
-        let (req, deadline) = match HostEgressCarrier::prepare(policy, request, body) {
-            Ok(prepared) => prepared,
-            Err(refused) => return refused,
-        };
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return carried_failure("refused", "this host carries no plugin egress".to_string());
-        };
-        runtime.block_on(HostEgressCarrier::send(req, deadline))
-    }
-
-    fn carry_under_async(
-        &'static self,
-        policy: crate::root::loader::EgressPolicy,
-        request: busbar_contract::abi::cold::export::HttpRequest,
-        body: Vec<u8>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = busbar_contract::abi::cold::export::HostResult> + Send,
-        >,
-    > {
-        Box::pin(async move {
-            match HostEgressCarrier::prepare(policy, &request, &body) {
-                Ok((req, deadline)) => HostEgressCarrier::send(req, deadline).await,
-                Err(refused) => refused,
-            }
-        })
-    }
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a
