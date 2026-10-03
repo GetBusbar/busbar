@@ -21,7 +21,7 @@ use crate::root::loader::dispatch::{
 };
 
 /// No money moves in a composition: nothing runs a unit.
-struct NoUnits;
+pub(super) struct NoUnits;
 
 impl MoneySeam for NoUnits {
     fn checkpoint(&self, _: &UnitCtx, _: &[UnitCount]) -> Checkpoint {
@@ -70,7 +70,7 @@ fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> Option<crate::root::li
     Some(plane)
 }
 
-fn composed_services() -> Arc<LateServices> {
+pub(super) fn composed_services() -> Arc<LateServices> {
     let late = LateServices::new();
     late.install_kernel(Arc::new(KernelServices::new(
         HashMap::new(),

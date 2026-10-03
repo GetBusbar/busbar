@@ -1012,6 +1012,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         }
     };
     served.spawn_ticks();
+    // THE DATA ROUTES (`root::serve::mount`, TODO U6-U7 P2): a request a composed plane claims
+    // reaches its driver on the data router's fallback; with no door plane nothing is mounted.
+    root::serve::mount(served).unwrap_or_else(|e| die(e));
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
     // business, and nothing about it is restored from disk here. The durable config that makes "fix

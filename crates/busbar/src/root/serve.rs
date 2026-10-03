@@ -14,21 +14,29 @@
 //! process, so none sees the refusal.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
+use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
-use busbar_contract::caps::OpClassId;
-use busbar_contract::caps::ReasonCode;
+use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut, CLAIM_EXACT};
+use busbar_contract::auth::AuthPrincipal;
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival as ArrivalStep, ArrivalRecord, Audit, Authenticate,
+    Authenticated, Canary, Consumption, Decode, Dial, Encode, Grant, Hold, HoldCell, Meter,
+    OpClassId, OriginKind, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, SeatVerdict,
+    Step, VerifiedDestination, Verify,
+};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
 use busbar_kernel::config::RootCfg;
+use busbar_kernel::door::{admitted_facts, refused_facts, UnitKeyMint};
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{
     BlockingPool, DestRules, KernelServices, SignKey, SystemResolver,
@@ -36,9 +44,17 @@ use busbar_kernel::host_services::{
 use busbar_kernel::net_guard::{Denylist, GuardPolicy};
 use busbar_kernel::plane::store::KIND_DEMOTION;
 use busbar_kernel::plane::DemotionRecord;
-use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
+use busbar_kernel::plane_driver::serve::{
+    publish, DataAnswer, DataRequest, ServeRoute, ServeTable,
+};
 use busbar_kernel::plane_driver::{
-    refusal_status, BufferCaps, CallerEnd, DriverConfig, HeadFields, MoneySeam, PlaneDriver,
+    refusal_status, Arrival, BufferCaps, CallerEnd, DriverConfig, FarEnd, FarPiece, HeadFields,
+    MoneySeam, OutboundRequest, Pick, PlaneDriver, Rendered,
+};
+use busbar_kernel::registry::Generation;
+use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
+use busbar_kernel::teller::{
+    run_unit_async, AccrualMeter, Evidence, Kernel, RouteAwait, Run, UnitCtx, Units,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -287,6 +303,8 @@ pub struct ServedPlane {
     pub driver: Arc<PlaneDriver>,
     /// The first generation's snapshot, as the host copied it.
     pub snapshot: OwnedSnapshot,
+    /// The `audit_kind` its tail states: what its units are audited under.
+    pub audit_kind: &'static str,
 }
 
 impl std::fmt::Debug for ServedPlane {
@@ -322,8 +340,7 @@ impl Served {
 /// minted), a [`PlaneDriver`] admitted to the kernel's composed services with the plane's tail
 /// facts and a money seam from `money`, and its admin routes published on the admin router's table
 /// (`plane_driver::serve`, K-SERVE). A plane whose section is absent stays bound and unopened, as
-/// before. Nothing here mounts a data route: a claimed arrival reaches a driver only once the
-/// plane's door row is served (P2).
+/// before. The data routes are mounted by [`mount`].
 ///
 /// # Errors
 ///
@@ -407,6 +424,7 @@ pub fn compose_planes(
             instance: instance.clone(),
             driver: Arc::new(driver),
             snapshot,
+            audit_kind: facts.audit_kind,
         });
     }
     Ok(served)
@@ -451,6 +469,310 @@ fn open(plugin: &DoorPlane, section: &serde_yaml::Value) -> Result<OwnedSnapshot
         return Err(format!("it did not open: {:?}", called.outcome));
     }
     snapshot.ok_or_else(|| "its snapshot did not pass the host's checks".to_string())
+}
+
+// ── the data routes: a claimed arrival, driven ──────────────────────────────────────────────────
+
+/// THE DOOR PLANES' DATA ROUTES (SERVE-WIRE P2, TODO U6-U7; ARCHITECT ruling 2026-10-01, option C):
+/// every composed plane's snapshot claims, offered each data request on the data router's fallback
+/// before any other plane reads it ([`busbar_kernel::plane_driver::serve::claimed`]). A claimed
+/// arrival is one unit of that plane, run through the kernel's one loop over the plane's
+/// [`PlaneDriver`], its caller's side an [`IngressCaller`]. A plane is served exactly when it is
+/// composed, so its door row is its serve switch: a fold adds only its door row (spec K5).
+pub struct DataRoutes {
+    served: Served,
+    kernel: Kernel,
+    gauge: ConcurrencyGauge,
+    canary: Canary,
+    keys: UnitKeyMint,
+}
+
+impl std::fmt::Debug for DataRoutes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataRoutes")
+            .field("served", &self.served)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The data routes [`mount`] mounted, for the process.
+static ROUTES: OnceLock<Arc<DataRoutes>> = OnceLock::new();
+
+/// MOUNT the composed planes' data routes, once per process, after their composition
+/// ([`compose_planes`]). A composition that claims no data route mounts nothing, so a build with no
+/// door plane serves every request as before.
+///
+/// # Errors
+///
+/// The data routes, or another data door, were already mounted.
+pub fn mount(served: Served) -> Result<(), String> {
+    if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
+        return Ok(());
+    }
+    let routes = Arc::new(DataRoutes {
+        served,
+        kernel: crate::root::kernel::new_kernel(),
+        gauge: ConcurrencyGauge::new(),
+        canary: Canary::new(),
+        keys: UnitKeyMint::default(),
+    });
+    ROUTES
+        .set(routes)
+        .map_err(|_| "the data routes are mounted once".to_string())?;
+    busbar_kernel::plane_driver::serve::mount_data(data_door)
+        .map_err(|_| "a data door is already mounted".to_string())
+}
+
+/// The data door the kernel's fallback asks ([`mount`]).
+fn data_door(req: DataRequest) -> Result<DataAnswer, DataRequest> {
+    match ROUTES.get() {
+        Some(routes) => routes.claimed(req),
+        None => Err(req),
+    }
+}
+
+impl DataRoutes {
+    /// The answer of the plane whose claim `req` matches, or `req` back.
+    fn claimed(self: &Arc<Self>, req: DataRequest) -> Result<DataAnswer, DataRequest> {
+        let Some((plane, claim)) = self.claim(req.method.as_str(), req.uri.path()) else {
+            return Err(req);
+        };
+        let routes = Arc::clone(self);
+        Ok(Box::pin(routes.answer(plane, claim, req)))
+    }
+
+    /// The first plane, in bind order, with a claim on `verb` and `path`: its index and the
+    /// claim's. A claim without `CLAIM_EXACT` matches a path it prefixes.
+    fn claim(&self, verb: &str, path: &str) -> Option<(usize, u32)> {
+        self.served
+            .planes
+            .iter()
+            .enumerate()
+            .find_map(|(p, plane)| {
+                let at = plane.snapshot.claims.iter().position(|c| {
+                    c.verb.eq_ignore_ascii_case(verb)
+                        && if c.flags & CLAIM_EXACT == 0 {
+                            path.starts_with(c.target.as_str())
+                        } else {
+                            path == c.target
+                        }
+                })?;
+                Some((p, u32::try_from(at).ok()?))
+            })
+    }
+
+    /// ONE CLAIMED ARRIVAL, SERVED: the caller's head (the credentials the auth gate consumed and
+    /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
+    /// resolved; the unit run inside the response, so a caller that goes away drops it.
+    async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DataRequest) -> Response {
+        let DataRequest {
+            method,
+            uri,
+            mut headers,
+            body,
+            gov,
+            consumed,
+        } = req;
+        if let Some(consumed) = &consumed {
+            consumed.strip(&mut headers);
+        }
+        let fields: HeadFields = headers
+            .iter()
+            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
+            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+        let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
+        let arrival = Arrival {
+            claim,
+            method: method.as_str().as_bytes().to_vec(),
+            target: target.as_bytes().to_vec(),
+            fields,
+            body: Arc::from(&body[..]),
+        };
+        let principal = match gov.key() {
+            Some(key) => PrincipalId::new(key.id.as_str()),
+            None => PrincipalId::new(AuthPrincipal(None).actor_id()),
+        };
+        let (caller, reply) = IngressCaller::new();
+        let unit = async move {
+            let served = &self.served.planes[plane];
+            let steps = DoorSteps {
+                principal: principal.clone(),
+                audited: OpClassId::new(served.audit_kind),
+            };
+            let units = served.driver.unit(&steps, &NoEgress, &caller, arrival, 0);
+            self.run(&units, principal).await;
+            units.take_rendered()
+        };
+        reply.answer(Box::pin(unit)).await
+    }
+
+    /// Run one unit through the kernel's one loop, from a zero arrival hold.
+    async fn run<U: Units + RouteAwait>(&self, units: &U, principal: PrincipalId) {
+        let ctx = UnitCtx {
+            key: self.keys.mint(),
+            origin: OriginKind::Client,
+            session: None,
+            generation: Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let cell = HoldCell::new(Hold::open(&self.kernel.admit_token(), principal, 0));
+        let (leases, meter) = (LeaseCell::new(), AccrualMeter::new());
+        let run = Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &self.gauge,
+            canary: &self.canary,
+            meter: &meter,
+        };
+        let _ended = run_unit_async(&self.kernel, units, &ctx, run, units).await;
+    }
+}
+
+/// THE KERNEL'S STEPS FOR A DOOR PLANE'S UNIT on the data door today (TRANSITIONAL,
+/// `1.6.0-QUESTIONS.md` Q-SW-P2): the caller is the one the auth gate resolved, and no destination
+/// is sealed for a door plane yet (its egress and its `$` admission are the plane's serving slice,
+/// TODO step 33), so VERIFY refuses and nothing after it runs: nothing is admitted, held, charged,
+/// metered or dialled. The plane renders the refusal. The plane's own seats (decode, route,
+/// encode) are the driver's.
+struct DoorSteps {
+    principal: PrincipalId,
+    /// What the unit is audited under: the plane's `audit_kind`.
+    audited: OpClassId,
+}
+
+/// The refusal of a door plane's unit past authenticate: no destination is sealed.
+fn unsealed<S: Step>(token: &Pass<S>) -> SeatVerdict<S> {
+    SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination))
+}
+
+impl Units for DoorSteps {
+    fn arrival(&self, token: &Pass<ArrivalStep>, _: &UnitCtx) -> SeatVerdict<ArrivalStep> {
+        SeatVerdict::proceed(
+            token,
+            ArrivalRecord {
+                source: String::new(),
+                port: 0,
+                alpn: None,
+                sni: None,
+                peer_cert: None,
+                transport_chain: Vec::new(),
+            },
+        )
+    }
+
+    fn decode(&self, token: &Pass<Decode>, _: &UnitCtx) -> SeatVerdict<Decode> {
+        SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+    }
+
+    fn authenticate(&self, token: &Pass<Authenticate>, _: &UnitCtx) -> SeatVerdict<Authenticate> {
+        SeatVerdict::proceed(token, Authenticated::Principal(self.principal.clone()))
+    }
+
+    fn verify(
+        &self,
+        token: &Pass<Verify>,
+        _: &Grant<Dial>,
+        _: &UnitCtx,
+        _: &PrincipalId,
+    ) -> SeatVerdict<Verify> {
+        unsealed(token)
+    }
+
+    fn approve(
+        &self,
+        token: &Pass<Approve>,
+        _: &UnitCtx,
+        _: &PrincipalId,
+        _: &[VerifiedDestination],
+    ) -> SeatVerdict<Approve> {
+        unsealed(token)
+    }
+
+    fn admit(
+        &self,
+        token: &Pass<Admit>,
+        _: &Grant<Admittance>,
+        _: &UnitCtx,
+        _: &PrincipalId,
+        _: &[VerifiedDestination],
+        _: &GroupLeaseSlip,
+    ) -> SeatVerdict<Admit> {
+        unsealed(token)
+    }
+
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        _: &UnitCtx,
+        _: &[VerifiedDestination],
+    ) -> SeatVerdict<Route> {
+        unsealed(token)
+    }
+
+    fn meter(
+        &self,
+        token: &Pass<Meter>,
+        _: &Grant<Consumption>,
+        _: &UnitCtx,
+        _: &Outcome,
+        _: &[VerifiedDestination],
+    ) -> SeatVerdict<Meter> {
+        unsealed(token)
+    }
+
+    fn audit(&self, token: &Pass<Audit>, _: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
+        SeatVerdict::proceed(
+            token,
+            admitted_facts(self.audited, None, outcome.is_completed()),
+        )
+    }
+
+    fn audit_refused(&self, token: &Pass<Audit>, _: &UnitCtx, _: &Refusal) -> SeatVerdict<Audit> {
+        SeatVerdict::proceed(token, refused_facts(self.audited))
+    }
+
+    fn encode(&self, token: &Pass<Encode>, _: &UnitCtx, _: &Outcome) -> SeatVerdict<Encode> {
+        SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+    }
+
+    fn evidence(&self, _: &UnitCtx) -> Evidence {
+        Evidence::default()
+    }
+}
+
+/// A door plane's far end while no egress is sealed for it (TRANSITIONAL, with [`DoorSteps`]):
+/// the walk is exhausted at once. VERIFY refuses first, so no attempt reaches it.
+struct NoEgress;
+
+impl FarEnd for NoEgress {
+    fn member<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+        _: u32,
+    ) -> impl std::future::Future<Output = Pick> + Send + 'a {
+        std::future::ready(Pick::Exhausted {
+            status: refusal_status(ReasonCode::NoDestination),
+            retry_after: None,
+        })
+    }
+
+    fn send<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+        _: OutboundRequest,
+    ) -> impl std::future::Future<Output = bool> + Send + 'a {
+        std::future::ready(false)
+    }
+
+    fn next<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+    ) -> impl std::future::Future<Output = Option<FarPiece>> + Send + 'a {
+        std::future::ready(None)
+    }
 }
 
 // ── the driver's caller side over today's ingress ────────────────────────────────────────────────
@@ -514,38 +836,82 @@ impl IngressReply {
     /// A status the wire cannot carry is the plane's fault, answered as the driver answers a
     /// plane fault; a field the wire cannot carry is not sent.
     pub async fn response(self) -> Option<Response> {
-        let (status, fields) = self.head.await.ok()?;
-        // The driver's own status for a plane fault, when the plane's cannot go on the wire.
-        let status = [status, refusal_status(ReasonCode::PlanePanic)]
-            .into_iter()
-            .find_map(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok())?;
-        let mut response = Response::new(Body::new(ReplyBody(self.body)));
-        *response.status_mut() = status;
-        let headers = response.headers_mut();
-        for (name, value) in fields {
-            if let (Ok(name), Ok(value)) = (
-                HeaderName::from_bytes(&name),
-                HeaderValue::from_bytes(&value),
-            ) {
-                headers.append(name, value);
-            }
+        let head = self.head.await.ok()?;
+        Some(stated(head, Body::new(ReplyBody(self.body, None))))
+    }
+
+    /// THE UNIT, SERVED: `unit` runs here until it states its head, then inside the response's
+    /// body as the body is read, so a caller that goes away drops it (the driver's client-drop
+    /// path). A unit that ends with no head answers what it rendered (a refusal or failure before
+    /// any byte), or the driver's plane-fault status when it rendered nothing.
+    pub async fn answer(self, mut unit: DrivenUnit) -> Response {
+        let IngressReply { mut head, body } = self;
+        let first = tokio::select! {
+            biased;
+            h = &mut head => Ok(h.ok()),
+            rendered = &mut unit => Err(rendered),
+        };
+        let rendered = match first {
+            Ok(Some(h)) => return stated(h, Body::new(ReplyBody(body, Some(unit)))),
+            Ok(None) => unit.await,
+            Err(rendered) => match head.try_recv() {
+                Ok(h) => return stated(h, Body::new(ReplyBody(body, None))),
+                Err(_) => rendered,
+            },
+        };
+        match rendered {
+            Some(r) => stated((r.status, r.fields), Body::from(r.body)),
+            None => stated(
+                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                Body::empty(),
+            ),
         }
-        Some(response)
     }
 }
 
-/// The response body: the pieces the unit writes, in order, until its caller side is dropped.
-struct ReplyBody(mpsc::Receiver<Bytes>);
+/// A unit the data door drives: what it rendered for its caller when it ended before any byte.
+pub type DrivenUnit = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Rendered>> + Send>>;
+
+/// A response under a stated head: a status the wire cannot carry is the plane's fault, answered as
+/// the driver answers a plane fault; a field the wire cannot carry is not sent.
+fn stated((status, fields): Head, body: Body) -> Response {
+    let status = [status, refusal_status(ReasonCode::PlanePanic)]
+        .into_iter()
+        .find_map(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    let headers = response.headers_mut();
+    for (name, value) in fields {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(&name),
+            HeaderValue::from_bytes(&value),
+        ) {
+            headers.append(name, value);
+        }
+    }
+    response
+}
+
+/// The response body: the pieces the unit writes, in order, until its caller side is dropped; and
+/// the unit itself, driven as the body is read, while it runs.
+struct ReplyBody(mpsc::Receiver<Bytes>, Option<DrivenUnit>);
 
 impl http_body::Body for ReplyBody {
     type Data = Bytes;
     type Error = std::convert::Infallible;
 
     fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
-        self.0
+        let this = self.get_mut();
+        if let Some(unit) = &mut this.1 {
+            if unit.as_mut().poll(cx).is_ready() {
+                this.1 = None;
+            }
+        }
+        this.0
             .poll_recv(cx)
             .map(|piece| piece.map(|bytes| Ok(http_body::Frame::data(bytes))))
     }
@@ -558,3 +924,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/serve_planes.rs"]
 mod planes_tests;
+
+#[cfg(all(test, feature = "plane-decisions"))]
+#[path = "tests/serve_door.rs"]
+mod door_tests;

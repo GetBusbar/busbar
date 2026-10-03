@@ -29,9 +29,30 @@ pub(crate) async fn protocol_dispatch(
     method: axum::http::Method,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
     consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
-    mut headers: HeaderMap,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // THE DOOR PLANES FIRST (SERVE-WIRE P2): a request a served door plane claims is that plane's,
+    // driven through its plane driver; any other comes back whole and is dispatched below.
+    let offered = crate::plane_driver::serve::DataRequest {
+        method,
+        uri,
+        headers,
+        body,
+        gov,
+        consumed: consumed.map(|c| c.0),
+    };
+    let crate::plane_driver::serve::DataRequest {
+        method,
+        uri,
+        mut headers,
+        body,
+        gov,
+        consumed,
+    } = match crate::plane_driver::serve::claimed(offered) {
+        Ok(answer) => return answer.await,
+        Err(back) => back,
+    };
     let path = uri.path().to_string();
     let Some(proto) = crate::proto::detect_protocol(&path, &headers) else {
         // Not a protocol endpoint: the pre-collapse 404 fallback shape (native envelope by path).
@@ -112,7 +133,7 @@ pub(crate) async fn protocol_dispatch(
         );
         // Identified (above, off the request as it arrived), the plane never sees the credential
         // the gate consumed — it carries the ref in the payload instead (#65, #40(b)).
-        crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
+        crate::auth::ConsumedCredentials::strip_from(consumed.as_ref(), &mut headers);
         // The plane ANSWERS (#28); this handler is the outer one that serves the answer.
         return ingress(busbar_kernel::ingress::arrival::Arrival {
             host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
