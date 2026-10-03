@@ -2528,7 +2528,9 @@ fn measured_row(
     // it goes to stdout, where a reader is.
     if cx.env().report_only {
         println!(
-            "\nTHE MATRIX (crate, kind, count, per scanner):\n{}",
+            "\nTHE MATRIX, REPORT-ONLY, MEASURED TOTAL {total} hit(s) over {} cell(s) (crate, kind, count, \
+             per scanner):\n{}",
+            matrix.len(),
             render_matrix(&matrix)
         );
         println!(
