@@ -113,9 +113,16 @@ fn dropped(folds: &Arc<Folds>, d: &Dispatcher) -> Option<Plugin<Auth>> {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
+    // THE NEWEST OF THE TWO, not the first that exists. `target/<profile>/` holds the library a
+    // plain build of this crate uplifted (`cargo build --workspace` builds it WITHOUT `dropped-in`,
+    // so it has no door symbol); `deps/` holds the one this test's own build just wrote, with the
+    // door. Taking `target/<profile>/` first loaded the doorless one whenever a workspace build ran
+    // earlier in the same target dir (the hop's test:workspace step, then this row): `NoDoor`.
     let path = [profile.join(&name), profile.join("deps").join(&name)]
         .into_iter()
-        .find(|p| p.exists());
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+        .max()
+        .map(|(_, p)| p);
     assert!(
         path.is_some() || std::env::var_os("CI").is_none(),
         "the busbar-auth-sigv4 cdylib is not built under CI; a both-ways proof must not skip"
