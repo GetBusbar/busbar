@@ -865,10 +865,7 @@ async fn a_record_write_with_no_record_path_fails_the_unit() {
 
 /// The kernel's host services, with no egress class and no store.
 fn services() -> Arc<KernelServices> {
-    Arc::new(KernelServices::new(
-        HashMap::new(),
-        Arc::new(SystemResolver),
-    ))
+    Arc::new(KernelServices::new())
 }
 
 fn driven(every_ns: u64) -> (Arc<Double>, Arc<cases::Book>, PlaneDriver) {
@@ -972,7 +969,7 @@ fn declaring() -> Double {
 fn stored() -> Arc<KernelServices> {
     let store = Arc::new(MemoryStore::new());
     Arc::new(
-        KernelServices::new(HashMap::new(), Arc::new(SystemResolver))
+        KernelServices::new()
             .with_records(Arc::new(Rows(store.clone())), store)
             .with_pool(Arc::new(Inline)),
     )

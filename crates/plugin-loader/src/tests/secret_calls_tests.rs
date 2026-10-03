@@ -21,10 +21,8 @@ use super::SecretRows;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
-#[path = "../../tests/fixtures/hook_door_plugin.rs"]
-mod hook_door_plugin;
-#[path = "../../tests/fixtures/secret_door_plugin.rs"]
-mod secret_door_plugin;
+use crate::hook_door_conformance_tests::hook_door_plugin;
+use crate::secret_door_conformance_tests::secret_door_plugin;
 use secret_door_plugin::{conforming, NAME};
 
 fn dispatcher() -> Arc<Dispatcher> {
@@ -130,7 +128,6 @@ fn a_door_of_another_kind_is_refused() {
     let mut rows = SecretRows::new(dispatcher, || None);
     let err = rows
         .link(hook_door_plugin::conforming::door)
-        .err()
-        .expect("a hook door is not a secret one");
+        .expect_err("a hook door is not a secret one");
     assert!(err.contains("not a secret one"), "{err}");
 }

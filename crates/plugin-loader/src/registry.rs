@@ -124,10 +124,7 @@ impl LoadablePlugin {
     /// Whether this row opens IN PROCESS ([`LinkedEntry::Store`]) rather than over the C ABI —
     /// such a row is handed no configuration across a boundary, so there is none to resolve for it.
     pub fn in_process(&self) -> bool {
-        matches!(
-            self.entry,
-            Some(LinkedEntry::Store { .. })
-        )
+        matches!(self.entry, Some(LinkedEntry::Store { .. }))
     }
 
     /// M6-COLD-DELETE: whether this row is a LINKED cold boundary (`BUSBAR_COLD_ENTRY`).
