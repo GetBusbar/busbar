@@ -310,7 +310,8 @@ impl Audited {
 /// plane is a plugin on the neutral ABI and does not depend on the kernel. So the context is the
 /// plane's and the provisional end is the response itself, while the token and the sealed answer
 /// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
-pub type AuditStep = for<'a> fn(&Pass<Audit>, &AuditCtx<'a>, Served, bool) -> Audited;
+pub type AuditStep =
+    for<'a, 'b> fn(&Pass<Audit>, &AuditCtx<'a>, Served, Option<&'b AdmitHandle>) -> Audited;
 
 /// How the plane says a unit ended.
 ///
