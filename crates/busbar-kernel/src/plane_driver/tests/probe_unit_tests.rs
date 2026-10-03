@@ -18,11 +18,14 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::mechanism::call::{Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket as PlaneTicket;
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut, UnitCount, CLAIM_PROBE,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_FAR_END, FROM_KERNEL, TAIL_PROBES, UNITS_REPORTED,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    UnitCount, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_FAR_END, FROM_KERNEL, TAIL_PROBES,
+    UNITS_REPORTED,
 };
 use busbar_contract::caps::OpClassId;
-use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
+use busbar_contract::plane_calls::{
+    Answered, Grow, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
+};
 
 use super::*;
 use crate::door::UnitKeyMint;
@@ -78,6 +81,26 @@ impl PieceInFlight for Now {
     }
 }
 
+/// The prober serves no route: every `serve` answers FAULT at once.
+struct NoServe;
+
+impl Future for NoServe {
+    type Output = Answered;
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Answered> {
+        Poll::Ready(Answered {
+            outcome: AbiOutcome::Fault,
+            short: false,
+            disposition: None,
+        })
+    }
+}
+
+impl ServeInFlight for NoServe {
+    fn out(&self) -> Option<ServeOut> {
+        None
+    }
+}
+
 impl PlaneCalls for Prober {
     fn now_ns(&self) -> u64 {
         static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -122,6 +145,10 @@ impl PlaneCalls for Prober {
     fn recycle(&self, _: PlaneTicket) {}
 
     fn drop_client(&self, _: PlaneTicket) {}
+
+    fn serve(&self, _: PlaneTicket, _: ServeIn, _: ServeOut, _: Lent) -> Box<dyn ServeInFlight> {
+        Box::new(NoServe)
+    }
 
     fn on_piece(
         &self,
