@@ -229,8 +229,7 @@ fn a_legacy_segment_keeps_the_rule_it_was_written_under() {
     // The vector is the legacy framing of exactly `written`: version 1, the header check zeroed, a
     // digest that verifies, and every other byte the current encoder's.
     assert_eq!(legacy.len(), written.len() * FRAME_BYTES);
-    for (record, chunk) in written.iter().zip(legacy.chunks_exact(FRAME_BYTES)) {
-        let frame: &[u8; FRAME_BYTES] = chunk.try_into().unwrap();
+    for (record, frame) in written.iter().zip(legacy.as_chunks::<FRAME_BYTES>().0) {
         assert_eq!(frame_version(frame), FRAME_VERSION_LEGACY);
         let current = record.encode().remove(0);
         assert_eq!(frame[0..4], current[0..4]);
