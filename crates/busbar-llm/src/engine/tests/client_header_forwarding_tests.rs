@@ -677,3 +677,91 @@ async fn a_same_dialect_hop_carries_the_callers_query() {
         "{crossed}"
     );
 }
+
+// ── TENANT SELECTORS: set from busbar's config (OWNER 2026-10-02; ARCHITECT ruling 2) ───────────────
+
+/// One openai-family request through a lane of `protocol` whose provider config names `tenant`;
+/// the upstream's view of the two OpenAI tenant headers.
+async fn tenant_seen(
+    ingress: &'static str,
+    protocol: &'static str,
+    tenant: Option<(&str, &str)>,
+) -> (Option<String>, Option<String>) {
+    crate::testkit::install_test_seams();
+    let state = Arc::new(MockServerState::new());
+    let reply = if protocol == crate::proto_codec::PROTO_ANTHROPIC {
+        json!({ "content": [] })
+    } else {
+        openai_reply()
+    };
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: reply,
+    });
+    let server = MockServer::new(state.clone()).await;
+    let mut lane = LaneSpec::new("test-model", protocol, &server.base_url()).provider("zai");
+    if let Some((org, project)) = tenant {
+        lane = lane.tenant(org, project);
+    }
+    let app = TestApp::new().lane(lane).pool("p", &[(0, 1)]).build();
+    let body = if ingress == "anthropic" {
+        anthropic_body()
+    } else {
+        openai_body()
+    };
+    drive(
+        &app,
+        ingress,
+        body,
+        collect(&[
+            ("openai-organization", "org-caller"),
+            ("openai-project", "proj-caller"),
+        ]),
+    )
+    .await;
+    let seen = (
+        state.get_last_request_header("openai-organization"),
+        state.get_last_request_header("openai-project"),
+    );
+    server.shutdown().await;
+    seen
+}
+
+/// The provider's configured tenant goes upstream, on a same-dialect and a translated route alike,
+/// and the caller's never does; with none configured none is sent (1.5.5's bytes); a dialect that
+/// declares no tenant selector gets none.
+#[tokio::test]
+async fn the_tenant_comes_from_config_never_from_the_caller() {
+    let configured = (Some("org-cfg".to_string()), Some("proj-cfg".to_string()));
+    assert_eq!(
+        tenant_seen(
+            "openai",
+            crate::proto_codec::PROTO_OPENAI,
+            Some(("org-cfg", "proj-cfg"))
+        )
+        .await,
+        configured
+    );
+    assert_eq!(
+        tenant_seen(
+            "anthropic",
+            crate::proto_codec::PROTO_OPENAI,
+            Some(("org-cfg", "proj-cfg"))
+        )
+        .await,
+        configured
+    );
+    assert_eq!(
+        tenant_seen("openai", crate::proto_codec::PROTO_OPENAI, None).await,
+        (None, None)
+    );
+    assert_eq!(
+        tenant_seen(
+            "anthropic",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            Some(("org-cfg", "proj-cfg"))
+        )
+        .await,
+        (None, None)
+    );
+}

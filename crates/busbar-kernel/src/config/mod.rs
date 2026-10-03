@@ -2022,6 +2022,11 @@ pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -
             .path_base
             .clone()
             .or_else(|| def.path_base.clone()),
+        organization: deploy_cfg
+            .organization
+            .clone()
+            .or_else(|| def.organization.clone()),
+        project: deploy_cfg.project.clone().or_else(|| def.project.clone()),
         token_url: deploy_cfg
             .token_url
             .clone()

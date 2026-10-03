@@ -580,6 +580,29 @@ pub fn with_caller_query(dialect: &str, target: &str, caller_query: &str) -> Opt
     Some(format!("{target}{sep}{}", added.join("&")))
 }
 
+/// The tenant head fields busbar sets for a far end of `dialect` from the provider's config: each
+/// selector the dialect declares whose config key (`organization`, `project`) has a value.
+#[must_use]
+pub fn tenant_fields<'a>(
+    dialect: &str,
+    organization: Option<&'a str>,
+    project: Option<&'a str>,
+) -> Vec<(&'static str, &'a str)> {
+    crate::dialect::dialect(dialect)
+        .map(|d| d.tenant_headers)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|(key, header)| {
+            let value = match *key {
+                "organization" => organization,
+                "project" => project,
+                _ => None,
+            };
+            value.map(|v| (*header, v))
+        })
+        .collect()
+}
+
 /// A value a head field can carry as text: visible ASCII and the tab.
 fn legal_field_value(v: &[u8]) -> bool {
     v.iter().all(|b| *b == b'\t' || (0x20..0x7f).contains(b))
@@ -628,11 +651,20 @@ fn head_fields(
             .to_vec(),
     );
     let content_type = ("content-type".to_string(), content_type.into_bytes());
+    // The provider's tenant selectors, from busbar's config (the caller's are governed).
+    let tenant = tenant_fields(
+        egress,
+        lane.organization.as_deref(),
+        lane.project.as_deref(),
+    )
+    .into_iter()
+    .map(|(n, v)| (n.to_string(), v.as_bytes().to_vec()));
     // A native client's user-agent, never a UA-less request (1.5.5's bytes); a same-dialect
     // caller's own replaces it below.
     let user_agent = ("user-agent".to_string(), user_agent.as_bytes().to_vec());
     let mut fields = vec![content_type, user_agent, accept];
     if arrived.dialect != egress {
+        fields.extend(tenant);
         return Ok(fields);
     }
     // The caller's fields, in the order the caller sent them; a repeated name keeps every value.
@@ -645,6 +677,7 @@ fn head_fields(
         .collect();
     fields.retain(|(own, _)| !forwarded.iter().any(|(name, _)| name == own));
     fields.extend(forwarded);
+    fields.extend(tenant);
     Ok(fields)
 }
 

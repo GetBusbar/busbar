@@ -637,6 +637,8 @@ fn lane(dialect: &'static str) -> Lane {
         dialect,
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         upstream_model: None,
         default_max_tokens: None,
         context_max: None,

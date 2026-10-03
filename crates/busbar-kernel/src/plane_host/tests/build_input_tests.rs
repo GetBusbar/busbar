@@ -14,6 +14,8 @@ fn lane(api_key: &str) -> LaneInput {
         base_url: "https://example.invalid".to_string(),
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         upstream_model: None,
         api_key: busbar_contract::redacted::Redacted::new(api_key.to_string()),
         auth_style: AuthStyleInput::Default,
