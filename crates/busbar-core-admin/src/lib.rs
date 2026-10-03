@@ -53,18 +53,17 @@ pub mod mint;
 pub mod posture;
 pub mod rate;
 pub mod refusal;
+/// The verbs unit's test-only `SecretOnce` mint (ARCHITECT ruling B): `cfg(test)` or `test-support` only.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod verb;
 pub mod verbs;
 pub mod versions;
 // The test-build admin-error witness ledger (moved from the kernel's `admin_witness`).
 #[cfg(any(test, feature = "test-support"))]
 pub mod witness;
-/// The verbs unit's test-only `SecretOnce` mint (ARCHITECT ruling B): `cfg(test)` or `test-support` only.
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
 
 pub use admin_state::{AdminState, AppAdmin};
-
 pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 pub use idempotency::ReplayEncoder;
 pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
