@@ -194,11 +194,12 @@ busbar-export-otlp-plugin = { workspace = true }
 busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"] }
 # The `kind: secret` BOTH-WAYS proof is a REAL secret source (owner FIXTURES ruling: "real plugins are the
 # examples"): the env source from its own repo (GetBusbar/busbar-secret-env) at the rev the workspace pins.
-# Its `rlib` re-exports the logic crate's door (the LINKED door); its `cdylib` (built under `deps/`, hashed)
-# is the DROPPED-IN door. `secret_door_conformance_tests` drives both through the one dispatcher over one
-# script and asserts the exact crossing count. The secret kind's door is not a cold entry, so the row below
-# reaches it as a door kind.
-busbar-secret-env-plugin = { workspace = true }
+# The edge is its LOGIC crate: that crate's door is the LINKED door. The DROPPED-IN door is the same repo's
+# `<logic crate>-plugin` cdylib, built from the pinned checkout (never a dependency here: its rlib exports
+# `busbar_plugin_door`, a second one beside the dispatcher's own test door and the tcp plugin's under LTO)
+# and found beside the test binaries. `secret_door_conformance_tests` drives both through the one dispatcher
+# over one script and asserts the exact crossing count.
+busbar-secret-env = { workspace = true }
 # The `kind: auth` BOTH-WAYS witness — #2's auth witness, step (4) (OWNER-LOCKED) — is a REAL plugin, not
 # a fixture (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real plugins are the examples"; R-FIX2): the
 # token-verifying OIDC module from its own repo (GetBusbar/busbar-auth-oidc) at a pinned rev. Its `rlib` gives
@@ -265,8 +266,9 @@ auth = "busbar-auth-oidc-plugin"
 # test reaches the row by that whole key (`both_doors_of`), never by the plugin's name.
 auth-verify = "busbar-auth-admin-tokens-plugin"
 hook = "busbar-hook-test-plugin"
-# A DOOR kind's fixture (memory ABI): no cold entry; `build.rs` emits its crate alias and cdylib name only.
-secret = "busbar-secret-env-plugin"
+# A DOOR kind's fixture (memory ABI): no cold entry; `build.rs` emits its crate alias and name only. The
+# row names the LOGIC crate (the linked door); its cdylib is the repo's `<row>-plugin`.
+secret = "busbar-secret-env"
 # A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
 # emits only its crate alias and its cdylib name for this row. It is also the one wire crate this
 # crate may take a (dev) edge on — kind-isolation's transport-registration rule reads this row.

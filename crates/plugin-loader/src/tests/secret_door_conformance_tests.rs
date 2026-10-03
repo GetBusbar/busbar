@@ -3,7 +3,7 @@
 
 //! **`kind: secret`, BOTH WAYS, THROUGH THE ONE DISPATCHER** (TODO ABI-b4; M6/contract). The
 //! secret kind's REAL plugin (the env source, from its own repo, reached by KIND through
-//! `[package.metadata.busbar.both-ways]`) is loaded LINKED (its door, compiled into this build) and
+//! `[package.metadata.busbar.both-ways]`) is loaded LINKED (the logic crate's door, compiled into this build) and
 //! DROPPED IN (its `cdylib`, built from the same crate and `dlopen`ed) and driven over one script of
 //! the kind's table: `validate`, `open`, a `resolve` that HITS (READY, its material under a lease,
 //! released), a `resolve` that MISSES (FAILED, NOT_FOUND), a `refresh` to the next generation, the
@@ -132,11 +132,13 @@ fn linked() -> Loaded<Secret> {
 /// The real secret plugin, DROPPED IN: its built `cdylib`. A missing artifact is a failure, never
 /// a skip: this suite is the kind's finish line.
 fn dropped() -> Loaded<Secret> {
-    let (_, krate) = HOT_FIXTURES
+    let (_, logic) = HOT_FIXTURES
         .iter()
         .find(|(k, _)| *k == "secret")
         .expect("a `secret` row in Cargo.toml's [package.metadata.busbar.both-ways]");
-    let path = crate::both_ways::cdylib(krate)
+    // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
+    let krate = format!("{logic}_plugin");
+    let path = crate::both_ways::cdylib(&krate)
         .unwrap_or_else(|| panic!("the secret plugin's cdylib ({krate}) is not built"));
     both::dropped_at::<Secret>(secret_fixture::door::door, &path)
 }
