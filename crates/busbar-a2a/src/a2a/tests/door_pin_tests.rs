@@ -167,7 +167,7 @@ fn the_doors_head_refusals_are_the_engines() {
 #[test]
 fn the_doors_body_refusals_are_the_engines() {
     let door = |body: &[u8]| match arrival::decide(body, |_| None) {
-        arrival::Decision::Refused(r) => rendered(&r),
+        arrival::Disposition::Refused(r) => rendered(&r),
         other => panic!("the door did not refuse: {other:?}"),
     };
     assert_eq!(

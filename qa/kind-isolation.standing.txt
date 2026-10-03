@@ -22,7 +22,6 @@ kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
 kind-isolation:matrix	ratchet	busbar × cleanliness	205
 kind-isolation:matrix	ratchet	busbar × hooks	13
 kind-isolation:matrix	ratchet	busbar-a2a × legacy	12
-kind-isolation:matrix	ratchet	busbar-a2a × plane	2723
 kind-isolation:matrix	ratchet	busbar-contract × plane	195
 kind-isolation:matrix	ratchet	busbar-kernel × transport	189
 kind-isolation:matrix	ratchet	busbar-kernel-budget × kernel	26
@@ -37,10 +36,10 @@ kind-isolation:matrix	ratchet	busbar-plane-mcp × legacy	11
 kind-isolation:matrix	ratchet	busbar-plugin-loader × hooks	3
 # FOLD-A2A, owner Q77 conformed (BUSBAR-1.6.0 #2 OWNER-LOCKED witness, step (4)): loader × plane 62 -> 65 is the three manifest lines of the a2a plane door's both-ways witness (crates/plugin-loader/Cargo.toml:246 the path dev-dependency, :287 its [package.metadata.busbar.both-ways] `plane-door` row). Not a move; re-armed only at the FINAL ledger pass after the architect audit (Q77 answer). Only goes down.
 kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	65
-# FOLD-A2A, Q77-PENDING (a), a MOVE (TODO P3 / M5 PLANE-FOLD a2a; ruling "config-schema two homes"): the a2a door's code moved out of busbar-a2a into busbar-plane-a2a, and 21 lines of it name the crate it came from (manifest notes, module docs, test headers). busbar-a2a × plane falls 2726 -> 2723 and × contract 350 -> 335 in the same lane. EXPIRES at FOLD-A2A slice 9 (busbar-a2a deleted). Re-armed only at the FINAL ledger pass (Q77 answer). Only goes down.
+# FOLD-A2A, Q77-PENDING (a), a MOVE (TODO P3 / M5 PLANE-FOLD a2a; ruling "config-schema two homes"): the a2a door's code moved out of busbar-a2a into busbar-plane-a2a, and 21 lines of it name the crate it came from (manifest notes, module docs, test headers). busbar-a2a × plane falls to 2722 (under its 2723 cell, so its standing row is struck) and × contract 350 -> 335 in the same lane. EXPIRES at FOLD-A2A slice 9 (busbar-a2a deleted). Re-armed only at the FINAL ledger pass (Q77 answer). Only goes down.
 kind-isolation:matrix	ratchet	busbar-plane-a2a × legacy	21
-# FOLD-A2A, Q77-PENDING (a), a MOVE: the agent card, skill fit, SSE and surface code moved out of busbar-a2a carry the A2A wire's own `streaming`/`streams` member names (35 hits: capabilities.streaming, message/stream) and the moved `agents:` grammar its 3 `mcp` mentions; the door's arrival, plane_door and task_door files name their own `arrival::Decision` (51 hits) (what `arrive` decided for a request), which the matrix reads as the decisions plane's noun: NEW door code, not a move, filed as QUESTIONS Q-FOLD-A2A-KI (measurement class or rename) and not reworded to pass the matcher. 26 -> 89, measured. Re-armed only at the FINAL ledger pass (Q77 answer). Only goes down.
-kind-isolation:matrix	ratchet	busbar-plane-a2a × plane	89
+# FOLD-A2A, Q77-PENDING (a), a MOVE: the agent card, skill fit, SSE and surface code moved out of busbar-a2a carry the A2A wire's own `streaming`/`streams` member names (35 hits: capabilities.streaming, message/stream), and the moved `agents:` grammar carries 3 `mcp` mentions. The door's own `arrival::Decision` is now `Disposition` (ARCHITECT ruling on Q138, same as Q137), so the 46 hits of that word are gone; 5 prose uses of `decision` remain. 26 -> 43, measured. Re-armed only at the FINAL ledger pass (Q77 answer). Only goes down.
+kind-isolation:matrix	ratchet	busbar-plane-a2a × plane	43
 kind-isolation:matrix	ratchet	busbar-store-memory × plane	6
 kind-isolation:matrix	ratchet	busbar-voice × contract	122
 kind-isolation:matrix	ratchet	busbar-voice × plane	871

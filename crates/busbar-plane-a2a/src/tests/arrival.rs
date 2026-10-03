@@ -29,9 +29,9 @@ fn with_origin<'a>(
     }
 }
 
-fn refused(d: Decision) -> Refusal {
+fn refused(d: Disposition) -> Refusal {
     match d {
-        Decision::Refused(r) => r,
+        Disposition::Refused(r) => r,
         other => panic!("expected a refusal, got {other:?}"),
     }
 }
@@ -62,21 +62,24 @@ fn a_json_media_type_in_any_spelling_is_read() {
         "application/vnd.x+JSON ; q=1",
     ] {
         assert!(
-            matches!(decide(SEND, head(Some(ct), None)), Decision::Request { .. }),
+            matches!(
+                decide(SEND, head(Some(ct), None)),
+                Disposition::Request { .. }
+            ),
             "{ct}"
         );
     }
     // No media type at all is not a wrong one.
     assert!(matches!(
         decide(SEND, head(None, None)),
-        Decision::Request { .. }
+        Disposition::Request { .. }
     ));
 }
 
 #[test]
 fn the_version_is_negotiated_on_major_minor_and_absent_is_0_3() {
     let version = |v: Option<&str>| match decide(SEND, head(None, v)) {
-        Decision::Request { version, .. } => version,
+        Disposition::Request { version, .. } => version,
         other => panic!("{other:?}"),
     };
     assert_eq!(version(None), "0.3");
@@ -137,7 +140,7 @@ fn a_notification_is_acknowledged_and_never_answered() {
             br#"{"jsonrpc":"2.0","method":"SendMessage"}"#,
             head(None, None)
         ),
-        Decision::Notice {
+        Disposition::Notice {
             method: "SendMessage".to_string()
         }
     );
@@ -146,7 +149,7 @@ fn a_notification_is_acknowledged_and_never_answered() {
 #[test]
 fn a_request_is_classed_by_its_row_and_an_unlisted_method_is_kept_verbatim() {
     match decide(SEND, head(None, Some("1.0"))) {
-        Decision::Request { row, id, version } => {
+        Disposition::Request { row, id, version } => {
             assert_eq!(row.op, crate::ops::OP_MESSAGE_SEND);
             assert_eq!(id, serde_json::json!(7));
             assert_eq!(version, "1.0");
@@ -158,7 +161,7 @@ fn a_request_is_classed_by_its_row_and_an_unlisted_method_is_kept_verbatim() {
             br#"{"jsonrpc":"2.0","id":"x","method":"vendor/Thing"}"#,
             head(None, None)
         ),
-        Decision::Unlisted {
+        Disposition::Unlisted {
             method: "vendor/Thing".to_string(),
             id: serde_json::json!("x"),
             version: "0.3",
@@ -333,7 +336,7 @@ fn an_origin_that_is_not_loopback_is_refused_before_every_other_rule() {
         assert!(
             matches!(
                 decide(SEND, with_origin(Some(origin), None, None)),
-                Decision::Request { .. }
+                Disposition::Request { .. }
             ),
             "{origin}"
         );
@@ -362,7 +365,7 @@ fn an_unlisted_method_is_classed_as_the_hop_the_engine_relays_it_on() {
         }
     }
     assert_eq!(
-        Decision::Refused(refused(decide(b"{", head(None, None)))).op_class(),
+        Disposition::Refused(refused(decide(b"{", head(None, None)))).op_class(),
         None
     );
 }
