@@ -230,3 +230,46 @@ fn drops_are_derived_from_missing_rows_in_the_control_order() {
     );
     assert!(models(&[ROWS], "model") && !models(&[ROWS], "other"));
 }
+
+#[test]
+fn the_name_resolver_reads_the_wire_path_from_the_rows() {
+    const ROWS: &[Field] = &[
+        row(&["config", "count"], Slot::N, ValueCodec::Plain),
+        row(
+            &["input[]", "type=thought"],
+            Slot::Structure,
+            ValueCodec::Prim("thinking"),
+        ),
+        row(
+            &["thought", "level"],
+            Slot::Structure,
+            ValueCodec::Prim("thinking"),
+        ),
+        row(
+            &["turns[]", "parts[]", "type=text", "mark"],
+            Slot::Structure,
+            ValueCodec::Prim("mark"),
+        ),
+        row(
+            &["turns[]", "parts[]", "type=image", "mark"],
+            Slot::Structure,
+            ValueCodec::Prim("mark"),
+        ),
+        row(&["count"], Slot::Structure, ValueCodec::Prim("n")),
+    ];
+    let table: Table = &[ROWS];
+    // A slot row names the slot, and wins over a `prim` row of the same name.
+    assert_eq!(wire_path(table, "n").as_deref(), Some("config.count"));
+    // Of several rows, the member outside every list.
+    assert_eq!(
+        wire_path(table, "thinking").as_deref(),
+        Some("thought.level")
+    );
+    // Rows that all sit in lists name the path they share.
+    assert_eq!(
+        wire_path(table, "mark").as_deref(),
+        Some("turns[].parts[].mark")
+    );
+    // No row: no wire path (the caller keeps the IR name).
+    assert_eq!(wire_path(table, "seed"), None);
+}

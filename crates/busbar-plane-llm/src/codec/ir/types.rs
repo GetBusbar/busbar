@@ -239,7 +239,7 @@ pub fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<Strin
     // `saturating_sub` would only imply a doubt that isn't there.
     let dropped = provided - cap;
     // A cap keeps its behaviour and always warns, through the one drop path.
-    crate::codec::drops::note(crate::codec::drops::Dropped::new(
+    crate::codec::drops::note(crate::codec::drops::Dropped::slot(
         "stop",
         &crate::codec::diagnostics::IR_TRUNCATE_STOP_SEQUENCES,
         format!(

@@ -331,7 +331,9 @@ impl Slot {
         }
     }
 
-    /// The slot's name: the IR field's, as warns and the seam's audit name a dropped control.
+    /// The slot's name: the IR field's. A dropped control's warn and audit row name the caller's
+    /// wire path for it ([`crate::codec::drops::wire_path`]), this name only when the caller's
+    /// dialect has no row for the slot.
     pub fn name(self) -> &'static str {
         match self {
             Slot::Metadata => "metadata",
@@ -654,6 +656,7 @@ pub fn warn_drops(
             (_, Some(drop_warn)) => crate::codec::dialect::warn_dropped([slot.name()], drop_warn),
             (_, None) => tracing::warn!(
                 control = slot.name(),
+                path = %crate::codec::drops::caller_path(slot.name()),
                 "dropping a request control on egress: the dialect has no form for it"
             ),
         }
@@ -663,10 +666,12 @@ pub fn warn_drops(
 /// A dropped control's own warn. With `value`, the warn names the dropped value under the slot's
 /// field (and `parameter`, for a sampling control), as each writer always spelled it.
 fn warn_slot(slot: Slot, text: &str, value: bool, req: &IrRequest) {
+    let path = crate::codec::drops::caller_path(slot.name());
     match (slot, value) {
         (Slot::FrequencyPenalty, true) => {
             if let Some(frequency_penalty) = req.frequency_penalty {
                 tracing::warn!(
+                    path = %path,
                     parameter = "frequency_penalty",
                     frequency_penalty,
                     "{}",
@@ -676,33 +681,40 @@ fn warn_slot(slot: Slot, text: &str, value: bool, req: &IrRequest) {
         }
         (Slot::PresencePenalty, true) => {
             if let Some(presence_penalty) = req.presence_penalty {
-                tracing::warn!(parameter = "presence_penalty", presence_penalty, "{}", text);
+                tracing::warn!(
+                    parameter = "presence_penalty",
+                    presence_penalty,
+                    path = %path,
+                    "{}",
+                    text
+                );
             }
         }
         (Slot::Seed, true) => {
             if let Some(seed) = req.seed {
-                tracing::warn!(parameter = "seed", seed, "{}", text);
+                tracing::warn!(parameter = "seed", seed, path = %path, "{}", text);
             }
         }
         (Slot::N, true) => {
             if let Some(n) = req.n {
-                tracing::warn!(parameter = "n", n, "{}", text);
+                tracing::warn!(parameter = "n", n, path = %path, "{}", text);
             }
         }
         (Slot::ServiceTier, true) => {
             if let Some(tier) = req.service_tier {
-                tracing::warn!(service_tier = tier.as_str(), "{}", text);
+                tracing::warn!(service_tier = tier.as_str(), path = %path, "{}", text);
             }
         }
         (Slot::Stop, true) => {
             let stop_count = req.stop.len();
             tracing::warn!(
+                    path = %path,
                 stop_count,
                 "{}",
                 text.replace("{count}", &stop_count.to_string())
             );
         }
-        _ => tracing::warn!("{}", text),
+        _ => tracing::warn!(path = %path, "{}", text),
     }
 }
 
@@ -726,6 +738,40 @@ pub fn maps(table: Table, path: &[&str]) -> bool {
 /// crosses is that code's declaration (`codec::drops::Parked`), not the row's.
 pub fn crosses(table: Table, path: &[&str]) -> bool {
     rows(table).any(|f| f.path == path && !matches!(f.codec, ValueCodec::Prim(_)))
+}
+
+/// THE NAME RESOLVER's table half: the notation-A wire path at which `table` spells the IR name
+/// `name` (a slot's [`Slot::name`] or a `prim` row's name), `None` when no row names it. Slot rows
+/// win over `prim` rows. Of several rows, a member outside every list wins (a request control is a
+/// top-level knob, not a member of each turn); rows that all sit in lists name the path they share,
+/// each step they differ at left out (`messages[].content[].type=text.cache_control` and
+/// `...type=image.cache_control` are `messages[].content[].cache_control`).
+pub fn wire_path(table: Table, name: &str) -> Option<String> {
+    let slot_rows: Vec<&[&str]> = rows(table)
+        .filter(|f| f.slot != Slot::Structure && f.slot.name() == name)
+        .map(|f| f.path)
+        .collect();
+    let paths = if slot_rows.is_empty() {
+        rows(table)
+            .filter(|f| matches!(f.codec, ValueCodec::Prim(p) if p == name))
+            .map(|f| f.path)
+            .collect()
+    } else {
+        slot_rows
+    };
+    let first = *paths.first()?;
+    let in_list = |p: &[&str]| p.iter().any(|step| step.ends_with("[]"));
+    if let Some(top) = paths.iter().find(|p| !in_list(p)) {
+        return Some(top.join("."));
+    }
+    if paths.iter().any(|p| p.len() != first.len()) {
+        return Some(first.join("."));
+    }
+    let shared: Vec<&str> = (0..first.len())
+        .filter(|&i| paths.iter().all(|p| p[i] == first[i]))
+        .map(|i| first[i])
+        .collect();
+    Some(shared.join("."))
 }
 
 /// Whether `key` is a top-level member `table` models (the reader keeps every other member in
