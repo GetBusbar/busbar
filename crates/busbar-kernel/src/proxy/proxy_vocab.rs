@@ -114,7 +114,7 @@ impl<'a> StageShape<'a> {
 pub fn fire_stage_taps(
     taps: &[crate::hooks::TapEntry],
     shape: &StageShape<'_>,
-    stage: crate::hooks::wire::HookStageProjection<'_>,
+    stage: busbar_contract::hook_wire::HookStageProjection<'_>,
     // The stage's declared catalog signals, computed by the caller behind `requested.wants(_)`.
     // An empty bag adds no key to the wire.
     signals: busbar_contract::signal::SignalBag,

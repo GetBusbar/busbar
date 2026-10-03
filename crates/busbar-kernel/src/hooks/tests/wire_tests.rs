@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/hooks/wire.rs`.
+//! Tests for `crates/busbar-kernel/src/hooks/wire.rs`, and v1.5.5's hook reply tests (its `wire.rs`
+//! inline suite, M4 HOOK-PARITY), verbatim. The 1.5.5 host normalized a JSON reply here; on the
+//! memory ABI the reply is lowered by the hook SDK into the kind's fixed `out` and read back by the
+//! kernel (`plugin::decision` / `transformed`), so `norm` runs that chain.
 
 /// A hook-supplied multi-byte help/label/unit must cap at a CHAR
 /// boundary, never panic (String::truncate takes bytes — 100 × '€' panicked the admin handler).
@@ -136,11 +139,19 @@ fn status_metrics_validates_native_buckets() {
     );
 }
 
+use super::super::plugin::{decision, transformed};
 use super::*;
-// `RoutingRequest`/`RoutingContext` are the api projection types the request-side `build` takes; with
-// that builder now homed in `busbar_kernel::hooks::wire` they are no longer imported into the
-// reply-side `wire` module `super::*` re-exports, so name them at their (core-re-exported) home.
-use crate::hooks::{CallerIdentity, PromptProjection, RoutingContext, RoutingRequest};
+use crate::hooks::{
+    CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingDecision, RoutingRequest,
+};
+use busbar_contract::abi::hook::{
+    VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
+};
+use busbar_contract::abi::sdk::hook::{
+    lower_decide_reply, lower_transform_reply, RewriteVerdict, Verdict,
+};
+use busbar_contract::hook_wire::{build, parse_restrict, OP_DECIDE};
+use busbar_contract::hooks::TransformOutcome;
 
 fn cand(idx: usize, tags: &'static [String]) -> Candidate<'static> {
     Candidate {
@@ -253,10 +264,51 @@ fn opt_in_prompt_without_system_still_sends_messages() {
     assert_eq!(v["request"]["messages"], serde_json::json!([]));
 }
 
+/// A 1.5.5 `decide` reply, as the host now receives it: the hook SDK lowers the JSON
+/// (`lower_decide_reply`) and states it in the kind's fixed `out` (`write_verdict`: the verb bits,
+/// the stated status, the written parts); the kernel reads that back (`plugin::decision`). The
+/// `out` encoding below is the hook ABI's, one line per verdict (the SDK's own tests prove
+/// `write_verdict` writes exactly this and the frame reads it back).
 fn norm(json: &str) -> RoutingDecision {
-    let parsed: HookResponse = serde_json::from_str(json).unwrap();
     let cands = [cand(0, &[]), cand(1, &[])];
-    normalize(parsed, &cands)
+    let (verbs, status, message, tags, order) =
+        match lower_decide_reply(Ok(serde_json::from_str(json).unwrap())) {
+            Verdict::Reject { status, message } => (
+                reject_verbs(status),
+                status.unwrap_or(0),
+                message,
+                vec![],
+                vec![],
+            ),
+            Verdict::Restrict(tags) => (VERB_RESTRICT, 0, String::new(), tags, vec![]),
+            Verdict::Prefer(order) if order.is_empty() => {
+                (VERB_ABSTAIN, 0, String::new(), vec![], vec![])
+            }
+            Verdict::Prefer(order) => (VERB_PREFER, 0, String::new(), vec![], order),
+            Verdict::Abstain => (VERB_ABSTAIN, 0, String::new(), vec![], vec![]),
+            Verdict::Failed(why) => panic!("the reply failed to parse: {why}"),
+        };
+    decision(verbs, status, || message, || tags, || order, &cands)
+}
+
+/// A 1.5.5 `transform` reply, the same way (`lower_transform_reply`, `write_rewrite`,
+/// `plugin::transformed`).
+fn transform(json: &str) -> TransformOutcome {
+    let (verbs, status, message, rewrite) =
+        match lower_transform_reply(Ok(serde_json::from_str(json).unwrap())) {
+            RewriteVerdict::Reject { status, message } => {
+                (reject_verbs(status), status.unwrap_or(0), message, vec![])
+            }
+            RewriteVerdict::Rewrite(bytes) => (VERB_REWRITE, 0, String::new(), bytes),
+            RewriteVerdict::Abstain => (VERB_ABSTAIN, 0, String::new(), vec![]),
+            RewriteVerdict::Failed(why) => panic!("the reply failed to parse: {why}"),
+        };
+    transformed(verbs, status, || message, || rewrite)
+}
+
+/// A reject's verb bits: the status bit only when the hook stated one that fits a `u16`.
+fn reject_verbs(status: Option<u16>) -> u32 {
+    VERB_REJECT | status.map_or(0, |_| VERB_HAS_REJECT_STATUS)
 }
 
 /// A bare `{"reject":{}}` is a full-strength rejection with the defaults: 403 + generic message.
@@ -522,4 +574,41 @@ fn parse_rewrite_is_fail_closed() {
     assert!(parse_rewrite(&serde_json::json!({"messages": []})).is_none());
     assert!(parse_rewrite(&serde_json::json!({"messages": "hi"})).is_none());
     assert!(parse_rewrite(&serde_json::json!("hi")).is_none());
+}
+
+/// The transform reply, read back: reject > rewrite > abstain; a reject's status clamped and its
+/// message sanitised; a rewrite that does not parse proceeds with the ORIGINAL body (abstain), and a
+/// well-formed one crosses intact. (1.5.5's host did this in `wire::transform_outcome`, deleted
+/// with the JSON reply lane.)
+#[test]
+fn transform_reply_reads_back_as_1_5_5_did() {
+    match transform(
+        r#"{"reject":{"status":200,"message":"no\r\nX"},"rewrite":{"messages":[{"role":"user"}]}}"#,
+    ) {
+        TransformOutcome::Reject { status, message } => {
+            assert_eq!(status, 403);
+            assert_eq!(message, "noX");
+        }
+        other => panic!("expected Reject, got {other:?}"),
+    }
+    match transform(
+        r#"{"rewrite":{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"t"}]}}"#,
+    ) {
+        TransformOutcome::Rewrite(rw) => {
+            assert_eq!(rw.messages.len(), 1);
+            assert_eq!(rw.tools.len(), 1);
+        }
+        other => panic!("expected Rewrite, got {other:?}"),
+    }
+    for json in [
+        r#"{"rewrite":{"messages":[]}}"#,
+        r#"{"rewrite":{"messages":"hi"}}"#,
+        r#"{"rewrite":null}"#,
+        r#"{}"#,
+    ] {
+        assert!(
+            matches!(transform(json), TransformOutcome::Abstain),
+            "a malformed or absent rewrite keeps the original body: {json}"
+        );
+    }
 }

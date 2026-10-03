@@ -1807,7 +1807,7 @@ fn unauthorized_with_completion_taps(
         busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
             &app.tap_hooks_response,
             &shape,
-            crate::hooks::wire::HookStageProjection {
+            busbar_contract::hook_wire::HookStageProjection {
                 at: "response",
                 model: None,
                 attempt_number: None,

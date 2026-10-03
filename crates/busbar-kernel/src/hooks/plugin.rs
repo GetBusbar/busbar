@@ -75,23 +75,41 @@ fn unanswered<O>(name: &str, budget: Duration, a: Answered<O>) -> String {
     }
 }
 
-/// LOWER a READY `decide` answer: reject > restrict > abstain > order (1.5.5's `wire::normalize`).
+/// LOWER a READY `decide` answer read from its frame (see [`decision`]).
 fn lower_decide(
     out: &busbar_contract::abi::hook::DecideOut,
     frame: &DecideFrame,
     candidates: &[Candidate<'_>],
 ) -> RoutingDecision {
-    let verbs = out.verbs;
+    decision(
+        out.verbs,
+        out.reject_status,
+        || frame.reject_message(out.reject_message_written),
+        || frame.restrict_tags(out.restrict_tags_written),
+        || frame.order(out.order_written),
+        candidates,
+    )
+}
+
+/// THE HOST'S HALF OF A `decide` ANSWER: reject > restrict > abstain > order, as 1.5.5's host
+/// normalized a reply (the 1.5.5 reply tests in `tests/wire_tests.rs` run through here). Each
+/// written part is read only when its verb asks for it.
+pub(super) fn decision(
+    verbs: u32,
+    reject_status: u16,
+    reject_message: impl FnOnce() -> String,
+    restrict_tags: impl FnOnce() -> Vec<String>,
+    order: impl FnOnce() -> Vec<usize>,
+    candidates: &[Candidate<'_>],
+) -> RoutingDecision {
     if verbs & VERB_REJECT != 0 {
-        let message = frame.reject_message(out.reject_message_written);
-        let (status, message) = reject_of(verbs, out.reject_status, &message);
+        let (status, message) = reject_of(verbs, reject_status, &reject_message());
         return RoutingDecision::Reject { status, message };
     }
     if verbs & VERB_RESTRICT != 0 {
         // Each tag trimmed, empties dropped; none left restricts to nothing (the gate's
         // `on_empty`), never allow-all.
-        let tags_any = frame
-            .restrict_tags(out.restrict_tags_written)
+        let tags_any = restrict_tags()
             .into_iter()
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
@@ -102,25 +120,38 @@ fn lower_decide(
         return RoutingDecision::Abstain;
     }
     let valid: std::collections::HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
-    RoutingDecision::from_ranked(frame.order(out.order_written), &valid)
+    RoutingDecision::from_ranked(order(), &valid)
 }
 
-/// LOWER a READY `transform` answer: reject > rewrite > abstain (1.5.5's `wire::transform_outcome`);
-/// a rewrite that does not parse proceeds with the ORIGINAL body.
+/// LOWER a READY `transform` answer read from its frame (see [`transformed`]).
 fn lower_transform(
     out: &busbar_contract::abi::hook::TransformOut,
     frame: &DecideFrame,
 ) -> TransformOutcome {
-    let verbs = out.verbs;
+    transformed(
+        out.verbs,
+        out.reject_status,
+        || frame.reject_message(out.reject_message_written),
+        || frame.rewrite(out.rewrite_written),
+    )
+}
+
+/// THE HOST'S HALF OF A `transform` ANSWER: reject > rewrite > abstain, as 1.5.5's host read a
+/// transform reply; a rewrite that does not parse proceeds with the ORIGINAL body.
+pub(super) fn transformed(
+    verbs: u32,
+    reject_status: u16,
+    reject_message: impl FnOnce() -> String,
+    rewrite: impl FnOnce() -> Vec<u8>,
+) -> TransformOutcome {
     if verbs & VERB_REJECT != 0 {
-        let message = frame.reject_message(out.reject_message_written);
-        let (status, message) = reject_of(verbs, out.reject_status, &message);
+        let (status, message) = reject_of(verbs, reject_status, &reject_message());
         return TransformOutcome::Reject { status, message };
     }
     if verbs & VERB_REWRITE == 0 {
         return TransformOutcome::Abstain;
     }
-    serde_json::from_slice::<serde_json::Value>(&frame.rewrite(out.rewrite_written))
+    serde_json::from_slice::<serde_json::Value>(&rewrite())
         .ok()
         .as_ref()
         .and_then(wire::parse_rewrite)

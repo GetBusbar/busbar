@@ -18,7 +18,7 @@ use busbar_contract::ir::invoke::InvokeReq;
 use std::sync::{Arc, Mutex};
 
 /// A gate that ANSWERS a fixed decision and RECORDS the exact wire document it was handed — built
-/// through the engine's own `wire::build`, so what this test reads is what a plugin would receive
+/// through the contract's own `hook_wire::build`, so what this test reads is what a plugin would receive
 /// across the ABI rather than a second rendering of the same struct.
 struct Spy {
     reply: RoutingDecision,
@@ -34,8 +34,8 @@ impl RoutingPolicy for Spy {
         ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
-        let doc = serde_json::to_value(crate::hooks::wire::build(
-            crate::hooks::wire::OP_DECIDE,
+        let doc = serde_json::to_value(busbar_contract::hook_wire::build(
+            busbar_contract::hook_wire::OP_DECIDE,
             req,
             candidates,
             ctx,
@@ -85,7 +85,7 @@ fn reply_gate(reply: serde_json::Value) -> Arc<dyn RoutingPolicy> {
 }
 
 /// A reply carrying a VALID `reject` beside a WRONG-TYPED sibling (`order` must be an array of
-/// integers) fails to parse into `HookResponse` — and with `on_error: reject` that MUST refuse the
+/// integers) fails the 1.5.5 reply parse (`abi::sdk::hook::lower_decide_reply`) — and with `on_error: reject` that MUST refuse the
 /// request, never route it. This is the exact CF4 fail-open: the malformed reply used to be
 /// swallowed to `Abstain` (proceed), bypassing both the hook's `reject` and the operator's on_error.
 #[tokio::test]
@@ -170,8 +170,8 @@ async fn a_malformed_reply_honors_a_non_reject_on_error() {
     );
 }
 
-/// A GENUINE no-opinion reply still Abstains. An empty `{}` parses cleanly to a `HookResponse` with
-/// no signals → `Ok(Abstain)` → proceed, even under `on_error: reject`: a hook that legitimately has
+/// A GENUINE no-opinion reply still Abstains. An empty `{}` parses cleanly to a reply with
+/// no verbs → `Ok(Abstain)` → proceed, even under `on_error: reject`: a hook that legitimately has
 /// nothing to say is NOT turned into a hard failure by this fix.
 #[tokio::test]
 async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
