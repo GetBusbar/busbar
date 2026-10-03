@@ -416,7 +416,9 @@ pub fn refuse_unserved_inbound(
     path: &std::path::Path,
     registry: &PluginRegistry,
 ) -> Result<(), String> {
-    let doc = document(path).unwrap_or_default();
+    let doc = document(path)
+        .map(|d| d.value().clone())
+        .unwrap_or_default();
     let candidates = discover(registry)?;
     refuse_inbound(&candidates, &select(&Uses::of(&doc), &candidates))
 }
