@@ -718,11 +718,14 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
 /// `BUSBAR_DATA_DIR` IS PROCESS-GLOBAL, and `cargo test` runs this binary's tests on parallel
 /// threads: two boot-book tests that each set it would resolve one directory and write two chains
 /// into one journal, whose replay then fails verification. Every test that sets it does so through
-/// [`data_dir_env`], which holds this lock until the test ends.
+/// [`data_dir_env`], which holds this lock until the test ends. Its only callers are the
+/// `linked_axis_body_ingress` boot-book cells, so it is gated with them.
+#[cfg(linked_axis_body_ingress)]
 static DATA_DIR_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Set `BUSBAR_DATA_DIR` to `dir` for the rest of the calling test, serialized against every other
 /// test that sets it. The tuple drops in order: the variable is restored, then the lock released.
+#[cfg(linked_axis_body_ingress)]
 fn data_dir_env(dir: &std::path::Path) -> (EnvVarGuard, std::sync::MutexGuard<'static, ()>) {
     // A test that panicked while holding the lock still restored the variable on unwind.
     let held = DATA_DIR_ENV
@@ -1233,7 +1236,8 @@ fn one_seal_after_two_reloads() {
 /// code, however it is reached (`root::boot::book(`, `super::boot::book(`, or a bare `book(` inside
 /// `boot.rs`), one entry per call. Not a call: a method (`.book(`), a longer name (`node_book(`)
 /// and the definition (`fn book(`). A line comment is skipped, and so is every `tests` directory
-/// and `tests.rs`.
+/// and `tests.rs`. Read only by [`one_seal_after_two_reloads`], so gated with it.
+#[cfg(linked_axis_body_ingress)]
 fn book_call_sites(src: &std::path::Path) -> Vec<String> {
     fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)

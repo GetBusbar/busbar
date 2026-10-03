@@ -23,7 +23,9 @@
 //! one function, the equality tests below go red for the same reason that arm is unequal.
 
 use super::*;
-use crate::root::boot::{dropped_planes, HostEgressCarrier};
+use crate::root::boot::dropped_planes;
+#[cfg(linked_egress)]
+use crate::root::boot::HostEgressCarrier;
 use crate::root::loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
 use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
