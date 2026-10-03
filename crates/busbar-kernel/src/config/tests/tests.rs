@@ -1995,18 +1995,22 @@ fn test_secret_ref_malformed_shapes_rejected() {
 /// string form trims trailing newlines (the file-delivered-secret convention).
 #[test]
 fn test_secret_ref_builtin_resolution_fail_closed() {
-    use crate::config::secret::{resolve_builtin, resolve_builtin_string};
+    use crate::config::secret::{resolve_linked_string, SecretResolver};
 
     // env: set, non-empty.
     std::env::set_var("BUSBAR_T_SECRET_ENV_OK", "s3cr3t-value");
     assert_eq!(
-        resolve_builtin(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK")).unwrap(),
+        SecretResolver::builtins_only()
+            .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
+            .unwrap(),
         b"s3cr3t-value".to_vec()
     );
     std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
 
     // env: unset -> error naming the variable.
-    let err = resolve_builtin(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET")).unwrap_err();
+    let err = SecretResolver::builtins_only()
+        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET"))
+        .unwrap_err();
     assert!(
         err.contains("BUSBAR_T_SECRET_ENV_UNSET") && err.contains("unset"),
         "{err}"
@@ -2014,7 +2018,9 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
 
     // env: set but EMPTY -> fail-closed error, never an empty secret.
     std::env::set_var("BUSBAR_T_SECRET_ENV_EMPTY", "");
-    let err = resolve_builtin(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY")).unwrap_err();
+    let err = SecretResolver::builtins_only()
+        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY"))
+        .unwrap_err();
     std::env::remove_var("BUSBAR_T_SECRET_ENV_EMPTY");
     assert!(err.contains("EMPTY"), "{err}");
 
@@ -2023,13 +2029,16 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     let path = dir.join(format!("busbar-secret-test-{}", std::process::id()));
     std::fs::write(&path, "file-secret\n").unwrap();
     let sref = SecretRef::file(path.to_str().unwrap());
-    assert_eq!(resolve_builtin(&sref).unwrap(), b"file-secret\n".to_vec());
-    assert_eq!(resolve_builtin_string(&sref).unwrap(), "file-secret");
+    assert_eq!(
+        SecretResolver::builtins_only().resolve(&sref).unwrap(),
+        b"file-secret\n".to_vec()
+    );
+    assert_eq!(resolve_linked_string(&sref).unwrap(), "file-secret");
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.
     let missing = SecretRef::file("/nonexistent/busbar-secret-test");
-    assert!(resolve_builtin(&missing).is_err());
+    assert!(SecretResolver::builtins_only().resolve(&missing).is_err());
 
     // unknown module -> fail-closed error naming the module.
     let mut settings = serde_json::Map::new();
@@ -2038,7 +2047,9 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         module: "vault".to_string(),
         settings,
     };
-    let err = resolve_builtin(&unknown).unwrap_err();
+    let err = SecretResolver::builtins_only()
+        .resolve(&unknown)
+        .unwrap_err();
     assert!(
         err.contains("vault") && err.contains("fail-closed"),
         "{err}"

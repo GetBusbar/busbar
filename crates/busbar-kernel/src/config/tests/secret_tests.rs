@@ -12,13 +12,16 @@ fn env_module_resolves_and_fails_closed() {
     let var = format!("BUSBAR_SECRET_TEST_{}", std::process::id());
     std::env::set_var(&var, "s3cret\n");
     let r = SecretRef::env(&var);
-    assert_eq!(resolve_builtin(&r).unwrap(), b"s3cret\n");
-    assert_eq!(resolve_builtin_string(&r).unwrap(), "s3cret");
+    assert_eq!(
+        SecretResolver::builtins_only().resolve(&r).unwrap(),
+        b"s3cret\n"
+    );
+    assert_eq!(resolve_linked_string(&r).unwrap(), "s3cret");
     std::env::remove_var(&var);
-    let err = resolve_builtin(&r).unwrap_err();
+    let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(err.contains("unset"), "unset env is fail-closed: {err}");
     std::env::set_var(&var, "");
-    let err = resolve_builtin(&r).unwrap_err();
+    let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(err.contains("EMPTY"), "empty env is fail-closed: {err}");
     std::env::remove_var(&var);
 }
@@ -29,13 +32,16 @@ fn file_module_resolves_and_fails_closed() {
     let path = std::env::temp_dir().join(format!("busbar-secret-{}.txt", std::process::id()));
     std::fs::write(&path, b"file-secret\n").unwrap();
     let r = SecretRef::file(path.to_string_lossy().into_owned());
-    assert_eq!(resolve_builtin(&r).unwrap(), b"file-secret\n");
-    assert_eq!(resolve_builtin_string(&r).unwrap(), "file-secret");
+    assert_eq!(
+        SecretResolver::builtins_only().resolve(&r).unwrap(),
+        b"file-secret\n"
+    );
+    assert_eq!(resolve_linked_string(&r).unwrap(), "file-secret");
     std::fs::write(&path, b"").unwrap();
-    let err = resolve_builtin(&r).unwrap_err();
+    let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(err.contains("EMPTY"), "empty file is fail-closed: {err}");
     let _ = std::fs::remove_file(&path);
-    let err = resolve_builtin(&r).unwrap_err();
+    let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(err.contains("cannot resolve"), "missing file fails: {err}");
 }
 
@@ -47,9 +53,11 @@ fn file_module_resolves_and_fails_closed() {
 fn env_whitespace_only_name_is_rejected() {
     for bad in ["", "   ", "\t\n"] {
         let r = SecretRef::env(bad);
-        let err = resolve_builtin(&r).expect_err(&format!(
-            "whitespace-only env name {bad:?} must be rejected"
-        ));
+        let err = SecretResolver::builtins_only()
+            .resolve(&r)
+            .expect_err(&format!(
+                "whitespace-only env name {bad:?} must be rejected"
+            ));
         assert!(
             err.contains("requires settings.key"),
             "whitespace-only env name {bad:?} must fail the settings-shape check, got: {err}"
@@ -62,9 +70,11 @@ fn env_whitespace_only_name_is_rejected() {
 fn file_whitespace_only_path_is_rejected() {
     for bad in ["", "   ", "\t\n"] {
         let r = SecretRef::file(bad);
-        let err = resolve_builtin(&r).expect_err(&format!(
-            "whitespace-only file path {bad:?} must be rejected"
-        ));
+        let err = SecretResolver::builtins_only()
+            .resolve(&r)
+            .expect_err(&format!(
+                "whitespace-only file path {bad:?} must be rejected"
+            ));
         assert!(
             err.contains("requires settings.path"),
             "whitespace-only file path {bad:?} must fail the settings-shape check, got: {err}"
@@ -81,7 +91,7 @@ fn none_reference_has_no_value_to_resolve() {
     let r = SecretRef::none();
     let resolver = SecretResolver::builtins_only();
     for err in [
-        resolve_builtin(&r).unwrap_err(),
+        SecretResolver::builtins_only().resolve(&r).unwrap_err(),
         resolver.resolve(&r).unwrap_err(),
         resolver.resolve_string(&r).unwrap_err(),
     ] {
@@ -100,7 +110,7 @@ fn unknown_module_fails_closed() {
         module: "vault".to_string(),
         settings: serde_json::Map::new(),
     };
-    let err = resolve_builtin(&r).unwrap_err();
+    let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(
         err.contains("fail-closed") && err.contains("vault"),
         "unknown module refuses: {err}"
@@ -115,12 +125,18 @@ fn malformed_builtin_refs_error_precisely() {
         module: SECRET_MODULE_ENV.to_string(),
         settings: serde_json::Map::new(),
     };
-    assert!(resolve_builtin(&r).unwrap_err().contains("settings.key"));
+    assert!(SecretResolver::builtins_only()
+        .resolve(&r)
+        .unwrap_err()
+        .contains("settings.key"));
     let r = SecretRef {
         module: SECRET_MODULE_FILE.to_string(),
         settings: serde_json::Map::new(),
     };
-    assert!(resolve_builtin(&r).unwrap_err().contains("settings.path"));
+    assert!(SecretResolver::builtins_only()
+        .resolve(&r)
+        .unwrap_err()
+        .contains("settings.path"));
 }
 
 /// Deserialize: the `{env}` / `{file}` sugar desugars to the canonical module + settings; the

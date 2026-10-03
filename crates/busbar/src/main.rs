@@ -265,6 +265,9 @@ fn register_protocols() {
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
 fn register_planes() {
+    // The root legacy table, before the first configuration read (the dropped-plugin scan below
+    // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
+    root::legacy::install();
     // The linked store and hook rows onto the kernel's cold-kind axis, with the default store the
     // store rows declare, and its auth rows onto the auth axis, before anything resolves one.
     root::linked::register_stores(&LINKED);
@@ -275,8 +278,8 @@ fn register_planes() {
     busbar_kernel::preflight::install_auth_axis(root::dispatch::auth_axis);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
-    let dropped = root::linked::dropped_from_config(&LINKED);
-    root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(&LINKED, dropped));
+    let dropped = root::boot::dropped_from_config(&LINKED);
+    root::linked::register_planes(&LINKED, root::boot::dropped_planes_of(&LINKED, dropped));
     root::linked::register_exports(dropped);
     // A plugin that declares an inbound need is refused until an accepted connection has a
     // consumer, after the axes it selects against are registered.
@@ -509,174 +512,6 @@ fn main() {
     }
 }
 
-/// THE BOOT BOOK, COMPOSED — the extracted seam [`open_boot_book`] calls, wired against a store
-/// adapter so its behaviour can be proved without a bound listener or a loaded plugin behind it.
-///
-/// Three decisions, made together here because they are ONE value and a caller that made them
-/// separately would have a node whose halves disagree:
-///
-/// 1. **The journal ships to the CONFIGURED STORE'S shipper.** A batch is offered to that shipper
-///    and its answer is part of the commit — committed-before-ack — and it is written to this
-///    node's own disk as well when a data directory was resolved. Read
-///    [`root::durability`]'s preamble for what "the store" answers with TODAY: on every store this
-///    binary can load, the record verbs are answered by the adapter's node-local shim, which
-///    acknowledges and never fails. So this line buys the WIRING, not new bytes at rest — the
-///    moment a store speaks the record ABI the batches land in it, with no change here. The
-///    durability a node gains today from this function is the on-disk half, and the honesty of the
-///    other half is that the previous release kept nothing there either.
-/// 2. **The ledger dual-writes onto the in-memory reconciliation rows.** That half stays memory: it
-///    is the cross-check the reconciliation identity is read from, not the acknowledgement path.
-/// 3. **The OPENING IS SEALED, here, before this function returns.** The previous release's rows are
-///    read through the same adapter and sealed as the opening figures, with the marker written onto
-///    THIS journal rather than the adapter's node-local shim — which could only ever hold it for the
-///    life of a process.
-///
-/// **THE ORDER IS THE WHOLE POINT.** The seal happens before the composed book is handed back, so it
-/// is impossible for a caller to reach a settlement path with an unopened book: the first accepted
-/// connection can settle, and a settlement posted before the opening was sealed would measure its
-/// residual from a checkpoint that did not exist when it happened. An opening sealed after traffic
-/// has begun is worse than no opening at all, because it looks authoritative.
-///
-/// It returns the wired stack, the rows a view reads them back from, and what the migration did.
-/// The opening is signed with the audit chain's own key (Q71(3): one keyset); a chain given no key
-/// seals it unsigned, which the ledger unit accepts.
-///
-/// # Errors
-///
-/// The journal could not be opened (a configured data directory that could not be read), or the
-/// opening could not be sealed — the two boot conditions [`root::migration::run`] returns where
-/// continuing would be worse than refusing. A store that merely would not answer for some rows is
-/// NOT one of them; see that module's preamble.
-fn compose_boot_book(
-    adapter: &crate::root::loader::store_adapter::StoreAdapter,
-    data_dir: Option<std::path::PathBuf>,
-    mig: &root::migration::MigrationConfig,
-    now: u64,
-    token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
-) -> Result<
-    (
-        root::durability::Durability,
-        Arc<busbar_kernel_ledger::legacy::RecordingRows>,
-        root::migration::Migration,
-    ),
-    String,
-> {
-    let rows = Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
-    let mut durability = root::durability::build_for_node(
-        &root::durability::DurabilityConfig {
-            data_dir: data_dir.clone(),
-        },
-        mig.node,
-        adapter.shipper(),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
-    )
-    .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
-    // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
-    // corrected count and every recorded content access survive the restart (a node with no data
-    // directory rebuilds nothing).
-    durability.restore_amendments();
-    // A corrupt journal segment was already logged and counted when the book was built; this puts
-    // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
-    if let Err(lost) =
-        durability.journal_quarantines(token, busbar_contract::caps::StepName::Meter, now)
-    {
-        tracing::error!(
-            step = lost.step().as_str(),
-            "the journal could not record the quarantine boot recovery made"
-        );
-    }
-    // THE DEPLOYMENT KEYSET (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect ruling 2026-09-26),
-    // bound BEFORE the opening is sealed so checkpoint 0 is signed with it too. With a data
-    // directory the first boot mints it, caches it there (0600) and seals its fingerprint in a
-    // `Bootstrap` record; a later boot that cannot produce that fingerprint refuses `KeysetMissing`.
-    // Without one it is ephemeral: minted for this process, written nowhere, checked by nothing.
-    root::keyset::bind(
-        &mut durability,
-        data_dir.as_deref(),
-        token,
-        busbar_contract::caps::StepName::Meter,
-        now,
-    )
-    .map_err(|e| e.to_string())?;
-    let migration = {
-        let (mut records, signer) =
-            durability.migration_records_signed(token, busbar_contract::caps::StepName::Meter);
-        let signer = signer
-            .as_ref()
-            .map(|s| s as &dyn busbar_kernel_ledger::checkpoint::CheckpointSecret);
-        root::migration::run(adapter, &mut records, mig, now, signer)
-            .map_err(|e| format!("the boot ledger could not seal its opening balances: {e}"))?
-    };
-    Ok((durability, rows, migration))
-}
-
-/// THE PROCESS'S ONE BOOK, opened over the deployment's configured store with its balances sealed.
-///
-/// A node with a governance store ships its book to that store and opens it from the rows the
-/// previous release left there; a node with none keeps the previous release's memory-only book,
-/// because a store the batches were never going to reach cannot be the one they are shipped to.
-///
-/// The data directory is the one [`busbar_kernel::preflight::fleet_data_dir`] resolves — the SAME
-/// accessor the plugin anti-downgrade floor persists under, so the two can never disagree about
-/// where this node keeps its own files. Absent, the branch in
-/// [`root::durability::build_for_node`] is the unset one and nothing is probed, nothing is opened
-/// and no file appears: this wiring gives a node with a CONFIGURED directory somewhere to write, and
-/// deliberately does not make writing unconditional.
-fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook {
-    let Some(gov) = app.governance.as_ref() else {
-        // No store: the keyset is node-local and ephemeral (PB-13), and the chain still signs.
-        let book = root::durability::node_book();
-        if let Err(e) = root::keyset::bind_ephemeral(
-            &mut book.durability.lock().unwrap_or_else(|p| p.into_inner()),
-        ) {
-            die(e);
-        }
-        return book;
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let adapter = crate::root::loader::store_adapter::StoreAdapter::native(gov.store());
-    let mig = root::migration::config_from(&app.cost, now);
-    let token = root::kernel::new_kernel().durability_token();
-    let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    match compose_boot_book(&adapter, data_dir, &mig, now, &token) {
-        Ok((durability, rows, migration)) => {
-            // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
-            // boot log's INFO+ line set is part of what "LLM-only ≡ 1.5.5" means — it is pinned
-            // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's
-            // `hazard|no-data-dir|logs` cell — so a new line here is a user-visible byte change
-            // on a surface that must not move. The seal is an internal fact an operator can ask
-            // for; it is not news a 1.5.5 deployment ever printed.
-            if migration.sealed_now() {
-                tracing::debug!(
-                    node = mig.node,
-                    rate_card_version = mig.rate_card_version,
-                    "the boot ledger sealed its opening balances from the configured store"
-                );
-            }
-            // THIS ONE STAYS A WARN, and the asymmetry is deliberate: it fires only when the store
-            // would not list its key rows, which means the opening is INCOMPLETE — sealed over the
-            // buckets configuration named and missing the ones the store would have. A money fact
-            // that degraded silently to keep a log shape would be the wrong trade. It cannot fire
-            // on the neutral shape: it takes a store that fails to answer, not a store with
-            // nothing in it.
-            if let Some(reason) = &migration.key_rows_unreadable {
-                tracing::warn!(
-                    reason = %reason,
-                    "the boot ledger could not list the store's key rows, so the opening was sealed \
-                     over the buckets the configuration named"
-                );
-            }
-            let durability = Arc::new(std::sync::Mutex::new(durability));
-            // Every amendment sealed from here on goes on the book it was rebuilt from.
-            root::durability::bind_amendments(&durability);
-            root::durability::NodeBook { durability, rows }
-        }
-        Err(e) => die(e),
-    }
-}
-
 async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::LateServices>) {
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
     root::observe::install();
@@ -893,7 +728,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The planes that state themselves through a door bind on the process's one dispatcher (built
     // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
     // one connector just built.
-    root::linked::load_door_planes();
+    root::boot::load_door_planes();
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
@@ -976,6 +811,55 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // tamper evidence) moved with the code; see busbar-core/src/boot.rs. A plane whose durable
     // state cannot be restored REFUSES BOOT — `hydrate_all` propagates the plane hook's `Err`.
     busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
+    // THE LATE ATTACH (`root::serve::attach`): the kernel's host services gain the pool, the
+    // signer and the hydrated demotion record this first build made, once.
+    let planes: Vec<_> = busbar_kernel::plane::registry::plane_decls()
+        .iter()
+        .map(|d| &d.declaration)
+        .collect();
+    let signer = app
+        .governance
+        .clone()
+        .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
+    root::serve::attach(&late_services, signer, &app.demotion_record, &planes);
+    // THE DOOR PLANES, COMPOSED (`root::serve::compose_planes`, TODO U6-U7): each plane bound through
+    // its door whose section this deployment writes is opened, driven and ticked here, once, its
+    // money posted onto the node's book a root unit keeps (`RootUnit::end_post`, through the
+    // generated table: this file names no root unit). A deployment without governance has no money
+    // book for a driven unit to settle on, and a build whose units keep no node book has nowhere to
+    // post an end, so their door planes stay bound and unopened, as before.
+    let end_post = ROOT_UNITS.iter().find_map(|u| u.end_post);
+    let served = match (app.governance.clone(), end_post) {
+        (Some(gov), Some(end_post)) => {
+            let post = end_post();
+            let money = move || {
+                Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
+                    Arc::clone(&gov),
+                    Arc::clone(&post),
+                )) as Arc<dyn busbar_kernel::plane_driver::MoneySeam>
+            };
+            root::serve::compose_planes(
+                root::boot::door_planes(),
+                &root::dispatch::dispatcher(),
+                &late_services,
+                &deploy.plane_raw,
+                &money,
+            )
+            .unwrap_or_else(|e| die(e))
+        }
+        (gov, _) => {
+            if !root::boot::door_planes().is_empty() {
+                let why = if gov.is_none() {
+                    "no governance book to settle on"
+                } else {
+                    "no node book to post an end onto"
+                };
+                tracing::warn!("door planes stay unopened: {why}");
+            }
+            root::serve::Served::default()
+        }
+    };
+    served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
     // business, and nothing about it is restored from disk here. The durable config that makes "fix
@@ -1044,17 +928,17 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // healthy, because an empty ledger reconciles. Its records ship to the deployment's CONFIGURED
     // STORE (committed-before-ack, and onto this node's own disk as well when a data directory was
     // resolved) and its OPENING BALANCES are SEALED at start-of-book from the rows the previous
-    // release left in that store — see `open_boot_book`. A configuration that named no data
+    // release left in that store — see `root::boot::book`. A configuration that named no data
     // directory still probes nothing and opens nothing; the branch that decides is unchanged.
     //
     // It is built HERE — before either listener binds — because the first accepted connection can
-    // settle, and it must settle against a book whose opening is ALREADY sealed. `open_boot_book`
+    // settle, and it must settle against a book whose opening is ALREADY sealed. `root::boot::book`
     // returns only after the seal, so there is no window in which a settlement could be measured
     // from a checkpoint that was not written yet.
     // Opened for the admin surface and for every root unit that settles onto it; a build with
     // neither opens nothing.
     let book = (cfg!(feature = "root-admin") || ROOT_UNITS.iter().any(|u| u.opens_book))
-        .then(|| open_boot_book(&app_handle.load()));
+        .then(|| root::boot::book(&app_handle.load()).unwrap_or_else(|e| die(e)));
 
     // THE CHECKPOINT CADENCE (OWNER Q71(3); BUSBAR-1.6.0.md THE DESIGN, §7): armed on the one book once its
     // opening is sealed, so every serving append checks the entry half and this tick checks the
