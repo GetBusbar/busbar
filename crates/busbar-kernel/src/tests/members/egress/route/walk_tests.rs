@@ -232,7 +232,8 @@ fn a_member_that_answers_with_a_server_error_is_failed_over_from() {
 /// `CallerFault`, which is the caller's own fault and penalises nothing. The exact number is the
 /// only thing that tells the two apart, and it has to reach the classifier for the destination to
 /// go down. The verdict here is stated against the NUMBER: a walk that hands the classifier no
-/// number falls through to the coarse-class default and relays instead of failing over.
+/// number falls through to the coarse-class default, which records nothing, so the destination is
+/// never recorded hard-down.
 #[test]
 fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
     let node = two_lane_pool();
@@ -271,9 +272,13 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
         vec![Outcome::HardDown],
         "and the destination is recorded hard-down, which is what fans out to its siblings"
     );
+    // The hard-down is recorded and then RELAYED to the plane (step 24, member-401: 1.5.5's attempt
+    // classifier ends the walk on an auth hard-down, and the plane's judge renders it); the far end
+    // no longer fails it over before the plane has seen it.
     assert!(
-        matches!(&outcome, Routed::Delivered(d) if d.destination == DestinationId::new(1)),
-        "a hard-down member is failed over from, never relayed: {outcome:?}"
+        matches!(&outcome, Routed::Delivered(d) if d.destination == DestinationId::new(0)
+            && d.status.map(|(code, _)| code) == Some(403)),
+        "a hard-down member's answer is relayed to the plane, not failed over: {outcome:?}"
     );
 }
 

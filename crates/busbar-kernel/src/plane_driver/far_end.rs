@@ -372,7 +372,7 @@ impl EgressFarEnd<'_> {
     }
 
     /// Make the member the walk took the live attempt.
-    fn take(&self, w: &mut State, taken: Taken) -> Pick {
+    fn admit_taken(&self, w: &mut State, taken: Taken) -> Pick {
         let Taken {
             pool,
             member,
@@ -425,7 +425,7 @@ impl EgressFarEnd<'_> {
             let mut w = self.lock();
             self.settle(&mut w);
             match w.walk.next(&ports, self.route.affinity, token) {
-                Step::Take(taken) => return self.take(&mut w, taken),
+                Step::Take(taken) => return self.admit_taken(&mut w, taken),
                 Step::Shed(shed) => return exhausted(&shed),
                 Step::Wait(wait) => wait,
             }
@@ -438,7 +438,7 @@ impl EgressFarEnd<'_> {
         let waited = parked.wait(&ports).await;
         let mut w = self.lock();
         match w.walk.waited(&ports, waited, token) {
-            Ok(taken) => self.take(&mut w, taken),
+            Ok(taken) => self.admit_taken(&mut w, taken),
             Err(shed) => exhausted(&shed),
         }
     }
