@@ -450,6 +450,11 @@ macro_rules! lend {
 }
 
 use crate::abi::auth::{IdentityBuf, NamedValue, VerifyIn};
+use crate::abi::hook::{
+    BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
+    CandidateStatic as HookCandidateStatic, DecideIn, RequestView as HookRequestView,
+    SignalEntry as HookSignalEntry,
+};
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
@@ -536,6 +541,19 @@ lend! {
         one(facts) -> ConnFacts;
         bytes(leftover, leftover_len);
     }
+    // THE HOOK KIND (`abi::hook`): the views, and the host buffers `decide`/`transform` answer into.
+    DecideIn {
+        list(candidates, candidates_len) -> HookCandidateStatic;
+        list(candidate_dynamics, candidates_len) -> HookCandidateDynamic;
+        list(budget, budget_len) -> HookBudgetBucketState;
+        buf(order_buf, order_cap) -> u32;
+        buf(reject_message_buf, reject_message_cap) -> u8;
+        buf(restrict_tags_buf, restrict_tags_cap) -> u8;
+        buf(rewrite_buf, rewrite_cap) -> u8;
+    }
+    HookRequestView { list(signals, signals_len) -> HookSignalEntry; }
+    HookCandidateStatic { list(tags, tags_len) -> AbiStr; }
+    HookCandidateDynamic { list(signals, signals_len) -> HookSignalEntry; }
 }
 
 // THE STORE KIND (`abi::store`): the lists a write lends and the host buffers a request-path read
