@@ -628,7 +628,7 @@ async fn protected_resource_route(ctx: PlaneReqCtx) -> axum::response::Response 
     let Some(mount) = ctx.slot.downcast_ref::<VoiceMount>() else {
         return refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "streaming route reached without its dispatch slot",
+            "the metadata route reached without its dispatch slot",
         );
     };
     protocol::metadata(&protocol::Metadata {
