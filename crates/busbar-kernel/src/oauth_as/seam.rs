@@ -12,6 +12,8 @@
 //! built for a different shape of plane and would force several of its fields to fictions here.
 
 use std::any::Any;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
 use super::config::AsIdentity;
@@ -24,7 +26,21 @@ use crate::core_routes::CoreRouter;
 type AsPlaneBuildFn =
     fn(&AsIdentity, Option<&str>, Vec<String>) -> Result<Arc<dyn Any + Send + Sync>, String>;
 
-/// The two functions core calls through this seam. Every field type here is either core-owned
+/// One RFC 9449 s7 presentation at a protected resource: the request line, the token from
+/// `Authorization: DPoP <token>`, and the one `DPoP` proof header.
+pub struct DpopPresentation {
+    pub method: String,
+    /// The request path; the plane makes the proof's `htu` from its own origin and this.
+    pub path: String,
+    pub token: String,
+    pub proof: String,
+}
+
+/// The plane's DPoP verification (the type of [`AsPlaneSeam::verify_dpop`]).
+type AsDpopVerifyFn =
+    fn(&Arc<dyn Any + Send + Sync>, DpopPresentation) -> Pin<Box<dyn Future<Output = bool> + Send>>;
+
+/// The functions core calls through this seam. Every field type here is either core-owned
 /// (`AsIdentity`, `CoreRouter`) or fully type-erased (`Arc<dyn Any + Send + Sync>`), so the seam
 /// itself names no `busbar_core_oauth2` item.
 pub struct AsPlaneSeam {
@@ -43,6 +59,12 @@ pub struct AsPlaneSeam {
     /// `plane` is the SAME type-erased object [`Self::build`] returned; only the plane crate names
     /// its concrete type, so only it can downcast this back.
     pub mount: fn(CoreRouter, Option<&Arc<dyn Any + Send + Sync>>) -> CoreRouter,
+
+    /// Verify a DPoP presentation at one of busbar's protected resources (`auth::dpop`): the proof
+    /// (signature, `htm`, `htu`, `iat` window, `ath`), its `jti` single use, and that its key is the
+    /// key the token's `cnf.jkt` names. `true` only when all hold. The authorization server owns
+    /// this because it owns the key verifiers and the replay ledger; the door owns the decision.
+    pub verify_dpop: AsDpopVerifyFn,
 }
 
 static SEAM: OnceLock<AsPlaneSeam> = OnceLock::new();

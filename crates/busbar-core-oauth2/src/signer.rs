@@ -253,6 +253,37 @@ impl JwsVerifier for RingEs256Verifier {
     }
 }
 
+/// The PS256 verifier over `ring` (RSASSA-PSS, SHA-256, MGF1-SHA-256, RFC 7518 s3.5): FAPI 2.0
+/// s5.4.1's other algorithm, for a client provisioned with an RSA key and for its DPoP proofs.
+/// Installed into the PS256 slot only, so an RS256 credential finds no verifier and is refused.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RingPs256Verifier;
+
+impl JwsVerifier for RingPs256Verifier {
+    fn alg(&self) -> JwsAlg {
+        JwsAlg::Ps256
+    }
+
+    /// `true` only for a valid PS256 signature over `signing_input` under an RSA `key` of 2048 to
+    /// 8192 bits (`RSA_PSS_2048_8192_SHA256` refuses a weaker modulus itself). Every failure — a
+    /// non-RSA key, an undecodable member, a bad signature — is the one `false`.
+    fn verify(&self, key: &Jwk, signing_input: &[u8], signature: &[u8]) -> bool {
+        let Jwk::Rsa { n, e, .. } = key else {
+            return false;
+        };
+        let (Ok(n), Ok(e)) = (B64.decode(n), B64.decode(e)) else {
+            return false;
+        };
+        ring::signature::RsaPublicKeyComponents { n, e }
+            .verify(
+                &ring::signature::RSA_PSS_2048_8192_SHA256,
+                signing_input,
+                signature,
+            )
+            .is_ok()
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/signer_tests.rs"]
 mod signer_tests;

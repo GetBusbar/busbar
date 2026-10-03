@@ -56,6 +56,9 @@ pub mod testkit;
 // + callback flow, so they were never one file's own test), so they are wired here instead, at the
 // crate root — the direct analogue of the old `oauth_as/mod.rs` wiring.
 #[cfg(test)]
+#[path = "tests/fapi2_tests.rs"]
+mod fapi2_tests;
+#[cfg(test)]
 #[path = "tests/flow_tests.rs"]
 mod flow_tests;
 #[cfg(test)]
@@ -74,6 +77,7 @@ pub fn install() {
         busbar_kernel::oauth_as::seam::AsPlaneSeam {
             build: plane::seam_build,
             mount: routes::seam_mount,
+            verify_dpop: plane::seam_verify_dpop,
         },
     );
 }
