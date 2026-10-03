@@ -12,6 +12,9 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
     process::dest_judge(&Destinations::default()).expect("the default")
 }
 
+// The one connector is built from this build's linked transport doors; a build that links none
+// (`--no-default-features`) has no connector to build, so this cell gates on the transport-door axis.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_process_has_one_connector_and_every_path_takes_it() {
     let doors = crate::LINKED_TRANSPORT_DOORS;

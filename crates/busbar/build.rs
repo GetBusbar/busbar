@@ -245,13 +245,16 @@ fn served_witness_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> Stri
 }
 
 /// `(set, declared)`: the `linked_axis_<axis>` cfgs of every axis an enabled linked row carries
-/// (the `plane` and `export-doors` axes included), and every such cfg any axis could produce (for
+/// (the `plane`, `export-doors` and `transport-door` axes included), and every such cfg any axis could produce (for
 /// `rustc-check-cfg`).
 fn linked_axis_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Vec<String>, Vec<String>) {
     let cfg_of = |axis: &str| format!("linked_axis_{}", axis.replace('-', "_"));
-    // The plane axis, every registration axis, and the export-door axis (the linked export sinks a
-    // config may name by module, e.g. the scrape sink: a test booting such a config gates on it).
-    let mut declared: Vec<String> = vec![cfg_of("plane"), cfg_of(EXPORT_DOOR_AXIS)];
+    // The plane axis, every registration axis, the export-door axis (the linked export sinks a
+    // config may name by module, e.g. the scrape sink: a test booting such a config gates on it) and
+    // the transport-door axis (the linked wire at the floor of the shipped stack, which the http rows
+    // compose over: a test that seals or folds the shipped stack gates on it).
+    let mut declared: Vec<String> =
+        vec![cfg_of("plane"), cfg_of(EXPORT_DOOR_AXIS), cfg_of(DOOR_AXIS)];
     declared.extend(AXES.iter().map(|(axis, _, _)| cfg_of(axis)));
     let mut set: Vec<String> = Vec::new();
     for (feature, axes) in metadata_map(manifest, "package.metadata.busbar.linked-axes") {

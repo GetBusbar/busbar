@@ -76,6 +76,10 @@ const DECISION: bool = cfg!(feature = "plane-decisions");
 
 /// Every transport and every plane goes into one registry, and both counts are what the design
 /// says they are. This is the half of the seal that does not depend on the claims.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn six_transports_and_five_planes_register() {
     let registry = linked_registry();
@@ -486,6 +490,10 @@ fn a_planes_own_claims_may_overlap() {
 /// The shipped stack composes: every layer the seven transports declare is registered, and the
 /// three that were actually built over a lower layer were built over one they declare. This is
 /// the composition half of the seal, and it passes today.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_shipped_transport_stack_composes() {
     let rows = linked_rows();
@@ -507,6 +515,10 @@ fn the_shipped_transport_stack_composes() {
 
 /// The other direction of the composition rule: a transport built over a layer it does not
 /// declare describes a node nobody is running, and the check says so.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn an_undeclared_composition_refuses_at_boot() {
     let mut rows = linked_rows();
@@ -622,6 +634,10 @@ fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
 /// and a transport's accumulation ceiling are the same number, so a wire built from a `Default`
 /// would take a body the door refused. The fold hands every row's build the ONE settings value it
 /// was given, and the capped composition still seals.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
     const CAP: usize = 1024;
@@ -676,6 +692,10 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 /// built over the first layer it declares: `sse`, `ws` and `grpc` over `http`, the four that open
 /// their own socket or streams over nothing. The same rows handed over in the reverse order build
 /// the same stack, because the order is the declarations' and not the table's.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_fold_builds_bottom_up_in_composes_over_order() {
     let rows = linked_rows();
@@ -890,6 +910,10 @@ fn rows_of(
 /// DROPPED IN, seals to the SAME composition the build that links all of them seals to — the same
 /// rows, each built over the same layer — and the dropped-in wire is registered through the same
 /// registration, answers the registry by its key, and is the wire under the data door.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
     let Some(wire) = dropped_doors().first() else {
