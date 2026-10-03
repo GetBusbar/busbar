@@ -545,6 +545,18 @@ impl Walk {
         audited.decision
     }
 
+    /// THE CHARGED TERMINAL FOR A CALLER THAT WENT AWAY: the facts are sealed and nothing is
+    /// posted, so the fee the door charged stays charged. Whatever the carry holds is dropped with
+    /// the unit; there is nobody to give it to.
+    pub fn audit_abandoned(
+        &self,
+        token: &Pass<busbar_contract::caps::step::Audit>,
+        ctx: &crate::unit::audit::AuditCtx<'_>,
+    ) -> SeatVerdict<busbar_contract::caps::step::Audit> {
+        drop(self.take_bytes());
+        crate::unit::audit::audit_abandoned(token, ctx)
+    }
+
     /// THE NOT-CHARGED TERMINAL. Nothing was charged, so nothing is refunded.
     ///
     /// Same shape, same carry, same sealing; the difference is the door, and the door's difference

@@ -367,6 +367,17 @@ pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged
     }
 }
 
+/// Seal the end of a unit that PASSED the door and whose CALLER WENT AWAY before any answer.
+///
+/// The facts are the charged door's own reading of an end with nothing rendered, and nothing is
+/// finished: no response was given, so no request is counted, no request-log link is sent, and the
+/// flat fee the door charged stays charged. The non-2xx refund is owed for a request that produced
+/// no usable result for a caller still there to receive one; a caller that left is not that, and
+/// 1.5.5's dropped request never reached the refund either (spec §7 F13, the four cancel rules).
+pub fn audit_abandoned(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>) -> SeatVerdict<Audit> {
+    SeatVerdict::proceed(unit_token, door::admitted_facts(ctx.op_class, None, false))
+}
+
 /// Seal the end of a unit that never passed the door. Nothing was charged, so nothing is refunded.
 ///
 /// The label is the SAME bound the admitted door applies, over the same destination, and that is
