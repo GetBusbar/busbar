@@ -2,6 +2,8 @@
 # One line per finding: <row>\t<tag>\t<subject>\t<figure>. The `--posture` run excuses exactly these,
 # at or below these figures, and reds anything new or higher. Written ONLY by
 # `cargo xtask gate <gate> --posture --write-standing`, which strikes and lowers and never adds.
+kind-isolation:closure	closure-test-reach	busbar-plane-decisions -> busbar-kernel-ledger	1
+kind-isolation:closure	closure-test-reach	busbar-plane-decisions -> busbar-kernel-wal	1
 kind-isolation:deps	unlisted-dep-edge	cleanliness -> plugin-tooling	1
 kind-isolation:deps	unlisted-dep-edge	legacy -> plane	2
 kind-isolation:deps	unlisted-transitional	crates/busbar-llm	1
