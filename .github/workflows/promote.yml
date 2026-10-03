@@ -35,9 +35,9 @@ jobs:
     if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    outputs: { runner: "${{ steps.pre.outputs.runner }}" }
+    outputs: { runner: "${{ steps.pre.outputs.runner }}", guard: "${{ steps.guard.outputs.guard }}" }
     steps:
-      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar } } # v7
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v7
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       - { continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { name: "engine-${{ env.SHA }}", path: engine } } # v8.0.1
       # The pre-flight is busbar-release's Rust CLI (preflight.json is the one list): it sizes the hop
@@ -55,6 +55,12 @@ jobs:
             mkdir -p "$engine" && cp target/release/busbar-release target/release/busbar-oracle "$engine/"
           fi
           "$engine/busbar-release" ci preflight
+      # THE 1.5.5 GOLDEN ADD-ONLY GUARD, ONCE, before the shards fan out (it ran in every shard: run
+      # 37081453506, four shards x 2.3 min for one answer, folded as INFRA). guard=verdict: it denied (or could
+      # not run), the shards do not start, and the fold makes its report the hop's verdict.
+      - id: guard
+        run: engine/busbar-release ci turnstile guard --busbar-repo busbar --sha "$SHA" --base-sha "$BASE_SHA" --out guard/turnstile-report.json
+      - { if: "steps.guard.outputs.guard == 'verdict'", uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "guard-${{ env.SHA }}", path: "guard/", retention-days: 7, if-no-files-found: error } } # v7.0.1
   # The release artifact the slsa-verifier conformance rig judges, built ONCE, in the merge group: the
   # commit it judges is the commit the queue lands, and the ladder fast-forwards that sha to dev, where
   # the turnstile fetches what this run stored for it (ARCHITECT 2026-10-02). Its SLSA provenance is
@@ -88,13 +94,14 @@ jobs:
   # test:workspace's hash partition K, plus the unsplit steps dealt to K; the gates in shard 1, the
   # oracle and conformance in shard 4). Each builds and runs the candidate's code, so it holds NO write
   # token (contents read only, no persisted credentials); its report leaves as an artifact. It waits for
-  # slsa-build when that runs (SLSA_ENABLED); skipped, the shards run. Which unsplit steps (and which gate
-  # selftests) each shard runs is dealt by measured time (busbar-release crate::deal), the same in every shard.
+  # slsa-build when that runs (SLSA_ENABLED); skipped, the shards run. A guard verdict (preflight's
+  # guard=verdict) starts none of them. Which unsplit steps (and which gate selftests) each shard runs is
+  # dealt by measured time (busbar-release crate::deal), the same in every shard.
   hop-shard:
     name: "hop shard ${{ matrix.shard }}"
     strategy: { fail-fast: false, matrix: { shard: [1, 2, 3, 4] } }
     needs: [preflight, slsa-build]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.slsa-build.result == 'success' || needs.slsa-build.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.guard != 'verdict' && (needs.slsa-build.result == 'success' || needs.slsa-build.result == 'skipped') }}
     permissions: { contents: read }
     runs-on: ${{ needs.preflight.outputs.runner }}
     timeout-minutes: 330
@@ -115,11 +122,12 @@ jobs:
       # the oracle's release build filled the runner's ~41 GiB free disk with debuginfo (ENOSPC, no log).
       # Base and candidate build alike, so the no-worse-than-base verdict is unchanged.
       - run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/hop.sh"
-        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", SHARD: "${{ matrix.shard }}/4", ENGINE_DIR: "${{ github.workspace }}/engine" }
+        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", SHARD: "${{ matrix.shard }}/4", ENGINE_DIR: "${{ github.workspace }}/engine", GUARD_DONE: "1" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}-shard${{ matrix.shard }}", path: "artifacts/", if-no-files-found: warn } } # v7.0.1
   # `hop` (the required check) folds the shards into the hop's ONE verdict: BOARD only when every shard
   # reported and boarded; a shard that is missing, timed out or INFRA makes it INFRA, never green, and so
-  # do shards that dealt the plan differently.
+  # do shards that dealt the plan differently. When the guard denied (or could not run) before the fan-out,
+  # its report is the verdict (`merge --guard`).
   hop:
     needs: [preflight, hop-shard]
     if: ${{ !cancelled() && needs.preflight.result == 'success' }}
@@ -130,6 +138,7 @@ jobs:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       - { continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { pattern: "turnstile-report-${{ env.SHA }}-shard*", path: shards } } # v8.0.1
       - { continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { name: "engine-${{ env.SHA }}", path: engine } } # v8.0.1
+      - { if: "needs.preflight.outputs.guard == 'verdict'", uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { name: "guard-${{ env.SHA }}", path: guard } } # v8.0.1
       - name: Fold the shards
         run: |
           mkdir -p merge artifacts
@@ -143,7 +152,8 @@ jobs:
           engine=("$GITHUB_WORKSPACE/engine/busbar-release")
           chmod +x "${engine[0]}" 2>/dev/null || true
           "${engine[0]}" --help >/dev/null 2>&1 || engine=(cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release --)
-          "${engine[@]}" ci turnstile merge --sha "$SHA" --shards 4 --dir "$GITHUB_WORKSPACE/merge" --out "$GITHUB_WORKSPACE/artifacts/turnstile-report.json"
+          "${engine[@]}" ci turnstile merge --sha "$SHA" --shards 4 --dir "$GITHUB_WORKSPACE/merge" --out "$GITHUB_WORKSPACE/artifacts/turnstile-report.json" \
+            --guard "$GITHUB_WORKSPACE/guard/turnstile-report.json"
       # The durable verdict (verdict/), from the folded report and every shard's step logs: the artifact publish reads.
       - { if: always(), run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/verdict.sh" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "verdict-${{ env.SHA }}", path: "verdict/", retention-days: 90, if-no-files-found: warn } } # v7.0.1
