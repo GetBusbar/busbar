@@ -73,7 +73,7 @@ fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> Option<crate::root::li
 fn composed_services() -> Arc<LateServices> {
     let late = LateServices::new();
     late.install_kernel(Arc::new(KernelServices::new()))
-    .expect("installed once");
+        .expect("installed once");
     late
 }
 

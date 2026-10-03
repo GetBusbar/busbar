@@ -992,12 +992,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     root::serve::attach(&late_services, signer, &app.demotion_record, &planes);
     // THE DOOR PLANES, COMPOSED (`root::serve::compose_planes`, TODO U6-U7): each plane bound through
     // its door whose section this deployment writes is opened, driven and ticked here, once, its
-    // money posted onto the process's one node. A deployment without governance has no money book
-    // for a driven unit to settle on, so its door planes stay bound and unopened, as before.
-    let served = match app.governance.clone() {
-        Some(gov) => {
-            let post: Arc<dyn busbar_kernel::plane_driver::EndPost> =
-                Arc::new(root::plane_node::NodeEndPost::new(root::plane_node::node()));
+    // money posted onto the node's book a root unit keeps (`RootUnit::end_post`, through the
+    // generated table: this file names no root unit). A deployment without governance has no money
+    // book for a driven unit to settle on, and a build whose units keep no node book has nowhere to
+    // post an end, so their door planes stay bound and unopened, as before.
+    let end_post = ROOT_UNITS.iter().find_map(|u| u.end_post);
+    let served = match (app.governance.clone(), end_post) {
+        (Some(gov), Some(end_post)) => {
+            let post = end_post();
             let money = move || {
                 Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
                     Arc::clone(&gov),
@@ -1013,9 +1015,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             )
             .unwrap_or_else(|e| die(e))
         }
-        None => {
+        (gov, _) => {
             if !root::linked::door_planes().is_empty() {
-                tracing::warn!("door planes stay unopened: no governance book to settle on");
+                let why = if gov.is_none() {
+                    "no governance book to settle on"
+                } else {
+                    "no node book to post an end onto"
+                };
+                tracing::warn!("door planes stay unopened: {why}");
             }
             root::serve::Served::default()
         }

@@ -1998,13 +1998,15 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
 ///   boot's own rate resolution is the history's opening entry (see
 ///   [`crate::root::kernel::install_card_repricer`]);
 /// * the node's book is opened for it, and its exit arm is bound to that book ([`bind_book`]) before
-///   any listener binds — without it the arm settles nothing.
+///   any listener binds — without it the arm settles nothing;
+/// * a door plane's driven unit posts its abandoned end onto the node ([`NodeEndPost`]).
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: None,
     drive: Some(drive),
     on_config: Some(|_| crate::root::kernel::install_card_repricer()),
     opens_book: true,
     on_book: Some(|ctx| bind_book(Arc::clone(&ctx.book.durability))),
+    end_post: Some(|| Arc::new(NodeEndPost::new(node()))),
 };
 
 /// [`bind_book`] for a named node and card holder: the holder's journal first, then the node's

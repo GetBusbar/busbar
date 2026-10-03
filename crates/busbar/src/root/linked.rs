@@ -254,6 +254,10 @@ pub struct RootUnit {
     pub opens_book: bool,
     /// Runs once the node's book is open, before any listener binds.
     pub on_book: Option<fn(&BookCtx<'_>)>,
+    /// The posting site a door plane's driven unit posts its abandoned end onto: the node's book
+    /// this unit settles on (`root::serve::compose_planes`' money seam). `None`: this unit keeps no
+    /// such book.
+    pub end_post: Option<fn() -> std::sync::Arc<dyn busbar_kernel::plane_driver::EndPost>>,
 }
 
 /// What a unit's [`RootUnit::on_book`] step is handed: the node's one book and the boot generation.
