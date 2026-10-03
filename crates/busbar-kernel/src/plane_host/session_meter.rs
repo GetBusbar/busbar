@@ -27,7 +27,15 @@ use super::{EngineHost, MeterPin};
 use crate::billing::Usage;
 use busbar_contract::records::VirtualKey;
 use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, PER_SESSION};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+
+/// THE OPEN GATE: an account's dry check and its session count are one step. Held across both, so
+/// two opens racing on a near-dry chain cannot both read the room one of them is about to take: each
+/// open's check sees every session counted before it, and a chain passes its cap by at most the one
+/// session fee the last open that found room counted (Q44(5)). An open is a session-level event, so
+/// one gate per process costs a lock per session and never one per turn.
+static OPEN_GATE: Mutex<()> = Mutex::new(());
 
 /// What a reported turn means for the carrier. The plane never learns why a session must close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,11 +60,20 @@ pub struct SessionAccount {
     /// The clock reading the open's session count landed at: a refund of that count lands in the
     /// same budget window.
     opened_at: u64,
+    /// Whether the open's session fee is SETTLED: final once the session served, or given back once
+    /// its open failed. Set once, so a fee is given back at most once and never after a serve.
+    settled: AtomicBool,
 }
 
 impl SessionAccount {
     /// Open the account. `Ok(None)` is an ungoverned deployment or a keyless caller — nothing to
     /// ledger against and nothing to refuse, as on every other plane. `Err` is a chain already dry.
+    ///
+    /// THE SESSION FEE IS COUNTED HERE, AT THE OPEN, under the same dry check (TODO 17(b), ARCHITECT
+    /// R4): the check and the count are one step under `OPEN_GATE`, so a chain passes its cap by at
+    /// most one session fee however many opens race on it (Q44(5)). An open that then fails — its
+    /// mint, SDP broker or provider dial, or its durable open — gives the fee back through
+    /// [`SessionAccount::refund_open`].
     pub fn open(
         host: Arc<dyn EngineHost>,
         key: Option<&VirtualKey>,
@@ -66,14 +83,15 @@ impl SessionAccount {
         let (Some(pin), Some(key)) = (host.meter_pin(), key) else {
             return Ok(None);
         };
-        let opened_at = host.clock_now_secs();
+        let _gate = OPEN_GATE.lock().unwrap_or_else(PoisonError::into_inner);
         let account = SessionAccount {
+            opened_at: host.clock_now_secs(),
             host,
             pin,
             key: key.clone(),
             pool: pool.to_string(),
             lane,
-            opened_at,
+            settled: AtomicBool::new(false),
         };
         if account.dry() {
             return Err(BudgetRefused);
@@ -87,39 +105,39 @@ impl SessionAccount {
     /// plane's `fees.per_session` prices it at read, and a plane with none reads 0. A lane no plane
     /// qualifies has no session fee to count.
     fn count_open(&self) {
-        let Some(plane) = self.fee_plane() else {
-            return;
-        };
-        let one = Usage {
-            usage_units: std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]),
-        };
-        let lane = plane_fee_lane(plane);
-        self.host.meter_ledger(
-            &self.pin,
-            &self.key,
-            &self.pool,
-            &lane,
-            &one,
-            self.opened_at,
-        );
+        if let Some(plane) = self.fee_plane() {
+            let one = Usage {
+                usage_units: std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]),
+            };
+            let (pin, key, pool) = (&self.pin, &self.key, &self.pool);
+            let lane = plane_fee_lane(plane);
+            self.host
+                .meter_ledger(pin, key, pool, &lane, &one, self.opened_at);
+        }
     }
 
-    /// GIVE BACK THE OPEN'S SESSION COUNT (Q17-6, ARCHITECT ruling R4): a session whose open failed
-    /// after the account counted it never opened, and a unit that never opened charges nothing.
-    /// Consumes the account, so its count is given back at most once. The budget book only: the
-    /// metering row the count reached stays, as v1.5.5's fee refund left it.
-    pub fn refund_open(self) {
-        let Some(plane) = self.fee_plane() else {
+    /// The session is SERVED: its provider leg is up (a socket session) or its one-shot pass answered
+    /// success (a mint, an SDP broker). The fee the open counted is final: no refund follows. Marking
+    /// it again, from another serving site, changes nothing.
+    pub fn served(&self) {
+        self.settled.store(true, Ordering::Release);
+    }
+
+    /// GIVE BACK THE OPEN'S SESSION COUNT (TODO 17(b), ARCHITECT R4): a session whose open failed
+    /// after the account counted it — its mint, SDP broker, provider dial or durable open — never
+    /// opened, and a unit that never opened charges nothing. Given back EXACTLY ONCE: a second call,
+    /// or a call after [`SessionAccount::served`], is a no-op. Through `GovState::refund_fee_unit`, in
+    /// the window the count landed in. The budget book only: the metering row the count reached
+    /// stays, as v1.5.5's fee refund left it.
+    pub fn refund_open(&self) {
+        if self.settled.swap(true, Ordering::AcqRel) {
             return;
-        };
-        self.host.meter_refund_fee(
-            &self.pin,
-            &self.key,
-            &self.pool,
-            plane,
-            PER_SESSION,
-            self.opened_at,
-        );
+        }
+        if let Some(plane) = self.fee_plane() {
+            let (pin, key, pool) = (&self.pin, &self.key, &self.pool);
+            self.host
+                .meter_refund_fee(pin, key, pool, plane, PER_SESSION, self.opened_at);
+        }
     }
 
     /// The plane whose fee lane the session count lands on; `None` for a lane no plane qualifies,
@@ -153,11 +171,8 @@ impl SessionAccount {
             b.pool.as_deref().is_none_or(|p| p == pool)
                 && b.remaining_micros.is_some_and(|r| r <= 0)
         });
-        spent
-            || self
-                .host
-                .rate_headroom(pin, key, Some(pool), now)
-                .is_some_and(|h| h <= 0.0)
+        let headroom = self.host.rate_headroom(pin, key, Some(pool), now);
+        spent || headroom.is_some_and(|h| h <= 0.0)
     }
 }
 

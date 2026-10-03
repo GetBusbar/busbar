@@ -1561,6 +1561,18 @@ async fn admitted(
         )
             .into_response();
     }
+    // THE HOP'S CHARGE, held from the instant admission counted its fee: every exit below that does
+    // not serve the call gives the fee back ([`HopCharge::refused`] / [`HopCharge::refund`]), and the
+    // relay settles it once it knows whether the call left. `now` is the request's instant, read
+    // before the admission, so the refund reaches the cell the fee was counted on.
+    let charge = HopCharge {
+        // The PRESENTING key `hop.billed_key_id` names (`inbound::admit` copies `key.id` into it), as
+        // the value the budget chain is walked from — its group is what a `budget:` cap sits on.
+        key: Arc::clone(key),
+        resource: resource.clone(),
+        actor: actor.clone(),
+        charged_at: now,
+    };
 
     // ── THE VERBS BUSBAR ANSWERS ITSELF. ────────────────────────────────────────────────────────
     //
@@ -1728,12 +1740,7 @@ async fn admitted(
     let grant = match super::creds::authorise_egress(key, &admitted.dispatch.agent_id, now) {
         Ok(g) => g,
         Err(e) => {
-            engine_host.audit_emit(
-                AUDIT_ACTION,
-                &resource,
-                busbar_contract::vocab::OUTCOME_REJECTED,
-                &actor,
-            );
+            charge.refused(engine_host.as_ref());
             return (
                 axum::http::StatusCode::FORBIDDEN,
                 axum::Json(super::rpcerror::body(
@@ -1764,6 +1771,7 @@ async fn admitted(
     {
         Ok(a) => a.flatten(),
         Err(message) => {
+            charge.refund(engine_host.as_ref());
             return super::rpcerror::respond(
                 &rpc_id,
                 super::rpcerror::A2aError::InvalidParams,
@@ -1776,6 +1784,7 @@ async fn admitted(
         Some(url) => {
             let Some(seam) = crate::a2a::runtime_arc_of(&engine_host).map(|p| p.relay_seam())
             else {
+                charge.refund(engine_host.as_ref());
                 return plane_absent();
             };
             // Box::pin: edge arm (a caller-supplied callback URL) — keeps the hot future small;
@@ -1783,6 +1792,7 @@ async fn admitted(
             match Box::pin(validate_callback(url, seam)).await {
                 Ok(pinned) => Some(pinned),
                 Err(message) => {
+                    charge.refund(engine_host.as_ref());
                     return super::rpcerror::respond(
                         &rpc_id,
                         super::rpcerror::A2aError::InvalidParams,
@@ -1834,6 +1844,7 @@ async fn admitted(
     // fresh-submission WALK — which would consume and settle a pool work-probe and let a failed card
     // read trip the breaker for real submissions. A caller wanting one member's card addresses it.
     if card_fetch && pool.is_some() {
+        charge.refund(engine_host.as_ref());
         return super::rpcerror::respond(
             &rpc_id,
             super::rpcerror::A2aError::UnsupportedOperation,
@@ -1883,6 +1894,7 @@ async fn admitted(
     // The plane, fetched ONCE for the member selection below and every later reader (the lease,
     // the binding, the seam). The refusal is identical wherever it fires.
     let Some(plane) = crate::a2a::runtime_arc_of(&engine_host) else {
+        charge.refund(engine_host.as_ref());
         return plane_absent();
     };
 
@@ -1976,6 +1988,7 @@ async fn admitted(
             super::task::plan_transition(super::task::TaskState::Working, now),
         ) {
             diag_warn!(A2A_INTERRUPTED_TASK_UNRESUMED, task = %task_id, error = %e, "a2a: an interrupted task could not be resumed");
+            charge.refund(engine_host.as_ref());
             return (
                 axum::http::StatusCode::CONFLICT,
                 axum::Json(super::rpcerror::body(
@@ -2012,6 +2025,7 @@ async fn admitted(
                 } else {
                     diag_debug!(A2A_INBOUND_TASK_UNOPENED, error = ?e, "a2a: could not open an inbound task");
                 }
+                charge.refund(engine_host.as_ref());
                 return plane_absent();
             }
         };
@@ -2027,6 +2041,7 @@ async fn admitted(
             } else {
                 diag_debug!(A2A_INBOUND_TASK_UNRECORDED, error = %e, "a2a: the inbound task could not be recorded");
             }
+            charge.refund(engine_host.as_ref());
             return (
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 axum::Json(super::rpcerror::body(
@@ -2096,15 +2111,9 @@ async fn admitted(
     //    member's facts, the credential lease, the binding, the pool walk's breaker refusal and the
     //    pin check) could still refuse the hop after it had been billed and stamped `applied`: a
     //    tripped breaker billed a hop busbar never attempted. The ledger records what the plane DID,
-    //    so the hop's charge is settled by [`HopCharge`] once the relay has said whether the call
-    //    left — every refusal before that is audited `rejected` and metered nothing.
-    let charge = HopCharge {
-        // The PRESENTING key `hop.billed_key_id` names (`inbound::admit` copies `key.id` into it), as
-        // the value the budget chain is walked from — its group is what a `budget:` cap sits on.
-        key: Arc::clone(key),
-        resource: resource.clone(),
-        actor: actor.clone(),
-    };
+    //    so the hop's charge (held since admission) is settled by [`HopCharge`] once the relay has
+    //    said whether the call left — every refusal before that is audited `rejected`, metered
+    //    nothing and gives the admission's fee back.
 
     // 7. RELAY. Everything above this line DECIDED; this is the line that reaches the backend.
     //
@@ -2139,29 +2148,33 @@ async fn admitted(
     ) {
         Ok(f) => f,
         Err(refusal) => {
-            return refusal.map(|resp| *resp).unwrap_or_else(|| {
-                // `Err(Some(..))` was audited `rejected` inside `hop_facts`; this arm (the pinned
-                // member's registration is gone) had no record at all.
-                charge.refused(engine_host.as_ref());
-                // A card fetch opened no task, so a hop that cannot be set up is a plain `502`, not
-                // an `end_task` (via `fail_task`) against a row that never existed.
-                if card_fetch {
-                    return super::rpcerror::respond(
-                        &rpc_id,
-                        super::rpcerror::A2aError::InvalidAgentResponse,
-                        "the extended agent card could not be fetched",
-                    );
-                }
-                fail_task(
-                    &engine_host,
-                    &seam,
+            // Either arm is a hop refused before the socket, so either gives the admission's fee
+            // back (Q35). `Err(Some(..))` is the egress refusal for a re-targeted or pinned member,
+            // already audited `rejected` inside `hop_facts`: it refunds and writes no second record.
+            if let Some(resp) = refusal {
+                charge.refund(engine_host.as_ref());
+                return *resp;
+            }
+            // This arm (the pinned member's registration is gone) had no record at all.
+            charge.refused(engine_host.as_ref());
+            // A card fetch opened no task, so a hop that cannot be set up is a plain `502`, not an
+            // `end_task` (via `fail_task`) against a row that never existed.
+            if card_fetch {
+                return super::rpcerror::respond(
                     &rpc_id,
-                    &task_id,
-                    &request_id,
-                    now,
-                    502,
-                )
-            });
+                    super::rpcerror::A2aError::InvalidAgentResponse,
+                    "the extended agent card could not be fetched",
+                );
+            }
+            return fail_task(
+                &engine_host,
+                &seam,
+                &rpc_id,
+                &task_id,
+                &request_id,
+                now,
+                502,
+            );
         }
     };
 
@@ -2438,6 +2451,8 @@ struct HopCharge {
     key: Arc<busbar_contract::records::VirtualKey>,
     resource: String,
     actor: String,
+    /// The instant the admission counted the hop's fee on — the cell a refund must reach.
+    charged_at: u64,
 }
 
 impl HopCharge {
@@ -2469,13 +2484,33 @@ impl HopCharge {
         );
     }
 
-    /// A hop refused before it left: one `rejected` record, and nothing metered.
+    /// A hop refused before it left: one `rejected` record, nothing metered, and the admission's
+    /// fee given back.
     fn refused(&self, engine_host: &dyn EngineHost) {
+        self.refund(engine_host);
         engine_host.audit_emit(
             AUDIT_ACTION,
             &self.resource,
             busbar_contract::vocab::OUTCOME_REJECTED,
             &self.actor,
+        );
+    }
+
+    /// GIVE BACK THE ONE `per_request` FEE UNIT the admission counted on this plane's fee lane, for
+    /// a call that was admitted and then not served: a hop refused before the socket ledgers nothing
+    /// (Q35). Keyed exactly as the admission was (the plane-qualified resource, the admission's
+    /// instant); the kernel floors it at 0. No governance: nothing was counted.
+    fn refund(&self, engine_host: &dyn EngineHost) {
+        let Some(pin) = engine_host.meter_pin() else {
+            return;
+        };
+        engine_host.meter_refund_fee(
+            &pin,
+            &self.key,
+            &self.resource,
+            crate::PLANE_KEY,
+            busbar_contract::plane::PER_REQUEST,
+            self.charged_at,
         );
     }
 }
@@ -2528,19 +2563,6 @@ fn ledger_hop_bytes(
         &usage,
         engine_host.clock_now_secs(),
     );
-}
-
-/// WHETHER A RELAY OUTCOME MEANS THE CALL LEFT BUSBAR. An answer did; so did every refusal that is
-/// about the hop's result (transport, status, body, correlation). The four refusals that are decided
-/// BEFORE the socket did not: an open breaker, the SSRF guard, a demotion, an unleasable credential.
-/// `Unframable` is kept on the billed side because it is raised both before the send and on reading
-/// the answer back, and this arm cannot tell which.
-fn hop_left<T>(outcome: &Result<T, super::relay::RelayRefusal>) -> bool {
-    use super::relay::RelayRefusal as R;
-    !matches!(
-        outcome,
-        Err(R::BreakerOpen { .. } | R::Guard(_) | R::Demoted(_) | R::Lease(_))
-    )
 }
 
 /// VERIFY-ON-CALL for one A2A delegation: re-verify `agent_id`'s card within `verify_ttl`,
@@ -2687,7 +2709,7 @@ async fn unary_hop(
             seam.as_ref(),
             now_ms,
         );
-        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out), &bytes);
+        charge.settle(engine_host.as_ref(), &hop_scope, bytes.left(), &bytes);
         out
     })
     .await;
@@ -3029,7 +3051,7 @@ async fn stream_hop(
             now_ms,
             &mut sink,
         );
-        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out), &bytes);
+        charge.settle(engine_host.as_ref(), &hop_scope, bytes.left(), &bytes);
         out
     });
 

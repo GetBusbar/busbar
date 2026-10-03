@@ -86,8 +86,8 @@ struct Carry {
     arrived: Option<BodyArrival>,
     /// The admission's meter half, built at the door and carried to the walk.
     sink: Option<crate::engine::UsageSink>,
-    /// Whether the admission charge landed.
-    charged: bool,
+    /// The admission charge, when it landed.
+    charged: Option<busbar_kernel::plane_host::AdmitHandle>,
     /// The pool the charge landed on — post-downgrade, never the requested one.
     effective: Option<String>,
     /// Whether the verified set offered an upstream to route to.
@@ -368,11 +368,11 @@ impl Walk {
         admitted.verdict
     }
 
-    /// Whether the admission charge landed — what the admitted terminal door is handed, and the one
-    /// input besides the client-facing status its refund of the fee base turns on.
+    /// The admission charge, when it landed — what the admitted terminal door is handed, and the
+    /// one input besides the client-facing status its refund of the fee base turns on.
     #[must_use]
-    pub fn charged(&self) -> bool {
-        self.lock().charged
+    pub fn charged(&self) -> Option<busbar_kernel::plane_host::AdmitHandle> {
+        self.lock().charged.clone()
     }
 
     /// The pool the charge landed on, or the requested one where nothing re-pooled it.
@@ -545,7 +545,7 @@ impl Walk {
         fallback: impl FnOnce() -> Served,
     ) -> SeatVerdict<busbar_contract::caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
-        let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged());
+        let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged().as_ref());
         self.seal_terminal(audited.response);
         audited.decision
     }

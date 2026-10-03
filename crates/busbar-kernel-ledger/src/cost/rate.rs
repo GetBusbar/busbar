@@ -528,6 +528,106 @@ impl RateCard {
         self
     }
 
+    /// **A SIGNED CORRECTION OF THIS CARD** (#79): this card with the named cells set to the
+    /// corrected integer rates and, where one is named, the flat fee replaced — and EVERYTHING ELSE
+    /// AS IT WAS: every other lane and class, every other plane's card, the fee the correction did
+    /// not name. A correction reprices exactly the cells it names; a card built from those cells
+    /// alone priced the fee at nothing, refused every class it was silent about and priced every
+    /// other plane at 0 for the whole corrected window.
+    ///
+    /// A plane-qualified lane (`"<plane>\u{1f}<lane>"`) corrects THAT plane's card. `None` when a
+    /// named cell has no PRESENT card to land on — the flat card or the plane's own card is absent
+    /// (billing off, #42) — or names no lane: a correction cannot switch a plane's billing on, which
+    /// would turn every unit it serves into a refusal for the classes the correction is silent about.
+    ///
+    /// A corrected cell is priced, so it leaves [`Self::refused_cells`] of the card it lands on;
+    /// every refused cell the correction does not name stays listed.
+    pub fn corrected(
+        &self,
+        cells: impl IntoIterator<Item = (LaneClass, u64)>,
+        fee: Option<i64>,
+    ) -> Option<RateCard> {
+        let mut card = self.clone();
+        if let Some(fee) = fee {
+            card.fee = fee.max(0);
+        }
+        for (cell, nanos) in cells {
+            let (plane, lane) = split_plane_lane(&cell.lane);
+            if lane.is_empty() {
+                return None;
+            }
+            let target = match plane {
+                "" => &mut card,
+                plane => card.planes.get_mut(plane)?,
+            };
+            if !target.present {
+                return None;
+            }
+            // A corrected cell is priced now, so it is no longer one the configuration refused.
+            target
+                .refused
+                .retain(|r| !(r.lane == lane && r.class == cell.class));
+            target
+                .prices
+                .entry(lane.to_string())
+                .or_default()
+                .entry(cell.class)
+                .or_default()
+                .set(nanos);
+        }
+        Some(card)
+    }
+
+    /// **THE CARD'S DIGEST**: `sha256` over every figure the card prices with, in one fixed order.
+    /// That is whether it is present, its flat and session fees, every `(lane, class)` cell (an
+    /// UNPRICED cell is spelt apart from every rate, zero included), and each plane's own card the
+    /// same way. Two cards with one digest price every hit alike. A signed correction records the
+    /// digest of the card it was sealed over (#79), and a restart rebuilds it over that card and no
+    /// other.
+    ///
+    /// [`Self::refused_cells`] is not in it. That list is boot validation's report about the
+    /// configuration, and every cell on it is already an unpriced cell of the card.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        let mut bytes = b"busbar/rate-card-digest/v1\0".to_vec();
+        self.digest_into(&mut bytes);
+        crate::digest::sha256(&bytes)
+    }
+
+    /// The bytes [`Self::digest`] hashes: length-prefixed, every map in its own (sorted) order.
+    fn digest_into(&self, out: &mut Vec<u8>) {
+        fn count(out: &mut Vec<u8>, n: usize) {
+            out.extend_from_slice(&(n as u64).to_le_bytes());
+        }
+        fn text(out: &mut Vec<u8>, s: &str) {
+            count(out, s.len());
+            out.extend_from_slice(s.as_bytes());
+        }
+        out.push(u8::from(self.present));
+        out.extend_from_slice(&self.fee.to_le_bytes());
+        out.extend_from_slice(&self.session_fee.to_le_bytes());
+        count(out, self.prices.len());
+        for (lane, classes) in &self.prices {
+            text(out, lane);
+            count(out, classes.len());
+            for (class, cell) in classes {
+                text(out, class);
+                match cell.nanos_per_unit() {
+                    None => out.push(0),
+                    Some(nanos) => {
+                        out.push(1);
+                        out.extend_from_slice(&nanos.to_le_bytes());
+                    }
+                }
+            }
+        }
+        count(out, self.planes.len());
+        for (plane, card) in &self.planes {
+            text(out, plane);
+            card.digest_into(out);
+        }
+    }
+
     /// The fee a reserved fee class ([`PER_REQUEST`], [`PER_SESSION`]) prices at on this card, in
     /// minor units; `None` for any other class.
     pub fn fee_of(&self, class: &str) -> Option<i64> {
@@ -549,9 +649,10 @@ impl RateCard {
         }
     }
 
-    /// The one placement of a configured rate into a cell, used by the constructor alone: a card is
-    /// built whole and has no mutator, so no second path can move a price after it is resolved
-    /// (#66: no second denomination a rate could be derived through).
+    /// The one placement of a configured rate into a cell, used by the constructor alone. A card is
+    /// built whole; the one other path that sets a cell is [`Self::corrected`], which builds a NEW
+    /// card from a signed correction's integer rates (#79) and never touches a card in force (#66:
+    /// no second denomination a rate could be derived through).
     ///
     /// A value the card cannot represent leaves the cell UNPRICED (and records it in
     /// [`Self::refused_cells`]) — it never sets a zero the operator did not configure (item 22).
@@ -588,12 +689,14 @@ impl RateCard {
     /// ALWAYS A FIGURE, NEVER A SILENCE — and that is a structural guarantee rather than a
     /// convention. The fee used to be read out of a per-currency map that a caller could leave a
     /// hole in: a card could name a currency for its RATES and stay silent about the fee in it,
-    /// pass every guard, and then have the missing entry read as zero. That is silent under-billing — fail-open, the one outcome this module refuses
-    /// everywhere else (#42 `BUSBAR-1.6.0.md:367`: *"a hit class not priced ⇒ REFUSE (money-sacred,
-    /// never a silent 0)"*). #66 removed the second axis, so the hole is GONE rather than guarded:
-    /// every constructor takes the fee by value, nothing replaces it afterwards, and there is no
-    /// key that could be absent. A fee CONFIGURED at nothing is #77(5)'s (`:420`) explicit zero row —
-    /// legitimately free, and distinguishable from a silence because a silence can no longer exist.
+    /// pass every guard, and then have the missing entry read as zero. That is silent
+    /// under-billing — fail-open, the one outcome this module refuses everywhere else (#42, the
+    /// money model row of `BUSBAR-1.6.0.md`'s ruling table: *"a hit class not priced ⇒ REFUSE
+    /// (money-sacred, never a silent 0)"*). #66 removed the second axis, so the hole is GONE rather
+    /// than guarded: every constructor takes the fee by value, only a signed correction
+    /// ([`Self::corrected`]) names a new one on a new card, and there is no key that could be
+    /// absent. A fee CONFIGURED at nothing is #77(5)'s explicit zero row — legitimately free, and
+    /// distinguishable from a silence because a silence can no longer exist.
     ///
     /// THE SPELLING THAT DEFAULTED IS STILL GONE. `per_request_fee(&self)` used to answer
     /// `unwrap_or(0)` out of that map; this answers the number the card was built with, and the

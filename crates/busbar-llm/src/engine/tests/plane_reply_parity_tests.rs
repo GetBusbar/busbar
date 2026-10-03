@@ -218,6 +218,7 @@ async fn served(ingress: &'static str, egress: &'static str, req: &Value, far: F
         key: Arc::new(key),
         pool: Arc::from("p"),
         charged_at: crate::engine::now(),
+        request_id: 0,
         admit: None,
     };
     let op = crate::test_support::op_for(

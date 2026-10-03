@@ -477,10 +477,40 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 pub struct InstalledLimits {
     guard: limits::InstallGuard,
     rates: ResolvedRates,
+    /// The rates this build STAGED with the holder (made durable before the caller persists):
+    /// withdrawn if this handle is dropped unkept, published by [`InstalledLimits::keep`].
+    staged: StagedRates,
     /// The destinations this configuration states, raised to the destination judge at the commit
     /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
     /// rejected apply must not leave them in force.
     destinations: config::Destinations,
+}
+
+/// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
+/// the config change never committed — the holder is told to withdraw them.
+struct StagedRates {
+    armed: bool,
+}
+
+impl Drop for StagedRates {
+    fn drop(&mut self) {
+        if self.armed {
+            crate::rate_apply::rates_withdrawn();
+        }
+    }
+}
+
+impl ResolvedRates {
+    /// The neutral view the seam carries.
+    fn raw(&self) -> crate::rate_apply::RawRates<'_> {
+        crate::rate_apply::RawRates {
+            lanes: &self.lanes,
+            units: &self.units,
+            flat_minor: self.flat_minor,
+            present: self.present,
+            plane_fees: &self.plane_fees,
+        }
+    }
 }
 
 /// The rates one build resolved, held (owned) until the build's commit raises them.
@@ -500,17 +530,13 @@ impl InstalledLimits {
         let InstalledLimits {
             guard,
             rates,
+            mut staged,
             destinations,
         } = self;
         guard.commit();
         crate::host_services::destinations_applied(&destinations);
-        crate::rate_apply::rates_applied(&crate::rate_apply::RawRates {
-            lanes: &rates.lanes,
-            units: &rates.units,
-            flat_minor: rates.flat_minor,
-            present: rates.present,
-            plane_fees: &rates.plane_fees,
-        });
+        staged.armed = false;
+        crate::rate_apply::rates_applied(&rates.raw());
     }
 }
 
@@ -2027,6 +2053,19 @@ pub fn build_app_from_config(
             retain(&app);
         }
     }
+    // THE CARD GOES ON THE JOURNAL BEFORE THE CONFIG CHANGE IS SAVED (MONEY-AUDIT D-6, ARCHITECT
+    // ruling 2026-10-02): the LAST fallible step of the build, so every caller's persist runs only
+    // after the holder made the rates durable. A journal that refuses them refuses the whole change:
+    // nothing is persisted, nothing is swapped, the old configuration and the old card both stay.
+    // From here the handle is armed: dropped unkept (a persist or swap that failed), the holder
+    // withdraws the staged card.
+    crate::rate_apply::rates_staged(&resolved_rates.raw()).map_err(|why| {
+        format!(
+            "the rate card could not be made durable, so the configuration change was refused \
+             and nothing was changed: {why}"
+        )
+    })?;
+    let staged = StagedRates { armed: true };
     // The build reached its end without a single fallible step refusing — but the build is not the
     // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
     // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it
@@ -2037,6 +2076,7 @@ pub fn build_app_from_config(
         InstalledLimits {
             guard: limits_guard,
             rates: resolved_rates,
+            staged,
             destinations,
         },
     ))

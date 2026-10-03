@@ -105,6 +105,7 @@ async fn drive(op: Op, ingress: &'static str, body: Vec<u8>) -> Outcome {
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at: 1_700_000_000,
+        request_id: 0,
         admit: None,
     });
     let breaker = busbar_kernel::store::BreakerCfg::default();

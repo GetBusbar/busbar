@@ -324,6 +324,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // degraded exhaustion paths read the same set for the whole failover walk.
     client_fwd: crate::engine::select::ClientFwd,
 ) -> Response {
+    // The sink carries this request's correlation id from here on, so every accrual it settles
+    // names the request on its residual audit row (`UsageSink::request_id`).
+    let usage_sink = usage_sink.map(|sink| UsageSink { request_id, ..sink });
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.

@@ -57,6 +57,9 @@ pub const KIND_CALL: &str = "call";
 /// The administrative AUDIT chain record kind — the neutral store tag the administrative mutation
 /// log's durable journal seam persists its hash-chained records under.
 pub const KIND_AUDIT: &str = "audit";
+/// The `usage.residual` row kind: one per-principal hash chain of the usage counts no billing class
+/// records (MONEY LAW). Durable and never purged; see [`crate::residual_log`].
+pub const KIND_RESIDUAL: &str = "usage_residual";
 /// That same plane's demotion record kind.
 pub const KIND_DEMOTION: &str = "demotion";
 /// The spent-approval ledger kind (a single-use token).

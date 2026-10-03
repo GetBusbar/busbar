@@ -110,9 +110,9 @@ fn pool_scope_suffix(pool: &Option<String>) -> String {
 /// generic limit engine. `Ok(Some(grant))` = admitted AND charged (the flat per-request fee + one
 /// request landed on every chain bucket; a non-2xx must refund, and the grant holds the
 /// `concurrent` in-flight gauges until the response completes). `Ok(None)` = admitted WITHOUT a
-/// charge (governance off / no key) - a non-2xx must NOT refund, because `refund_request` is a
-/// blind decrement that would erode ANOTHER request's spend/count in the same window (see
-/// `finish_rejected`). `Err(resp)` = rejected with the protocol-native error NAMING the exact
+/// charge (governance off / no key) - a non-2xx must NOT refund: there is no
+/// [`FeeCharge`](crate::governance::FeeCharge) to return, and a refund without one would erode
+/// ANOTHER request's spend/count in the same window (see `finish_rejected`). `Err(resp)` = rejected with the protocol-native error NAMING the exact
 /// blocking bucket (group + metric + window).
 ///
 /// The admission window is keyed off `charged_at` (the pinned header-arrival epoch), NOT a fresh
@@ -475,35 +475,29 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
 /// charge bills every admitted request up front. Token fees are charged post-response only on success
 /// (via `UsageSink`), so this keeps both fee policies "successful requests only".
 ///
-/// Test-only now: every production admission threads the `charged` flag through
-/// [`finish_admitted`] (a store-error fail-open admit must not refund); this unconditional-refund
-/// form survives only for the in-module tests that always charge.
+/// Test-only now: every production admission threads its charge through [`finish_admitted`] (a
+/// store-error fail-open admit must not refund); this always-refunding form survives only for the
+/// tests that always charge, and refunds the `charge` they admitted with.
 #[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::too_many_arguments)]
 pub fn finish(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    _gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
+    _charged_at: u64,
     resp: Response,
+    charge: &crate::governance::FeeCharge,
 ) -> Response {
-    finish_inner(
-        app,
-        gov,
-        ingress_protocol,
-        pool,
-        started,
-        charged_at,
-        resp,
-        true,
-    )
+    finish_inner(app, ingress_protocol, pool, started, resp, Some(charge))
 }
 
 /// Post-admission finish whose non-2xx refund is CONDITIONAL on whether the flat fee actually landed
-/// at admission (`charged`, from `governance_guard`). Admitting a request WITHOUT charging (store-
-/// error fail-open, or governance off) and then refunding on a non-2xx would blind-decrement OTHER
-/// requests' spend/count in the same window — so those requests must finish with `charged = false`.
+/// at admission (`charged`: the admission's own [`FeeCharge`](crate::governance::FeeCharge), from
+/// its grant). Admitting a request WITHOUT charging (store-error fail-open, or governance off) and
+/// then refunding on a non-2xx would decrement OTHER requests' spend/count in the same window — so
+/// those requests finish with `charged = None`.
 // `pub` (was module-private): the charged-admission finish/audit terminal a mounted plane's engine's
 // native drive path ends on — surfaced through `crate::engine_facade` (Phase-0 visibility lift; pure
 // visibility). Its `gov: &crate::governance::GovCtx` arg names a still-crate-private carrier, so a
@@ -512,68 +506,49 @@ pub fn finish(
 #[allow(clippy::too_many_arguments)]
 pub fn finish_admitted(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    _gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
+    _charged_at: u64,
     resp: Response,
-    charged: bool,
+    charged: Option<&crate::governance::FeeCharge>,
 ) -> Response {
-    finish_inner(
-        app,
-        gov,
-        ingress_protocol,
-        pool,
-        started,
-        charged_at,
-        resp,
-        charged,
-    )
+    finish_inner(app, ingress_protocol, pool, started, resp, charged)
 }
 
 /// NOT-CHARGED finish: the request was turned away BEFORE the admission charge ever ran — either a
 /// governance guard rejected it (pool / rate / over-budget / store-error-deny) OR it failed
 /// pre-routing (malformed body, missing/unresolved model, unsupported path/action) before reaching
 /// `governance_guard`. In every case the flat fee was NEVER charged, so this emits metrics + the
-/// webhook with NO refund. Using `finish` (refund-on-non-2xx) on a pre-charge path would issue a
-/// SPURIOUS refund — `refund_request` is a blind `UPDATE` that decrements the spend/requests of
-/// OTHER, legitimately-charged requests in the same window, eroding the budget cap. So every
-/// pre-charge exit MUST use this, never `finish`.
+/// webhook with NO refund: a pre-charge path holds no admission charge, and a refund on it would
+/// decrement the spend of OTHER, legitimately-charged requests in the same window, eroding the
+/// budget cap. So every pre-charge exit MUST use this.
 // `pub` (was module-private): the pre-charge turn-away finish terminal, surfaced through
 // `crate::engine_facade` (Phase-0). Same `GovCtx` leak allow as `finish_admitted`.
 #[allow(private_interfaces)]
 pub fn finish_rejected(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    _gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
+    _charged_at: u64,
     resp: Response,
 ) -> Response {
-    finish_inner(
-        app,
-        gov,
-        ingress_protocol,
-        pool,
-        started,
-        charged_at,
-        resp,
-        false,
-    )
+    finish_inner(app, ingress_protocol, pool, started, resp, None)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The one finish. It takes no key and no instant: a refund reads only the admission's own
+/// [`FeeCharge`](crate::governance::FeeCharge), never a cell resolved again from the key and
+/// `charged_at` (the three entries above still accept both for their callers).
 fn finish_inner(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
     resp: Response,
-    refund_on_non_2xx: bool,
+    refund_on_non_2xx: Option<&crate::governance::FeeCharge>,
 ) -> Response {
     // FINISH stage: metrics record + request-log gate + non-2xx refund check (zero cost unprofiled).
     let _fin = crate::profile::start(crate::profile::Stage::Finish);
@@ -630,13 +605,15 @@ fn finish_inner(
     // upstream errors, post-admission 404) so a key is never billed the flat fee for a failure
     // outside its control — preserving the prior "bill 2xx only" policy. (Token fees are likewise
     // only charged on successful streams via UsageSink, so both fee policies stay consistent.) The
-    // refund bills against the SAME window the admission charge used (`charged_at`, the header-arrival
-    // epoch), so a window-straddling request refunds where it charged (#29). `refund_on_non_2xx` is
-    // false for governance-rejection finishes (those were never charged — nothing to refund).
+    // refund returns the fee from exactly the cells the admission's charge reached (its
+    // `FeeCharge`), so a window-straddling request refunds where it charged (#29, M-1) and a charge
+    // whose window has since rolled is taken back from that window, never the newer one.
+    // `refund_on_non_2xx` is `None` for governance-rejection finishes (those were never charged —
+    // nothing to refund).
     let is_success = matches!(status, 200..=299);
-    if refund_on_non_2xx && !is_success {
-        if let (Some(g), Some(key)) = (&app.governance, &gov.key) {
-            g.refund_request(&app.cost, key, pool, charged_at);
+    if let (Some(charge), false) = (refund_on_non_2xx, is_success) {
+        if let Some(g) = &app.governance {
+            g.refund_charge(charge);
         }
     }
     resp

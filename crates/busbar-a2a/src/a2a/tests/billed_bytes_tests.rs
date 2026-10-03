@@ -20,7 +20,7 @@ use busbar_kernel::{
     config::{self, groups::GroupCfg, groups::LimitCfg, groups::LimitMetric, groups::LimitWindow},
     config_validate::validate,
     cost::CostModel,
-    governance::{budget_window, PLANE_LANE_SEP},
+    governance::{budget_window, metering_bucket, PLANE_LANE_SEP},
     test_support::engine_kit::CostKit,
 };
 
@@ -287,6 +287,172 @@ async fn a_hop_refused_before_the_socket_counts_nothing() {
         bytes_ledgered(&h),
         Some(left),
         "a hop refused before the socket moved no byte and ledgers none"
+    );
+}
+
+/// **A HOP REFUSED BEFORE THE SOCKET KEEPS NO FEE (Q35).** At `agents.fees.per_request: 2`, the
+/// CONTROL hop reaches the dying backend (a 401 trips its breaker) and keeps its fee of 2; the three
+/// submissions after it are admitted — the admission counts a fee unit each — and then refused by
+/// the open breaker before the socket. Each gives its fee back: the bucket reads 2, not 8, and only
+/// the hop that left has a request on the ledger.
+#[tokio::test]
+async fn a_hop_refused_before_the_socket_keeps_no_fee() {
+    crate::testkit::install_test_seams();
+    let limits = vec![per_day(LimitMetric::Budget, 1_000)];
+    let h = harness_priced(
+        Outcome::Answers(401, "denied".to_string()),
+        None,
+        limits.clone(),
+    )
+    .await;
+    let (s1, b1) = call(&h).await;
+    assert_eq!(s1, 502, "the control hop reaches the dying backend: {b1}");
+    for n in 1..=3 {
+        let (status, body) = call(&h).await;
+        assert_eq!(
+            status, 503,
+            "call {n} is refused by the open breaker: {body}"
+        );
+    }
+    assert_eq!(
+        h.sent().len(),
+        1,
+        "only the control hop reached the backend"
+    );
+
+    let deploy = config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\nagents:\n  fees: { per_request: 2 }\n",
+    )
+    .expect("the config parses");
+    let root = config::resolve(&deploy, &Default::default()).expect("resolves");
+    let group = GroupCfg {
+        limits,
+        ..Default::default()
+    };
+    let groups = [("g".to_string(), group)].into();
+    let cost = CostModel::resolve_parts(None, 0, &groups).with_plane_fees(&root.plane_fees);
+    let priced: std::sync::Arc<dyn CostKit> = std::sync::Arc::new(cost);
+    h.gov.flush_budgets();
+    let read = h
+        .gov
+        .derived_bucket_usage(&*priced, "group:g@day", "day", true, crate::host_now())
+        .expect("the group reads");
+    assert_eq!(
+        read.spend_cents, 2,
+        "the hop that left keeps its fee of 2; the three refused before the socket keep none"
+    );
+
+    h.gov.flush_metering();
+    let requests: u64 = h
+        .gov
+        .store()
+        .list_metering(metering_bucket(crate::host_now()))
+        .expect("metering reads back")
+        .into_iter()
+        .filter(|r| r.provider == "a2a")
+        .map(|r| r.requests)
+        .sum();
+    assert_eq!(
+        requests, 1,
+        "only the hop that left is a request on the ledger"
+    );
+}
+
+/// The group bucket's spend at `agents.fees.per_request: fee`, read through the one pricing
+/// function over `limits`.
+fn spend_at_fee(h: &Harness, fee: u64, limits: Vec<LimitCfg>) -> i64 {
+    let deploy = config::deploy_from_yaml_str(&format!(
+        "providers: {{}}\nmodels: {{}}\nagents:\n  fees: {{ per_request: {fee} }}\n"
+    ))
+    .expect("the config parses");
+    let root = config::resolve(&deploy, &Default::default()).expect("resolves");
+    let group = GroupCfg {
+        limits,
+        ..Default::default()
+    };
+    let groups = [("g".to_string(), group)].into();
+    let cost = CostModel::resolve_parts(None, 0, &groups).with_plane_fees(&root.plane_fees);
+    let priced: std::sync::Arc<dyn CostKit> = std::sync::Arc::new(cost);
+    h.gov.flush_budgets();
+    h.gov
+        .derived_bucket_usage(&*priced, "group:g@day", "day", true, crate::host_now())
+        .expect("the group reads")
+        .spend_cents
+}
+
+/// **A HOP PINNED TO A POOL MEMBER THE CALLER MAY NO LONGER REACH KEEPS NO FEE** (A2A-3, Q35;
+/// REV-278 finding 1). Pool `planner` is `planner-a` + `planner-b`, the caller granted both. The
+/// CONTROL submission reaches A, whose 401 trips it, and keeps its fee of 2; the next is re-targeted
+/// to B, accepted there, and keeps its fee of 2. Then the caller's grant on `planner-b` is withdrawn.
+/// A `tasks/get` addressed to `planner-a` is admitted (one fee unit counted) and pinned to B, the
+/// member that holds the task; `route::hop_facts` refuses it at the egress gate for B (403, audited
+/// `rejected`) before any socket. That refusal gives the fee back: the bucket reads 4, not 6.
+#[tokio::test]
+async fn a_hop_pinned_to_a_member_the_caller_may_not_reach_keeps_no_fee() {
+    crate::testkit::install_test_seams();
+    let limits = vec![per_day(LimitMetric::Budget, 1_000)];
+    let h = harness_priced_pooled(
+        Outcome::AnswersByHost(vec![
+            ("backend.agent.test".to_string(), 401, "denied".to_string()),
+            (
+                "backend-b.agent.test".to_string(),
+                200,
+                backend_ok_for(serde_json::json!(7)),
+            ),
+        ]),
+        &["planner-a", "planner-b"],
+        &[
+            ("planner-a", BACKEND),
+            ("planner-b", "https://backend-b.agent.test/a2a"),
+        ],
+        &[("planner", &["planner-a", "planner-b"])],
+        limits.clone(),
+    )
+    .await;
+
+    let (s1, b1) = call_agent(&h, "planner-a", &envelope()).await;
+    assert_eq!(s1, 502, "the control hop reaches the dying member A: {b1}");
+    let (s2, b2) = call_agent(&h, "planner-a", &envelope()).await;
+    assert_eq!(
+        s2, 200,
+        "the twin B accepts the re-targeted submission: {b2}"
+    );
+    let task_id = b2
+        .pointer("/result/id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("the accepted task has busbar's id: {b2}"))
+        .to_string();
+
+    // The caller's grant on B is withdrawn; A stays granted, so the verb is still admitted.
+    let mut key = h
+        .gov
+        .store()
+        .list_keys()
+        .expect("the keys read")
+        .pop()
+        .expect("the caller's key");
+    key.allowed_scopes = Some(vec![busbar_contract::records::ScopeRef {
+        kind: crate::a2a::inbound::SCOPE_KIND_AGENT.to_string(),
+        value: "planner-a".to_string(),
+    }]);
+    h.gov.store().put_key(&key).expect("put");
+    h.gov.refresh().expect("refresh");
+
+    let sent = h.sent().len();
+    let get = serde_json::json!({
+        "jsonrpc": "2.0", "id": 9, "method": "tasks/get", "params": { "id": task_id }
+    });
+    let (s3, b3) = call_agent(&h, "planner-a", &get).await;
+    assert_eq!(
+        s3, 403,
+        "the pinned hop is refused at the egress gate for B: {b3}"
+    );
+    assert_eq!(h.sent().len(), sent, "and no backend saw the refused hop");
+
+    assert_eq!(
+        spend_at_fee(&h, 2, limits),
+        4,
+        "the two hops that left keep their fees of 2; the hop refused for B before the socket keeps none"
     );
 }
 

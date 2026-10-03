@@ -1196,8 +1196,9 @@ impl ProtocolReader for BedrockReader {
                         return out;
                     }
                 };
-                // The guardrail policy units ride the same frame's `trace`, as they do buffered.
-                warn_guardrail_units(data);
+                // The guardrail policy units ride the same frame's `trace`, as they do buffered,
+                // and travel on the usage as residuals (never billed).
+                usage.detail.residual_units = warn_guardrail_units(data);
 
                 if let Some(tier) = read_served_tier(data) {
                     usage.detail.service_tier = Some(tier);
@@ -1419,8 +1420,9 @@ impl ProtocolReader for BedrockReader {
         if let Some(tier) = read_served_tier(body) {
             usage.detail.service_tier = Some(tier);
         }
-        // The guardrail policy units AWS bills beside the tokens ride `trace`, not `usage`.
-        warn_guardrail_units(body);
+        // The guardrail policy units AWS bills beside the tokens ride `trace`, not `usage`; they
+        // travel on the usage as residuals (never billed).
+        usage.detail.residual_units = warn_guardrail_units(body);
 
         Ok(crate::codec::ir::IrResponse {
             logprobs: Vec::new(),

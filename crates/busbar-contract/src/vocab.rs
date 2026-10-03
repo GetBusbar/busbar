@@ -42,6 +42,10 @@ pub const OUTCOME_DEGRADED: &str = "degraded";
 pub const OUTCOME_DISPATCHED: &str = "dispatched";
 /// Call stream: the call did NOT go out.
 pub const OUTCOME_REFUSED: &str = "refused";
+/// Usage residual: the provider reported a count no billing class records, and it was NOT billed
+/// (MONEY LAW, owner 2026-10-02). The row exists so the gap between the ledger and the provider's
+/// invoice is on the audit chain rather than in a log line alone.
+pub const OUTCOME_UNBILLED: &str = "unbilled";
 
 // ── REASONS: which of the distinguishable refusals it was ───────────────────────────────────────
 

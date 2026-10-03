@@ -30,6 +30,9 @@ pub(crate) struct UsageSink {
     /// calls read the clock independently and could land in different 60s rate windows / budget
     /// periods, mis-attributing spend and TPM.
     pub(crate) charged_at: u64,
+    /// This request's correlation id, stamped by the forward path once it is minted
+    /// (`forward_with_pool_parsed_inner`); 0 before then. The residual audit row names it.
+    pub(crate) request_id: u64,
     /// The admission's in-flight HOLDS (the `concurrent` limit gauges), released when the LAST
     /// clone of this sink drops - i.e. when the response stream completes or the request context
     /// unwinds on any error path. `Arc` because the sink clones per failover attempt; `None` for

@@ -107,6 +107,7 @@ async fn stream_without_usage_frame_bills_zero_on_every_dialect() {
             key: Arc::new(key.clone()),
             pool: Arc::from("p"),
             charged_at,
+            request_id: 0,
             admit: None,
         };
         let resp = forward_with_pool(

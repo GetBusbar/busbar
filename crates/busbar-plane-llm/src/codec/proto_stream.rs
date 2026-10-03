@@ -1566,6 +1566,7 @@ fn merge_trailing_usage_detail(
         billed_output_tokens,
         billed_classifications,
         usage_identity_note,
+        residual_units,
         traffic_type,
         create_time,
         by_modality,
@@ -1635,6 +1636,13 @@ fn merge_trailing_usage_detail(
     }
     if billed_classifications.is_some() {
         acc.billed_classifications = *billed_classifications;
+    }
+    // The residuals (counts no billing class records, never billed) ride the frame that reported
+    // them, as the note above does: Bedrock's guardrail units arrive on the stream's `metadata`
+    // frame only, and a fold that dropped them would leave the streamed turn with no audit row where
+    // its buffered twin has one.
+    if !residual_units.is_empty() {
+        acc.residual_units = residual_units.clone();
     }
     // A streamed Gemini egress reports `usageMetadata.trafficType` only on the trailing
     // usage-bearing chunk (same shape as `tool_use_prompt_tokens` above), so folding only the four

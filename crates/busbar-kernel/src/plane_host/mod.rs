@@ -1248,8 +1248,11 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
         started: std::time::Instant,
         charged_at: u64,
         resp: axum::response::Response,
-        charged: bool,
+        charged: Option<&busbar_kernel::plane_host::AdmitHandle>,
     ) -> axum::response::Response {
+        // The handle is the grant `admission_check`/`admission_door` wrapped: its charge is what a
+        // non-2xx end refunds.
+        let grant = charged.and_then(|h| h.0.downcast_ref::<crate::governance::AdmitGrant>());
         crate::ingress::finish_admitted(
             &self.app,
             gov,
@@ -1258,7 +1261,7 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
             started,
             charged_at,
             resp,
-            charged,
+            grant.map(crate::governance::AdmitGrant::charge),
         )
     }
 
@@ -1816,6 +1819,10 @@ impl SendHostDispatch {
 #[cfg(test)]
 #[path = "tests/mod_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/residual_tests.rs"]
+mod residual_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 // THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C): the single-compiled `PlaneBuildInput`
@@ -2587,6 +2594,9 @@ pub trait TelemetryHost: Send + Sync {
     fn pool_label<'a>(&self, model: &'a str) -> &'a str;
 }
 
+/// The audit action of a residual row ([`JournalHost::settle_residual`]): counts reported, never billed.
+pub const USAGE_RESIDUAL_ACTION: &str = "usage.residual";
+
 /// The JOURNAL slice: the durable admin-audit / call-log emits a plane writes as a side effect of the
 /// mutation it records. All fire-and-forget (a store miss never fails the recorded action). Split off
 /// `EngineHost` as a supertrait.
@@ -2606,6 +2616,28 @@ pub trait JournalHost: Send + Sync {
     ///
     /// WEDGE 3 (App-retype): the neutral home of the engine's `AUDIT.record_by(...)` reach.
     fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str);
+
+    /// THE SETTLE STEP'S RESIDUAL ROW (MONEY LAW, owner 2026-10-02; ARCHITECT ruling 2026-10-02): a
+    /// usage count no billing class records is WARNed where the reader found it, never billed, and
+    /// recorded here as ONE `usage.residual` row per non-empty `residual` map on the DURABLE
+    /// PER-PRINCIPAL journal stream ([`crate::residual_log`]): store-backed, hash-chained per
+    /// `principal`, replayed at boot, never evicted. NOT the admin audit ring
+    /// ([`audit_record`](Self::audit_record)), which is operator-rate and bounded in RAM. The row names
+    /// every unit and its count, the plane, the dialect that reported them, the serving lane and the
+    /// request id, outcome `unbilled`; `principal` is the caller the units settled against. An empty
+    /// map writes nothing. The row is the kernel's, so a plane hands the counts over and never spells
+    /// the row itself.
+    fn settle_residual(
+        &self,
+        residual: &std::collections::BTreeMap<String, u64>,
+        plane: &str,
+        dialect: &str,
+        lane: &str,
+        request_id: u64,
+        principal: &str,
+    ) {
+        crate::residual_log::emit(residual, plane, dialect, lane, request_id, principal);
+    }
 
     /// Emit ONE per-call record through the durable MCP call-log engine. The transient `HostCtx` the
     /// chain seam needs is minted INTERNALLY (a fresh per-call arena over the live engine — the append
@@ -3096,8 +3128,9 @@ pub trait AdmissionHost: Send + Sync {
 
     /// POST-ADMISSION finish through the host: emit the per-request metric family + request-log
     /// webhook and, on a NON-2xx outcome, REFUND the flat per-request fee IFF it actually landed at
-    /// admission (`charged`). Identical to `busbar_kernel::ingress::finish_admitted` over the bound
-    /// snapshot + `gov` scope.
+    /// admission (`charged`: the admission's own handle, `None` when nothing was charged) — from
+    /// exactly the cells that admission's charge reached. Identical to
+    /// `busbar_kernel::ingress::finish_admitted` over the bound snapshot + `gov` scope.
     #[allow(clippy::too_many_arguments)]
     fn finish_admitted(
         &self,
@@ -3107,7 +3140,7 @@ pub trait AdmissionHost: Send + Sync {
         started: std::time::Instant,
         charged_at: u64,
         resp: axum::response::Response,
-        charged: bool,
+        charged: Option<&AdmitHandle>,
     ) -> axum::response::Response;
 
     /// NOT-CHARGED (pre-charge turn-away) finish through the host: emit metrics + the webhook with NO

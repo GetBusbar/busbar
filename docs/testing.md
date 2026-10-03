@@ -97,7 +97,7 @@ context-length must **not** move the breaker (assert `streak`/`err` unchanged vi
 through HTTP. The backend is the compiled-in `MemoryStore` (`busbar-store-memory`),
 built with `Arc::new(MemoryStore::new())` and wrapped in `GovState::new(store, None)`
 (no durable file). Tests cover key CRUD via `create_key`, budget-window period math,
-atomic charge-and-cap through `try_charge_request_within_budget` plus `refund_request`
+atomic charge-and-cap through `try_charge_request_within_budget` plus `refund_charge`
 (and the concurrent-overshoot guard on the store's `charge_within_budget`), the derived
 token cost model (`gov.rate_card` / `budget_groups` / `price_per_request_cents` against a
 `CostModel`), and metering accrual via `record_metering`. (`busbar-store-sqlite`'s own

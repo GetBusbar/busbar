@@ -534,3 +534,268 @@ fn billable_classes_are_pairwise_disjoint_and_exclude_cached_tokens() {
         );
     }
 }
+
+/// The presenting key the session-fee cells below open under.
+#[cfg(feature = "test-support")]
+fn fee_key() -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
+        id: "vk-session-fee".to_string(),
+        name: "session-fee".to_string(),
+        ..Default::default()
+    }
+}
+
+/// The presenting key's meter over `host`, as the governed open builds it.
+#[cfg(feature = "test-support")]
+fn fee_meter(host: &Arc<crate::testkit::fixture_host::FixtureHost>) -> crate::runtime::TurnMeter {
+    crate::runtime::TurnMeter::new(
+        Arc::clone(host) as Arc<dyn EngineHost>,
+        fee_key(),
+        "streaming-server",
+        crate::OPENAI_REALTIME,
+    )
+}
+
+/// A governed host with room on the key's chain, holding ONE KEPT SESSION: opened and served to its
+/// end through the one serving loop, so its session fee is on the budget book and stays there. A
+/// failed open's refund that gave back more than its own fee would eat this one.
+#[cfg(feature = "test-support")]
+async fn host_with_one_kept_session(
+    rt: &VoiceRuntime,
+) -> Arc<crate::testkit::fixture_host::FixtureHost> {
+    let host = Arc::new(
+        crate::testkit::fixture_host::FixtureHost::new()
+            .governed()
+            .with_count_cap(1_000),
+    );
+    let hosted = crate::runtime::build_runtime_hosted(rt, Arc::clone(&host) as Arc<dyn EngineHost>);
+    let (core, handle) = crate::topology::begin_session(
+        &hosted,
+        OpenAiRealtimeCodec,
+        "acct",
+        "call-kept",
+        None,
+        crate::runtime::Carrier::sideband(),
+        Some(fee_meter(&host)),
+        1,
+    )
+    .expect("the kept session opens");
+    crate::runtime::serve_with_sweep(core, async {}).await;
+    handle.finish(1);
+    assert_eq!(
+        host.ledger_usage(&fee_key().id).map_or(0, |u| u.sessions),
+        1,
+        "the premise: the kept session's fee is on the budget book"
+    );
+    host
+}
+
+/// TODO 17(b) (ARCHITECT R4): `failed` opens each counted their session fee AT THE OPEN, under the
+/// same dry check, and each gave it back EXACTLY ONCE through the governance refund. The metering
+/// row keeps every count (the refund adjusts the budget book only, as v1.5.5's fee refund did); the
+/// budget book holds the kept session's fee alone.
+#[cfg(feature = "test-support")]
+#[track_caller]
+fn assert_each_failed_open_refunded_once(
+    host: &crate::testkit::fixture_host::FixtureHost,
+    failed: u64,
+    what: &str,
+) {
+    assert_eq!(
+        host.session_rows(&fee_key().id),
+        1 + failed,
+        "{what}: each failed open counted its session fee at the open, under the dry check"
+    );
+    assert_eq!(
+        host.ledger_usage(&fee_key().id).map_or(0, |u| u.sessions),
+        1,
+        "{what}: each failed open's fee is given back exactly once, and the kept session's stays"
+    );
+}
+
+/// A loopback provider that FAILS both one-shot passes: `POST /v1/realtime/client_secrets` (the mint)
+/// and `POST /v1/realtime/calls` (the SDP broker) answer `500`, and each request reaching it is
+/// counted in `hits`, so a cell can prove its failure came from the provider leg and not from an
+/// earlier refusal.
+#[cfg(feature = "test-support")]
+async fn spawn_failing_provider(
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+) -> super::ProviderEndpoint {
+    async fn fail(
+        axum::extract::State(hits): axum::extract::State<Arc<std::sync::atomic::AtomicUsize>>,
+    ) -> axum::http::StatusCode {
+        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    }
+    let app = axum::Router::new()
+        .route("/v1/realtime/client_secrets", axum::routing::post(fail))
+        .route("/v1/realtime/calls", axum::routing::post(fail))
+        .with_state(hits);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port");
+    let addr = listener.local_addr().expect("its address");
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("the provider serves");
+    });
+    super::ProviderEndpoint {
+        base_url: format!("http://{addr}"),
+        api_key: "sk-test".to_string(),
+    }
+}
+
+/// One governed one-shot open of `ingress` for the fee key on `host`, through `provider`.
+#[cfg(feature = "test-support")]
+async fn open_one_shot(
+    rt: &VoiceRuntime,
+    host: &Arc<crate::testkit::fixture_host::FixtureHost>,
+    provider: Option<&super::ProviderEndpoint>,
+    ingress: Ingress,
+    call_id: &str,
+) -> axum::http::StatusCode {
+    let mut open = governed_open(
+        rt,
+        Arc::clone(host) as Arc<dyn EngineHost>,
+        ingress,
+        call_id,
+    );
+    open.provider = provider;
+    open.vkey = Some(fee_key());
+    open_governed(open).await.status()
+}
+
+/// A FAILED MINT REFUNDS ITS SESSION FEE EXACTLY ONCE (TODO 17(b)): the provider's mint answers `500`,
+/// so the browser is handed no secret and the session never opened. RED with the fee counted at
+/// `served()`: the open counted nothing to refund.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn a_failed_mint_refunds_its_session_fee_exactly_once() {
+    let rt = runtime_for("allowed-model");
+    let host = host_with_one_kept_session(&rt).await;
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = spawn_failing_provider(Arc::clone(&hits)).await;
+    let status = open_one_shot(
+        &rt,
+        &host,
+        Some(&provider),
+        Ingress::Mint,
+        "call-mint-fails",
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_GATEWAY,
+        "the premise: the mint failed at the provider"
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the premise: the open reached the provider's mint"
+    );
+    assert_each_failed_open_refunded_once(&host, 1, "a failed mint");
+}
+
+/// A FAILED SDP BROKER REFUNDS ITS SESSION FEE EXACTLY ONCE (TODO 17(b)): the provider answers the
+/// brokered offer `500`, so no call was set up and the session never opened. The cell opens under its
+/// own call id and proves the broker was reached, so the failure is the broker's and not a durable
+/// refusal of a reused id. RED with the fee counted at `served()`.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn a_failed_sdp_broker_refunds_its_session_fee_exactly_once() {
+    let rt = runtime_for("allowed-model");
+    let host = host_with_one_kept_session(&rt).await;
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = spawn_failing_provider(Arc::clone(&hits)).await;
+    let status = open_one_shot(&rt, &host, Some(&provider), Ingress::Sdp, "call-sdp-fails").await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "the premise: the provider refused the brokered offer, and the answer carries its status"
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the premise: the open reached the provider's SDP broker"
+    );
+    assert_each_failed_open_refunded_once(&host, 1, "a failed SDP broker");
+}
+
+/// AN UNREACHABLE PROVIDER REFUNDS THE SESSION FEE ON EACH ONE-SHOT PASS (TODO 17(b)): nothing listens
+/// on the discard port, so the mint and the SDP broker each fail at connect and answer `502`. Each pass
+/// opens under its own call id, so neither failure is a durable refusal of a reused id. RED with the
+/// fee counted at `served()`.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn an_unreachable_provider_refunds_the_session_fee_on_each_one_shot_pass() {
+    let rt = runtime_for("allowed-model");
+    let host = host_with_one_kept_session(&rt).await;
+    let down = super::ProviderEndpoint {
+        base_url: "http://127.0.0.1:9".to_string(),
+        api_key: "sk-test".to_string(),
+    };
+    for (ingress, call) in [
+        (Ingress::Mint, "call-mint-down"),
+        (Ingress::Sdp, "call-sdp-down"),
+    ] {
+        let status = open_one_shot(&rt, &host, Some(&down), ingress, call).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_GATEWAY,
+            "{ingress:?}: the premise: the provider leg failed at connect"
+        );
+    }
+    assert_each_failed_open_refunded_once(&host, 2, "an unreachable provider");
+}
+
+/// AN OPEN ANSWERED `501` REFUNDS ITS SESSION FEE EXACTLY ONCE (TODO 17(b)): with no provider composed,
+/// every HTTP open the governed door answers `501` serves nothing, so it is a failed open: the mint,
+/// the SDP broker, the HTTP telephony open and the HTTP sideband open each give their fee back. RED
+/// with the fee counted at `served()`.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn an_open_answered_501_refunds_its_session_fee_exactly_once() {
+    let rt = runtime_for("allowed-model");
+    let host = host_with_one_kept_session(&rt).await;
+    let opens = [
+        (Ingress::Mint, "call-mint-501"),
+        (Ingress::Sdp, "call-sdp-501"),
+        (Ingress::Telephony, "call-telephony-501"),
+        (Ingress::Sideband, "call-sideband-501"),
+    ];
+    for (ingress, call) in opens {
+        let status = open_one_shot(&rt, &host, None, ingress, call).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::NOT_IMPLEMENTED,
+            "{ingress:?}: the premise: the open is governed and nothing serves it"
+        );
+    }
+    assert_each_failed_open_refunded_once(&host, 4, "an open answered 501");
+}
+
+/// A FAILED PROVIDER DIAL REFUNDS ITS SESSION FEE EXACTLY ONCE (TODO 17(b)): the WS telephony / Gemini
+/// leg opens the session, then dials the provider; a failed dial settles the session through
+/// [`super::settle_undialed`], the arm `ws_accept` takes, and never serves it. RED with the fee
+/// counted at `served()`.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn a_failed_provider_dial_refunds_its_session_fee_exactly_once() {
+    let base = runtime_for("allowed-model");
+    let host = host_with_one_kept_session(&base).await;
+    let rt = crate::runtime::build_runtime_hosted(&base, Arc::clone(&host) as Arc<dyn EngineHost>);
+    let proxy = crate::topology::telephony::open_admitted_telephony(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct",
+        "call-dial-fails",
+        g711_config(),
+        Some(fee_meter(&host)),
+        1,
+        None,
+    )
+    .expect("the session opens");
+    super::settle_undialed(proxy, 2);
+    assert_each_failed_open_refunded_once(&host, 1, "a failed provider dial");
+}

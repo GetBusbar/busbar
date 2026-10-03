@@ -9,8 +9,9 @@
 //!   through the governance book's one accrual (`GovState::record_usage`), which files it in the
 //!   window of the unit's ARRIVAL epoch (THE DESIGN, section 7: "same balance, same window, same row");
 //! * the unit's flat request fee is refunded as a separate act from the ledgering
-//!   (`GovState::refund_request`), decided by the unit's [`FeeRefund`] rule: 1.5.5's non-2xx
-//!   caller status, or, for a plane new in 1.6.0, the plane's own fee-unit report;
+//!   (`GovState::refund_charge`, over the admission's own charge), decided by the unit's
+//!   [`FeeRefund`] rule: 1.5.5's non-2xx caller status, or, for a plane new in 1.6.0, the plane's
+//!   own fee-unit report;
 //! * a cancelled unit's bill (the four 1.5.5 cancel rules, computed by the driver) is ledgered the
 //!   same way, and the unit's later end ledgers nothing twice;
 //! * `on_exhaustion: finish-unit` (the default, 1.5.5) never cuts. `cut-stream` (new in 1.6.0) cuts
@@ -66,6 +67,9 @@ pub struct UnitMoney {
     pub mode: ExhaustionMode,
     /// Who decides the unit's flat-fee refund, chosen by the root for the unit's plane.
     pub fee: FeeRefund,
+    /// What the unit's admission charged ([`AdmitGrant::charge`](crate::governance::AdmitGrant::charge)):
+    /// the one input its fee refund reads.
+    pub charge: crate::governance::FeeCharge,
 }
 
 /// WHO DECIDES A UNIT'S FLAT-FEE REFUND. The design's money section: the plane reports the units it
@@ -184,7 +188,7 @@ impl PlaneMoney {
             }
         }
         if m.fee.refunds(caller_status, &open.last) {
-            self.gov.refund_request(&m.cost, &m.key, &m.pool, m.arrived);
+            self.gov.refund_charge(&m.charge);
         }
     }
 

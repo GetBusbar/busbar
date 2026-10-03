@@ -328,3 +328,98 @@ fn a_snapshot_above_the_head_sees_the_whole_history() {
     assert_eq!(above.entries().len(), 3);
     assert_eq!(above.card_at(120).expect("covered").0, HistorySeq(2));
 }
+
+/// **THE ONE CARD A CORRECTION'S WINDOW RESOLVES TO** (#79): the entry pricing every
+/// instant of the window, or nothing when a second entry resolves part of it or the window runs past
+/// the entry's end.
+#[test]
+fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
+    let mut history = History::opening(card_at(2.0), 0);
+    history.append(CardEntryDraft {
+        effective_from: 6_000,
+        effective_until: None,
+        card: card_at(3.0),
+        appended_at: 6_000,
+        author: Author::Config { policy_epoch: 1 },
+    });
+    history.append(CardEntryDraft {
+        effective_from: 10_000,
+        effective_until: Some(12_000),
+        card: card_at(4.0),
+        appended_at: 20_000,
+        author: Author::Amend {
+            operator_fingerprint: "op".to_string(),
+            reason_hash: [0; 32],
+        },
+    });
+    let view = history.current();
+    let seq = |from, until| view.sole_entry_over(from, until).map(|e| e.seq());
+    assert_eq!(seq(1_000, Some(6_000)), Some(HistorySeq(0)));
+    assert_eq!(
+        seq(1_000, Some(6_001)),
+        None,
+        "the edit at 6,000 prices part of it"
+    );
+    assert_eq!(seq(6_000, Some(10_000)), Some(HistorySeq(1)));
+    assert_eq!(
+        seq(6_000, None),
+        None,
+        "the amendment prices part of an open window"
+    );
+    assert_eq!(seq(10_000, Some(12_000)), Some(HistorySeq(2)));
+    assert_eq!(
+        seq(11_000, Some(12_001)),
+        None,
+        "runs past the amendment's end"
+    );
+    assert_eq!(seq(12_000, None), Some(HistorySeq(1)));
+    assert_eq!(
+        History::new()
+            .current()
+            .sole_entry_over(0, None)
+            .map(|e| e.seq()),
+        None
+    );
+}
+
+/// **WHERE A CORRECTION WOULD CUT INSIDE A ROW** (OWNER ruling #32, 2026-09-29). Rows are
+/// 1,000-wide buckets here, one per price era; everything before 5,000 may be stored. An edit at
+/// 2,500 appended on time opened an era there; an amendment back-dated to 3,200 did not (units from 3,200 accrued before it).
+#[test]
+fn correction_cut_names_a_boundary_inside_a_row() {
+    let mut history = History::opening(card_at(2.0), 0);
+    history.append(CardEntryDraft {
+        effective_from: 2_500,
+        effective_until: None,
+        card: card_at(3.0),
+        appended_at: 2_500,
+        author: Author::Config { policy_epoch: 1 },
+    });
+    history.append(CardEntryDraft {
+        effective_from: 3_200,
+        effective_until: Some(3_600),
+        card: card_at(4.0),
+        appended_at: 4_000,
+        author: Author::Amend {
+            operator_fingerprint: "op".to_string(),
+            reason_hash: [0; 32],
+        },
+    });
+    let view = history.current();
+    let cut = |from, until| view.correction_cut(from, until, 5_000, 1_000);
+    // Bucket starts and an era opened on time split every stored row.
+    assert_eq!(cut(1_000, Some(2_000)), None);
+    assert_eq!(cut(2_500, Some(3_000)), None);
+    assert_eq!(cut(0, None), None);
+    // Inside a stored row.
+    assert_eq!(cut(1_500, Some(2_000)), Some(1_500));
+    assert_eq!(cut(1_000, Some(1_500)), Some(1_500));
+    assert_eq!(cut(2_700, None), Some(2_700));
+    // An era back-dated after its units were stored splits nothing.
+    assert_eq!(cut(3_200, Some(4_000)), Some(3_200));
+    // A future window: its start cuts nothing; its end must not leave the units after it in a row
+    // that starts inside the window.
+    assert_eq!(cut(5_200, Some(5_800)), None);
+    assert_eq!(cut(5_200, Some(6_300)), Some(6_300));
+    assert_eq!(cut(5_200, Some(6_000)), None);
+}
