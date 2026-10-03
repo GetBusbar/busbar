@@ -26,8 +26,8 @@
 //! because a machine with no cached tarball is not evidence of a broken adapter.
 //!
 //! The tests that drive the verb seam (it takes a minted `Grant<AdminVerb>`) and the round trip
-//! through the published store live in busbar-kernel, where minting is legal:
-//! `crates/busbar-kernel/src/tests/members/plugin_loader/store_adapter_tests.rs`.
+//! through the published store live in busbar's integration suite, which takes the token from the
+//! kernel's test token helper: `crates/busbar/tests/store_adapter_verb_seam.rs`.
 
 use super::*;
 use crate::store_adapter::{

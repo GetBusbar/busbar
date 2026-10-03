@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TEST ONLY: the fake-call store harness, shared by this crate's own tests and the kernel's minting
-//! tests (`busbar-kernel`'s `src/tests/members/plugin_loader/`). Those tests live in the kernel
-//! because they mint the `Grant<AdminVerb>` the verb seam takes, and minting is legal only there.
+//! TEST ONLY: the fake-call store harness, shared by this crate's own tests and the minting tests in
+//! busbar's integration suite (`crates/busbar/tests/store_adapter_verb_seam.rs`). Those tests live
+//! there because they take the `Grant<AdminVerb>` the verb seam needs from the kernel's test token
+//! helper, and load a store crate the kernel does not name (ARCHITECT C4B-1).
 //!
 //! Compiled under `cfg(test)` (this crate's own tests) and under the `test-support` feature, which
-//! only the kernel's `[dev-dependencies]` edge turns on; never in a shipped build. The items it
+//! the kernel's own `test-support` feature and busbar's `[dev-dependencies]` edge turn on; never in a
+//! shipped build. The items it
 //! drives (`wire_up_raw`, `DynStore::new`, `stage::load_library_from_bytes`, the private
 //! `load_dyn_store_from_bytes_at_abi`) keep their normal visibility: this module is their
 //! descendant and reaches them as such, and exposes only the thin entry points below.

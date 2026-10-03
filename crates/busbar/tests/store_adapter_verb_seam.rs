@@ -2,13 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The store adapter's seams that take a minted token, against a store at the PUBLISHED payload
-//! schema, moved from `busbar-plugin-loader`'s `src/tests/store_adapter_tests.rs` (whose module
-//! doc states the three things that file and this one prove together). The verb seam takes a
-//! `Grant<AdminVerb>`, and minting one is legal only here. The fake-call store harness and the
-//! oracle-cache locator are the loader's, reached through its `test-support` feature.
+//! schema, from `busbar-plugin-loader`'s `src/tests/store_adapter_tests.rs` (whose module doc
+//! states the three things that file and this one prove together). The verb seam takes a
+//! `Grant<AdminVerb>`; this suite takes it from the kernel's test token helper, and drives the
+//! loader's fake-call store harness and oracle-cache locator through its `test-support` feature.
+//!
+//! It lives in the composition root's integration suite, not in busbar-kernel (ARCHITECT C4B-1,
+//! 2026-10-03): the store proof it loads is `busbar-store-memory`'s cold door, and the root is the
+//! crate that links that store as the shipped plugin; the kernel names no store crate.
 
-use super::fixtures::EventLog;
-use busbar_contract::caps::{AdminVerb, Grant, KernelSeal};
+use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_contract::records::VirtualKey;
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceRequest, SliceStore};
 use busbar_contract::verb_store::Store as VerbStore;
@@ -18,10 +21,56 @@ use busbar_plugin_loader::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SE
 use busbar_plugin_loader::test_support::{self, dyn_proof_store_with_fake_call_at_abi};
 use std::sync::Arc;
 
+/// The `tracing` capture the store-adapter tests assert silence with, carried from
+/// `busbar-plugin-loader`'s `src/tests/abi2_store_ops_tests.rs` (where it stays for its own tests).
+mod event_log {
+    use std::sync::{Arc, Mutex};
+
+    /// Every `tracing` event that fired on this thread while a subscriber built from this was
+    /// installed, rendered as `LEVEL message field=value ...`.
+    #[derive(Clone, Default)]
+    pub struct EventLog(Arc<Mutex<Vec<String>>>);
+
+    impl EventLog {
+        pub fn lines(&self) -> Vec<String> {
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        }
+    }
+
+    impl tracing::Subscriber for EventLog {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Render(String);
+            impl tracing::field::Visit for Render {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push_str(&format!(" {}={:?}", field.name(), value));
+                }
+            }
+            let mut r = Render(format!("{}", event.metadata().level()));
+            event.record(&mut r);
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).push(r.0);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+}
+use event_log::EventLog;
+
 /// The verbs unit's admin token. Minting one is what the kernel does for the length of an admin
-/// verb; a test standing in for the kernel mints its own.
+/// verb; a test standing in for the kernel takes one from the kernel's test token helper.
 fn admin() -> Grant<AdminVerb> {
-    Grant::<AdminVerb>::mint(&KernelSeal::acquire_for_kernel())
+    busbar_kernel::test_support::tokens::grant::<AdminVerb>()
 }
 
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same

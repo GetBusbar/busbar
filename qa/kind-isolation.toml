@@ -779,16 +779,6 @@ cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> cor
 why     = "busbar-mcp names busbar-plane-mcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The codec fold (#39, 5fbd891e0) moved the MCP wire dialect into the plane crate, which is where definition 16-20 puts a protocol's dialect, and the retiring engine now READS it rather than restating it. That fold landed the `[[transitional]]` half and not this one, so the edge shipped for a week with no row holding its number. The edge is permitted by the `[[transitional]]` drain row above and by nothing else; this row holds the NUMBER."
 drain   = "delete the busbar-plane-mcp dependency from busbar-mcp's Cargo.toml — which happens when busbar-mcp itself folds into busbar-plane-mcp and is deleted (#19; BUSBAR-1.6.0.md THE DESIGN, §11.11), because the dialect is already where it belongs and it is the ENGINE that is still in the wrong crate."
 
-[[dep]]
-from    = "busbar-mcp"
-to      = "busbar-plugin-loader"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-mcp names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-loader dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
 
 
 [[dep]]
@@ -910,16 +900,6 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar-kernel"
-to      = "busbar-plugin-loader"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 — kernel -> plugin-tooling is a granted class (the loop names the author-side plugin machinery face)."
-why     = "busbar-kernel names busbar-plugin-loader: declared dev in the test graph (dev-dependencies, features test-support), 1 declaration(s) at this commit, beside the shipped edge. TOKEN-SEALED A (ARCHITECT Q-GG3, #373): the loader's store-adapter tests mint a `Grant<AdminVerb>`, so they moved into the kernel and drive the fake-call harness through the loader's off-by-default `test-support` feature. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER."
-
-[[dep]]
-from    = "busbar-kernel"
 to      = "busbar-store-memory"
 half    = "shipped"
 count   = "1"
@@ -928,16 +908,6 @@ cite    = "ARCHITECT K5/K5b/K5c/K5d rulings (b17f0a2c1, 0ade205df): the composit
 why     = "busbar-kernel names busbar-store-memory as `fixture-store`: declared normal, optional in the shipped graph, enabled ONLY by the kernel's `test-support` feature (`dep:fixture-store`) — a test build has no root, so this fixture stands in for the row the root links (`preflight::install_linked_rows`); no kernel source names the plugin, and no default or shipped feature turns the edge on. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "delete the `fixture-store` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their linked rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-store-memory)."
 
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-store-memory"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECT Q-GG3 (token-sealed A, #373): the plugin-loader store-adapter tests moved into the kernel and wire up the memory store's cold door. `kernel -> store` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict stays the one the architecture implies; the row holds a TEST-SUPPORT edge beside the optional `fixture-store` stand-in, not a shipped coupling."
-why     = "busbar-kernel names busbar-store-memory as `fixture-store`: declared dev in the test graph (dev-dependencies, features cold-dropped-in), 1 declaration(s) at this commit, so a scoped `cargo test -p busbar-kernel` builds the store-proof cdylib WITH its door. No kernel source names the plugin. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "delete this dev-dependency once the moved store-adapter tests take their cdylib from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-store-memory)."
 
 [[dep]]
 from    = "busbar-a2a"
@@ -1493,16 +1463,6 @@ verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §8 (BUSBAR-1.6.0.md:1123-1126): \"Exactly three crates are compiled in and are never plugins; each depends one way on the kernel, names no plugin\"; DECISIONS #5 (BUSBAR-1.6.0.md:2159): \"admin, oauth2 and the connector are NOT plugins. They are the three compiled-in cleanliness crates, one-way dep on core\" — the test binary links the same one-way cleanliness -> kernel edge the shipped half declares (ARCHITECTURE_ALLOWED cleanliness -> kernel)."
 why     = "busbar-core-admin names busbar-kernel: declared dev in the test graph (features test-support, plane-mcp, plane-a2a), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER."
-
-[[dep]]
-from    = "busbar-kernel-egress"
-to      = "busbar-contract"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140-1141): busbar-contract is \"the shapes and the author SDK\" every kernel crate is written against; DECISIONS #36 (BUSBAR-1.6.0.md:2196) seats busbar-kernel-egress in the kernel tier (ARCHITECTURE_ALLOWED kernel -> contract)."
-why     = "busbar-kernel-egress names busbar-contract: declared dev in the test graph (features test-seal), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants the kernel -> contract class. What this row holds is the NUMBER."
 
 [[dep]]
 from    = "busbar-plugin-loader"

@@ -326,13 +326,10 @@ rcgen = { workspace = true, features = ["pem"] }
 criterion = { workspace = true }
 # THE MEMBER CRATES' `test-support` SEAMS (ARCHITECT Q-GG3): the minting tests moved into
 # `src/tests/members/` reach a member's private step only through its off-by-default
-# `test-support` feature, enabled HERE and nowhere in a release build.
+# `test-support` feature, enabled HERE and nowhere in a release build. (The loader's store-adapter
+# minting tests live in busbar's integration suite, `tests/store_adapter_verb_seam.rs`: the store
+# proof they load is a store crate, and the kernel names none — ARCHITECT C4B-1.)
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
-busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
-# The store-proof cdylib the moved plugin-loader store-adapter tests wire up: the memory store's
-# cold door, as plugin-loader's own dev-dependency builds it (a scoped `cargo test -p busbar-kernel`
-# would otherwise build it without the door).
-fixture-store = { package = "busbar-store-memory", path = "../store-memory", features = ["cold-dropped-in"] }
 
 # The telemetry recovery tests read per-thread jemalloc counters; the lib's TEST binary therefore
 # runs on the same allocator the shipped binary does (see the cfg(test) global_allocator in
