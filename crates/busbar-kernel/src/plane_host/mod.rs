@@ -472,7 +472,8 @@ pub async fn synthesize_completion_over(
     model: &str,
     body: bytes::Bytes,
     max_body_bytes: usize,
-) -> Result<busbar_kernel::plane_host::HostCompletion, String> {
+) -> Result<busbar_kernel::plane_host::HostCompletion, busbar_kernel::plane_host::CompletionRefusal>
+{
     // FRESH headers, not the inbound request's: the caller's own headers carry affinity keys and
     // per-request parameters addressed to the caller's request, and replaying them onto a leg the
     // caller did not compose would let one exchange steer another.
@@ -486,9 +487,9 @@ pub async fn synthesize_completion_over(
     // LLM routing tables and RELOCATED into the LLM plane; core reaches it through the neutral
     // resolved-completion seam, threading `App`/`GovCtx` back opaquely as [`ArrivalCtx`]. `None` is
     // the all-planes-off deletion configuration: with no LLM plane installed there is no chat dialect
-    // to drive, and the caller gets that as an error rather than a hard-coded protocol identity.
+    // to drive, and the caller gets that as a neutral refusal it words in its own vocabulary.
     let Some(synth) = busbar_kernel::ingress::arrival::completion_ingress() else {
-        return Err("no default chat protocol is installed".to_string());
+        return Err(busbar_kernel::plane_host::CompletionRefusal::NotInstalled);
     };
     let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
         crate::ingress::arrival_host::ArrivalPayload {
@@ -507,7 +508,7 @@ pub async fn synthesize_completion_over(
     let status = response.status().as_u16();
     let body = axum::body::to_bytes(response.into_body(), max_body_bytes)
         .await
-        .map_err(|e| format!("the sampling completion's body could not be read: {e}"))?;
+        .map_err(|e| busbar_kernel::plane_host::CompletionRefusal::BodyUnread(e.to_string()))?;
     Ok(busbar_kernel::plane_host::HostCompletion { status, body })
 }
 
@@ -1300,7 +1301,10 @@ impl busbar_kernel::plane_host::CompletionHost for EngineHostImpl {
         model: &str,
         body: bytes::Bytes,
         max_body_bytes: usize,
-    ) -> Result<busbar_kernel::plane_host::HostCompletion, String> {
+    ) -> Result<
+        busbar_kernel::plane_host::HostCompletion,
+        busbar_kernel::plane_host::CompletionRefusal,
+    > {
         // The veneer keeps the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
         // reaches in core; it only `.await`s the native async fn, so no `HostCtx` crosses the
         // `.await` and the future stays `Send`.
@@ -2051,6 +2055,17 @@ pub struct HostCompletion {
     pub status: u16,
     /// The pipeline's response body bytes (bounded by the `max_body_bytes` the caller passed).
     pub body: bytes::Bytes,
+}
+
+/// Why the host produced no completion. NEUTRAL: the kernel names the fact, and the plane that asked
+/// words the refusal in its own vocabulary (lean-core: no plane word is a kernel literal).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionRefusal {
+    /// No plane installed the resolved-completion ingress, so there is no dialect to drive.
+    NotInstalled,
+    /// The pipeline answered, but its body could not be read within `max_body_bytes`; carries the
+    /// read error's text.
+    BodyUnread(String),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -3229,8 +3244,9 @@ pub trait CompletionHost: Send + Sync {
     /// ingress pipeline (governance → pools → breaker/failover → metering → request log) under `gov`,
     /// on the operator's declared `model`, and return the raw wire outcome. The dialect the request is
     /// driven as is NEUTRAL to this seam: the host resolves it from the registry's residual-default
-    /// chat protocol (`None` — no chat dialect installed — surfaces as an error, not a hard-coded
-    /// identity), so MCP's `sampling/complete` bridge names no LLM dialect to reach a completion.
+    /// chat protocol (`None` — no chat dialect installed — surfaces as
+    /// [`CompletionRefusal::NotInstalled`], not a hard-coded identity), so MCP's `sampling/complete`
+    /// bridge names no LLM dialect to reach a completion, and words the refusal itself.
     ///
     /// The ONE async method beside [`IdentityHost::identity_admit`] — but simpler:
     /// the host drives a NATIVE core async fn (no C-ABI slot, no `spawn_blocking`), so this only
@@ -3242,7 +3258,7 @@ pub trait CompletionHost: Send + Sync {
         model: &str,
         body: bytes::Bytes,
         max_body_bytes: usize,
-    ) -> Result<HostCompletion, String>;
+    ) -> Result<HostCompletion, CompletionRefusal>;
 }
 
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.

@@ -722,7 +722,7 @@ fn red_two_listeners_on_one_address_are_refused() {
 /// A Statement's needs are read off its rendering into the candidate.
 #[test]
 fn a_candidate_carries_its_statements_needs() {
-    use busbar_contract::abi::host::conn::connector::Need;
+    use busbar_contract::abi::host::conn::connector::{Need, KEEP_NAMED};
     use busbar_contract::abi::mechanism::call::Blob;
     const NEEDS: &[Need] = &[Need {
         direction: DIRECTION_INBOUND,
@@ -740,6 +740,10 @@ fn a_candidate_carries_its_statements_needs() {
         keep_response_headers: core::ptr::null(),
         keep_response_headers_len: 0,
         timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: core::ptr::null(),
+        deny_response_headers_len: 0,
     }];
     let st = busbar_contract::abi::mechanism::door::Statement {
         kind: KindCode::Plane as u32,

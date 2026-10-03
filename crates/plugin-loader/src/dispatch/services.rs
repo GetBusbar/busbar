@@ -14,7 +14,9 @@
 //! * **May pend only on a ticket.** A service that may pend, called with no ticket, is REFUSED and
 //!   never runs.
 //! * **Served so far:** `clock.now`, `dest.judge`, `records.get`/`records.list`/`records.claim`,
-//!   `sign`, `trust.sight` and `trust.due`. Every other slot answers REFUSED ([`UNIMPLEMENTED`]).
+//!   `sign`, `trust.sight`, `trust.due`, `trust.verify` and `records.secret` (to the credential
+//!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise). Every other slot answers REFUSED
+//!   ([`UNIMPLEMENTED`]).
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -31,10 +33,10 @@ use std::sync::{Arc, Mutex, Weak};
 use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in, may_pend,
     op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, RandomFillIn,
-    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceHead, ServiceOut, SignIn,
-    TrustDueIn, TrustSightIn, SERVICES,
+    RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead,
+    ServiceOut, SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn, SERVICES,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 
@@ -56,6 +58,9 @@ pub const UNTICKETED: &str = "a service that may pend is callable only inside a 
 pub const SHORT: &str = "the buffer is too small";
 /// The refusal of a `random.fill` of no bytes or above `MAX_RANDOM_FILL`, before a byte is drawn.
 pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes";
+/// The refusal of a `records.secret` read of a credential kind the calling instance does not
+/// declare, before anything is read.
+pub const UNDECLARED_KIND: &str = "the caller does not declare that credential kind";
 /// The error text of the second short answer on one handle.
 pub const SECOND_SHORT: &str = "a second short answer on one handle";
 
@@ -325,6 +330,8 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     hook_call: Some(hook_call),
     random_fill: Some(random_fill),
     need_admit: Some(need_admit),
+    trust_verify: Some(trust_verify),
+    records_secret: Some(records_secret),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -357,6 +364,16 @@ fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
     }
     // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
     Some(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+}
+
+/// A checked blob of the caller's, copied: `None` for NULL with a length.
+fn blob_of(b: Blob, field: &'static str) -> Option<Vec<u8>> {
+    check::listed(b.ptr, b.len, field).ok()?;
+    if b.len == 0 {
+        return Some(Vec::new());
+    }
+    // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
+    Some(unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec())
 }
 
 /// A checked UTF-8 string of the caller's, copied: `None` for NULL with a length or bad UTF-8.
@@ -585,6 +602,56 @@ extern "C" fn records_get(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
+/// The credential kinds an instance's context declares it reads; none before bind stated them.
+fn credential_kinds(ctx: HostCtx) -> &'static [String] {
+    if ctx.ptr.is_null() {
+        return &[];
+    }
+    // SAFETY: every `HostCtx` the host hands out points to a leaked (`'static`) `InstanceWake`.
+    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    wake.credential_kinds.get().map_or(&[], Vec::as_slice)
+}
+
+extern "C" fn records_secret(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    slot(
+        ctx,
+        input,
+        out,
+        op::RECORDS_SECRET,
+        size_of::<RecordsSecretIn>(),
+        |served, route, head| {
+            // SAFETY: the head covered a `RecordsSecretIn`.
+            let i = unsafe { input.cast::<RecordsSecretIn>().read_unaligned() };
+            let (Some(kind), Some(id)) = (
+                text_of(i.kind, "records_secret.kind"),
+                text_of(i.id, "records_secret.id"),
+            ) else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            // THE DECLARED NEED: the caller's Statement names the kinds it reads; every other kind,
+            // and every caller that names none (any non-auth instance), is refused before the
+            // kernel reads anything.
+            if !credential_kinds(ctx).contains(&kind) {
+                return Answered::bare(Outcome::Refused, UNDECLARED_KIND);
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.records_secret(&kind, &id, later)
+                })
+            }
+        },
+    )
+}
+
 extern "C" fn records_list(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     scoped(
         ctx,
@@ -666,17 +733,12 @@ extern "C" fn sign(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
         |served, route, head, caller| {
             // SAFETY: the head covered a `SignIn`.
             let i = unsafe { input.cast::<SignIn>().read_unaligned() };
-            if check::listed(i.data.ptr, i.data.len, "sign.data").is_err()
-                || check_bufs(&i.into).is_err()
-            {
+            let Some(data) = blob_of(i.data, "sign.data") else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
                 return Answered::fault();
             }
-            let data = if i.data.len == 0 {
-                Vec::new()
-            } else {
-                // SAFETY: a checked range of the caller's, live for the call.
-                unsafe { std::slice::from_raw_parts(i.data.ptr, i.data.len) }.to_vec()
-            };
             let provider = Arc::clone(&served.provider);
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
@@ -733,6 +795,37 @@ extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             unsafe {
                 serve(&served.store, &route, &head, Some(&i.into), |_| {
                     Ran::Now(provider.trust_due(&caller))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_VERIFY,
+        size_of::<TrustVerifyIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustVerifyIn`.
+            let i = unsafe { input.cast::<TrustVerifyIn>().read_unaligned() };
+            let (Some(counterparty), Some(payload), Some(signatures)) = (
+                text_of(i.counterparty, "trust_verify.counterparty"),
+                blob_of(i.payload, "trust_verify.payload"),
+                blob_of(i.signatures, "trust_verify.signatures"),
+            ) else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                serve(&served.store, &route, &head, Some(&i.into), |_| {
+                    Ran::Now(provider.trust_verify(&caller, &counterparty, &payload, &signatures))
                 })
             }
         },

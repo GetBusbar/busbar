@@ -8,9 +8,11 @@
 //! through `busbar_contract::export_door!`), so the two cannot answer differently.
 //! `tests/conformance.rs` loads both through the one loader and requires one transcript.
 //!
-//! Nothing routes to this door yet: no production path loads it, and the composition root still
-//! declares the plane with its inert claims (`crates/busbar/src/root/plane_decisions.rs`). Serving
-//! it is the root's serve switch.
+//! The composition root links [`door`] on its `plane-door` axis under its development-only switch
+//! `plane-decisions-door` (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch") and binds it through
+//! the loader's one load beside the dropped-in plane doors. The root still declares the plane with
+//! its inert claims (`crates/busbar/src/root/plane_decisions.rs`); a request reaches the door once
+//! the serve path composes the bound door planes.
 //!
 //! * The Statement: the plane's key and version, `decisions:` declared and `providers:` consumed,
 //!   its one outbound need, and the tail [`TAIL`] (every list read off [`crate::driven::tail`]).
@@ -28,9 +30,10 @@
 use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::{Mutex, PoisonError};
 
-use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER};
+use busbar_contract::abi::host::conn::connector::{
+    Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_NAMED,
+};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
@@ -50,7 +53,7 @@ use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{
-    open_failed, Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot,
+    open_failed, Generations, HostBuf, Instance, Keyed, Lent, Out, Safe, SafeSlot,
 };
 use busbar_contract::plane::PlaneMeta;
 
@@ -133,6 +136,10 @@ pub const NEEDS: &[Need] = &[Need {
     keep_response_headers: KEEP_RESPONSE_HEADERS.as_ptr(),
     keep_response_headers_len: KEEP_RESPONSE_HEADERS.len(),
     timeout_ms: 0,
+    keep_mode: KEEP_NAMED,
+    _reserved: 0,
+    deny_response_headers: core::ptr::null(),
+    deny_response_headers_len: 0,
 }];
 
 /// THE STATEMENT TAIL: the plane's static facts, every list [`crate::driven::tail`]'s.
@@ -237,7 +244,7 @@ struct Unit {
 #[derive(Debug)]
 pub struct DecisionsDoor {
     generations: Generations<PlaneSnapshot>,
-    units: Mutex<BTreeMap<u64, Unit>>,
+    units: Keyed<u64, Unit>,
 }
 
 /// One slot body on the SDK's safe surface, over this plane's [`DecisionsDoor`].
@@ -277,7 +284,7 @@ slot!(
         };
         let plane = DecisionsDoor {
             generations: Generations::new(),
-            units: Mutex::new(BTreeMap::new()),
+            units: Keyed::new(),
         };
         let spec = snapshot_spec(section.models.len());
         out.publish(|o| &o.snapshot, &plane.generations, open.generation, &spec);
@@ -522,32 +529,33 @@ slot!(
         };
         let given = input.get();
         let bytes = input.field(|i| &i.bytes).bytes();
-        let mut units = plane.units.lock().unwrap_or_else(PoisonError::into_inner);
-        let unit = unit_of(&mut units, given.unit);
-        // A re-call after `more = 1` carries no bytes, no flags and no attempt: it is paid from
-        // what is owed.
-        let continues = bytes.is_empty() && given.flags == 0 && given.attempt_no == 0;
-        let (outcome, done) = if continues && unit.at < unit.owed.len() {
-            (Outcome::Ready, pay(unit, input, &mut out))
-        } else {
-            match given.from {
-                FROM_KERNEL if given.attempt_no != 0 => (attempt(unit, input, &mut out), false),
-                FROM_CALLER => match driven::caller_piece(bytes, given.flags & PIECE_LAST != 0) {
-                    CallerAnswer::Empty => (Outcome::Refused, true),
-                    CallerAnswer::Keep if unit.attempt => {
-                        owe(unit, bytes, EMIT_TO_FAR_END, input, &mut out);
-                        (Outcome::Ready, false)
-                    }
-                    CallerAnswer::Keep => (Outcome::Ready, false),
-                },
-                FROM_FAR_END => far_end(unit, input, &mut out),
-                _ => (Outcome::Refused, false),
+        plane.units.with_all(|units| {
+            let unit = unit_of(units, given.unit);
+            // A re-call after `more = 1` carries no bytes, no flags and no attempt: it is paid from
+            // what is owed.
+            let continues = bytes.is_empty() && given.flags == 0 && given.attempt_no == 0;
+            let (outcome, done) = if continues && unit.at < unit.owed.len() {
+                (Outcome::Ready, pay(unit, input, &mut out))
+            } else {
+                match given.from {
+                    FROM_KERNEL if given.attempt_no != 0 => (attempt(unit, input, &mut out), false),
+                    FROM_CALLER => match driven::caller_piece(bytes, given.flags & PIECE_LAST != 0) {
+                        CallerAnswer::Empty => (Outcome::Refused, true),
+                        CallerAnswer::Keep if unit.attempt => {
+                            owe(unit, bytes, EMIT_TO_FAR_END, input, &mut out);
+                            (Outcome::Ready, false)
+                        }
+                        CallerAnswer::Keep => (Outcome::Ready, false),
+                    },
+                    FROM_FAR_END => far_end(unit, input, &mut out),
+                    _ => (Outcome::Refused, false),
+                }
+            };
+            if done {
+                units.remove(&given.unit);
             }
-        };
-        if done {
-            units.remove(&given.unit);
-        }
-        outcome
+            outcome
+        })
     }
 );
 

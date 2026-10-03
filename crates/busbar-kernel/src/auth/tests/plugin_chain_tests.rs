@@ -572,7 +572,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
 
 /// 1.5.2 admin-plane OIDC: `AdminAuthChain::build` — the function `build_app_from_config` invokes on
 /// BOTH boot and reload — resolves every NON-BUILTIN `admin_auth:` entry into a loaded `kind: auth`
-/// plugin, keyed by config name, `has_plugin: true`; the operator credential is NOT in the map (it
+/// plugin, keyed by config name; the operator credential is NOT in the map (it
 /// is held apart, `AdminAuthChain::operator`). Building it TWICE against the same registry (boot, then the reload rebuild) both populate:
 /// the reload path can never leave `admin_modules` stale/empty.
 #[test]
@@ -601,10 +601,6 @@ fn admin_modules_rebuilt_on_reload() {
     // BOOT build.
     let boot = AdminAuthChain::build(&cfg, &registry, &resolver).expect("boot builds admin chain");
     assert!(
-        boot.has_plugin,
-        "an external admin module is a loaded plugin"
-    );
-    assert!(
         boot.modules.contains_key("admin-oidc"),
         "keyed by the config module name"
     );
@@ -618,7 +614,7 @@ fn admin_modules_rebuilt_on_reload() {
     let reload =
         AdminAuthChain::build(&cfg, &registry, &resolver).expect("reload rebuilds admin chain");
     assert!(
-        reload.has_plugin && reload.modules.contains_key("admin-oidc"),
+        reload.modules.contains_key("admin-oidc"),
         "reload repopulates admin_modules — never stale/empty"
     );
 
@@ -1264,7 +1260,7 @@ fn an_unauthenticated_admin_chain_admits_nothing_to_the_cache() {
         .admin_chain(vec!["test-scope-module".to_string()])
         .build();
 
-    let (verdict, _cap) = crate::auth::run_admin_chain(&app, Some("junk-token"), None);
+    let (verdict, _cap) = crate::auth::tests::run_admin_chain_on(&app, Some("junk-token"), None);
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -1300,7 +1296,7 @@ fn admin_pass_churn_cannot_evict_an_identified_data_plane_row() {
     // The cache's own ceiling (`auth_cache::MAX_ENTRIES`) worth of unauthenticated admin probes.
     for i in 0..4096u64 {
         let junk = format!("junk-{i}");
-        let (verdict, _cap) = crate::auth::run_admin_chain(&app, Some(&junk), None);
+        let (verdict, _cap) = crate::auth::tests::run_admin_chain_on(&app, Some(&junk), None);
         assert_eq!(
             verdict,
             ChainVerdict::Denied,
@@ -1328,7 +1324,7 @@ fn an_identified_admin_chain_still_caches_its_identity() {
         .admin_chain(vec!["test-scope-module".to_string()])
         .build();
 
-    let (verdict, _cap) = crate::auth::run_admin_chain(&app, Some("grp:admins"), None);
+    let (verdict, _cap) = crate::auth::tests::run_admin_chain_on(&app, Some("grp:admins"), None);
 
     assert!(matches!(verdict, ChainVerdict::Identified { .. }));
     assert_eq!(

@@ -442,7 +442,8 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
         std::sync::Arc::new(|_| {}),
     );
     let owner = InstanceId(1);
-    c.declare_over(owner, NeedId(0), scheme);
+    c.declare_over(owner, NeedId(0), scheme)
+        .expect("a served scheme declares");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -655,7 +656,8 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         std::sync::Arc::new(|_| {}),
     );
     let owner = InstanceId(1);
-    c.declare_over(owner, NeedId(1), raw);
+    c.declare_over(owner, NeedId(1), raw)
+        .expect("a served scheme declares");
     assert!(
         !c.framed(owner, NeedId(1)),
         "the socket framer is a raw stream"
@@ -668,7 +670,8 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         let (far, mut seen) =
             serve_once(respond(scheme, "{V} 200 OK\r\ncontent-length: 0\r\n\r\n")).await;
         let declared = format!("{scheme}://{far}");
-        c.declare_need_to(owner, NeedId(0), scheme, 0, &declared);
+        c.declare_need_to(owner, NeedId(0), scheme, 0, &declared)
+            .expect("a served scheme declares");
         assert!(c.framed(owner, NeedId(0)), "the composing door is framed");
         let fields: [(&str, &[u8]); 1] = [("x-a", b"1")];
         let desc = OpenDesc {

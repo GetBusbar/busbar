@@ -38,7 +38,7 @@ fn block<T>(f: impl std::future::Future<Output = T>) -> T {
 
 /// `loaded` opened as the host opens a store.
 fn store(loaded: Loaded<Store>) -> LoadedStore {
-    LoadedStore::open(loaded.plugin, loaded.dispatcher, b"{}", 1).expect("the store opens")
+    LoadedStore::open(loaded.plugin, loaded.dispatcher, b"{}", mint).expect("the store opens")
 }
 
 /// One cell of `amount` requests.
@@ -157,4 +157,13 @@ fn a_store_that_grants_part_of_a_cell_is_refused_through_both_doors() {
     };
     let dropped = reserved(&store(dropped), 4);
     same(&[format!("{linked:?}")], &[format!("{dropped:?}")]);
+}
+
+/// This test's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+fn mint() -> busbar_contract::abi::store::OpId {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    busbar_contract::abi::store::OpId::from_parts(
+        0xd00c,
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+    )
 }

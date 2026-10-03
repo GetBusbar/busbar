@@ -11,16 +11,20 @@
 use super::*;
 use serde_json::{json, Value};
 
-/// The production REQUEST translate steps (reader -> egress seam -> writer).
+/// The production REQUEST translate steps (reader -> egress seam -> writer). The egress seam is the
+/// CROSS-protocol one and runs only when the dialects differ, as in production: it clears `extra`,
+/// where the reader parks a same-dialect hop's verbatim blocks.
 fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
     let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress");
     let egress_p = crate::codec::proto_codec::protocol_for(egress).expect("egress");
     let mut req = ingress_p.reader().read_request(body).expect("read_request");
-    prepare(
-        &mut req,
-        ingress,
-        egress_p.decl().is_some_and(|d| d.requires_max_tokens),
-    );
+    if ingress != egress {
+        prepare(
+            &mut req,
+            ingress,
+            egress_p.decl().is_some_and(|d| d.requires_max_tokens),
+        );
+    }
     let mut out = egress_p.writer().write_request(&req);
     crate::codec::wire_shim::strip_router_shim_keys(&mut out, egress);
     out
@@ -178,7 +182,7 @@ fn bedrock_to_anthropic_to_bedrock_round_trips_a_one_part_search_result() {
 
 #[test]
 fn a_dialect_without_the_block_still_reads_the_passage_and_its_source() {
-    let out = xreq("bedrock", "openai_chat", &bedrock_body()).to_string();
+    let out = xreq("bedrock", "openai", &bedrock_body()).to_string();
     for needle in [
         "Refund policy",
         "https://kb.example/doc-7",

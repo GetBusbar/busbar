@@ -13,9 +13,14 @@ use super::{anthropic_writer, AnthropicReader, AnthropicWriter};
 // Request-level provider-specific fields — carried verbatim through `extra` (same-protocol lossless).
 // ---------------------------------------------------------------------------------------------
 
-/// `metadata`, `service_tier`, `container`, `mcp_servers`, `betas`: Anthropic-specific request knobs
-/// with no cross-protocol analog. They ride `extra` and must re-emit byte-exact on a same-protocol
+/// `metadata`, `service_tier`, `container`, `betas`: Anthropic-specific request knobs with no
+/// cross-protocol analog. They ride `extra` and must re-emit byte-exact on a same-protocol
 /// (Anthropic→Anthropic) hop. Each has its OWN assertion so dropping any one fails this test.
+///
+/// THE GENERAL RULE (DIALECT-FIDELITY F4): a top-level request member busbar has NEVER heard of
+/// survives the same-dialect hop byte-identical. Same-dialect relay carries every path by
+/// construction, with no list of carried fields, so the proof uses a member no table, row or reader
+/// names: [`UNKNOWN_MEMBER`], holding a nested object.
 #[test]
 fn anthropic_request_provider_specific_fields_carry() {
     let body = serde_json::json!({
@@ -25,7 +30,7 @@ fn anthropic_request_provider_specific_fields_carry() {
         "metadata": {"user_id": "u-42", "custom": "keep-me"},
         "service_tier": "priority",
         "container": "container-abc",
-        "mcp_servers": [{"type": "url", "url": "https://mcp.example/sse", "name": "srv"}],
+        (UNKNOWN_MEMBER): unknown_member_value(),
         "betas": ["token-counting-2024-11-01", "pdfs-2024-09-25"]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
@@ -37,11 +42,52 @@ fn anthropic_request_provider_specific_fields_carry() {
     assert_eq!(out["metadata"]["custom"], "keep-me");
     assert_eq!(out["service_tier"], "priority", "service_tier must survive");
     assert_eq!(out["container"], "container-abc", "container must survive");
-    assert_eq!(
-        out["mcp_servers"], body["mcp_servers"],
-        "mcp_servers survive"
-    );
+    assert_unknown_member_carried(&body, &out);
     assert_eq!(out["betas"], body["betas"], "betas must survive");
+}
+
+/// A top-level request member no dialect table, row or reader names (DIALECT-FIDELITY F4's synthetic
+/// key). If it survives, every member busbar has never heard of does.
+const UNKNOWN_MEMBER: &str = "x_busbar_unknown_member";
+
+/// The unknown member's value: nested, mixed-type, and key-ordered unusually, so a writer that
+/// reserializes, sorts, coerces or flattens it is caught, not only one that drops it.
+fn unknown_member_value() -> serde_json::Value {
+    serde_json::json!({"z": [1, {"y": null, "a": "keep"}], "b": 2.5, "a": {"nested": true}})
+}
+
+/// The F4 assertion: the unknown member is present on the way out and byte-identical to what came in.
+fn assert_unknown_member_carried(body: &serde_json::Value, out: &serde_json::Value) {
+    let sent = serde_json::to_string(&body[UNKNOWN_MEMBER]).expect("serialises");
+    let got = out
+        .get(UNKNOWN_MEMBER)
+        .map(|v| serde_json::to_string(v).expect("serialises"));
+    assert_eq!(
+        got.as_deref(),
+        Some(sent.as_str()),
+        "a member busbar has never heard of must survive the same-dialect hop byte-identical"
+    );
+}
+
+/// RED arm of the F4 assertion: a writer that DROPS the unknown member fails it.
+#[test]
+#[should_panic(expected = "must survive the same-dialect hop byte-identical")]
+fn the_unknown_member_check_fails_on_a_drop() {
+    let body = serde_json::json!({ (UNKNOWN_MEMBER): unknown_member_value() });
+    let mut out = body.clone();
+    out.as_object_mut().expect("object").remove(UNKNOWN_MEMBER);
+    assert_unknown_member_carried(&body, &out);
+}
+
+/// RED arm of the F4 assertion: a writer that REBUILDS the member (here, one nested value coerced)
+/// fails it, even though the key is still present.
+#[test]
+#[should_panic(expected = "must survive the same-dialect hop byte-identical")]
+fn the_unknown_member_check_fails_on_a_reserialize() {
+    let body = serde_json::json!({ (UNKNOWN_MEMBER): unknown_member_value() });
+    let mut out = body.clone();
+    out[UNKNOWN_MEMBER]["b"] = serde_json::json!(2);
+    assert_unknown_member_carried(&body, &out);
 }
 
 /// `top_k` is a first-class sampling knob (cross-protocol): read into `ir.top_k` and re-emitted 1:1.

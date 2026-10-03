@@ -422,7 +422,7 @@ impl AuthResponse {
             LoginOutcome::Prompt(form) => AuthResponse::Prompt(form.into()),
             LoginOutcome::Exchange(hop) => AuthResponse::TokenExchange(hop.into()),
             LoginOutcome::Identify(p) => AuthResponse::Identity(p.into()),
-            LoginOutcome::Reject => AuthResponse::Reject,
+            _ => AuthResponse::Reject,
         }
     }
 

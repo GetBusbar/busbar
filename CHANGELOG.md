@@ -867,6 +867,9 @@ each dialect translates, field by field, is listed in the generated
   split of the cache-write tokens (additive: billed counts are unchanged).
 - A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
   shape the published Chat Completions schema defines.
+- On a same-dialect route the caller receives every upstream response header except hop-by-hop
+  fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers;
+  1.5.5 relayed only Content-Type and the dialect's request-id headers.
 
 ### Fixed
 

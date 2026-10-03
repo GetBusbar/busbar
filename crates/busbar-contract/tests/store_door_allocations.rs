@@ -30,8 +30,10 @@ use std::ptr;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::store::{
-    Cap, CapsRefused, Cell as UnitCell, Grant, OpResult, ReserveRefused, StoreSlots, Tail,
+    Cap, CapsRefused, Cell as UnitCell, Grant, Op as StoreOp, OpResult, ReserveRefused, Scanned,
+    Step, StoreSlots, Tail,
 };
 use busbar_contract::abi::store::{
     slot, AppendPlaneRecordIn, GetPlaneRecordIn, HostBlobs, HostBuf, HostBytesOut, HostListOut,
@@ -41,8 +43,8 @@ use busbar_contract::abi::store::{
 };
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
-    AuditRecord, MeteringDelta, MeteringRow, PlaneRecordRef, PlaneSelector, RecordStore,
-    RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
+    PlaneSelector, RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 
 // ── the witness ──────────────────────────────────────────────────────────────────────────────
@@ -120,143 +122,354 @@ fn down<T>() -> RecordStoreResult<T> {
 
 struct Canned;
 
-impl RecordStore for Canned {
-    fn put_key(&self, _: &VirtualKey) -> RecordStoreResult<()> {
-        unreachable!("not a request-path slot")
-    }
-    fn get_key(&self, _: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        unreachable!("not a request-path slot")
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        unreachable!("not a request-path slot")
-    }
-    fn delete_key(&self, _: &str) -> RecordStoreResult<()> {
-        unreachable!("not a request-path slot")
-    }
-    fn get_usage(&self, _: &str, _: u64) -> RecordStoreResult<UsageLedger> {
-        unreachable!("not a request-path slot")
-    }
-    fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> RecordStoreResult<()> {
-        unreachable!("not a request-path slot")
-    }
-    fn add_metering(&self, _: &MeteringDelta) -> RecordStoreResult<()> {
-        unreachable!("not a request-path slot")
-    }
-    fn list_metering(&self, _: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        unreachable!("not a request-path slot")
-    }
-    fn get_plane_record(&self, kind: &str, _: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        unwitnessed(|| {
-            if kind == DOWN {
-                down()
-            } else {
-                Ok(Some(b"a body".to_vec()))
-            }
-        })
-    }
-    fn upsert_plane_record(&self, _: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn list_plane_records(&self, _: &str, _: &PlaneSelector) -> RecordStoreResult<Vec<Vec<u8>>> {
-        unwitnessed(|| Ok(vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]))
-    }
-    fn delete_plane_record(&self, kind: &str, _: &str) -> RecordStoreResult<()> {
-        unwitnessed(|| if kind == DOWN { down() } else { Ok(()) })
-    }
-    fn redeem_plane_token(&self, _: &str, _: &str, _: u64, _: u64) -> RecordStoreResult<bool> {
-        Ok(true)
-    }
-    fn plane_token_live(&self, _: &str, _: &str, _: u64, _: u64) -> RecordStoreResult<bool> {
-        Ok(true)
-    }
-}
-
 impl StoreSlots for Canned {
     const TAIL: Tail = Tail {
         ephemeral: true,
         durable_plane: false,
         fork_refusal: false,
     };
-    fn open(_: &[u8]) -> Result<Self, String> {
+
+    fn validate(_: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+    fn open(_: &[u8], _: Option<Host>) -> Result<Self, String> {
         Ok(Self)
     }
-    fn add_usage_op(&self, _: OpId, _: &str, _: u64, _: &UsageDelta) -> OpResult<()> {
+    fn add_usage_op(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &str,
+        _: u64,
+        _: &UsageDelta,
+    ) -> Step<OpResult<()>> {
         unreachable!("not a request-path slot")
     }
-    fn add_metering_op(&self, _: OpId, _: &MeteringDelta) -> OpResult<()> {
+    fn add_metering_op(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &MeteringDelta,
+    ) -> Step<OpResult<()>> {
         unreachable!("not a request-path slot")
     }
-    fn append_audit_op(&self, _: OpId, _: &AuditRecord) -> OpResult<()> {
+    fn append_audit_op(&self, _: &mut StoreOp<'_>, _: OpId, _: &AuditRecord) -> Step<OpResult<()>> {
         unreachable!("not a request-path slot")
     }
-    fn append_plane_record_op(&self, _: OpId, _: PlaneRecordRef<'_>) -> OpResult<()> {
-        Ok(())
+    fn append_plane_record_op(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: PlaneRecordRef<'_>,
+    ) -> Step<OpResult<()>> {
+        Step::Ready(Ok(()))
     }
-    fn append_batch(&self, _: OpId, _: &str, _: &[RecordBytes]) -> OpResult<Head> {
+    fn append_batch(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &str,
+        _: &[RecordBytes],
+    ) -> Step<OpResult<Head>> {
         unreachable!("not a request-path slot")
     }
-    fn heads(&self) -> Result<Vec<(String, Head)>, String> {
+    fn heads(&self, _: &mut StoreOp<'_>) -> Step<Result<Vec<(String, Head)>, String>> {
         unreachable!("not a request-path slot")
     }
-    fn session_put(&self, _: u64, _: &str, _: &str) -> Result<(), String> {
+    fn session_put(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+        _: &str,
+        _: &str,
+    ) -> Step<Result<(), String>> {
         unreachable!("not a request-path slot")
     }
-    fn session_remove(&self, _: u64) -> Result<(), String> {
+    fn session_remove(&self, _: &mut StoreOp<'_>, _: u64) -> Step<Result<(), String>> {
         unreachable!("not a request-path slot")
     }
-    fn sessions_for(&self, _: &str) -> Result<Vec<(u64, String)>, String> {
-        unwitnessed(|| Ok(vec![(7, "node-a".to_string()), (9, "node-b".to_string())]))
+    fn sessions_for(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+    ) -> Step<Result<Vec<(u64, String)>, String>> {
+        Step::Ready(unwitnessed(|| {
+            Ok(vec![(7, "node-a".to_string()), (9, "node-b".to_string())])
+        }))
     }
-    fn record_put(&self, _: &str, _: &[u8], _: &[u8]) -> Result<(), String> {
-        Ok(())
+    fn record_put(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &[u8],
+        _: &[u8],
+    ) -> Step<Result<(), String>> {
+        Step::Ready(Ok(()))
     }
-    fn record_get(&self, schema: &str, _: &[u8]) -> Result<Option<RecordBytes>, String> {
-        unwitnessed(|| {
+    fn record_get(
+        &self,
+        _: &mut StoreOp<'_>,
+        schema: &str,
+        _: &[u8],
+    ) -> Step<Result<Option<RecordBytes>, String>> {
+        Step::Ready(unwitnessed(|| {
             if schema == DOWN {
                 Err(DOWN_TEXT.to_string())
             } else {
                 Ok(RecordBytes::new(b"a value".to_vec()).ok())
             }
-        })
+        }))
     }
     fn record_scan(
         &self,
+        _: &mut StoreOp<'_>,
         _: &str,
         _: &[u8],
         _: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, String> {
+    ) -> Step<Result<Scanned, String>> {
         let v = || RecordBytes::new(b"v".to_vec()).expect("a small record");
-        unwitnessed(|| Ok(vec![(b"k1".to_vec(), v()), (b"k2".to_vec(), v())]))
+        Step::Ready(unwitnessed(|| {
+            Ok(vec![(b"k1".to_vec(), v()), (b"k2".to_vec(), v())])
+        }))
     }
     fn reserve<'c>(
         &self,
+        _: &mut StoreOp<'_>,
         _: OpId,
         _: u64,
         _: impl Iterator<Item = UnitCell<'c>> + Clone,
         _: &mut impl Extend<Grant>,
-    ) -> Result<(), ReserveRefused> {
+    ) -> Step<Result<(), ReserveRefused>> {
         unreachable!("money: not this witness")
     }
     fn slice_release(
         &self,
+        _: &mut StoreOp<'_>,
         _: OpId,
         _: u64,
         _: impl Iterator<Item = (u64, u64)> + Clone,
         _: &mut impl Extend<u64>,
-    ) -> OpResult<()> {
+    ) -> Step<OpResult<()>> {
         unreachable!("money: not this witness")
     }
-    fn add_usage_batch(&self, _: OpId, _: &[(&str, u64, UsageDelta)]) -> OpResult<()> {
+    fn add_usage_batch(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &[(&str, u64, UsageDelta)],
+    ) -> Step<OpResult<()>> {
         unreachable!("not a request-path slot")
     }
-    fn add_metering_batch(&self, _: OpId, _: &[MeteringDelta]) -> OpResult<()> {
+    fn add_metering_batch(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &[MeteringDelta],
+    ) -> Step<OpResult<()>> {
         unreachable!("not a request-path slot")
     }
-    fn append_audit_batch(&self, _: OpId, _: &[AuditRecord]) -> OpResult<()> {
+    fn append_audit_batch(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &[AuditRecord],
+    ) -> Step<OpResult<()>> {
         unreachable!("not a request-path slot")
     }
-    fn window_caps(&self, _: OpId, _: &[Cap<'_>]) -> Result<(), CapsRefused> {
+    fn window_caps(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &[Cap<'_>],
+    ) -> Step<Result<(), CapsRefused>> {
         unreachable!("not a request-path slot")
+    }
+    fn put_key(&self, _: &mut StoreOp<'_>, _: &VirtualKey) -> Step<RecordStoreResult<()>> {
+        unreachable!("not a request-path slot")
+    }
+    fn get_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<Option<VirtualKey>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn list_keys(&self, _: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn delete_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<()>> {
+        unreachable!("not a request-path slot")
+    }
+    fn scrub_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<()>> {
+        unreachable!("not a request-path slot")
+    }
+    fn list_keys_since(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+    ) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn get_usage(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: u64,
+    ) -> Step<RecordStoreResult<UsageLedger>> {
+        unreachable!("not a request-path slot")
+    }
+    fn put_usage(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: u64,
+        _: &UsageLedger,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("not a request-path slot")
+    }
+    fn list_metering(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+    ) -> Step<RecordStoreResult<Vec<MeteringRow>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn purge_windows_before(&self, _: &mut StoreOp<'_>, _: u64) -> Step<RecordStoreResult<u64>> {
+        unreachable!("not a request-path slot")
+    }
+    fn purge_metering_before(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<u64>> {
+        unreachable!("not a request-path slot")
+    }
+    fn put_credential(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &CredentialSecret,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("not a request-path slot")
+    }
+    fn put_key_with_credential(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &VirtualKey,
+        _: &CredentialSecret,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("not a request-path slot")
+    }
+    fn list_credentials(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+    ) -> Step<RecordStoreResult<Vec<CredentialMeta>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn lookup_credential_secret(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+    ) -> Step<RecordStoreResult<Option<CredentialSecret>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn revoke_credential(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("not a request-path slot")
+    }
+    fn list_credentials_since(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+    ) -> Step<RecordStoreResult<Vec<CredentialSecret>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn list_audit(&self, _: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn add_denylist(&self, _: &mut StoreOp<'_>, _: &str, _: &str) -> Step<RecordStoreResult<()>> {
+        unreachable!("not a request-path slot")
+    }
+    fn list_denylist(&self, _: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn list_audit_tail(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+    ) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn upsert_plane_record(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: PlaneRecordRef<'_>,
+    ) -> Step<RecordStoreResult<()>> {
+        Step::Ready(Ok(()))
+    }
+    fn get_plane_record(
+        &self,
+        _: &mut StoreOp<'_>,
+        kind: &str,
+        _: &str,
+    ) -> Step<RecordStoreResult<Option<Vec<u8>>>> {
+        Step::Ready(unwitnessed(|| {
+            if kind == DOWN {
+                down()
+            } else {
+                Ok(Some(b"a body".to_vec()))
+            }
+        }))
+    }
+    fn list_plane_records(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &PlaneSelector<'_>,
+    ) -> Step<RecordStoreResult<Vec<Vec<u8>>>> {
+        Step::Ready(unwitnessed(|| {
+            Ok(vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()])
+        }))
+    }
+    fn list_plane_record_parents(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+    ) -> Step<RecordStoreResult<Vec<String>>> {
+        unreachable!("not a request-path slot")
+    }
+    fn purge_plane_records_before(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: u64,
+    ) -> Step<RecordStoreResult<u64>> {
+        unreachable!("not a request-path slot")
+    }
+    fn delete_plane_record(
+        &self,
+        _: &mut StoreOp<'_>,
+        kind: &str,
+        _: &str,
+    ) -> Step<RecordStoreResult<()>> {
+        Step::Ready(unwitnessed(|| if kind == DOWN { down() } else { Ok(()) }))
+    }
+    fn redeem_plane_token(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> Step<RecordStoreResult<bool>> {
+        Step::Ready(Ok(true))
+    }
+    fn plane_token_live(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> Step<RecordStoreResult<bool>> {
+        Step::Ready(Ok(true))
     }
 }
 

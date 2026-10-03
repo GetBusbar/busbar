@@ -187,7 +187,7 @@ fn a_string_counted_with_a_null_pointer_is_fault() {
 
 // ── THE STATEMENT'S LISTS (the design's One Statement: marks, rewrites, sections, needs) ──────
 
-use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND};
+use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, KEEP_NAMED};
 use crate::abi::mechanism::call::Blob;
 use crate::abi::mechanism::door::{
     MarkWord, Rewrite, Section, MARK_BLOCKS, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE,
@@ -347,6 +347,10 @@ const NEEDS: &[Need] = &[Need {
     keep_response_headers: core::ptr::null(),
     keep_response_headers_len: 0,
     timeout_ms: 0,
+    keep_mode: KEEP_NAMED,
+    _reserved: 0,
+    deny_response_headers: core::ptr::null(),
+    deny_response_headers_len: 0,
 }];
 
 #[test]

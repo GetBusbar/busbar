@@ -812,7 +812,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             // Compiled out (`--no-default-features`), naming one is a boot error, never a silent
             // degrade (the same compliance-by-compilation stance as the pool strategy rule).
             if crate::config::is_strategy_name(current) {
-                if crate::preflight::builtin_ranking(current).is_none() {
+                if !crate::preflight::builtin_ranking_known(current) {
                     errors.push(format!(
                         "hook '{hook_name}' on_error names the built-in ranking strategy \
                          '{current}' but this binary was built WITHOUT the `hooks-ranking` \
@@ -1046,7 +1046,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // works — it's the engine's inline SWRR floor, not a plugin.)
     for (pool_name, pool_cfg) in &cfg.pools {
         let name = pool_cfg.policy.native_name();
-        if name.is_some_and(|n| crate::preflight::builtin_ranking(n).is_none()) {
+        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n)) {
             errors.push(format!(
                 "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
                  WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent. \

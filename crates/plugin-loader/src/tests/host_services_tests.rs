@@ -32,6 +32,8 @@ struct Provider {
     scoped: Mutex<Vec<(String, &'static str, Vec<u8>)>>,
     /// How many `random.fill`s reached the provider.
     filled: AtomicUsize,
+    /// Every `records.secret` read that reached the provider, as `kind:id`.
+    secrets: Mutex<Vec<String>>,
 }
 
 impl Provider {
@@ -112,6 +114,15 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
+    /// Answers the payload's length as the verdict, and the counterparty as the bytes.
+    fn trust_verify(&self, c: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
+        self.saw(c, "trust.verify", &[payload, b"|", sigs].concat());
+        Stored {
+            bytes: cp.as_bytes().to_vec(),
+            ..Stored::ready(payload.len() as u64)
+        }
+    }
+
     fn entitlement_check(&self, c: &Caller, unit: Option<u64>, target: &str) -> Stored {
         let arg = format!("{unit:?} {target}");
         self.saw(c, "entitlement.check", arg.as_bytes());
@@ -125,6 +136,19 @@ impl HostServices for Provider {
             bytes: vec![n as u8; len as usize],
             ..Stored::ready(0)
         }
+    }
+
+    /// The credential double: `<kind>:<id>` live, its secret `s3cr3t`, answered at once.
+    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
+        self.secrets.lock().unwrap().push(format!("{kind}:{id}"));
+        let mut stored = Stored::ready(svc::SECRET_LIVE);
+        stored.bytes = b"s3cr3t".to_vec();
+        stored.spans = vec![ItemSpan {
+            key: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 6 },
+        }];
+        later(stored);
+        Ran::Later
     }
 }
 
@@ -309,6 +333,8 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.hook_call,
         HOST_SLOTS.random_fill,
         HOST_SLOTS.need_admit,
+        HOST_SLOTS.trust_verify,
+        HOST_SLOTS.records_secret,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     for (service, f) in (0..SERVICES).zip(slots) {
@@ -332,7 +358,12 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             );
         } else if !matches!(
             service,
-            op::CLOCK_NOW | op::SIGN | op::TRUST_DUE | op::ENTITLEMENT_CHECK | op::RANDOM_FILL
+            op::CLOCK_NOW
+                | op::SIGN
+                | op::TRUST_DUE
+                | op::ENTITLEMENT_CHECK
+                | op::RANDOM_FILL
+                | op::TRUST_VERIFY
         ) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
@@ -692,6 +723,68 @@ fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
     );
 }
 
+fn blob(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
+    busbar_contract::abi::mechanism::call::Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        fmt: 0,
+        flags: 0,
+    }
+}
+
+/// `trust.verify` reaches the kernel from a ticketless op as its caller, with the counterparty,
+/// payload and signatures it named; the kernel's bytes land in the caller's buffer.
+#[test]
+fn trust_verify_reaches_the_kernel_without_a_ticket_and_answers_into_the_callers_buffer() {
+    let d = double();
+    let mut buf = [0u8; 8];
+    let i = TrustVerifyIn {
+        head: head(
+            op::TRUST_VERIFY,
+            Ticket::NONE,
+            0,
+            size_of::<TrustVerifyIn>(),
+        ),
+        counterparty: text("peer"),
+        payload: blob(b"doc"),
+        signatures: blob(b"[]"),
+        into: bufs(&mut buf, &mut []),
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!((o.value, o.len), (3, 4));
+    assert_eq!(&buf[..4], b"peer");
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().as_slice(),
+        &[("double".to_string(), "trust.verify", b"doc|[]".to_vec())]
+    );
+}
+
+/// RED: a signatures blob that names a length with no bytes is FAULT, and never reaches the kernel.
+#[test]
+fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
+    let d = double();
+    let mut i = TrustVerifyIn {
+        head: head(
+            op::TRUST_VERIFY,
+            Ticket::NONE,
+            0,
+            size_of::<TrustVerifyIn>(),
+        ),
+        counterparty: text("peer"),
+        payload: blob(b"doc"),
+        signatures: blob(b""),
+        into: bufs(&mut [], &mut []),
+    };
+    i.signatures.ptr = std::ptr::null();
+    i.signatures.len = 2;
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+}
+
 fn entitlement_in(target: &'static str) -> EntitlementCheckIn {
     EntitlementCheckIn {
         head: head(
@@ -840,5 +933,80 @@ fn a_recycled_ticket_drops_its_stored_service_results() {
         runs.load(Ordering::SeqCst),
         3,
         "the recycled ticket's old handle runs afresh: no earlier result is read back"
+    );
+}
+
+fn secret_in(
+    kind: &'static str,
+    id: &'static str,
+    buf: &mut [u8],
+    spans: &mut [ItemSpan],
+) -> RecordsSecretIn {
+    RecordsSecretIn {
+        head: head(op::RECORDS_SECRET, TICKET, 0, size_of::<RecordsSecretIn>()),
+        kind: text(kind),
+        id: text(id),
+        into: bufs(buf, spans),
+    }
+}
+
+fn call_secret(ctx: HostCtx, i: &RecordsSecretIn) -> (RawOutcome, ServiceOut) {
+    let mut o = blank();
+    let ret = HOST_SLOTS.records_secret.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    (ret, o)
+}
+
+/// THE DECLARED NEED (ARCHITECT ruling B): `records.secret` serves an instance only the credential
+/// kinds its Statement declares. An undeclared kind, and a caller that declares none (any non-auth
+/// instance), are REFUSED before the kernel reads anything; a declared kind reaches the kernel and
+/// its secret lands in the caller's buffers; ticketless it is refused as any may-pend service is.
+/// RED: before the slot, `records.secret` was no slot at all.
+#[test]
+fn records_secret_serves_only_a_declared_kind() {
+    let d = double();
+    let (mut buf, mut spans) = (
+        [0u8; 16],
+        [ItemSpan {
+            key: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 0 },
+        }; 1],
+    );
+    // A caller that declares no credential kind.
+    let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let (ret, o) = call_secret(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), UNDECLARED_KIND);
+    assert!(d.route.provider.secrets.lock().unwrap().is_empty());
+
+    // A caller that declares `sigv4`.
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake.credential_kinds.set(vec!["sigv4".to_string()]).is_ok());
+    let reader = HostCtx {
+        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
+    };
+    let other = secret_in("bearer", "AKID", &mut buf, &mut spans);
+    let (ret, o) = call_secret(reader, &other);
+    assert_eq!(ret.outcome(), Outcome::Refused, "an undeclared kind");
+    assert_eq!(error(&o), UNDECLARED_KIND);
+    assert!(d.route.provider.secrets.lock().unwrap().is_empty());
+
+    let mut ticketless = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    ticketless.head.handle.ticket = Ticket::NONE;
+    let (ret, o) = call_secret(reader, &ticketless);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), UNTICKETED);
+    assert!(d.route.provider.secrets.lock().unwrap().is_empty());
+
+    let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let (ret, o) = call_secret(reader, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::SECRET_LIVE);
+    assert!(svc::check_records_secret(&i, ret, &o).is_ok());
+    assert_eq!(&buf[..6], b"s3cr3t");
+    assert_eq!(
+        d.route.provider.secrets.lock().unwrap().as_slice(),
+        &["sigv4:AKID".to_string()]
     );
 }

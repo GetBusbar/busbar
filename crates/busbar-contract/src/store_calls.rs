@@ -23,6 +23,11 @@ use crate::abi::store::OpId;
 use crate::kinds::{Head, RecordBytes};
 use crate::records::{AuditRecord, MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 
+/// THE NODE'S ONE `op_id` ALLOCATOR, as a store handle is handed it: every `op_id` a handle mints
+/// for itself (the synchronous bridge's additive writes) comes from the kernel's one allocator, so no
+/// handle owns a counter and no two handles, reloads or boots mint the same id.
+pub type OpIdMint = fn() -> OpId;
+
 /// One store call in flight.
 pub type StoreCall<'a, T> = Pin<Box<dyn Future<Output = Result<T, StoreFailure>> + Send + 'a>>;
 
@@ -163,4 +168,65 @@ pub trait StoreCalls: Send + Sync {
         expires_at: u64,
         now: u64,
     ) -> StoreCall<'a, bool>;
+}
+
+// THE STORE AXIS (WIRE-STORE Q8/Q9: the kernel receives the store kind's axis from the
+// composition root and never names the loader or the dispatcher) ─────────────────────────────
+
+/// Where one store's door comes from: a compiled-in row's door, or a dropped-in plugin's verified
+/// library bytes with the Statement rendering its signed manifest states.
+pub enum StoreDoor {
+    /// A compiled-in row's door.
+    Linked(crate::abi::mechanism::door::DoorFn),
+    /// A dropped-in plugin.
+    Dropped {
+        /// Its tarball's file name (diagnostics).
+        file: String,
+        /// The library bytes its signed manifest's `sha256` names.
+        bytes: std::sync::Arc<Vec<u8>>,
+        /// The Statement rendering its signed manifest states: what the door is admitted against.
+        stated: Vec<u8>,
+    },
+}
+
+impl std::fmt::Debug for StoreDoor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreDoor::Linked(_) => f.debug_tuple("Linked").finish_non_exhaustive(),
+            StoreDoor::Dropped { file, .. } => f
+                .debug_struct("Dropped")
+                .field("file", file)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+/// ONE OPENED STORE, as the axis hands it to the kernel (WIRE-STORE Q9): the 1.5.5 op set
+/// synchronously (`records`, the transitional bridge until M6) and the typed v3 calls.
+pub struct OpenedStore {
+    /// The 1.5.5 op set.
+    pub records: std::sync::Arc<dyn crate::records::RecordStore>,
+    /// The store v3 slots; `None` for a store reached by no door.
+    pub calls: Option<std::sync::Arc<dyn StoreCalls>>,
+}
+
+impl std::fmt::Debug for OpenedStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenedStore")
+            .field("calls", &self.calls.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// THE STORE AXIS, as the composition root installs it in the kernel: every store, compiled in or
+/// dropped in, is loaded through the process's ONE dispatcher and opened through the store v3
+/// table (`abi::store`), its bridge writes minted by the kernel's one `op_id` allocator.
+pub trait StoreAxis: Send + Sync {
+    /// Load `door` under the host's instance `label` and OPEN it on `settings` (the store section's
+    /// JSON, its secret references already resolved).
+    ///
+    /// # Errors
+    /// Why it will not open: the door refused the load, or the store refused its settings (in the
+    /// store's own words).
+    fn open(&self, door: StoreDoor, label: &str, settings: &[u8]) -> Result<OpenedStore, String>;
 }

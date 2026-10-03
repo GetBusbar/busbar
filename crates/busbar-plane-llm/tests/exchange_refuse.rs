@@ -145,6 +145,45 @@ fn every_member_down_reads_the_overloaded_answer() {
     }
 }
 
+#[test]
+fn a_model_no_rate_prices_reads_the_kernels_no_rate_text() {
+    entropy();
+    let cell = "http.crosscut__unknown-path__openai-suffix";
+    let r = kernel_refusal(
+        "openai",
+        reason::NO_RATE,
+        400,
+        "no configured rate for model 'nope'",
+        0,
+    );
+    assert_matches(cell, &r);
+}
+
+/// A model that names no pool and no configured model: 1.5.5 answered the dialect's not-found
+/// envelope, 404, with its model-not-found sentence (1.5.5 `native_ingress`, the destination miss).
+/// No cell records it yet, so the recorded not-found envelope of the same dialect (the unknown-path
+/// cell) is the shape, with the model's sentence in it.
+#[test]
+fn a_model_that_resolves_to_no_destination_reads_the_not_found_answer() {
+    entropy();
+    let message = busbar_plane_llm::exchange::refuse::model_not_found("nope", None);
+    assert_eq!(
+        message,
+        "The model 'nope' does not exist or you do not have access to it."
+    );
+    let r = kernel_refusal("openai", reason::NO_DESTINATION, 404, &message, 0);
+    let mut want = recorded("http.crosscut__unknown-path__bare");
+    want["body"]["json"]["error"]["message"] = Value::String(message.clone());
+    assert_eq!(r.status, 404);
+    let body: Value = serde_json::from_slice(&r.body).expect("the rendered body is JSON");
+    assert_eq!(body, want["body"]["json"]);
+    // The dialect's own copy, where the path gave one, is the sentence.
+    assert_eq!(
+        busbar_plane_llm::exchange::refuse::model_not_found("m", Some("models/m is not found")),
+        "models/m is not found"
+    );
+}
+
 fn arrival_refusal(
     method: &str,
     target: &str,

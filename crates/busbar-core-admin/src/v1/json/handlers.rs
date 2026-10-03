@@ -1,4 +1,5 @@
 use super::*;
+use crate::admin_state::AppAdmin as _;
 
 use busbar_kernel::diagnostics::{
     diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, PLUGIN_ROLLBACK_PIN_PERSIST_FAILED,
@@ -547,12 +548,9 @@ pub(crate) async fn rollback_plugin(
     match out {
         Ok((installed, manifest)) => {
             audit::AUDIT.record_by("plugin.rollback", &resource, audit::OUTCOME_APPLIED, &actor);
-            installed.versions.record(
-                installed.config_version,
+            installed.record_version(
                 &actor,
                 &format!("plugin.rollback {resource} -> {}", manifest.version),
-                &installed.hook_registry,
-                &installed.global_hooks,
             );
             with_config_etag(
                 ok_json(
@@ -790,13 +788,7 @@ pub(crate) async fn register_hook(
     match out {
         Ok((installed, existed)) => {
             audit::AUDIT.record_by("hook.register", &resource, audit::OUTCOME_APPLIED, &actor);
-            installed.versions.record(
-                installed.config_version,
-                &actor,
-                &format!("hook.register {resource}"),
-                &installed.hook_registry,
-                &installed.global_hooks,
-            );
+            installed.record_version(&actor, &format!("hook.register {resource}"));
             // Project the registered hook from the NEW (post-swap) snapshot for the 201 body; the
             // new config-plane ETag rides along so the caller chains its next If-Match without a read.
             with_config_etag(
@@ -892,13 +884,7 @@ pub(crate) async fn put_hook(
     match out {
         Ok(installed) => {
             audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_APPLIED, &actor);
-            installed.versions.record(
-                installed.config_version,
-                &actor,
-                &format!("hook.replace {resource}"),
-                &installed.hook_registry,
-                &installed.global_hooks,
-            );
+            installed.record_version(&actor, &format!("hook.replace {resource}"));
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_hook(&name).await),
                 installed.config_version,
@@ -986,13 +972,7 @@ pub(crate) async fn delete_hook(
     match out {
         Ok(installed) => {
             audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_APPLIED, &actor);
-            installed.versions.record(
-                installed.config_version,
-                &actor,
-                &format!("hook.delete {resource}"),
-                &installed.hook_registry,
-                &installed.global_hooks,
-            );
+            installed.record_version(&actor, &format!("hook.delete {resource}"));
             // 204 still carries the NEW config-plane ETag — a scripted delete chain needs no re-read.
             with_config_etag(
                 StatusCode::NO_CONTENT.into_response(),
@@ -1727,13 +1707,7 @@ fn merge_group_patch(
 /// audited, timestamped version row (so `GET /config/versions` shows the event honestly). The
 /// snapshot does not yet carry groups, so `config/rollback` cannot restore them.
 fn record_group_version(installed: &Arc<busbar_kernel::state::App>, actor: &str, summary: &str) {
-    installed.versions.record(
-        installed.config_version,
-        actor,
-        summary,
-        &installed.hook_registry,
-        &installed.global_hooks,
-    );
+    installed.record_version(actor, summary);
 }
 
 /// `GET /api/v1/admin/audit` — the admin audit log (most-recent-first), every mutation with its outcome.
@@ -1782,7 +1756,7 @@ pub(crate) async fn list_config_versions(
         Ok(n) => n,
         Err(resp) => return resp,
     };
-    let mut versions = handle.load().versions.list(start, limit + 1);
+    let mut versions = handle.load().versions().list(start, limit + 1);
     let next_cursor = page_cursor(&mut versions, start, limit);
     ok_json(
         StatusCode::OK,
@@ -1803,13 +1777,16 @@ pub(crate) async fn get_config_version(
             "config version must be a non-negative integer; got `{v}`"
         )));
     };
-    match handle.load().versions.get(v) {
+    match handle.load().versions().get(v) {
         Some(cv) => {
             // Project the snapshot through the ONE wire HookView shape (against the SNAPSHOT's own
             // global wiring) — never the raw HookCfg file shape, so a consumer parses hooks with a
             // single schema whether it reads /hooks or a retained version.
-            let hooks: std::collections::BTreeMap<&String, _> = cv
-                .hook_registry
+            let registry = match decode_hook_registry(&cv.hook_registry) {
+                Ok(r) => r,
+                Err(e) => return err_json(&e),
+            };
+            let hooks: std::collections::BTreeMap<&String, _> = registry
                 .iter()
                 .map(|(name, cfg)| {
                     (
@@ -1836,6 +1813,14 @@ pub(crate) async fn get_config_version(
     }
 }
 
+/// A retained version's hook-registry snapshot, decoded back into the kernel's hook config shape
+/// (the snapshot is the serialized form `record_version` wrote).
+fn decode_hook_registry(
+    snapshot: &serde_json::Value,
+) -> Result<std::collections::HashMap<String, busbar_kernel::config::HookCfg>, AdminError> {
+    serde_json::from_value(snapshot.clone()).map_err(|_| AdminError::Internal)
+}
+
 /// `GET /api/v1/admin/config/diff?from=&to=` — structured hook-surface diff between two retained
 /// versions: hook names added / removed / changed (definition differs), plus the global wiring of
 /// each side when it changed.
@@ -1853,7 +1838,7 @@ pub(crate) async fn config_diff(
     };
     let app = handle.load();
     // Name exactly WHICH version is missing — "and/or" made a consumer re-probe both.
-    let a = match app.versions.get(from) {
+    let a = match app.versions().get(from) {
         Some(v) => v,
         None => {
             return err_json(&AdminError::not_found(format!(
@@ -1861,7 +1846,7 @@ pub(crate) async fn config_diff(
             )))
         }
     };
-    let b = match app.versions.get(to) {
+    let b = match app.versions().get(to) {
         Some(v) => v,
         None => {
             return err_json(&AdminError::not_found(format!(
@@ -1869,26 +1854,18 @@ pub(crate) async fn config_diff(
             )))
         }
     };
-    let mut added: Vec<&String> = b
-        .hook_registry
-        .keys()
-        .filter(|k| !a.hook_registry.contains_key(*k))
-        .collect();
-    let mut removed: Vec<&String> = a
-        .hook_registry
-        .keys()
-        .filter(|k| !b.hook_registry.contains_key(*k))
-        .collect();
-    // "Changed" = present in both with a differing definition. HookCfg has no PartialEq (transport
-    // objects don't); compare the serialized form — the definition IS its config shape.
-    let mut changed: Vec<&String> = a
-        .hook_registry
+    let empty = serde_json::Map::new();
+    let (ra, rb) = (
+        a.hook_registry.as_object().unwrap_or(&empty),
+        b.hook_registry.as_object().unwrap_or(&empty),
+    );
+    let mut added: Vec<&String> = rb.keys().filter(|k| !ra.contains_key(*k)).collect();
+    let mut removed: Vec<&String> = ra.keys().filter(|k| !rb.contains_key(*k)).collect();
+    // "Changed" = present in both with a differing definition. The snapshots ARE the serialized
+    // config shape, so the definitions compare directly.
+    let mut changed: Vec<&String> = ra
         .iter()
-        .filter(|(k, va)| {
-            b.hook_registry
-                .get(*k)
-                .is_some_and(|vb| serde_json::to_value(va).ok() != serde_json::to_value(vb).ok())
-        })
+        .filter(|(k, va)| rb.get(*k).is_some_and(|vb| *va != vb))
         .map(|(k, _)| k)
         .collect();
     added.sort();
@@ -1963,7 +1940,7 @@ pub(crate) async fn rollback_config(
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
         }
-        let Some(target) = current.versions.get(want) else {
+        let Some(target) = current.versions().get(want) else {
             return Err(AdminError::not_found(format!(
                 "config version {want} (pruned or never recorded)"
             )));
@@ -1972,10 +1949,11 @@ pub(crate) async fn rollback_config(
         // resolved and every referenced plugin re-opened, the largest blocking-FFI burst of any
         // mutation on this lock. See `register_hook`.
         let snapshot = current.clone();
+        let registry = decode_hook_registry(&target.hook_registry)?;
         Ok(txn.read_store(move || {
             let installed = Arc::new(build_with_registry(
                 &snapshot,
-                target.hook_registry,
+                registry,
                 target.global_hooks,
             )?);
             // PERSIST-then-SWAP, fail-closed. A wholesale registry write (both tombstone args
@@ -2009,13 +1987,7 @@ pub(crate) async fn rollback_config(
     match out {
         Ok(installed) => {
             audit::AUDIT.record_by("config.rollback", &resource, audit::OUTCOME_APPLIED, &actor);
-            installed.versions.record(
-                installed.config_version,
-                &actor,
-                &format!("config.rollback to v{}", req.version),
-                &installed.hook_registry,
-                &installed.global_hooks,
-            );
+            installed.record_version(&actor, &format!("config.rollback to v{}", req.version));
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
@@ -2125,17 +2097,8 @@ pub(crate) async fn put_auth(
         let mut next = (**current).clone();
         next.config_version = current.config_version.wrapping_add(1);
         next.admin_chain = req.admin_auth;
-        // DRY-RUN GUARD: this very request's carriers, evaluated under the CANDIDATE chain.
-        let authz_credential = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(busbar_kernel::auth::AuthMiddleware::extract_bearer_token);
-        let header_tok = headers
-            .get(busbar_kernel::auth::X_ADMIN_TOKEN)
-            .and_then(|v| v.to_str().ok())
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
-        let survives = busbar_kernel::auth::dry_run_admin_scope(&next, authz_credential.as_deref(), header_tok.as_deref())
+        // DRY-RUN GUARD: this very request's credential, evaluated under the CANDIDATE chain.
+        let survives = busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
             .contains(busbar_kernel::admin::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
@@ -2172,13 +2135,7 @@ pub(crate) async fn put_auth(
         audit::OUTCOME_APPLIED,
         principal.actor_id(),
     );
-    installed.versions.record(
-        installed.config_version,
-        principal.actor_id(),
-        "auth.admin_chain_put",
-        &installed.hook_registry,
-        &installed.global_hooks,
-    );
+    installed.record_version(principal.actor_id(), "auth.admin_chain_put");
     // The response IS the resource (the same {configured, modules} shape GET /admin-auth returns,
     // so a Terraform provider uses the PUT response as post-state) + apply metadata.
     with_config_etag(
@@ -2354,13 +2311,7 @@ pub(crate) async fn reload_config(
                 audit::OUTCOME_APPLIED,
                 &actor,
             );
-            installed.versions.record(
-                installed.config_version,
-                &actor,
-                "config.reload (from disk)",
-                &installed.hook_registry,
-                &installed.global_hooks,
-            );
+            installed.record_version(&actor, "config.reload (from disk)");
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
@@ -2591,13 +2542,7 @@ pub(crate) async fn apply_config(
                 audit::OUTCOME_APPLIED,
                 &actor,
             );
-            installed.versions.record(
-                installed.config_version,
-                &actor,
-                "config.apply (request body)",
-                &installed.hook_registry,
-                &installed.global_hooks,
-            );
+            installed.record_version(&actor, "config.apply (request body)");
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
@@ -3329,13 +3274,7 @@ pub(crate) async fn patch_hook_settings(
     match out {
         Ok(installed) => {
             audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_APPLIED, &actor);
-            installed.versions.record(
-                installed.config_version,
-                &actor,
-                &format!("hook.settings {resource}"),
-                &installed.hook_registry,
-                &installed.global_hooks,
-            );
+            installed.record_version(&actor, &format!("hook.settings {resource}"));
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_hook(&name).await),
                 installed.config_version,
@@ -4568,7 +4507,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // response shapes always match what serde serializes. Driven by a table keyed on
     // (relative-path, method, status); `attach` resolves the type to a `#/components/schemas/<T>`
     // ref, records it in `gen`, and writes the `content` block.
-    use busbar_kernel::admin::v1::contract::schema as sview;
+    use crate::v1::schema as sview;
     let mut gen = schemars::generate::SchemaSettings::draft2020_12()
         .with(|s| {
             // OpenAPI 3.1 keeps component schemas under `#/components/schemas`; strip the per-schema

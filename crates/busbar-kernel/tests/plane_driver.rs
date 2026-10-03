@@ -707,7 +707,7 @@ use busbar_contract::kinds::{RecordBytes, StoreError};
 use busbar_contract::services::{Caller as Instance, HostServices, Ran, RecordsList, Stored};
 use busbar_kernel::governance::MemoryStore;
 use busbar_kernel::host_records::RecordRows;
-use busbar_kernel::host_services::{InstanceFacts, KernelServices, Offload, SystemResolver};
+use busbar_kernel::host_services::{InstanceFacts, KernelServices, Offload};
 
 /// The memory store's typed records.
 struct Rows(Arc<MemoryStore>);
@@ -751,7 +751,7 @@ fn instance() -> Instance {
 /// The kernel's records services over a memory store, the instance admitted with one kind.
 fn records() -> Arc<KernelServices> {
     let store = Arc::new(MemoryStore::new());
-    let s = KernelServices::new(HashMap::new(), Arc::new(SystemResolver))
+    let s = KernelServices::new()
         .with_records(Arc::new(Rows(Arc::clone(&store))), store)
         .with_pool(Arc::new(Inline));
     let facts = InstanceFacts {

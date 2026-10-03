@@ -20,6 +20,10 @@ license = "Apache-2.0"
 #   cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 [features]
 pack = ["dep:jsonschema"]
+# The auth axis's TEST STAND-IN (`auth_axis::stand_in`): a build with no composition root opens its
+# auth rows on a dispatcher of its own. A test double, so it never ships: a dependent crate's
+# `test-support` forwards here.
+test-support = []
 
 [[bin]]
 name = "busbar-plugin-pack"
@@ -133,11 +137,8 @@ ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 libloading = { workspace = true }
-# The kind:hook seam: `DlopenPolicy` implements the async `busbar_contract::hooks::RoutingPolicy` trait, running
-# the blocking `busbar_call` on `spawn_blocking` (a hook gate can be CPU-heavy). `async-trait` matches
-# the engine's; `tokio` is `rt`/`time`/`sync` only (spawn_blocking, timeout, the hook-call semaphore)
-# — no runtime is started in this crate.
-async-trait = { workspace = true }
+# `tokio` is `rt`/`time`/`sync` only (spawn_blocking, timeouts, the hook quarantine's wait) — no
+# runtime is started in this crate.
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
 # The transport adapter (`transport_adapter`): a HOT-lane transport presented as the host's async
 # `busbar_contract::Transport`, whose frame pump is a `futures::Stream` and whose detached stream is
@@ -214,18 +215,14 @@ busbar-auth-oidc-plugin = { workspace = true }
 # plugin — door + both-ways conformance, the AUTH kind proof). The row above proves the
 # login-capable surface, but its token can only be REFUSED (the issuer's keys are unreachable
 # offline); this one runs the token cases to every verdict — the accepted token IDENTIFIES, a wrong
-# one is REJECTED, another scheme's token and no credential PASS — on both doors. `dropped-in`: the
-# door is compiled only under it (a build that links the module must not carry a second door
-# registration), and this proof needs both halves of it.
-# From its own repo at the rev busbar-kernel pins: the repo's plugin crate, which turns the module's
-# `dropped-in` door on and re-exports it whole; its cdylib is built under `deps/`, hashed.
+# one is REJECTED, another scheme's token and no credential PASS — on both doors, on the auth kind's
+# memory ABI (ARCHITECT 2026-09-30, AUTH-DOOR Q1): its `rlib`'s `door::door` is the linked door, its
+# cdylib (built under `deps/`, hashed) the dropped-in one.
 busbar-auth-admin-tokens-plugin = { workspace = true }
 # The libraries the plugin-logging witness logs through from inside a call (`log_witness_plugin`).
 h2 = { workspace = true }
 log = { workspace = true }
 tungstenite = { workspace = true }
-# The `kind: hook` BOTH-WAYS fixture, on the same terms (`hook_conformance_tests`).
-busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 # The `kind: transport` BOTH-WAYS fixture (#3, OWNER-LOCKED: a transport is swappable, compiled in
 # OR dropped in): a real shipped transport door. `transport_door_tests` signs a dropped-in door image
 # (the plugin repo's cdylib, built under `deps/` by this edge and found by kind) into a `plugins/`
@@ -266,7 +263,6 @@ auth = "busbar-auth-oidc-plugin"
 # A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the
 # test reaches the row by that whole key (`both_doors_of`), never by the plugin's name.
 auth-verify = "busbar-auth-admin-tokens-plugin"
-hook = "busbar-hook-test-plugin"
 # A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
 # emits only its crate alias and its cdylib name for this row. It is also the one wire crate this
 # crate may take a (dev) edge on — kind-isolation's transport-registration rule reads this row.

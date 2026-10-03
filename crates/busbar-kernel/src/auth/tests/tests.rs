@@ -821,8 +821,8 @@ async fn forbidden_admin_requests_audit_once_per_window() {
 
 /// A test-only external admin module that SLEEPS on the (blocking-pool) thread before returning —
 /// stands in for a wedged admin IdP doing blocking JWKS/introspection I/O. Returns `Pass` (so the
-/// chain fail-closed-denies) once it wakes. Injected via `TestApp::admin_module`, which forces
-/// `has_plugin`, so the admin middleware OFFLOADS it off the reactor.
+/// chain fail-closed-denies) once it wakes. Injected via `TestApp::admin_module` as an external
+/// module, so the admin middleware OFFLOADS its call off the reactor.
 struct SleepingAdminModule(std::time::Duration);
 impl crate::auth::AuthModule for SleepingAdminModule {
     fn name(&self) -> &'static str {
@@ -1889,7 +1889,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
     // Default ceiling for an external module is read-only: the full binding is capped.
     let app = mk_app(None, "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, Some("grp:ops"), None),
+        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
         Grants::of(Scope::ReadOnly),
         "an external module without an explicit cap must be ceilinged to read-only"
     );
@@ -1897,7 +1897,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
     // Explicit max_admin_scope: full lifts the ceiling; the full binding now lands.
     let app = mk_app(Some("full"), "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, Some("grp:ops"), None),
+        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
         Grants::of(Scope::Full),
         "an explicit full cap must let the full binding through"
     );
@@ -1906,13 +1906,15 @@ fn test_admin_scope_cap_ceilings_external_module() {
     // the principal (identified by test-scope-module) earns no scope at all.
     let app = mk_app(Some("full"), "other-module");
     assert!(
-        dry_run_admin_scope(&app, Some("grp:ops"), None) == Grants::default(),
+        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)) == Grants::default(),
         "a binding under another module's table must grant nothing"
     );
 
     // A credential no chain module identifies: denied (fail closed).
     let app = mk_app(Some("full"), "test-scope-module");
-    assert!(dry_run_admin_scope(&app, Some("not-a-grp"), None) == Grants::default());
+    assert!(
+        dry_run_admin_scope(&app, &admin_headers(Some("not-a-grp"), None)) == Grants::default()
+    );
 }
 
 /// AF1 (security-visibility): an EMPTY admin chain is the anonymous OPEN dev posture — a property of
@@ -1932,7 +1934,7 @@ fn test_dry_run_empty_admin_chain_is_not_full() {
     a.admin_chain = vec![]; // the empty / open posture
 
     // No admin credential presented: an empty chain earns nothing (NOT Full).
-    let g = dry_run_admin_scope(&app, None, None);
+    let g = dry_run_admin_scope(&app, &admin_headers(None, None));
     assert!(
         !g.contains(Scope::Full),
         "an empty admin_auth chain must NOT dry-run to Full — that masks the fail-open the \
@@ -1947,7 +1949,11 @@ fn test_dry_run_empty_admin_chain_is_not_full() {
     // ...and even WITH an arbitrary credential waved, the empty chain still earns no Full: the
     // (absent) chain is what decides, not what the caller presented.
     assert!(
-        !dry_run_admin_scope(&app, Some("anything"), Some("x-admin-token")).contains(Scope::Full),
+        !dry_run_admin_scope(
+            &app,
+            &admin_headers(Some("anything"), Some("x-admin-token"))
+        )
+        .contains(Scope::Full),
         "an empty chain must not grant Full to any presented credential"
     );
 }
@@ -2213,7 +2219,7 @@ fn the_operator_credential_opens_from_the_axis() {
     use crate::auth::{open_operator, OperatorCredential};
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
     // This crate's test binary links no auth row, so its linked registry has none to open.
-    let linked = crate::preflight::linked().expect("the linked registry");
+    let linked = std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
     let none = Default::default();
     let open = |digest| open_operator(&linked, digest, &none).expect("opens");
     assert!(matches!(
@@ -2221,4 +2227,206 @@ fn the_operator_credential_opens_from_the_axis() {
         OperatorCredential::Unanswered
     ));
     assert!(matches!(*open(None), OperatorCredential::Unanswered));
+}
+
+/// TEST-ONLY: a request's head presenting `bearer` as its Bearer and `header` on the second admin
+/// carrier.
+pub(super) fn admin_headers(bearer: Option<&str>, header: Option<&str>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(b) = bearer {
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {b}")).expect("a header value"),
+        );
+    }
+    if let Some(h) = header {
+        headers.insert(
+            HeaderName::from_static(X_ADMIN_TOKEN),
+            HeaderValue::from_str(h).expect("a header value"),
+        );
+    }
+    headers
+}
+
+/// TEST-ONLY: the admin chain as the synchronous probe walks it (the sync [`admin_door`]'s walk),
+/// over the two admin carriers. A chain that cannot be judged on the spot reads `Denied`.
+pub(super) fn run_admin_chain_on(
+    app: &crate::state::App,
+    bearer: Option<&str>,
+    header: Option<&str>,
+) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
+    let headers = admin_headers(bearer, header);
+    let walk = std::pin::pin!(run_admin_chain(app, "GET", "/", &headers, true));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::future::Future::poll(walk, &mut cx) {
+        std::task::Poll::Ready(Ok(answer)) => answer,
+        std::task::Poll::Ready(Err(_)) | std::task::Poll::Pending => (ChainVerdict::Denied, None),
+    }
+}
+
+/// An operator credential's door stand-in: answers `verified` to every verify, on the spot and
+/// submitted.
+struct OperatorDouble(busbar_contract::auth_calls::Verified);
+
+struct OperatorAnswer(Option<busbar_contract::auth_calls::VerifyAnswer>);
+
+impl std::future::Future for OperatorAnswer {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(self.0.take().expect("polled once"))
+    }
+}
+
+impl busbar_contract::auth_calls::Verifying for OperatorAnswer {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        self.0.take()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for OperatorDouble {
+    fn name(&self) -> &str {
+        "operator-double"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.0.clone().into())
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(OperatorAnswer(Some(self.0.clone().into())))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// An app whose admin chain is the operator credential alone, its door answering `verified`.
+pub(super) fn operator_app(
+    verified: busbar_contract::auth_calls::Verified,
+) -> std::sync::Arc<crate::state::App> {
+    let op = crate::config::operator_provider();
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec![op.to_string()])
+        .build();
+    let operator = Operator::open(
+        op,
+        std::iter::empty(),
+        true,
+        Some("digest".to_string()),
+        |_| Ok(std::sync::Arc::new(OperatorDouble(verified))),
+    )
+    .expect("opens");
+    std::sync::Arc::get_mut(&mut app)
+        .expect("freshly built App Arc is unshared")
+        .admin_modules = std::sync::Arc::new(AdminAuthChain {
+        modules: std::collections::HashMap::new(),
+        operator,
+    });
+    app
+}
+
+/// The admin chain of [`operator_app`] over `verified`, awaited, for a request presenting a Bearer.
+async fn walk(verified: busbar_contract::auth_calls::Verified) -> AdminChainAnswer {
+    let app = operator_app(verified);
+    let headers = admin_headers(Some("tok"), None);
+    run_admin_chain(&app, "GET", "/", &headers, false).await
+}
+
+/// THE ADMIN DOOR ON THE OPERATOR'S DOOR (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1): the operator
+/// credential's verify is AWAITED, and its answer is read apart — an identity admits, a bad
+/// credential is the 1.5.5 refusal (Denied, 401), and an overloaded verifier or one that answered no
+/// verdict is 503 `unavailable`, never a 401. RED: were an overloaded or failed verify folded into a
+/// bad credential (as the cold lane did), the two `Err` arms below would read `Ok(Denied)`.
+#[tokio::test]
+async fn the_operator_door_is_awaited_and_its_outage_is_not_a_bad_credential() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    let identity = Verified::Identity(VerifiedIdentity {
+        subject: "admin".into(),
+        ..VerifiedIdentity::default()
+    });
+    assert!(matches!(
+        walk(identity).await,
+        Ok((ChainVerdict::Identified { .. }, _))
+    ));
+    assert!(matches!(
+        walk(Verified::Reject).await,
+        Ok((ChainVerdict::Denied, None))
+    ));
+    assert!(matches!(
+        walk(Verified::Pass).await,
+        Ok((ChainVerdict::Denied, None))
+    ));
+    assert_eq!(
+        walk(Verified::Overloaded).await.err(),
+        Some(AdminUnavailable::Overloaded)
+    );
+    assert_eq!(
+        walk(Verified::Failed).await.err(),
+        Some(AdminUnavailable::Outage)
+    );
+}
+
+/// The 503 an admin chain that could not be judged answers: the frozen v1 envelope's `unavailable`.
+#[tokio::test]
+async fn an_unjudged_admin_chain_answers_503_unavailable() {
+    let mut bodies = Vec::new();
+    for why in [AdminUnavailable::Overloaded, AdminUnavailable::Outage] {
+        let resp = admin_unavailable_response(why);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        bodies.push(body);
+    }
+    assert_eq!(
+        bodies[0], bodies[1],
+        "an outage answers the overloaded verifier's bytes: no new customer string"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&bodies[0]).expect("json");
+    assert_eq!(v["error"]["code"], "unavailable");
+}
+
+/// The synchronous admin door (the dry run, the root's admin unit) PROBES the operator credential
+/// (`verify_now`): an overloaded verifier grants nothing, and the door is `Denied`, fail-closed.
+#[test]
+fn the_sync_admin_door_probe_fails_closed_when_the_operator_verifier_is_overloaded() {
+    let app = operator_app(busbar_contract::auth_calls::Verified::Overloaded);
+    let headers = admin_headers(Some("tok"), None);
+    assert!(dry_run_admin_scope(&app, &headers) == busbar_contract::authz::Grants::default());
+    assert_eq!(admin_door(&app, "GET", "/", &headers), AdminDoor::Denied);
+}
+
+/// The operator credential's door reads the request's head: its method, its path and query apart,
+/// its authority off the `host` line, and every field line as presented.
+#[test]
+fn the_admin_head_hands_the_request_through_as_presented() {
+    let mut headers = admin_headers(Some("tok"), Some("hdr"));
+    headers.insert(
+        axum::http::header::HOST,
+        HeaderValue::from_static("node.example:8443"),
+    );
+    let head = admin_head("POST", "/api/v1/admin/keys?limit=2", &headers, 7);
+    assert_eq!(head.point, busbar_contract::abi::auth::AuthPoint::Head);
+    assert_eq!(
+        (
+            head.method.as_str(),
+            head.path.as_str(),
+            head.query.as_deref()
+        ),
+        ("POST", "/api/v1/admin/keys", Some("limit=2"))
+    );
+    assert_eq!(head.authority, "node.example:8443");
+    assert_eq!(head.timestamp, 7);
+    let names: Vec<&str> = head.lines.iter().map(|l| l.0.as_str()).collect();
+    assert_eq!(names, ["authorization", X_ADMIN_TOKEN, "host"]);
 }

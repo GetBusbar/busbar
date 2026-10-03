@@ -302,6 +302,18 @@ fn section<T: for<'de> Deserialize<'de>>(
     }
 }
 
+/// The settings sections the tables read: the declaring one and the ones read beside it.
+pub mod sections {
+    /// The pools: the plane's own section.
+    pub const POOLS: &str = "pools";
+    /// The providers.
+    pub const PROVIDERS: &str = "providers";
+    /// The models.
+    pub const MODELS: &str = "models";
+    /// The limits.
+    pub const LIMITS: &str = "limits";
+}
+
 impl Shaping {
     /// READ THE TABLES from the settings object.
     ///
@@ -312,12 +324,13 @@ impl Shaping {
     /// pool member naming no model, or one model given two context windows.
     pub fn from_settings(settings: &Value) -> Result<Self, String> {
         let providers: BTreeMap<String, ProviderCfg> =
-            section(settings, "providers")?.unwrap_or_default();
-        let models: BTreeMap<String, ModelCfg> = section(settings, "models")?.unwrap_or_default();
-        let limits: Option<LimitsCfg> = section(settings, "limits")?;
+            section(settings, sections::PROVIDERS)?.unwrap_or_default();
+        let models: BTreeMap<String, ModelCfg> =
+            section(settings, sections::MODELS)?.unwrap_or_default();
+        let limits: Option<LimitsCfg> = section(settings, sections::LIMITS)?;
         let mut pools: BTreeMap<String, Vec<Member>> = BTreeMap::new();
         let mut context: HashMap<String, Option<usize>> = HashMap::new();
-        if let Some(Value::Object(sec)) = settings.get("pools") {
+        if let Some(Value::Object(sec)) = settings.get(sections::POOLS) {
             for (name, pool) in sec {
                 // The reserved keys of the section are settings, not pools: a pool has members.
                 let Some(Value::Array(ms)) = pool.get("members") else {

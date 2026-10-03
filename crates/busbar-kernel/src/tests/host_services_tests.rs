@@ -1,34 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The kernel's host services: `clock.now`, and `dest.judge` over the one destination judge, with a
-//! resolver the test answers by hand.
+//! The kernel's host services: `clock.now`, and `dest.judge` over the destination judge the root
+//! installs (the connector's guard; its rules are tested there, `busbar-core-connector`
+//! `dest_judge_tests`).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
-
-/// A resolver that holds every resolution for the test to answer.
-#[derive(Default)]
-struct HandResolver {
-    asked: AtomicUsize,
-    held: Mutex<Vec<Resolved>>,
-}
-
-impl Resolve for HandResolver {
-    fn resolve(&self, _host: &str, done: Resolved) {
-        self.asked.fetch_add(1, Ordering::SeqCst);
-        self.held.lock().unwrap().push(done);
-    }
-}
-
-fn services(resolver: Arc<HandResolver>) -> KernelServices {
-    let rules = DestRules {
-        policy: GuardPolicy::default(),
-        denylist: Arc::new(Denylist::new(&[], &[], false)),
-    };
-    KernelServices::new(HashMap::from([(0, rules)]), resolver)
-}
 
 fn verdict_now(r: Ran) -> Stored {
     match r {
@@ -51,7 +30,7 @@ fn recorder() -> (Arc<Mutex<Option<Stored>>>, Later) {
 
 #[test]
 fn the_clock_reads_wall_time_and_a_monotonic_origin() {
-    let s = services(Arc::default());
+    let s = KernelServices::new();
     let a = s.now();
     let b = s.now();
     assert!(a.wall_ns > 1_600_000_000_000_000_000);
@@ -60,7 +39,7 @@ fn the_clock_reads_wall_time_and_a_monotonic_origin() {
 
 #[test]
 fn random_fill_draws_fresh_bytes_every_call_and_refuses_outside_its_cap() {
-    let s = services(Arc::default());
+    let s = KernelServices::new();
     let a = s.random_fill(32);
     let b = s.random_fill(32);
     assert_eq!((a.outcome, a.bytes.len()), (Outcome::Ready, 32));
@@ -75,354 +54,6 @@ fn random_fill_draws_fresh_bytes_every_call_and_refuses_outside_its_cap() {
         assert_eq!((r.outcome, r.error), (Outcome::Refused, FILL_OUT_OF_RANGE));
         assert!(r.bytes.is_empty(), "len {len}");
     }
-}
-
-/// 1.5.5 REFUSAL TIMING: a refusal the name decides answers at once, before any resolution, with the
-/// verdict the one judge gives.
-#[test]
-fn dest_judge_refuses_what_the_name_decides_at_once() {
-    let r = Arc::new(HandResolver::default());
-    let s = services(Arc::clone(&r));
-    for (dest, want) in [
-        (
-            "https://169.254.169.254/latest/meta-data/",
-            svc::DEST_METADATA,
-        ),
-        ("https://metadata.google.internal/", svc::DEST_METADATA),
-        ("https://[fd00:ec2::254]/", svc::DEST_METADATA),
-        ("https://0x7f000001/", svc::DEST_OBFUSCATED),
-        ("ftp://files.example/", svc::DEST_SCHEME),
-        ("https://10.0.0.7/", svc::DEST_INTERNAL),
-        ("https://93.184.216.34/", svc::DEST_ALLOWED),
-    ] {
-        let (_, later) = recorder();
-        let got = verdict_now(s.dest_judge(dest, 0, true, Some(later)));
-        assert_eq!(
-            (got.outcome, got.value),
-            (Stored::ready(0).outcome, want),
-            "{dest}"
-        );
-    }
-    assert_eq!(r.asked.load(Ordering::SeqCst), 0);
-}
-
-/// Every loopback and private SPELLING is refused without resolving, for a class without private
-/// addressing: `?`, `#` and `\` end the authority, a trailing root dot and a percent-encoded name are
-/// read the way the dialling stack reads them. RED on the reader that ended the authority only at
-/// `/`, which judged each of these an unresolved name and allowed it.
-#[test]
-fn dest_judge_refuses_every_loopback_spelling_without_resolving() {
-    let r = Arc::new(HandResolver::default());
-    let s = services(Arc::clone(&r));
-    for dest in [
-        "https://127.0.0.1?x",
-        "https://localhost#a",
-        "https://127.0.0.1./",
-        "https://%6c%6fcalhost/",
-        "https://10.0.0.5\\x/",
-    ] {
-        let (_, later) = recorder();
-        let got = verdict_now(s.dest_judge(dest, 0, false, Some(later)));
-        assert_eq!(
-            (got.outcome, got.value),
-            (Stored::ready(0).outcome, svc::DEST_INTERNAL),
-            "{dest}"
-        );
-    }
-    assert_eq!(r.asked.load(Ordering::SeqCst), 0);
-}
-
-/// Asked to resolve, a name pends and the address judgement decides the answer; not asked, the
-/// name's own judgement is the verdict and nothing resolves.
-#[test]
-fn dest_judge_resolves_only_when_asked_and_judges_what_answered() {
-    let r = Arc::new(HandResolver::default());
-    let s = services(Arc::clone(&r));
-    let (slot, later) = recorder();
-    assert!(matches!(
-        s.dest_judge("https://api.example.com/v1", 0, true, Some(later)),
-        Ran::Later
-    ));
-    let done = r.held.lock().unwrap().pop().unwrap();
-    done(Ok(vec!["10.1.2.3".parse().unwrap()]));
-    assert_eq!(
-        slot.lock().unwrap().as_ref().unwrap().value,
-        svc::DEST_INTERNAL
-    );
-
-    let (slot, later) = recorder();
-    assert!(matches!(
-        s.dest_judge("https://api.example.com/v1", 0, true, Some(later)),
-        Ran::Later
-    ));
-    let done = r.held.lock().unwrap().pop().unwrap();
-    done(Err("NXDOMAIN".into()));
-    assert_eq!(
-        slot.lock().unwrap().as_ref().unwrap().value,
-        svc::DEST_UNRESOLVABLE
-    );
-
-    let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://api.example.com/v1", 0, false, Some(later)));
-    assert_eq!(got.value, svc::DEST_ALLOWED);
-    assert_eq!(r.asked.load(Ordering::SeqCst), 2);
-}
-
-/// The addresses a stored `dest.judge` answer names: each span's key, as text.
-fn addresses(s: &Stored) -> Vec<String> {
-    s.spans
-        .iter()
-        .map(|sp| {
-            assert_eq!(sp.value.len, 0, "an address span carries no value");
-            let at = sp.key.offset as usize;
-            String::from_utf8(s.bytes[at..at + sp.key.len as usize].to_vec()).unwrap()
-        })
-        .collect()
-}
-
-/// THE JUDGED ADDRESSES (ARCHITECT DEST-PIN 2026-10-01): asked to resolve and admitted, `dest.judge`
-/// writes every address its one judgement judged, one span each, the pin first, from the SAME
-/// resolution (no second lookup); an IP literal names itself; a refusal and a judgement that did
-/// not resolve name none. RED on the judge that answered the verdict alone.
-#[test]
-fn dest_judge_writes_the_addresses_it_judged() {
-    let r = Arc::new(HandResolver::default());
-    let s = services(Arc::clone(&r));
-    let (slot, later) = recorder();
-    assert!(matches!(
-        s.dest_judge("https://push.example.com/hook", 0, true, Some(later)),
-        Ran::Later
-    ));
-    let done = r.held.lock().unwrap().pop().unwrap();
-    done(Ok(vec![
-        "93.184.216.34".parse().unwrap(),
-        "2606:2800:220:1:248:1893:25c8:1946".parse().unwrap(),
-    ]));
-    let got = slot.lock().unwrap().take().unwrap();
-    assert_eq!(got.value, svc::DEST_ALLOWED);
-    assert_eq!(
-        addresses(&got),
-        ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]
-    );
-    assert_eq!(r.asked.load(Ordering::SeqCst), 1, "one resolution");
-
-    let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://93.184.216.34/x", 0, true, Some(later)));
-    assert_eq!(
-        (got.value, addresses(&got)),
-        (svc::DEST_ALLOWED, vec!["93.184.216.34".to_owned()])
-    );
-
-    let (slot, later) = recorder();
-    assert!(matches!(
-        s.dest_judge("https://mixed.example.com/", 0, true, Some(later)),
-        Ran::Later
-    ));
-    let done = r.held.lock().unwrap().pop().unwrap();
-    done(Ok(vec![
-        "93.184.216.34".parse().unwrap(),
-        "10.0.0.7".parse().unwrap(),
-    ]));
-    let got = slot.lock().unwrap().take().unwrap();
-    assert_eq!(got.value, svc::DEST_INTERNAL);
-    assert!(
-        got.spans.is_empty() && got.bytes.is_empty(),
-        "a refusal names none"
-    );
-
-    let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://push.example.com/", 0, false, Some(later)));
-    assert!(got.spans.is_empty(), "not asked to resolve, none");
-}
-
-#[test]
-fn an_egress_class_the_kernel_did_not_map_is_refused() {
-    let s = services(Arc::default());
-    let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://a.example/", 7, true, Some(later)));
-    assert_eq!(got, Stored::refused("no such egress class"));
-}
-
-/// THE JUDGE A DIAL READS: the address it answers is exactly the one the judgement pinned. A name
-/// pends and the pin arrives with the answer; an IP literal is its own pin and asks no resolver; a
-/// refusal the name decides answers at once; an answered address the rules refuse is refused with
-/// the verdict `dest.judge` gives.
-#[test]
-fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
-    let r = Arc::new(HandResolver::default());
-    let s = services(Arc::clone(&r));
-    let pinned = Arc::new(Mutex::new(None));
-    let got = Arc::clone(&pinned);
-    let now = s.judge_dial(
-        "api.example.com:8443",
-        0,
-        Box::new(move |v| *got.lock().unwrap() = Some(v)),
-    );
-    assert_eq!(now, None, "a name pends");
-    let done = r.held.lock().unwrap().pop().unwrap();
-    done(Ok(vec![
-        "93.184.216.34".parse().unwrap(),
-        "93.184.216.35".parse().unwrap(),
-    ]));
-    assert_eq!(
-        *pinned.lock().unwrap(),
-        Some(Ok("93.184.216.34:8443".parse().unwrap())),
-        "the first admissible address, at the named port"
-    );
-
-    let got = s.judge_dial("93.184.216.34:443", 0, Box::new(|_| panic!("no pend")));
-    assert_eq!(got, Some(Ok("93.184.216.34:443".parse().unwrap())));
-    let got = s.judge_dial(
-        "metadata.google.internal:80",
-        0,
-        Box::new(|_| panic!("no pend")),
-    );
-    assert_eq!(got, Some(Err(svc::DEST_METADATA)));
-    assert_eq!(
-        r.asked.load(Ordering::SeqCst),
-        1,
-        "only the name asked the resolver"
-    );
-
-    let refused = Arc::new(Mutex::new(None));
-    let got = Arc::clone(&refused);
-    assert_eq!(
-        s.judge_dial(
-            "rebind.example:80",
-            0,
-            Box::new(move |v| *got.lock().unwrap() = Some(v))
-        ),
-        None
-    );
-    let done = r.held.lock().unwrap().pop().unwrap();
-    done(Ok(vec!["169.254.169.254".parse().unwrap()]));
-    assert_eq!(*refused.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
-    assert_eq!(
-        s.judge_dial("a.example:1", 7, Box::new(|_| {})),
-        Some(Err(svc::DEST_NO_HOST)),
-        "an unmapped class dials nothing"
-    );
-}
-
-fn services_under(resolver: Arc<HandResolver>, denylist: Denylist) -> KernelServices {
-    let rules = DestRules {
-        policy: GuardPolicy::default(),
-        denylist: Arc::new(denylist),
-    };
-    KernelServices::new(HashMap::from([(0, rules)]), resolver)
-}
-
-/// 1.5.5's OVERRIDES, ON THE ONE JUDGE: under `security.allow_all_metadata` the metadata guard is
-/// off for `dest.judge` and for the connector's dial alike (both are `judge_dial`): a metadata
-/// literal is admitted and pinned, a metadata name is resolved and its metadata answer pinned.
-/// RED on the judge that lifted only the denylist and kept the address guard's own metadata refusal.
-#[test]
-fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
-    let r = Arc::new(HandResolver::default());
-    let s = services_under(Arc::clone(&r), Denylist::new(&[], &[], true));
-    let imds: SocketAddr = "169.254.169.254:80".parse().unwrap();
-    assert_eq!(
-        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
-        Some(Ok(imds))
-    );
-    let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://169.254.169.254/latest", 0, true, Some(later)));
-    assert_eq!(got.value, svc::DEST_ALLOWED);
-
-    let pinned = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&pinned);
-    assert!(s
-        .judge_dial(
-            "metadata.google.internal:80",
-            0,
-            Box::new(move |v| *slot.lock().unwrap() = Some(v)),
-        )
-        .is_none());
-    let done = r.held.lock().unwrap().pop().expect("the name was resolved");
-    done(Ok(vec![imds.ip()]));
-    assert_eq!(*pinned.lock().unwrap(), Some(Ok(imds)));
-}
-
-/// A CARVE-OUT lifts exactly what it names: `allow_metadata_hosts: [169.254.169.254]` admits that
-/// address (literal, or answered for a name) and nothing else on the list.
-#[test]
-fn a_metadata_carve_out_admits_only_what_it_names() {
-    let r = Arc::new(HandResolver::default());
-    let s = services_under(
-        Arc::clone(&r),
-        Denylist::new(&[], &["169.254.169.254".to_string()], false),
-    );
-    assert_eq!(
-        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
-        Some(Ok("169.254.169.254:80".parse().unwrap()))
-    );
-    assert_eq!(
-        s.judge_dial("100.100.100.200:80", 0, Box::new(|_| {})),
-        Some(Err(svc::DEST_METADATA))
-    );
-    let pinned = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&pinned);
-    assert!(s
-        .judge_dial(
-            "rebind.example:80",
-            0,
-            Box::new(move |v| *slot.lock().unwrap() = Some(v))
-        )
-        .is_none());
-    let done = r.held.lock().unwrap().pop().expect("resolved");
-    done(Ok(vec!["100.100.100.200".parse().unwrap()]));
-    assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
-}
-
-/// With no override nothing changes: metadata is refused on the dial, by literal and by answer.
-#[test]
-fn without_an_override_metadata_stays_refused_on_the_dial() {
-    let r = Arc::new(HandResolver::default());
-    let s = services(Arc::clone(&r));
-    assert_eq!(
-        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
-        Some(Err(svc::DEST_METADATA))
-    );
-    let pinned = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&pinned);
-    assert!(s
-        .judge_dial(
-            "rebind.example:80",
-            0,
-            Box::new(move |v| *slot.lock().unwrap() = Some(v))
-        )
-        .is_none());
-    let done = r.held.lock().unwrap().pop().expect("resolved");
-    done(Ok(vec!["169.254.169.254".parse().unwrap()]));
-    assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
-}
-
-/// RULING A ON THE DIAL: every resolved address is judged by the same lists the configuration check
-/// reads, operator-blocked addresses included. A name answering an address in
-/// `security.blocked_metadata_hosts` is refused on the dial, exactly as the literal is.
-#[test]
-fn an_operator_blocked_answer_is_refused_on_the_dial() {
-    let r = Arc::new(HandResolver::default());
-    let s = services_under(
-        Arc::clone(&r),
-        Denylist::new(&["93.184.216.34".to_string()], &[], false),
-    );
-    assert_eq!(
-        s.judge_dial("93.184.216.34:443", 0, Box::new(|_| {})),
-        Some(Err(svc::DEST_METADATA))
-    );
-    let pinned = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&pinned);
-    assert!(s
-        .judge_dial(
-            "blocked.example:443",
-            0,
-            Box::new(move |v| *slot.lock().unwrap() = Some(v))
-        )
-        .is_none());
-    let done = r.held.lock().unwrap().pop().expect("resolved");
-    done(Ok(vec!["93.184.216.34".parse().unwrap()]));
-    assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
 }
 
 // ── records, sign, trust ─────────────────────────────────────────────────────────────────────
@@ -511,7 +142,7 @@ fn rig() -> Rig {
     let store = Arc::new(MemoryStore::new());
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = Arc::clone(&clock);
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
         .with_pool(Arc::new(Inline))
         .with_signer(Arc::new(FixedKey))
@@ -725,7 +356,7 @@ fn a_claim_with_no_time_to_live_or_an_expiry_past_the_clock_is_refused() {
 
 #[test]
 fn records_are_refused_on_a_host_with_no_store() {
-    let s = services(Arc::default());
+    let s = KernelServices::new();
     s.admit(
         "inst",
         InstanceFacts {
@@ -754,7 +385,7 @@ fn sign_is_refused_without_a_declared_domain_or_a_key() {
     r.s.admit("plain", InstanceFacts::default()).unwrap();
     let s = r.s.sign(&caller("plain"), b"x");
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NO_DOMAIN));
-    let keyless = services(Arc::default());
+    let keyless = KernelServices::new();
     keyless
         .admit(
             "inst",
@@ -883,7 +514,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
 /// The rig's kernel after a restart: the same durable demotion record, nothing else.
 fn restarted(r: &Rig) -> KernelServices {
     let d = r.s.demotions.as_ref().unwrap();
-    services(Arc::default())
+    KernelServices::new()
         .with_demotions(Arc::clone(&d.record), &d.default_instance)
         .with_pool(Arc::new(Inline))
 }
@@ -1050,7 +681,7 @@ fn noop() -> Acked {
 
 /// Kernel services over `reads`, on the blocking pool of `rt`, with "inst" admitted.
 fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordRows>) -> KernelServices {
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(reads, Arc::new(MemoryStore::new()))
         .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
     s.admit(
@@ -1152,7 +783,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
 fn a_durable_record_with_no_pool_judges_nothing() {
     let r = rig();
     let d = r.s.demotions.as_ref().unwrap();
-    let s = services(Arc::default()).with_demotions(Arc::clone(&d.record), SECTION_KEY);
+    let s = KernelServices::new().with_demotions(Arc::clone(&d.record), SECTION_KEY);
     s.admit("inst", trusting(Some("fp"))).unwrap();
     let a = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
     assert_eq!((a.outcome, a.error), (Outcome::Refused, NO_POOL));
@@ -1197,7 +828,7 @@ fn an_instance_declaring_a_signing_domain_another_holds_is_refused() {
 fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
     let r = rig();
     let held = Arc::new(Held::default());
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
         .with_pool(Arc::new(Arc::clone(&held)));
     let declares = || InstanceFacts {
@@ -1260,7 +891,7 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
         .build()
         .unwrap();
     let store = Arc::new(MemoryStore::new());
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
         .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
     s.admit(
@@ -1366,7 +997,7 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
         .build()
         .unwrap();
     let gate = Arc::new(Gate::default());
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(gate.clone(), Arc::new(MemoryStore::new()))
         .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 2)));
     s.admit(
@@ -1448,7 +1079,7 @@ fn answers() -> (Answers, impl Fn() -> Acked) {
 fn a_write_is_answered_only_once_the_store_took_it() {
     let r = rig();
     let held = Arc::new(Held::default());
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
         .with_pool(Arc::new(Arc::clone(&held)));
     s.admit(
@@ -1475,7 +1106,7 @@ fn a_write_is_answered_only_once_the_store_took_it() {
 fn a_write_the_store_refuses_answers_failed_and_leaves_the_overlay() {
     let store = Arc::new(MemoryStore::new());
     let held = Arc::new(Held::default());
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(Arc::new(Refusing(Mem(Arc::clone(&store)))), store.clone())
         .with_pool(Arc::new(Arc::clone(&held)));
     s.admit(
@@ -1504,7 +1135,7 @@ fn a_write_dropped_before_any_flush_answers_dropped() {
 
 /// Kernel services over `store`, on `pool`, with "inst" declaring the one kind.
 fn writer(store: &Arc<MemoryStore>, pool: Arc<dyn Offload>) -> KernelServices {
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(store))), store.clone())
         .with_pool(pool);
     s.admit(
@@ -1713,7 +1344,7 @@ fn claims_left_pending_on_the_pool_never_both_win() {
     let r = rig();
     let held = Arc::new(Held::default());
     let c = Arc::clone(&r.clock);
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
         .with_pool(Arc::new(Arc::clone(&held)))
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
@@ -1738,7 +1369,7 @@ fn a_won_answer_past_the_callers_deadline_is_taken() {
     let r = rig();
     let held = Arc::new(Held::default());
     let c = Arc::clone(&r.clock);
-    let s = services(Arc::default())
+    let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
         .with_pool(Arc::new(Arc::clone(&held)))
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
@@ -1946,4 +1577,69 @@ fn a_unit_not_in_flight_or_no_unit_is_not_entitled_and_ungoverned_is() {
     let stranger =
         r.s.entitlement_check(&caller("stranger"), Some(9), "item:one");
     assert_eq!(stranger.value, svc::NOT_ENTITLED);
+}
+
+// ── THE DESTINATION GUARD AS THE KERNEL'S JUDGE (OWNER DESTINATION GUARD): the kernel asks the
+// judge the root installed; its rules are the connector's, never the kernel's ──
+
+/// A judge that refuses `10.0.0.5` as internal and admits every other literal, recording what it
+/// was asked.
+#[derive(Default)]
+struct FakeGuard(Mutex<Vec<String>>);
+
+impl DestJudge for FakeGuard {
+    fn judge_name(&self, dest: &str, _class: u32) -> Result<(), u64> {
+        self.0.lock().unwrap().push(dest.to_owned());
+        if dest.contains("10.0.0.5") {
+            Err(svc::DEST_INTERNAL)
+        } else {
+            Ok(())
+        }
+    }
+    fn judge(
+        &self,
+        dest: &str,
+        class: u32,
+        _done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        Some(self.judge_name(dest, class).map(|()| {
+            let at: SocketAddr = "93.184.216.34:443".parse().unwrap();
+            (at, vec![at.ip()])
+        }))
+    }
+    fn judge_answer(&self, _: &str, _: &[IpAddr], _: u32) -> Result<(), DestRefusal> {
+        Ok(())
+    }
+}
+
+/// RED: with a judge installed, `dest.judge` answers the judge's refusal; the kernel's own
+/// (permissive) class rules are never consulted, under any class.
+#[test]
+fn dest_judge_answers_the_installed_guard_refusal() {
+    let guard = Arc::new(FakeGuard::default());
+    let s = KernelServices::new().with_dest_judge(guard.clone());
+    for class in [0, 4] {
+        let (_, later) = recorder();
+        let got = verdict_now(s.dest_judge("http://10.0.0.5:80/x", class, false, Some(later)));
+        assert_eq!(got.value, svc::DEST_INTERNAL, "class {class}");
+    }
+    assert_eq!(
+        s.judge_dial("10.0.0.5:80", 0, Box::new(|_| {})),
+        Some(Err(svc::DEST_INTERNAL))
+    );
+    assert!(guard.0.lock().unwrap().len() >= 3);
+}
+
+/// RED: the judge's admission is `dest.judge`'s answer too, with the addresses it judged.
+#[test]
+fn dest_judge_answers_the_installed_guard_admission() {
+    let s = KernelServices::new().with_dest_judge(Arc::new(FakeGuard::default()));
+    let (_, later) = recorder();
+    let got = verdict_now(s.dest_judge("https://api.example.com/", 0, true, Some(later)));
+    assert_eq!(got.value, svc::DEST_ALLOWED);
+    assert_eq!(got.bytes, b"93.184.216.34");
+    assert_eq!(
+        s.judge_dial("api.example.com:443", 0, Box::new(|_| {})),
+        Some(Ok("93.184.216.34:443".parse().unwrap()))
+    );
 }

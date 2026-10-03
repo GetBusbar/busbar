@@ -30,7 +30,11 @@
 // sites flip onto the seam — the same not-yet-mounted posture `identity`/`trust_anchor` record.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::net::IpAddr;
+use std::sync::Arc;
+
 use crate::egress::engine::ClientIdentity;
+use crate::host_services::{DestJudge, DestRefusal};
 use crate::plane_host::spki::SpkiError;
 use rustls_pki_types::CertificateDer;
 
@@ -42,24 +46,49 @@ use rustls_pki_types::CertificateDer;
 pub trait EgressTrustHost: Send + Sync {
     /// Register a parsed mTLS client `identity` at boot, returning the opaque `client_identity_ref` a
     /// hop carries. Pass-through to [`identity::register`](super::identity::register).
-    fn register_client_identity(&self, identity: ClientIdentity) -> u64;
+    fn register_client_identity(&self, identity: ClientIdentity) -> u64 {
+        super::identity::register(identity)
+    }
 
     /// Resolve a `client_identity_ref` to its parsed identity (`None` for the reserved `0` ref or an
     /// unknown one). Pass-through to [`identity::resolve`](super::identity::resolve).
-    fn resolve_client_identity(&self, client_identity_ref: u64) -> Option<ClientIdentity>;
+    fn resolve_client_identity(&self, client_identity_ref: u64) -> Option<ClientIdentity> {
+        super::identity::resolve(client_identity_ref)
+    }
 
     /// Register a set of parsed extra-root `roots` at boot, returning the opaque `trust_anchor_ref` a
     /// hop carries. Pass-through to [`trust_anchor::register`](super::trust_anchor::register).
-    fn register_trust_anchor(&self, roots: Vec<CertificateDer<'static>>) -> u64;
+    fn register_trust_anchor(&self, roots: Vec<CertificateDer<'static>>) -> u64 {
+        super::trust_anchor::register(roots)
+    }
 
     /// Resolve a `trust_anchor_ref` to its extra roots (an EMPTY vec for the reserved `0` ref or an
     /// unknown one — fail-closed). Pass-through to
     /// [`trust_anchor::resolve`](super::trust_anchor::resolve).
-    fn resolve_trust_anchor(&self, trust_anchor_ref: u64) -> Vec<CertificateDer<'static>>;
+    fn resolve_trust_anchor(&self, trust_anchor_ref: u64) -> Vec<CertificateDer<'static>> {
+        super::trust_anchor::resolve(trust_anchor_ref)
+    }
 
     /// The `sha256/<base64>` SPKI pin of a peer certificate a completed handshake produced. Pure DER
     /// walk; pass-through to [`spki::pin`](super::spki::pin).
-    fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError>;
+    fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError> {
+        super::spki::pin(cert_der)
+    }
+
+    /// An answer the kernel's own pooled client resolved for `host`, judged whole under `class` by
+    /// the deployment's destination guard (OWNER DESTINATION GUARD; the connector decides). INTERIM
+    /// for the eight pooled-client builders; struck when D1-D6 move onto `conns` (Phase B).
+    ///
+    /// # Errors
+    ///
+    /// The refusal of the first refused address; with no guard behind the capability (the
+    /// pass-through) every answer: FAIL CLOSED, never allowed.
+    fn judge_answer(&self, host: &str, _: &[IpAddr], _: u32) -> Result<(), DestRefusal> {
+        Err(DestRefusal {
+            verdict: busbar_contract::abi::host::service::DEST_NO_HOST,
+            reason: format!("host `{host}` was not dialled: no destination guard is installed"),
+        })
+    }
 }
 
 /// The production egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side primitives.
@@ -67,25 +96,15 @@ pub trait EgressTrustHost: Send + Sync {
 /// the refs, identities and pins the free functions produce now.
 pub struct PassThroughEgressTrust;
 
-impl EgressTrustHost for PassThroughEgressTrust {
-    fn register_client_identity(&self, identity: ClientIdentity) -> u64 {
-        super::identity::register(identity)
-    }
+impl EgressTrustHost for PassThroughEgressTrust {}
 
-    fn resolve_client_identity(&self, client_identity_ref: u64) -> Option<ClientIdentity> {
-        super::identity::resolve(client_identity_ref)
-    }
+/// The capability the composition root installs: the pass-through primitives, and every answer
+/// judged by the deployment's one destination guard (the connector's; this decides nothing).
+pub struct GuardedEgressTrust(pub Arc<dyn DestJudge>);
 
-    fn register_trust_anchor(&self, roots: Vec<CertificateDer<'static>>) -> u64 {
-        super::trust_anchor::register(roots)
-    }
-
-    fn resolve_trust_anchor(&self, trust_anchor_ref: u64) -> Vec<CertificateDer<'static>> {
-        super::trust_anchor::resolve(trust_anchor_ref)
-    }
-
-    fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError> {
-        super::spki::pin(cert_der)
+impl EgressTrustHost for GuardedEgressTrust {
+    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
+        self.0.judge_answer(host, addrs, class)
     }
 }
 
@@ -93,18 +112,18 @@ impl EgressTrustHost for PassThroughEgressTrust {
 /// ([`install_egress_trust_host`]). A plane reads it back through [`egress_trust_host`] and gets `None`
 /// in a build that installed none — the dormant default, under which the egress chokepoint calls the
 /// free primitives directly and the outbound path is unchanged.
-static EGRESS_TRUST: std::sync::OnceLock<&'static dyn EgressTrustHost> = std::sync::OnceLock::new();
+static EGRESS_TRUST: std::sync::OnceLock<Arc<dyn EgressTrustHost>> = std::sync::OnceLock::new();
 
 /// Install the process egress-trust capability — the composition root's one write, at boot, before any
 /// hop opens. Idempotent by `OnceLock`: a second install is a no-op (the first wins).
-pub fn install_egress_trust_host(host: &'static dyn EgressTrustHost) {
+pub fn install_egress_trust_host(host: Arc<dyn EgressTrustHost>) {
     let _ = EGRESS_TRUST.set(host);
 }
 
 /// The installed egress-trust capability, or `None` when none was installed (the dormant default).
 #[must_use]
 pub fn egress_trust_host() -> Option<&'static dyn EgressTrustHost> {
-    EGRESS_TRUST.get().copied()
+    EGRESS_TRUST.get().map(AsRef::as_ref)
 }
 
 // Test body externalised to `tests/egress_trust_tests.rs` (the sibling `identity`/`trust_anchor`

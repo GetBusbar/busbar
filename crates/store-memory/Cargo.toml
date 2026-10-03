@@ -41,5 +41,8 @@ busbar-contract = { path = "../busbar-contract" }
 #
 # Core's own reference backend still runs the suite: if the reference implementation does not pass
 # the checks the plugin backends are held to, the checks are wrong.
+# The store kind's shared epoch and slice-life cases (`busbar_contract::testkit::store_v3`), which
+# every store runs; the test kit is dev-only (`test-seal`: no test kit ships).
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

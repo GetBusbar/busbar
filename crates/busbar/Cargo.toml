@@ -62,6 +62,9 @@ ed25519-dalek = { workspace = true }
 # protocol and watch it refuse that protocol's config rather than serve it
 # (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks both.
 busbar-llm = { path = "../busbar-llm", optional = true }
+# THE LLM PLANE, through its memory-ABI door: the edge the development-only `llm-on-driver` switch
+# carries (see that feature). Off by default: the `proto-llm` row serves llm until the flip.
+busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
 busbar-mcp = { path = "../busbar-mcp", optional = true }
 # THE A2A PLANE-KIND SHELL (step 3.B.0 of the plane split). Empty crate so far (see its `src/lib.rs`)
 # — nothing in `main.rs` names it and `plane-a2a` below is not in `default`, so this edge is inert
@@ -158,7 +161,7 @@ busbar-transport-http = { workspace = true }
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
-busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
+busbar-transport-ws = { workspace = true, optional = true }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
@@ -262,6 +265,22 @@ transport-tcp = []
 # differently either way — which is what keeps the neutrality cells answering the same on both
 # legs, and is why this ships on rather than waiting for a golden it could never move.
 plane-decisions = ["dep:busbar-plane-decisions"]
+# THE DECISIONS PLANE THROUGH ITS DOOR, the plane's development-only switch (BUSBAR-1.6.0.md Part 3
+# section 12, "The switch": a development-only cargo feature flips a plane onto the driver during its
+# fold and is deleted when the fold completes). Never in `default`. On, the plane's memory-ABI door
+# (`busbar_plane_decisions::plane_door::door`) is a `plane-door` row: the root hands it to the loader
+# beside every dropped-in plane door and binds it through the one load on the one dispatcher, so the
+# compiled-in plane is called through the same table as its dropped-in cdylib (#2, #30; THE DESIGN
+# section 11.4). It carries `plane-decisions`, which keeps the crate edge and the `decisions:` key's
+# owner.
+plane-decisions-door = ["plane-decisions"]
+# THE LLM PLANE THROUGH ITS DOOR, the llm fold's development-only switch (BUSBAR-1.6.0.md Part 3
+# section 12, "The switch"; deleted when the llm fold completes). Never in `default`. On, the plane's
+# memory-ABI door (`busbar_plane_llm::plane_door::door`) is a `plane-door` row, bound through the
+# loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
+# (#2, #30; THE DESIGN section 11.4). It carries `proto-llm`, whose row stays linked and answers
+# every arrival the serve path does not hand the door.
+llm-on-driver = ["proto-llm", "dep:busbar-plane-llm"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-file = ["dep:busbar-export-file"]
@@ -343,6 +362,10 @@ transport-sse = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
 transport-grpc = "busbar-transport-http"
 transport-stdio = "busbar-transport-stdio"
+# THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
+# loader's one load beside the dropped-in plane doors.
+plane-decisions-door = "busbar-plane-decisions"
+llm-on-driver = "busbar-plane-llm"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
@@ -354,7 +377,9 @@ transport-stdio = "busbar-transport-stdio"
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
 # `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
-# `auths`: a `kind: auth` plugin's SDK boundary (`BUSBAR_COLD_ENTRY`), under its `linked-name` key.
+# `auths`: a `kind: auth` plugin's memory-ABI door (`<entry>::door::door`, the one its dropped-in
+# build exports), under its `linked-name` key.
+# `plane-door`: a plane's memory-ABI `door`, bound through the loader's one load (`root::linked`).
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
@@ -374,6 +399,8 @@ transport-sse = "transport"
 transport-ws = "transport"
 transport-grpc = "transport"
 transport-stdio = "transport"
+plane-decisions-door = "plane-door"
+llm-on-driver = "plane-door"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
@@ -383,8 +410,11 @@ busbar-plane-decisions = "crate::root::plane_decisions"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
 transport-grpc = "busbar_transport_http::linked::grpc"
-# An auth plugin's boundary is the SDK's, at its crate root.
+# An auth plugin's entry is its crate root; its memory-ABI door is `<entry>::door::door`.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
+# A plane door row's entry is the module that exports its `door`.
+plane-decisions-door = "busbar_plane_decisions::plane_door"
+llm-on-driver = "busbar_plane_llm::plane_door"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]

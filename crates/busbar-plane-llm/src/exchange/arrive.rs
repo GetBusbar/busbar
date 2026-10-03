@@ -288,9 +288,7 @@ pub fn arrive(
                             400,
                             proto,
                             KIND_INVALID_REQUEST,
-                            format!(
-                                "The model '{model}' does not exist or you do not have access to it."
-                            ),
+                            super::refuse::model_not_found(&model, None),
                         ));
                     }
                 }
