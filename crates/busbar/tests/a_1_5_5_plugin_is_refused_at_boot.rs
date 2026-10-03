@@ -99,7 +99,7 @@ fn boot(dir: &Path) -> Option<(i32, String)> {
 }
 
 #[test]
-fn a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild() {
+fn the_real_binary_refuses_a_1_5_5_json_contract_plugin_at_boot() {
     for &(kind, v155) in PUBLISHED_1_5_5 {
         let dir = fixture_dir(kind);
         let mut m = plugins::manifest(kind, &format!("busbar-{kind}-published"), "acme");

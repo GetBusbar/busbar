@@ -62,7 +62,7 @@ pub const DOOR_SYMBOL: &[u8] = b"busbar_plugin_door\0";
 /// The v1.5.5 JSON-contract entry: `busbar_abi() -> u32`, answering the mechanism version v1.5.5
 /// called `TRANSPORT_VERSION` (1). A memory-ABI plugin exports [`DOOR_SYMBOL`] and is never asked for
 /// this one. A library that exports it and no door is a 1.5.5 JSON-contract plugin, and the loader
-/// refuses it, naming the rebuild against the 1.6.0 SDK (THE DESIGN §11.8). The transitional JSON lane
+/// refuses it, naming the rebuild against the 1.6.0 SDK (THE DESIGN, "No legacy loading"). The transitional JSON lane
 /// (`abi/cold`, deleted at M6) still reads it as its handshake.
 pub const JSON_CONTRACT_SYMBOL: &[u8] = b"busbar_abi\0";
 

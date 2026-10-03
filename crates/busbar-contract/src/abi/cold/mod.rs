@@ -153,7 +153,7 @@ pub mod kind {
 /// refused in either direction, and the `supported_abi` range is unchanged.
 ///
 /// The engine's `supported_abi` for `store` is the store door's kind ABI up to this version (THE
-/// DESIGN §11.8: no legacy loading); a published 1.5.5 store (`abi_version: 2`) is refused at boot,
+/// DESIGN, "No legacy loading"); a published 1.5.5 store (`abi_version: 2`) is refused at boot,
 /// naming the rebuild.
 pub const ABI_VERSION: u32 = 4;
 
