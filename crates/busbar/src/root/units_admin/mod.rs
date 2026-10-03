@@ -3581,6 +3581,7 @@ pub(crate) fn encode(
                 status: None,
                 status_code: None,
                 retry_after_secs: None,
+                text: false,
             },
         },
     )

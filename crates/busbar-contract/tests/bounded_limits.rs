@@ -469,6 +469,7 @@ fn the_frame_cursor_stops_at_the_per_connection_ceiling() {
                 status: None,
                 status_code: None,
                 retry_after_secs: None,
+                text: false,
             },
         })
         .collect();

@@ -248,6 +248,7 @@ fn blank_meta() -> FrameMeta {
         status: None,
         status_code: None,
         retry_after_secs: None,
+        text: false,
     }
 }
 
@@ -276,6 +277,7 @@ impl FramerOut for Produced<'_> {
         if meta.retry_after_secs.is_none() {
             meta.retry_after_secs = piece.retry_after_secs;
         }
+        meta.text |= piece.text;
         if piece.end_of_frame {
             let (bytes, mut meta) = self
                 .partial

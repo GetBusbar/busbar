@@ -345,6 +345,7 @@ impl HostWire {
                             status: None,
                             status_code: None,
                             retry_after_secs: None,
+                            text: got.text,
                         },
                     };
                     return Poll::Ready(Some(Ok((StreamId(got.stream), frame))));

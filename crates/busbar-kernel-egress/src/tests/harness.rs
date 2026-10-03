@@ -750,6 +750,7 @@ pub fn frame_with_upstream(
             status,
             status_code,
             retry_after_secs,
+            text: false,
         },
     }
 }
