@@ -17,8 +17,9 @@
 //!   and target and is REFUSED for any other; the SDK closes the checkout when the op answers
 //!   anything but PENDING, when its ticket is cancelled, and whenever its parked state is dropped
 //!   (a recycle, an instance that faulted and closed);
-//! * a call on no ticket (the synchronous bridge, a direct call in a test) may not pend: PENDING
-//!   there is FAULT.
+//! * a call on no ticket (the synchronous bridge's fallback on a dispatcher's only worker, a direct
+//!   call in a test) may not pend: PENDING there is FAULT. The synchronous bridge itself calls on a
+//!   ticket and waits for the completion, so a store may pend on it.
 //!
 //! MONEY: closing a connection undoes nothing a remote store already committed. So a cancelled or
 //! failed `op_id`-carrying op is EITHER not applied OR applied, and then a retry with the SAME
@@ -97,8 +98,8 @@ impl std::fmt::Debug for Op<'_> {
 }
 
 impl Op<'static> {
-    /// An op on no ticket: the synchronous bridge, a direct call in a test. It may not pend and has
-    /// no connector.
+    /// An op on no ticket: the synchronous bridge's fallback on a dispatcher's only worker, a
+    /// direct call in a test. It may not pend and has no connector.
     #[must_use]
     pub fn detached() -> Self {
         Self {
