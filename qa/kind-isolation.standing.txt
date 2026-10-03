@@ -54,7 +54,6 @@ kind-isolation:matrix	unlisted-cell	busbar-core-connector × legacy	1
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	7
 kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × kernel	5
 kind-isolation:matrix	unlisted-cell	busbar-core-oauth2 × legacy	2
-kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	40
 kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	34
 kind-isolation:matrix	unlisted-cell	busbar-kernel × kernel	187

@@ -103,7 +103,8 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # plane crates turns on for this crate's own tests). Renamed to the role they play: no source here
 # names the plugin.
 fixture-store = { package = "busbar-store-memory", path = "../store-memory", optional = true }
-fixture-hook = { package = "busbar-hooks-ranking", path = "../hooks-ranking", optional = true }
+# Pinned at the SAME rev as the workspace's `busbar-hook-ranking` (a renamed dependency cannot inherit).
+fixture-hook = { package = "busbar-hook-ranking", git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "955c2396c5062864d370f0d1a0f34ae33b2e4f1a", optional = true }
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }

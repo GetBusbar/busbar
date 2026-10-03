@@ -2235,7 +2235,7 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
-  "hook-test-plugin", "hooks-ranking",
+  "hook-test-plugin",
 ]
 known_missing_deny = [ "plugin-loader",
 ]

@@ -119,7 +119,7 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 busbar-store-memory = { path = "../store-memory" }
 # THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
-busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+busbar-hook-ranking = { workspace = true, optional = true }
 # THE OPERATOR CREDENTIAL (`auth.admin_auth: [admin-tokens]`, the single operator admin token), a
 # first-party AUTH plugin linked through the `auths` axis under `auth-admin-tokens` — the same row a
 # signed tarball of it registers when dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
@@ -299,7 +299,7 @@ test-harness = []
 # operator credential resolves only when a signed tarball of the module is dropped into `plugins/`,
 # and a configured admin token with no row answering it is a boot refusal naming this feature.
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
-hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
@@ -333,7 +333,7 @@ auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
-hooks-ranking = "busbar-hooks-ranking"
+hooks-ranking = "busbar-hook-ranking"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. Rows share a crate where one crate carries several wires.
