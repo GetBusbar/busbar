@@ -406,7 +406,9 @@ fn ir11_anthropic_hosted_tools_reach_gemini() {
     );
 }
 
-/// IR-04..07: the slots Gemini has no form for are not written and are reported to the seam.
+/// IR-04..07: the slots Gemini has no form for are not written and are reported to the seam. The
+/// service tier and the logging switch are NOT among them: Gemini spells them `serviceTier` and
+/// `store` (dialects/gemini.toml `[rows.tier]`, DF-MAP), so they are written, not dropped.
 #[test]
 fn ir04_to_07_unsupported_slots_are_dropped_and_reported() {
     let mut ir = bare_ir();
@@ -417,15 +419,11 @@ fn ir04_to_07_unsupported_slots_are_dropped_and_reported() {
     ir.verbosity = Some(crate::codec::ir::IrVerbosity::Low);
     assert_eq!(
         gw().dropped_egress_controls(&ir),
-        vec![
-            "service_tier",
-            "store",
-            "safety_identifier",
-            "prompt_cache_key",
-            "verbosity"
-        ]
+        vec!["safety_identifier", "prompt_cache_key", "verbosity"]
     );
     let out = gw().write_request(&ir);
+    assert_eq!(out.get("serviceTier"), Some(&json!("priority")), "{out}");
+    assert_eq!(out.get("store"), Some(&json!(true)), "{out}");
     for k in [
         "service_tier",
         "store",
