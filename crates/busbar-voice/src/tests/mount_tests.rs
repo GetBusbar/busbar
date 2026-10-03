@@ -547,9 +547,7 @@ fn fee_key() -> busbar_contract::records::VirtualKey {
 
 /// The presenting key's meter over `host`, as the governed open builds it.
 #[cfg(feature = "test-support")]
-fn fee_meter(
-    host: &Arc<crate::testkit::fixture_host::FixtureHost>,
-) -> crate::runtime::TurnMeter {
+fn fee_meter(host: &Arc<crate::testkit::fixture_host::FixtureHost>) -> crate::runtime::TurnMeter {
     crate::runtime::TurnMeter::new(
         Arc::clone(host) as Arc<dyn EngineHost>,
         fee_key(),
@@ -638,7 +636,9 @@ async fn spawn_failing_provider(
         .expect("a loopback port");
     let addr = listener.local_addr().expect("its address");
     tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("the provider serves");
+        axum::serve(listener, app)
+            .await
+            .expect("the provider serves");
     });
     super::ProviderEndpoint {
         base_url: format!("http://{addr}"),
@@ -676,7 +676,14 @@ async fn a_failed_mint_refunds_its_session_fee_exactly_once() {
     let host = host_with_one_kept_session(&rt).await;
     let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let provider = spawn_failing_provider(Arc::clone(&hits)).await;
-    let status = open_one_shot(&rt, &host, Some(&provider), Ingress::Mint, "call-mint-fails").await;
+    let status = open_one_shot(
+        &rt,
+        &host,
+        Some(&provider),
+        Ingress::Mint,
+        "call-mint-fails",
+    )
+    .await;
     assert_eq!(
         status,
         axum::http::StatusCode::BAD_GATEWAY,
