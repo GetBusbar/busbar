@@ -93,13 +93,14 @@ fn main() {
                 );
             }
             // A second proof of one kind is keyed `<kind>-<proof>`; its alias is that key as an ident.
-            // A HOT kind's row gets NO alias: nothing names its crate, so the test binary never
+            // A HOT kind's `-plugin` row gets NO alias: nothing names its crate, so the test binary never
             // links its rlib. The row is a dev-dependency only so cargo BUILDS its cdylib, and a
             // `-plugin` crate's rlib exports `busbar_plugin_door` (`export_door!`), which two
             // doors in one fat-LTO unit make "symbol multiply defined". Naming the crate would link it.
             // A row naming the LOGIC crate (no `-plugin` suffix, so no door symbol in its rlib: the
             // `secret` row) is linked as an ordinary fixture crate below.
-            if let (true, Some(logic)) = (HOT_KINDS.contains(&kind), snake.strip_suffix("_plugin")) {
+            if let (true, Some(logic)) = (HOT_KINDS.contains(&kind), snake.strip_suffix("_plugin"))
+            {
                 // The row's LOGIC crate (the same repo's crate the `-plugin` crate packs; it exports no
                 // door symbol) gives the linked door: `<kind>_linked::{door, KEY}`.
                 crates.push_str(&format!(
