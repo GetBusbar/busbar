@@ -343,6 +343,7 @@ async fn run_case(egress: &str, shape: Upstream) {
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at,
+        request_id: 0,
         admit: None,
     };
     let request = json!({"model": "p", "stream": true, "input": MARKER});

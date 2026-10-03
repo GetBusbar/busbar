@@ -45,6 +45,12 @@ pub struct TokenUsage {
     /// by the class the plane declares and ledgered verbatim beside the reserved four (#71). A zero
     /// count is not carried.
     pub open_units: std::collections::BTreeMap<String, u64>,
+    /// RESIDUALS: counts the provider reported that no billing class records (MONEY LAW, owner
+    /// 2026-10-02), keyed by the provider's own count name (a policy-unit count, or
+    /// `<identity>.stated_total_gap` for a stated total above its itemized sum). NEVER BILLED: no billed-usage builder reads this map, and no
+    /// meter class is made from it. The reader WARNs where it fills it, and the kernel's settle step
+    /// writes one `usage.residual` audit row per non-empty map. Sparse: a zero count is left off.
+    pub residual_units: std::collections::BTreeMap<String, u64>,
 }
 
 /// The billable item produced for one response. Priced by the 1.3 engine via an exhaustive match.

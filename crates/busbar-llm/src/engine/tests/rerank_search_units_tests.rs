@@ -52,6 +52,7 @@ fn spend_cents_after(card_yaml: Option<&str>, body: &str) -> Result<i64, String>
         key: Arc::new(key.clone()),
         pool: Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
     let app = crate::test_support::TestApp::new()
@@ -137,6 +138,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
         key: Arc::new(key.clone()),
         pool: Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
     let app = crate::test_support::TestApp::new()

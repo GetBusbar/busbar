@@ -185,3 +185,36 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
         Some(1000)
     );
 }
+
+/// A RESIDUAL NEVER REACHES A BILL (MONEY LAW, owner 2026-10-02). A usage carrying residual units
+/// (Bedrock guardrail policy units, a stated total above its itemized sum) projects into the two
+/// billed-usage builders exactly as the same usage with none: `tier_usage` holds the four token
+/// tiers only, and `Units::of` adds no open class. RED if either builder copies the residual map.
+#[test]
+fn a_residual_never_reaches_a_bill() {
+    let billed = TokenUsage {
+        input: 10,
+        output: 5,
+        cache_read: Some(2),
+        ..Default::default()
+    };
+    let with_residual = TokenUsage {
+        residual_units: std::collections::BTreeMap::from([
+            ("guardrail.inputAssessment.topicPolicyUnits".to_string(), 14),
+            ("bedrock.usage.stated_total_gap".to_string(), 7),
+        ]),
+        ..billed.clone()
+    };
+    assert_eq!(
+        tier_usage(&with_residual),
+        tier_usage(&billed),
+        "tier_usage must bill the token tiers only, never a residual"
+    );
+    let units = crate::exchange::reply::Units::of(Some(&with_residual), Default::default());
+    assert_eq!(
+        units,
+        crate::exchange::reply::Units::of(Some(&billed), Default::default()),
+        "Units::of must report no residual as a billed class"
+    );
+    assert!(units.open.is_empty(), "no residual becomes an open class");
+}

@@ -353,6 +353,8 @@ pub(crate) fn usage_sink(
             // The header-arrival epoch this request was admitted at — reused for the token fee so it
             // shares the flat per-request fee's window (#29). See `UsageSink::charged_at`.
             charged_at,
+            // Not minted yet: the forward path stamps it (`UsageSink::request_id`).
+            request_id: 0,
             // The admission's in-flight HOLDS (the `concurrent` limit gauges) ride the sink so
             // they release when the response stream completes / the request context unwinds - the
             // sink is the one per-request object that provably lives to stream end. The opaque

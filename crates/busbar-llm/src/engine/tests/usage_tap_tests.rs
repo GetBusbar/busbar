@@ -295,6 +295,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 
@@ -393,6 +394,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at: 1_700_000_000,
+        request_id: 0,
         admit: None,
     });
 
@@ -506,6 +508,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 
