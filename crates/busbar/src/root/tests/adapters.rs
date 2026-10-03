@@ -376,6 +376,9 @@ fn a_drifted_bank_reads_as_a_drift() {
 /// drift, naming both spellings. Read off the seal's own body, so moving the call out of the boot
 /// path goes red here; and the seal on today's banks still succeeds, so the call refuses nothing it
 /// should not.
+// The seal it drives composes the shipped transport stack (the http rows over the linked transport
+// door); a build that links no transport door cannot seal it, so this cell gates on that axis.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_boot_seal_runs_the_label_bank_check_and_a_drift_refuses_the_boot() {
     let registry = include_str!("../registry.rs");
