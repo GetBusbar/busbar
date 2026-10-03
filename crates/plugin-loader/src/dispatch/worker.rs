@@ -935,6 +935,14 @@ impl Worker {
                     env.stats
                         .driver_kept_high
                         .fetch_max(kept as u64, Ordering::Relaxed);
+                } else if e.short_slot != Some(meta.slot) {
+                    // A NEW op starts on the ticket (not the one re-call a short answer earns):
+                    // its handles count from 0 again (the replay rule, `abi::sdk::conn`), and a
+                    // stored result is redeemed only by the op that issued it, on its resume (THE
+                    // DESIGN §11.12) — so the last op's kept answers go. Kept, the next op's
+                    // `ESTABLISH` (handle 0) would answer the last op's stream without a dial.
+                    env.services.forget(ticket);
+                    super::conn_services::forget(meta.instance.instance, ticket);
                 }
                 let inst = meta.instance.clone();
                 let expired = meta.class != DeadlineClass::WriteBehind
