@@ -24,7 +24,8 @@
 //!   outcome, `detached`), the ticket stays, and a later wake still completes it. A reload drain
 //!   ([`Dispatcher::drain`]) never waits on WriteBehind ops: they carry over to the new generation.
 //! * THE WATCHDOG (`watchdog`): an op that does not RETURN within its class budget faults its
-//!   instance and replaces its worker; see there for what happens to every ticket.
+//!   instance and replaces its worker; see there for what happens to every ticket. An op submitted
+//!   with its own watch budget ([`Dispatcher::submit_watched`]) is watched for the longer of the two.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -388,6 +389,9 @@ pub(crate) struct Meta {
     class: DeadlineClass,
     deadline_ns: u64,
     in_size: u32,
+    /// The op's own watch budget ([`Dispatcher::submit_watched`]): its crossings are watched for
+    /// the longer of this and its class budget. ZERO = the class budget alone.
+    watch: Duration,
     /// The `max_inflight` units it holds: one, or all of them for `close`.
     units: u32,
     /// Whether it still holds them (see [`Meta::give_back`]).
@@ -881,7 +885,10 @@ impl Worker {
                     h.ticket = ticket;
                     h.deadline_ns = meta.deadline_ns;
                 }
-                let (s, budget) = (meta.slot, env.budgets.of(meta.slot, meta.class));
+                let (s, budget) = (
+                    meta.slot,
+                    env.budgets.of(meta.slot, meta.class).max(meta.watch),
+                );
                 e.current = Some(Current {
                     meta,
                     job: Some(job),
@@ -901,7 +908,12 @@ impl Worker {
                 };
                 cur.pending = false;
                 let inst = cur.meta.instance.clone();
-                let (s, budget) = (cur.meta.slot, env.budgets.of(cur.meta.slot, cur.meta.class));
+                let (s, budget) = (
+                    cur.meta.slot,
+                    env.budgets
+                        .of(cur.meta.slot, cur.meta.class)
+                        .max(cur.meta.watch),
+                );
                 if inst.faulted.load(Ordering::Acquire) {
                     self.end(&mut st, idx, Crossed::host(Outcome::Fault), env);
                     return Some(st);
@@ -1292,7 +1304,16 @@ impl Dispatcher {
         class: DeadlineClass,
         deadline_ns: u64,
     ) -> Reply<I, O> {
-        self.submit_with(plugin, ticket, s, frame, class, deadline_ns, None)
+        self.submit_with(
+            plugin,
+            ticket,
+            s,
+            frame,
+            class,
+            deadline_ns,
+            None,
+            Duration::ZERO,
+        )
     }
 
     /// [`Dispatcher::submit`], with the owner of the memory `frame`'s pointers lend the plugin:
@@ -1309,7 +1330,44 @@ impl Dispatcher {
         deadline_ns: u64,
         lent: Lent,
     ) -> Reply<I, O> {
-        self.submit_with(plugin, ticket, s, frame, class, deadline_ns, Some(lent))
+        self.submit_with(
+            plugin,
+            ticket,
+            s,
+            frame,
+            class,
+            deadline_ns,
+            Some(lent),
+            Duration::ZERO,
+        )
+    }
+
+    /// [`Dispatcher::submit_lent`], with the op's own WATCH BUDGET: the watchdog faults one of its
+    /// crossings only past the longer of `watch` and its class budget, never sooner. The caller
+    /// states the budget its row carries (a hook's `timeout_ms`, `BUSBAR-1.6.0.md` §11.7: "The
+    /// watchdog's budget is the hook's `timeout_ms`"); every other op keeps its class budget.
+    #[allow(clippy::too_many_arguments)] // `submit_lent`'s seven, plus the watch budget
+    pub fn submit_watched<K: Kind, I: InFrame, O: OutFrame>(
+        &self,
+        plugin: &Plugin<K>,
+        ticket: Ticket,
+        s: u32,
+        frame: Frame<I, O>,
+        class: DeadlineClass,
+        deadline_ns: u64,
+        lent: Lent,
+        watch: Duration,
+    ) -> Reply<I, O> {
+        self.submit_with(
+            plugin,
+            ticket,
+            s,
+            frame,
+            class,
+            deadline_ns,
+            Some(lent),
+            watch,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1322,6 +1380,7 @@ impl Dispatcher {
         class: DeadlineClass,
         deadline_ns: u64,
         lent: Option<Lent>,
+        watch: Duration,
     ) -> Reply<I, O> {
         let inst = &plugin.inner;
         if ticket.is_none() {
@@ -1355,6 +1414,7 @@ impl Dispatcher {
             class,
             deadline_ns,
             in_size: size_of::<I>() as u32,
+            watch,
             units,
             units_held: true,
             lifecycle,
