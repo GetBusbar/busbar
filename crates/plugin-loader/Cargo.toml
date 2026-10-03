@@ -74,14 +74,9 @@ crate-type = ["cdylib"]
 
 # THE MEMORY-ABI BOTH-WAYS FIXTURES (TODO ABI-b4; `door_both_ways`): each source compiled into the
 # test build as a module (the LINKED door) and built here as a `cdylib` (the DROPPED door). The
-# conforming secret and hook doors, and per kind a door that breaks its contract (the RED arms of
+# conforming hook door, and per kind a door that breaks its contract (the RED arms of
 # `{store,secret,hook}_door_conformance_tests`). Examples, not crates: `cargo test` builds them and
 # they never ship.
-[[example]]
-name = "secret_door"
-path = "tests/fixtures/secret_door.rs"
-crate-type = ["cdylib"]
-
 [[example]]
 name = "secret_broken_door"
 path = "tests/fixtures/secret_broken_door.rs"
@@ -197,10 +192,14 @@ busbar-export-otlp-plugin = { workspace = true }
 # `dropped-in` feature: that exports `busbar_plugin_door` from the rlib too, which this test build's
 # own linked fixtures already define.
 busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"] }
-# NO `kind: secret` fixture: the in-tree secret fixture is deleted (owner, 1.6.0-QUESTIONS.md
-# "FIXTURES": "real plugins are the examples"). The secret kind is proven by the REAL plugin repo
-# (GetBusbar/busbar-secret-vault) — `plugin_proof_tests` dlopens its built cdylib from
-# `BUSBAR_PLUGIN_PROOF_DIR`, run by the removed ci.yml's `plugin-proofs` job.
+# The `kind: secret` BOTH-WAYS proof is a REAL secret source (owner FIXTURES ruling: "real plugins are the
+# examples"): the env source from its own repo (GetBusbar/busbar-secret-env) at the rev the workspace pins.
+# The edge is its LOGIC crate: that crate's door is the LINKED door. The DROPPED-IN door is the same repo's
+# `<logic crate>-plugin` cdylib, built from the pinned checkout (never a dependency here: its rlib exports
+# `busbar_plugin_door`, a second one beside the dispatcher's own test door and the tcp plugin's under LTO)
+# and found beside the test binaries. `secret_door_conformance_tests` drives both through the one dispatcher
+# over one script and asserts the exact crossing count.
+busbar-secret-env = { workspace = true }
 # The `kind: auth` BOTH-WAYS witness — #2's auth witness, step (4) (OWNER-LOCKED) — is a REAL plugin, not
 # a fixture (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real plugins are the examples"; R-FIX2): the
 # token-verifying OIDC module from its own repo (GetBusbar/busbar-auth-oidc) at a pinned rev. Its `rlib` gives
@@ -265,6 +264,9 @@ auth = "busbar-auth-oidc-plugin"
 # A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the
 # test reaches the row by that whole key (`both_doors_of`), never by the plugin's name.
 auth-verify = "busbar-auth-admin-tokens-plugin"
+# A DOOR kind's fixture (memory ABI): no cold entry; `build.rs` emits its crate alias and name only. The
+# row names the LOGIC crate (the linked door); its cdylib is the repo's `<row>-plugin`.
+secret = "busbar-secret-env"
 # A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
 # emits only its crate alias and its cdylib name for this row. It is also the one wire crate this
 # crate may take a (dev) edge on — kind-isolation's transport-registration rule reads this row.

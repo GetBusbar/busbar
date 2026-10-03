@@ -20,8 +20,9 @@
 use std::env;
 use std::path::PathBuf;
 
-/// The HOT-lane kinds (#30): their fixtures carry a `#[repr(C)]` decl, not a cold entry.
-const HOT_KINDS: &[&str] = &["plane", "transport"];
+/// The kinds whose fixture carries a door or a `#[repr(C)]` decl, not a cold entry (plane, transport
+/// and the memory-ABI secret kind).
+const HOT_KINDS: &[&str] = &["plane", "transport", "secret"];
 
 /// The rows whose fixture is on its kind's MEMORY ABI: the linked door is the fixture's
 /// `door::door` (THE DESIGN, compiled-in = dropped-in: the same door its dropped-in build exports),
@@ -96,15 +97,15 @@ fn main() {
             // links its rlib. The row is a dev-dependency only so cargo BUILDS its cdylib, and a
             // `-plugin` crate's rlib exports `busbar_plugin_door` (`export_door!`), which two
             // doors in one fat-LTO unit make "symbol multiply defined". Naming the crate would link it.
-            if HOT_KINDS.contains(&kind) {
+            // A row naming the LOGIC crate (no `-plugin` suffix, so no door symbol in its rlib: the
+            // `secret` row) is linked as an ordinary fixture crate below.
+            if let (true, Some(logic)) = (HOT_KINDS.contains(&kind), snake.strip_suffix("_plugin")) {
                 // The row's LOGIC crate (the same repo's crate the `-plugin` crate packs; it exports no
                 // door symbol) gives the linked door: `<kind>_linked::{door, KEY}`.
-                if let Some(logic) = snake.strip_suffix("_plugin") {
-                    crates.push_str(&format!(
-                        "#[allow(unused_imports)]\npub(crate) use ::{logic}::linked as {}_linked;\n",
-                        kind.replace('-', "_")
-                    ));
-                }
+                crates.push_str(&format!(
+                    "#[allow(unused_imports)]\npub(crate) use ::{logic}::linked as {}_linked;\n",
+                    kind.replace('-', "_")
+                ));
                 continue;
             }
             let alias = kind.replace('-', "_");
