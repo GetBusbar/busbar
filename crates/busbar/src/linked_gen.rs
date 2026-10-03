@@ -75,7 +75,7 @@ pub(crate) const DOOR_AXIS: &str = "transport-door";
 
 /// The plane door axis (#2, THE DESIGN §11.4): the row's entry exports its plane kind's memory-ABI
 /// `door`, and the root hands it to the loader beside every dropped-in plane door
-/// (`crate::root::linked::dropped_planes_of`), so a compiled-in plane is bound through the same table
+/// (`crate::root::boot::dropped_planes_of`), so a compiled-in plane is bound through the same table
 /// as a dropped-in one. It needs no `plane` beside it: the door states the plane.
 pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
 

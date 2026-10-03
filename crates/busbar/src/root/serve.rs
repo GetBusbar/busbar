@@ -38,7 +38,7 @@ use busbar_kernel::plane_driver::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-use crate::root::linked::DoorPlane;
+use crate::root::boot::DoorPlane;
 use crate::root::loader::dispatch::kinds::plane::OwnedSnapshot;
 use crate::root::loader::dispatch::plane_calls::PlaneInstance;
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
@@ -323,7 +323,7 @@ impl Served {
 }
 
 /// THE DOOR PLANES' COMPOSITION (ARCHITECT Q-SW4, 2026-10-02): every plane bound through its door
-/// (`root::linked::door_planes`) whose declared section this deployment writes (LAW 7: a plugin
+/// (`root::boot::door_planes`) whose declared section this deployment writes (LAW 7: a plugin
 /// loads iff its section is present) is opened with that section as its settings, and composed:
 /// a [`PlaneInstance`] on `dispatcher` (unit tickets on worker 0, where its driver ticket is
 /// minted), a [`PlaneDriver`] admitted to the kernel's composed services with the plane's tail

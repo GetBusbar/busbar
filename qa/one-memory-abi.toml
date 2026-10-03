@@ -320,7 +320,16 @@ item = "spawn_blocking"
 rule = "one-memory-abi:cold-lane"
 file = "crates/busbar/src/root/linked.rs"
 item = "abi::cold"
-count = 16
+count = 1
+expires = "M6-COLD-DELETE"
+
+# BOOT-TAIL card item 4: the host egress carrier moved whole from root/linked.rs into root/boot.rs
+# (a pure move), and its 15 cold-lane lines with it: linked.rs 16 -> 1, boot.rs 15. Net zero.
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar/src/root/boot.rs"
+item = "abi::cold"
+count = 15
 expires = "M6-COLD-DELETE"
 
 [[finding]]

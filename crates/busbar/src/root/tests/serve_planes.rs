@@ -50,7 +50,7 @@ fn dropped_path() -> Option<std::path::PathBuf> {
 
 /// The test plane, dropped in and bound on `dispatcher` as `instance`; `None` where its `cdylib`
 /// is not built.
-fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> Option<crate::root::linked::DoorPlane> {
+fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> Option<crate::root::boot::DoorPlane> {
     let path = dropped_path()?;
     let stated = rendering_of_library(&path)
         .expect("the test plane's library reads")
