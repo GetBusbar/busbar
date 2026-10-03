@@ -250,6 +250,9 @@ pub fn decl_of(name: &str) -> Option<&'static busbar_contract::protocol::Protoco
 #[path = "tests/test_host.rs"]
 pub(crate) mod test_host;
 #[cfg(test)]
+#[path = "tests/usage_census.rs"]
+pub(crate) mod usage_census;
+#[cfg(test)]
 pub(crate) use test_host::ensure_test_protocols_registered;
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.

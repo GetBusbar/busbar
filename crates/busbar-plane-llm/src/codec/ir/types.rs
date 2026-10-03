@@ -1438,10 +1438,11 @@ impl IrUsage {
     /// counts an operator is invoiced on. So `billed_input_tokens`/`billed_output_tokens`, when
     /// present, WIN over the raw totals for the reserved input/output tiers — a DELIBERATE,
     /// tested per-dialect ledgered-count change (no other dialect populates these, so every other
-    /// provider projects byte-identically to before). The Cohere OPEN buckets
-    /// (`billed_classifications` → `classifications`, `search_units` → `search`) are attribution
-    /// that will ride `usage_units` once the ledger population lands (a designed later-milestone
-    /// residual); today they remain on `IrUsageDetail` and are re-emitted by the Cohere writer.
+    /// provider projects byte-identically to before). Cohere's billed `search_units` is the open
+    /// class `search_units` (see `open_units`). Its billed `classifications` has no meter class the
+    /// LLM plane declares: the Cohere reader WARNs it as a residual and it is ledgered nowhere
+    /// (MONEY-AUDIT A-F1; the residual audit row is escalated, A-F4/STR-5/STR-8). Both stay on
+    /// `IrUsageDetail` and are re-emitted by the Cohere writer.
     ///
     /// THE BILLED INPUT IS NETTED AGAINST THE CACHE READ, for the same reason the raw total is.
     /// The billed-wins exception above was written when Cohere reported no cache accounting at all,
@@ -1485,9 +1486,12 @@ impl IrUsage {
     /// and the plane reports units, never a price). Anthropic bills each server-side web search
     /// (`usage.server_tool_use.web_search_requests`) as one search, so the count is the declared
     /// open class `search_units` (a rerank's billed searches, item 134) that a rate card prices per
-    /// lane under `units:`. A zero count is not carried: a zero search is no hit on the class.
+    /// lane under `units:`. Cohere's chat `billed_units.search_units` is that same class by name and
+    /// meaning (the units a rerank bills). A zero count is not carried: a zero search is no hit on
+    /// the class.
     fn open_units(&self) -> std::collections::BTreeMap<String, u64> {
-        let searches = self.detail.web_search_requests.unwrap_or(0);
+        let searches = (self.detail.web_search_requests.unwrap_or(0))
+            .saturating_add(self.detail.search_units.unwrap_or(0));
         (searches != 0)
             .then(|| {
                 (
