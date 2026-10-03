@@ -410,6 +410,7 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // whoever holds it forges every token this deployment will ever issue. Reached from `RootCfg`
     // through `oauth_as`, which is the VALIDATED identity, which is why that type carries the
     // reference verbatim rather than consuming it at `resolve` time.
+    ("CheckedAsBlock", SecretBearing::Walked),
     (
         "AsIdentity",
         SecretBearing::NotInResolvedConfig(
