@@ -576,9 +576,9 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
 
 /// The dropped-in door that composes over ONE socket framer: the request/response framer the head
 /// tests drive, found among the libraries beside this test binary by what it states (one layer in
-/// its `composes_over`), as [`layer_door`] finds its layer. It is the http transport repo's cdylib,
-/// which is in no graph of this workspace: the hop's `build:dlopen-cdylibs` builds it (and the tcp
-/// door it composes over) from the pinned checkout busbar's root resolves, into this target dir
+/// its `composes_over`), as [`layer_door`] finds its layer. It is a pinned plugin repo's cdylib,
+/// which is in no graph of this workspace: the hop's `build:dlopen-cdylibs` builds it (and the
+/// framer door it composes over) from the pinned checkout busbar's root resolves, into this target dir
 /// (spec P5). A missing door is a failure, never a skip.
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
     libraries_beside_the_test()
