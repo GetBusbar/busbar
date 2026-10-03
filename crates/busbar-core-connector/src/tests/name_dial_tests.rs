@@ -153,7 +153,7 @@ fn a_need_dials_a_hostname_through_the_one_guard() {
         let mut buf = [0_u8; 8];
         assert_eq!(t.read(id, 7, &mut buf), Err(ConnError::Pending));
         assert_eq!(
-            t.write(id, b"ping", false),
+            t.write(id, b"ping", false, false),
             Ok(4),
             "a write waits for the dial"
         );
@@ -197,7 +197,7 @@ fn a_need_dials_localhost_through_the_system_resolver() {
                 },
             )
             .expect("opens");
-        assert_eq!(t.write(id, b"pong", false), Ok(4));
+        assert_eq!(t.write(id, b"pong", false, false), Ok(4));
         assert_eq!(read(&t, id).await.expect("the echo"), b"pong");
     });
 }
@@ -410,7 +410,11 @@ fn a_name_resolving_to_loopback_is_refused_before_any_socket() {
                 },
             )
             .expect("a name opens, its judgement pending");
-        assert_eq!(c.write(OWNER, id, b"leak", false), Ok(4), "held, not sent");
+        assert_eq!(
+            c.write(OWNER, id, b"leak", false, false),
+            Ok(4),
+            "held, not sent"
+        );
         assert_eq!(read_direct(&c, id).await, Err(ConnError::Refused));
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing was dialled");
@@ -438,7 +442,7 @@ fn the_same_name_dials_when_allowlisted() {
                 },
             )
             .expect("opens");
-        assert_eq!(c.write(OWNER, id, b"dial", false), Ok(4));
+        assert_eq!(c.write(OWNER, id, b"dial", false, false), Ok(4));
         assert_eq!(read_direct(&c, id).await.expect("the echo"), b"dial");
         assert_eq!(accepted.load(Ordering::SeqCst), 1);
     });
@@ -462,7 +466,7 @@ fn a_config_named_target_on_loopback_is_trusted() {
         let id = c
             .open(OWNER, NEED, &OpenDesc::default())
             .expect("the configured target opens");
-        assert_eq!(c.write(OWNER, id, b"conf", false), Ok(4));
+        assert_eq!(c.write(OWNER, id, b"conf", false, false), Ok(4));
         assert_eq!(read_direct(&c, id).await.expect("the echo"), b"conf");
         assert_eq!(accepted.load(Ordering::SeqCst), 1);
     });

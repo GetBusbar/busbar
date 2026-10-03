@@ -1612,7 +1612,7 @@ fn compute_layout() -> String {
             bytes,
             len,
             end_of_frame,
-            _reserved,
+            flags,
             sink,
             deadline_ns
         ]

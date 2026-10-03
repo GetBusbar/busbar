@@ -17,7 +17,7 @@ const SOCKET: &str = "unix:///run/busbar.sock";
 #[test]
 fn a_need_over_a_unix_scheme_is_refused() {
     let c = Connector::new();
-    c.declare_over(OWNER, NeedId(0), "unix");
+    let _ = c.declare_over(OWNER, NeedId(0), "unix");
     let desc = OpenDesc {
         target: SOCKET,
         ..OpenDesc::default()

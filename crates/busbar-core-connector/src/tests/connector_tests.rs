@@ -243,13 +243,9 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
             alpn: Vec::new(),
         }])
         .unwrap();
-        let c = Connector::serving(
-            view,
-            Arc::new(crate::LiteralsOnly),
-            None,
-            Arc::new(|_: Ticket| {}),
-        );
-        c.declare_over(OWNER, NeedId(0), "bytes");
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_: Ticket| {}));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
             ..OpenDesc::default()
