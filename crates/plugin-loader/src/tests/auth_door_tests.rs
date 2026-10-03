@@ -190,6 +190,38 @@ fn script() -> Vec<(VerifyRequest, VerifyAnswer)> {
     ]
 }
 
+/// The request with `credential` LENT as the candidate credential (`VerifyRequest::credential`, the
+/// `credential` blob of `verify`'s `in`), and nothing on the query or the field lines.
+fn lent(credential: &str) -> VerifyRequest {
+    VerifyRequest {
+        credential: Some(Redacted::new(credential.as_bytes().to_vec())),
+        method: "GET".into(),
+        authority: "node.example".into(),
+        path: "/v1/chat/completions".into(),
+        ..VerifyRequest::default()
+    }
+}
+
+/// THE PRESENTED CREDENTIAL REACHES THE DOOR (AUTH-CHAIN-SWITCH, ARCHITECT lane L2-AUTH): the
+/// candidate the host lends is the credential the plugin judges, on the spot and submitted — a
+/// wrong one is REFUSED and the right one identifies.
+///
+/// RED before the loader lent it: `verify`'s `in` carried no credential (`presented = false`), the
+/// plugin saw none, and every lent candidate PASSED — a door could never refuse a wrong credential.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lent_credential_is_judged_and_a_wrong_one_refused() {
+    let a = opened("judge-a");
+    for (credential, want) in [
+        ("bad", answered(Verified::Reject)),
+        ("good", alice()),
+        ("other", answered(Verified::Pass)),
+    ] {
+        assert_eq!(a.verify_now(&lent(credential)), Some(want.clone()), "{credential}");
+        let submitted = Box::into_pin(a.verify(lent(credential))).await;
+        assert_eq!(submitted, want, "{credential} submitted");
+    }
+}
+
 #[test]
 fn the_tail_states_its_name_and_facts() {
     let a = opened("judge-a");

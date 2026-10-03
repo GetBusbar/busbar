@@ -30,6 +30,10 @@ pub struct VerifyRequest {
     pub conn: u64,
     /// The unit the kernel minted for the request; `0` at [`AuthPoint::Peer`].
     pub unit: u64,
+    /// The candidate credential the host extracted from the request (the data plane's client token,
+    /// the admin plane's Bearer), lent as `verify`'s `credential` blob (`abi::auth::VerifyIn`);
+    /// `None` = none presented. SECRET.
+    pub credential: Option<Redacted<Vec<u8>>>,
     /// The neutral field lines, as presented (name, value). A value may be a credential: secret.
     pub lines: Vec<(String, Redacted<Vec<u8>>)>,
     /// The peer facts; `Some` only at [`AuthPoint::Peer`].
@@ -55,6 +59,7 @@ impl Default for VerifyRequest {
             point: AuthPoint::Head,
             conn: 0,
             unit: 0,
+            credential: None,
             lines: Vec::new(),
             peer: None,
             body: None,
@@ -68,7 +73,7 @@ impl Default for VerifyRequest {
 }
 
 impl std::fmt::Debug for VerifyRequest {
-    // Never a line value or the body: they carry the credential and the payload.
+    // Never the credential, a line value or the body: they carry the credential and the payload.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VerifyRequest")
             .field("point", &self.point)
