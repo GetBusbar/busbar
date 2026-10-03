@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the connector slots and the host's connection table are proven over the `dispatch_test_plugin` fixture door; a hand-built in-test `Door` replaces it.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

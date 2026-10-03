@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the plane kind adapter's ops and the host's snapshot copy need a loaded plane door; a hand-built in-test `Door` replaces this fixture.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

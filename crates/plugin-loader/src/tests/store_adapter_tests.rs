@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the store adapter is driven over the real `busbar-store-memory` cdylib; an in-test boundary replaces the image.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

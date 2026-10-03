@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the per-plugin log file sink is proven over the `log_witness_*` fixture doors, linked and dropped; a hand-built in-test `Door` replaces the linked half.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

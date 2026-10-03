@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the HOT door's latency rides the example plane's decl (an in-tree plugin) and the plane door's mechanics ride the `plane_door_plugin` fixture door; a hand-built in-test decl/door replaces each, or the published suite's plane script carries it.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

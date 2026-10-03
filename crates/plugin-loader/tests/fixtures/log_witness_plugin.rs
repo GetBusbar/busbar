@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the per-plugin log file sink and the door macro's call capture need a door logging from inside a call; a hand-built in-test `Door` replaces the linked half, the dropped half has no replacement without a binary.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

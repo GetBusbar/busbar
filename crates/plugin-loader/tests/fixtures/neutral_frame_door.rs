@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): a socket-framing transport door beside the test binary for transport_door_tests, the connector's universal_needs and the root's registry fold; replaced when those prove the registry fold over an in-test decl.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

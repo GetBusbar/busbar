@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): a MONEY proof (kept, not deleted): the store v3 money path over the real `busbar-store-memory`, linked and dropped (`store_v3_door`); replaced by an in-test store door or by store-memory's own suite run.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

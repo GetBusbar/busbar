@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the ABI-2 store defaults are driven over the real `busbar-store-memory` cdylib with its `call` faked; an in-test boundary (`_lib: None`, as export_tests builds) replaces the image.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

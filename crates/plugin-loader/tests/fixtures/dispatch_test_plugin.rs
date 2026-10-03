@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the dispatcher's mechanism rules (outcome authority, pend/wake, deadlines, max_inflight, write-behind, the watchdog) need a loaded door as their subject; a hand-built in-test `Door` over host-side fns replaces this fixture.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

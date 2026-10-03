@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the dlopen-seam mechanics here (staging, TOCTOU-safe load, hot-swap, kind cross-check) load the real `busbar-store-memory` cdylib as their image; a hand-built in-test boundary (`Image::Linked` over in-test fns) replaces it where no mapped library is the subject.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): a failed `open`'s reason reaching the operator is proven over the `open_reason_*` fixture doors; a hand-built in-test store `Door` replaces them.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

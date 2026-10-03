@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): `busbar-store-memory`'s door DROPPED IN for store_money_acceptance's dropped leg (a money proof, kept); replaced when the money acceptance runs over an in-test store door or moves to store-memory's own suite run.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

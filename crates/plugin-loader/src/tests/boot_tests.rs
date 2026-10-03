@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the boot's one load (bind, log file, ready) is proven over the `plane_door_plugin` and `ready_plugins` fixture doors; hand-built in-test `Door`s replace them.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

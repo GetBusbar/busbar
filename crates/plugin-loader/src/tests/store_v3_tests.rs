@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the host-side store v3 adapter (`LoadedStore`) is driven over the real `busbar-store-memory` door; a hand-built in-test store `Door` replaces it.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

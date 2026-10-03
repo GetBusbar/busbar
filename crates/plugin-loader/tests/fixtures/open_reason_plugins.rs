@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the host lends `open` a reason buffer and rebuilds 1.5.5's text from it; a hand-built in-test store `Door` whose `open` fails replaces this fixture.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 

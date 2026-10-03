@@ -1,3 +1,4 @@
+// TRANSITIONAL (NO-TEST-PLUGINS, QUESTIONS CONF-SUITE-DEL): the dispatcher's `ready` mechanics (pend/resume on the ticket, ready before open, an older door's size) and the boot's one load need a door that states `ready`; a hand-built in-test `Door` replaces this fixture.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
