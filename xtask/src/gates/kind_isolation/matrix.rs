@@ -147,6 +147,7 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
+mod external;
 mod instances;
 mod os_words;
 mod vendors;
@@ -647,6 +648,10 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     // coupling ([`super::conformance_witness_edges`]).
     let granted = super::conformance_witness_edges(cx, crates);
 
+    // The external crate roots each crate's manifest declares ([`external`]).
+    let tree: BTreeSet<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+    let mut externals: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
     let mut matrix: Matrix = BTreeMap::new();
     let mut wire_locks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (rel, text) in &files {
@@ -685,6 +690,19 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         } else {
             mask_identifiers(text, &contract)
         };
+        // A name inside a path rooted at an EXTERNAL crate is that crate's word (`std::process::
+        // Stdio`), and `busbar_kernel::audit` is a module of the kernel facade, not a sibling crate.
+        let roots = externals.entry(dir.clone()).or_insert_with(|| {
+            external::external_roots(
+                c.deps
+                    .iter()
+                    .chain(&c.dev_deps)
+                    .map(|d| (d.pkg.as_str(), d.key.as_str())),
+                &tree,
+            )
+        });
+        let masked = external::mask_external_paths(&rel, &masked, roots);
+        let masked = external::mask_kernel_facade(&rel, &masked);
         // English words that are also instance names are not counted as English prose.
         let masked = mask_english_prose(&rel, &masked);
         // Instance ids that are also a crate's or an abbreviation's name count only as references.
@@ -3848,6 +3866,49 @@ pub fn selftest<'a>(
             "pub const P: &str = \"busbar-plane-mcp\";\n",
         ),
         &[WIRE_PLANT, "plane"],
+    ));
+
+    // EXTERNAL CRATES' PATHS ([`external`]). GREEN: the standard library's `Stdio` is not the stdio
+    // transport. RED, beside it, so no real hit is masked with it: the stdio transport's own crate
+    // path, and a local module named `stdio`, still count.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "`std::process::Stdio` is the standard library's, not the stdio transport",
+        &[ROW_MATRIX],
+        wire_plant(
+            cx,
+            "src/spawn.rs",
+            "use std::process::{Command, Stdio};\nfn f() { let _ = std::process::Stdio::piped(); let _ = Stdio::null(); }\n",
+        ),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the stdio transport's own crate path is still counted beside a std Stdio",
+        &[ROW_MATRIX],
+        wire_plant(
+            cx,
+            "src/spawn.rs",
+            "use std::process::Stdio;\nuse busbar_transport_stdio::Run;\n",
+        ),
+        &[WIRE_PLANT, "transport"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a local `mod stdio` is still counted -- only an external crate's path is masked",
+        &[ROW_MATRIX],
+        wire_plant(cx, "src/lib.rs", "mod stdio;\nfn f() { stdio::run(); }\n"),
+        &[WIRE_PLANT, "transport"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a kernel sibling's crate path (`busbar_kernel_audit::`) is still counted; only the facade's module is masked",
+        &[ROW_MATRIX],
+        wire_plant(cx, "src/lib.rs", "use busbar_kernel_audit::Sink;\n"),
+        &[WIRE_PLANT, "kernel"],
     ));
 
     // -- THE SPELLING THE COMPILER READS AND THE SCANNER DID NOT --------------------------------
