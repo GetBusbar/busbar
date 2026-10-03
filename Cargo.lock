@@ -565,7 +565,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-file"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=795eadb866e5f9a98bc854b9697ae42a28a51e92#795eadb866e5f9a98bc854b9697ae42a28a51e92"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=2ba3c96b0dc762029d73cfc66b8816f5cca9ad55#2ba3c96b0dc762029d73cfc66b8816f5cca9ad55"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -576,8 +576,9 @@ dependencies = [
 [[package]]
 name = "busbar-export-file-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=795eadb866e5f9a98bc854b9697ae42a28a51e92#795eadb866e5f9a98bc854b9697ae42a28a51e92"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=2ba3c96b0dc762029d73cfc66b8816f5cca9ad55#2ba3c96b0dc762029d73cfc66b8816f5cca9ad55"
 dependencies = [
+ "busbar-contract",
  "busbar-export-file",
 ]
 
