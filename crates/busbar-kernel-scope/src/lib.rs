@@ -42,6 +42,9 @@
 
 use busbar_contract::{ClaimKey, OpClassId};
 
+/// The egress gate: a virtual-key grant check before busbar spends its own outbound credential.
+pub mod egress;
+
 /// The built-in authorization scopes — a strict two-rung chain: `ReadOnly` at the bottom, `Full` at
 /// the top. Authorization is checked on the PRINCIPAL per endpoint and is NEVER derived from the
 /// request body, so a crafted request cannot escalate.

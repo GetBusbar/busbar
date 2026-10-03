@@ -4,6 +4,7 @@
 use super::*;
 
 mod bitset;
+mod egress;
 mod narrowing;
 
 /// The authorization matrix, ported from 1.5.5's `required_scope_matrix` test: reads (+ the two

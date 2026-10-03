@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Re-export shim. THE EGRESS GATE moved DOWN into `busbar-substrate` in Phase-B B1; this module
-//! re-exports it (glob) so every `crate::egress_auth::gate::…` name resolves unchanged and hosts the
-//! core-only gate tests, which name `crate::audit_ring` and `crate::audit`.
+//! THE EGRESS GATE: may busbar spend its own outbound credential on a subject, on behalf of the
+//! inbound caller? A virtual-key grant check, so it is authorization and lives with the APPROVE
+//! step (BUSBAR-1.6.0.md Part 2 #36: `busbar-kernel-scope` is authZ). Moved verbatim from
+//! `busbar-kernel/src/egress_auth/gate.rs` (D1, ARCHITECT ruling 2026-10-02). Each plane supplies
+//! its grant kind ([`EgressSubject`]) and words the refusal; the gate, the refusal and the
+//! witness are written once, here.
 
-// This outbound trust/egress auth gate is served only by a trust-fronting plane; with none such
-// compiled in the glob re-export names nothing any in-core caller uses, exactly as the pre-split
-// module read dead there. Gated on the neutral `egress-auth-gate` CAPABILITY marker (naming a
-// capability, not a plane, per plane-purity §2.1) — enabled transitively by `plane-mcp`/`plane-a2a`,
-// so `not(feature = "egress-auth-gate")` is byte-identical to the original
-// `not(any(feature = "plane-mcp", feature = "plane-a2a"))` gate this replaced.
-#![cfg_attr(not(feature = "egress-auth-gate"), allow(unused_imports))]
-#![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-#[cfg(test)]
-#[path = "tests/gate_tests.rs"]
-mod gate_tests;
-
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use busbar_contract::records::VirtualKey;
 
 /// ONE GRANT THAT MUST PASS: which check this is, the scope KIND it is asked under, and the VALUE
@@ -29,8 +19,11 @@ use busbar_contract::records::VirtualKey;
 /// value — a computed kind would be a caller choosing which grant list it is checked against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Requirement<G> {
+    /// The consumer's own marker for this check.
     pub grant: G,
+    /// The scope kind the grant is asked under (a vocabulary constant of the consumer).
     pub scope_kind: &'static str,
+    /// The value looked up in the caller's grant list.
     pub value: String,
 }
 
@@ -69,14 +62,21 @@ pub enum EgressRefusal<G> {
     /// The key is disabled, tombstoned or expired. A key that may not authenticate may certainly not
     /// cause a credential to be minted, and a credential outliving the key that occasioned it is a
     /// hop nobody's grant covers.
-    KeyNotLive { caller: String },
+    KeyNotLive {
+        /// The refused key's id.
+        caller: String,
+    },
     /// The inbound principal holds no grant covering this requirement. FAIL CLOSED: busbar does not
     /// spend its own credential on behalf of a caller that is not itself authorised for the
     /// destination.
     NoGrant {
+        /// The refused key's id.
         caller: String,
+        /// The consumer's marker for the missing grant.
         grant: G,
+        /// The scope kind the missing grant is asked under.
         scope_kind: &'static str,
+        /// The value the caller holds no grant for.
         value: String,
     },
 }
@@ -108,8 +108,7 @@ impl<G> std::fmt::Display for EgressRefusal<G> {
 // methods exist to replace, and the replacement is a separate change because it edits an ingress
 // module. Present now because the audit VOCABULARY is the part that needs to be shared, and a
 // consumer that arrives later must find it here rather than invent a third spelling. Exercised by
-// `tests/gate_tests.rs`.
-#[cfg_attr(not(test), allow(dead_code))]
+// `tests/egress.rs`.
 impl<G> EgressRefusal<G> {
     /// The refused destination in the vocabulary the AUDIT ring speaks: `<scope kind>:<value>`, or
     /// the key itself when the refusal is about the key rather than the destination.
@@ -149,10 +148,6 @@ pub struct EgressGrant<S> {
 
 impl<S> EgressGrant<S> {
     /// The subject this grant was taken against.
-    // Used only by consumers built under the `relay` feature: they read the subject back off the
-    // witness at mint time, while other consumers do not — so with `relay` off this accessor has no
-    // caller.
-    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub fn subject(&self) -> &S {
         &self.subject
     }

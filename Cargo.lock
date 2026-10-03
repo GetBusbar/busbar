@@ -734,6 +734,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-llm",
  "busbar-mcp",

@@ -896,6 +896,16 @@ drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this ro
 
 [[dep]]
 from    = "busbar-kernel"
+to      = "busbar-kernel-scope"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md — kernel workflow crates form the loop; #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). Both crates are kernel-tier, so this edge crosses no kind boundary. #36 makes busbar-kernel-scope the authZ crate."
+why     = "busbar-kernel names busbar-kernel-scope: declared normal in the shipped graph, 1 declaration(s) at this commit. THE EGRESS GRANT GATE (D1, ARCHITECT ruling 2026-10-02): the virtual-key grant check moved out of busbar-kernel/src/egress_auth/gate.rs into busbar_kernel_scope::egress, and the kernel re-exports it as busbar_kernel::egress_grant so the planes that gate on it grow no new edge."
+drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this row holds is the NUMBER."
+
+[[dep]]
+from    = "busbar-kernel"
 to      = "busbar-plugin-loader"
 half    = "shipped"
 count   = "1"
