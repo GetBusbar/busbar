@@ -95,6 +95,13 @@ pub trait Kind: Send + Sync + 'static {
         Ok(None)
     }
 
+    /// The credential kinds an instance of this kind declares its op reads through the host's
+    /// `records.secret`, read off its [`Kind::context`]; none for a kind that declares none.
+    fn credential_kinds(context: Option<&Context>) -> Vec<String> {
+        let _ = context;
+        Vec::new()
+    }
+
     /// THE KIND'S ANSWER VALIDATION: the kind's pure `check_<op>` in `abi/<kind>/`, run after every
     /// answer of every op, on EVERY outcome but FAULT (each check decides which fields an outcome
     /// carries). `Err` is FAULT, logged once at warn with the plugin, the

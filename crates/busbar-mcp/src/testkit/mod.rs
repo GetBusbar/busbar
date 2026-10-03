@@ -37,7 +37,7 @@ const SCRATCH_KEY: &str = "mcp";
 
 /// INSTALL THE MCP CROSS-PLANE TEST SEAMS the composition root (`main`) installs in production: register
 /// the MCP plane in the process registry (so `config_sections()` / cross-plane refusal / plane
-/// resolution see it) and bind the parse-time section-list provider. Idempotent. Called from the MCP
+/// resolution see it), bind the parse-time section-list provider and the hostless-egress driver. Idempotent. Called from the MCP
 /// finalizer (every plane-building test) AND directly by MCP config/admin tests that validate documents
 /// WITHOUT building a plane (they reach the same `config_sections()` fold).
 pub fn install_test_seams() {
@@ -47,9 +47,9 @@ pub fn install_test_seams() {
     // for the cross-plane refusal / matrix fixtures. Idempotent; replaces the deleted `#[path]` witness
     // row that used to net the MCP codec into `busbar-core`'s test binary.
     busbar_kernel::proto::register_test_protocol(&crate::PROTO_DECL);
-    busbar_kernel::plane::config::install_plane_sections(
-        busbar_kernel::plane::config::default_plane_sections,
-    );
+    // The root's seam bindings beside the plane: the hostless-egress driver this plane's wire legs
+    // run on, and the parse-time section list.
+    busbar_kernel::test_support::install_root_seams();
 }
 
 /// The MCP plane's accumulated fixture state, mutated across the fluent builder chain and consumed

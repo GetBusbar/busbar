@@ -545,24 +545,18 @@ async fn callback(
             }
             LoginOutcome::Exchange(hop) => {
                 // Execute the hop, CORE-injecting the client_secret VALUE into the named form field.
-                let (status, body) =
-                    match execute_hop(
-                        http,
-                        &hop,
-                        m.client_secret.as_ref().map(|r| r.expose_secret().as_str()),
-                        &m.allowed_hosts,
-                        Duration::from_secs(HOP_TIMEOUT_SECS),
-                    )
-                    .await
-                    {
-                        Ok(v) => v,
-                        Err(_) => return clear_and(error_page(
-                            StatusCode::BAD_GATEWAY,
-                            "Couldn't reach your provider",
-                            "We couldn't reach your identity provider to finish signing you in. \
-                             Please try again shortly.",
-                        )),
-                    };
+                let (status, body) = match execute_hop(
+                    http,
+                    &hop,
+                    m.client_secret.as_ref().map(|r| r.expose_secret().as_str()),
+                    &m.allowed_hosts,
+                    Duration::from_secs(HOP_TIMEOUT_SECS),
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(_) => return clear_and(provider_unreachable()),
+                };
                 // NONCE BINDING (core's job — the ABI CompleteLogin has no nonce field): if the hop
                 // body carries an id_token, its `nonce` claim MUST equal the cookie nonce BEFORE any
                 // identity is trusted. A mismatch is a rejected callback with NO identity established.
@@ -578,6 +572,10 @@ async fn callback(
                 }
                 cl.token_response = Some(LoginHttpResponse { status, body });
             }
+            LoginOutcome::Outage => return clear_and(provider_unreachable()),
+            // The IdP's answer failed the login's security check: 1.5.5's verification page, the
+            // one the state mismatch renders.
+            LoginOutcome::SecurityCheckFailed => return clear_and(security_check_failed()),
             LoginOutcome::Reject => {
                 return clear_and(error_page(
                     StatusCode::UNAUTHORIZED,
@@ -739,6 +737,7 @@ pub(crate) async fn credential_submit(
     .await
     {
         LoginOutcome::Identify(p) => p,
+        LoginOutcome::Outage => return clear_and(provider_unreachable()),
         LoginOutcome::Reject => {
             return clear_and(error_page(
                 StatusCode::UNAUTHORIZED,
@@ -1202,6 +1201,17 @@ const LOGOUT_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="
 /// browser-flow failure (chooser / begin / callback / credential POST) routes through here with an
 /// honest, secret-free message and the right HTTP status. The HEADLESS JSON `POST /auth/token` path
 /// keeps its `{"error":…}` body (see `exchange::refusal`) — this is the browser branch ONLY.
+/// 1.5.5's page for an identity provider that could not be reached: a hop that failed, or a login
+/// plugin that answered `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]).
+fn provider_unreachable() -> Response {
+    error_page(
+        StatusCode::BAD_GATEWAY,
+        "Couldn't reach your provider",
+        "We couldn't reach your identity provider to finish signing you in. Please try again \
+         shortly.",
+    )
+}
+
 fn error_page(status: StatusCode, heading: &str, message: &str) -> Response {
     let body = page(&format!(
         "<div class=\"brand\"><span class=\"glyph\">{GLYPH}</span><span class=\"wordmark\">Busbar</span></div>\

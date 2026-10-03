@@ -299,7 +299,6 @@ pub(crate) mod taxonomy;
 // ── W4.b P2: substrate ENGINE absorbed INTO busbar-kernel; busbar-substrate deleted. The neutral
 // engine modules that had no kernel counterpart land here at their historical `busbar_kernel::` paths.
 pub mod admin_verbs;
-pub mod admin_witness;
 pub mod api;
 pub mod detached;
 pub mod plane_routes;

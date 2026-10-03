@@ -39,7 +39,16 @@ fn open() -> LoadedStore {
         },
     )
     .expect("the memory store's door loads");
-    LoadedStore::open(plugin, d, b"{}", 7).expect("the memory store opens")
+    LoadedStore::open(plugin, d, b"{}", mint).expect("the memory store opens")
+}
+
+/// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+fn mint() -> OpId {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    OpId::from_parts(
+        0x7e57,
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+    )
 }
 
 fn run<T>(f: impl std::future::Future<Output = T>) -> T {

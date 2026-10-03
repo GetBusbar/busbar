@@ -53,7 +53,7 @@ pub(super) fn linked(
         cli_help: &[],
         exports: &[],
         stores: &[],
-        hooks: &[],
+        hook_doors: &[],
         auths: &[],
         gauntlet_one_shot: &[],
         gauntlet_session: &[],
@@ -1191,8 +1191,8 @@ async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing
 /// cold-kind axis (`root::linked::register_stores` -> `preflight::install_linked_rows`), which
 /// registers them through `PluginRegistry::link` like any dropped-in row: the default
 /// `governance.store` is the one row that declares itself the default, an ephemeral in-process store
-/// that opens, and each built-in strategy spelling is an alias of the one hook row, opening the
-/// policy of that name.
+/// that opens; the hook table is the linked ranking DOOR, whose Statement claims each built-in
+/// strategy word (the root's hook axis binds it).
 ///
 /// RED by deleting the `store-memory` / `hooks-ranking` rows of `[package.metadata.busbar.linked]`:
 /// the tables carry no default store (and no ranking row) to hand the kernel.
@@ -1218,21 +1218,30 @@ fn the_default_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
         busbar_kernel::config::STRATEGY_LEAST_BUSY,
         busbar_kernel::config::STRATEGY_USAGE,
     ];
-    let hooks: Vec<_> = crate::LINKED.hooks.iter().map(|h| h.1).collect();
-    let want: &[&[&str]] = if cfg!(linked_axis_hooks) {
-        &[&strategies]
+    // Each linked hook door's claimed hook words (its Statement's `MARK_WORD_HOOK` marks).
+    let words: Vec<Vec<String>> = crate::LINKED
+        .hook_doors
+        .iter()
+        .map(|door| {
+            let stated =
+                crate::root::loader::dispatch::rendering_of(*door).expect("the door states");
+            busbar_contract::abi::mechanism::rendering::read(&stated)
+                .expect("the rendering reads")
+                .mark_words
+                .into_iter()
+                .filter(|(class, _)| {
+                    *class == busbar_contract::abi::mechanism::door::MARK_WORD_HOOK
+                })
+                .map(|(_, word)| word)
+                .collect()
+        })
+        .collect();
+    let want: Vec<Vec<String>> = if cfg!(linked_axis_hooks) {
+        vec![strategies.iter().map(|s| s.to_string()).collect()]
     } else {
-        &[]
+        Vec::new()
     };
-    assert_eq!(
-        hooks, want,
-        "the ranking row answers to every strategy spelling"
-    );
-    for (_, aliases, open) in crate::LINKED.hooks {
-        for spelling in *aliases {
-            assert_eq!(open(spelling).map(|p| p.name()), Some(*spelling));
-        }
-    }
+    assert_eq!(words, want, "the ranking door claims every strategy word");
 }
 
 /// STORE-DEFAULT — THE DEFAULT GOVERNANCE STORE IS THE LINKED ROW THAT DECLARES ITSELF THE DEFAULT.
@@ -1248,8 +1257,11 @@ fn the_default_store_is_the_row_that_declares_it() {
     fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         Err("never opened".into())
     }
-    const PLAIN: LinkedStore = ("acme-plain", false, false, open);
-    const CLAIMS: LinkedStore = ("acme-default", true, true, open);
+    extern "C" fn door() -> *const busbar_contract::abi::mechanism::door::Door {
+        std::ptr::null()
+    }
+    const PLAIN: LinkedStore = ("acme-plain", false, false, open, door);
+    const CLAIMS: LinkedStore = ("acme-default", true, true, open, door);
     assert_eq!(
         super::default_store(&[PLAIN, CLAIMS]),
         Ok(Some("acme-default"))
@@ -1279,9 +1291,12 @@ fn two_rows_declaring_the_default_refuse_boot() {
     fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         Err("never opened".into())
     }
-    const A: LinkedStore = ("acme-a", true, true, open);
-    const B: LinkedStore = ("acme-b", false, true, open);
-    const C: LinkedStore = ("acme-c", false, false, open);
+    extern "C" fn door() -> *const busbar_contract::abi::mechanism::door::Door {
+        std::ptr::null()
+    }
+    const A: LinkedStore = ("acme-a", true, true, open, door);
+    const B: LinkedStore = ("acme-b", false, true, open, door);
+    const C: LinkedStore = ("acme-c", false, false, open, door);
     assert_eq!(
         super::default_store(&[A, C, B]),
         Err(

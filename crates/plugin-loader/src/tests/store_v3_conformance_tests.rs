@@ -51,7 +51,7 @@ fn compiled_in() -> LoadedStore {
     let row = LinkedRow::of(crate::both_ways::store_fixture::door)
         .expect("the store states its Statement");
     let p = load_linked::<Store>(&row, bind(&d)).expect("the door loads");
-    LoadedStore::open(p, d, b"{}", 1).expect("it opens")
+    LoadedStore::open(p, d, b"{}", mint).expect("it opens")
 }
 
 /// The same door, dropped in (the `store_v3_door` example `cdylib`). `None` only in a scoped,
@@ -63,7 +63,16 @@ fn dropped_in() -> Option<LoadedStore> {
     let stated = rendering_of(crate::both_ways::store_fixture::door)
         .expect("the store renders its Statement");
     let p = load_dropped::<Store>(&path, &stated, bind(&d)).expect("the dropped-in door loads");
-    Some(LoadedStore::open(p, d, b"{}", 1).expect("it opens"))
+    Some(LoadedStore::open(p, d, b"{}", mint).expect("it opens"))
+}
+
+/// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+fn mint() -> OpId {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    OpId::from_parts(
+        0x7e58,
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+    )
 }
 
 fn block<T>(f: impl std::future::Future<Output = T>) -> T {

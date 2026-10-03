@@ -295,10 +295,8 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // clean checkout of b7200b496, base pinned to origin/predev, is red on exactly the rows on this
     // list. Three names were STALE and are struck here in the same commit:
     // `ports-only-tests:busbar-llm`, `request-path-fn-size` and `terminal-doors-in-audit-step` are
-    // PASS on that run. `ceiling-rose` is green again because the ten expired kind-isolation raises
-    // in qa/construction.toml were struck in the same commit (each cell already reads its `to` at
-    // the base). The rows below were red and on no list, so `--posture` scored them NEW; each is a
-    // true finding, named with what it measures and the phase that drains it.
+    // PASS on that run. The rows below were red and on no list, so `--posture` scored them NEW;
+    // each is a true finding, named with what it measures and the phase that drains it.
     //
     // `one-pricing-site` STRUCK (ARCHITECT ruling 2026-09-30, a $ commit landed alone): the admin
     // usage read built the ledger slice itself and priced it beside the cost unit. The row
@@ -313,23 +311,14 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "token-sealed:kernel-seal",
     "token-sealed:secret-once-mint",
     //
-    // C1 / THE FOLD — DRAIN: Phase 4.
-    // `lean-core`: 14 string literals in the kernel and busbar-kernel-* crates naming a dialect or a
-    // section 1.3 pinned word (config/mod.rs, appbuild.rs). Item 379 widened the scan to the eight
-    // kernel crates the units became, which is what made it visible. Measured 2026-09-27: 5 (two
-    // reserved-name messages in config_validate, a metrics help text, two plane_host errors) once
-    // the 28 `known_sites` pins that had drifted off their literals were re-pointed.
-    "lean-core",
+    // `lean-core` STRUCK 2026-10-02 (GATE-GREEN): #178 re-pointed the reviewed sites by path + text;
+    // the last two, plane_host's completion-seam errors, became the neutral `CompletionRefusal` the
+    // mcp plane words in its own vocabulary, so the kernel spells neither.
     // `neutral-no-dialect` STRUCK 2026-09-25: the dialect and strict-purity drains emptied it, and
     // `--posture` scored the name STALE.
     //
-    // `loc-ceilings:union`: the kernel + contract + unit-* union measures 59342 against 57456 — the
-    // union had been absorbing its members' overage while it read their slack (item 378 made it
-    // read their ceilings). A TRUE red, held under OWNER RULING Q50. Its two members
-    // `loc-ceilings:caps-contract` and `surface-ceiling:contract` are STRUCK 2026-09-25: the pair was
-    // re-armed at the measurement (OWNER RULING Q68(3)), both rows are green, and `--posture` scored
-    // the two names STALE.
-    "loc-ceilings:union",
+    // `loc-ceilings:union` STRUCK 2026-10-02 WITH THE ROW ITSELF: size is not a CI check (owner
+    // 2026-10-02), and every `loc-ceilings:*` and `surface-ceiling:*` row is deleted.
 ];
 
 /// THE `qa-names` GATE'S STANDING REDS, BY NAME.
@@ -405,10 +394,10 @@ pub const MONEY_INVARIANTS_STANDING_REDS: &[&str] = &[
 /// [`QA_NAMES_STANDING_REDS`]: a red this list does not name is scored, and a name on this list that
 /// has gone green is STALE and is scored too.
 pub const CONFORMANCE_SYNC_STANDING_REDS: &[&str] = &[
-    // Item 165 (2026-09-24): freshness is judged against the checkout's own commit, so every
-    // carried-over pass is STALE on the dev line (TODO rule 7.3). Drained in Phase 5 on the release
-    // sha (TODO rule 7.4). Strike this line in the commit that turns the row green.
-    "conformance:freshness",
+    // DRAINED 2026-10-02: `conformance:freshness` stood here (item 165: freshness is judged against
+    // the checkout's own commit, so every carried-over pass was STALE). The ten hand-stamped passes
+    // left the tree (d2b588d74e: a verdict is produced at judge time), so nothing carried over is
+    // left to be stale. Struck in the train that turned it green.
 ];
 
 /// THE STRUCTURE-LINT GATE'S STANDING REDS, BY NAME. Same contract as
@@ -421,7 +410,8 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     // other 33. DRAIN: Phase 4 — the plane owners dedupe each plane-local copy or sign its ledger
     // row, prune the stale ledger rows, take the axis identity questions out of the agnostic core
     // and collapse each second spelling. Strike each line in the commit that turns its row green.
-    "structure-lint:axis:purity",
+    // `structure-lint:axis:purity` STRUCK 2026-10-02 (GATE-GREEN, ee06655df0): the contract asks no
+    // claim its transport and the ABI handshake has one home, so the row is green.
     "structure-lint:plane-dup:unledgered",
 ];
 

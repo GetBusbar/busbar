@@ -16,7 +16,7 @@ use super::door::{
 };
 use crate::abi::host::conn::connector::{
     Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED,
-    KEEP_RESPONSE_HEADERS_MAX, NEVER_KEPT,
+    KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED, KEEP_RESPONSE_HEADERS_MAX, NEVER_KEPT,
 };
 
 /// [`span`]: no bytes; the span's length is then `0`.
@@ -499,34 +499,76 @@ pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
     Ok(())
 }
 
-/// A need's kept response head fields: a bounded list of lower-case tokens, none hop-by-hop or
-/// credential-bearing ([`NEVER_KEPT`]: [`Rule::Foreign`], a field that is not the plugin's to read).
+/// A need's response head rule ([`Need::keep_mode`]):
+/// - [`KEEP_NAMED`]: a bounded list of kept names, each a lower-case token and none hop-by-hop or
+///   credential-bearing ([`NEVER_KEPT`]: [`Rule::Foreign`], a field that is not the plugin's to
+///   read); no deny list ([`Rule::Contradiction`]).
+/// - [`KEEP_ALL_EXCEPT_DENIED`]: a bounded list of denied names, each a lower-case token; no kept
+///   list ([`Rule::Contradiction`]).
+/// - any other mode: [`Rule::UnknownCode`]. The padding is `0`.
 fn keep_response_headers(n: &Need) -> Result<(), Fault> {
-    const FIELD: &str = "need.keep_response_headers";
-    listed(n.keep_response_headers, n.keep_response_headers_len, FIELD)?;
-    if n.keep_response_headers_len > KEEP_RESPONSE_HEADERS_MAX {
-        return Err(fault(Rule::OverMax, FIELD));
+    const KEPT: &str = "need.keep_response_headers";
+    const DENIED: &str = "need.deny_response_headers";
+    if n._reserved != 0 {
+        return Err(fault(Rule::UnknownCode, "need._reserved"));
     }
-    if n.keep_response_headers_len == 0 {
+    match n.keep_mode {
+        KEEP_NAMED => {
+            if n.deny_response_headers_len != 0 || !n.deny_response_headers.is_null() {
+                return Err(fault(Rule::Contradiction, DENIED));
+            }
+            header_names(
+                n.keep_response_headers,
+                n.keep_response_headers_len,
+                KEPT,
+                true,
+            )
+        }
+        KEEP_ALL_EXCEPT_DENIED => {
+            if n.keep_response_headers_len != 0 || !n.keep_response_headers.is_null() {
+                return Err(fault(Rule::Contradiction, KEPT));
+            }
+            header_names(
+                n.deny_response_headers,
+                n.deny_response_headers_len,
+                DENIED,
+                false,
+            )
+        }
+        _ => Err(fault(Rule::UnknownCode, "need.keep_mode")),
+    }
+}
+
+/// A need's list of response head field names: at most [`KEEP_RESPONSE_HEADERS_MAX`], each a
+/// lower-case token; with `kept`, none of [`NEVER_KEPT`].
+fn header_names(
+    ptr: *const AbiStr,
+    len: usize,
+    field: &'static str,
+    kept: bool,
+) -> Result<(), Fault> {
+    listed(ptr, len, field)?;
+    if len > KEEP_RESPONSE_HEADERS_MAX {
+        return Err(fault(Rule::OverMax, field));
+    }
+    if len == 0 {
         return Ok(());
     }
-    // SAFETY: a non-NULL list of `keep_response_headers_len` strings the plugin's door states as
-    // `'static` data (checked non-NULL above), bounded by `KEEP_RESPONSE_HEADERS_MAX`.
-    let names = unsafe {
-        core::slice::from_raw_parts(n.keep_response_headers, n.keep_response_headers_len)
-    };
+    // SAFETY: a non-NULL list of `len` strings the plugin's door states as `'static` data (checked
+    // non-NULL above), bounded by `KEEP_RESPONSE_HEADERS_MAX`.
+    let names = unsafe { core::slice::from_raw_parts(ptr, len) };
     for s in names {
-        named(*s, FIELD)?;
+        named(*s, field)?;
         // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
         let name = unsafe { core::slice::from_raw_parts(s.ptr, s.len) };
         let token = name
             .iter()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_');
         if !token {
-            return Err(fault(Rule::UnknownCode, FIELD));
+            return Err(fault(Rule::UnknownCode, field));
         }
-        if NEVER_KEPT.iter().any(|k| k.as_bytes() == name) {
-            return Err(fault(Rule::Foreign, FIELD));
+        if kept && NEVER_KEPT.iter().any(|k| k.as_bytes() == name) {
+            return Err(fault(Rule::Foreign, field));
         }
     }
     Ok(())

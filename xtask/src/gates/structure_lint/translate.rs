@@ -27,8 +27,8 @@
 
 use crate::gates::structure_lint::roots::Addresses;
 use crate::gates::structure_lint::{
-    axis, census, choke_points, corpus, fn_scoped, hybrid, inline_tests, oversized, plane_dups,
-    plane_store, roots, Findings, StructureLintGate, Tables, CORPUS_DEPENDENT,
+    axis, census, choke_points, corpus, fn_scoped, hybrid, inline_tests, plane_dups, plane_store,
+    roots, Findings, StructureLintGate, Tables, CORPUS_DEPENDENT,
 };
 use crate::ledger::Row;
 use crate::parity::LegacyRun;
@@ -57,7 +57,7 @@ const CHATTER_PREFIXES: &[&str] = &[
     "structure-lint FAILED",
     "known duplication, ledgered and owed a unification:",
     "ledgered ",
-    "OVERSIZED (grandfathered",
+    "OVERSIZED",
 ];
 
 /// Chatter that is recognised by a phrase rather than a prefix: the summary lines the script prints
@@ -240,16 +240,6 @@ fn classify(
             .unwrap_or_default()
             .to_string();
         f.hybrid.push(hybrid::finding(&base));
-        return Ok(());
-    }
-    if let Some(rest) = line.strip_prefix("OVERSIZED: ") {
-        let (path, tail) = rest.split_once(" (").ok_or_else(|| unrecognised(line))?;
-        let n: usize = tail
-            .split_whitespace()
-            .next()
-            .and_then(|s| s.parse().ok())
-            .ok_or_else(|| unrecognised(line))?;
-        f.oversized.push(oversized::finding(path, n));
         return Ok(());
     }
 

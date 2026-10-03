@@ -449,7 +449,14 @@ macro_rules! lend {
     };
 }
 
-use crate::abi::auth::{IdentityBuf, NamedValue, VerifyIn};
+use crate::abi::auth::{
+    BeginLoginIn, CompleteLoginIn, IdentityBuf, NamedValue, StripName, VerifyIn,
+};
+use crate::abi::hook::{
+    BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
+    CandidateStatic as HookCandidateStatic, DecideIn, MessageView as HookMessageView, NotifyIn,
+    PromptView as HookPromptView, RequestView as HookRequestView, SignalEntry as HookSignalEntry,
+};
 use crate::abi::mechanism::lifecycle::{OpenIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
@@ -469,8 +476,14 @@ lend! {
         buf(err_buf, err_cap) -> u8;
     }
     RefreshIn { list(secrets, secrets_len) -> Blob; }
-    // THE AUTH KIND (`abi::auth`): `verify`'s carriers, and the host's identity buffer.
-    VerifyIn { list(carrier, carrier_len) -> NamedValue; }
+    // THE AUTH KIND (`abi::auth`): `verify`'s field lines and strip array, a login's requested
+    // scopes and submitted form fields, and the host's identity buffer.
+    VerifyIn {
+        list(lines, lines_len) -> NamedValue;
+        buf(strip, strip_cap) -> StripName;
+    }
+    BeginLoginIn { list(scopes, scopes_len) -> AbiStr; }
+    CompleteLoginIn { list(submitted, submitted_len) -> NamedValue; }
     IdentityBuf {
         buf(buf, buf_cap) -> u8;
         buf(groups, groups_cap) -> Span;
@@ -535,6 +548,21 @@ lend! {
         one(facts) -> ConnFacts;
         bytes(leftover, leftover_len);
     }
+    // THE HOOK KIND (`abi::hook`): the views, and the host buffers `decide`/`transform` answer into.
+    DecideIn {
+        list(candidates, candidates_len) -> HookCandidateStatic;
+        list(candidate_dynamics, candidates_len) -> HookCandidateDynamic;
+        list(budget, budget_len) -> HookBudgetBucketState;
+        buf(order_buf, order_cap) -> u32;
+        buf(reject_message_buf, reject_message_cap) -> u8;
+        buf(restrict_tags_buf, restrict_tags_cap) -> u8;
+        buf(rewrite_buf, rewrite_cap) -> u8;
+    }
+    HookRequestView { list(signals, signals_len) -> HookSignalEntry; }
+    HookCandidateStatic { list(tags, tags_len) -> AbiStr; }
+    HookCandidateDynamic { list(signals, signals_len) -> HookSignalEntry; }
+    HookPromptView { list(messages, messages_len) -> HookMessageView; }
+    NotifyIn { list(signals, signals_len) -> HookSignalEntry; }
 }
 
 // THE STORE KIND (`abi::store`): the lists a write lends and the host buffers a request-path read

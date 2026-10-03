@@ -95,9 +95,9 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arc-swap"
@@ -345,6 +345,7 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-plane-decisions",
+ "busbar-plane-llm",
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
@@ -426,17 +427,44 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=648b6683d0b9274c02a20f6da17146ba1b85f74c#648b6683d0b9274c02a20f6da17146ba1b85f74c"
 dependencies = [
  "busbar-contract",
+ "serde_json",
 ]
 
 [[package]]
 name = "busbar-auth-admin-tokens-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=648b6683d0b9274c02a20f6da17146ba1b85f74c#648b6683d0b9274c02a20f6da17146ba1b85f74c"
 dependencies = [
  "busbar-auth-admin-tokens",
+ "busbar-contract",
+]
+
+[[package]]
+name = "busbar-auth-header"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-auth-oauth"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "http",
+ "ring",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -467,15 +495,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-auth-sigv4"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "hex",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-auth-webhook-signature"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "hex",
  "http",
  "indexmap",
  "jsonschema",
+ "libc",
  "memchr",
  "serde",
  "serde_json",
@@ -523,6 +579,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plugin-loader",
+ "busbar-transport-tcp-plugin",
  "crc32fast",
  "dimpl",
  "futures",
@@ -652,9 +709,9 @@ dependencies = [
 name = "busbar-hooks-ranking"
 version = "1.6.0"
 dependencies = [
- "async-trait",
  "busbar-contract",
- "tokio",
+ "busbar-plugin-loader",
+ "serde_json",
 ]
 
 [[package]]
@@ -896,6 +953,7 @@ name = "busbar-plane-llm"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-loader",
  "bytes",
  "getrandom 0.3.4",
  "serde",
@@ -937,7 +995,6 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
- "async-trait",
  "busbar-auth-admin-tokens-plugin",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
@@ -945,7 +1002,6 @@ dependencies = [
  "busbar-export-otlp-plugin",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook-plugin",
- "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin-example-plane",
@@ -1030,12 +1086,10 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=2812d6355610673614681bd4f523da9bed32d07b#2812d6355610673614681bd4f523da9bed32d07b"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
- "busbar-transport-ws",
  "futures",
- "libloading",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
@@ -1107,9 +1161,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -3356,9 +3410,9 @@ dependencies = [
 
 [[package]]
 name = "rkyv"
-version = "0.8.16"
+version = "0.8.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73389e0c99e664f919275ab5b5b0471391fe9a8de61e1dff9b1eaf56a90f16e3"
+checksum = "d9776093b7ca170454ab1406954f7b7d97a57c51dc6c0642957fb2ef25c2d399"
 dependencies = [
  "bytes",
  "hashbrown 0.17.1",
@@ -3374,13 +3428,13 @@ dependencies = [
 
 [[package]]
 name = "rkyv_derive"
-version = "0.8.16"
+version = "0.8.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d2ed0b54125315fb36bd021e82d314d1c126548f871634b483f46b31d13cac6"
+checksum = "1c25ef604ac7dd839d44d64648952ea23c97866f124ff671b0ed2cf3ad9bb06e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -3886,7 +3940,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

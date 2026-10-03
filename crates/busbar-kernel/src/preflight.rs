@@ -42,14 +42,20 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
 }
 
 type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
-/// A linked in-process STORE's entry: `(name, ephemeral, default, open)` — the name
-/// `governance.store` selects it by, whether what it holds is lost on restart, whether it claims to
-/// be the store a deployment that configures none runs on, and its open.
-pub type LinkedStore = (&'static str, bool, bool, StoreOpen);
-type HookOpen = fn(&str) -> Option<busbar_plugin_loader::registry::RankingPolicy>;
-/// A linked RANKING hook's entry: `(name, aliases, open)` — one row, its frozen strategy spellings
-/// the aliases, `open` handed the spelling a reference used.
-pub type LinkedHook = (&'static str, &'static [&'static str], HookOpen);
+/// A linked STORE's entry: `(name, ephemeral, default, open, door)` — the name `governance.store`
+/// selects it by, whether what it holds is lost on restart, whether it claims to be the store a
+/// deployment that configures none runs on, its in-process open, and its store v3 door (the door
+/// boot opens it through, on the root's [`RootInstall::store_axis`]).
+pub type LinkedStore = (
+    &'static str,
+    bool,
+    bool,
+    StoreOpen,
+    busbar_contract::abi::mechanism::door::DoorFn,
+);
+/// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
+/// one dispatcher and opened through the store v3 table.
+pub type StoreAxisOf = fn() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis>;
 pub use busbar_kernel_identity::operator::LinkedAuth;
 use busbar_plugin_loader::{boot, dispatch::PluginLogConfig, LinkedPlugin, PluginRegistry};
 /// THE ROOT'S REGISTRY BUILD (ARCHITECT ruling Q8: the composition root builds the plugin registry;
@@ -111,8 +117,6 @@ pub type PluginsFetch = fn(
 pub struct RootInstall {
     /// The build's linked in-process stores.
     pub stores: &'static [LinkedStore],
-    /// The build's linked ranking hooks.
-    pub hooks: &'static [LinkedHook],
     /// The governance store a deployment that configures none runs on: the linked store row that
     /// declares itself the default (empty when no row claims it).
     pub default_store_module: &'static str,
@@ -120,21 +124,43 @@ pub struct RootInstall {
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
+    /// The hook axis the root builds over a registry (ARCHITECT ruling 2026-09-29, the opener seam;
+    /// the SWITCH-OVER hook axis): every `kind: hook` row, compiled in or dropped in, opened on the
+    /// hook kind's ABI over the process's one dispatcher. `None` = no hook opens.
+    pub hook_axis: Option<HookAxisBuild>,
+    /// The root's store axis: what boot opens the configured store through.
+    pub store_axis: Option<StoreAxisOf>,
 }
+
+/// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
+///
+/// # Errors
+/// A `kind: hook` row that will not state itself (a 1.5.5 JSON hook plugin is refused, naming the
+/// rebuild).
+pub type HookAxisBuild =
+    fn(
+        &std::sync::Arc<PluginRegistry>,
+    ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
 /// stand-in store (which claims the default) as the default.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
     stores: &[fixture_store::linked::STORE],
-    hooks: &[
-        #[cfg(feature = "hooks-ranking")]
-        fixture_hook::linked::HOOK,
-    ],
     default_store_module: fixture_store::linked::STORE.0,
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
+    hook_axis: Some(crate::test_support::hook_axis_stand_in),
+    store_axis: Some(crate::test_support::store_axis_stand_in),
 };
+
+/// The hook doors a test build links in place of the root's (the stand-in hook axis,
+/// [`crate::test_support::hook_axis_stand_in`]): the ranking door, under its feature.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[
+    #[cfg(feature = "hooks-ranking")]
+    fixture_hook::linked::door,
+];
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
 /// compiled in, its ranking hooks), its resolved default store and its registry build, installed
@@ -166,14 +192,36 @@ pub use busbar_kernel_identity::operator::{
     install_linked as install_linked_auth, linked_names as linked_auth_names,
 };
 
+/// Opens one build's AUTH AXIS over that build's registry, on the process's one dispatcher: the
+/// composition root's (it holds the dispatcher), installed once; the kernel names neither the
+/// dispatcher nor the rows it opens (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
+pub type AuthAxisOpener = fn(Arc<PluginRegistry>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis>;
+
+static AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> = std::sync::OnceLock::new();
+
+/// THE ROOT'S DOOR onto the auth axis's opener (the first install stands).
+pub fn install_auth_axis(open: AuthAxisOpener) {
+    let _ = AUTH_AXIS.set(open);
+}
+
+/// This build's auth axis over `registry`; `None` (no opener installed, no stand-in): no auth row
+/// answers anything. A test build has no root: the loader's test stand-in opens the build's rows on a
+/// dispatcher of its own.
+pub(crate) fn auth_axis(
+    registry: Arc<PluginRegistry>,
+) -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
+    #[cfg(feature = "test-support")]
+    let _ = AUTH_AXIS.set(busbar_plugin_loader::auth_axis::stand_in);
+    AUTH_AXIS.get().map(|open| open(registry))
+}
+
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
 /// stores, the kernel's own secret modules, the root's hooks — a test build (no root) stands its
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
-    let RootInstall { stores, hooks, .. } = root_rows();
-    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1);
-    let hook = |&(name, aliases, open): &LinkedHook| LinkedPlugin::ranking(name, aliases, open);
+    let RootInstall { stores, .. } = root_rows();
+    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1).with_store_door(s.4);
     let own = [
         config::secret::SECRET_MODULE_ENV,
         config::secret::SECRET_MODULE_FILE,
@@ -181,15 +229,46 @@ fn linked_rows() -> Vec<LinkedPlugin> {
     let secrets = own.map(LinkedPlugin::builtin_secret);
     let rows = stores.iter().map(store).chain(secrets);
     let auths = busbar_kernel_identity::operator::linked().iter();
-    let rows = rows.chain(hooks.iter().map(hook));
-    rows.chain(auths.map(|&(name, entry)| LinkedPlugin::auth(name, entry)))
+    rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
         .collect()
 }
 
-/// The built-in ranking strategy `name` spells on the hook axis — its linked row opened with that
-/// spelling — or `None` when this build links no ranking row answering to it.
-pub(crate) fn builtin_ranking(name: &str) -> Option<busbar_plugin_loader::registry::RankingPolicy> {
-    linked().ok()?.open_ranking(name).ok()
+/// The hook axis over this build's LINKED rows alone (no plugins directory): where a pool strategy
+/// word resolves.
+fn linked_hook_axis() -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>> {
+    let build = root_rows().hook_axis?;
+    build(&std::sync::Arc::new(linked().ok()?)).ok()
+}
+
+/// Whether this build links a ranking hook that claims the strategy word `name` (a hook word mark
+/// of a linked `kind: hook` row).
+pub(crate) fn builtin_ranking_known(name: &str) -> bool {
+    linked_hook_axis().is_some_and(|axis| axis.linked(name))
+}
+
+/// The built-in ranking strategy `name` names on the hook axis — the linked row that claims the
+/// word, opened with `{"policy": "<name>"}` (ARCHITECT 2026-10-02, the hook-ranking opener) and
+/// called through the hook seam — with its deadline: the dispatcher's Call class budget (ARCHITECT
+/// Q-SO9), never the gate default. Ranking is pure compute and answers on its first poll, so, as in
+/// 1.5.5, it cannot time out. `None` when this build links no ranking row claiming the word.
+pub(crate) fn builtin_ranking(
+    name: &str,
+) -> Option<(
+    std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+    std::time::Duration,
+)> {
+    let axis = linked_hook_axis()?;
+    if !axis.linked(name) {
+        return None;
+    }
+    let budget = axis.call_budget();
+    let calls = axis
+        .open(name, name, &serde_json::json!({ "policy": name }), budget)
+        .ok()?;
+    Some((
+        crate::hooks::plugin::HookPolicy::policy(calls, name),
+        budget,
+    ))
 }
 
 /// The build's own secret module `module` names on the secret axis — a linked `kind: secret` row,
@@ -254,7 +333,7 @@ fn require_plugin(
 /// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has.
 /// No directory is read and no root is needed: the kernel's own built-in secret modules resolve in
 /// any build.
-pub(crate) fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
+pub(crate) fn linked() -> Result<PluginRegistry, String> {
     PluginRegistry::empty().link(linked_rows())
 }
 

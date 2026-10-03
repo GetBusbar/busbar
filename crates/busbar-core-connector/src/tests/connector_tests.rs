@@ -6,6 +6,21 @@ use super::*;
 const OWNER: InstanceId = InstanceId(1);
 const OTHER: InstanceId = InstanceId(2);
 
+/// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
+/// private address the scheme-rule test names (the destination guard refuses both by default), so
+/// what those tests assert stays the connector's own rule.
+fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
+    let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
+    std::sync::Arc::new(crate::LiteralsOnly(
+        crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
+            block_private_addresses: true,
+            allow,
+            ..busbar_kernel::config::Destinations::default()
+        })
+        .expect("the loopback allowlist"),
+    ))
+}
+
 /// A far end on loopback: the bound listener, and the address a need dials to reach it.
 async fn far_end() -> (tokio::net::TcpListener, String) {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -13,17 +28,17 @@ async fn far_end() -> (tokio::net::TcpListener, String) {
     (l, addr)
 }
 
-/// A declared need is answered with the shell's refusal, never a silent success; an undeclared one
-/// is refused as undeclared.
+/// A need declared without a transport (an inbound need) dials nothing: its open is refused; an
+/// undeclared one is refused as undeclared.
 #[test]
-fn a_declared_need_is_refused_until_a_transport_is_composed() {
+fn a_need_declared_without_a_transport_dials_nothing() {
     let c = Connector::new();
     c.declare(OWNER, NeedId(0));
     let desc = OpenDesc {
         target: "127.0.0.1:1",
         ..OpenDesc::default()
     };
-    assert_eq!(c.open(OWNER, NeedId(0), &desc), Err(NO_TRANSPORT_YET));
+    assert_eq!(c.open(OWNER, NeedId(0), &desc), Err(ConnError::Refused));
     assert_eq!(
         c.open(OWNER, NeedId(1), &desc),
         Err(ConnError::UndeclaredNeed)
@@ -32,6 +47,70 @@ fn a_declared_need_is_refused_until_a_transport_is_composed() {
         c.open(OTHER, NeedId(0), &desc),
         Err(ConnError::UndeclaredNeed)
     );
+}
+
+/// RED (spec Part 2 #50, THE SCHEME MATCH AT DECLARE): a need over a scheme no loaded transport
+/// serves is refused when it is declared, by the inherent declare and the table's alike, and is
+/// left undeclared, so no open ever meets an unserved scheme; re-declaring a served need over an
+/// unserved scheme drops its record. The same need over the served scheme opens.
+#[test]
+fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = literal_connector();
+        assert!(c.serves_scheme("bytes"));
+        assert!(!c.serves_scheme("nowhere"));
+        assert_eq!(
+            c.declare_over(OWNER, NeedId(0), "nowhere"),
+            Err(ConnError::Refused)
+        );
+        let mut unserved = config_targeted_need("");
+        unserved.transport = "nowhere".to_owned();
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(1), &unserved, None),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(c.declared(OWNER, NeedId(1)), Some(Err(ConnError::Refused)));
+        // An inbound need over an unserved scheme is refused alike (ARCHITECT ruling 2026-10-02).
+        let mut inbound = unserved.clone();
+        inbound.direction = busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None),
+            Err(ConnError::Refused)
+        );
+        inbound.transport = "bytes".to_owned();
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None),
+            Ok(())
+        );
+        let desc = OpenDesc {
+            target: &far,
+            ..OpenDesc::default()
+        };
+        assert_eq!(
+            c.open(OWNER, NeedId(0), &desc),
+            Err(ConnError::UndeclaredNeed)
+        );
+        assert_eq!(
+            c.open(OWNER, NeedId(1), &desc),
+            Err(ConnError::UndeclaredNeed)
+        );
+
+        // The served scheme opens.
+        DeclaredConns::declare(&c, OWNER, NeedId(2), &config_targeted_need(""), None)
+            .expect("a served scheme declares");
+        let id = c
+            .open(OWNER, NeedId(2), &desc)
+            .expect("a need over a served scheme opens");
+        c.close(OWNER, id).unwrap();
+
+        // A served need re-declared over an unserved scheme loses its record.
+        assert_eq!(
+            c.declare_over(OWNER, NeedId(2), "nowhere"),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(c.open(OWNER, NeedId(2), &desc), Err(ConnError::Refused));
+    });
 }
 
 /// No id is live in the shell, so every id-taking operation answers closed, never a fault.
@@ -81,7 +160,7 @@ fn serving(wakes: Arc<AtomicU64>) -> Connector {
     .unwrap();
     Connector::serving(
         view,
-        Arc::new(crate::LiteralsOnly),
+        loopback_literals(),
         None,
         Arc::new(move |_| {
             wakes.fetch_add(1, Ordering::SeqCst);
@@ -108,7 +187,8 @@ fn a_need_over_a_served_transport_reaches_a_real_far_end() {
         });
         let wakes = Arc::new(AtomicU64::new(0));
         let c = serving(wakes.clone());
-        c.declare_over(OWNER, NeedId(0), "bytes");
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
             body: b"first",
@@ -148,7 +228,8 @@ fn a_need_over_a_served_transport_reaches_a_real_far_end() {
 fn a_metadata_target_is_refused_even_over_a_served_transport() {
     worker().block_on(async {
         let c = serving(Arc::new(AtomicU64::new(0)));
-        c.declare_over(OWNER, NeedId(0), "bytes");
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
         for target in [
             "169.254.169.254:80",
             "[fd00:ec2::254]:80",
@@ -193,8 +274,10 @@ fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
             })
         };
         let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_| {}));
-        c.declare_over(OWNER, NeedId(0), "bytes");
-        c.declare_need(OWNER, NeedId(1), "bytes", RESTRICTED);
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        c.declare_need(OWNER, NeedId(1), "bytes", RESTRICTED)
+            .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
             ..OpenDesc::default()
@@ -226,7 +309,8 @@ fn writes_held_for_a_pending_judgement_are_capped() {
         None
     };
     let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_| {}));
-    c.declare_over(OWNER, NeedId(0), "bytes");
+    c.declare_over(OWNER, NeedId(0), "bytes")
+        .expect("a served scheme declares");
     let desc = OpenDesc {
         target: "upstream.test:80",
         ..OpenDesc::default()
@@ -260,14 +344,14 @@ mod name_dial;
 
 // ── EGRESS: the declared target; metadata and link-local are refused on every need ──
 
-/// A connector serving the byte-exact door, admitting literals (loopback and private included).
+/// A connector serving the byte-exact door, admitting literals (its loopback far ends allowlisted).
 fn literal_connector() -> Connector {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
         alpn: Vec::new(),
     }])
     .unwrap();
-    Connector::serving(view, Arc::new(crate::LiteralsOnly), None, Arc::new(|_| {}))
+    Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}))
 }
 
 /// RED: a need whose config names its target (`target_from`) dials that target and no other: an
@@ -278,7 +362,8 @@ fn a_config_targeted_need_dialing_elsewhere_is_refused() {
     worker().block_on(async {
         let (_listening, declared) = far_end().await;
         let c = literal_connector();
-        c.declare_need_to(OWNER, NeedId(0), "bytes", crate::DEFAULT_CLASS, &declared);
+        c.declare_need_to(OWNER, NeedId(0), "bytes", crate::DEFAULT_CLASS, &declared)
+            .expect("a served scheme declares");
         let open = |target: &str| {
             c.open(
                 OWNER,
@@ -397,7 +482,8 @@ fn a_plugin_named_need_to_a_class_legal_host_is_allowed() {
     worker().block_on(async {
         let (_listening, far) = far_end().await;
         let c = literal_connector();
-        c.declare_over(OWNER, NeedId(0), "bytes");
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
         let id = c
             .open(
                 OWNER,
@@ -418,7 +504,8 @@ fn a_plugin_named_need_to_a_class_legal_host_is_allowed() {
 fn a_plugin_named_need_to_the_metadata_address_is_refused() {
     worker().block_on(async {
         let c = literal_connector();
-        c.declare_over(OWNER, NeedId(0), "bytes");
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
         for target in ["169.254.169.254:80", "169.254.1.1:80", "[fe80::1]:80"] {
             assert_eq!(
                 c.open(
@@ -453,7 +540,8 @@ fn a_host_side_reader_is_woken_through_its_own_waker() {
         });
         let wakes = Arc::new(AtomicU64::new(0));
         let c = serving(wakes.clone());
-        c.declare_over(OWNER, NeedId(0), "bytes");
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
             body: b"first",
@@ -512,7 +600,7 @@ fn scheme_connector() -> Connector {
     let tls = crate::tls::client::build_client_config(&Default::default()).expect("the config");
     Connector::serving(
         view,
-        Arc::new(crate::LiteralsOnly),
+        loopback_literals(),
         Some(Arc::new(tls)),
         Arc::new(|_| {}),
     )
@@ -536,8 +624,10 @@ fn http_to_a_public_host_under_open_web_is_refused() {
     worker().block_on(async {
         let (_listening, far) = far_end().await;
         let c = scheme_connector();
-        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPEN_WEB);
-        c.declare_need(OWNER, NeedId(1), "sec", EGRESS_OPEN_WEB);
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPEN_WEB)
+            .expect("a served scheme declares");
+        c.declare_need(OWNER, NeedId(1), "sec", EGRESS_OPEN_WEB)
+            .expect("a served scheme declares");
         assert_eq!(open_in(&c, 0, "93.184.216.34:80"), Err(ConnError::Refused));
         assert_eq!(open_in(&c, 0, &far), Err(ConnError::Refused));
         let id = open_in(&c, 1, &far).expect("open-web over a secure target opens");
@@ -552,7 +642,8 @@ fn the_operator_infrastructure_http_private_target_is_allowed() {
     worker().block_on(async {
         let (_listening, far) = far_end().await;
         let c = scheme_connector();
-        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPERATOR_INFRASTRUCTURE);
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPERATOR_INFRASTRUCTURE)
+            .expect("a served scheme declares");
         let id = open_in(&c, 0, &far).expect("plaintext to the private target opens");
         c.close(OWNER, id).unwrap();
     });
@@ -565,7 +656,8 @@ fn loopback_allowed_refuses_plaintext_off_loopback() {
     worker().block_on(async {
         let (_listening, far) = far_end().await;
         let c = scheme_connector();
-        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_LOOPBACK_ALLOWED);
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_LOOPBACK_ALLOWED)
+            .expect("a served scheme declares");
         assert_eq!(open_in(&c, 0, "10.1.2.3:80"), Err(ConnError::Refused));
         let id = open_in(&c, 0, &far).expect("plaintext loopback opens");
         c.close(OWNER, id).unwrap();
@@ -581,9 +673,12 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
     worker().block_on(async {
         let wakes = Arc::new(AtomicU64::new(0));
         let c = serving(wakes.clone());
-        c.declare_over(OWNER, NeedId(0), "bytes");
-        c.declare_over(OWNER, NeedId(1), "bytes");
-        c.declare_over(OTHER, NeedId(0), "bytes");
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        c.declare_over(OWNER, NeedId(1), "bytes")
+            .expect("a served scheme declares");
+        c.declare_over(OTHER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
         let limits = crate::listen::AcceptLimits::default();
         let addr = c
             .listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits)

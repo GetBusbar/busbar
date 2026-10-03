@@ -42,13 +42,13 @@
 //! Naming them is the honest third answer, and the declaration is itself stale-checked.
 //!
 //! THE THREE `legacy-reach:<crate>` ROWS WERE ON THAT LIST AND ARE NOT ANY MORE. They gate, and
-//! [`ceiling_ratchet_cases`] plants their figures at zero to prove it — the plant that could not be
+//! [`ceiling_file_cases`] plants their figures at zero to prove it — the plant that could not be
 //! written while they were PASS by construction.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, Overlay};
-use crate::gates::construction::model::{CRow, Cfg};
+use crate::gates::construction::model::CRow;
 use crate::gates::construction::tree::{crate_name_of_dir, dirs_for_globs};
 use crate::gates::construction::{
     ceilings, census, external, rules, rules2, ConstructionGate, CEILINGS, UNSAFE_HALVES,
@@ -195,7 +195,8 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     r.append(shape_cases(gate, &gcx, &fixture));
     r.append(loop_cases(gate, &gcx, &fixture));
     r.append(delegated_cases(gate, &gcx, &fixture));
-    r.append(ceiling_cases(gate, &gcx, cx, &fixture, &cleared));
+    r.append(unit_crate_cases(gate, &gcx, &fixture));
+    r.append(ceiling_file_cases(gate, &gcx, cx, &fixture, &cleared));
     r.append(kind_cases(gate, &gcx, &fixture));
     r.append(vocabulary_cases(gate, &gcx, &fixture));
     r.append(money_cases(gate, &gcx, &fixture));
@@ -222,17 +223,15 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 /// * `lean-core` — today's sites added to the rule's own `known_sites` (as `<path> :: <literal text>`).
 /// * `manifest-allowlist:<crate>` — today's deps added to that crate's `reviewed_extra` and
 ///   `known_red_deps`, the rule's two review lists.
-/// * every RATCHETED ceiling (`ceilings::pins`) pinned to what it measures — which is exactly the
-///   state `ceiling-slack` asks for and `--write` would produce, in both directions.
-/// * `ceiling-rose` — the base's copy of both ceilings files planted as THIS file, and the
-///   `[gate.ceiling_raises]` declarations dropped, since over a base with no raise every one of
-///   them is stale by design.
+/// * every COUNT RATCHET (`ceilings::pins`: the legacy reach and the ports-only figures) pinned to
+///   what it measures, in both directions.
+/// * `ceiling-census` — the base's copy of the ceilings file planted as THIS file.
 ///
 /// NOTHING HERE REACHES THE GATE ITSELF. `cargo xtask gate construction` never sees this overlay;
 /// every row it clears stays exactly as red on the gate as it was. What moves is the SELF-TEST's
 /// question: "does the rule fire on a NEW violation", which a baseline carrying the old ones in
 /// review cannot answer with a false yes. The ids it cleared are returned so the fixture's own
-/// green is asserted (see the green control in [`ceiling_ratchet_cases`]) rather than assumed.
+/// green is asserted (see the green control in [`ceiling_file_cases`]) rather than assumed.
 fn green_fixture(
     cx: &Ctx,
     base: &Overlay,
@@ -336,16 +335,11 @@ fn green_fixture(
         }
         cleared.push(row.id.clone());
     }
-    let text = ceilings::strip_tables(&text, "gate.ceiling_raises.");
+    // The base's copy of this file is THIS file, so `ceiling-census` compares the fixture's floors
+    // with themselves and every floor holds; the base is pinned so a long run cannot see it move.
     if let Ok(based) = ceilings::base_ref(cx) {
         g.set_command(ceilings::BASE_PIN_KEY, based.sha.clone());
         g.set_command(format!("git-show:{based}:{CEILINGS}"), text.clone());
-        if let Ok(kind) = cx.read(ceilings::KIND_CEILINGS) {
-            g.set_command(
-                format!("git-show:{based}:{}", ceilings::KIND_CEILINGS),
-                kind,
-            );
-        }
     }
     g.set(CEILINGS, text);
     cleared.sort();
@@ -758,8 +752,34 @@ fn delegated_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'
     r
 }
 
-/// The section 1.1 ceilings, each spent in the file or crate whose budget it is.
-fn ceiling_cases<'a>(
+/// THE ZERO-ARMED `busbar-unit-*` TRIPWIRE. A unit crate coming back is an architecture regression,
+/// so the plant brings one back — a manifest and a source file — and `no-unit-crates` names it. The
+/// section 1.1 line-count ceilings this case used to spend are deleted: size is not a CI check
+/// (owner 2026-10-02).
+fn unit_crate_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
+    let mut r = Report::new();
+    let mut ov = on(base);
+    let planted = "busbar-unit-planted";
+    ov.set(
+        format!("crates/{planted}/Cargo.toml"),
+        format!("[package]\nname = \"{planted}\"\nversion = \"0.0.0\"\n"),
+    );
+    ov.set(format!("crates/{planted}/src/zz_planted_unit.rs"), bulk(3));
+    r.push(prove_red(
+        cx,
+        gate,
+        "a busbar-unit-* crate coming back is refused at a ceiling of zero",
+        &[rules2::ROW_NO_UNIT_CRATES],
+        ov,
+        &[planted],
+    ));
+    r
+}
+
+/// THE RULES PLANTED THROUGH THE CEILINGS FILE rather than through the tree: the per-crate reach
+/// figures, the census floors and the `one-attempt-seam` scan set. Each reads a NUMBER or a string
+/// in `qa/construction.toml`, and the honest plant for a rule about a number is a different number.
+fn ceiling_file_cases<'a>(
     gate: &'a dyn Gate,
     cx: &Ctx,
     real: &Ctx,
@@ -768,166 +788,30 @@ fn ceiling_cases<'a>(
 ) -> Report<'a> {
     let mut r = Report::new();
     let Ok(cfg) = ConstructionGate::cfg(cx) else {
-        r.note_infra_failure("the ceilings file could not be read, so no ceiling can be planted");
+        r.note_infra_failure(
+            "the ceilings file could not be read, so nothing can be planted in it",
+        );
         return r;
     };
-
-    let mut ov = on(base);
-    let mut cover = strings(&[
-        "loc-ceilings:kernel",
-        "loc-ceilings:caps-contract",
-        "loc-ceilings:unit-total",
-        "loc-ceilings:union",
-    ]);
-    // The row prints its label and its file patterns, never its offender list, so the naming is
-    // the patterns the ceiling is written for: that text appears only when THAT row is not PASS.
-    let mut naming: Vec<String> = Vec::new();
-    for (key, spec) in cfg.doc.children("rules.loc-ceilings.kernel_files") {
-        let patterns = spec.list_of("patterns");
-        for p in &patterns {
-            let rel = format!("crates/busbar-kernel/src/{p}");
-            // A PATTERN WHOSE FILE IS NOT THERE STILL HAS TO BE PLANTABLE. This used to plant only
-            // when the file already existed, so the rows whose subject had LEFT the kernel --
-            // `slice.rs`, which moved to busbar-contract, and `arena.rs`/`masking.rs`, which no
-            // longer exist anywhere -- measured the empty set, passed under every plant, and made
-            // this case unable to tell "the ceiling held" from "the ceiling was never spent". That
-            // is the one thing the case is for. Planting the file INTO EXISTENCE reds the row the
-            // way the file coming back would.
-            let planted = match cx.read(&rel) {
-                Ok(basetext) => format!("{basetext}\n{}", bulk(2000)),
-                Err(_) => bulk(2000),
-            };
-            ov.set(&rel, planted);
-        }
-        naming.push(format!("({})", patterns.join(", ")));
-        cover.push(format!("loc-ceilings:kernel:{key}"));
-    }
-    naming.push("reachable-by-name in".to_string());
-    naming.push("together stay within their LOC ceiling".to_string());
-    naming.push("all busbar-unit-* crates together".to_string());
-    // The union row's title, as `loc_ceilings` spells it since busbar-caps folded into the contract
-    // (#37/#38). It read "caps/contract" here after the row stopped saying so, and the case failed
-    // on the stale string rather than on anything the rule did.
-    naming.push("the kernel + contract + unit-* union".to_string());
-
-    // THE CONTRACT CRATE, READ FROM THE KEY THE ROW READS. This planted into `caps_crate`, falling
-    // back to `busbar-caps` — a key struck from the ceilings file and a crate folded into
-    // busbar-contract — so the plant landed in a crate no row measures, and
-    // `loc-ceilings:caps-contract` looked proven only because it was already over its ceiling.
-    // On the green fixture it is at its ceiling, and this plant is what has to move it.
-    let contract = cfg
-        .rule("loc-ceilings")
-        .ok()
-        .and_then(|t| t.str_of("contract_crate").map(String::from))
-        .unwrap_or_else(|| "busbar-contract".to_string());
-    ov.set(
-        format!("crates/{contract}/src/zz_planted_loc.rs"),
-        bulk(200),
-    );
-    // A UNIT CRATE THAT COMES BACK IS WHAT `loc-ceilings:unit-total` IS FOR, so when the tree has
-    // none — fold F14 2/2 deleted the last, and the ceiling is 0 — the plant brings one back.
-    // Planting only into the unit crates on disk would plant nothing and leave the row unspent.
-    let mut units: Vec<String> = dirs_for_globs(cx, &strings(&["crates/busbar-unit-*"]))
-        .iter()
-        .map(|d| crate_name_of_dir(d))
-        .collect();
-    if units.is_empty() {
-        let planted = "busbar-unit-planted";
-        ov.set(
-            format!("crates/{planted}/Cargo.toml"),
-            format!("[package]\nname = \"{planted}\"\nversion = \"0.0.0\"\n"),
-        );
-        units.push(planted.to_string());
-    }
-    for name in units {
-        ov.set(format!("crates/{name}/src/zz_planted_loc.rs"), bulk(2_600));
-    }
-    r.push(prove_red(
-        cx,
-        gate,
-        "every section 1.1 ceiling is spent past its figure, in the file or crate it belongs to",
-        &refs(&cover),
-        ov,
-        &refs(&naming),
-    ));
-
-    // The surface ceilings are `cargo xtask loc`'s answer. It is asked IN PROCESS now and is
-    // overlay-aware, so a plant could drive it directly; the planted-command seam is kept because
-    // it is the only way to plant a figure the tree cannot actually hold (999999), which is what
-    // proves the ROW rather than the counter.
-    let mut ov = on(base);
-    let mut cover = Vec::new();
-    for (id, _key, crates, _what, _default) in super::SURFACE {
-        ov.set_command(
-            format!("{}{crates}", external::SURFACE_KEY_PREFIX),
-            format!("1\n{crates}  999999\ntotal  999999\nFAIL  {crates}  999999 > 1\n"),
-        );
-        cover.push(format!("surface-ceiling:{id}"));
-    }
-    r.push(prove_red(
-        cx,
-        gate,
-        "every section 1.1 surface ceiling is reported over by its meter",
-        &refs(&cover),
-        ov,
-        &["999999"],
-    ));
-
-    r.append(ceiling_ratchet_cases(gate, cx, real, base, &cfg, cleared));
-    r
-}
-
-/// THE RULES ABOUT THE CEILINGS THEMSELVES, planted through the ceilings file rather than through
-/// the tree.
-///
-/// Both rules read a NUMBER, and the honest plant for a rule about a number is a different number:
-/// planting a bigger tree would prove the measurement moved, which is what every other case in this
-/// file already proves. So the ceilings file itself is the overlay, and the base commit's copy of
-/// it is the overlay's answer to the `show` the rule asks git for.
-fn ceiling_ratchet_cases<'a>(
-    gate: &'a dyn Gate,
-    cx: &Ctx,
-    real: &Ctx,
-    base: &Overlay,
-    cfg: &Cfg,
-    cleared: &[String],
-) -> Report<'a> {
-    let mut r = Report::new();
     let Ok(text) = cx.read(CEILINGS) else {
         r.note_infra_failure("the ceilings file could not be read, so it cannot be re-pinned");
         return r;
     };
 
-    // ONE PLANTED CEILINGS FILE FOR FOUR RULES. `ceiling-slack`, the per-crate reach figures,
-    // `ceiling-census` and the `one-attempt-seam` scan-set arm are each proven by a different
-    // number or string in this one file, touching disjoint keys and read by disjoint rows. They
-    // were six cases — six whole-gate drives over a 660k-line tree — and the budget entry for this
-    // gate is exactly about that growth. They are one plant now, and each row is still held to its
-    // own naming string, so a rule that stopped seeing its edit fails this case by name.
+    // ONE PLANTED CEILINGS FILE FOR THREE RULES. The per-crate reach figures, `ceiling-census` and
+    // the `one-attempt-seam` scan-set arm are each proven by a different number or string in this
+    // one file, touching disjoint keys and read by disjoint rows — one whole-gate drive instead of
+    // one per rule, and each row is still held to its own naming string.
     let mut combined = text.clone();
     let mut combined_cover: Vec<String> = Vec::new();
     let mut combined_naming: Vec<String> = Vec::new();
-
-    // -- ceiling-slack ---------------------------------------------------------------------------
-    match ceilings::set_int(&combined, "rules.legacy-reach", "ceiling", 1_000_000) {
-        Some(raised) => {
-            combined = raised;
-            combined_cover.push(ceilings::ROW_SLACK.to_string());
-            combined_naming.push("rules.legacy-reach.ceiling = 1000000".to_string());
-        }
-        None => r.note_infra_failure(
-            "[rules.legacy-reach] carries no `ceiling` to raise, so the slack rule cannot be \
-             planted against the row it is written for",
-        ),
-    }
 
     // -- the per-crate reach figures, which used to be WARN rows nothing could fail on ------------
     let mut pinned = combined.clone();
     let mut cover = Vec::new();
     // ONLY A FIGURE ABOVE ZERO CAN BE PLANTED DOWN TO ZERO. `busbar_core` and `busbar_substrate`
     // measure 0 against 0, so rewriting their figure to 0 changes nothing and their rows cannot go
-    // red under this plant — which is how this case reported "expected Red, got Green" while every
-    // rule under it worked. Those rows are proven where their MEASUREMENT can move: the root-reach
+    // red under this plant. Those rows are proven where their MEASUREMENT can move: the root-reach
     // plant in `money_cases`, which names all three prefixes and covers every per-crate row.
     for (key, spec) in cfg.doc.children("rules.legacy-reach.prefixes") {
         let table = format!("rules.legacy-reach.prefixes.{key}");
@@ -941,8 +825,7 @@ fn ceiling_ratchet_cases<'a>(
     }
     // EVERY FIGURE DRAINED TO ZERO IS THE GOAL STATE, NOT AN INFRA FAILURE: with no figure above
     // zero there is nothing to plant down, and every per-crate row is proven where its measurement
-    // moves (the root-reach plant in `money_cases`, which covers each `legacy-reach:<key>`). Only a
-    // figure above zero that could not be planted leaves a row unproven.
+    // moves. Only a figure above zero that could not be planted leaves a row unproven.
     let plantable = cfg
         .doc
         .children("rules.legacy-reach.prefixes")
@@ -961,286 +844,23 @@ fn ceiling_ratchet_cases<'a>(
         combined_naming.push("ratchet 0, pinned to the measurement".to_string());
     }
 
-    // -- ceiling-rose ----------------------------------------------------------------------------
-    //
-    // A BASE THAT CANNOT BE ESTABLISHED IS RED, NEVER GREEN, and until this case existed that claim
-    // lived only in a doc comment. It was false twice: `base_ref` once treated "the ref does not
-    // resolve" as "compare against HEAD~1", and later resolved a ref that had gone stale and
-    // diverged. Both read exactly like a working gate, for weeks, because nothing ever drove the
-    // arm. The ref is asked of `base_line` rather than written down here, so this case keeps
-    // exercising the arm on a checkout whose branch is not the one it was written on.
-    if let Ok((line, _)) = ceilings::base_line(cx) {
-        let mut ov = on(base);
-        // The fixture PINS the base; this case is about the live derivation, so it unpins it.
-        ov.set_command(ceilings::BASE_PIN_KEY, "");
-        ov.set_command(format!("git-ref:{line}"), "0");
-        r.push(prove_rows_red(
-            cx,
-            gate,
-            "a base ref that does not resolve is refused, never quietly replaced by HEAD~1",
-            &[ceilings::ROW_ROSE],
-            ov,
-            &["no base commit could be established"],
-        ));
-    } else {
-        r.note_infra_failure(
-            "this checkout has no base line to plant as unresolvable (detached HEAD), so the arm \
-             that refuses an unestablishable base is unproven here",
-        );
-    }
-
-    let based = match ceilings::base_ref(cx) {
-        Ok(b) => b,
-        Err(e) => {
-            r.note_infra_failure(format!(
-                "no base commit could be resolved in this repository, so the rule that compares \
-                 against one is unproven here rather than passing: {e}"
-            ));
-            return r;
-        }
-    };
-    // …AND A DECLARATION THAT DESCRIBES NO RAISE AT ALL IS A WAIVER THAT OUTLIVED WHAT IT EXCUSED.
-    // This is the half that makes the mechanism unable to silt up: the entry is struck by the
-    // commit after the one that needed it, or this row says so. It rides in the SAME plant as the
-    // qa/kind-isolation.toml raise below: the two edits are in different files, each produces its
-    // own finding on this row, and the case names both — one drive of the gate instead of two.
-    let stale_declaration = format!(
-        "{text}\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 1\nto = 2\n\
-         because = \"planted by the self-test; it describes no raise on this branch and must \
-         therefore be refused as a stale declaration rather than carried\"\n"
-    );
-    let mut stale_carried = false;
-    for (file, table, key) in rose_plants(cx, &text, cfg) {
-        let Ok(now) = cx.read(&file) else { continue };
-        let Some(lowered) = ceilings::set_int(&now, &table, &key, 0) else {
-            continue;
-        };
-        let mut ov = on(base);
-        ov.set_command(format!("git-show:{based}:{file}"), lowered);
-        let raised = format!("{file} {table}.{key}: 0 ->");
-        let mut naming: Vec<&str> = vec![&raised];
-        let mut name =
-            format!("a ceiling in {file} that is higher than it was at the base is refused");
-        if file != CEILINGS && !stale_carried {
-            ov.set(CEILINGS, stale_declaration.clone());
-            naming.push("is not a raise at the base");
-            name.push_str(
-                ", and a declared raise that is not a raise at the base is a waiver that outlived \
-                 its commit",
-            );
-            stale_carried = true;
-        }
-        r.push(prove_rows_red(
-            cx,
-            gate,
-            name,
-            &[ceilings::ROW_ROSE],
-            ov,
-            &naming,
-        ));
-    }
-
-    // ── the declared raise, and both ways it is refused ─────────────────────────────────────────
-    //
-    // A DECLARATION THAT DOES NOT DESCRIBE THIS RAISE EXCUSES NOTHING. The committed entry says
-    // 26 -> 47; rewriting its `to` leaves the raise in the file undeclared, and a declaration that
-    // named a direction rather than an edit would be a permanent hole with a reason field.
-    //
-    // THE PLANT IS THIS CASE'S OWN, NEVER THE COMMITTED FILE'S. It used to rewrite whichever
-    // `[gate.ceiling_raises]` entry the tree happened to carry — and that made the case depend on a
-    // table whose entire design is that it EMPTIES ITSELF. A declaration expires the commit after
-    // the one that needed it; the commit that struck the last standing entry turned this case into
-    // an infra failure, which is a self-test held hostage by the mechanism it is proving. So both
-    // halves are planted: the BASE's copy of one real ceiling is lowered, which makes the committed
-    // file a genuine raise, and a declaration is appended whose numbers describe a different edit.
-    // The refusal is then proven against a `[gate.ceiling_raises]` table that is empty in the tree,
-    // which is the state it is supposed to spend most of its life in.
-    let subject = rose_subject(&text, cfg);
-    if let Some((s_table, s_key, base_lowered)) = subject.as_ref().and_then(|(t, k, _)| {
-        ceilings::set_int(&text, t, k, 0).map(|low| (t.clone(), k.clone(), low))
-    }) {
-        let mut ov = on(base);
-        ov.set_command(format!("git-show:{based}:{CEILINGS}"), base_lowered);
-        ov.set(
-            CEILINGS,
-            format!(
-                "{text}\n[gate.ceiling_raises.\"{s_table}.{s_key}\"]\nfrom = 999\n\
-                 to = 998\nbecause = \"planted by the self-test: a declaration whose numbers are \
-                 not the raise it sits beside, so the raise is still undeclared and still \
-                 refused\"\n"
-            ),
-        );
-        r.push(prove_rows_red(
-            cx,
-            gate,
-            "a declared raise whose numbers are not this raise excuses nothing",
-            &[ceilings::ROW_ROSE],
-            ov,
-            &["declared as 999->998"],
-        ));
-    } else {
-        r.note_infra_failure(
-            "the ceilings file carries no ratcheted ceiling above 0 to lower at the base, so the \
-             arm that refuses a declaration describing a different edit is unproven",
-        );
-    }
-
-    // ── A RE-DECLARED RAISE IS NOT A RISE ───────────────────────────────────────────────────────
-    //
-    // A declaration's own `from` / `to` are numbers in the ceilings file, and the row used to read
-    // them as ceilings: the commit that replaces a landed declaration with the next re-arm of the
-    // same ceiling moves both numbers UP, and the re-declaration itself was refused as two
-    // undeclared rises. GREEN arm: the base carries the ceiling at 0 and an OLDER declaration of
-    // it; the tree raises the ceiling and re-declares exactly that raise. RED arm: the same plant
-    // with one more rise, undeclared, of a second ceiling — taking the declaration tables out of
-    // the comparison must not take a real ceiling with them.
-    let doc = crate::toml_doc::parse_str(&text).ok();
-    let int_at = |table: &str, key: &str| -> Option<i64> {
-        doc.as_ref()
-            .and_then(|d| d.table(table).and_then(|t| t.int_of(key)))
-            .filter(|v| *v > 0)
-    };
-    let (s_table, s_key) = subject
-        .as_ref()
-        .map(|(t, k, _)| (t.clone(), k.clone()))
-        .unwrap_or_default();
-    let current = subject.as_ref().map(|(_, _, v)| *v);
-    match (current, ceilings::set_int(&text, &s_table, &s_key, 0)) {
-        (Some(now), Some(base_lowered)) => {
-            let declare = |from: i64, to: i64| {
-                format!(
-                    "\n[gate.ceiling_raises.\"{s_table}.{s_key}\"]\nfrom = {from}\n\
-                     to = {to}\nbecause = \"planted by the self-test: the re-arm of a ceiling whose \
-                     previous declaration had already landed, which moves the declaration's own \
-                     numbers up and is still exactly one declared raise\"\n"
-                )
-            };
-            let mut ov = on(base);
-            ov.set_command(
-                format!("git-show:{based}:{CEILINGS}"),
-                format!("{base_lowered}{}", declare(0, now - 1)),
-            );
-            ov.set(CEILINGS, format!("{text}{}", declare(0, now)));
-            r.push(prove_rows_green(
-                real,
-                gate,
-                "a re-declared raise is one declared raise, not a rise of the declaration's own \
-                 numbers",
-                &[ceilings::ROW_ROSE],
-                ov.clone(),
-            ));
-            // The second rise is another RATCHETED ceiling of the same file, read off the pins
-            // the gate itself keeps rather than named here.
-            let second = ceilings::pins(cfg)
-                .into_iter()
-                .filter(|p| !(p.table == s_table && p.key == s_key))
-                .filter(|p| int_at(&p.table, &p.key).is_some())
-                .find_map(|p| {
-                    let before = ceilings::set_int(&base_lowered, &p.table, &p.key, 0)?;
-                    Some((p.table, p.key, before))
-                });
-            match second {
-                Some((table, key, lowered)) => {
-                    ov.set_command(
-                        format!("git-show:{based}:{CEILINGS}"),
-                        format!("{lowered}{}", declare(0, now - 1)),
-                    );
-                    let raised = format!("{CEILINGS} {table}.{key}: 0 ->");
-                    r.push(prove_rows_red(
-                        cx,
-                        gate,
-                        "beside a re-declared raise, an undeclared rise is still refused",
-                        &[ceilings::ROW_ROSE],
-                        ov,
-                        &[raised.as_str()],
-                    ));
-                }
-                None => r.note_infra_failure(
-                    "no second ratcheted ceiling could be lowered at the base, so the arm that \
-                     refuses an undeclared rise beside a re-declared one is unproven",
-                ),
-            }
-        }
-        _ => r.note_infra_failure(
-            "the ceilings file carries no ratcheted ceiling above 0 to re-declare a raise of, so \
-             the arm that reads a re-declaration as one declared raise is unproven",
-        ),
-    }
-
-    // ── A DECLARATION WHOSE RAISE HAS LANDED IS EXPIRED, NOT RED ────────────────────────────────
-    //
-    // The base is the commit before the tip, so the commit after a re-arm finds its declaration
-    // already carried by the base. GREEN: the tree and the base both read the subject ceiling at
-    // `v`, and a declaration `v-1 -> v` sits beside it; the row passes and names the declaration as
-    // expired. The RED counterparts are the cases above: an undeclared rise, and a declaration
-    // whose ceiling never moved (`stale_declaration`, whose `to` matches neither base nor tree).
-    if let Some((table, key, v)) = subject.as_ref() {
-        let mut ov = on(base);
-        ov.set(
-            CEILINGS,
-            format!(
-                "{text}\n[gate.ceiling_raises.\"{table}.{key}\"]\nfrom = {}\nto = {v}\n\
-                 because = \"planted by the self-test: the declaration of a raise its own commit \
-                 landed, which the base now carries, so it has expired and is struck at leisure\"\n",
-                v - 1
-            ),
-        );
-        r.push(prove_rows_green(
-            real,
-            gate,
-            "a declared raise whose base already carries its number has landed: expired, not red",
-            &[ceilings::ROW_ROSE],
-            ov,
-        ));
-    }
-
-    if !stale_carried {
-        let mut ov = on(base);
-        ov.set(CEILINGS, stale_declaration);
-        r.push(prove_rows_red(
-            cx,
-            gate,
-            "a declared raise that is not a raise at the base is a waiver that outlived its commit",
-            &[ceilings::ROW_ROSE],
-            ov,
-            &["is not a raise at the base"],
-        ));
-    }
-
-    // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
-    // comparison that cannot be made is not a comparison that passed.
-    let mut ov = on(base);
-    ov.set_command(
-        format!("git-show:{based}:{CEILINGS}"),
-        "[rules.x\nthis is not a ceilings file\n",
-    );
-    r.push(prove_rows_red(
-        cx,
-        gate,
-        "a base whose ceilings file cannot be read is refused, never compared against nothing",
-        &[ceilings::ROW_ROSE],
-        ov,
-        &["could not be compared against the base"],
-    ));
-
     // -- ceiling-census --------------------------------------------------------------------------
     //
     // THE ROW THAT COUNTS THE RULE TABLES THE REST OF THE GATE IS DERIVED FROM. `owed()` reads the
-    // same `Cfg` the rules read, so deleting `[rules.loc-ceilings.kernel_files.arena]` deleted the
-    // check AND the obligation in one edit — 112 rows became 111, silently. These cases drive the
-    // shortfall arm from the other side: raising a census floor above what the tree carries is the
-    // same comparison as deleting the table under a floor that stayed put, and it is a one-integer
-    // plant that cannot rot the way a hard-coded table name would.
-    if let Some(planted) =
-        ceilings::set_int(&combined, "gate.census", "loc_ceilings_kernel_files", 99)
+    // same `Cfg` the rules read, so deleting a rule table deletes the check AND the obligation in
+    // one edit. These cases drive the shortfall arm from the other side: raising a census floor
+    // above what the tree carries is the same comparison as deleting the table under a floor that
+    // stayed put, and it is a one-integer plant that cannot rot the way a hard-coded table name
+    // would.
+    if let Some(planted) = ceilings::set_int(&combined, "gate.census", "legacy_reach_prefixes", 99)
     {
         combined = planted;
         combined_cover.push(census::ROW_CENSUS.to_string());
-        combined_naming.push("[rules.loc-ceilings.kernel_files] entries:".to_string());
+        combined_naming.push("[rules.legacy-reach.prefixes] entries:".to_string());
         combined_naming.push("99 pinned".to_string());
     } else {
         r.note_infra_failure(
-            "the [gate.census] loc_ceilings_kernel_files floor could not be rewritten, so the arm \
+            "the [gate.census] legacy_reach_prefixes floor could not be rewritten, so the arm \
              that refuses a deleted rule table is unproven",
         );
     }
@@ -1260,24 +880,17 @@ fn ceiling_ratchet_cases<'a>(
         );
     }
 
-    // THE THREE GREEN CONTROLS, AND THE FIXTURE'S OWN, IN ONE RUN. They used to be three cases
-    // with one identical overlay — three whole-gate drives to read three rows of one verdict — and
-    // two of them asserted the REAL tree green on `ceiling-slack` and `ceiling-rose`, which it is
-    // not: that is real debt the gate reports, not a fact about either rule. The claim now is the
-    // one each RED case above depends on: over the green fixture, planted onto the REAL tree (so
-    // the plant bites), every ratcheted ceiling equals its measurement, no ceiling has risen
-    // against a base that carries this file, every census floor holds, and every row the fixture
-    // was built to clear is green. If the fixture ever stops clearing a row, this says which.
-    let mut control: Vec<String> =
-        strings(&[ceilings::ROW_SLACK, ceilings::ROW_ROSE, census::ROW_CENSUS]);
+    // THE GREEN CONTROL, AND THE FIXTURE'S OWN, IN ONE RUN. Over the green fixture, planted onto
+    // the REAL tree (so the plant bites), every census floor holds and every row the fixture was
+    // built to clear is green. If the fixture ever stops clearing a row, this says which.
+    let mut control: Vec<String> = strings(&[census::ROW_CENSUS]);
     control.extend(cleared.iter().cloned());
     control.sort();
     control.dedup();
     r.push(prove_rows_green(
         real,
         gate,
-        "over the green fixture every ceiling equals its measurement, none has risen against its \
-         base, every census floor holds, and every row the fixture clears is green",
+        "over the green fixture every census floor holds and every row the fixture clears is green",
         &refs(&control),
         on(base),
     ));
@@ -1287,9 +900,7 @@ fn ceiling_ratchet_cases<'a>(
     // `one-attempt-seam` counts send-verb sites OUTSIDE `allowed_function`, and its `inside == 0`
     // arm is the one that notices the seam MOVED — the send verb matched nothing inside the allowed
     // function, i.e. the scan set went empty. A blind-stub audit found that arm was driven by NO
-    // selftest case: stub it and `construction --selftest` gained ZERO failures. It is the only
-    // thing standing between an empty scan set and a vacuous green on this row, which is exactly
-    // the shape the gate-wide scan-set floor exists to refuse.
+    // selftest case: stub it and `construction --selftest` gained ZERO failures.
     //
     // The plant makes the verb match nothing ANYWHERE, so `extra` is empty too and the row's single
     // offender is the arm under test — nothing else can be what turned it red.
@@ -1315,51 +926,16 @@ fn ceiling_ratchet_cases<'a>(
         r.push(prove_rows_red(
             cx,
             gate,
-            "one planted ceilings file: a ceiling raised above what it measures is slack, each \
-             retiring crate's reach figure is a ratchet the root can exceed, a rule table and a \
-             kind glob that went missing under their census floors are refused, and a send verb \
-             that matches nothing is the seam having moved, not a clean tree",
+            "one planted ceilings file: each retiring crate's reach figure is a ratchet the root \
+             can exceed, a rule table and a kind glob that went missing under their census floors \
+             are refused, and a send verb that matches nothing is the seam having moved, not a \
+             clean tree",
             &refs(&combined_cover),
             ov,
             &refs(&combined_naming),
         ));
     }
     r
-}
-
-/// One ceiling per watched file, chosen FROM THE FILE rather than named here: a plant that
-/// hard-codes a key is a plant that stops planting the day the key is renamed, and goes green.
-fn rose_plants(cx: &Ctx, text: &str, cfg: &Cfg) -> Vec<(String, String, String)> {
-    let mut out: Vec<(String, String, String)> = rose_subject(text, cfg)
-        .map(|(table, key, _)| (CEILINGS.to_string(), table, key))
-        .into_iter()
-        .collect();
-    if let Ok(text) = cx.read(ceilings::KIND_CEILINGS) {
-        if let Ok(doc) = crate::toml_doc::parse_str(&text) {
-            let found = doc.tables().iter().find_map(|(p, t)| {
-                t.keys()
-                    .iter()
-                    .find(|k| t.int_of(k).is_some())
-                    .map(|k| (p.to_string(), k.clone()))
-            });
-            if let Some((path, key)) = found {
-                out.push((ceilings::KIND_CEILINGS.to_string(), path, key));
-            }
-        }
-    }
-    out
-}
-
-/// A ratcheted ceiling of the ceilings file that reads above zero: the subject the rise cases plant
-/// against, by lowering the base's copy of it. The root's legacy reach was that subject until it
-/// drained to 0, and a ceiling at 0 cannot be lowered at the base to make a rise, so the subject is
-/// read off the pins the gate keeps rather than named here.
-fn rose_subject(text: &str, cfg: &Cfg) -> Option<(String, String, i64)> {
-    let doc = crate::toml_doc::parse_str(text).ok()?;
-    ceilings::pins(cfg).into_iter().find_map(|p| {
-        let v = doc.table(&p.table)?.int_of(&p.key)?;
-        (v > 0).then_some((p.table, p.key, v))
-    })
 }
 
 /// The plugin kinds: the manifest allow-list, the source denylist and the unsafe attributes.

@@ -141,10 +141,13 @@ fn the_source_names_no_kernel_side_crate() {
 #[test]
 fn the_manifest_names_only_what_a_plane_may_name() {
     let manifest = manifest();
+    // The SHIPPED dependencies: the `[dependencies]` table alone. A dev-dependency builds only this
+    // crate's tests (the plugin tests itself through the real loader, linked and dropped in).
     let deps = manifest
         .split("[dependencies]")
         .nth(1)
         .expect("the manifest has a dependency section");
+    let deps = deps.split("\n[").next().unwrap_or_default();
     // The codecs are this crate's own `codec` module now (THE DESIGN section 9/#39: no `busbar-*-codec`
     // crate), not a named dependency — `busbar-contract` is the only workspace crate a plane names.
     let allowed = ["busbar-contract"];

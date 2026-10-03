@@ -197,6 +197,7 @@ unsafe impl<T: Scalar, const N: usize> Scalar for [T; N] {}
 unsafe impl Scalar for crate::abi::mechanism::call::RawOutcome {}
 unsafe impl Scalar for crate::abi::mechanism::ticket::Ticket {}
 unsafe impl Scalar for crate::abi::mechanism::call::Span {}
+unsafe impl Scalar for crate::abi::auth::StripName {}
 unsafe impl Scalar for crate::abi::plane::UnitCount {}
 unsafe impl Scalar for crate::abi::plane::RecordWrite {}
 unsafe impl Scalar for crate::abi::plane::OutField {}

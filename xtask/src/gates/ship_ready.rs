@@ -1,20 +1,21 @@
 //! `cargo xtask gate ship-ready` — THE SHIP CRITERION, AS A ROW THAT CAN GO RED.
 //!
 //! The ship criterion used to be a checklist that nothing enforced: the ship twin is zero
-//! everywhere, no ceiling carries slack, no ceiling rose, the standing-red list is empty. A
+//! everywhere and the standing-red list is empty. A
 //! checklist is a promise that someone will read it. Nothing in the tree could tell whether any
 //! line of it was true, and nothing went red when a line stopped being true — which is the same as
 //! not having the criterion at all.
 //!
-//! So it is a gate. Four rows, each of which is one line of the old checklist, each of which can be
+//! So it is a gate. Two rows, each of which is one line of the old checklist, each of which can be
 //! red on its own:
 //!
 //! | row | the claim |
 //! | --- | --- |
 //! | [`ROW_SHIP_TWIN`] | `kind-isolation-ship` is green: every kind's ship twin measures zero |
-//! | [`ROW_SLACK`] | `ceiling-slack` is green: every ceiling equals the thing it measures |
-//! | [`ROW_ROSE`] | `ceiling-rose` is green: no number in a qa ceilings file went up on this branch |
 //! | [`ROW_STANDING`] | the standing-red list is EMPTY, for a `qa`/`main` posture |
+//!
+//! The two ceiling rows (`ship-ready:ceiling-slack`, `ship-ready:ceiling-rose`) are DELETED with
+//! the construction rows they read: size is not a CI check (owner 2026-10-02).
 //!
 //! The `gate-mutants` job used to be a fifth row here, read from the GitHub
 //! checks API. Per owner ruling it is now MANUAL-ONLY and entirely OPTIONAL — it tests the tests,
@@ -23,7 +24,7 @@
 //!
 //! ## THE POSTURE
 //!
-//! Three of the four rows are claims about the tree and hold everywhere. [`ROW_STANDING`] is not:
+//! [`ROW_SHIP_TWIN`] is a claim about the tree and holds everywhere. [`ROW_STANDING`] is not:
 //! the standing-red list is a DEV-LINE CONVENIENCE, a set of construction rows that are known-red,
 //! written down, and deliberately not blocking the integration line while they are drained. That is
 //! a reasonable thing to have on a working branch and an unreasonable thing to promote. So this row
@@ -33,16 +34,13 @@
 //! exemption becomes the architecture.
 
 use crate::ctx::Ctx;
-use crate::gates::construction::ceilings;
 use crate::gates::{Case, Expect, Gate, Report, CONSTRUCTION_STANDING_REDS};
 use crate::ledger::{Row, Status, Verdict};
 
 pub const ROW_SHIP_TWIN: &str = "ship-ready:ship-twin";
-pub const ROW_SLACK: &str = "ship-ready:ceiling-slack";
-pub const ROW_ROSE: &str = "ship-ready:ceiling-rose";
 pub const ROW_STANDING: &str = "ship-ready:standing-reds";
 
-const OWED: &[&str] = &[ROW_SHIP_TWIN, ROW_SLACK, ROW_ROSE, ROW_STANDING];
+const OWED: &[&str] = &[ROW_SHIP_TWIN, ROW_STANDING];
 
 /// The postures under which the standing-red list is refused. A promotion carries none of the
 /// dev line's written-down conveniences.
@@ -240,39 +238,6 @@ fn red_verdict(ids: &[&str]) -> Verdict {
     )
 }
 
-/// THE CEILING ROWS. Both are construction-gate rows; this gate does not re-implement either
-/// rule, it runs the gate that owns them and reads the two verdicts it is about. Re-implementing a
-/// rule in a second place is how two gates come to disagree and both stay green.
-fn ceiling_rows(construction: &Verdict) -> Vec<Row> {
-    [
-        (ROW_SLACK, ceilings::ROW_SLACK),
-        (ROW_ROSE, ceilings::ROW_ROSE),
-    ]
-    .iter()
-    .map(
-        |(mine, theirs)| match construction.rows.iter().find(|r| r.id == *theirs) {
-            None => Row::fail(
-                *mine,
-                "the construction gate emitted no such row",
-                format!(
-                    "`{theirs}` is not in the construction gate's verdict. A ship criterion whose \
-                     evidence row has been renamed or deleted is a criterion nothing measures, and \
-                     it must be red rather than absent."
-                ),
-            ),
-            Some(r) if r.status == Status::Pass => {
-                Row::pass(*mine, format!("`{theirs}` is green"), r.detail.clone())
-            }
-            Some(r) => Row::fail(
-                *mine,
-                format!("`{theirs}` is not green"),
-                format!("{}: {}", r.title, r.detail),
-            ),
-        },
-    )
-    .collect()
-}
-
 /// THE SHIP-TWIN ROW. `kind-isolation-ship` is the twin that measures the ship criterion for every
 /// plugin kind; ship-ready is green on it only when the twin has no failing row at all.
 fn ship_twin_row(ship: &Verdict) -> Row {
@@ -336,7 +301,6 @@ impl Gate for ShipReadyGate {
             CONSTRUCTION_STANDING_REDS,
             &construction,
         )];
-        rows.extend(ceiling_rows(&construction));
 
         let ship_gate = crate::gates::kind_isolation::KindIsolationGate::ship();
         let ship = crate::gates::execute(&ship_gate as &dyn Gate, cx);
@@ -482,51 +446,6 @@ impl Gate for ShipReadyGate {
                 &[EXAMPLE_STANDING],
                 &red_verdict(&[EXAMPLE_STANDING]),
             ),
-        ));
-
-        // -- THE CEILING ROWS. A missing evidence row is the failure that matters: a rename in the
-        //    construction gate must red this gate rather than silently satisfy it.
-        let slack_pass = Row::pass(ceilings::ROW_SLACK, "t", "d");
-        let rose_pass = Row::pass(ceilings::ROW_ROSE, "t", "d");
-        report.push(rows_case(
-            "both ceiling rows green is green here",
-            &[ROW_SLACK, ROW_ROSE],
-            Expect::Green,
-            ceiling_rows(&Verdict::of(vec![slack_pass.clone(), rose_pass.clone()])),
-        ));
-        report.push(rows_case(
-            "a ceiling left above the count it measures is red",
-            &[ROW_SLACK],
-            Expect::Red {
-                naming: vec![ceilings::ROW_SLACK.to_string()],
-            },
-            ceiling_rows(&Verdict::of(vec![
-                Row::fail(
-                    ceilings::ROW_SLACK,
-                    "slack",
-                    "a ceiling above its measurement",
-                ),
-                rose_pass.clone(),
-            ])),
-        ));
-        report.push(rows_case(
-            "a ceiling that rose on this branch is red",
-            &[ROW_ROSE],
-            Expect::Red {
-                naming: vec![ceilings::ROW_ROSE.to_string()],
-            },
-            ceiling_rows(&Verdict::of(vec![
-                slack_pass.clone(),
-                Row::fail(ceilings::ROW_ROSE, "rose", "a number went up"),
-            ])),
-        ));
-        report.push(rows_case(
-            "an evidence row the construction gate no longer emits is RED, not absent",
-            &[ROW_SLACK, ROW_ROSE],
-            Expect::Red {
-                naming: vec!["emitted no such row".to_string()],
-            },
-            ceiling_rows(&Verdict::of(vec![Row::pass("something-else", "t", "d")])),
         ));
 
         // -- THE SHIP TWIN. Zero rows is the vacuous-green shape and is proven separately from a

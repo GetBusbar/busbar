@@ -300,7 +300,7 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     // at its reader) named themselves, and the other ~40 — OpenAI `logit_bias` /
     // `store` / `metadata` / `service_tier` / `stream_options` / `prediction` /
     // `modalities` / `audio` / `web_search_options`, Anthropic `metadata` / `container` /
-    // `mcp_servers` / `betas`, Gemini `safetySettings` / `labels`, Bedrock
+    // its server-connector list / `betas`, Gemini `safetySettings` / `labels`, Bedrock
     // `guardrailConfig` / `promptVariables` / `requestMetadata` / `performanceConfig`,
     // Cohere `citation_options` / `safety_mode` / `strict_tools` / `logprobs`, Responses
     // `previous_response_id` / `conversation` / `truncation` / `include` / `prompt` /

@@ -23,7 +23,6 @@
 //! * [`planeverbs`] — [`planeverbs::CorePlaneAdminEnvelope`], the core backing for the self-enveloping
 //!   plane-verb seam. `busbar-a2a`/`busbar-mcp` name it at
 //!   `busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope`, so it stays in core.
-//! * [`versions`] — the [`versions::VersionLog`] config-version store, a field of `state::App`.
 
 pub mod seam;
 
@@ -40,4 +39,3 @@ pub mod seam;
 #[allow(dead_code)]
 pub mod planeverbs;
 pub mod v1;
-pub mod versions;

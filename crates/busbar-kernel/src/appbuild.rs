@@ -477,9 +477,6 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 pub struct InstalledLimits {
     guard: limits::InstallGuard,
     rates: ResolvedRates,
-    /// The lists this configuration's provider URLs are judged by when dialled, published at the
-    /// commit for the same reason the rates are: a rejected apply must not leave them in force.
-    dial: crate::net_guard::DialDenylist,
 }
 
 /// The rates one build resolved, held (owned) until the build's commit raises them.
@@ -496,9 +493,8 @@ impl InstalledLimits {
     /// raise the rate-apply seam with the rates this build resolved — the one moment the
     /// configuration they came from is the one in force.
     pub fn keep(self) {
-        let InstalledLimits { guard, rates, dial } = self;
+        let InstalledLimits { guard, rates } = self;
         guard.commit();
-        crate::egress::engine::process_dial_table().publish(dial);
         crate::rate_apply::rates_applied(&crate::rate_apply::RawRates {
             lanes: &rates.lanes,
             units: &rates.units,
@@ -682,20 +678,6 @@ pub fn build_app_from_config(
         present: cfg.rate_card.is_some(),
         plane_fees: cfg.plane_fees.clone(),
     };
-    // THE DIAL TABLE: the lists the validator judged each provider URL by, keyed by the host the
-    // URL names, so the egress client judges every address that host resolves to by the same rule
-    // when it dials. Published at the commit (`InstalledLimits::keep`), beside the rates.
-    let dial = crate::net_guard::DialDenylist::new(
-        &cfg.blocked_metadata_hosts,
-        &cfg.allow_metadata_hosts,
-        cfg.allow_all_metadata,
-        cfg.providers.values().flat_map(|p| {
-            std::iter::once(p.base_url.as_str())
-                .chain(p.token_url.as_deref())
-                .map(move |url| (url, p.allow_metadata_hosts.as_slice()))
-        }),
-    );
-
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
     for (model, mc) in sorted_models {
@@ -1064,10 +1046,11 @@ pub fn build_app_from_config(
         h2_prior_knowledge,
     };
 
-    // The hook plugin-resolution environment: the validated registry + shared projectors. Every hook
-    // `plugin:` ref opens a `DlopenPolicy` through this. Built once and cloned into each resolver and
-    // onto `App` (for the control-plane reads + scrape).
-    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone());
+    // The hook plugin-resolution environment: the validated registry and the root's hook axis over
+    // it. Every hook `plugin:` ref opens through the axis. Built once and cloned into each resolver
+    // and onto `App` (for the control-plane reads + scrape). A 1.5.5 JSON hook plugin in the
+    // registry refuses the build here, naming the rebuild.
+    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
 
     // FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
     // hook secret aborts boot/reload here — matching the store path (above) and the auth chain
@@ -1236,11 +1219,19 @@ pub fn build_app_from_config(
                 .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
         let cfg_json = serde_json::Value::Object(resolved).to_string();
-        let store: Arc<dyn governance::RecordStore> = Arc::from(
-            plugin_registry
-                .open_store(&g.module, &cfg_json)
-                .map_err(|e| format!("store '{}' plugin load failed: {e}", g.module))?,
-        );
+        // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
+        // loaded through the root's one dispatcher and opened through the store v3 table, on the
+        // store axis the composition root installed (WIRE-STORE Q8/Q9). Compiled in or dropped
+        // in, one path.
+        let load_failed = |e: String| format!("store '{}' plugin load failed: {e}", g.module);
+        let door = plugin_registry.store_door(&g.module).map_err(load_failed)?;
+        let axis = crate::preflight::root_rows()
+            .store_axis
+            .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
+        let store: Arc<dyn governance::RecordStore> = axis()
+            .open(door, &g.module, cfg_json.as_bytes())
+            .map_err(load_failed)?
+            .records;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
@@ -1879,9 +1870,9 @@ pub fn build_app_from_config(
         // plane's `build` (through its own carried-gates field, off `BuildCtx::prior`), so `App`
         // carries no dedicated field for them either.
         // History + rate windows are Arc-shared across applies (process-lifetime state).
-        versions: prior.map_or_else(
-            || Arc::new(admin::versions::VersionLog::new()),
-            |p| p.versions.clone(),
+        admin: prior.map_or_else(
+            || Arc::new(admin::seam::AdminSlot::default()),
+            |p| p.admin.clone(),
         ),
         mutation_limiter: prior.map_or_else(
             || Arc::new(ratelimit::MutationLimiter::new()),
@@ -1995,7 +1986,7 @@ pub fn build_app_from_config(
         mint_policy: std::sync::Arc::new(governance::mint_policy::MintPolicy::from_auth(
             cfg.auth.as_ref(),
         )),
-        // Arc-shared like `versions`/`mutation_limiter`: a REBUILD carries the SAME counter forward
+        // Arc-shared like `admin`/`mutation_limiter`: a REBUILD carries the SAME counter forward
         // (ids stay monotonic across a config reload) while a fresh boot seeds it once from OS
         // entropy (see `state::seed_request_id_counter`) so restarts don't restamp `0, 1, 2, …`.
         request_id_counter: prior.map_or_else(
@@ -2034,7 +2025,6 @@ pub fn build_app_from_config(
         InstalledLimits {
             guard: limits_guard,
             rates: resolved_rates,
-            dial,
         },
     ))
 }

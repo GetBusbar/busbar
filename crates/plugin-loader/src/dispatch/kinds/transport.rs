@@ -37,6 +37,10 @@ use busbar_contract::abi::transport::{
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
+/// The transport tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
+/// GROWTH RULE, `abi::mechanism::door::tail_read_len`).
+const TRANSPORT_TAIL_FROZEN: usize = std::mem::size_of::<TransportTail>();
+
 /// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
 /// `check_claims`, `check_claim_rows` and `check_composes_over`: its role, every scheme it answers
 /// for (the Statement's `claims`, the first its own) and the claims it composes over. The host's registry view reads it through
@@ -68,20 +72,10 @@ fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
 
 /// The transport's tail, read from the Statement and checked.
 fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
-    let p = st.kind_tail;
-    if p.is_null() {
-        return Err("a transport states no kind tail".into());
-    }
-    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
-    // whole tail is read only once its size covers this host's `TransportTail`.
-    let size = unsafe { (*p).size };
-    if (size as usize) < std::mem::size_of::<TransportTail>() {
-        return Err(format!(
-            "the transport tail is {size} bytes, smaller than this host's"
-        ));
-    }
-    // SAFETY: as above.
-    let tail = unsafe { p.cast::<TransportTail>().read_unaligned() };
+    // SAFETY: `TransportTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid);
+    // a non-NULL kind tail is `'static` plugin data of its stated size.
+    let tail: TransportTail =
+        unsafe { crate::dispatch::plugin::kind_tail(st, "a transport", TRANSPORT_TAIL_FROZEN) }?;
     let broke = |f: Fault| format!("the transport tail breaks {:?} at {}", f.rule, f.field);
     check_tail(&tail).map_err(broke)?;
     // SAFETY: `check_tail` refused a NULL list with a count; both lists are `'static` plugin data.

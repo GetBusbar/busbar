@@ -224,7 +224,9 @@ pub struct LoginHttpResponse {
 
 /// The verdict of one login step (begin or complete). `Authorize` = redirect the browser here;
 /// `Exchange` = the core must run this hop then call complete_login again with the response;
-/// `Identify` = identity established; `Reject` = fail closed.
+/// `Identify` = identity established; `Reject` = fail closed; `Outage` = the identity provider
+/// could not be reached (the auth ABI's `LOGIN_OUTAGE`), fail closed too, but told apart from a
+/// declined credential.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoginOutcome {
     Authorize(String),
@@ -234,6 +236,12 @@ pub enum LoginOutcome {
     Exchange(LoginHop),
     Identify(Principal),
     Reject,
+    /// The identity provider could not be reached: nothing was verified, and the credential was
+    /// not declined either.
+    Outage,
+    /// The identity provider answered, and its answer failed the login's security check (its
+    /// identity token's nonce is not the login's): no identity is trusted.
+    SecurityCheckFailed,
 }
 
 /// The OPT-IN browser-login capability of an auth module (auth ABI v2). SEPARATE from [`AuthModule`]

@@ -13,6 +13,8 @@ fn every_stated_reason_code_is_the_reason_it_is_named_for() {
         (reason::OVER_BUDGET, "over_budget"),
         (reason::DESTINATION_UNREACHABLE, "destination_unreachable"),
         (reason::GROUP_FROZEN, "group_frozen"),
+        (reason::NO_RATE, "no_rate"),
+        (reason::NO_DESTINATION, "no_destination"),
     ] {
         assert_eq!(
             reason_of(code).map(|r| r.as_str()),

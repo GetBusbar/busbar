@@ -5968,3 +5968,78 @@ fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
 fn signed_kind() -> String {
     crate::tests::frozen_str("signed_credential_kind")
 }
+
+/// THE CREDENTIAL READ (`records.secret`, AUTH-DOOR Q2): a live credential reads its own secret,
+/// live; an unknown id reads the fixed dummy secret, not live; a revoked key's credential reads not
+/// live. RED: an unknown id that answered no secret, or a revoked key read live, fails here.
+#[test]
+fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_credential() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = busbar_kernel::store::now();
+    let (key, _bearer, akid, secret) = gov
+        .create_key_with_aws(
+            NewKeySpec {
+                name: "read".to_string(),
+                ..Default::default()
+            },
+            now,
+        )
+        .unwrap();
+    let (got, live) = gov.credential_secret(&signed_kind(), &akid, now);
+    assert_eq!(
+        (got.expose_secret().as_str(), live),
+        (secret.as_str(), true)
+    );
+    let (got, live) = gov.credential_secret(&signed_kind(), "AKIAdoesnotexist0000", now);
+    assert_eq!(
+        (got.expose_secret().as_str(), live),
+        (crate::auth::DUMMY_SECRET, false)
+    );
+    gov.revoke(&key.id, "test").unwrap();
+    assert!(
+        !gov.credential_secret(&signed_kind(), &akid, now).1,
+        "a revoked key is not live"
+    );
+}
+
+/// THE CREDENTIAL READ'S COST does not say whether the id exists: over many interleaved runs, the
+/// median time of a known id's read and an unknown id's read stay within a factor of each other. A
+/// short-circuit on the unknown id (no copy, no revocation check) moves the medians apart well
+/// beyond run-to-run jitter, which the median over many runs absorbs.
+#[test]
+fn the_credential_read_costs_the_same_for_a_known_and_an_unknown_id() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = busbar_kernel::store::now();
+    let (_key, _bearer, akid, _secret) = gov
+        .create_key_with_aws(
+            NewKeySpec {
+                name: "timing".to_string(),
+                ..Default::default()
+            },
+            now,
+        )
+        .unwrap();
+    let kind = signed_kind();
+    let time = |id: &str| {
+        let t = std::time::Instant::now();
+        for _ in 0..64 {
+            std::hint::black_box(gov.credential_secret(&kind, std::hint::black_box(id), now));
+        }
+        t.elapsed().as_nanos()
+    };
+    let (mut known, mut unknown) = (Vec::new(), Vec::new());
+    for _ in 0..401 {
+        known.push(time(&akid));
+        unknown.push(time("AKIAdoesnotexist0000"));
+    }
+    known.sort_unstable();
+    unknown.sort_unstable();
+    let (k, u) = (known[200] as f64, unknown[200] as f64);
+    assert!(
+        (0.5..=2.0).contains(&(u / k)),
+        "median known {k} ns vs unknown {u} ns per 64 reads: the unknown id's read takes a \
+         different path"
+    );
+}

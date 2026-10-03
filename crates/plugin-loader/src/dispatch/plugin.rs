@@ -39,6 +39,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome,
     DIAG_LOG, DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR,
@@ -857,6 +858,39 @@ unsafe fn array<'a, T>(p: *const T, len: usize) -> Option<&'a [T]> {
     }
 }
 
+/// `st`'s kind tail as this host's `T`, by THE KIND TAIL GROWTH RULE
+/// (`abi::mechanism::door::tail_read_len`): the plugin's first `min(size, host)` bytes, the rest
+/// zero (a field the plugin predates reads absent); refused when NULL or smaller than `frozen`, the
+/// kind's last frozen size. `who` names the plugin in the refusal.
+///
+/// # Safety
+/// `T` is a `#[repr(C)]` kind tail of plain integers and pointers leading with a `KindTailHead`, so
+/// all-zero bytes are a valid `T`; a non-NULL `st.kind_tail` is `'static` plugin data of at least its
+/// stated size.
+pub(crate) unsafe fn kind_tail<T: Copy>(
+    st: &busbar_contract::abi::mechanism::door::Statement,
+    who: &str,
+    frozen: usize,
+) -> Result<T, String> {
+    let p = st.kind_tail;
+    if p.is_null() {
+        return Err(format!("{who} states no kind tail"));
+    }
+    // SAFETY: a non-NULL kind tail leads with a `KindTailHead` (the caller's contract).
+    let size = unsafe { (*p).size };
+    let read = busbar_contract::abi::mechanism::door::tail_read_len(size, frozen, size_of::<T>())
+        .ok_or_else(|| {
+        format!("{who} states a {size}-byte tail, smaller than its frozen {frozen}")
+    })?;
+    let mut tail = std::mem::MaybeUninit::<T>::zeroed();
+    // SAFETY: `read` is at most the plugin's stated size and at most `size_of::<T>()`; the rest of
+    // `tail` stays zero, a valid `T` (the caller's contract).
+    unsafe {
+        std::ptr::copy_nonoverlapping(p.cast::<u8>(), tail.as_mut_ptr().cast::<u8>(), read);
+        Ok(tail.assume_init())
+    }
+}
+
 /// A borrowed string's bytes; NULL-and-empty reads as empty. The length is capped BEFORE any
 /// slice is made: over [`MAX_TEXT`], or non-empty behind NULL, is `None` (a malformed answer).
 pub(crate) fn str_bytes<'a>(s: AbiStr) -> Option<&'a [u8]> {
@@ -935,14 +969,27 @@ impl<K: Kind> Plugin<K> {
                         .map(|r| r.needs)
                         .ok_or_else(|| LoadError::BadStatement("the needs do not render".into()))?;
                     for (i, need) in needs.iter().enumerate() {
+                        // THE BOOT'S SCHEME MATCH (spec Part 0: core refuses at boot; Part 2
+                        // #50): a need, outbound or inbound, over a scheme no loaded transport
+                        // serves refuses the load, naming the plugin and the scheme — fail closed
+                        // now, never at the need's first open or listen.
+                        if !need.transport.is_empty() && !table.serves_scheme(&need.transport) {
+                            return Err(LoadError::UnservedScheme {
+                                plugin: str_bytes(st.name)
+                                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                                    .unwrap_or_default(),
+                                inbound: need.direction != DIRECTION_OUTBOUND,
+                                scheme: need.transport.clone(),
+                            });
+                        }
                         // A need whose target comes from config is declared once its settings
                         // arrive (`open`, `refresh`); until then an open on it is undeclared.
                         if !need.target_from.is_empty() {
                             continue;
                         }
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-                        // The answer is the connection table's to keep; a need the host will not
-                        // carry is refused at its open, not at bind.
+                        // The answer is the connection table's to keep (`need.admit` reads it);
+                        // its scheme was matched above.
                         let _ = table.declare(instance, id, need, None);
                     }
                     declared_needs = needs.into_boxed_slice();
@@ -969,6 +1016,9 @@ impl<K: Kind> Plugin<K> {
             kind: v.kind,
         });
         let context = K::context(&st).map_err(LoadError::KindTail)?;
+        let _ = wake
+            .credential_kinds
+            .set(K::credential_kinds(context.as_deref()));
         let plugin = Self {
             inner: Arc::new(Instance {
                 instance,

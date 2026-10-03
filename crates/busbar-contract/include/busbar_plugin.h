@@ -150,6 +150,7 @@ extern "C" {
 #define BB_STORE_RESERVE_OK UINT32_C(0) /* [`ReserveOut::reason`]: granted (READY). */
 #define BB_STORE_RESERVE_EXHAUSTED UINT32_C(1) /* [`ReserveOut::reason`]: a cell's window has no headroom (`SliceError::Exhausted`). */
 #define BB_STORE_RESERVE_STALE_EPOCH UINT32_C(2) /* [`ReserveOut::reason`]: the node's epoch is behind the fleet's (`SliceError::StaleEpoch`). */
+#define BB_STORE_SLICE_TTL_MS UINT64_C(60000) /* THE STORE KIND'S EPOCH AND SLICE LIFE (ARCHITECT ruling on the store epoch spec). A store a */
 #define BB_STORE_RESERVE_UNAVAILABLE UINT32_C(3) /* [`ReserveOut::reason`]: the store could not be reached (`SliceError::Unavailable`). */
 #define BB_STORE_RESERVE_NO_CAP UINT32_C(4) /* [`ReserveOut::reason`]: a cell names a window no `window_caps` cap was pushed for — never an */
 #define BB_STORE_RESERVE_NO_FAILED_CELL UINT32_C(0xffffffff) /* [`ReserveOut::failed_cell`]: no cell is named (READY, or a failure no single cell caused). */
@@ -172,7 +173,7 @@ extern "C" {
 
 /* auth */
 #define BB_AUTH_IDENTITY_GROUPS_HARD_MAX UINT32_C(0x10000) /* The hard maximum of `needed_groups`: no identity asserts more groups than this. */
-#define BB_AUTH_FIELDS_HARD_MAX UINT32_C(64) /* The hard maximum of `needed_fields`: no style writes more auth fields than this. */
+#define BB_AUTH_FIELDS_HARD_MAX UINT32_C(64) /* The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the */
 #define BB_AUTH_ABI_VERSION UINT32_C(3) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`. */
 #define BB_AUTH_SLOT_VERIFY UINT32_C(9) /* `verify`. */
 #define BB_AUTH_SLOT_BEGIN_LOGIN UINT32_C(10) /* `begin_login`. */
@@ -186,34 +187,47 @@ extern "C" {
 #define BB_AUTH_CAP_LOGIN UINT32_C(2) /* [`AuthTail::caps`]: the plugin serves `begin_login`/`complete_login`. */
 #define BB_AUTH_CAP_OUTBOUND UINT32_C(4) /* [`AuthTail::caps`]: the plugin serves `open_outbound`/`outbound_ready`/`fields`. */
 #define BB_AUTH_FACT_CACHEABLE UINT32_C(1) /* [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators): */
-#define BB_AUTH_FACT_INBOUND_NEEDS_BODY_HASH UINT32_C(2) /* [`AuthTail::facts`]: `verify` reads the request's body hash ([`RequestFacts::body_hash`]). */
+#define BB_AUTH_FACT_INBOUND_NEEDS_BODY_HASH UINT32_C(2) /* [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as */
 #define BB_AUTH_FACT_INBOUND_ALL_HEADERS UINT32_C(4) /* [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's */
+#define BB_AUTH_FACT_OPERATOR UINT32_C(8) /* [`AuthTail::facts`]: this plugin's `verify` judges THE OPERATOR CREDENTIAL, the one admin */
+#define BB_AUTH_FACT_READS_CREDENTIALS UINT32_C(16) /* [`AuthTail::facts`]: this plugin's `verify` reads host-held credentials of the kinds */
 #define BB_AUTH_METRIC_CACHE_FLUSHED "busbar_auth_cache_flushed_total" /* THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a */
 #define BB_AUTH_LOGIN_KIND_NONE UINT32_C(0) /* [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared). */
 #define BB_AUTH_LOGIN_KIND_REDIRECT UINT32_C(1) /* [`AuthTail::login_kind`]: a redirect to an IdP. */
 #define BB_AUTH_LOGIN_KIND_CREDENTIAL UINT32_C(2) /* [`AuthTail::login_kind`]: a credential form the core renders. */
-#define BB_AUTH_STYLE_NEEDS_BODY_HASH UINT32_C(1) /* [`StyleDecl::flags`]: `fields` needs [`RequestFacts::body_hash`] for this style. */
 #define BB_AUTH_STYLE_NEEDS_HEADERS UINT32_C(2) /* [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style. */
+#define BB_AUTH_STYLE_CALLER_CREDENTIAL UINT32_C(4) /* [`StyleDecl::flags`]: this style serves [`MODE_PASSTHROUGH`] as well as [`MODE_OWN`] — the */
+#define BB_AUTH_AUTH_TAIL_FROZEN ((size_t)40) /* The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the */
 #define BB_AUTH_CANCEL_ABANDONED UINT32_C(1) /* [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned, */
 #define BB_AUTH_CANCEL_CONTINUES UINT32_C(2) /* [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: the call is */
 #define BB_AUTH_VERDICT_IDENTITY UINT32_C(1) /* [`IdentifyOut::verdict`] for `verify`: identified; [`IdentifyOut::identity`] holds who. */
 #define BB_AUTH_VERDICT_REJECT UINT32_C(2) /* [`IdentifyOut::verdict`] for `verify`: a credential was presented and is invalid. Fail-closed; */
 #define BB_AUTH_VERDICT_PASS UINT32_C(3) /* [`IdentifyOut::verdict`] for `verify`: not this plugin's credential; try the next. */
+#define BB_AUTH_DECISION_CONTINUE UINT32_C(1) /* [`IdentifyOut::decision`] for `verify`: the transport goes on with the request (the next */
+#define BB_AUTH_DECISION_STOP UINT32_C(2) /* [`IdentifyOut::decision`] for `verify`: the transport stops the request. The SDK's default */
+#define BB_AUTH_STRIP_FIELD UINT32_C(1) /* [`StripName::place`]: a field line of the request head, matched ASCII case-insensitively. */
+#define BB_AUTH_STRIP_QUERY UINT32_C(2) /* [`StripName::place`]: a query key of the request target, matched case-sensitively. */
 #define BB_AUTH_LOGIN_IDENTITY UINT32_C(1) /* [`IdentifyOut::verdict`] for `complete_login`: identified. */
 #define BB_AUTH_LOGIN_BAD_CREDENTIAL UINT32_C(2) /* [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP answered, and the credential */
 #define BB_AUTH_LOGIN_OUTAGE UINT32_C(3) /* [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP could not answer (connect, */
+#define BB_AUTH_LOGIN_SECURITY_CHECK_FAILED UINT32_C(4) /* [`IdentifyOut::verdict`] for `complete_login`: the IdP answered, and its answer failed the */
 #define BB_AUTH_IDENTITY_BUF_BYTES ((size_t)16384) /* The identity buffer the host hands `verify`/`complete_login` to start: bytes. */
 #define BB_AUTH_IDENTITY_GROUPS UINT32_C(256) /* The identity buffer the host hands `verify`/`complete_login` to start: group spans. */
 #define BB_AUTH_FIELDS_BUF_BYTES ((size_t)16384) /* The field buffer the host hands `fields` to start: bytes. */
-#define BB_AUTH_FIELDS_MAX UINT32_C(16) /* The field buffer the host hands `fields` to start: fields. */
+#define BB_AUTH_FIELDS_MAX UINT32_C(16) /* The field buffer the host hands `fields` to start: fields. Also the strip array the host */
 #define BB_AUTH_MODE_OWN UINT32_C(1) /* [`FieldsIn::mode`]: the plugin's own bound credential. */
 #define BB_AUTH_MODE_PASSTHROUGH UINT32_C(2) /* [`FieldsIn::mode`]: pass the caller's verified credential ([`FieldsIn::caller_credential`]). */
-#define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: the value is credential material. An h2 encoder sends it never-indexed, */
+#define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its */
+#define BB_AUTH_FIELD_QUERY UINT32_C(2) /* [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends */
 #define BB_AUTH_FORM_TEXT UINT32_C(1) /* [`LoginField::kind`]: plain text. */
 #define BB_AUTH_FORM_PASSWORD UINT32_C(2) /* [`LoginField::kind`]: a password; its submitted value arrives as a secret */
 #define BB_AUTH_BEGIN_AUTHORIZE UINT32_C(1) /* [`BeginLoginOut::shape`]: redirect to [`BeginLoginOut::authorize_url`]. */
 #define BB_AUTH_BEGIN_FORM UINT32_C(2) /* [`BeginLoginOut::shape`]: render [`BeginLoginOut::form`]. */
 #define BB_AUTH_IDENTITY_HAS_TTL UINT32_C(1) /* [`IdentityOut::flags`]: [`IdentityOut::ttl_secs`] is set. */
+#define BB_AUTH_POINT_PEER UINT32_C(1) /* [`AuthPoints`] bit of [`AuthPoint::Peer`]. */
+#define BB_AUTH_POINT_HEAD UINT32_C(2) /* [`AuthPoints`] bit of [`AuthPoint::Head`]. */
+#define BB_AUTH_POINT_HEAD_BODY UINT32_C(4) /* [`AuthPoints`] bit of [`AuthPoint::HeadBody`]. */
+#define BB_AUTH_POINT_FRAME UINT32_C(8) /* [`AuthPoints`] bit of [`AuthPoint::Frame`]: RESERVED. No set may hold it yet */
 
 /* hook */
 #define BB_HOOK_ABI_VERSION UINT32_C(2) /* The hook kind's ABI version: v1.5.5 shipped `1` (`HOOK_ABI_VERSION`), so 1.6.0 ships `2`. */
@@ -283,6 +297,8 @@ extern "C" {
 #define BB_HOOK_CANCEL_RACED_TO_COMPLETION UINT32_C(1) /* The op had already completed when the cancel arrived (a race with the deadline); its */
 #define BB_HOOK_HARD_MAX_ORDER_SLOTS UINT64_C(0x10000) /* The most `order_buf` slots (`u32` entries, not bytes) one answer may state. */
 #define BB_HOOK_HARD_MAX_HEADERS_OUT_LEN UINT64_C(128) /* The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs. */
+#define BB_HOOK_HARD_MAX_MESSAGES UINT64_C(0x10000) /* The most messages one [`PromptView`] may carry (a FAULT ceiling far above any real request). */
+#define BB_HOOK_HARD_MAX_SIGNALS UINT64_C(1024) /* The most signal entries one view may carry (a FAULT ceiling: the catalog holds ten signals). */
 
 /* export */
 #define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`. */
@@ -485,6 +501,8 @@ extern "C" {
 #define BB_HCONN_EGRESS_OPERATOR_INFRASTRUCTURE UINT32_C(2) /* [`Need::egress_class`] `operator-infrastructure`: databases, secret services, directories — */
 #define BB_HCONN_EGRESS_OPEN_WEB UINT32_C(3) /* [`Need::egress_class`] `open-web`: public destinations over a secure connection only. */
 #define BB_HCONN_EGRESS_LOOPBACK_ALLOWED UINT32_C(4) /* [`Need::egress_class`] `loopback-allowed`: a secure connection, or plaintext to loopback; the */
+#define BB_HCONN_KEEP_NAMED UINT32_C(0) /* [`Need::keep_mode`]: only the fields [`Need::keep_response_headers`] names cross. */
+#define BB_HCONN_KEEP_ALL_EXCEPT_DENIED UINT32_C(1) /* [`Need::keep_mode`]: every response head field crosses but the kernel's [`ALWAYS_DENIED`] and */
 #define BB_HCONN_KEEP_RESPONSE_HEADERS_MAX ((size_t)32) /* The most response head fields one need may keep. */
 #define BB_HCONN_SERVICE_ESTABLISH UINT32_C(0) /* Establish a stream for a need on the connector lane. */
 #define BB_HCONN_SERVICE_REJECT_ENDPOINT UINT32_C(1) /* Reject the endpoint a stream landed on; the connector tries the next. */
@@ -535,7 +553,11 @@ extern "C" {
 #define BB_HSVC_OP_HOOK_CALL UINT32_C(17) /* `hook.call`. */
 #define BB_HSVC_OP_RANDOM_FILL UINT32_C(18) /* `random.fill`. */
 #define BB_HSVC_OP_NEED_ADMIT UINT32_C(19) /* `need.admit`. */
-#define BB_HSVC_SERVICES UINT32_C(20) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_TRUST_VERIFY UINT32_C(20) /* `trust.verify`. */
+#define BB_HSVC_OP_RECORDS_SECRET UINT32_C(21) /* `records.secret`. */
+#define BB_HSVC_SERVICES UINT32_C(22) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
+#define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
 #define BB_HSVC_FOUND UINT64_C(1) /* `value` of [`op::RECORDS_GET`]: the record is in span `0`. */
 #define BB_HSVC_CLAIM_WON UINT64_C(1) /* `value` of [`op::RECORDS_CLAIM`]: this call made the claim. */
@@ -554,6 +576,15 @@ extern "C" {
 #define BB_HSVC_TRUST_SAME UINT64_C(2) /* `trust.sight` verdict: the pinned catalogue. */
 #define BB_HSVC_TRUST_DRIFTED UINT64_C(3) /* `trust.sight` verdict: the catalogue moved from its pin. */
 #define BB_HSVC_TRUST_QUARANTINED UINT64_C(4) /* `trust.sight` verdict: the counterparty is quarantined. */
+#define BB_HSVC_SIGNED_VERIFIED UINT64_C(0) /* `trust.verify` verdict: a signature verified against the root key. */
+#define BB_HSVC_SIGNED_NONE UINT64_C(1) /* `trust.verify` verdict: the document carries no signature. */
+#define BB_HSVC_SIGNED_TOO_MANY UINT64_C(2) /* `trust.verify` verdict: more signatures than one document needs. */
+#define BB_HSVC_SIGNED_MALFORMED_HEADER UINT64_C(3) /* `trust.verify` verdict: a protected header that is not an encoded object. */
+#define BB_HSVC_SIGNED_ALGORITHM UINT64_C(4) /* `trust.verify` verdict: a header algorithm other than the root key's; the bytes name it. */
+#define BB_HSVC_SIGNED_CRITICAL UINT64_C(5) /* `trust.verify` verdict: a critical header member this verifier does not implement, named. */
+#define BB_HSVC_SIGNED_MALFORMED_SIGNATURE UINT64_C(6) /* `trust.verify` verdict: a signature that is not one encoded signature of the key's size. */
+#define BB_HSVC_SIGNED_NOT_BY_ROOT UINT64_C(7) /* `trust.verify` verdict: well-formed, and no signature is the root key's. */
+#define BB_HSVC_SIGNED_MALFORMED_ROOT UINT64_C(8) /* `trust.verify` verdict: the declared root key is not a key this verifier reads. */
 #define BB_HSVC_VERIFY_HIT UINT64_C(1) /* `verify.lookup`: a cached entry. */
 #define BB_HSVC_VERIFY_LEAD UINT64_C(2) /* `verify.lookup`: the caller leads. */
 #define BB_HSVC_VERIFY_FOLLOW UINT64_C(3) /* `verify.lookup`: the caller followed a leader, whose entry is in span `0`. */
@@ -586,6 +617,12 @@ typedef uint32_t bb_mech_KindCode;
 #define BB_MECH_KindCode_Export ((bb_mech_KindCode)5)
 #define BB_MECH_KindCode_Plane ((bb_mech_KindCode)6)
 #define BB_MECH_KindCode_Transport ((bb_mech_KindCode)7)
+/* One auth point. Its value is its [`AuthPoints`] bit, so the order is the design's: */
+typedef uint32_t bb_auth_AuthPoint;
+#define BB_AUTH_AuthPoint_Peer ((bb_auth_AuthPoint)1)
+#define BB_AUTH_AuthPoint_Head ((bb_auth_AuthPoint)2)
+#define BB_AUTH_AuthPoint_HeadBody ((bb_auth_AuthPoint)4)
+#define BB_AUTH_AuthPoint_Frame ((bb_auth_AuthPoint)8)
 /* One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of */
 typedef uint8_t bb_export_ExportStream;
 #define BB_EXPORT_ExportStream_Metrics ((bb_export_ExportStream)0)
@@ -736,6 +773,7 @@ typedef struct bb_auth_NamedValue bb_auth_NamedValue;
 typedef struct bb_auth_RequestFacts bb_auth_RequestFacts;
 typedef struct bb_auth_IdentityBuf bb_auth_IdentityBuf;
 typedef struct bb_auth_IdentityOut bb_auth_IdentityOut;
+typedef struct bb_auth_StripName bb_auth_StripName;
 typedef struct bb_auth_VerifyIn bb_auth_VerifyIn;
 typedef struct bb_auth_IdentifyOut bb_auth_IdentifyOut;
 typedef struct bb_auth_BeginLoginIn bb_auth_BeginLoginIn;
@@ -759,6 +797,7 @@ typedef struct bb_hook_RequestView bb_hook_RequestView;
 typedef struct bb_hook_CandidateStatic bb_hook_CandidateStatic;
 typedef struct bb_hook_CandidateDynamic bb_hook_CandidateDynamic;
 typedef struct bb_hook_PromptView bb_hook_PromptView;
+typedef struct bb_hook_MessageView bb_hook_MessageView;
 typedef struct bb_hook_UserView bb_hook_UserView;
 typedef struct bb_hook_BudgetBucketState bb_hook_BudgetBucketState;
 typedef struct bb_hook_DecideIn bb_hook_DecideIn;
@@ -884,6 +923,7 @@ typedef struct bb_hsvc_ClockNowIn bb_hsvc_ClockNowIn;
 typedef struct bb_hsvc_RecordsGetIn bb_hsvc_RecordsGetIn;
 typedef struct bb_hsvc_RecordsListIn bb_hsvc_RecordsListIn;
 typedef struct bb_hsvc_RecordsClaimIn bb_hsvc_RecordsClaimIn;
+typedef struct bb_hsvc_RecordsSecretIn bb_hsvc_RecordsSecretIn;
 typedef struct bb_hsvc_DestJudgeIn bb_hsvc_DestJudgeIn;
 typedef struct bb_hsvc_SignIn bb_hsvc_SignIn;
 typedef struct bb_hsvc_UnitNestIn bb_hsvc_UnitNestIn;
@@ -893,6 +933,7 @@ typedef struct bb_hsvc_WorkSettleIn bb_hsvc_WorkSettleIn;
 typedef struct bb_hsvc_WorkResumeIn bb_hsvc_WorkResumeIn;
 typedef struct bb_hsvc_TrustSightIn bb_hsvc_TrustSightIn;
 typedef struct bb_hsvc_TrustDueIn bb_hsvc_TrustDueIn;
+typedef struct bb_hsvc_TrustVerifyIn bb_hsvc_TrustVerifyIn;
 typedef struct bb_hsvc_VerifyLookupIn bb_hsvc_VerifyLookupIn;
 typedef struct bb_hsvc_VerifyStoreIn bb_hsvc_VerifyStoreIn;
 typedef struct bb_hsvc_EntitlementCheckIn bb_hsvc_EntitlementCheckIn;
@@ -911,6 +952,8 @@ typedef bb_mech_RawOutcome (*bb_mech_Op)(void *, const void *, void *);
 typedef const bb_mech_Door *(*bb_mech_DoorFn)(void);
 /* `host.wake(ctx, ticket)`: callable from any thread, never blocks, never fails. A wake for a */
 typedef void (*bb_mech_WakeFn)(bb_mech_HostCtx, bb_mech_Ticket);
+/* A set of auth points, as a style or a transport declares it: [`POINT_PEER`] | */
+typedef uint32_t bb_auth_AuthPoints;
 /* A host service: `svc(ctx, in, out)`. `extern "C"`: a panic escaping it aborts. */
 typedef bb_mech_RawOutcome (*bb_hsvc_ServiceFn)(bb_mech_HostCtx, const void *, bb_hsvc_ServiceOut *);
 
@@ -1694,9 +1737,6 @@ struct bb_auth_RequestFacts {
     bb_mech_AbiStr canonical_path;
     bb_mech_AbiStr query;
     uint64_t timestamp;
-    uint8_t body_hash[32];
-    uint32_t body_hash_present;
-    uint32_t _reserved;
 };
 
 /* The HOST buffer an identity is written into (request-path results live in host memory). */
@@ -1722,16 +1762,35 @@ struct bb_auth_IdentityOut {
     uint64_t ttl_secs;
     uint32_t groups_len;
     uint32_t _reserved;
+    bb_mech_Span replay_key;
+    uint64_t replay_ttl_secs;
+    bb_mech_Span credential;
 };
 
-/* `verify`'s `in`. */
+/* One credential line or query key an auth names for the transport to strip: a NAME, never a */
+struct bb_auth_StripName {
+    bb_mech_Span name;
+    uint32_t place;
+    uint32_t _reserved;
+};
+
+/* `verify`'s `in`: the request at one AUTH POINT (THE DESIGN, "Auth points and guest lists"). */
 struct bb_auth_VerifyIn {
     bb_mech_InHead head;
     bb_mech_Blob credential;
-    const bb_auth_NamedValue *carrier;
-    size_t carrier_len;
+    const bb_auth_NamedValue *lines;
+    size_t lines_len;
     bb_auth_RequestFacts request;
     bb_auth_IdentityBuf out_buf;
+    uint32_t point;
+    uint32_t _reserved;
+    uint64_t conn;
+    uint64_t unit;
+    bb_mech_Blob peer;
+    bb_mech_Blob body;
+    bb_auth_StripName *strip;
+    uint32_t strip_cap;
+    uint32_t _reserved2;
 };
 
 /* `verify`'s and `complete_login`'s `out`. */
@@ -1741,6 +1800,10 @@ struct bb_auth_IdentifyOut {
     uint32_t needed_groups;
     uint64_t needed_bytes;
     bb_auth_IdentityOut identity;
+    uint32_t decision;
+    uint32_t strip_len;
+    uint32_t needed_strip;
+    uint32_t _reserved;
 };
 
 /* `begin_login`'s `in`. Every field is core-minted or public; there is no secret. */
@@ -1782,6 +1845,7 @@ struct bb_auth_CompleteLoginIn {
     const bb_auth_NamedValue *submitted;
     size_t submitted_len;
     bb_auth_IdentityBuf out_buf;
+    bb_mech_AbiStr nonce;
 };
 
 /* The auth kind's ops table: the shared [`OpsHead`], then the kind's slots, contiguous. */
@@ -1799,7 +1863,7 @@ struct bb_auth_Ops {
 struct bb_auth_StyleDecl {
     bb_mech_AbiStr name;
     uint32_t flags;
-    uint32_t _reserved;
+    uint32_t points;
 };
 
 /* THE AUTH STATEMENT TAIL: `Statement.kind_tail` of an auth plugin. Plain `'static` data. */
@@ -1808,9 +1872,12 @@ struct bb_auth_AuthTail {
     uint32_t caps;
     uint32_t facts;
     uint32_t login_kind;
-    uint32_t _reserved;
+    uint32_t inbound_points;
     const bb_auth_StyleDecl *styles;
     size_t styles_len;
+    bb_mech_AbiStr operator_principal;
+    const bb_mech_AbiStr *credential_kinds;
+    size_t credential_kinds_len;
 };
 
 /* `open_outbound`'s `in`. */
@@ -1853,16 +1920,19 @@ struct bb_auth_FieldsIn {
     bb_mech_InHead head;
     uint64_t handle;
     uint32_t mode;
-    uint32_t _reserved;
+    uint32_t point;
     bb_auth_RequestFacts request;
     bb_mech_Blob caller_credential;
     uint8_t *field_buf;
     size_t field_buf_cap;
     bb_auth_FieldSpan *fields;
     uint32_t fields_cap;
-    uint32_t _reserved2;
+    uint32_t _reserved;
     const bb_auth_NamedValue *headers;
     size_t headers_len;
+    uint64_t conn;
+    uint64_t unit;
+    bb_mech_Blob body;
 };
 
 /* `fields`' `out`. READY with `fields_len == 0` = no auth header. */
@@ -1948,6 +2018,14 @@ struct bb_hook_PromptView {
     bb_mech_AbiStr system;
     uint64_t message_count;
     bb_mech_Blob body;
+    const bb_hook_MessageView *messages;
+    size_t messages_len;
+};
+
+/* One message of the prompt view (OLD `HookMessage`): its role and its flattened text, as 1.5.5's */
+struct bb_hook_MessageView {
+    bb_mech_AbiStr role;
+    bb_mech_AbiStr text;
 };
 
 /* The user view (OLD `CallerIdentity`): present iff `user` access is granted */
@@ -2045,6 +2123,11 @@ struct bb_hook_StageView {
 struct bb_hook_NotifyIn {
     bb_mech_InHead head;
     bb_hook_StageView stage;
+    const bb_hook_SignalEntry *signals;
+    size_t signals_len;
+    bb_hook_PromptView prompt;
+    uint32_t present;
+    uint32_t _reserved;
 };
 
 /* `configure`'s `in`. ARCHITECT review ruling (fresh-Opus M3-SHAPES review, parity item): */
@@ -3006,6 +3089,10 @@ struct bb_hconn_Need {
     const bb_mech_AbiStr *keep_response_headers;
     size_t keep_response_headers_len;
     uint64_t timeout_ms;
+    uint32_t keep_mode;
+    uint32_t _reserved;
+    const bb_mech_AbiStr *deny_response_headers;
+    size_t deny_response_headers_len;
 };
 
 /* The head of every service `in`, in either table. */
@@ -3223,6 +3310,14 @@ struct bb_hsvc_RecordsClaimIn {
     uint64_t ttl_ms;
 };
 
+/* [`op::RECORDS_SECRET`]'s `in`: the secret of one HOST-held credential, of a kind the calling */
+struct bb_hsvc_RecordsSecretIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr kind;
+    bb_mech_AbiStr id;
+    bb_hsvc_ServiceBufs into;
+};
+
 /* [`op::DEST_JUDGE`]'s `in`: judge a destination named inside content against the egress rules of */
 struct bb_hsvc_DestJudgeIn {
     bb_hsvc_ServiceHead head;
@@ -3286,6 +3381,15 @@ struct bb_hsvc_TrustSightIn {
 /* [`op::TRUST_DUE`]'s `in`: the counterparties the kernel's `tick` marked for re-verification, */
 struct bb_hsvc_TrustDueIn {
     bb_hsvc_ServiceHead head;
+    bb_hsvc_ServiceBufs into;
+};
+
+/* [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the */
+struct bb_hsvc_TrustVerifyIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr counterparty;
+    bb_mech_Blob payload;
+    bb_mech_Blob signatures;
     bb_hsvc_ServiceBufs into;
 };
 
@@ -3364,9 +3468,11 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn hook_call;
     bb_hsvc_ServiceFn random_fill;
     bb_hsvc_ServiceFn need_admit;
+    bb_hsvc_ServiceFn trust_verify;
+    bb_hsvc_ServiceFn records_secret;
 };
 
-/* ---- layout proof: 255 of 258 structures are pinned by the golden ---- */
+/* ---- layout proof: 259 of 262 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -3962,16 +4068,13 @@ BB_ASSERT(sizeof(bb_auth_NamedValue) == 40, "bb_auth_NamedValue: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_NamedValue) == 8, "bb_auth_NamedValue: alignment");
 BB_ASSERT(offsetof(bb_auth_NamedValue, name) == 0, "bb_auth_NamedValue.name: offset");
 BB_ASSERT(offsetof(bb_auth_NamedValue, value) == 16, "bb_auth_NamedValue.value: offset");
-BB_ASSERT(sizeof(bb_auth_RequestFacts) == 112, "bb_auth_RequestFacts: size");
+BB_ASSERT(sizeof(bb_auth_RequestFacts) == 72, "bb_auth_RequestFacts: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_RequestFacts) == 8, "bb_auth_RequestFacts: alignment");
 BB_ASSERT(offsetof(bb_auth_RequestFacts, method) == 0, "bb_auth_RequestFacts.method: offset");
 BB_ASSERT(offsetof(bb_auth_RequestFacts, authority) == 16, "bb_auth_RequestFacts.authority: offset");
 BB_ASSERT(offsetof(bb_auth_RequestFacts, canonical_path) == 32, "bb_auth_RequestFacts.canonical_path: offset");
 BB_ASSERT(offsetof(bb_auth_RequestFacts, query) == 48, "bb_auth_RequestFacts.query: offset");
 BB_ASSERT(offsetof(bb_auth_RequestFacts, timestamp) == 64, "bb_auth_RequestFacts.timestamp: offset");
-BB_ASSERT(offsetof(bb_auth_RequestFacts, body_hash) == 72, "bb_auth_RequestFacts.body_hash: offset");
-BB_ASSERT(offsetof(bb_auth_RequestFacts, body_hash_present) == 104, "bb_auth_RequestFacts.body_hash_present: offset");
-BB_ASSERT(offsetof(bb_auth_RequestFacts, _reserved) == 108, "bb_auth_RequestFacts._reserved: offset");
 BB_ASSERT(sizeof(bb_auth_IdentityBuf) == 32, "bb_auth_IdentityBuf: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_IdentityBuf) == 8, "bb_auth_IdentityBuf: alignment");
 BB_ASSERT(offsetof(bb_auth_IdentityBuf, buf) == 0, "bb_auth_IdentityBuf.buf: offset");
@@ -3979,7 +4082,7 @@ BB_ASSERT(offsetof(bb_auth_IdentityBuf, buf_cap) == 8, "bb_auth_IdentityBuf.buf_
 BB_ASSERT(offsetof(bb_auth_IdentityBuf, groups) == 16, "bb_auth_IdentityBuf.groups: offset");
 BB_ASSERT(offsetof(bb_auth_IdentityBuf, groups_cap) == 24, "bb_auth_IdentityBuf.groups_cap: offset");
 BB_ASSERT(offsetof(bb_auth_IdentityBuf, _reserved) == 28, "bb_auth_IdentityBuf._reserved: offset");
-BB_ASSERT(sizeof(bb_auth_IdentityOut) == 80, "bb_auth_IdentityOut: size");
+BB_ASSERT(sizeof(bb_auth_IdentityOut) == 104, "bb_auth_IdentityOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_IdentityOut) == 8, "bb_auth_IdentityOut: alignment");
 BB_ASSERT(offsetof(bb_auth_IdentityOut, subject) == 0, "bb_auth_IdentityOut.subject: offset");
 BB_ASSERT(offsetof(bb_auth_IdentityOut, key_id) == 8, "bb_auth_IdentityOut.key_id: offset");
@@ -3993,21 +4096,42 @@ BB_ASSERT(offsetof(bb_auth_IdentityOut, flags) == 60, "bb_auth_IdentityOut.flags
 BB_ASSERT(offsetof(bb_auth_IdentityOut, ttl_secs) == 64, "bb_auth_IdentityOut.ttl_secs: offset");
 BB_ASSERT(offsetof(bb_auth_IdentityOut, groups_len) == 72, "bb_auth_IdentityOut.groups_len: offset");
 BB_ASSERT(offsetof(bb_auth_IdentityOut, _reserved) == 76, "bb_auth_IdentityOut._reserved: offset");
-BB_ASSERT(sizeof(bb_auth_VerifyIn) == 272, "bb_auth_VerifyIn: size");
+BB_ASSERT(offsetof(bb_auth_IdentityOut, replay_key) == 80, "bb_auth_IdentityOut.replay_key: offset");
+BB_ASSERT(offsetof(bb_auth_IdentityOut, replay_ttl_secs) == 88, "bb_auth_IdentityOut.replay_ttl_secs: offset");
+BB_ASSERT(offsetof(bb_auth_IdentityOut, credential) == 96, "bb_auth_IdentityOut.credential: offset");
+BB_ASSERT(sizeof(bb_auth_StripName) == 16, "bb_auth_StripName: size");
+BB_ASSERT(BB_ALIGNOF(bb_auth_StripName) == 4, "bb_auth_StripName: alignment");
+BB_ASSERT(offsetof(bb_auth_StripName, name) == 0, "bb_auth_StripName.name: offset");
+BB_ASSERT(offsetof(bb_auth_StripName, place) == 8, "bb_auth_StripName.place: offset");
+BB_ASSERT(offsetof(bb_auth_StripName, _reserved) == 12, "bb_auth_StripName._reserved: offset");
+BB_ASSERT(sizeof(bb_auth_VerifyIn) == 320, "bb_auth_VerifyIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_VerifyIn) == 8, "bb_auth_VerifyIn: alignment");
 BB_ASSERT(offsetof(bb_auth_VerifyIn, head) == 0, "bb_auth_VerifyIn.head: offset");
 BB_ASSERT(offsetof(bb_auth_VerifyIn, credential) == 88, "bb_auth_VerifyIn.credential: offset");
-BB_ASSERT(offsetof(bb_auth_VerifyIn, carrier) == 112, "bb_auth_VerifyIn.carrier: offset");
-BB_ASSERT(offsetof(bb_auth_VerifyIn, carrier_len) == 120, "bb_auth_VerifyIn.carrier_len: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, lines) == 112, "bb_auth_VerifyIn.lines: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, lines_len) == 120, "bb_auth_VerifyIn.lines_len: offset");
 BB_ASSERT(offsetof(bb_auth_VerifyIn, request) == 128, "bb_auth_VerifyIn.request: offset");
-BB_ASSERT(offsetof(bb_auth_VerifyIn, out_buf) == 240, "bb_auth_VerifyIn.out_buf: offset");
-BB_ASSERT(sizeof(bb_auth_IdentifyOut) == 192, "bb_auth_IdentifyOut: size");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, out_buf) == 200, "bb_auth_VerifyIn.out_buf: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, point) == 232, "bb_auth_VerifyIn.point: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, _reserved) == 236, "bb_auth_VerifyIn._reserved: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, conn) == 240, "bb_auth_VerifyIn.conn: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, unit) == 248, "bb_auth_VerifyIn.unit: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, peer) == 256, "bb_auth_VerifyIn.peer: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, body) == 280, "bb_auth_VerifyIn.body: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, strip) == 304, "bb_auth_VerifyIn.strip: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, strip_cap) == 312, "bb_auth_VerifyIn.strip_cap: offset");
+BB_ASSERT(offsetof(bb_auth_VerifyIn, _reserved2) == 316, "bb_auth_VerifyIn._reserved2: offset");
+BB_ASSERT(sizeof(bb_auth_IdentifyOut) == 232, "bb_auth_IdentifyOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_IdentifyOut) == 8, "bb_auth_IdentifyOut: alignment");
 BB_ASSERT(offsetof(bb_auth_IdentifyOut, head) == 0, "bb_auth_IdentifyOut.head: offset");
 BB_ASSERT(offsetof(bb_auth_IdentifyOut, verdict) == 96, "bb_auth_IdentifyOut.verdict: offset");
 BB_ASSERT(offsetof(bb_auth_IdentifyOut, needed_groups) == 100, "bb_auth_IdentifyOut.needed_groups: offset");
 BB_ASSERT(offsetof(bb_auth_IdentifyOut, needed_bytes) == 104, "bb_auth_IdentifyOut.needed_bytes: offset");
 BB_ASSERT(offsetof(bb_auth_IdentifyOut, identity) == 112, "bb_auth_IdentifyOut.identity: offset");
+BB_ASSERT(offsetof(bb_auth_IdentifyOut, decision) == 216, "bb_auth_IdentifyOut.decision: offset");
+BB_ASSERT(offsetof(bb_auth_IdentifyOut, strip_len) == 220, "bb_auth_IdentifyOut.strip_len: offset");
+BB_ASSERT(offsetof(bb_auth_IdentifyOut, needed_strip) == 224, "bb_auth_IdentifyOut.needed_strip: offset");
+BB_ASSERT(offsetof(bb_auth_IdentifyOut, _reserved) == 228, "bb_auth_IdentifyOut._reserved: offset");
 BB_ASSERT(sizeof(bb_auth_BeginLoginIn) == 168, "bb_auth_BeginLoginIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_BeginLoginIn) == 8, "bb_auth_BeginLoginIn: alignment");
 BB_ASSERT(offsetof(bb_auth_BeginLoginIn, head) == 0, "bb_auth_BeginLoginIn.head: offset");
@@ -4031,7 +4155,7 @@ BB_ASSERT(offsetof(bb_auth_BeginLoginOut, _reserved) == 100, "bb_auth_BeginLogin
 BB_ASSERT(offsetof(bb_auth_BeginLoginOut, authorize_url) == 104, "bb_auth_BeginLoginOut.authorize_url: offset");
 BB_ASSERT(offsetof(bb_auth_BeginLoginOut, form) == 120, "bb_auth_BeginLoginOut.form: offset");
 BB_ASSERT(offsetof(bb_auth_BeginLoginOut, form_len) == 128, "bb_auth_BeginLoginOut.form_len: offset");
-BB_ASSERT(sizeof(bb_auth_CompleteLoginIn) == 216, "bb_auth_CompleteLoginIn: size");
+BB_ASSERT(sizeof(bb_auth_CompleteLoginIn) == 232, "bb_auth_CompleteLoginIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_CompleteLoginIn) == 8, "bb_auth_CompleteLoginIn: alignment");
 BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, head) == 0, "bb_auth_CompleteLoginIn.head: offset");
 BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, code) == 88, "bb_auth_CompleteLoginIn.code: offset");
@@ -4041,6 +4165,7 @@ BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, code_verifier) == 144, "bb_auth_Comp
 BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, submitted) == 168, "bb_auth_CompleteLoginIn.submitted: offset");
 BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, submitted_len) == 176, "bb_auth_CompleteLoginIn.submitted_len: offset");
 BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, out_buf) == 184, "bb_auth_CompleteLoginIn.out_buf: offset");
+BB_ASSERT(offsetof(bb_auth_CompleteLoginIn, nonce) == 216, "bb_auth_CompleteLoginIn.nonce: offset");
 BB_ASSERT(sizeof(bb_auth_Ops) == 128, "bb_auth_Ops: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_Ops) == 8, "bb_auth_Ops: alignment");
 BB_ASSERT(offsetof(bb_auth_Ops, head) == 0, "bb_auth_Ops.head: offset");
@@ -4054,16 +4179,19 @@ BB_ASSERT(sizeof(bb_auth_StyleDecl) == 24, "bb_auth_StyleDecl: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_StyleDecl) == 8, "bb_auth_StyleDecl: alignment");
 BB_ASSERT(offsetof(bb_auth_StyleDecl, name) == 0, "bb_auth_StyleDecl.name: offset");
 BB_ASSERT(offsetof(bb_auth_StyleDecl, flags) == 16, "bb_auth_StyleDecl.flags: offset");
-BB_ASSERT(offsetof(bb_auth_StyleDecl, _reserved) == 20, "bb_auth_StyleDecl._reserved: offset");
-BB_ASSERT(sizeof(bb_auth_AuthTail) == 40, "bb_auth_AuthTail: size");
+BB_ASSERT(offsetof(bb_auth_StyleDecl, points) == 20, "bb_auth_StyleDecl.points: offset");
+BB_ASSERT(sizeof(bb_auth_AuthTail) == 72, "bb_auth_AuthTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_AuthTail) == 8, "bb_auth_AuthTail: alignment");
 BB_ASSERT(offsetof(bb_auth_AuthTail, head) == 0, "bb_auth_AuthTail.head: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, caps) == 8, "bb_auth_AuthTail.caps: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, facts) == 12, "bb_auth_AuthTail.facts: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, login_kind) == 16, "bb_auth_AuthTail.login_kind: offset");
-BB_ASSERT(offsetof(bb_auth_AuthTail, _reserved) == 20, "bb_auth_AuthTail._reserved: offset");
+BB_ASSERT(offsetof(bb_auth_AuthTail, inbound_points) == 20, "bb_auth_AuthTail.inbound_points: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, styles) == 24, "bb_auth_AuthTail.styles: offset");
 BB_ASSERT(offsetof(bb_auth_AuthTail, styles_len) == 32, "bb_auth_AuthTail.styles_len: offset");
+BB_ASSERT(offsetof(bb_auth_AuthTail, operator_principal) == 40, "bb_auth_AuthTail.operator_principal: offset");
+BB_ASSERT(offsetof(bb_auth_AuthTail, credential_kinds) == 56, "bb_auth_AuthTail.credential_kinds: offset");
+BB_ASSERT(offsetof(bb_auth_AuthTail, credential_kinds_len) == 64, "bb_auth_AuthTail.credential_kinds_len: offset");
 BB_ASSERT(sizeof(bb_auth_OpenOutboundIn) == 152, "bb_auth_OpenOutboundIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_OpenOutboundIn) == 8, "bb_auth_OpenOutboundIn: alignment");
 BB_ASSERT(offsetof(bb_auth_OpenOutboundIn, head) == 0, "bb_auth_OpenOutboundIn.head: offset");
@@ -4094,16 +4222,19 @@ BB_ASSERT(BB_ALIGNOF(bb_auth_FieldsIn) == 8, "bb_auth_FieldsIn: alignment");
 BB_ASSERT(offsetof(bb_auth_FieldsIn, head) == 0, "bb_auth_FieldsIn.head: offset");
 BB_ASSERT(offsetof(bb_auth_FieldsIn, handle) == 88, "bb_auth_FieldsIn.handle: offset");
 BB_ASSERT(offsetof(bb_auth_FieldsIn, mode) == 96, "bb_auth_FieldsIn.mode: offset");
-BB_ASSERT(offsetof(bb_auth_FieldsIn, _reserved) == 100, "bb_auth_FieldsIn._reserved: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, point) == 100, "bb_auth_FieldsIn.point: offset");
 BB_ASSERT(offsetof(bb_auth_FieldsIn, request) == 104, "bb_auth_FieldsIn.request: offset");
-BB_ASSERT(offsetof(bb_auth_FieldsIn, caller_credential) == 216, "bb_auth_FieldsIn.caller_credential: offset");
-BB_ASSERT(offsetof(bb_auth_FieldsIn, field_buf) == 240, "bb_auth_FieldsIn.field_buf: offset");
-BB_ASSERT(offsetof(bb_auth_FieldsIn, field_buf_cap) == 248, "bb_auth_FieldsIn.field_buf_cap: offset");
-BB_ASSERT(offsetof(bb_auth_FieldsIn, fields) == 256, "bb_auth_FieldsIn.fields: offset");
-BB_ASSERT(offsetof(bb_auth_FieldsIn, fields_cap) == 264, "bb_auth_FieldsIn.fields_cap: offset");
-BB_ASSERT(offsetof(bb_auth_FieldsIn, _reserved2) == 268, "bb_auth_FieldsIn._reserved2: offset");
-BB_ASSERT(offsetof(bb_auth_FieldsIn, headers) == 272, "bb_auth_FieldsIn.headers: offset");
-BB_ASSERT(offsetof(bb_auth_FieldsIn, headers_len) == 280, "bb_auth_FieldsIn.headers_len: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, caller_credential) == 176, "bb_auth_FieldsIn.caller_credential: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, field_buf) == 200, "bb_auth_FieldsIn.field_buf: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, field_buf_cap) == 208, "bb_auth_FieldsIn.field_buf_cap: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, fields) == 216, "bb_auth_FieldsIn.fields: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, fields_cap) == 224, "bb_auth_FieldsIn.fields_cap: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, _reserved) == 228, "bb_auth_FieldsIn._reserved: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, headers) == 232, "bb_auth_FieldsIn.headers: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, headers_len) == 240, "bb_auth_FieldsIn.headers_len: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, conn) == 248, "bb_auth_FieldsIn.conn: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, unit) == 256, "bb_auth_FieldsIn.unit: offset");
+BB_ASSERT(offsetof(bb_auth_FieldsIn, body) == 264, "bb_auth_FieldsIn.body: offset");
 BB_ASSERT(sizeof(bb_auth_FieldsOut) == 112, "bb_auth_FieldsOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_FieldsOut) == 8, "bb_auth_FieldsOut: alignment");
 BB_ASSERT(offsetof(bb_auth_FieldsOut, head) == 0, "bb_auth_FieldsOut.head: offset");
@@ -4163,11 +4294,17 @@ BB_ASSERT(offsetof(bb_hook_CandidateDynamic, signals) == 32, "bb_hook_CandidateD
 BB_ASSERT(offsetof(bb_hook_CandidateDynamic, signals_len) == 40, "bb_hook_CandidateDynamic.signals_len: offset");
 BB_ASSERT(offsetof(bb_hook_CandidateDynamic, present) == 48, "bb_hook_CandidateDynamic.present: offset");
 BB_ASSERT(offsetof(bb_hook_CandidateDynamic, _reserved) == 52, "bb_hook_CandidateDynamic._reserved: offset");
-BB_ASSERT(sizeof(bb_hook_PromptView) == 48, "bb_hook_PromptView: size");
+BB_ASSERT(sizeof(bb_hook_PromptView) == 64, "bb_hook_PromptView: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_PromptView) == 8, "bb_hook_PromptView: alignment");
 BB_ASSERT(offsetof(bb_hook_PromptView, system) == 0, "bb_hook_PromptView.system: offset");
 BB_ASSERT(offsetof(bb_hook_PromptView, message_count) == 16, "bb_hook_PromptView.message_count: offset");
 BB_ASSERT(offsetof(bb_hook_PromptView, body) == 24, "bb_hook_PromptView.body: offset");
+BB_ASSERT(offsetof(bb_hook_PromptView, messages) == 48, "bb_hook_PromptView.messages: offset");
+BB_ASSERT(offsetof(bb_hook_PromptView, messages_len) == 56, "bb_hook_PromptView.messages_len: offset");
+BB_ASSERT(sizeof(bb_hook_MessageView) == 32, "bb_hook_MessageView: size");
+BB_ASSERT(BB_ALIGNOF(bb_hook_MessageView) == 8, "bb_hook_MessageView: alignment");
+BB_ASSERT(offsetof(bb_hook_MessageView, role) == 0, "bb_hook_MessageView.role: offset");
+BB_ASSERT(offsetof(bb_hook_MessageView, text) == 16, "bb_hook_MessageView.text: offset");
 BB_ASSERT(sizeof(bb_hook_UserView) == 48, "bb_hook_UserView: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_UserView) == 8, "bb_hook_UserView: alignment");
 BB_ASSERT(offsetof(bb_hook_UserView, key_id) == 0, "bb_hook_UserView.key_id: offset");
@@ -4184,7 +4321,7 @@ BB_ASSERT(offsetof(bb_hook_BudgetBucketState, window_start) == 64, "bb_hook_Budg
 BB_ASSERT(offsetof(bb_hook_BudgetBucketState, budget_period) == 72, "bb_hook_BudgetBucketState.budget_period: offset");
 BB_ASSERT(offsetof(bb_hook_BudgetBucketState, present) == 88, "bb_hook_BudgetBucketState.present: offset");
 BB_ASSERT(offsetof(bb_hook_BudgetBucketState, _reserved) == 92, "bb_hook_BudgetBucketState._reserved: offset");
-BB_ASSERT(sizeof(bb_hook_DecideIn) == 384, "bb_hook_DecideIn: size");
+BB_ASSERT(sizeof(bb_hook_DecideIn) == 400, "bb_hook_DecideIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_DecideIn) == 8, "bb_hook_DecideIn: alignment");
 BB_ASSERT(offsetof(bb_hook_DecideIn, head) == 0, "bb_hook_DecideIn.head: offset");
 BB_ASSERT(offsetof(bb_hook_DecideIn, request) == 88, "bb_hook_DecideIn.request: offset");
@@ -4192,20 +4329,20 @@ BB_ASSERT(offsetof(bb_hook_DecideIn, candidates) == 168, "bb_hook_DecideIn.candi
 BB_ASSERT(offsetof(bb_hook_DecideIn, candidate_dynamics) == 176, "bb_hook_DecideIn.candidate_dynamics: offset");
 BB_ASSERT(offsetof(bb_hook_DecideIn, candidates_len) == 184, "bb_hook_DecideIn.candidates_len: offset");
 BB_ASSERT(offsetof(bb_hook_DecideIn, prompt) == 192, "bb_hook_DecideIn.prompt: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, user) == 240, "bb_hook_DecideIn.user: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, budget_remaining) == 288, "bb_hook_DecideIn.budget_remaining: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, budget) == 296, "bb_hook_DecideIn.budget: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, budget_len) == 304, "bb_hook_DecideIn.budget_len: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, present) == 312, "bb_hook_DecideIn.present: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, _reserved) == 316, "bb_hook_DecideIn._reserved: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, order_buf) == 320, "bb_hook_DecideIn.order_buf: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, order_cap) == 328, "bb_hook_DecideIn.order_cap: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, reject_message_buf) == 336, "bb_hook_DecideIn.reject_message_buf: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, reject_message_cap) == 344, "bb_hook_DecideIn.reject_message_cap: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, restrict_tags_buf) == 352, "bb_hook_DecideIn.restrict_tags_buf: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, restrict_tags_cap) == 360, "bb_hook_DecideIn.restrict_tags_cap: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, rewrite_buf) == 368, "bb_hook_DecideIn.rewrite_buf: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, rewrite_cap) == 376, "bb_hook_DecideIn.rewrite_cap: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, user) == 256, "bb_hook_DecideIn.user: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, budget_remaining) == 304, "bb_hook_DecideIn.budget_remaining: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, budget) == 312, "bb_hook_DecideIn.budget: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, budget_len) == 320, "bb_hook_DecideIn.budget_len: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, present) == 328, "bb_hook_DecideIn.present: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, _reserved) == 332, "bb_hook_DecideIn._reserved: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, order_buf) == 336, "bb_hook_DecideIn.order_buf: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, order_cap) == 344, "bb_hook_DecideIn.order_cap: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, reject_message_buf) == 352, "bb_hook_DecideIn.reject_message_buf: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, reject_message_cap) == 360, "bb_hook_DecideIn.reject_message_cap: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, restrict_tags_buf) == 368, "bb_hook_DecideIn.restrict_tags_buf: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, restrict_tags_cap) == 376, "bb_hook_DecideIn.restrict_tags_cap: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, rewrite_buf) == 384, "bb_hook_DecideIn.rewrite_buf: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, rewrite_cap) == 392, "bb_hook_DecideIn.rewrite_cap: offset");
 BB_ASSERT(sizeof(bb_hook_DecideOut) == 152, "bb_hook_DecideOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_DecideOut) == 8, "bb_hook_DecideOut: alignment");
 BB_ASSERT(offsetof(bb_hook_DecideOut, head) == 0, "bb_hook_DecideOut.head: offset");
@@ -4247,10 +4384,15 @@ BB_ASSERT(offsetof(bb_hook_StageView, status) == 128, "bb_hook_StageView.status:
 BB_ASSERT(offsetof(bb_hook_StageView, _reserved) == 130, "bb_hook_StageView._reserved: offset");
 BB_ASSERT(offsetof(bb_hook_StageView, stage_present) == 132, "bb_hook_StageView.stage_present: offset");
 BB_ASSERT(offsetof(bb_hook_StageView, _reserved2) == 136, "bb_hook_StageView._reserved2: offset");
-BB_ASSERT(sizeof(bb_hook_NotifyIn) == 232, "bb_hook_NotifyIn: size");
+BB_ASSERT(sizeof(bb_hook_NotifyIn) == 320, "bb_hook_NotifyIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_NotifyIn) == 8, "bb_hook_NotifyIn: alignment");
 BB_ASSERT(offsetof(bb_hook_NotifyIn, head) == 0, "bb_hook_NotifyIn.head: offset");
 BB_ASSERT(offsetof(bb_hook_NotifyIn, stage) == 88, "bb_hook_NotifyIn.stage: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, signals) == 232, "bb_hook_NotifyIn.signals: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, signals_len) == 240, "bb_hook_NotifyIn.signals_len: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, prompt) == 248, "bb_hook_NotifyIn.prompt: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, present) == 312, "bb_hook_NotifyIn.present: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, _reserved) == 316, "bb_hook_NotifyIn._reserved: offset");
 BB_ASSERT(sizeof(bb_hook_ConfigureIn) == 136, "bb_hook_ConfigureIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_ConfigureIn) == 8, "bb_hook_ConfigureIn: alignment");
 BB_ASSERT(offsetof(bb_hook_ConfigureIn, head) == 0, "bb_hook_ConfigureIn.head: offset");
@@ -4999,7 +5141,7 @@ BB_ASSERT(offsetof(bb_transport_AdoptIn, facts) == 96, "bb_transport_AdoptIn.fac
 BB_ASSERT(offsetof(bb_transport_AdoptIn, leftover) == 104, "bb_transport_AdoptIn.leftover: offset");
 BB_ASSERT(offsetof(bb_transport_AdoptIn, leftover_len) == 112, "bb_transport_AdoptIn.leftover_len: offset");
 BB_ASSERT(offsetof(bb_transport_AdoptIn, sink) == 120, "bb_transport_AdoptIn.sink: offset");
-BB_ASSERT(sizeof(bb_hconn_Need) == 120, "bb_hconn_Need: size");
+BB_ASSERT(sizeof(bb_hconn_Need) == 144, "bb_hconn_Need: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_Need) == 8, "bb_hconn_Need: alignment");
 BB_ASSERT(offsetof(bb_hconn_Need, direction) == 0, "bb_hconn_Need.direction: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, egress_class) == 4, "bb_hconn_Need.egress_class: offset");
@@ -5011,6 +5153,10 @@ BB_ASSERT(offsetof(bb_hconn_Need, details) == 72, "bb_hconn_Need.details: offset
 BB_ASSERT(offsetof(bb_hconn_Need, keep_response_headers) == 96, "bb_hconn_Need.keep_response_headers: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, keep_response_headers_len) == 104, "bb_hconn_Need.keep_response_headers_len: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, timeout_ms) == 112, "bb_hconn_Need.timeout_ms: offset");
+BB_ASSERT(offsetof(bb_hconn_Need, keep_mode) == 120, "bb_hconn_Need.keep_mode: offset");
+BB_ASSERT(offsetof(bb_hconn_Need, _reserved) == 124, "bb_hconn_Need._reserved: offset");
+BB_ASSERT(offsetof(bb_hconn_Need, deny_response_headers) == 128, "bb_hconn_Need.deny_response_headers: offset");
+BB_ASSERT(offsetof(bb_hconn_Need, deny_response_headers_len) == 136, "bb_hconn_Need.deny_response_headers_len: offset");
 BB_ASSERT(sizeof(bb_hconn_EstablishIn) == 64, "bb_hconn_EstablishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_EstablishIn) == 8, "bb_hconn_EstablishIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, head) == 0, "bb_hconn_EstablishIn.head: offset");
@@ -5176,6 +5322,12 @@ BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, head) == 0, "bb_hsvc_RecordsClaimIn.h
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, kind) == 24, "bb_hsvc_RecordsClaimIn.kind: offset");
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, key) == 40, "bb_hsvc_RecordsClaimIn.key: offset");
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, ttl_ms) == 56, "bb_hsvc_RecordsClaimIn.ttl_ms: offset");
+BB_ASSERT(sizeof(bb_hsvc_RecordsSecretIn) == 88, "bb_hsvc_RecordsSecretIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_RecordsSecretIn) == 8, "bb_hsvc_RecordsSecretIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_RecordsSecretIn, head) == 0, "bb_hsvc_RecordsSecretIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_RecordsSecretIn, kind) == 24, "bb_hsvc_RecordsSecretIn.kind: offset");
+BB_ASSERT(offsetof(bb_hsvc_RecordsSecretIn, id) == 40, "bb_hsvc_RecordsSecretIn.id: offset");
+BB_ASSERT(offsetof(bb_hsvc_RecordsSecretIn, into) == 56, "bb_hsvc_RecordsSecretIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_DestJudgeIn) == 80, "bb_hsvc_DestJudgeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_DestJudgeIn) == 8, "bb_hsvc_DestJudgeIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, head) == 0, "bb_hsvc_DestJudgeIn.head: offset");
@@ -5224,6 +5376,13 @@ BB_ASSERT(sizeof(bb_hsvc_TrustDueIn) == 56, "bb_hsvc_TrustDueIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustDueIn) == 8, "bb_hsvc_TrustDueIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TrustDueIn, head) == 0, "bb_hsvc_TrustDueIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustDueIn, into) == 24, "bb_hsvc_TrustDueIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_TrustVerifyIn) == 120, "bb_hsvc_TrustVerifyIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustVerifyIn) == 8, "bb_hsvc_TrustVerifyIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, head) == 0, "bb_hsvc_TrustVerifyIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, counterparty) == 24, "bb_hsvc_TrustVerifyIn.counterparty: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, payload) == 40, "bb_hsvc_TrustVerifyIn.payload: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, signatures) == 64, "bb_hsvc_TrustVerifyIn.signatures: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, into) == 88, "bb_hsvc_TrustVerifyIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_VerifyLookupIn) == 72, "bb_hsvc_VerifyLookupIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_VerifyLookupIn) == 8, "bb_hsvc_VerifyLookupIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_VerifyLookupIn, head) == 0, "bb_hsvc_VerifyLookupIn.head: offset");
@@ -5261,7 +5420,7 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_NeedAdmitIn) == 4, "bb_hsvc_NeedAdmitIn: alignment"
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, head) == 0, "bb_hsvc_NeedAdmitIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, need) == 24, "bb_hsvc_NeedAdmitIn.need: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, _reserved) == 28, "bb_hsvc_NeedAdmitIn._reserved: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 168, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 184, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5285,6 +5444,8 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, content_scan) == 136, "bb_hsvc_HostSlots.c
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_call) == 144, "bb_hsvc_HostSlots.hook_call: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, random_fill) == 152, "bb_hsvc_HostSlots.random_fill: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 160, "bb_hsvc_HostSlots.need_admit: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 168, "bb_hsvc_HostSlots.trust_verify: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 176, "bb_hsvc_HostSlots.records_secret: offset");
 #endif
 
 #ifdef __cplusplus

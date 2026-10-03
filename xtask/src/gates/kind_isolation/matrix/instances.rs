@@ -43,13 +43,13 @@
 //! compiler reads it (escapes decoded, adjacent literals joined — [`super::decoded_line`]), so
 //! `"\x6f\x74lp"` and `concat!("ot", "lp")` are `"otlp"`.
 //!
-//! ## ARMED AT TODAY'S NUMBER
+//! ## PRESENCE, NOT SIZE
 //!
-//! Every non-zero cell carries an `[[instance]]` row in `qa/kind-isolation.toml` with TODAY'S
-//! measured count (a first measurement, not a raise). The ratchet is exact in both
-//! directions like `[[cell]]`: a rise is the landing that grew the naming, a fall with the row left
-//! standing is stale slack, and a row over a zero cell is dead. The ship twin owes zero in every
-//! neutral crate through the Law 0 class. The drain is Phase 4's.
+//! Every non-zero cell carries an `[[instance]]` row in `qa/kind-isolation.toml` — crate and kind,
+//! no count, exactly like `[[cell]]`. Size is not a CI check (owner 2026-10-02): a cell with no row
+//! is a NEW naming and is RED (`unlisted-instance`), a row over a zero cell is dead, and more names
+//! inside a listed cell change nothing here. The ship twin owes zero in every neutral crate through
+//! the Law 0 class. The drain is Phase 4's.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -472,6 +472,101 @@ fn file_literals(rel: &str, text: &str) -> std::sync::Arc<Vec<(usize, String)>> 
     out
 }
 
+/// THE INSTANCE NAMES THAT ARE ALSO AN HTTP WORD (TODO: "a word collision never raises a cell: it
+/// gets a mask"; ARCHITECT ruling 2026-09-30, kernel × auth instance-ratchet +14). `header` is the
+/// auth instance `busbar-auth-header`'s id, and it is also the word HTTP uses for a request line:
+/// RFC 9728's `bearer_methods_supported: ["header"]` (customer bytes), the config's credential
+/// placement, a JSON object's key, a panic message. When the census learned `header` from the new
+/// crate's name, 8 pre-existing kernel lines of that word started counting as kernel × auth.
+///
+/// A `"header"` literal is masked ONLY in these contexts (see [`word_collisions`]):
+///
+/// * PROSE — it sits in a `.rs` `//` comment (a doc quoting a value);
+/// * A PANIC MESSAGE — it is the whole argument of `.expect(…)`;
+/// * AN OBJECT KEY — it is followed by `:` (not `::`): `json!({"header": …})`, a `.json` key;
+/// * THE RFC 9728/6750 BEARER METHOD — its line, or the non-blank line before it, names
+///   `bearer_methods_supported`;
+/// * A CREDENTIAL PLACEMENT — in a `.json`, an element of a `"variants": [` array of a type whose
+///   name ends `Placement` (the config schema's `CredentialPlacement`);
+/// * AN OPENAPI LOCATION — the string value of an OpenAPI `"in":` key (a parameter's or a
+///   securityScheme's location, customer bytes: `"in": "header"`; ARCHITECT ruling 2026-09-30,
+///   WIRE-AUTH RISE (a), `busbar-core-admin × auth` +31).
+///
+/// Everything else still counts: `m == "header"`, `lookup("header", …)`, `const AUTH_MODULE: &str
+/// = "header"`, a match arm, a list element. The mask only ever LOWERS a cell; it never re-spells
+/// a name (Q81), and a literal spelled any other way (`" header"`, a `concat!`) is not masked.
+pub(super) const COLLIDING_LITERALS: &[&str] = &["header"];
+
+/// How many `"word"` literals on line `at` (0-based) of `lines`, a file at `rel`, are the WORD and
+/// not the instance (see [`COLLIDING_LITERALS`]).
+fn word_collisions(rel: &str, lines: &[&str], at: usize, word: &str) -> usize {
+    let Some(line) = lines.get(at).copied() else {
+        return 0;
+    };
+    let low = line.to_ascii_lowercase();
+    let quoted = format!("\"{word}\"");
+    let prose_at = if rel.ends_with(".rs") {
+        super::comment_start(line)
+    } else {
+        None
+    };
+    let prev = lines[..at]
+        .iter()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .copied()
+        .unwrap_or("");
+    let bearer_method =
+        line.contains("bearer_methods_supported") || prev.contains("bearer_methods_supported");
+    let placement = rel.ends_with(".json") && placement_variant(lines, at);
+    let mut n = 0;
+    let mut from = 0;
+    while let Some(off) = low[from..].find(&quoted) {
+        let i = from + off;
+        let j = i + quoted.len();
+        from = j;
+        let before = line[..i].trim_end();
+        let after = line[j..].trim_start();
+        let prose = prose_at.is_some_and(|p| i >= p);
+        let message = before.ends_with(".expect(") && after.starts_with(')');
+        let key = after.starts_with(':') && !after.starts_with("::");
+        let openapi_in = before.ends_with("\"in\":");
+        if prose || message || key || bearer_method || placement || openapi_in {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Whether line `at` of a `.json` sits in a `"variants": [` array of a type named `…Placement`.
+fn placement_variant(lines: &[&str], at: usize) -> bool {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut k = at;
+    let open = loop {
+        if k == 0 {
+            return false;
+        }
+        k -= 1;
+        let t = lines[k].trim();
+        if t.contains(']') {
+            return false;
+        }
+        if t.ends_with('[') {
+            if !t.starts_with("\"variants\"") {
+                return false;
+            }
+            break k;
+        }
+    };
+    let depth = indent(lines[open]);
+    let owner = lines[..open]
+        .iter()
+        .rev()
+        .find(|l| indent(l) < depth && l.trim_end().ends_with('{'));
+    let name = owner.map_or("", |l| l.trim().trim_end_matches(&['{', ':', ' ', '"'][..]));
+    name.trim_start_matches('"').ends_with("Placement")
+}
+
 /// THE FIVE AXES, MEASURED over every `Family::Neutral` crate.
 pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) -> Instances {
     let by_dir: BTreeMap<&str, &CrateInfo> = crates
@@ -500,10 +595,28 @@ pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) 
         let Some(c) = by_dir.get(dir.as_str()) else {
             continue;
         };
-        for (line, lit) in file_literals(rel, text).iter() {
+        let lits = file_literals(rel, text);
+        let collides = |l: &String| COLLIDING_LITERALS.contains(&l.as_str());
+        let lines: Vec<&str> = if lits.iter().any(|(_, l)| collides(l)) {
+            text.lines().collect()
+        } else {
+            Vec::new()
+        };
+        // Per line and colliding word: how many of its literals are still the word, not the name.
+        let mut words_left: BTreeMap<(usize, &str), usize> = BTreeMap::new();
+        for (line, lit) in lits.iter() {
             let Some(kinds) = lookup.get(lit) else {
                 continue;
             };
+            if let Some(w) = COLLIDING_LITERALS.iter().find(|w| **w == lit.as_str()) {
+                let left = words_left
+                    .entry((*line, *w))
+                    .or_insert_with(|| word_collisions(rel, &lines, line - 1, w));
+                if *left > 0 {
+                    *left -= 1;
+                    continue;
+                }
+            }
             for (k, owners) in kinds {
                 // A crate is never measured against its own name.
                 if owners.contains(&c.name.as_str()) {
@@ -535,7 +648,23 @@ fn heaviest(cell: &Cell) -> String {
         .join(", ")
 }
 
-/// THE RATCHET — every finding the `[[instance]]` table owes, exact in both directions.
+/// The files a cell's names sit in, heaviest first, WITHOUT their counts: a finding that is about
+/// presence names where to look and carries no figure (size is not a CI check, owner 2026-10-02).
+fn files_of(cell: &Cell) -> String {
+    let mut per: BTreeMap<&str, usize> = BTreeMap::new();
+    for h in &cell.hits {
+        if let Some(at) = h.split('\t').nth(1).and_then(|p| p.rsplit_once(':')) {
+            *per.entry(at.0).or_default() += 1;
+        }
+    }
+    let mut v: Vec<(&str, usize)> = per.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    v.truncate(6);
+    v.iter().map(|(f, _)| *f).collect::<Vec<_>>().join(", ")
+}
+
+/// EVERY FINDING THE `[[instance]]` TABLE OWES — presence only: an unlisted cell, a dead row, a
+/// duplicate row.
 pub fn offenders(
     measured: &Instances,
     vocab: &Vocab,
@@ -557,10 +686,10 @@ pub fn offenders(
         }
     }
 
-    let mut listed: BTreeMap<(String, String), i64> = BTreeMap::new();
+    let mut listed: BTreeSet<(String, String)> = BTreeSet::new();
     let mut seen: BTreeMap<(String, String), usize> = BTreeMap::new();
     for c in &reg.instance_cells {
-        listed.insert((c.krate.clone(), c.kind.clone()), c.count);
+        listed.insert((c.krate.clone(), c.kind.clone()));
         *seen.entry((c.krate.clone(), c.kind.clone())).or_default() += 1;
     }
     for ((krate, kind), n) in seen {
@@ -573,33 +702,17 @@ pub fn offenders(
     }
 
     for ((krate, kind), cell) in measured {
-        let key = (krate.clone(), (*kind).to_string());
-        match listed.get(&key) {
-            None => out.push(format!(
-                "unlisted-instance\t{krate} \u{d7} {kind} = {}\t{krate} names {} `{kind}` \
-                 instance(s) as a value and there is no `[[{TABLE}]] crate = \"{krate}\", kind = \
-                 \"{kind}\"` in {led}. C1: core names no instance. {}",
-                cell.count,
-                cell.count,
-                heaviest(cell)
-            )),
-            Some(&n) if n as usize != cell.count => {
-                let verb = if (n as usize) < cell.count {
-                    "RAISED — this landing grew the naming"
-                } else {
-                    "STALE SLACK — the count fell and the ceiling did not; slack is how drift hides"
-                };
-                out.push(format!(
-                    "instance-ratchet\t{krate} \u{d7} {kind}\tceiling {n} vs measured {} ({verb}). \
-                     The ceiling must equal the count, exactly. {}",
-                    cell.count,
-                    heaviest(cell)
-                ));
-            }
-            Some(_) => {}
+        if cell.count == 0 || listed.contains(&(krate.clone(), (*kind).to_string())) {
+            continue;
         }
+        out.push(format!(
+            "unlisted-instance\t{krate} \u{d7} {kind}\t{krate} names `{kind}` instances as a \
+             value and there is no `[[{TABLE}]] crate = \"{krate}\", kind = \"{kind}\"` in \
+             {led}. C1: core names no instance. In: {}",
+            files_of(cell)
+        ));
     }
-    for (krate, kind) in listed.keys() {
+    for (krate, kind) in &listed {
         let live = measured
             .iter()
             .any(|((k, kd), c)| k == krate && kd == kind && c.count > 0);
@@ -681,7 +794,7 @@ fn one_name_per_axis(cx: &crate::ctx::Ctx) -> Result<Vec<(&'static str, String)>
     Ok(out)
 }
 
-/// THE STALE-SLACK FIXTURE'S CRATE: a neutral `kernel`-kind crate that exists only in the overlay,
+/// THE FIXTURE CRATE: a neutral `kernel`-kind crate that exists only in the overlay,
 /// so the instance cases measure a cell no live crate owns and no fold can take away.
 // qa-names: crates/busbar-kernel-planted -- xtask/src/gates/kind_isolation/matrix/instances.rs -- an overlay-only fixture crate the instance and cell cases plant whole (manifest and sources); it is absent from the tree on purpose, so no live crate or fold decides what those cases measure
 pub(super) const FIXTURE_DIR: &str = "crates/busbar-kernel-planted";
@@ -758,7 +871,7 @@ pub fn selftest<'a>(
                 super::plant(cx, &rel, &body),
                 &[
                     "unlisted-instance",
-                    &format!("{CORE_NAME} \u{d7} {k} = 1"),
+                    &format!("{CORE_NAME} \u{d7} {k}"),
                     &rel,
                 ],
             ));
@@ -768,19 +881,21 @@ pub fn selftest<'a>(
         return;
     }
 
-    // THE BREACH ITSELF, ONE MORE: the kernel growing its closed list of export instance names.
+    // PRESENCE, NOT SIZE (owner 2026-10-02: size is not a CI check). The kernel's export cell is
+    // a listed `[[instance]]` row, so one more export instance name inside it is not a new edge and
+    // adds no finding. The RED half of the same rule is every `unlisted-instance` case above: a
+    // cell with no row at all.
     if let Some((_, name)) = names.iter().find(|(k, _)| *k == "export") {
-        report.push(prove_rows_red(
+        report.push(prove_rows_green(
             cx,
             gate,
-            "the kernel naming one more export instance is a RAISED instance cell",
+            "the kernel naming one more export instance inside its listed cell adds no finding",
             &[ROW_MATRIX],
             super::plant(
                 cx,
                 "crates/busbar-kernel/src/planted_export_instance.rs",
                 &format!("pub const ALSO: &str = \"{name}\";\n"),
             ),
-            &["instance-ratchet", "busbar-kernel \u{d7} export", "RAISED"],
         ));
     }
 
@@ -803,7 +918,7 @@ pub fn selftest<'a>(
         ov,
         &[
             "unlisted-instance",
-            "busbar-core-connector \u{d7} store = 1",
+            "busbar-core-connector \u{d7} store",
             "planted_new_store.rs",
         ],
     ));
@@ -821,6 +936,109 @@ pub fn selftest<'a>(
             "pub const FROB_MODULE: &str = \"frobnicate\";\n",
         ),
         &["unattributed-instance-name", "frobnicate", "FROB_MODULE"],
+    ));
+
+    // A WORD COLLISION NEVER RAISES A CELL: IT GETS A MASK — and the mask is not a hole. Core
+    // writing `"header"` as the HTTP word, in every masked shape the kernel holds (a doc, a panic
+    // message, a JSON key, RFC 9728's bearer method, the config's credential placement), is no
+    // auth instance; the same file with ONE real reference to the `header` auth instance added
+    // counts exactly that one. The auth-header manifest is planted only if the tree has none, so
+    // the pair measures the `header` instance whatever the crate's future.
+    let header_words = || {
+        let mut ov = super::plant(
+            cx,
+            &format!("{CORE}/src/planted_header_words.rs"),
+            "/// `bearer_methods_supported` is `[\"header\"]` and is not a parameter.\n\
+             pub fn doc() -> serde_json::Value {\n    \
+                 let _ = std::str::from_utf8(b\"x\").expect(\"header\");\n    \
+                 let _ = serde_json::json!({\"header\": 1, \"trim_start\": false});\n    \
+                 let _ = (\n        \"bearer_methods_supported\",\n        \
+                 vec![\"header\"],\n    );\n    \
+                 serde_json::json!({\"bearer_methods_supported\": [\"header\"]})\n\
+             }\n",
+        );
+        let schema = "{\n  \"types\": {\n    \"CredentialPlacement\": {\n      \"kind\": \
+                      \"enum\",\n      \"variants\": [\n        \"bearer\",\n        \
+                      \"header\"\n      ]\n    }\n  }\n}\n";
+        ov.set(
+            format!("{CORE}/src/planted-schema.snapshot.json"),
+            schema.to_string(),
+        );
+        const AUTH_HEADER: &str = "crates/busbar-auth-header/Cargo.toml";
+        if !cx.exists(AUTH_HEADER) {
+            ov.set(
+                AUTH_HEADER,
+                "[package]\nname = \"busbar-auth-header\"\nversion = \"0.0.0\"\n".to_string(),
+            );
+        }
+        ov
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "`\"header\"` as the HTTP word (doc, panic message, JSON key, bearer method, credential \
+         placement) is no auth instance",
+        &[ROW_MATRIX],
+        header_words(),
+    ));
+    let mut real = header_words();
+    real.set(
+        format!("{CORE}/src/planted_header_pick.rs"),
+        "pub fn pick(module: &str) -> bool {\n    module == \"header\"\n}\n".to_string(),
+    );
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a real reference to the `header` auth instance still counts beside the masked words",
+        &[ROW_MATRIX],
+        real,
+        &[
+            "unlisted-instance",
+            "busbar-core-connector \u{d7} auth = 1",
+            "planted_header_pick.rs",
+        ],
+    ));
+
+    // THE OPENAPI LOCATION in core-admin: `"in": "header"` (customer bytes) is the HTTP word and
+    // leaves core-admin × auth where it was; a bare `"header"` instance literal in the same crate
+    // still raises it.
+    const ADMIN: &str = "crates/busbar-core-admin";
+    let openapi = || {
+        let mut ov = super::plant(
+            cx,
+            &format!("{ADMIN}/src/planted_openapi.json"),
+            "{\n  \"parameters\": [\n    {\n      \"in\": \"header\",\n      \"name\": \
+             \"If-Match\"\n    }\n  ],\n  \"adminToken\": {\"type\": \"apiKey\", \"in\": \
+             \"header\", \"name\": \"x\"}\n}\n",
+        );
+        const AUTH_HEADER: &str = "crates/busbar-auth-header/Cargo.toml";
+        if !cx.exists(AUTH_HEADER) {
+            ov.set(
+                AUTH_HEADER,
+                "[package]\nname = \"busbar-auth-header\"\nversion = \"0.0.0\"\n".to_string(),
+            );
+        }
+        ov
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "an OpenAPI `\"in\": \"header\"` location in core-admin is no auth instance",
+        &[ROW_MATRIX],
+        openapi(),
+    ));
+    let mut bare = openapi();
+    bare.set(
+        format!("{ADMIN}/src/planted_header_pick.rs"),
+        "pub fn pick(module: &str) -> bool {\n    module == \"header\"\n}\n".to_string(),
+    );
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a bare `header` instance literal in core-admin still raises core-admin × auth",
+        &[ROW_MATRIX],
+        bare,
+        &["instance-ratchet", "busbar-core-admin \u{d7} auth"],
     ));
 
     // A CRATE IS NEVER MEASURED AGAINST ITS OWN NAME — the store instance writing its own id is
@@ -878,7 +1096,7 @@ pub fn selftest<'a>(
         core_word(false, false),
         &[
             "unlisted-instance",
-            &format!("{CORE_NAME} \u{d7} auth = 1"),
+            &format!("{CORE_NAME} \u{d7} auth"),
             "planted_core_word.rs",
         ],
     ));
@@ -931,67 +1149,68 @@ pub fn selftest<'a>(
         &["bad-core-name-cite", "zebedee"],
     ));
 
-    // THE RATCHET IS EXACT BOTH WAYS, and a ceiling for an axis nothing measures is refused at load.
+    // A LISTED CELL IS GREEN, AND A ROW FOR AN AXIS NOTHING MEASURES IS REFUSED AT LOAD.
     //
-    // THE STALE-SLACK CASE BUILDS ITS OWN ROW, ON A CRATE IT BUILDS. It used to add 1 to the live
-    // `busbar-kernel × export` ceiling, a cell whose ceiling sits BELOW its count on this tree (54
-    // vs 79, RAISED — owner question Q77): ceiling + 1 is still below the count, so the planted run
-    // could only say RAISED again and never STALE SLACK — a proof that could not be had (item 89).
-    // Its later fixtures were live crates' cells (`busbar-timing` until that crate folded into
-    // the kernel, then `busbar-kernel-scope`), and a live crate is one a fold can take away. So
-    // the fixture is now wholly the battery's: [`FIXTURE_CRATE`], a neutral kernel-kind crate that
-    // exists only in the overlay, names the store instance `memory` once, and the ledger gains an
-    // `[[instance]]` row for exactly that cell. At `count = "1"` the row equals its measurement and
-    // the row is GREEN (the control below); at `count = "2"` the ceiling sits one above the count,
-    // which is the stale slack this case exists to prove the ratchet refuses. Only the number
-    // differs between the two plants.
+    // THE FIXTURE IS WHOLLY THE BATTERY'S: [`FIXTURE_CRATE`], a neutral kernel-kind crate that
+    // exists only in the overlay, names the store instance `memory` once. With an `[[instance]]`
+    // row for exactly that cell it is GREEN; without one it is `unlisted-instance` (RED). Only the
+    // row differs between the two plants. The row carries no count — presence only (owner
+    // 2026-10-02) — and a `count` written back into it is refused at load.
     //
-    // THE ROW PRE-DATES THE BRANCH IN BOTH, because the base's copy of the ledger is planted with
-    // it. A row that is in no copy of the ledger at the merge-base is `minted-row` whatever its
-    // count, so without that the control could never be green and the red case would be red for
-    // two reasons at once; with it, the count is the only thing either case is about.
-    let slack_fixture = |count: &str| {
+    // THE ROW PRE-DATES THE BRANCH, because the base's copy of the ledger is planted with it. A row
+    // that is in no copy of the ledger at the merge-base is `minted-row`, so without that the
+    // control could never be green; with it, the row is the only thing either case is about.
+    let listed_fixture = |row: Option<&str>| {
         let mut ov = fixture_crate();
         ov.set(
-            format!("{FIXTURE_DIR}/src/planted_slack.rs"),
+            format!("{FIXTURE_DIR}/src/planted_listed.rs"),
             "pub const S: &str = \"memory\";\n".to_string(),
         );
-        let ledger = format!(
-            "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\ncount = \"{count}\"\n",
-            cx.read(super::LEDGER).unwrap_or_default().trim_end()
-        );
-        if let Some(sha) = super::super::debt_free::pinned_base(cx) {
-            ov.set_command(format!("git-show:{sha}:{}", super::LEDGER), ledger.clone());
+        if let Some(extra) = row {
+            let ledger = format!(
+                "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\n{extra}",
+                cx.read(super::LEDGER).unwrap_or_default().trim_end()
+            );
+            if let Some(sha) = super::super::debt_free::pinned_base(cx) {
+                ov.set_command(format!("git-show:{sha}:{}", super::LEDGER), ledger.clone());
+            }
+            ov.set(super::LEDGER, ledger);
         }
-        ov.set(super::LEDGER, ledger);
         ov
     };
     report.push(prove_rows_green(
         cx,
         gate,
-        "an [[instance]] ceiling equal to its count is green (the stale-slack fixture's control)",
+        "an [[instance]] row over a live cell is green, whatever the cell's size",
         &[ROW_MATRIX],
-        slack_fixture("1"),
+        listed_fixture(Some("")),
     ));
     report.push(prove_rows_red(
         cx,
         gate,
-        "an [[instance]] ceiling left above its count is stale slack",
+        "the same cell with no [[instance]] row is an unlisted instance cell",
         &[ROW_MATRIX],
-        slack_fixture("2"),
+        listed_fixture(None),
         &[
-            "instance-ratchet",
+            "unlisted-instance",
             &format!("{FIXTURE_CRATE} \u{d7} store"),
-            "ceiling 2 vs measured 1",
-            "STALE SLACK",
+            "planted_listed.rs",
         ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `count` written back into an [[instance]] row is refused at load — presence only",
+        &[super::super::ROW_REGISTRY],
+        listed_fixture(Some("count = \"1\"\n")),
+        &["unknown-field", "`[[instance]]` declares `count`"],
     ));
     let text = cx.read(super::LEDGER).unwrap_or_default();
     let mut dead = fixture_crate();
     dead.set(
         super::LEDGER,
         format!(
-            "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\ncount = \"1\"\n",
+            "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\n",
             text.trim_end()
         ),
     );
@@ -1012,7 +1231,7 @@ pub fn selftest<'a>(
             cx,
             super::LEDGER,
             &format!(
-                "{}\n\n[[instance]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"1\"\n",
+                "{}\n\n[[instance]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\n",
                 text.trim_end()
             ),
         ),
@@ -1049,6 +1268,60 @@ mod tests {
         // …and a name split across a concat! is still one name to the per-file reading.
         let lits = file_literals("crates/x/src/a.rs", "let n = concat!(\"ot\", \"lp\");\n");
         assert!(lits.iter().any(|(_, l)| l == "otlp"), "{lits:?}");
+    }
+
+    #[test]
+    fn header_the_http_word_is_masked_and_header_the_instance_is_not() {
+        let n = |rel: &str, text: &str| {
+            let lines: Vec<&str> = text.lines().collect();
+            (0..lines.len())
+                .map(|at| word_collisions(rel, &lines, at, "header"))
+                .sum::<usize>()
+        };
+        // The kernel's eight shapes, one each.
+        let rs = "/// `bearer_methods_supported` is `[\"header\"]` and is not a parameter\n\
+                  /// `[\"header\"]` tells a conforming client not to try the others\n\
+                  doc.insert(\n    \"bearer_methods_supported\".into(),\n    \
+                  Value::from(vec![\"header\"]),\n);\n\
+                  assert_eq!(body[\"bearer_methods_supported\"], json!([\"header\"]));\n\
+                  HeaderValue::from_str(&sig).expect(\"header\"),\n\
+                  HeaderValue::from_str(&x).expect( \"header\" ),\n\
+                  serde_json::json!({\"header\": header, \"trim_start\": trim_start})\n";
+        assert_eq!(n("crates/k/src/a.rs", rs), 7);
+        let json = "{\n  \"CredentialPlacement\": {\n    \"kind\": \"enum\",\n    \
+                    \"variants\": [\n      \"bearer\",\n      \"header\"\n    ]\n  }\n}\n";
+        assert_eq!(
+            n("crates/k/src/config/config-schema.snapshot.json", json),
+            1
+        );
+        // OpenAPI locations, in a `.json` document and in a `.rs` `json!` literal.
+        let openapi = "        \"in\": \"header\",\n\
+                       \"adminToken\": {\"type\": \"apiKey\", \"in\": \"header\", \"name\": X},\n";
+        assert_eq!(n("crates/k/src/v1/json/openapi.json", openapi), 2);
+        assert_eq!(n("crates/k/src/v1/json/handlers.rs", openapi), 2);
+        // THE INSTANCE STILL COUNTS: a comparison, a call argument, a module constant, a match arm,
+        // a list element, a value after a key, and a variant of a type that is not a placement.
+        for real in [
+            "if module == \"header\" {",
+            "lookup_credential(\"header\", key)",
+            "pub const AUTH_MODULE_HEADER: &str = \"header\";",
+            "    \"header\" => Kind::Header,",
+            "const AUTHS: &[&str] = &[\"header\", \"sigv4\"];",
+            "json!({\"module\": \"header\"})",
+            "json!({\"within\": \"header\"})",
+            "path::to::x(\"header\")::y",
+        ] {
+            assert_eq!(n("crates/k/src/a.rs", real), 0, "{real}");
+        }
+        let modules =
+            "{\n  \"AuthModule\": {\n    \"variants\": [\n      \"header\"\n    ]\n  }\n}\n";
+        assert_eq!(n("crates/k/src/s.json", modules), 0);
+        // A prose `//` inside a string is not a comment, and the placement rule is `.json` only.
+        assert_eq!(
+            n("crates/k/src/a.rs", "let u = \"a//b\"; f(\"header\");"),
+            0
+        );
+        assert_eq!(n("crates/k/src/a.yaml", json), 0);
     }
 
     #[test]

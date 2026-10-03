@@ -33,6 +33,8 @@ use std::os::raw::c_void;
 use std::path::Path;
 
 pub mod auth;
+pub mod auth_axis;
+pub mod auth_door;
 // The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
 /// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
@@ -46,7 +48,7 @@ pub mod export;
 pub mod fetch;
 mod ffi_thread;
 pub mod highwater;
-pub mod hook;
+pub mod hook_door;
 mod host;
 /// THE ONE DURABLE-WRITE OWNER, named once for the whole loader: every file or directory the loader
 /// publishes (fetched artifacts, the high-water marks, plugin log directories) goes through it.
@@ -89,7 +91,6 @@ impl LinkedPlugin {
 pub use carrier::{HotReply, ReplyStream, RequestHead, MAX_PLANE_REPLY_LEN};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
-pub use hook::DlopenPolicy;
 pub use host::{install_egress_carrier, EgressCarrier};
 pub use plane::{
     link_plane, load_plane, load_plane_from_bytes, DynPlane, HotClaim, HotDeclaration, ServedPlane,
@@ -161,13 +162,13 @@ pub mod contract_types_are_named_from_the_contract {}
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
-/// `DlopenPolicy`/`DynAuth` carry `name: &'static str`, and a name string used to be `Box::leak`ed on
-/// EVERY open — but `open_hook`/`open_auth` run per config/plugin reload, per `push_configure`, per
+/// The hook routing seam and `DynAuth` carry `name: &'static str`, and a name string used to be
+/// `Box::leak`ed on EVERY open — but hook and auth opens run per config/plugin reload, per `push_configure`, per
 /// `fetch_status` (every Prometheus `/metrics/hooks` scrape refresh), per `fetch_schema`, and per
 /// `resolve_on_error_chain`, so the leak was per-CALL and unbounded over the process lifetime, driven
 /// by routine external scraping. Interning bounds it to ONE leak per DISTINCT plugin name for the life
 /// of the process: a repeated open of the same plugin reuses the interned `&'static str`.
-pub(crate) fn intern_name(name: &str) -> &'static str {
+pub fn intern_name(name: &str) -> &'static str {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
     static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
@@ -256,6 +257,36 @@ fn ffi_guard<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String
 /// `thread_local!` with a destructor on the calling thread, because that is what arms the plugin's
 /// `pthread_key` and puts a destructor inside the image on that thread. See `ffi_thread` for the
 /// full mechanism and `where_the_plugin_arms_its_tls_key` for the measurement that decided the split.
+/// The library's `busbar_abi` entry, or the refusal that names a library without one.
+pub(crate) fn abi_symbol(
+    lib: &Library,
+    display: &str,
+) -> Result<busbar_contract::abi::cold::AbiFn, String> {
+    unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
+        .map(|f| *f)
+        .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))
+}
+
+/// THE PLUGIN-ABI HANDSHAKE, one home for every load path. The cold kinds, the upload vet, the
+/// plane loader and the transport loader each spelled it: four copies. Calls `busbar_abi()` under
+/// the ffi guard (it runs plugin code, so a panic fails the load closed) and refuses a plugin whose
+/// plugin-ABI version is not the engine's, answering the version it verified. `noun` is how the
+/// refusal names it (`plugin`, `plane`, `transport`), so each path's text is unchanged byte for
+/// byte.
+pub(crate) fn abi_handshake(
+    abi: busbar_contract::abi::cold::AbiFn,
+    display: &str,
+    noun: &str,
+) -> Result<u32, String> {
+    let abi_version = ffi_guard_confined(display, "abi", || unsafe { abi() })?;
+    if abi_version != TRANSPORT_VERSION {
+        return Err(format!(
+            "{noun} '{display}' targets transport ABI v{abi_version}, engine speaks v{TRANSPORT_VERSION}"
+        ));
+    }
+    Ok(abi_version)
+}
+
 fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
     ffi_thread::on_plugin_thread(f).map_err(|_| {
         format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
@@ -368,8 +399,7 @@ impl RawPlugin {
             .map_err(|e| TransportError::engine(format!("plugin request encode failed: {e}")))?;
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
-        // Guard the `busbar_call` crossing, for PARITY with the hook seam (`DlopenPolicy::call`).
-        // What this can catch is stated on `ffi_guard`: an unwind from this process's own runtime.
+        // Guard the `busbar_call` crossing. What this can catch is stated on `ffi_guard`: an unwind from this process's own runtime.
         // A dlopened plugin's panic is caught by the SDK on the PLUGIN side (answered as
         // `STATUS_PANIC`, classified below); one that escapes a non-SDK plugin is a foreign
         // exception to this runtime and aborts the process — no host-side guard can turn that into
@@ -737,22 +767,12 @@ fn wire_up(
     // ── 1. Transport handshake FIRST — refuse a non-matching transport before resolving open/call. ──
     // The `busbar_abi()` call runs plugin code, so it too rides `ffi_guard`: a plugin that panics in
     // its handshake fails the load CLOSED instead of aborting the engine during boot/reload.
-    let transport = {
-        let f = match (lib, entry) {
-            (Some(lib), _) => *unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
-                .map_err(|_| {
-                    format!("'{display}' is not a busbar plugin (no busbar_abi symbol)")
-                })?,
-            (None, Some(e)) => e.abi,
-            (None, None) => return Err(format!("'{display}' has no boundary to load")),
-        };
-        ffi_guard_confined(&display, "abi", || unsafe { f() })?
+    let abi = match (lib, entry) {
+        (Some(lib), _) => abi_symbol(lib, &display)?,
+        (None, Some(e)) => e.abi,
+        (None, None) => return Err(format!("'{display}' has no boundary to load")),
     };
-    if transport != TRANSPORT_VERSION {
-        return Err(format!(
-            "plugin '{display}' targets transport ABI v{transport}, engine speaks v{TRANSPORT_VERSION}"
-        ));
-    }
+    abi_handshake(abi, &display, "plugin")?;
 
     // ── 2. Kind bound at load — read the exported kind, cross-check it against the seam AND the
     // signed manifest. Any disagreement is a hard fail-closed load error naming both. ──
@@ -912,7 +932,7 @@ fn wire_up(
     }
     // On the SUCCESS path a well-behaved plugin leaves `err` null, but an ABI-violating
     // plugin may set a non-null `err` alongside `STATUS_OK`. Free it here rather than leaking it on
-    // every load (the hot `fetch_status` → `open_hook` → `wire_up_raw` metrics-scrape path).
+    // every load (the `wire_up_raw` path every cold open takes).
     free_guarded(free, &display, err, err_len);
 
     // Success: disarm the guard and move the library + backing into the RawPlugin (whose fields drop
@@ -1941,16 +1961,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
 /// exit paths cannot each be responsible for routing the unload — the caller unloads once.
 fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
     let display = display.to_string();
-    let transport = {
-        let f = unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
-            .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
-    };
-    if transport != TRANSPORT_VERSION {
-        return Err(format!(
-            "plugin '{display}' targets transport ABI v{transport}, engine speaks v{TRANSPORT_VERSION}"
-        ));
-    }
+    let abi_version = abi_handshake(abi_symbol(lib, &display)?, &display, "plugin")?;
     // The exported kind must be one the engine supports (a range exists for it).
     let plugin_kind = read_plugin_kind(lib, &display)?;
     if supported_abi(&plugin_kind).is_empty() {
@@ -1970,7 +1981,7 @@ fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
         lib.get::<CloseFn>(symbol::CLOSE)
             .map_err(|e| format!("plugin '{display}' missing busbar_close: {e}"))?;
     }
-    Ok(transport)
+    Ok(abi_version)
 }
 
 /// One entry in a plugins-directory inventory: the library filename and whether it validated as a
@@ -2130,16 +2141,12 @@ mod plugin_proof_tests;
 #[path = "tests/auth_conformance_tests.rs"]
 mod auth_conformance_tests;
 
-/// `kind: auth` through both doors, VERIFY VERDICTS: the token cases driven to every verdict
-/// (identify, reject, defer) over a second real auth plugin, one wire and one module either way.
+/// `kind: auth` through both doors on the memory ABI, VERIFY VERDICTS: the token cases driven to
+/// every verdict (identify, reject, pass) over a second real auth plugin, one row and one answer
+/// either way.
 #[cfg(test)]
 #[path = "tests/auth_verify_conformance_tests.rs"]
 mod auth_verify_conformance_tests;
-
-/// `kind: hook` through both doors: one wire, one row, one routing policy.
-#[cfg(test)]
-#[path = "tests/hook_conformance_tests.rs"]
-mod hook_conformance_tests;
 
 /// The dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
 /// arm per mechanism rule.

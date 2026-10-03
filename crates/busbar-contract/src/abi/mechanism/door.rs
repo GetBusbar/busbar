@@ -229,3 +229,18 @@ pub struct KindTailHead {
     /// Alignment padding.
     pub _reserved: u32,
 }
+
+/// THE KIND TAIL GROWTH RULE: a kind tail grows only by APPENDING fields, and its head's `size`
+/// says how much of it the plugin wrote. The host reads the plugin's first `min(size, host)` bytes
+/// and zero-fills the rest, so a field the plugin predates reads absent (`0`, NULL, an empty
+/// string); a newer plugin's bytes past the host's tail are not read. Only a tail smaller than
+/// `frozen`, the kind's size when its tail last froze, is refused (`None`). Returns how many of
+/// the plugin's bytes the host reads.
+#[must_use]
+pub const fn tail_read_len(size: u32, frozen: usize, host: usize) -> Option<usize> {
+    let size = size as usize;
+    if size < frozen {
+        return None;
+    }
+    Some(if size < host { size } else { host })
+}

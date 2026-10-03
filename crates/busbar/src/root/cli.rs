@@ -304,6 +304,15 @@ fn validate_config_command() -> i32 {
         );
         return 1;
     }
+    // THE DESTINATION GUARD, as boot builds it: a bad `advanced.allow_destinations` entry fails
+    // here as it fails the boot.
+    if let Err(e) = crate::root::connector::guard_for(&cfg.destinations()) {
+        eprintln!(
+            "[error] {}: config validation failed:\n  - {e}",
+            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+        );
+        return 1;
+    }
     // PLUGIN PRE-FLIGHT — the EXACT pipeline boot runs (`plugins_preflight` is shared with
     // `build_app_from_config`), so a clean `--validate` means the plugin half of boot succeeds too:
     // consistency (plugins.enabled vs store.module), trust-policy resolution, the three-phase

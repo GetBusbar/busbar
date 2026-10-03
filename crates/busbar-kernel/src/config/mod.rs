@@ -499,6 +499,8 @@ pub struct RootCfg {
     /// DISABLED — every cloud-metadata endpoint is reachable by every provider. Logs a startup WARN.
     /// Default false.
     pub allow_all_metadata: bool,
+    /// The `advanced` destination-guard keys, as written ([`RootCfg::destinations`] adds the rest).
+    pub guard: Destinations,
     /// Fully-resolved operational limits ("NEVER CODED CAPS"), projected from the `limits:` /
     /// `observability:` / `governance:` / `metrics:` / `health:` / `routing:` config sections. Every
     /// value defaults to its historical hardcoded const, so an all-default config is unchanged. Read
@@ -1384,7 +1386,7 @@ impl DeployCfg {
 }
 
 // Moved to `busbar_kernel::config::sections`; re-exported at its historical `config::` path.
-pub use busbar_kernel::config::sections::SecurityCfg;
+pub use busbar_kernel::config::sections::{Destinations, SecurityCfg};
 
 /// The top-level `plugins:` block — the ONLY configuration surface of the dynamic plugin subsystem.
 /// A plugin is a plugin: store, auth, and hook plugins share this one block (one directory, one
@@ -2617,6 +2619,11 @@ pub fn resolve(
             blocked_metadata_hosts: security.blocked_metadata_hosts,
             allow_metadata_hosts: security.allow_metadata_hosts,
             allow_all_metadata: security.allow_all_metadata,
+            guard: Destinations {
+                block_private_addresses: deploy.advanced.block_private_addresses,
+                allow: deploy.advanced.allow_destinations.clone(),
+                ..Destinations::default()
+            },
             // Project the operational-limit sections onto a flat resolved struct. The `advanced:` /
             // `export:` blocks are optional; absent ⇒ their section defaults (the historical
             // hardcoded values, via the manual `Default` impls).
@@ -2641,6 +2648,10 @@ pub fn resolve(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/advanced_destinations_tests.rs"]
+mod advanced_destinations_tests;
 
 #[cfg(test)]
 #[path = "tests/named_map_merge_tests.rs"]

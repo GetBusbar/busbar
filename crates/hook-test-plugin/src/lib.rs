@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A **hermetic trivial `kind: hook` plugin** — a `cdylib` exporting the hook C ABI, used only as TEST
-//! support for the end-to-end `DlopenPolicy` seam tests (the engine loading a real signed `kind: hook`
-//! tarball over the loader and driving decide/transform/notify/configure/describe/status through it).
+//! A **hermetic trivial `kind: hook` plugin** — a `cdylib` exporting the hook kind's door (the
+//! memory ABI, `abi::hook`), used only as TEST support for the end-to-end hook seam tests (the
+//! engine loading a real signed `kind: hook` tarball through the hook axis on the one dispatcher and
+//! driving decide/transform/notify/configure/describe/status through it). Written against the 1.5.5
+//! JSON contract ([`HookHandler`]) and bridged onto the door by the SDK ([`json_hook`]), exactly as a
+//! ported 1.5.5 hook is.
 //! It does NO network and NO real policy work: it exercises the WIRE — it ranks by echoing a
 //! configured order, screens for a configured reject token, rewrites/restricts on demand, and reports
 //! a fixed metric. The point under test is the ENGINE seam (project → busbar_call → parse), not a real
@@ -15,6 +18,8 @@
 //! ```
 //! Both optional: absent `order` → abstain; absent `reject_if_contains` → never rejects on content.
 
+use busbar_contract::abi::hook::{Tail, CLASS_GATE, PROMPT_RW, USER_RO};
+use busbar_contract::abi::sdk::hook::{json_hook, statement_with_tail, tail, Hook, HookOpen};
 use busbar_contract::abi::sdk::HookHandler;
 use serde::Deserialize;
 
@@ -61,19 +66,14 @@ struct HookConfig {
     /// version) — lets a test prove a NACK'd configure does not commit (Err over the seam).
     #[serde(default)]
     nack_configure: bool,
-    /// PANIC inside `decide` — proves a plugin panic is caught (SDK catch_unwind → STATUS_PANIC,
-    /// and the engine's own catch_unwind as defense in depth) and surfaces as a fail-closed `Err`,
-    /// never a torn-down runtime or a crossed unwind. The status is the DISTINCT panic code, NOT
-    /// STATUS_PROTOCOL: that distinction is the whole point of the code existing, since the loader
-    /// keys its safe-default fallback on the unsupported/protocol shapes and a panic must never be
-    /// able to reach it.
+    /// PANIC inside `decide` — proves a plugin panic is caught (the SDK's door answers the op FAULT)
+    /// and surfaces as a fail-closed `Err`, never a torn-down runtime or a crossed unwind.
     #[serde(default)]
     panic_decide: bool,
     /// PANIC inside `transform` — the rewrite-path twin of `panic_decide`, and the fixture a plane
     /// needs to establish what a panicking `prompt: rw` hook ACTUALLY produces at its apply site.
-    /// The answer is not a torn-down task: the SDK's export boundary catches it (STATUS_PANIC), the
-    /// engine's `ffi_guard` maps it to a transport error, and `DlopenPolicy` turns that into
-    /// `TransformOutcome::Failed` — so it is the operator's `on_error` that decides, and the
+    /// The answer is not a torn-down task: the SDK's door catches it (the op answers FAULT) and the
+    /// host's hook seam turns that into `TransformOutcome::Failed` — so it is the operator's `on_error` that decides, and the
     /// plane's `spawn_blocking` join never sees a `JoinError`.
     #[serde(default)]
     panic_transform: bool,
@@ -250,9 +250,7 @@ impl HookHandler for TestGate {
 /// Construct the gate from the engine-passed JSON config. An empty config is fine (a pure-abstain
 /// gate that never rejects); malformed JSON is a fail-closed load error.
 ///
-/// `pub` so the COMPILED-IN arm of the hook both-ways test constructs exactly the handler the
-/// `cdylib`'s `busbar_open` constructs, and drives it through the `dispatch_compiled_in` twin
-/// `export_hook_plugin!` emits beside `busbar_call`.
+/// `pub`: this crate's own tests drive the handler directly; the door opens it through [`Open`].
 pub fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     // Exercises the host log bridge from the one place it matters most — a constructor, where a
     // plugin has something worth reporting and where `tracing::warn!` inside a cdylib goes nowhere.
@@ -299,7 +297,28 @@ pub fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     }))
 }
 
-busbar_contract::abi::sdk::export_hook_plugin!(open);
+/// The plugin's opener on the hook door: [`open`]'s handler over the SDK's JSON bridge.
+pub struct Open;
+
+impl HookOpen for Open {
+    fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
+        open(settings).map(json_hook)
+    }
+}
+
+/// The hook tail: a gate that may be granted the prompt read-write and the user read-only (the
+/// tests grant every combination).
+const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_RO);
+
+busbar_contract::hook_door! {
+    open: Open,
+    statement: statement_with_tail(
+        busbar_contract::abi::sdk::door::statement("busbar-hook-test-plugin", "1.5.0", 64),
+        TAIL,
+    ),
+}
+
+busbar_contract::export_door!(door);
 
 #[cfg(test)]
 #[path = "tests.rs"]

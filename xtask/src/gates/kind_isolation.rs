@@ -52,7 +52,8 @@
 //!   finding rather than a filter: `off-tree-crate` for a crate of a kind living outside
 //!   `crates/<dir>`, `nested-crate` for one buried inside another crate's directory, `unmembered`
 //!   for one on disk and off `[workspace.members]`. All three were walked through by a red team
-//!   with every gate green. The row also holds the census floor, the dead-kind rule, the
+//!   with every gate green. The row also holds `missed-member` (the census reads every
+//!   `[workspace.members]` entry, by name, ARCHITECT 2026-10-02), the dead-kind rule, the
 //!   `qa/construction.toml [gate.plugin_kinds]` cross-check, the [`OFF_TREE_MANIFESTS`] expiry and
 //!   the LEGACY RATCHET.
 //! * `kind-isolation:matrix` — REPORT-ONLY (owner 2026-10-03: the matrix is a measured to-do list,
@@ -60,11 +61,12 @@
 //!   registrations. The rows above hold the line for the WIRES, and none of them looked
 //!   at `crates/busbar`, the COMPOSITION ROOT, where the tree hand-wires one file per plane and
 //!   where a plane-named accept loop was landed on a sibling branch, all of it green because
-//!   nothing counted it. This row counts, for EVERY kind and EVERY crate, how many times that crate
-//!   names that kind's derived vocabulary — every `.rs` and `.toml` under it (never `Cargo.toml`, owner 2026-10-03), WHOLE TEXT, comments
-//!   and tests and filenames included — against per-cell ceilings in
-//!   [`REGISTRY_FILE`]'s `[[edge]]`, `[[cell]]` and `[[disagreement]]` tables, exact in both
-//!   directions. See [`matrix`].
+//!   nothing counted it. This row measures, for EVERY kind and EVERY crate, whether that crate
+//!   names that kind's derived vocabulary — every `.rs` and `.toml` under it (never `Cargo.toml`,
+//!   owner 2026-10-03), WHOLE TEXT, comments and tests and filenames included — and compares every
+//!   such crate × kind EDGE with the rows of [`REGISTRY_FILE`]'s `[[edge]]` and `[[cell]]` tables:
+//!   a new edge, or a row whose edge is gone, is a finding in the row's report-only text, never a
+//!   FAIL. PRESENCE, not size: size is not a CI check (owner 2026-10-02). See [`matrix`].
 //!
 //! ## THE TARGET NAMING SCHEME IS `busbar-<kind>-<name>`, AND THE GATE ACCEPTS BOTH
 //!
@@ -194,19 +196,7 @@ const MAKE_A_NEW_KIND: &str = "make a new plugin kind, do not fuse two";
 /// landings. Read through [`Ctx::read`] like every other input, so a selftest can plant it.
 pub const REGISTRY_FILE: &str = "qa/kind-isolation.toml";
 
-/// A crate census below this is not a tree this gate can be a gate over.
-///
-/// 30, not 50 (item F0b, same shape as F0's `workspace-deps` `MIN_CRATE_MANIFESTS`, `98434a220`).
-/// The Phase 4 fold's planned end state is 35 crates under `crates/`, 34 if `busbar-core-connsec`
-/// folds, and the roster's 33 (docs/design/1.6.0-TODO.md "THE FOLD"; docs/design/BUSBAR-1.6.0.md
-/// crate roster) — at 50 this row was already standing at its own floor pre-fold ("the tree sits
-/// EXACTLY at MIN_MANIFESTS") and would have reddened `:registry` at fold #1. The floor guards
-/// against a BLIND census (an emptied or unreadable `crates/`, a walk that stopped matching), which
-/// finds a handful or nothing; it is not a ratchet on the roster. 30 sits three under the smallest
-/// planned roster variant, so no planned fold trips it, while any walk that loses more than a
-/// third of today's census is still RED.
-const MIN_MANIFESTS: usize = 30;
-/// Likewise for the source walk the vocabulary rule reads.
+/// The floor under the source walk the vocabulary rule reads: a scan of no files names no leak.
 const MIN_SOURCES: usize = 600;
 
 // ------------------------------------------------------------------------------------------------
@@ -418,22 +408,16 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 /// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` and `export`
 /// are pending because their instances live OUTSIDE this repo: the owner deleted the in-tree
 /// fixtures ("FIXTURES", docs/design/1.6.0-QUESTIONS.md) and each kind is proven by its real plugin
-/// repos. `auth` is pending on the same terms: its last in-tree crate, the built-in admin-tokens
-/// module, moved to its own repo and is pulled at a pinned rev.
+/// repos. `auth` is no longer pending (AUTH-SPLIT): busbar-auth-header, busbar-auth-sigv4,
+/// busbar-auth-oauth and busbar-auth-webhook-signature are in-tree, staged auth-kind plugin crates
+/// (ARCHITECT ruling 2026-09-28, placement (B); each extracts to its own repo at KERNEL<>PLUGINS
+/// step 40), so the dead-kind rule watches them like every other kind.
 const PENDING_KINDS: &[(&str, &str)] = &[
     (
         "secret",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
          secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/busbar-secret-vault \
          through crates/plugin-loader/src/tests/plugin_proof_tests.rs",
-    ),
-    (
-        "auth",
-        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         auth fixture is deleted (\"FIXTURES\") and the built-in admin-tokens module moved to \
-         GetBusbar/busbar-auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
-         rev; the kind is proven both ways by crates/plugin-loader/src/tests/auth_conformance_tests.rs \
-         and auth_verify_conformance_tests.rs over the pinned real plugins",
     ),
     (
         "export",
@@ -606,11 +590,13 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // 2026-09-25 "K5d residue"). `plane`, `store` and `transport` were granted as the first crate
     // of each landed; `export` (the built-in sinks, #3 / item 141) and `hooks` (the ranking hooks
     // K5d moved onto the root's linked tables) were left out, so the root doing its job was scored
-    // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` and `secret` are absent because
-    // the root links no crate of either kind; a grant with no edge under it is a sentence about a
-    // tree that does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
+    // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` is granted for the root's rows on
+    // the auth axis (ARCHITECT INTEGRATION U17, 2026-09-30). `secret` is absent because the root
+    // links no crate of that kind; a grant with no edge under it is a sentence about a tree that
+    // does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
     // root's shipped edges and refuses a plugin kind the root links without a grant here. The
     // grant is the ROOT's: a non-root crate reaching a plugin crate is still refused (selftest).
+    ("root", "auth"),
     ("root", "cleanliness"),
     ("root", "contract"),
     ("root", "export"),
@@ -918,12 +904,13 @@ struct MatrixEdge {
     drain: String,
 }
 
-/// One `[[cell]]` row: what one crate's naming of one kind MEASURES TODAY, exactly.
+/// One `[[cell]]` (or `[[instance]]`) row: one crate names one kind's vocabulary at all — a
+/// crate-level cross-kind EDGE that exists and was reviewed. Presence only: size is not a CI check
+/// (owner 2026-10-02), so the row carries no count.
 #[derive(Debug, Clone)]
 struct MatrixCell {
     krate: String,
     kind: String,
-    count: i64,
 }
 
 /// One `[[core-name]]` row: a word the instance vocabulary learns off a module-name constant that is
@@ -942,19 +929,6 @@ struct CoreName {
     kind: String,
     name: String,
     cite: String,
-}
-
-/// One `[[disagreement]]` row: a cell whose two scanners return different totals, and why.
-///
-/// Its own table rather than an optional field on `[[cell]]`, because every other row in this file
-/// is a fixed set of required fields and an optional one would be the first thing a reader has to
-/// remember. A disagreement is also its own fact: it says a spelling exists that one scanner cannot
-/// see, which is a finding about the MEASUREMENT and not about the count.
-#[derive(Debug, Clone)]
-struct MatrixDisagreement {
-    krate: String,
-    kind: String,
-    note: String,
 }
 
 /// One `[[dep]]` row: one crate's dependency on one other crate, in one half of the build graph,
@@ -986,10 +960,10 @@ struct DepEdge {
 
 /// One `[[question]]` row: the question an `owner-ruling-pending` edge is asking.
 ///
-/// Its own table rather than an optional field, on exactly the terms `[[disagreement]]` is: every
-/// row in this file is a fixed set of required fields, and an optional one would be the first thing
-/// a reader has to remember. A question is also its own fact — it says the architecture has not
-/// ruled, which is a statement about the DESIGN and not about the count.
+/// Its own table rather than an optional field: every row in this file is a fixed set of required
+/// fields, and an optional one would be the first thing a reader has to remember. A question is
+/// also its own fact — it says the architecture has not ruled, which is a statement about the
+/// DESIGN and not about the count.
 #[derive(Debug, Clone)]
 struct DepQuestion {
     from: String,
@@ -1028,15 +1002,13 @@ struct KindRegistry {
     dep_questions: Vec<DepQuestion>,
     /// The `:faces` row's table — one row per crate that implements another kind's entry face.
     faces: Vec<FaceDebt>,
-    /// The `:matrix` row's three tables. They live in this reader rather than in a second one
+    /// The `:matrix` row's two tables. They live in this reader rather than in a second one
     /// because there is ONE registry file and a file read twice is a file two rules can disagree
     /// about.
     matrix_edges: Vec<MatrixEdge>,
     matrix_cells: Vec<MatrixCell>,
-    matrix_disagreements: Vec<MatrixDisagreement>,
     /// The `[[instance]]` table: the five plugin-instance axes C1 was never measured over (item
-    /// 118). Same row shape as `[[cell]]` — crate, kind, today's exact count. See
-    /// `matrix::instances`.
+    /// 118). Same row shape as `[[cell]]` — crate, kind, presence only. See `matrix::instances`.
     instance_cells: Vec<MatrixCell>,
     /// The `[[core-name]]` table: core's own words the instance vocabulary must not count. See
     /// [`CoreName`] and `matrix::instances::vocabulary`.
@@ -1266,9 +1238,9 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             }
             reg.registered.push(Registered { name, kind, reason });
         }
-        // THE `:matrix` ROW'S THREE TABLES. Same reader, same refusals: an unknown field is
-        // refused, an empty one is refused, and a missing one is refused, because a ceiling with
-        // half a sentence is a budget.
+        // THE `:matrix` ROW'S TABLES. Same reader, same refusals: an unknown field is refused, an
+        // empty one is refused, and a missing one is refused, because an edge with half a sentence
+        // is a budget.
         "edge" => {
             let Some(v) = take_row(
                 fields,
@@ -1287,41 +1259,16 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 drain: v[4].clone(),
             });
         }
+        // EXISTENCE ONLY (owner 2026-10-02: size is not a CI check). A row says this crate × kind
+        // edge exists and is reviewed; it carries no count, and a leftover `count` field is refused
+        // as an unknown field so the integers cannot come back one row at a time.
         "cell" => {
-            let Some(v) = take_row(fields, &["crate", "kind", "count"], table, at, &mut reg.errors)
-            else {
+            let Some(v) = take_row(fields, &["crate", "kind"], table, at, &mut reg.errors) else {
                 return;
             };
-            let Ok(count) = v[2].parse::<i64>() else {
-                reg.errors.push(format!(
-                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[cell]] count = \"{}\"` is not a number. A \
-                     ceiling that cannot be compared to a measurement is not a ceiling",
-                    v[2]
-                ));
-                return;
-            };
-            // A NEGATIVE CEILING IS A PER-CELL OFF SWITCH, and it is refused HERE rather than
-            // tolerated downstream. `count = "-1"` parses, so every load-time refusal let it
-            // through; the exact-both-directions comparison then skipped the cell entirely,
-            // `dead-cell` keys on the MEASURED count so it never fired, and one character turned
-            // the ratchet off for one crate × kind with nothing anywhere saying so. A number no
-            // measurement can ever equal is not a ceiling — it is the absence of one, spelled to
-            // look like a reviewed figure.
-            if count < 0 {
-                reg.errors.push(format!(
-                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[cell]] count = \"{}\"` is negative. No \
-                     measurement is ever below zero, so a negative ceiling is not a ceiling this \
-                     rule can compare against — it is this cell's ratchet switched off in a value \
-                     that reads like a reviewed figure. Write the count the tree measures, or \
-                     strike the row",
-                    v[2]
-                ));
-                return;
-            }
             reg.matrix_cells.push(MatrixCell {
                 krate: v[0].clone(),
                 kind: v[1].clone(),
-                count,
             });
         }
         // `[patch]` AND `[replace]` REDIRECT WHAT CARGO COMPILES, AND NOTHING IN THIS GATE READ
@@ -1342,29 +1289,18 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 reason: v[2].clone(),
             });
         }
-        // THE FIVE INSTANCE AXES' CEILINGS (item 118). The same refusals as `[[cell]]`, plus one:
-        // a row naming a kind that is not one of the five axes would be a ceiling no measurement
-        // ever produces, so it is refused at load rather than scored dead forever.
+        // THE FIVE INSTANCE AXES' EDGES (item 118). Existence only, on the same terms as
+        // `[[cell]]`, plus one refusal: a row naming a kind that is not one of the five axes would
+        // be an edge no measurement ever produces, so it is refused at load rather than scored dead
+        // forever.
         "instance" => {
-            let Some(v) = take_row(fields, &["crate", "kind", "count"], table, at, &mut reg.errors)
-            else {
+            let Some(v) = take_row(fields, &["crate", "kind"], table, at, &mut reg.errors) else {
                 return;
-            };
-            let count = match v[2].parse::<i64>() {
-                Ok(n) if n >= 0 => n,
-                _ => {
-                    reg.errors.push(format!(
-                        "bad-count\t{REGISTRY_FILE}:{at}\t`[[instance]] count = \"{}\"` is not a \
-                         non-negative number. A ceiling no measurement can equal is not a ceiling",
-                        v[2]
-                    ));
-                    return;
-                }
             };
             if !matrix::instance_axes().contains(&v[1].as_str()) {
                 reg.errors.push(format!(
                     "bad-instance-kind\t{REGISTRY_FILE}:{at}\t`[[instance]] kind = \"{}\"` is not \
-                     one of the instance axes ({}). A ceiling for an axis nothing measures is never \
+                     one of the instance axes ({}). A row for an axis nothing measures is never \
                      compared to anything",
                     v[1],
                     matrix::instance_axes().join(", ")
@@ -1374,7 +1310,6 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             reg.instance_cells.push(MatrixCell {
                 krate: v[0].clone(),
                 kind: v[1].clone(),
-                count,
             });
         }
         // CORE'S OWN WORDS (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q1). A mask over the learned
@@ -1425,17 +1360,6 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 kind: v[0].clone(),
                 name,
                 cite: v[2].clone(),
-            });
-        }
-        "disagreement" => {
-            let Some(v) = take_row(fields, &["crate", "kind", "note"], table, at, &mut reg.errors)
-            else {
-                return;
-            };
-            reg.matrix_disagreements.push(MatrixDisagreement {
-                krate: v[0].clone(),
-                kind: v[1].clone(),
-                note: v[2].clone(),
             });
         }
         // THE `:deps` AND `:test-deps` ROWS' TWO TABLES. Same reader, same refusals — and two more
@@ -1545,8 +1469,8 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
-             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[disagreement]]`, `[[instance]]`, \
-             `[[core-name]]` and `[[patch]]` rows and nothing else"
+             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` \
+             and `[[patch]]` rows and nothing else"
         )),
     }
 }
@@ -1581,7 +1505,8 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[edge]]`, `[[cell]]`, `[[disagreement]]` and `[[patch]]` rows and nothing else",
+                 `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` and `[[patch]]` rows and \
+                 nothing else",
                 i + 1
             ));
             continue;
@@ -1991,6 +1916,33 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name).then(a.dir.cmp(&b.dir)));
     Ok(out)
+}
+
+/// THE CENSUS IS THE WORKSPACE, EXACTLY (ARCHITECT 2026-10-02). Every `[workspace.members]` entry
+/// whose manifest is a crate of this tree (not an [`OFF_TREE_MANIFESTS`] entry) is in the census;
+/// the members it is not are returned by directory, and each is a finding by name. This replaced a
+/// crate-count floor: a number fights the roster (spec #39 ends the repo at 15 crates), while a
+/// census held to the member list is exact at any size and survives every extraction, because an
+/// extraction strikes the member line with the crate. `Err` when the root manifest declares no
+/// member at all, since a census checked against nothing is checked against nothing.
+fn missed_members(cx: &Ctx, crates: &[CrateInfo]) -> Result<Vec<String>, String> {
+    let root = cx
+        .read("Cargo.toml")
+        .map_err(|e| format!("the root manifest is unreadable ({e})"))?;
+    let members = manifest::workspace_members(&root);
+    if members.is_empty() {
+        return Err(
+            "the root manifest declares no [workspace.members], so the census has no \
+                    member list to be read against and every rule over it would hold vacuously"
+                .to_string(),
+        );
+    }
+    let dirs: BTreeSet<&str> = crates.iter().map(|c| c.dir.as_str()).collect();
+    Ok(members
+        .into_iter()
+        .filter(|m| off_tree_entry(&format!("{m}/Cargo.toml")).is_none())
+        .filter(|m| !dirs.contains(m.as_str()))
+        .collect())
 }
 
 /// The registry keys a transport or plane crate DECLARES: each `const KEY` inside an
@@ -3386,16 +3338,23 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
     // that did not parse, and neither may read a short table as a clean one.
     let mut offenders: Vec<String> = reg.errors.clone();
 
-    if crates.len() < MIN_MANIFESTS {
-        return Row::fail(
-            ROW_REGISTRY,
-            "the crate census collapsed below its floor",
+    // THE CENSUS READ EVERY MEMBER. A census that finds almost nothing recognises almost
+    // everything; one that skipped a member says nothing about that member, so each miss is named.
+    match missed_members(cx, crates) {
+        Err(why) => {
+            return Row::fail(
+                ROW_REGISTRY,
+                "the crate census has no member list to be read against",
+                why,
+            )
+        }
+        Ok(missed) => offenders.extend(missed.into_iter().map(|m| {
             format!(
-                "{} crate(s) under crates/ (floor {MIN_MANIFESTS}). A census that finds almost \
-                 nothing recognises almost everything.",
-                crates.len()
-            ),
-        );
+                "missed-member\t{m}\t`{m}` is in [workspace.members] and the census did not read \
+                 it: no manifest with a [package] name at {m}/Cargo.toml. Every rule here is \
+                 silent about a crate the census never saw."
+            )
+        })),
     }
 
     // WHERE A CRATE LIVES IS A FINDING, NOT A FILTER. The census walks every `Cargo.toml` in the
@@ -3940,8 +3899,8 @@ struct SourceIndex {
     skeleton: BTreeMap<String, BTreeSet<String>>,
     /// dir -> how many times each trait is implemented in its shipped source.
     impls: BTreeMap<String, BTreeMap<String, usize>>,
-    /// dir -> how many memory-ABI transport door tails (`TransportTail { .. }` statements, the
-    /// table `export_door!` exports) its shipped source states. See [`entry_count`].
+    /// dir -> how many memory-ABI door tails (`TransportTail { .. }` statements, `AuthTail`
+    /// consts: the table the door exports) its shipped source states. See [`entry_count`].
     doors: BTreeMap<String, usize>,
     /// dir -> whether it has a `src/lib.rs` at all.
     has_lib: BTreeSet<String>,
@@ -4188,7 +4147,7 @@ struct SourceFacts {
     mods: Option<Vec<String>>,
     /// Every trait-impl head in it, when shipped; empty otherwise.
     heads: Vec<String>,
-    /// How many transport door tails it states, when shipped; 0 otherwise. See [`door_tails`].
+    /// How many door tails it states, when shipped; 0 otherwise. See [`door_tails`].
     door_tails: usize,
 }
 
@@ -4349,23 +4308,32 @@ fn pinned_exemplars(
     out
 }
 
-/// THE TRANSPORT DOOR TAILS a file states: every production line that builds a `TransportTail`
-/// (`const TAIL: TransportTail = TransportTail { .. }`), the Statement tail a memory-ABI door
-/// carries and `export_door!` exports as the image's one table. The contract's own
-/// `struct TransportTail` declaration is not a tail.
+/// THE DOOR TAILS a file states: the Statement tail a memory-ABI door carries and exports as the
+/// image's one table. A transport tail is every production line that builds a `TransportTail`
+/// (`const TAIL: TransportTail = TransportTail { .. }`); an auth tail is every production `const`
+/// of type `AuthTail` (`const TAIL: &AuthTail = &AuthTail { .. }`, or one built by the SDK's
+/// `verify_tail`). The contract's own `struct` declarations and its `const fn` builders are not
+/// tails.
 fn door_tails(text: &str) -> usize {
     scan::production_lines(text)
         .into_iter()
         .filter(|(_, code)| {
             let t = code.trim();
-            t.contains("TransportTail {") && !t.contains("struct TransportTail")
+            let transport = t.contains("TransportTail {") && !t.contains("struct TransportTail");
+            let auth =
+                t.contains("const ") && (t.contains(": &AuthTail =") || t.contains(": AuthTail ="));
+            transport || auth
         })
         .count()
 }
 
-/// HOW MANY ENTRIES `dir` STATES FOR `kind` (ARCHITECT ruling 2026-09-30, option A). A kind's
-/// entry is its trait implemented in shipped source; for `transport` it is ALSO the memory-ABI
-/// door, because in the final design the door IS the entry (compiled in and dropped in are one
+/// The kinds whose memory-ABI door IS an entry (ARCHITECT rulings 2026-09-30 option A for
+/// `transport`, 2026-10-02 #145 for `auth`): no trait carries them; the door tail does.
+const DOOR_ENTRY_KINDS: &[&str] = &["transport", "auth"];
+
+/// HOW MANY ENTRIES `dir` STATES FOR `kind` (ARCHITECT ruling 2026-09-30, option A; extended to
+/// `auth` 2026-10-02). A kind's entry is its trait implemented in shipped source; for the
+/// [`DOOR_ENTRY_KINDS`] it is ALSO the memory-ABI door, because in the final design the door IS the entry (compiled in and dropped in are one
 /// table). So a transport crate's entries are its `impl Transport` blocks PLUS its door tails
 /// ([`door_tails`]). The exemplar `busbar-transport-tcp` is a door (one tail, no `impl`) and
 /// vouches for the kind again through it; a crate carrying a legacy `impl Transport` beside its
@@ -4380,7 +4348,7 @@ fn entry_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> us
         .and_then(|m| m.get(want_trait))
         .copied()
         .unwrap_or(0);
-    let doors = if kind == "transport" {
+    let doors = if DOOR_ENTRY_KINDS.contains(&kind) {
         idx.doors.get(dir).copied().unwrap_or(0)
     } else {
         0
@@ -4390,7 +4358,7 @@ fn entry_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> us
 
 /// How [`entry_count`] reads `kind`'s entries, for a finding's text.
 fn entry_note(kind: &str) -> &'static str {
-    if kind == "transport" {
+    if DOOR_ENTRY_KINDS.contains(&kind) {
         " (its `impl` blocks plus its door tails)"
     } else {
         ""
@@ -4688,18 +4656,17 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
             // <KindTrait> = &P;`), so a crate of the kind that implements the trait ZERO times has
             // nothing for its battery to be about — and a file that compiles anyway is a file that
             // asserts about something else. Read off the same trait-impl index `:shape` counts with.
-            let implementors = idx
-                .impls
-                .get(&c.dir)
-                .and_then(|m| m.get(&want_trait))
-                .copied()
-                .unwrap_or(0);
+            // A door kind's door is its implementor ([`entry_count`]): a door crate's battery has
+            // the door as its subject.
+            let implementors = entry_count(idx, &c.dir, kind, &want_trait);
             if implementors == 0 {
                 offenders.push(format!(
-                    "no-implementor\t{}\t{} is kind `{kind}` and implements `{want_trait}` nowhere \
-                     in shipped source, so its battery has no subject — a conformance file that \
-                     passes over no implementor is not evidence about this crate",
-                    c.dir, c.name
+                    "no-implementor\t{}\t{} is kind `{kind}` and implements `{want_trait}`{} \
+                     nowhere in shipped source, so its battery has no subject — a conformance file \
+                     that passes over no implementor is not evidence about this crate",
+                    c.dir,
+                    c.name,
+                    entry_note(kind)
                 ));
             }
             if idx.conformance_dead.contains(&c.dir) {
@@ -5593,7 +5560,7 @@ pub const ROW_WRITE: &str = "kind-isolation:write";
 
 /// One row of the registry whose number this run would move.
 struct Repin {
-    /// `[[cell]] busbar × plane`, `[[dep]] a -> b (shipped)`, `[[face]] c / Plane` — what a reader
+    /// `[[dep]] a -> b (shipped)`, `[[face]] c / Plane` — what a reader
     /// is looking at.
     label: String,
     /// The lines that identify the row in the file, so the rewrite cannot move the wrong one.
@@ -5607,46 +5574,9 @@ struct Repin {
 fn repins(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Result<Vec<Repin>, String> {
     let mut out: Vec<Repin> = Vec::new();
 
-    let cells = matrix::measured_cells(cx, crates)?;
-    for c in &reg.matrix_cells {
-        let now = cells
-            .get(&(c.krate.clone(), c.kind.clone()))
-            .copied()
-            .unwrap_or(0) as i64;
-        if now != c.count {
-            out.push(Repin {
-                label: format!("[[cell]] {} × {}", c.krate, c.kind),
-                keys: vec![
-                    ("crate".to_string(), c.krate.clone()),
-                    ("kind".to_string(), c.kind.clone()),
-                ],
-                table: "cell",
-                was: c.count,
-                now,
-            });
-        }
-    }
-
-    let inst = matrix::measured_instances(cx, crates, &reg.core_names)?;
-    for c in &reg.instance_cells {
-        let now = inst
-            .get(&(c.krate.clone(), c.kind.clone()))
-            .copied()
-            .unwrap_or(0) as i64;
-        if now != c.count {
-            out.push(Repin {
-                label: format!("[[instance]] {} × {}", c.krate, c.kind),
-                keys: vec![
-                    ("crate".to_string(), c.krate.clone()),
-                    ("kind".to_string(), c.kind.clone()),
-                ],
-                table: "instance",
-                was: c.count,
-                now,
-            });
-        }
-    }
-
+    // `[[cell]]` and `[[instance]]` rows carry no count (size is not a CI check, owner
+    // 2026-10-02), so there is nothing of theirs to re-pin. `[[dep]]` and `[[face]]` counts are
+    // EDGE records — declarations and implementations — and stay exact.
     for half in [Half::Shipped, Half::Test] {
         let measured = measure_edges(crates, half);
         for row in reg.dep_edges.iter().filter(|d| d.half == half.word()) {
@@ -5752,8 +5682,10 @@ fn rewrite_counts(text: &str, repins: &[Repin]) -> String {
 /// The ratchet is exact in both directions, and that is what makes it a ratchet: a count above its
 /// row is the landing that grew the coupling, and a count BELOW it is stale slack nobody drained on
 /// the commit that drained the edge. Exactness has one cost, though, and it lands on the landing
-/// that does the RIGHT thing: a cut that removes two of a crate's plane hits leaves the row three
-/// too high, and the gate is red until somebody edits a number by hand. That is a tax on draining,
+/// that does the RIGHT thing: a cut that removes one of a crate's dependency declarations leaves
+/// its `[[dep]]` row one too high, and the gate is red until somebody edits a number by hand.
+/// (`[[cell]]` and `[[instance]]` rows carry no number to re-pin: size is not a CI check, owner
+/// 2026-10-02.) That is a tax on draining,
 /// which is the opposite of what the ratchet is for.
 ///
 /// So the flag exists, and it does exactly one thing: it lowers a row to what the tree measures.
@@ -6133,15 +6065,16 @@ impl Gate for KindIsolationGate {
                 self,
                 "--write refuses wholesale when any count would RISE",
                 &[ROW_WRITE],
-                matrix::cell_subst(cx, "busbar-kernel", "plane", "0"),
+                // A `[[dep]]` row, because `[[cell]]` rows carry no count any more (size is not a
+                // CI check, owner 2026-10-02); the dependency ledger is an EDGE record and still
+                // re-pins exactly.
+                dep_subst(cx, "busbar-kernel", "busbar-contract", "0"),
                 &[
                     "would RISE",
                     "NOTHING was written",
-                    // THE CELL AND THE CEILING THIS PLANT WROTE, not the measurement beside them.
-                    // A fixture cannot know what the tree measures without running the gate, and
-                    // the number that used to be here (`0 -> 1`) was a measurement copied out of a
-                    // ratchet that has since re-pinned it to four figures.
-                    "busbar-kernel × plane 0 ->",
+                    // THE ROW AND THE COUNT THIS PLANT WROTE, not the measurement beside them. A
+                    // fixture cannot know what the tree measures without running the gate.
+                    "busbar-kernel -> busbar-contract (shipped) 0 ->",
                 ],
             ));
             // …AND THE WRITE ARM MEASURES THE WHOLE GATE BEFORE IT WRITES ANYTHING. It did not:
@@ -6720,18 +6653,24 @@ impl Gate for KindIsolationGate {
             // loader re-points its `hook` both-ways row at a real hook crate the base never named,
             // takes it as a `[dev-dependencies]` edge, and records the row: the conformance test is
             // the fixture's only user, so the edge is #2's witness and not a new forbidden edge…
+            //
+            // The plant is anchored on the section headers the loader's manifest keeps whatever rows
+            // it carries (`[package.metadata.busbar.both-ways]`, `[dev-dependencies]`) and writes the
+            // witness's one user into the hook kind's door conformance file, so it plants the whole
+            // shape — row, edge and user — however the real `hook` row moves.
             let witness = |dev: bool, extra_user: bool| {
                 let rel = "crates/plugin-loader/Cargo.toml";
                 let fixture = "busbar-hooks-ranking = { path = \"../hooks-ranking\" }\n";
+                let table = "[package.metadata.busbar.both-ways]\n";
                 let mut m = cx.read(rel).unwrap_or_default().replacen(
-                    "hook = \"busbar-hook-test-plugin\"",
-                    "hook = \"busbar-hooks-ranking\"",
+                    table,
+                    &format!("{table}hook = \"busbar-hooks-ranking\"\n"),
                     1,
                 );
                 m = if dev {
                     m.replacen(
-                        "busbar-hook-test-plugin = { path = \"../hook-test-plugin\" }\n",
-                        &format!("busbar-hook-test-plugin = {{ path = \"../hook-test-plugin\" }}\n{fixture}"),
+                        "[dev-dependencies]\n",
+                        &format!("[dev-dependencies]\n{fixture}"),
                         1,
                     )
                 } else {
@@ -6745,6 +6684,15 @@ impl Gate for KindIsolationGate {
                 };
                 let mut ov = Overlay::new();
                 ov.set(rel, m);
+                let conformance = "crates/plugin-loader/src/tests/hook_door_conformance_tests.rs";
+                ov.set(
+                    conformance,
+                    manifest_plus(
+                        cx,
+                        conformance,
+                        "fn planted_witness() {\n    let _ = super::both_ways::hook_fixture::open;\n}\n",
+                    ),
+                );
                 ov.set(
                     REGISTRY_FILE,
                     format!(
@@ -6757,7 +6705,7 @@ impl Gate for KindIsolationGate {
                     ),
                 );
                 if extra_user {
-                    let t = "crates/plugin-loader/src/tests/hook_tests.rs";
+                    let t = "crates/plugin-loader/src/tests/hook_door_tests.rs";
                     ov.set(
                         t,
                         manifest_plus(
@@ -6960,22 +6908,16 @@ impl Gate for KindIsolationGate {
                 &["new-forbidden-edge", "busbar-planted-clean -> busbar-plugin-loader"],
             ));
 
-            // A NEGATIVE COUNT IS A PER-CELL OFF SWITCH, and it is refused where every other
-            // unreadable value is: at load. `-1` parses as a number, so `bad-count` let it through,
-            // and the exact-both-directions comparison then SKIPPED the cell — one character
-            // turning off one crate × kind's ratchet, with nothing anywhere saying so.
+            // A `[[cell]]` ROW IS EXISTENCE ONLY, and a `count` written back into one is refused
+            // at load: size is not a CI check (owner 2026-10-02), and a field the reader still
+            // accepted would be the integers coming back one row at a time.
             report.push(plant_registry(
                 cx,
                 subject,
-                "a negative `[[cell]]` count is refused at load — it is not a ceiling, it is the \
-                 absence of one",
+                "a `count` field on a `[[cell]]` row is refused at load — the row is presence only",
                 &[ROW_DEPS],
-                matrix::cell_subst(cx, "busbar-llm", "contract", "-1"),
-                &[
-                    "bad-count",
-                    "is negative",
-                    "No measurement is ever below zero",
-                ],
+                matrix::cell_subst(cx, "busbar-llm", "contract", "count = \"1\""),
+                &["unknown-field", "`[[cell]]` declares `count`"],
             ));
 
             // `to = "*"` IS A LEGAL TRAILING GLOB AND A BLANKET AMNESTY. `covers` does
@@ -7458,7 +7400,6 @@ impl Gate for KindIsolationGate {
         // (It was `timing`, `=busbar-timing`, until OWNER Q70 folded that crate into the kernel.)
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-contract/Cargo.toml");
-        hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
             subject,
@@ -7496,7 +7437,6 @@ impl Gate for KindIsolationGate {
         // is the `voice` entry's own finding, not merely some alias going red.
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-plane-streaming/Cargo.toml");
-        hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
             subject,
@@ -7592,15 +7532,16 @@ impl Gate for KindIsolationGate {
             &["unreadable", "qa/construction.toml"],
         ));
 
-        // THE TWO FLOORS, AND THEY FAIL APART. A census that finds almost nothing recognises almost
-        // everything, and a scan of no files names no leak — both read exactly like a clean tree.
+        // THE CENSUS AND THE SOURCE WALK, AND THEY FAIL APART. A census that skipped a member says
+        // nothing about it (named by the member list, ARCHITECT 2026-10-02), and a scan of no files
+        // names no leak — both read exactly like a clean tree.
         report.push(prove_rows_red(
             cx,
             subject,
-            "the crate census collapsed below its floor",
+            "the crate census missed the workspace's members",
             &[ROW_REGISTRY],
             move || all_but(cx, "toml", 4),
-            &["floor", &MIN_MANIFESTS.to_string()],
+            &["missed-member", "crates/store-memory"],
         ));
         report.push(prove_rows_red(
             cx,
@@ -8480,7 +8421,6 @@ impl Gate for KindIsolationGate {
         // THE LEGACY RATCHET, proven by retiring one.
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-a2a/Cargo.toml");
-        hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
             subject,
@@ -8573,9 +8513,14 @@ impl Gate for KindIsolationGate {
                 &["unknown-kind", "registered", "nosuchkind"][..],
             ),
             (
-                "a [[cell]] count that is not a number is refused",
+                "a [[cell]] row carrying a count is refused — the row is presence only",
                 "[[cell]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"lots\"\n",
-                &["bad-count", "lots", "not a number"][..],
+                &["unknown-field", "cell", "count"][..],
+            ),
+            (
+                "a [[disagreement]] row is refused — the table went with the counts",
+                "[[disagreement]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\nnote = \"x\"\n",
+                &["unknown-table", "disagreement"][..],
             ),
             (
                 "a [[table]] this gate does not read is refused, not skipped",
@@ -8675,8 +8620,6 @@ impl Gate for KindIsolationGate {
             &[ROW_REGISTRY],
             move || {
                 let mut ov = kinds_gone(cx, &[CLEANLINESS]);
-                let gone = ov.paths().count();
-                hold_census_floor(&mut ov, gone);
                 ov.set(REGISTRY_FILE, String::new());
                 ov
             },
@@ -9694,12 +9637,11 @@ fn wire_row_and_source(cx: &Ctx, wire: &str) -> Result<Overlay, String> {
     Ok(ov)
 }
 
-/// THE TREE WITH ALMOST EVERY FILE OF ONE EXTENSION REMOVED, for the two floors.
+/// THE TREE WITH ALMOST EVERY FILE OF ONE EXTENSION REMOVED, for the census and the source floor.
 ///
-/// A floor is the only rule whose subject is the SIZE of its own input, so the only honest fixture
-/// for one is a tree that really is that small. `keep` files survive, which is what makes the two
-/// floors fail APART: four manifests is under the census floor and nowhere near the source floor,
-/// and four sources are the mirror.
+/// A rule whose subject is its own input needs a fixture where that input really is gone. `keep`
+/// files survive, which is what makes the two fail APART: four manifests miss most of the
+/// workspace's members and leave the source walk whole, and four sources are the mirror.
 fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
     let mut ov = Overlay::new();
     let Ok(files) = cx.walk(&WalkSpec::new(["crates"]).ext(ext)) else {
@@ -9707,33 +9649,6 @@ fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
     };
     for f in files.iter().skip(keep) {
         ov.remove(f.rel_str());
-    }
-    ov
-}
-
-/// THE CENSUS HELD AT EXACTLY `n` MANIFESTS — item F0b's boundary fixture.
-///
-/// `all_but` thins the `crates/` walk, but [`census`] also reads root/`xtask`/`examples`/`testing`
-/// manifests the registry's off-tree table does not cover, so "keep 29 files under `crates/`" and
-/// "the census is 29" are not the same claim near the new, much lower floor — they were 24 apart at
-/// the old floor of 50 and nobody had to tell them apart. This removes exactly enough CENSUSED
-/// `crates/` manifests, and only those, to land the real census at `n`, so a boundary case can plant
-/// the number the floor actually reads rather than a number of files that merely implies it.
-///
-/// A `#[cfg(test)]`-only fixture: unlike `all_but`, its only caller is the two boundary cases in
-/// `plant_tests`, run through `cargo test`, not the `prove_rows_red` battery `cargo xtask selftest`
-/// runs (item 89's IMPOSS rule is why — see those cases' own comment).
-#[cfg(test)]
-fn census_holding(cx: &Ctx, n: usize) -> Overlay {
-    let full = census(cx).unwrap_or_default();
-    let excess = full.len().saturating_sub(n);
-    let mut ov = Overlay::new();
-    for c in full
-        .iter()
-        .filter(|c| c.manifest.starts_with("crates/"))
-        .take(excess)
-    {
-        ov.remove(c.manifest.clone());
     }
     ov
 }
@@ -9758,25 +9673,6 @@ fn kinds_gone(cx: &Ctx, kinds: &[&str]) -> Overlay {
         }
     }
     ov
-}
-
-/// THE CENSUS HELD AWAY FROM ITS FLOOR under a plant that removes `removed` manifests.
-///
-/// [`MIN_MANIFESTS`] is 30 (item F0b); the Phase 4 fold walks the real census down toward that
-/// number one commit at a time, so a plant elsewhere in this battery that removes a manifest for a
-/// reason of its own — a dead kind, a retired alias, a struck legacy row — can, late in the fold,
-/// land close enough to the floor that the removal ALSO drops the census below it. When that
-/// happens the floor refusal, its own proven case, answers for the whole `:registry` row: `the
-/// crate census collapsed below its floor`, and never the rule the case is about. The floor is not
-/// lowered. Each removed manifest is replaced by one inert kernel-kind filler crate, so the census
-/// stays a census and the row judges what was planted.
-fn hold_census_floor(ov: &mut Overlay, removed: usize) {
-    for i in 0..removed {
-        ov.set(
-            format!("crates/busbar-kernel-censusfill{i}/Cargo.toml"),
-            format!("[package]\nname = \"busbar-kernel-censusfill{i}\"\nversion = \"0.0.0\"\n"),
-        );
-    }
 }
 
 /// THE TREE WITH EVERY MANIFEST UNDER `crates/<marker>*` REMOVED — a whole KIND deleted.
@@ -10288,74 +10184,80 @@ mod plant_tests {
         rule_registry(&cx, &crates, &reg_of(&cx), false)
     }
 
-    // ── item F0b: the two crate-count floors, lowered to 30, proven at their new boundary ────────
+    // ── THE CENSUS IS THE WORKSPACE, EXACTLY (ARCHITECT 2026-10-02) ─────────────────────────────
     //
-    // `MIN_MANIFESTS` and `closure::MIN_GRAPH_CRATES` moved 50 -> 30 and 40 -> 30 (same shape as
-    // F0's `workspace-deps` `MIN_CRATE_MANIFESTS`, `98434a220`) so the Phase 4 fold's planned end
-    // state (35 crates, 34 / 33 in the roster variants) clears both. The coarse collapse cases
-    // above (`all_but(cx, "toml", 4)`, `all_but(cx, "rs", 4)`) already prove each floor fires on a
-    // genuine collapse; these two prove the LOWERED floor fires exactly one manifest under itself
-    // and admits the real, un-planted tree — which sits well over 30 today, before the fold has
-    // touched a single crate. `:registry` and `:closure` both carry unrelated standing debt on the
-    // real tree right now (dead-kind/dead-transitional findings, a two-hop breach), so a
-    // `prove_rows_green` case asking either row to be wholly clean would be Impossible by
-    // construction (item 89); these read the FLOOR arm's own detail instead of the row's overall
-    // status, which is provable on the real tree regardless of that other debt.
+    // The two crate-count floors (`MIN_MANIFESTS`, `closure::MIN_GRAPH_CRATES`, both 30) guarded
+    // against a census that read a truncated tree, with a number. A number fights the roster
+    // (spec #39: the repo ends at 15 crates) and lowering it is re-ceilinging a gate. The rule that
+    // replaces them has no number: every `[workspace.members]` entry that is a crate of this tree
+    // is in the census, and a member the census missed is RED by name. Both rows are proven on one
+    // planted miss, on the real tree, and on an extraction (manifest AND member line gone), which
+    // must not read as a miss.
+
+    /// The member every case below takes out: a kernel unit no fold is planned to remove.
+    const MISSED: &str = "crates/busbar-kernel-scope";
+
+    fn census_misses_one() -> Overlay {
+        let mut ov = Overlay::new();
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        ov
+    }
+
+    /// The crate extracted the honest way: its manifest gone AND its member line struck.
+    fn crate_extracted() -> Overlay {
+        let root = ws().read("Cargo.toml").expect("the root manifest reads");
+        let line = format!("    \"{MISSED}\",\n");
+        assert!(root.contains(&line), "the root declares {MISSED}");
+        let mut ov = census_misses_one();
+        ov.set("Cargo.toml", root.replace(&line, ""));
+        ov
+    }
+
     #[test]
-    fn the_registry_census_floor_reds_one_below_thirty_and_admits_the_real_tree() {
-        assert_eq!(
-            MIN_MANIFESTS, 30,
-            "this case is pinned to the lowered floor"
-        );
+    fn a_census_that_misses_a_member_reds_the_registry_naming_it() {
         let cx = ws();
-
-        let plant = census_holding(&cx, MIN_MANIFESTS - 1);
-        assert_bites(&cx, &plant);
-        let planted = cx.with_overlay(plant);
-        assert_eq!(
-            crates_of(&planted).0.len(),
-            MIN_MANIFESTS - 1,
-            "the fixture must land the census exactly one under the floor"
-        );
+        assert_bites(&cx, &census_misses_one());
         assert_red_naming(
-            &registry_over(census_holding(&cx, MIN_MANIFESTS - 1)),
-            &["floor", &MIN_MANIFESTS.to_string()],
+            &registry_over(census_misses_one()),
+            &["missed-member", MISSED],
         );
-
         let real = registry_over(Overlay::new());
         assert!(
-            !real.detail.contains("collapsed below its floor"),
-            "the real tree's census must clear the lowered floor of {MIN_MANIFESTS}: {}",
+            !real.detail.contains("missed-member"),
+            "the real census reads every member: {}",
             real.detail
+        );
+        let extracted = registry_over(crate_extracted());
+        assert!(
+            !extracted.detail.contains("missed-member"),
+            "an extracted crate is not a missed member: {}",
+            extracted.detail
         );
     }
 
     #[test]
-    fn the_closure_graph_floor_reds_one_below_thirty_and_admits_the_real_tree() {
-        const MIN_GRAPH_CRATES: usize = 30;
+    fn a_census_that_misses_a_member_reds_the_closure_naming_it() {
         let cx = ws();
-
-        let plant = census_holding(&cx, MIN_GRAPH_CRATES - 1);
-        assert_bites(&cx, &plant);
-        let planted = cx.with_overlay(plant);
+        let planted = cx.with_overlay(census_misses_one());
         let (planted_crates, _) = crates_of(&planted);
-        assert_eq!(
-            planted_crates.len(),
-            MIN_GRAPH_CRATES - 1,
-            "the fixture must land the census exactly one under the floor"
-        );
         assert_red_naming(
             &closure::rule_closure(&planted, &planted_crates),
-            &["floor", &MIN_GRAPH_CRATES.to_string()],
+            &["missed-member", MISSED],
         );
-
         let (real_crates, _) = crates_of(&cx);
         let real = closure::rule_closure(&cx, &real_crates);
         assert!(
-            !real.detail.contains("under the floor")
-                && !real.detail.contains("could not be walked over this tree"),
-            "the real tree's census must clear the lowered floor of {MIN_GRAPH_CRATES}: {}",
+            !real.detail.contains("missed-member"),
+            "the real census reads every member: {}",
             real.detail
+        );
+        let extracted = cx.with_overlay(crate_extracted());
+        let (extracted_crates, _) = crates_of(&extracted);
+        let row = closure::rule_closure(&extracted, &extracted_crates);
+        assert!(
+            !row.detail.contains("missed-member"),
+            "an extracted crate is not a missed member: {}",
+            row.detail
         );
     }
 
@@ -10650,6 +10552,24 @@ mod plant_tests {
         );
         assert_eq!(
             door_tails("// const T: TransportTail = TransportTail { };\n"),
+            0
+        );
+        assert_eq!(
+            door_tails("const TAIL: &AuthTail = &AuthTail {\n    caps: C,\n};\n"),
+            1
+        );
+        assert_eq!(
+            door_tails("const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD_BODY);\n"),
+            1
+        );
+        assert_eq!(
+            door_tails("pub struct AuthTail {\n    pub caps: u32,\n}\n"),
+            0
+        );
+        assert_eq!(
+            door_tails(
+                "pub const fn verify_tail(f: u32, p: AuthPoints) -> AuthTail {\n    AuthTail {\n"
+            ),
             0
         );
     }

@@ -86,22 +86,22 @@ pub const ALLOWLIST_C1: &[Allow] = &[
     allow("secret", "crates/busbar-contract/src/records.rs", "secret"),
     allow(
         "token",
-        "crates/busbar-kernel/src/admin/v1/contract/schema.rs",
+        "crates/busbar-core-admin/src/v1/schema.rs",
         "token",
     ),
     allow(
         "aws_secret_access_key",
-        "crates/busbar-kernel/src/admin/v1/contract/schema.rs",
+        "crates/busbar-core-admin/src/v1/schema.rs",
         "aws_secret_access_key",
     ),
     allow(
         "access_token",
-        "crates/busbar-kernel/src/admin/v1/contract/schema.rs",
+        "crates/busbar-core-admin/src/v1/schema.rs",
         "",
     ),
     allow(
         "secret",
-        "crates/busbar-kernel/src/admin/v1/contract/schema.rs",
+        "crates/busbar-core-admin/src/v1/schema.rs",
         "secret",
     ),
     allow(

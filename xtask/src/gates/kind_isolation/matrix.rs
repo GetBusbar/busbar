@@ -31,18 +31,18 @@
 //!
 //! ## THE MATRIX
 //!
-//! For EVERY kind `K` in the kind table and EVERY crate `C` under `crates/`, this row counts how
-//! many times `C` names `K`'s vocabulary. `K`'s vocabulary is DERIVED, never listed: it is the
-//! package names of `K`'s member crates plus each member's INSTANCE ID (the name segments after the
-//! kind marker) and, for a plane, its alias. Registering a plane, a transport or a store teaches
-//! this row a new word in every other crate, on the same commit — the same derivation the rest of
-//! the gate already runs on.
+//! For EVERY kind `K` in the kind table and EVERY crate `C` under `crates/`, this row measures
+//! whether `C` names `K`'s vocabulary at all — a crate-level cross-kind EDGE. `K`'s vocabulary is
+//! DERIVED, never listed: it is the package names of `K`'s member crates plus each member's
+//! INSTANCE ID (the name segments after the kind marker) and, for a plane, its alias. Registering a
+//! plane, a transport or a store teaches this row a new word in every other crate, on the same
+//! commit — the same derivation the rest of the gate already runs on.
 //!
 //! A crate is never measured against its own spellings, and when `kind(C) == K` the crate's OWN id
 //! is struck from the needles first: what is left is the other instances of its own kind, which is
 //! the cross-instance leak `busbar-plane-llm` naming `mcp` would be.
 //!
-//! ## TWO INDEPENDENT SCANNERS, AND DISAGREEMENT IS RED
+//! ## TWO INDEPENDENT SCANNERS, AND THE HIGHER ONE DECIDES
 //!
 //! > "I'd rather have it false-fail than not." — owner, 2026-09-08
 //!
@@ -53,19 +53,20 @@
 //! both sides are boundaries — a non-alphanumeric, or a case transition. They share the needles and
 //! share nothing else.
 //!
-//! The scored count is the HIGHER of the two, never the lower, and a cell where the two disagree is
-//! RED unless the cell's row in `qa/kind-isolation.toml` records the disagreement and why. A name
-//! written in a spelling one scanner cannot see is exactly the leak that must not pass at the lower
-//! number.
+//! The cell's count is the HIGHER of the two (and of the decoded reading), never the lower, so a
+//! name written in a spelling one scanner cannot see still makes the cell non-zero — exactly the
+//! leak that must not pass. With the counts gone from the ledger (below) a disagreement between the
+//! scanners decides nothing a row could record, so the `[[disagreement]]` table went with them;
+//! `--report` still prints both scanners' numbers per cell.
 //!
 //! A boundary rule rather than a raw byte substring, and the reason is measurable rather than
 //! aesthetic: `sse` is a transport instance and also the middle of `assert`, `ws` is a transport
 //! instance and also the middle of `rows`. A raw substring scan of this tree answers 35 306 for
-//! `sse` and 5 671 for `ws`, numbers made almost entirely of English, and a ceiling pinned to them
-//! moves whenever somebody writes an assertion. That is not a stricter gate, it is a line counter
-//! wearing one. The boundary rule keeps every spelling a human would recognise as the name —
-//! `a2a_session`, `mcpFrame`, `root-voice-serve`, `busbar_transport_http`, `VoiceServe`, the
-//! filename, the feature, the comment — and refuses the ones that are not names at all.
+//! `sse` and 5 671 for `ws`, numbers made almost entirely of English, and a cell made of them is
+//! non-zero in every crate that writes an assertion. That is not a stricter gate, it is a line
+//! counter wearing one. The boundary rule keeps every spelling a human would recognise as the
+//! name — `a2a_session`, `mcpFrame`, `root-voice-serve`, `busbar_transport_http`, `VoiceServe`,
+//! the filename, the feature, the comment — and refuses the ones that are not names at all.
 //!
 //! ## WHAT IS SCANNED: EVERYTHING, INCLUDING COMMENTS, INCLUDING TESTS
 //!
@@ -78,8 +79,8 @@
 //!
 //! Tests are NOT excluded. A transport's own test that names a plane is that transport's source
 //! naming a plane; the only place tests may legitimately name planes is the composition root's,
-//! because the root's tests drive the assembly — and that is a LISTED cell with a citation and a
-//! ceiling, not a silent `continue` in this file.
+//! because the root's tests drive the assembly — and that is a LISTED cell with a citation, not a
+//! silent `continue` in this file.
 //!
 //! **`Cargo.toml` IS NOT SCANNED (owner 2026-10-03: "Cargo.toml is ignored blanketly from this
 //! check").** The composition root must name every compiled-in plugin crate in its manifest's
@@ -94,23 +95,25 @@
 //! There is no allow-list in this source, and there is no second reader either: these rows go
 //! through the SAME hand reader the `[[transitional]]`, `[[registered]]` and `[[announced]]` tables
 //! do ([`super::parse_registry`]), on the same terms — a missing field, an empty field or an
-//! unknown field is REFUSED AT LOAD rather than skipped. Three tables:
+//! unknown field is REFUSED AT LOAD rather than skipped. Two tables:
 //!
 //! * `[[edge]]` — one per kind → kind CLASS, carrying `cite` (the `BUSBAR-1.6.0.md` clause that
-//!   grants it, or the words that say none does), `why` (what the number is made of) and `drain`
-//!   (the line that deletes it; a ceiling with no route to zero is a ceiling nobody drains). The
-//!   prose belongs to the class because that is what a reader is reading.
-//! * `[[cell]]` — one per crate × kind, carrying `count`: TODAY'S MEASURED NUMBER, exactly, not a
-//!   budget. The number belongs to the crate because that is what the ratchet moves.
-//! * `[[disagreement]]` — one per cell whose two scanners return different totals, carrying the
-//!   `note` that says which spelling they read differently.
+//!   grants it, or the words that say none does), `why` (what the class is made of) and `drain`
+//!   (the line that deletes it; an allowance with no route to zero is one nobody drains). The prose
+//!   belongs to the class because that is what a reader is reading.
+//! * `[[cell]]` — one per crate × kind: `crate` and `kind`, and NOTHING ELSE. A row says this
+//!   crate-level edge exists and was reviewed. It carries no count, and a `count` field is refused
+//!   at load.
 //!
-//! The RATCHET IS EXACT IN BOTH DIRECTIONS. A count above its row is the landing that grew the
-//! coupling. A count BELOW its row is stale slack, and stale slack is how drift hides: the row must
-//! come down on the commit that drained it, or the gate is red. A row whose cell now measures zero
-//! is a dead allowance and must be struck. A cell above zero with no row at all is an UNLISTED
-//! EDGE — refused, whatever `BUSBAR-1.6.0.md` may or may not grant, because an edge nobody wrote
-//! down is an edge nobody reviewed.
+//! PRESENCE, NOT SIZE. Size is not a CI check (owner 2026-10-02): how MANY times a crate names a
+//! kind is read at perf time with the hash tool, not here. What CI holds is the EDGE, and it holds
+//! it HARD. A cell above zero with no row is a NEW crate-level cross-kind edge (`unlisted-cell`),
+//! refused whatever `BUSBAR-1.6.0.md` may or may not grant, because an edge nobody wrote down is an
+//! edge nobody reviewed; a class with no `[[edge]]` row is `unlisted-edge`. A row whose cell now
+//! measures zero is a dead allowance and must be struck. A row this branch MINTED is refused
+//! ([`minted_rows`]) — that is the rule that stops a branch legitimising a new edge by writing its
+//! row in the same commit. More hits inside a listed cell change nothing here, and no finding of
+//! this row carries a hit count, so a red row's figure is the number of findings it holds.
 //!
 //! ONE SPAN IS NOT READ, BY ARCHITECT RULING (2026-10-02, DF-MAP): a plane crate's dialect mapping
 //! file (`<plane crate>/dialects/<d>.toml`) quotes its rows' wire paths verbatim from the provider's
@@ -124,7 +127,7 @@
 //! seven plugin kinds is not counted in the `contract` column. #40(a) makes `busbar-contract` the
 //! only crate a plugin may name, so that column in a plugin crate measures the wall standing, not a
 //! coupling; the exemption is the kind table's own `is_the_wall`, it covers no other pair, and a
-//! ledger row that still records such a cell or class is RED (`rule-granted-cell`/`-edge`).
+//! ledger row that still records such a cell or class is a finding (`rule-granted-cell`/`-edge`).
 //!
 //! The ship twin owes the same row at ZERO everywhere, and owes it without consulting the ledger:
 //! `qa/kind-isolation.toml` is a record of what 1.6.0 still has to delete, not a shape it is
@@ -147,6 +150,7 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
+mod auth_words;
 mod external;
 mod instances;
 mod os_words;
@@ -170,27 +174,13 @@ pub(super) fn instance_axes() -> Vec<&'static str> {
     instances::axes()
 }
 
-/// Every neutral crate's naming of the five axes, `(crate, kind) -> count` — for `--write`.
-pub(super) fn measured_instances(
-    cx: &Ctx,
-    crates: &[CrateInfo],
-    core: &[super::CoreName],
-) -> Result<BTreeMap<(String, String), usize>, String> {
-    let (files, _) = scan_set(cx)?;
-    let vocab = instances::vocabulary(crates, &files, core);
-    Ok(instances::measure(crates, &files, &vocab)
-        .into_iter()
-        .map(|((k, kind), c)| ((k, kind.to_string()), c.count))
-        .collect())
-}
-
 /// LAW 0/1 readiness: the neutral crates ENFORCED at ceiling 0 in the EVERYDAY
 /// (`ship: false`) gate. Starts empty. A crate belongs here the moment its measured
 /// `source_count` for every [`instance_vocab_kinds`] cell reaches 0 — adding it PINS that
 /// crate at 0 permanently: from then on the everyday gate reds again the instant the
-/// count rises above zero, even though the ordinary `[[cell]]` ratchet would otherwise
-/// let it float back up. A neutral crate NOT yet listed here still drains through the
-/// ordinary ratchet above (raised/stale-slack against its `[[cell]]` row) — this list
+/// count rises above zero, even though its listed `[[cell]]` row (presence only) would
+/// otherwise let it float back up. A neutral crate NOT yet listed here is still held to
+/// its `[[cell]]` rows (a new cell with no row is `unlisted-cell`) — this list
 /// does not exempt it, it just does not yet BLOCK the push gate on it, so crates still
 /// draining do not brick every other push. The ship twin (`ship: true`) ignores this
 /// list entirely and enforces EVERY neutral crate unconditionally, because the ship SHA
@@ -541,12 +531,6 @@ struct Cell {
     confusables: Vec<String>,
 }
 
-impl Cell {
-    fn disagrees(&self) -> bool {
-        self.by_segments != self.by_windows
-    }
-}
-
 /// Which crate directory a scanned path belongs to.
 fn owning_dir(rel: &str) -> Option<String> {
     let parts: Vec<&str> = rel.split('/').collect();
@@ -644,6 +628,9 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
 
     let (files, skipped) = scan_set(cx)?;
     let contract = contract_identifiers(&files, &vocab);
+    // The auth ABI's own `decision` field (continue/stop) is masked in auth crates while the
+    // contract declares it ([`auth_words`]).
+    let auth_decision = auth_words::declared(&files);
     // A plugin's own conformance test naming the loader it is granted is the witness, not a
     // coupling ([`super::conformance_witness_edges`]).
     let granted = super::conformance_witness_edges(cx, crates);
@@ -711,6 +698,12 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         // Its context is read off the ORIGINAL text: an earlier mask's filler must not change what
         // a neighbouring word says ("the unix socket" with `socket` masked as a contract name).
         let masked = os_words::mask_os_words_in(&rel, text, &masked);
+        let masked = match auth_words::scope(c.kind, &dir, &rel).filter(|_| auth_decision) {
+            Some(with_type) => std::borrow::Cow::Owned(
+                auth_words::mask_auth_decision(&rel, &masked, with_type).into_owned(),
+            ),
+            None => masked,
+        };
         // A dialect mapping file's wire-lock keys are the provider's words (ruling above).
         let masked = if c.kind == Some("plane") {
             mask_dialect_wire_keys(cx, &dir, &rel, text, &masked, &mut wire_locks)
@@ -1890,22 +1883,21 @@ const HOMOGLYPHS: &[(char, char)] = &[
 
 /// The ledger in its two halves, projected out of the ONE registry reader in the parent module.
 ///
-/// The numbers, per crate × kind; the SENTENCES, per kind → kind class; and the recorded scanner
-/// disagreements. The prose belongs to the class because that is what a reader is reading — the same
-/// split `[[transitional]]` already makes — and the number belongs to the cell because that is what
-/// the ratchet moves. Every field is required and validated at LOAD by [`super::take_row`], so a
-/// row that reaches here is a row a human could read.
+/// The crate × kind EDGES that exist, per cell; the SENTENCES, per kind → kind class. The prose
+/// belongs to the class because that is what a reader is reading — the same split
+/// `[[transitional]]` already makes. A cell row carries no number: presence, not size (owner
+/// 2026-10-02). Every field is required and validated at LOAD by [`super::take_row`], so a row that
+/// reaches here is a row a human could read.
 #[derive(Default)]
 struct Ledger {
-    cells: BTreeMap<(String, String), i64>,
+    cells: BTreeSet<(String, String)>,
     /// class -> `cite`/`why`/`drain`, kept rather than discarded so `--report` can hand a reader
-    /// the citation and the deleting line beside the number instead of a bare count.
+    /// the citation and the deleting line beside the class.
     edges: BTreeMap<(String, String), (String, String, String)>,
-    disagreements: BTreeMap<(String, String), String>,
 }
 
-/// TWO ROWS FOR ONE CELL IS TWO ANSWERS. The maps below would keep the last, which is a ceiling
-/// chosen by file order — so a repeated key is reported instead, by name.
+/// TWO ROWS FOR ONE CELL IS TWO ANSWERS. The maps below would keep the last, which is a row chosen
+/// by file order — so a repeated key is reported instead, by name.
 fn duplicates(reg: &super::KindRegistry) -> Vec<String> {
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     for c in &reg.matrix_cells {
@@ -1916,11 +1908,6 @@ fn duplicates(reg: &super::KindRegistry) -> Vec<String> {
     for e in &reg.matrix_edges {
         *seen
             .entry(format!("edge\t{} -> {}", e.from, e.to))
-            .or_default() += 1;
-    }
-    for d in &reg.matrix_disagreements {
-        *seen
-            .entry(format!("disagreement\t{} × {}", d.krate, d.kind))
             .or_default() += 1;
     }
     seen.into_iter()
@@ -1940,7 +1927,7 @@ fn read_ledger(reg: &super::KindRegistry) -> Ledger {
         cells: reg
             .matrix_cells
             .iter()
-            .map(|c| ((c.krate.clone(), c.kind.clone()), c.count))
+            .map(|c| (c.krate.clone(), c.kind.clone()))
             .collect(),
         edges: reg
             .matrix_edges
@@ -1952,11 +1939,6 @@ fn read_ledger(reg: &super::KindRegistry) -> Ledger {
                 )
             })
             .collect(),
-        disagreements: reg
-            .matrix_disagreements
-            .iter()
-            .map(|d| ((d.krate.clone(), d.kind.clone()), d.note.clone()))
-            .collect(),
     }
 }
 
@@ -1966,11 +1948,6 @@ fn render_classes(listed: &Ledger) -> String {
     for ((from, to), (cite, why, drain)) in &listed.edges {
         out.push_str(&format!(
             "--- {from} -> {to}\n  cite : {cite}\n  why  : {why}\n  drain: {drain}\n"
-        ));
-    }
-    for ((krate, kind), note) in &listed.disagreements {
-        out.push_str(&format!(
-            "--- {krate} × {kind} (scanners disagree)\n  {note}\n"
         ));
     }
     out
@@ -2003,40 +1980,24 @@ fn render_drain(matrix: &Matrix) -> String {
     out
 }
 
-/// EVERY CELL'S MEASURED COUNT, for the one caller that needs the numbers without the verdict:
-/// `--write`, which re-pins a `[[cell]]` row DOWNWARD to what the tree measures today.
-pub fn measured_cells(
-    cx: &Ctx,
-    crates: &[CrateInfo],
-) -> Result<BTreeMap<(String, String), usize>, String> {
-    let (matrix, _, _) = measure(cx, crates)?;
-    Ok(matrix
-        .into_iter()
-        .map(|((krate, kind), cell)| ((krate, kind.to_string()), cell.count))
-        .collect())
-}
-
-/// THE ROWS THIS BRANCH MINTED — a `[[cell]]`, `[[edge]]` or `[[disagreement]]` that is in no
+/// THE ROWS THIS BRANCH MINTED — a `[[cell]]`, `[[edge]]` or `[[instance]]` that is in no
 /// merge-base copy of the ledger at all.
 ///
-/// `ceiling-rose` cannot see one, and that is not an oversight in it: it walks the numbers the BASE
-/// carries and asks whether they went up, so a key the base does not have has no `before` to be
-/// higher than and is skipped in silence. A red team walked straight through the gap — a
-/// `pub struct WSFrame;` planted in a store plugin went red twice (`unlisted-cell` and
-/// `unlisted-edge`), and three hand-written rows, one of them a `[[disagreement]]` note the author
-/// composed themselves, made the whole gate green.
+/// The rows are presence only (size is not a CI check, owner 2026-10-02), so a row is the whole of
+/// what legitimises a cross-kind edge — and THIS is the rule that refuses a branch legitimising a
+/// NEW edge by writing its row in the same commit as the coupling. A red team walked straight
+/// through the gap before it existed: a `pub struct WSFrame;` planted in a store plugin went red
+/// twice (`unlisted-cell` and `unlisted-edge`), and hand-written rows made the whole gate green.
 ///
-/// A new row is a `0 -> N` raise wearing the clothes of a first measurement. It is refused here,
-/// and the refusal is the transaction the ceiling machinery is built on everywhere else: the number
-/// moves in a commit that says so, and a reviewer reads the sentence rather than the diff's
-/// arithmetic.
+/// A new row is a new edge wearing the clothes of a first measurement. It is refused here: the edge
+/// lands in a commit that says why the tree now needs it, and a reviewer reads that sentence.
 fn minted_rows(cx: &Ctx) -> Vec<String> {
     let base = match super::base::read(cx) {
         Ok(b) => b,
         Err(why) => {
             return vec![format!(
                 "no-base\t{LEDGER}\tno merge-base could be read, so no row could be shown to \
-                 pre-date this branch ({why}). A ratchet that cannot read its own history reports \
+                 pre-date this branch ({why}). A rule that cannot read its own history reports \
                  nothing, and reporting nothing is not passing."
             )]
         }
@@ -2052,7 +2013,7 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
         (
             "cell",
             &["crate", "kind"][..],
-            "a ceiling for one crate's naming of one kind",
+            "an allowance for one crate naming one kind",
         ),
         (
             "edge",
@@ -2060,18 +2021,13 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
             "an allowance for one kind naming another",
         ),
         (
-            "disagreement",
-            &["crate", "kind"][..],
-            "an excuse for the two scanners reading one cell differently",
-        ),
-        (
             instances::TABLE,
             &["crate", "kind"][..],
-            "a ceiling for one neutral crate naming one plugin kind's instances as a value",
+            "an allowance for one neutral crate naming one plugin kind's instances as a value",
         ),
     ] {
         let was = super::base::row_keys(&base.registry, table, ids);
-        // A WHOLE COLUMN THAT DID NOT EXIST IS THE RULE ARRIVING, NOT A CEILING RISING.
+        // A WHOLE COLUMN THAT DID NOT EXIST IS THE RULE ARRIVING, NOT A NEW EDGE.
         //
         // Every key here is `<row> \u{d7} <column>` — a crate and the kind it names, or an edge's two
         // ends — and the mint rule is about the ROW: a second `[[cell]]` in a column that already
@@ -2101,10 +2057,9 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
             out.push(format!(
                 "minted-row\t[[{table}]] {key}\tthis row is in no copy of {LEDGER} at the \
                  merge-base {}: this branch MINTED it. It is {what}, and a row that did not exist \
-                 is a 0 -> N raise wearing the clothes of a first measurement — the one raise \
-                 `ceiling-rose` cannot see, because a key with no `before` has nothing to be higher \
-                 than. Delete the coupling instead, or land the row in a commit whose message says \
-                 why the tree now needs it.",
+                 is a NEW cross-kind edge legitimised in the same branch that grew it. Delete the \
+                 coupling instead, or land the row in a commit whose message says why the tree now \
+                 needs it.",
                 &base.commit[..8.min(base.commit.len())]
             ));
         }
@@ -2113,7 +2068,7 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
 }
 
 /// THE LAW 0/1 ARMED CLASS — evaluated UNCONDITIONALLY of the `[[cell]]` ledger: a NEUTRAL
-/// crate's ceiling against [`instance_vocab_kinds`] is 0, and no ratchet row can raise it.
+/// crate's ceiling against [`instance_vocab_kinds`] is 0, and no ledger row can raise it.
 /// Cargo.toml is not read by the matrix at all (owner 2026-10-03, see [`is_cargo_manifest`]); a
 /// manifest edge is governed by `kind-isolation:deps`.
 ///
@@ -2361,91 +2316,37 @@ fn measured_row(
         .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
         .collect();
 
+    // PRESENCE, NOT SIZE (owner 2026-10-02: size is not a CI check). A cell above zero is a
+    // crate-level cross-kind EDGE, and the only question asked of it is whether a row says it may
+    // exist. No finding here carries a hit count: a count in the text would make every extra hit
+    // inside an already-listed (or already-standing) cell read as a new or larger finding, which is
+    // the line counter the ruling deleted. The numbers stay in `--report`.
     for ((krate, kind), cell) in &matrix {
+        if cell.count == 0 {
+            continue;
+        }
         let src = kind_of.get(krate.as_str()).copied().unwrap_or("?");
         let edge = (src.to_string(), (*kind).to_string());
         if !listed.edges.contains_key(&edge) {
             offenders.push(format!(
-                "unlisted-edge\t{src} -> {kind}\t{krate} names {kind} vocabulary {} time(s) and \
-                 there is no `[[edge]] from = \"{src}\", to = \"{kind}\"` in {LEDGER}. An edge \
-                 nobody wrote down is an edge nobody reviewed: add the class with its ARCHITECTURE \
-                 citation and the line that deletes it, or delete the hits.",
-                cell.count
+                "unlisted-edge\t{src} -> {kind}\t{krate} names {kind} vocabulary and there is no \
+                 `[[edge]] from = \"{src}\", to = \"{kind}\"` in {LEDGER}. An edge nobody wrote \
+                 down is an edge nobody reviewed: add the class with its ARCHITECTURE citation and \
+                 the line that deletes it, or delete the hits."
             ));
         }
-
-        let key = (krate.clone(), (*kind).to_string());
-        let Some(&listed_count) = listed.cells.get(&key) else {
+        if !listed.cells.contains(&(krate.clone(), (*kind).to_string())) {
             offenders.push(format!(
-                "unlisted-cell\t{krate} × {kind} = {}\tno `[[cell]] crate = \"{krate}\", kind = \
-                 \"{kind}\"` in {LEDGER}. Every cell above zero carries its own number: add `count \
-                 = \"{}\"`.",
-                cell.count, cell.count
-            ));
-            continue;
-        };
-        // NO `listed_count >= 0` GUARD. It was here, and it was the hole: a `count = "-1"` row
-        // parsed, reached this line, failed the guard and skipped the comparison — a per-cell off
-        // switch nothing reported. A negative count is now refused at LOAD (`bad-count`), so a
-        // count that arrives here is a number a measurement can equal, and the comparison is
-        // unconditional. Two rules, one claim: the reader refuses what it cannot compare, and the
-        // comparison compares everything it is handed.
-        if listed_count as usize != cell.count {
-            let verb = if (listed_count as usize) < cell.count {
-                "RAISED — this landing grew the coupling"
-            } else {
-                "STALE SLACK — the count fell and the ceiling did not; slack is how drift hides"
-            };
-            // THE FILES THE NUMBER IS MADE OF, HEAVIEST FIRST, named in the row itself. A ratchet
-            // finding that says only "2881 vs 2891" sends the reader to `--report`; one that says
-            // `root/plane_node.rs` hands them the file. The whole list is in `--report`.
-            let mut per_file: BTreeMap<&str, usize> = BTreeMap::new();
-            for h in &cell.hits {
-                let mut f = h.split('\t');
-                let Some(at) = f.nth(1).and_then(|p| p.rsplit_once(':').map(|(f, _)| f)) else {
-                    continue;
-                };
-                let n = f
-                    .next()
-                    .and_then(|n| n.trim_end_matches('x').parse::<usize>().ok())
-                    .unwrap_or(1);
-                *per_file.entry(at).or_default() += n;
-            }
-            let total_files = per_file.len();
-            let mut files: Vec<(&str, usize)> = per_file.into_iter().collect();
-            files.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-            files.truncate(6);
-            offenders.push(format!(
-                "ratchet\t{krate} × {kind}\tceiling {} vs measured {} ({verb}). The ceiling must \
-                 equal the count, exactly. {total_files} file(s), heaviest first: {}",
-                listed_count,
-                cell.count,
-                files
-                    .iter()
-                    .map(|(f, n)| format!("{f} ({n})"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        // THE DISAGREEMENT'S FIGURE IS THE GAP, NOT THE CELL. The
-        // cell's own count is already this cell's `ratchet`/`unlisted-cell` finding; carrying it
-        // here too filed every disagreeing cell twice in the standing snapshot (kernel×transport
-        // 1 811 twice), so a burn-down summed over the snapshot double-counted exactly those
-        // cells. What a disagreement IS is the spellings one scanner sees and the other does not.
-        if cell.disagrees() && !listed.disagreements.contains_key(&key) {
-            let gap = cell.by_segments.abs_diff(cell.by_windows);
-            offenders.push(format!(
-                "measurement-disagreement\t{krate} × {kind}\tsegment scanner {} vs window scanner \
-                 {}: they differ by {gap}, and the cell scores the higher, {} (that count is the \
-                 cell's own row). Record a `[[disagreement]]` row for this cell, or drain the \
-                 spellings one scanner cannot see.",
-                cell.by_segments, cell.by_windows, cell.count
+                "unlisted-cell\t{krate} \u{d7} {kind}\tno `[[cell]] crate = \"{krate}\", kind = \
+                 \"{kind}\"` in {LEDGER}: this is a NEW crate-level cross-kind edge. Delete the \
+                 hits (`--report` lists them, file:line), or add the row in a commit that says why \
+                 the tree now needs the edge."
             ));
         }
     }
 
     // A ROW WHOSE CELL IS GONE IS A DEAD ALLOWANCE. The exemption cannot outlive the coupling.
-    for (krate, kind) in listed.cells.keys() {
+    for (krate, kind) in &listed.cells {
         // A PLUGIN CRATE'S CONTRACT CELL IS NOT GONE, IT IS THE RULE: the column is not measured
         // for a plugin kind (see [`measure`]), so the row is an exception to a rule that excepts
         // nothing, and it says so rather than reading as a coupling that drained.
@@ -2467,17 +2368,6 @@ fn measured_row(
                 "dead-cell\t{krate} × {kind}\tthe `[[cell]]` row covers nothing: the cell measures \
                  0. Strike it — an allowance that outlives what it allowed is a hole nobody \
                  re-reads."
-            ));
-        }
-    }
-    for (krate, kind) in listed.disagreements.keys() {
-        let live = matrix
-            .iter()
-            .any(|((k, kd), c)| k == krate && kd == kind && c.disagrees());
-        if !live {
-            offenders.push(format!(
-                "dead-disagreement\t{krate} × {kind}\tthe `[[disagreement]]` row covers nothing: \
-                 the two scanners agree on this cell now. Strike it."
             ));
         }
     }
@@ -2503,12 +2393,11 @@ fn measured_row(
 
     // A HOMOGLYPH IS NEVER A SPELLING ANYBODY MEANT, AND ITS CEILING IS ZERO.
     //
-    // Every other number in this row is a ratchet against a `[[cell]]` row, because every other
-    // number counts a word somebody wrote on purpose and the question is whether there are MORE of
-    // them than last week. This one is different in kind: a token whose ASCII fold is a plane's
-    // name and whose raw bytes are not is a token that reads as that name to the reviewer and to
-    // nothing else. There is no count of those that is the right count, so there is no row that
-    // raises it — the ceiling is zero, exactly, and it is measured at zero on this tree today.
+    // Every other cell in this row is held to a `[[cell]]` row, because every other hit is a word
+    // somebody wrote on purpose and the question is whether the edge it makes was reviewed. This
+    // one is different in kind: a token whose ASCII fold is a plane's name and whose raw bytes are
+    // not is a token that reads as that name to the reviewer and to nothing else. There is no row
+    // that allows it — the ceiling is zero, exactly, and it is measured at zero on this tree today.
     for ((krate, kind), cell) in &matrix {
         for c in &cell.confusables {
             offenders.push(format!(
@@ -2521,16 +2410,19 @@ fn measured_row(
 
     // LAW 0/1, EVERYDAY BRANCH: armed unconditionally of the `[[cell]]` ledger, but BLOCKING
     // only for the crates [`LAW0_ENFORCED_NEUTRAL_CRATES`] has caught up to — the readiness
-    // gate that lets the list ratchet down to 0 and STAY there without bricking the push gate
-    // on neutral crates still draining. A crate not yet listed still shows up on the ordinary
-    // ratchet above (raised / stale-slack against its `[[cell]]` row); it is only exempt from
-    // being blocked TWICE for the same hits.
+    // gate that lets the list reach 0 and STAY there without bricking the push gate on neutral
+    // crates still draining. A crate not yet listed is still held to its `[[cell]]` row above
+    // (a new cell with no row is `unlisted-cell`); it is only exempt from being blocked TWICE.
     offenders.extend(law0_offenders(
         &matrix,
         crates,
         Some(LAW0_ENFORCED_NEUTRAL_CRATES),
     ));
 
+    // THE HIT TOTALS ARE THE PASS DETAIL'S AND `--report`'s, NEVER THE FAIL DETAIL'S. The release
+    // turnstile reads a standing-red row's figure as the detail's LEADING integer, and a FAIL
+    // detail that opened with the hit total turned every extra hit in an already-listed cell into
+    // a higher figure and a DENY. A red row's figure is the number of findings it carries.
     let headline = format!(
         "{total} hit(s) over {} cell(s), {inst_total} instance name(s) written as a value over {} \
          `[[{}]]` cell(s), {scanned} file(s) scanned",
@@ -2583,7 +2475,12 @@ fn measured_row(
             Row::fail(
                 ROW_MATRIX,
                 "the kind × crate vocabulary matrix does not match its ledger",
-                format!("{headline}: {}", offenders.join(" | ")),
+                format!(
+                    "{} finding(s) over {} cell(s), {scanned} file(s) scanned: {}",
+                    offenders.len(),
+                    matrix.len(),
+                    offenders.join(" | ")
+                ),
             ),
             Some(reading_of(&matrix, total)),
         );
@@ -2592,8 +2489,8 @@ fn measured_row(
     (
         Row::pass(
             ROW_MATRIX,
-            "every crate's naming of every other kind is at its recorded ceiling",
-            format!("every cell equals its {LEDGER} row; {headline}"),
+            "every crate's naming of every other kind is a listed edge",
+            format!("every non-zero cell has its {LEDGER} row; {headline}"),
         ),
         Some(reading_of(&matrix, total)),
     )
@@ -2638,54 +2535,15 @@ fn the_accept_loop_that_named_its_plane() -> String {
     )
 }
 
-/// THE ROOT'S `busbar × plane` ROW RE-PINNED TO WHAT THE UNPLANTED TREE MEASURES, as the base the
-/// accept-loop case and its green twin share. The number is MEASURED here, never quoted (see
-/// [`cell_anchor`]), and the plant is built on the worker, so the one extra scan is the case's own.
-///
-/// Empty when the row already equals the measurement: the twin is then the unplanted control, and
-/// a ledger written back byte for byte would be an inert plant. Empty, too, when the tree cannot
-/// be measured or the row cannot be found: the red case then plants the file alone and says what
-/// it says, and nothing here hides that.
-fn root_plane_row_at_measurement(cx: &Ctx) -> crate::ctx::Overlay {
-    row_at_measurement(cx, "busbar", "plane")
-}
-
-/// The ledger with `krate × kind`'s row re-pinned to what the unplanted tree measures, so a plant
-/// is the only thing that moves the cell (empty when the row already equals it).
-fn row_at_measurement(cx: &Ctx, krate: &str, kind: &str) -> crate::ctx::Overlay {
-    let repinned = super::census(cx)
-        .and_then(|crates| measured_cells(cx, &crates))
-        .and_then(|cells| {
-            let now = cells
-                .get(&(krate.to_string(), kind.to_string()))
-                .copied()
-                .unwrap_or(0);
-            cell_subst(cx, krate, kind, &now.to_string())
-        })
-        .and_then(|(from, to)| {
-            if from == to {
-                Ok(crate::ctx::Overlay::new())
-            } else {
-                ledger_with(cx, &from, &to)
-            }
-        });
-    repinned.unwrap_or_default()
-}
-
 /// THE HAND-WIRED ROOT, as a fixture this battery owns: a composition-root module that names four
-/// planes' crates, nodes, units and sections by hand. Read at run time and planted at
-/// [`HAND_WIRED_ROOT_PLANT`]; stored as `.txt` so no crate, compiler or source scanner reads it
+/// planes' crates, nodes, units and sections by hand. Read at run time and planted into the fixture
+/// crate ([`fixture_files`]); stored as `.txt` so no crate, compiler or source scanner reads it
 /// where it lives.
 const HAND_WIRED_ROOT_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/units_hand_wired.txt";
 
 /// A synthetic `[[edge]]` row whose class no crate has, appended to the ledger by the dead-edge case.
 /// Stored under `xtask/fixtures/`, which this gate treats as off-tree.
 const DEAD_EDGE_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/dead_edge_row.txt";
-
-/// Where the hand-wired root is planted: inside the composition root, where the drained
-/// `root/units_*.rs` files lived.
-// qa-names: crates/busbar/src/root/units_hand_wired.rs -- xtask/src/gates/kind_isolation/matrix.rs -- a PLANT TARGET, not a scan root: the case writes the fixture to this path in its own overlay, so the path is absent from the tree by design, and this declaration reds the day a real file lands there
-const HAND_WIRED_ROOT_PLANT: &str = "crates/busbar/src/root/units_hand_wired.rs";
 
 /// A one-file plant under `dir`, without disturbing anything else in the tree.
 ///
@@ -2711,8 +2569,7 @@ fn plant(cx: &Ctx, rel: &str, body: &str) -> crate::ctx::Overlay {
     ov
 }
 
-/// The ledger with one row rewritten, so a case can raise a ceiling, leave slack in one, or knock a
-/// whole class out.
+/// The ledger with one row rewritten, so a case can double a row or knock a whole class out.
 ///
 /// THE SENTENCE THAT USED TO BE HERE WAS THE OPPOSITE OF TRUE. It read: *"a fixture that pins a
 /// number goes LOUDLY red when the tree is re-measured, which is what a fixture is for."* It did
@@ -2721,8 +2578,7 @@ fn plant(cx: &Ctx, rel: &str, body: &str) -> crate::ctx::Overlay {
 /// `1942` wrote the ledger back BYTE-FOR-BYTE, the gate read the unplanted tree, and the case
 /// scored whatever that tree scores — quietly, for as long as it took anyone to check. Three cases
 /// in this file were doing it. A needle that is no longer in the ledger is an UNPLANTABLE CASE
-/// now, and [`cell_anchor`] reads the number off the file so a re-pin cannot cause it in the first
-/// place.
+/// now, and [`cell_anchor`] reads the row off the file rather than restating it.
 fn ledger_with(cx: &Ctx, from: &str, to: &str) -> Result<crate::ctx::Overlay, String> {
     let text = cx.read(LEDGER)?;
     if !text.contains(from) {
@@ -2734,17 +2590,15 @@ fn ledger_with(cx: &Ctx, from: &str, to: &str) -> Result<crate::ctx::Overlay, St
     Ok(plant(cx, LEDGER, &text.replacen(from, to, 1)))
 }
 
-/// THE FIXTURE CRATE ([`instances::FIXTURE_CRATE`]) with `files` under its `src/`, and a `[[cell]]`
-/// row for `fixture × kind` at `count` appended to the ledger. `inherited` plants the base's copy
-/// of the ledger with the row in it as well, so the row pre-dates the branch and `minted-row` has
-/// nothing to say about it; without it the row is one this branch wrote.
-fn fixture_cell(
-    cx: &Ctx,
-    kind: &str,
-    count: &str,
-    files: &[(&str, &str)],
-    inherited: bool,
-) -> crate::ctx::Overlay {
+/// THE FIXTURE CRATE ([`instances::FIXTURE_CRATE`]) with `files` under its `src/`, and NO ledger
+/// row: a neutral kernel-kind crate that exists only in the overlay, so a case measures a cell no
+/// live crate owns and no fold can take away.
+///
+/// THE SCANNER PROPERTIES ARE PROVEN THROUGH PRESENCE. The cells carry no count (size is not a CI
+/// check, owner 2026-10-02), so "this spelling does not count" is the fixture holding ONLY that
+/// spelling and the row GREEN — the cell is zero, there is no edge — and "this spelling counts" is
+/// the same plant plus the spelling and the row RED, `unlisted-cell` naming `<fixture> × <kind>`.
+fn fixture_files(files: &[(&str, &str)]) -> crate::ctx::Overlay {
     let mut ov = instances::fixture_crate();
     for (name, body) in files {
         ov.set(
@@ -2752,10 +2606,24 @@ fn fixture_cell(
             (*body).to_string(),
         );
     }
+    ov
+}
+
+/// [`fixture_files`] plus a `[[cell]]` row for `fixture × kind` appended to the ledger. `inherited`
+/// plants the base's copy of the ledger with the row in it as well, so the row pre-dates the
+/// branch and `minted-row` has nothing to say about it; without it the row is one this branch
+/// wrote.
+fn fixture_cell(
+    cx: &Ctx,
+    kind: &str,
+    files: &[(&str, &str)],
+    inherited: bool,
+) -> crate::ctx::Overlay {
+    let mut ov = fixture_files(files);
     let ledger = format!(
         "{}\n\n[[cell]]\n{}\n",
         cx.read(LEDGER).unwrap_or_default().trim_end(),
-        cell_row(instances::FIXTURE_CRATE, kind, count)
+        cell_row(instances::FIXTURE_CRATE, kind)
     );
     if inherited {
         if let Some(sha) = super::debt_free::pinned_base(cx) {
@@ -2764,6 +2632,23 @@ fn fixture_cell(
     }
     ov.set(LEDGER, ledger);
     ov
+}
+
+/// THE OS SPELLINGS OF `unix` THE FIXTURE PLANTS — its cfg predicate, `std::os::unix`, the standard
+/// socket type, the clock and "non-unix" prose — none of which is the carrier ([`os_words`]).
+const UNIX_OS_FILE: (&str, &str) = (
+    "os.rs",
+    "#[cfg(unix)]\n\
+     use std::os::unix::fs::PermissionsExt;\n\
+     #[cfg(all(unix, not(target_os = \"macos\")))]\n\
+     pub fn mode(l: &tokio::net::UnixListener) -> u64 { now_unix_ns() }\n\
+     fn now_unix_ns() -> u64 { std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_secs()) }\n\
+     // Non-unix builds have no mode bits; Unix seconds since the epoch.\n",
+);
+
+/// The subject a fixture cell is named by in its findings: `<fixture> × <kind>`.
+fn fixture_subject(kind: &str) -> String {
+    format!("{} \u{d7} {kind}", instances::FIXTURE_CRATE)
 }
 
 /// [`prove_rows_red`](crate::gates::prove_rows_red) over a one-substitution plant into the real
@@ -2810,39 +2695,6 @@ fn plant_ledger<'a>(
     }
 }
 
-/// The first `[[disagreement]]` row whose cell STILL disagrees on this tree, as `(crate, kind,
-/// manifest)`, for the case that kills a row's cell. The root and the contract are passed over:
-/// removing either manifest takes half the census with it, and the case is about one row.
-fn live_disagreement(cx: &Ctx) -> Result<(String, String, String), String> {
-    let crates = super::census(cx)?;
-    let (matrix, _, _) = measure(cx, &crates)?;
-    let text = cx.read(LEDGER)?;
-    for block in text.split("[[disagreement]]").skip(1) {
-        let field = |key: &str| {
-            block.lines().find_map(|l| {
-                let (k, v) = l.split_once('=')?;
-                (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
-            })
-        };
-        let (Some(krate), Some(kind)) = (field("crate"), field("kind")) else {
-            continue;
-        };
-        if krate == "busbar" || krate == "busbar-contract" {
-            continue;
-        }
-        let live = matrix
-            .iter()
-            .any(|((k, kd), c)| *k == krate && *kd == kind && c.disagrees());
-        if let (true, Some(c)) = (live, crates.iter().find(|c| c.name == krate)) {
-            return Ok((krate, kind, c.manifest.clone()));
-        }
-    }
-    Err(format!(
-        "no `[[disagreement]]` row in {LEDGER} outside the root and the contract disagrees on this \
-         tree, so no row can be shown dying"
-    ))
-}
-
 /// THE TREE WITH ALMOST EVERY FILE UNDER `crates/` GONE, for this row's own floor.
 ///
 /// `:matrix` does not walk one extension: it LISTS `crates/` whole, because a plane's name in a
@@ -2861,40 +2713,38 @@ fn all_but_scanned(cx: &Ctx, keep: usize) -> crate::ctx::Overlay {
     ov
 }
 
-/// The three lines of one `[[cell]]` row.
-pub(super) fn cell_row(krate: &str, kind: &str, count: &str) -> String {
-    format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"{count}\"")
+/// The two lines of one `[[cell]]` row.
+pub(super) fn cell_row(krate: &str, kind: &str) -> String {
+    format!("crate = \"{krate}\"\nkind = \"{kind}\"")
 }
 
-/// THE `[[cell]]` ROW FOR `crate × kind` AS THE LEDGER SPELLS IT TODAY, count included.
+/// THE `[[cell]]` ROW FOR `crate × kind` AS THE LEDGER SPELLS IT TODAY.
 ///
-/// A FIXTURE MAY NOT HARD-CODE A RATCHET VALUE. Every `count` in this file is TODAY'S MEASUREMENT
-/// by construction, and `cargo xtask gate kind-isolation --write` re-pins it whenever the tree
-/// moves down; a plant that quotes one is a plant that stops planting on the next re-pin and says
-/// nothing when it does. `busbar × plane` was `1798` when the cases below were written and is
-/// `1942` now; `busbar-kernel × plane` was `1` and is four figures. The anchor is read off the
-/// file every run instead.
+/// Read off the file rather than restated: a fixture that quotes a row the ledger no longer
+/// carries is a plant that stops planting and says nothing when it does. The two lines are only an
+/// anchor when the `[[cell]]` header sits directly above them, because `crate`/`kind` is also the
+/// shape of an `[[instance]]` row.
 pub(super) fn cell_anchor(cx: &Ctx, krate: &str, kind: &str) -> Result<String, String> {
     let text = cx.read(LEDGER)?;
-    let head = format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"");
-    let at = text.find(&head).ok_or_else(|| {
-        format!("no `[[cell]]` row for {krate} × {kind} in {LEDGER} to plant over")
-    })?;
-    let rest = &text[at + head.len()..];
-    let end = rest.find('"').ok_or_else(|| {
-        format!("the `[[cell]]` row for {krate} × {kind} has an unterminated `count`")
-    })?;
-    Ok(format!("{head}{}\"", &rest[..end]))
+    let row = format!("[[cell]]\n{}", cell_row(krate, kind));
+    if !text.contains(&row) {
+        return Err(format!(
+            "no `[[cell]]` row for {krate} × {kind} in {LEDGER} to plant over"
+        ));
+    }
+    Ok(row)
 }
 
-/// That row, and the same row with `count` moved to `count`.
+/// That row, and the same row with `extra` (one more `key = "value"` line) written into it.
 pub(super) fn cell_subst(
     cx: &Ctx,
     krate: &str,
     kind: &str,
-    count: &str,
+    extra: &str,
 ) -> Result<(String, String), String> {
-    Ok((cell_anchor(cx, krate, kind)?, cell_row(krate, kind, count)))
+    let anchor = cell_anchor(cx, krate, kind)?;
+    let planted = format!("{anchor}\n{extra}");
+    Ok((anchor, planted))
 }
 
 /// THE REPORT ASSERTION: the registered gate's row stays PASS under `plant` and the total in its
@@ -2967,8 +2817,8 @@ pub fn selftest<'a>(
     ));
 
     // THE SHIP TWIN OWES A DIFFERENT PROOF, because it is RED on this tree ON PURPOSE. Every case
-    // below is about the LEDGER, and the ship twin does not read the ledger — planting a raised
-    // ceiling against it would produce the same red it already produces, and "the gate went red"
+    // below is about the LEDGER, and the ship twin does not read the ledger — planting a row
+    // against it would produce the same red it already produces, and "the gate went red"
     // is the answer this battery exists to refuse. So the ship twin gets one case, and it makes a
     // NAMED, NEW deviation: a cell that measures ZERO today and does not after the plant.
     if ship {
@@ -2988,61 +2838,111 @@ pub fn selftest<'a>(
         return;
     }
 
-    // THE FIVE INSTANCE AXES (item 118) — every one planted in core, plus the ratchet both ways.
+    // THE FIVE INSTANCE AXES (item 118) — every one planted in core, plus the listed/unlisted pair.
     instances::selftest(cx, gate, false, report);
 
-    // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP): a quoted map key that IS a
-    // path of the file's wire lock is the provider's word; the same word anywhere else still counts.
-    // Every arm runs on the plane crate's row re-pinned to its measurement, so the plant alone moves it.
-    let dialect_case = |line: &'static str| {
-        let cx = cx.clone();
-        move || {
-            let file = "crates/busbar-plane-llm/dialects/openai_responses.toml";
-            let body = cx.read(file).unwrap_or_default();
-            row_at_measurement(&cx, "busbar-plane-llm", "plane").layered(&plant(
-                &cx,
-                file,
-                &format!("{body}\n{line}\n"),
-            ))
+    // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP) is a COUNT property inside a
+    // listed cell (`busbar-plane-llm × plane`), which presence cannot observe; it is proven on the
+    // cell itself in `tests::a_dialect_wire_key_is_the_providers_word_and_the_same_word_elsewhere_counts`.
+
+    // THE AUTH ABI'S `decision` FIELD IS NOT THE DECISIONS PLANE ([`auth_words`]), and the mask is
+    // not a hole: an auth crate reading and naming the continue/stop field is green; the same crate
+    // writing the decisions plane's registry key `"decision"` is still a `× plane` cell. The plant
+    // files' own paths carry no plane word: a file's path is scanned as its line 0, unmasked.
+    let auth = super::census(cx).ok().and_then(|cs| {
+        cs.into_iter()
+            .filter(|c| c.kind == Some(auth_words::KIND))
+            .map(|c| (c.name, c.dir))
+            .min()
+    });
+    match auth {
+        Some((name, dir)) => {
+            let field = || {
+                plant(
+                    cx,
+                    &format!("{dir}/src/planted_verdict_field.rs"),
+                    "pub fn names_a_decision(out: &Out) -> u32 {\n    let decision = \
+                     out.decision;\n    decision\n}\n",
+                )
+            };
+            report.push(prove_rows_green(
+                cx,
+                gate,
+                "an auth crate naming its own ABI's `decision` field is no decisions-plane cell",
+                &[ROW_MATRIX],
+                field(),
+            ));
+            let mut plane = field();
+            plane.set(
+                format!("{dir}/src/planted_plane_key.rs"),
+                "pub const KEY: &str = \"decision\";\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "an auth crate writing the decisions plane's key is still a `× plane` cell",
+                &[ROW_MATRIX],
+                plane,
+                &[&format!("{name} \u{d7} plane")],
+            ));
         }
-    };
-    let llm_raised = ["ratchet", "busbar-plane-llm × plane", "RAISED"];
-    report.push(prove_rows_green(
-        cx,
-        gate,
-        "a dialect map key that is a wire-lock path (`input[].type=mcp_call.arguments`) is the \
-         provider's word, not a plane coupling",
-        &[ROW_MATRIX],
-        dialect_case(
-            "[unmapped.stream]\n\"input[].type=mcp_call.arguments\" = { no-equivalent = \"x\" }",
-        ),
-    ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "the same plane word in a dialect map VALUE still counts",
-        &[ROW_MATRIX],
-        dialect_case("[unmapped.stream]\n\"input[].type=function_call.arguments\" = { no-equivalent = \"an mcp call\" }"),
-        &llm_raised,
-    ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "the same plane word in a dialect map comment still counts",
-        &[ROW_MATRIX],
-        dialect_case("# the mcp tool"),
-        &llm_raised,
-    ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "a dialect map key the wire lock does not have still counts",
-        &[ROW_MATRIX],
-        dialect_case(
-            "[unmapped.stream]\n\"tools[].type=mcp.no_such_member\" = { no-equivalent = \"x\" }",
-        ),
-        &llm_raised,
-    ));
+        None => report.push(crate::gates::CasePlan::from(super::unplantable(
+            "an auth-kind crate to plant the `decision` field in",
+            &[ROW_MATRIX],
+            &["decision"],
+            "the census holds no auth-kind crate".to_string(),
+        ))),
+    }
+
+    const LOADER_PACKAGE: &str = "busbar-plugin-loader";
+    // …and on the LOADER'S side of the auth ABI: a plugin-tooling file whose path names `auth`
+    // reading the field and the contract's `Decision` type is green; the same file's crate writing
+    // the decisions plane's key in an auth file is still a `× plane` cell.
+    let loader = super::census(cx).ok().and_then(|cs| {
+        cs.into_iter()
+            .find(|c| c.kind == Some(auth_words::LOADER_KIND) && c.name == LOADER_PACKAGE)
+            .map(|c| (c.name, c.dir))
+    });
+    match loader {
+        Some((name, dir)) => {
+            let field = || {
+                plant(
+                    cx,
+                    &format!("{dir}/src/planted_auth_verdict.rs"),
+                    "use busbar_contract::auth_calls::Decision;\n\
+                     pub fn read(out: &Out) -> Decision {\n    let decision = out.decision;\n    \
+                     if decision == 0 { Decision::Continue } else { Decision::Stop }\n}\n",
+                )
+            };
+            report.push(prove_rows_green(
+                cx,
+                gate,
+                "the loader's auth file naming the auth ABI's `decision` and `Decision` is no \
+                 decisions-plane cell",
+                &[ROW_MATRIX],
+                field(),
+            ));
+            let mut plane = field();
+            plane.set(
+                format!("{dir}/src/planted_auth_key.rs"),
+                "pub const KEY: &str = \"decision\";\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "the loader's auth file writing the `decision` key is still a `× plane` cell",
+                &[ROW_MATRIX],
+                plane,
+                &[&format!("{name} \u{d7} plane")],
+            ));
+        }
+        None => report.push(crate::gates::CasePlan::from(super::unplantable(
+            "the loader crate to plant its auth `decision` in",
+            &[ROW_MATRIX],
+            &["decision"],
+            format!("the census holds no plugin-tooling `{LOADER_PACKAGE}`"),
+        ))),
+    }
 
     // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
     // `files.len() < MIN_SCANNED` into `false && …` and the whole battery stayed green: every other
@@ -3059,26 +2959,24 @@ pub fn selftest<'a>(
         &["below the floor of", &MIN_SCANNED.to_string()],
     ));
 
-    // A ROW THIS BRANCH MINTED IS A `0 -> N` RAISE, and it is the raise `ceiling-rose` cannot see:
-    // that rule walks the numbers the BASE carries and asks whether they went up, so a key with no
-    // `before` has nothing to be higher than and is skipped in silence. A red team walked straight
-    // through the gap — `pub struct WSFrame;` planted in a store plugin went red twice, and three
-    // hand-written rows (a `[[cell]]`, an `[[edge]]` and a `[[disagreement]]` whose note the author
-    // composed themselves) made the whole gate green.
+    // A ROW THIS BRANCH MINTED IS A NEW EDGE LEGITIMISED IN THE BRANCH THAT GREW IT, and with the
+    // counts gone it is the ONLY thing standing between a branch and a new cross-kind edge it wrote
+    // its own row for. A red team walked straight through the gap before this rule existed —
+    // `pub struct WSFrame;` planted in a store plugin went red twice, and hand-written rows (a
+    // `[[cell]]` and an `[[edge]]` the author composed themselves) made the whole gate green.
     //
-    // The plant is the fixture crate naming one transport, and a `[[cell]]` row for that cell at
-    // EXACTLY its measurement: nothing about the row is wrong except that it is new, so the refusal
-    // the case asserts is the one it is about.
+    // The plant is the fixture crate naming one transport, and a `[[cell]]` row for that cell:
+    // nothing about the row is wrong except that it is new, so the refusal the case asserts is the
+    // one it is about.
     report.push(prove_rows_red(
         cx,
         gate,
-        "a `[[cell]]` row this branch minted is a 0 -> N raise, not a first measurement",
+        "a `[[cell]]` row this branch minted is a new edge, not a first measurement",
         &[ROW_MATRIX],
         fixture_cell(
             cx,
             "transport",
-            "1",
-            &[("wire.rs", "pub const WIRE: &str = \"stdio\";\n")],
+            &[("wire.rs", "pub const WIRE: &str = \"tcp\";\n")],
             false,
         ),
         &[
@@ -3087,80 +2985,71 @@ pub fn selftest<'a>(
             "this branch MINTED it",
         ],
     ));
+    // …and the SAME row, inherited from the base, is GREEN: the row is what makes the edge
+    // reviewed, and a listed cell is green whatever its size.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "the same `[[cell]]` row inherited from the base is a listed edge, and green",
+        &[ROW_MATRIX],
+        fixture_cell(
+            cx,
+            "transport",
+            &[("wire.rs", "pub const WIRE: &str = \"tcp\";\n")],
+            true,
+        ),
+    ));
 
-    // THE INCIDENT, PLANTED — and its green twin, which is the same tree with the file absent.
+    // THE INCIDENT, PLANTED — and its green twin, which is the same crate with the file absent.
     //
-    // BOTH RUN ON THE ROOT'S ROW RE-PINNED TO ITS MEASUREMENT ([`root_plane_row_at_measurement`]).
-    // The case used to read the LIVE `busbar × plane` ceiling, and whenever that row sat above what
-    // the tree measures (919 over 787 on predev f882c3ce6, owned drain debt) the plant's seven hits
-    // left it STALE SLACK and the case could never say RAISED: a proof that depended on the
-    // ledger's debt, the same failure the comment case below was moved off for. Pinned, the plant
-    // is the only thing that moves the cell, whatever the ledger carries.
-    let root_repin = {
-        let cx = cx.clone();
-        move || root_plane_row_at_measurement(&cx)
-    };
-    let accept_loop = {
-        let cx = cx.clone();
-        let repin = root_repin.clone();
-        move || {
-            repin().layered(&plant(
-                &cx,
-                "crates/busbar/src/root/voice_serve.rs",
-                &the_accept_loop_that_named_its_plane(),
-            ))
-        }
-    };
+    // `keep-streams-3` `dd96a04f3` landed a plane-named accept loop in the composition root, and
+    // CI was green because nothing measured the root. The root's `busbar × plane` cell is a listed
+    // edge today, and more plane names inside it are not a CI finding any more (size is not a CI
+    // check, owner 2026-10-02) — so the case proves the SCANNER, through presence: the incident's
+    // own bytes, planted into the fixture crate whose plane cell has no row, make that cell a NEW
+    // edge (RED), and the same crate without them is GREEN. The plane is named in the path, the
+    // `cfg(feature)`, the module prose and the import; the case asserts the scan sees it.
     report.push(prove_rows_red(
         cx,
         gate,
         "the accept loop that named its plane (`root/voice_serve.rs`, keep-streams-3 dd96a04f3)",
         &[ROW_MATRIX],
-        accept_loop,
-        &["ratchet", "busbar × plane", "RAISED"],
+        fixture_files(&[(
+            "voice_serve.rs",
+            the_accept_loop_that_named_its_plane().as_str(),
+        )]),
+        &["unlisted-cell", &fixture_subject("plane")],
     ));
     report.push(prove_rows_green(
         cx,
         gate,
-        "the same tree with that accept loop absent, at the ceiling its measurement pins",
+        "the same crate with that accept loop absent",
         &[ROW_MATRIX],
-        root_repin,
+        fixture_files(&[]),
     ));
 
-    // THE ROOT THAT HAND-WIRED FOUR PLANES. Drop the cell to what a registry-driven root would
-    // measure and the row names the file the planes are wired in.
-    //
-    // THE FILE IS A FIXTURE, NOT A LIVE ONE. The case used to name `root/units_voice.rs`, the
-    // heaviest of the root's hand-wired units files; that file is deleted, and a case that
-    // names a live file breaks the day the drain it is measuring succeeds. The hand-wired module is
-    // now [`HAND_WIRED_ROOT_FIXTURE`], planted under the root, so the row is asked to name bytes this
-    // battery owns.
-    let hand_wired = match cx.read(HAND_WIRED_ROOT_FIXTURE) {
-        Ok(body) => cell_subst(cx, "busbar", "plane", "0")
-            .and_then(|(from, to)| ledger_with(cx, &from, &to))
-            .map(|mut ov| {
-                ov.set(HAND_WIRED_ROOT_PLANT, body);
-                ov
-            }),
-        Err(e) => Err(format!("{HAND_WIRED_ROOT_FIXTURE}: {e}")),
-    };
-    let name =
-        "the root that hand-wired four planes, held to the zero a registry-driven root would measure";
-    let naming = ["ratchet", "busbar × plane", "RAISED", "units_hand_wired.rs"];
-    match hand_wired {
-        Ok(ov) => report.push(prove_rows_red(cx, gate, name, &[ROW_MATRIX], ov, &naming)),
-        Err(why) => report.push(super::unplantable(name, &[ROW_MATRIX], &naming, why)),
+    // THE ROOT THAT HAND-WIRED FOUR PLANES. The module is a fixture this battery owns
+    // ([`HAND_WIRED_ROOT_FIXTURE`]), planted into the fixture crate, whose plane cell has no row:
+    // a hand-wired module is a plane edge a registry-driven crate would not have.
+    let name = "the root that hand-wired four planes is a plane edge where none is listed";
+    let subject = fixture_subject("plane");
+    let naming = ["unlisted-cell", subject.as_str()];
+    match cx.read(HAND_WIRED_ROOT_FIXTURE) {
+        Ok(body) => report.push(prove_rows_red(
+            cx,
+            gate,
+            name,
+            &[ROW_MATRIX],
+            fixture_files(&[("units_hand_wired.rs", body.as_str())]),
+            &naming,
+        )),
+        Err(e) => report.push(super::unplantable(
+            name,
+            &[ROW_MATRIX],
+            &naming,
+            format!("{HAND_WIRED_ROOT_FIXTURE}: {e}"),
+        )),
     }
-
-    // A CEILING WITH SLACK IS THE OTHER HALF OF THE RATCHET.
-    report.push(plant_ledger(
-        cx,
-        gate,
-        "a ceiling left above the count it measures — stale slack is how drift hides",
-        &[ROW_MATRIX],
-        cell_subst(cx, "busbar-kernel", "plane", "99999"),
-        &["ratchet", "busbar-kernel × plane", "STALE SLACK"],
-    ));
 
     // A PLANE NAMED INSIDE A TRANSPORT — the wire learning what it carries.
     report.push(prove_rows_red(
@@ -3191,36 +3080,42 @@ pub fn selftest<'a>(
         &[WIRE_PLANT, "plane"],
     ));
 
-    // A TRANSPORT NAMED INSIDE A PLANE — the same fusion, the other way up. The word is a
-    // transport the census holds: `grpc` (and `tcp`, `http`) left this tree with their crates, and
-    // a word no transport crate carries is no needle, so the plant measured nothing.
+    // A TRANSPORT NAMED INSIDE A PLANE — the same fusion, the other way up.
+    //
+    // EVERY LIVE PLANE ALREADY CARRIES A TRANSPORT CELL (listed or standing), and more hits inside
+    // one are not a CI finding (size is not a CI check, owner 2026-10-02). So the plane is a
+    // battery-owned one that exists only in the overlay, and the transport name is its first: the
+    // cell goes from no edge to an edge, which is the thing the row holds.
     report.push(prove_rows_red(
         cx,
         gate,
-        "a transport named inside a plane (`busbar-plane-mcp` says `stdio`)",
+        "a transport named inside a plane (`busbar-plane-quokka` says `grpc`)",
         &[ROW_MATRIX],
-        // Re-pinned to its measurement first, so the plant's one hit is what moves the cell: the
-        // row's ceiling was set while three more transports' words counted in it.
-        row_at_measurement(cx, "busbar-plane-mcp", "transport").layered(&plant(
-            cx,
-            "crates/busbar-plane-mcp/src/leak.rs",
-            "//! The stdio wire delivers these.\n",
-        )),
-        &["ratchet", "busbar-plane-mcp × transport", "RAISED"],
+        {
+            let mut ov = plant(
+                cx,
+                "crates/busbar-plane-quokka/Cargo.toml",
+                "[package]\nname = \"busbar-plane-quokka\"\nversion = \"0.0.0\"\n",
+            );
+            ov.set(
+                "crates/busbar-plane-quokka/src/lib.rs",
+                "//! The grpc wire delivers these.\n".to_string(),
+            );
+            ov
+        },
+        &["unlisted-cell", "busbar-plane-quokka × transport"],
     ));
 
-    // A STORE NAMED INSIDE THE KERNEL — core is core.
+    // A STORE NAMED INSIDE A KERNEL CRATE — core is core. The fixture crate is kernel-kind and
+    // names nothing, so the store name is its first: `busbar-kernel × store` already stands red on
+    // the tree, and more hits inside a standing cell are not a new finding.
     report.push(prove_rows_red(
         cx,
         gate,
-        "a store named inside the kernel (`busbar-kernel` says `busbar_store_memory`)",
+        "a store named inside a kernel crate (the fixture says `busbar_store_memory`)",
         &[ROW_MATRIX],
-        plant(
-            cx,
-            "crates/busbar-kernel/src/leak.rs",
-            "use busbar_store_memory::MemoryStore;\n",
-        ),
-        &["busbar-kernel", "store"],
+        fixture_files(&[("leak.rs", "use busbar_store_memory::MemoryStore;\n")]),
+        &["unlisted-cell", &fixture_subject("store")],
     ));
 
     // `BUSBAR-1.6.0.md` §11.5's SCOPED EXEMPTION, BOTH WAYS. ARCHITECT ruling 2026-09-27: the MATRIX never files a hit
@@ -3228,6 +3123,11 @@ pub fn selftest<'a>(
     // home every kind's ABI shapes legitimately cross-reference (`is_contract_abi_shape`). The
     // exemption is scoped to THIS counting, not to `busbar-contract` wholesale — the same noun one
     // path segment outside `abi/` still counts, exactly like it would in any other crate.
+    //
+    // THE NOUN IS A HOOK INSTANCE'S (`hooks-ranking`), because the contract names no hooks
+    // vocabulary today: its plane and transport cells are listed edges and more hits inside them
+    // are not a finding (size is not a CI check, owner 2026-10-02), so only a kind the contract
+    // does not name yet can show a hit being filed — or not filed — into a cell.
     report.push(prove_rows_red(
         cx,
         gate,
@@ -3236,9 +3136,9 @@ pub fn selftest<'a>(
         plant(
             cx,
             "crates/busbar-contract/src/leak.rs",
-            "//! Not an ABI shape: the mcp plane's frames are described here.\n",
+            "//! Not an ABI shape: the hooks-ranking hook's verdicts are described here.\n",
         ),
-        &["busbar-contract", "plane"],
+        &["unlisted-cell", "busbar-contract × hooks"],
     ));
     report.push(prove_rows_green(
         cx,
@@ -3248,7 +3148,7 @@ pub fn selftest<'a>(
         plant(
             cx,
             "crates/busbar-contract/src/abi/plane/leak.rs",
-            "//! Not an ABI shape: the mcp plane's frames are described here.\n",
+            "//! Not an ABI shape: the hooks-ranking hook's verdicts are described here.\n",
         ),
     ));
 
@@ -3259,29 +3159,29 @@ pub fn selftest<'a>(
     report.push(prove_rows_red(
         cx,
         gate,
-        "a plane word planted in any other `busbar-contract` test file still counts",
+        "a hook word planted in any other `busbar-contract` test file still counts",
         &[ROW_MATRIX],
         plant(
             cx,
-            "crates/busbar-contract/tests/planted_plane_word.rs",
-            "//! Not a layout mirror: the mcp plane's frames are described here.\n",
+            "crates/busbar-contract/tests/planted_hook_word.rs",
+            "//! Not a layout mirror: the hooks-ranking hook's verdicts are described here.\n",
         ),
-        &["busbar-contract", "plane"],
+        &["unlisted-cell", "busbar-contract × hooks"],
     ));
     report.push(prove_rows_red(
         cx,
         gate,
-        "a plane word in a hand-written header beside the generated one still counts",
+        "a hook word in a hand-written header beside the generated one still counts",
         &[ROW_MATRIX],
         plant(
             cx,
             "crates/busbar-contract/include/hand_written.h",
-            "/* Not the generated header: the mcp plane's frames are described here. */\n",
+            "/* Not the generated header: the hooks-ranking hook's verdicts are here. */\n",
         ),
-        &["busbar-contract", "plane"],
+        &["unlisted-cell", "busbar-contract × hooks"],
     ));
     // The mirror keeps every line it has and GAINS one, so the only thing the plant changes is a
-    // plane word added to a mirror.
+    // hook word added to a mirror.
     let mirror = "crates/busbar-contract/tests/golden/abi-layout.golden";
     let mirror_text = cx.read(mirror).unwrap_or_default();
     report.push(prove_rows_green(
@@ -3292,7 +3192,7 @@ pub fn selftest<'a>(
         plant(
             cx,
             mirror,
-            &format!("{}\nPlaneTail.mcp=8\n", mirror_text.trim_end()),
+            &format!("{}\nHookTail.hooks_ranking=8\n", mirror_text.trim_end()),
         ),
     ));
 
@@ -3308,22 +3208,24 @@ pub fn selftest<'a>(
     // A HIT THAT IS ONLY A COMMENT. Nothing is stripped: a plane named in a doc comment of a
     // kernel crate is the kernel's reader being taught a plane.
     //
-    // THE CELL IS THE FIXTURE'S OWN. The case used to plant into `busbar-kernel` and read the live
-    // `busbar-kernel × plane` ceiling, which sits above its measurement on the tree it runs over —
-    // so three more hits left it STALE SLACK and the case could never say RAISED. The fixture
-    // crate names one plane in code, its row (carried by the base's ledger too) records exactly
-    // that one, and the control below is green; the comment is the only thing the red case adds.
+    // THE CELL IS THE FIXTURE'S OWN, AND PROVEN THROUGH PRESENCE. The fixture crate holds one
+    // comment and no `[[cell]]` row: a comment that names no plane leaves its plane cell at zero
+    // (GREEN), and the same file naming two planes makes the cell an edge nobody listed (RED). The
+    // comment is the only thing the red case adds.
     let comment_fixture = |comment: bool| {
-        let mut files = vec![("wiring.rs", "pub const PLANE: &str = \"llm\";\n")];
-        if comment {
-            files.push(("leak.rs", "// mcp and a2a come through here too.\n"));
-        }
-        fixture_cell(cx, "plane", "1", &files, true)
+        fixture_files(&[(
+            "leak.rs",
+            if comment {
+                "// mcp and a2a come through here too.\n"
+            } else {
+                "// nothing comes through here.\n"
+            },
+        )])
     };
     report.push(prove_rows_green(
         cx,
         gate,
-        "a kernel crate's plane cell at its recorded ceiling is green (the comment case's control)",
+        "a kernel crate whose only comment names no plane has no plane edge (the control)",
         &[ROW_MATRIX],
         comment_fixture(false),
     ));
@@ -3333,28 +3235,22 @@ pub fn selftest<'a>(
         "a plane named in nothing but a comment inside the kernel",
         &[ROW_MATRIX],
         comment_fixture(true),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        &["unlisted-cell", &fixture_subject("plane")],
     ));
 
     // AN ENGLISH WORD THAT IS ALSO AN INSTANCE NAME, IN PROSE, IS NOT THE INSTANCE (ARCHITECT ruling
-    // 2026-09-27; [`ENGLISH_INSTANCE_WORDS`]). The fixture's plane cell is recorded at its one hit;
-    // a comment that says "which streams" leaves it there (GREEN). The same word as a config
-    // section key, and the decisions plane's id as a code identifier, are each a hit (RED).
+    // 2026-09-27; [`ENGLISH_INSTANCE_WORDS`]). The fixture holds only the prose and no row: a
+    // comment that says "which streams" leaves its plane cell at zero (GREEN). The same word as a
+    // config section key, and the decisions plane's id as a code identifier, are each a hit, and
+    // the cell becomes an edge nobody listed (RED).
     let english_fixture = |extra: Option<(&'static str, &'static str)>| {
-        let mut files = vec![
-            ("wiring.rs", "pub const PLANE: &str = \"llm\";\n"),
-            (
-                "prose.rs",
-                "// first a buffered answer, then one over the reply buffer, which streams.\n\
-                 // the hook's decision is final.\n",
-            ),
-        ];
+        let mut files = vec![(
+            "prose.rs",
+            "// first a buffered answer, then one over the reply buffer, which streams.\n\
+             // the hook's decision is final.\n",
+        )];
         files.extend(extra);
-        fixture_cell(cx, "plane", "1", &files, true)
+        fixture_files(&files)
     };
     report.push(prove_rows_green(
         cx,
@@ -3369,11 +3265,7 @@ pub fn selftest<'a>(
         "`streams:` in section-key position in a fixture still counts",
         &[ROW_MATRIX],
         english_fixture(Some(("fixture.yaml", "streams:\n  gw: {}\n"))),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        &["unlisted-cell", &fixture_subject("plane")],
     ));
     report.push(prove_rows_red(
         cx,
@@ -3381,36 +3273,27 @@ pub fn selftest<'a>(
         "`decision` as a code identifier naming the plane still counts",
         &[ROW_MATRIX],
         english_fixture(Some(("route.rs", "pub fn route_to_decision() {}\n"))),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        &["unlisted-cell", &fixture_subject("plane")],
     ));
 
     // AN INSTANCE ID THAT IS ALSO A CRATE'S OR AN ABBREVIATION'S NAME COUNTS ONLY AS A REFERENCE
-    // ([`COLLIDING_INSTANCE_WORDS`]). The fixture's transport cell is recorded
-    // at its one hit, a registry key `"ws"`. The `http` crate's paths, `axum::http`, HTTP in a
-    // comment, a URL scheme, whitespace called `ws`, and a file named `skip_ws.rs` leave it there
-    // (GREEN). A crate-rooted path to a `ws` module, and the transport crate's own path, are each
-    // a hit (RED). The crate path is `busbar_transport_ws`: the http transport left this tree, and a
-    // crate the census does not hold supplies no needle.
+    // ([`COLLIDING_INSTANCE_WORDS`]). The fixture holds only the non-references and no row: the
+    // `http` crate's paths, `axum::http`, HTTP in a comment, a URL scheme, whitespace called `ws`,
+    // and a file named `skip_ws.rs` leave its transport cell at zero (GREEN). A crate-rooted path
+    // to a `ws` module, and the transport crate's own path, are each a hit (RED).
     let colliding_fixture = |extra: Option<(&'static str, &'static str)>| {
-        let mut files = vec![
-            ("wiring.rs", "pub const T: &str = \"ws\";\n"),
-            (
-                "skip_ws.rs",
-                "// speaks HTTP; a WS peer never reaches this.\n\
-                 use http::Method;\n\
-                 use axum::{http, Router};\n\
-                 pub fn status() -> axum::http::StatusCode { axum::http::StatusCode::OK }\n\
-                 pub fn skip_ws(s: &str) -> &str { let ws = s.trim_start(); ws }\n\
-                 pub const URL: &str = \"http://example.com/ws\";\n\
-                 pub fn is_http(m: &Method) -> bool { m == Method::GET }\n",
-            ),
-        ];
+        let mut files = vec![(
+            "skip_ws.rs",
+            "// speaks HTTP; a WS peer never reaches this.\n\
+             use http::Method;\n\
+             use axum::{http, Router};\n\
+             pub fn status() -> axum::http::StatusCode { axum::http::StatusCode::OK }\n\
+             pub fn skip_ws(s: &str) -> &str { let ws = s.trim_start(); ws }\n\
+             pub const URL: &str = \"http://example.com/ws\";\n\
+             pub fn is_http(m: &Method) -> bool { m == Method::GET }\n",
+        )];
         files.extend(extra);
-        fixture_cell(cx, "transport", "1", &files, true)
+        fixture_files(&files)
     };
     report.push(prove_rows_green(
         cx,
@@ -3425,71 +3308,44 @@ pub fn selftest<'a>(
         "a crate-rooted path to a `ws` module still counts",
         &[ROW_MATRIX],
         colliding_fixture(Some(("accept.rs", "pub use crate::ingress::ws::accept;\n"))),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        &["unlisted-cell", &fixture_subject("transport")],
     ));
     report.push(prove_rows_red(
         cx,
         gate,
-        "the ws transport crate's own path still counts",
+        "the http transport crate's own path still counts",
         &[ROW_MATRIX],
-        colliding_fixture(Some(("dial.rs", "use busbar_transport_ws::Dial;\n"))),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        colliding_fixture(Some(("dial.rs", "use busbar_transport_http::Dial;\n"))),
+        &["unlisted-cell", &fixture_subject("transport")],
     ));
 
-    // ONE WRITTEN NAME, ONE HIT ([`one_needle_per_span`]). The fixture's plane cell is recorded
-    // at 1. `busbar_plane_llm::` is the package name, and inside it `plane-llm` and `llm`: it
-    // scored 3 before, and is 1 now (GREEN). The bare id written again on the same line is a
-    // second name and still counts (RED).
-    let nested_fixture =
-        |line: &'static str| fixture_cell(cx, "plane", "1", &[("wiring.rs", line)], true);
-    report.push(prove_rows_green(
-        cx,
-        gate,
-        "a package name scores once, not once per shorter needle inside it",
-        &[ROW_MATRIX],
-        nested_fixture("use busbar_plane_llm::Codec;\n"),
-    ));
+    // ONE WRITTEN NAME, ONE HIT ([`one_needle_per_span`]) IS A CLAIM ABOUT A COUNT (1, not 3), and
+    // a row that holds presence cannot observe a count. It is proven where a count can be read:
+    // `tests::a_package_name_scores_once_and_the_bare_id_beside_it_scores_again`, which measures
+    // the fixture cell directly. Here, only what presence can see: the package name alone is a hit.
     report.push(prove_rows_red(
         cx,
         gate,
-        "the bare id written beside the package name still counts",
+        "a plane's package name in a kernel crate is a plane edge",
         &[ROW_MATRIX],
-        nested_fixture("use busbar_plane_llm::Codec; // an llm codec\n"),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        fixture_files(&[("wiring.rs", "use busbar_plane_llm::Codec;\n")]),
+        &["unlisted-cell", &fixture_subject("plane")],
     ));
 
     // `unix` AS THE OPERATING SYSTEM IS NOT THE CARRIER ([`os_words`]). A `busbar-transport-unix`
-    // crate is planted so `unix` is a transport needle at all. The fixture's only real hit is the
-    // claim literal `"unix"`; its cfg predicate, `std::os::unix`, standard socket type, clock and
-    // "non-unix" prose are not hits. The carrier's crate path, a `unix://` target, "the unix
-    // socket" in prose and a carrier identifier each RAISE a cell recorded at 1.
-    let unix_fixture = |count: &'static str, extra: Option<(&'static str, &'static str)>| {
-        let mut files = vec![
-            ("wiring.rs", "pub const CLAIM: &str = \"unix\";\n"),
-            (
-                "os.rs",
-                "#[cfg(unix)]\n\
-                 use std::os::unix::fs::PermissionsExt;\n\
-                 #[cfg(all(unix, not(target_os = \"macos\")))]\n\
-                 pub fn mode(l: &tokio::net::UnixListener) -> u64 { now_unix_ns() }\n\
-                 fn now_unix_ns() -> u64 { std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_secs()) }\n\
-                 // Non-unix builds have no mode bits; Unix seconds since the epoch.\n",
-            ),
-        ];
-        files.extend(extra);
-        let mut ov = fixture_cell(cx, "transport", count, &files, true);
+    // crate is planted so `unix` is a transport needle at all. The fixture's OS spellings — its
+    // cfg predicate, `std::os::unix`, the standard socket type, the clock and "non-unix" prose —
+    // are not hits; the carrier's crate path, a `unix://` target, "the unix socket" in prose and a
+    // carrier identifier each are.
+    //
+    // THE MASK'S OWN PROOF IS A COUNT and lives in
+    // `tests::unix_as_the_operating_system_is_not_the_carrier`, which measures the fixture cell at
+    // exactly the claim literal's one hit. (A GREEN arm cannot be written here: with a unix carrier
+    // planted, the real tree's own carrier mentions make new cells in crates that never had one.)
+    // The red arms below therefore plant the OS spellings beside each real reference, so each is
+    // the one reference the test has shown the OS spellings are not.
+    let unix_fixture = |extra: (&'static str, &'static str)| {
+        let mut ov = fixture_files(&[(UNIX_OS_FILE.0, UNIX_OS_FILE.1), extra]);
         ov.set(
             "crates/busbar-transport-unix/Cargo.toml",
             "[package]\nname = \"busbar-transport-unix\"\nversion = \"0.0.0\"\n".to_string(),
@@ -3500,182 +3356,102 @@ pub fn selftest<'a>(
         );
         ov
     };
-    // THE MASK'S OWN RED ARM: the same fixture recorded one hit ABOVE its true count (the claim
-    // literal alone), as if the OS spellings counted. With the mask the cell measures under its row and is STALE SLACK;
-    // without it the OS spellings fill the row and nothing is said. (A GREEN arm cannot be written
-    // here: with a unix carrier planted, the real tree's own carrier mentions raise real cells.)
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "`unix` as a cfg, a std path, a socket type, UNIX_EPOCH, the clock or the platform is not counted",
-        &[ROW_MATRIX],
-        unix_fixture("2", None),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "STALE SLACK",
-        ],
-    ));
     report.push(prove_rows_red(
         cx,
         gate,
         "the unix carrier's crate path still counts",
         &[ROW_MATRIX],
-        unix_fixture(
-            "1",
-            Some(("dial.rs", "use busbar_transport_unix::Carrier;\n")),
-        ),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        unix_fixture(("dial.rs", "use busbar_transport_unix::Carrier;\n")),
+        &["unlisted-cell", &fixture_subject("transport")],
     ));
     report.push(prove_rows_red(
         cx,
         gate,
         "a `unix://` target still counts",
         &[ROW_MATRIX],
-        unix_fixture(
-            "1",
-            Some((
-                "target.rs",
-                "pub const SOCK: &str = \"unix:///run/busbar.sock\";\n",
-            )),
-        ),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        unix_fixture((
+            "target.rs",
+            "pub const SOCK: &str = \"unix:///run/busbar.sock\";\n",
+        )),
+        &["unlisted-cell", &fixture_subject("transport")],
     ));
     report.push(prove_rows_red(
         cx,
         gate,
         "\"the unix socket\" in prose still counts",
         &[ROW_MATRIX],
-        unix_fixture("1", Some(("prose.rs", "// dial the unix socket first.\n"))),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        unix_fixture(("prose.rs", "// dial the unix socket first.\n")),
+        &["unlisted-cell", &fixture_subject("transport")],
     ));
     report.push(prove_rows_red(
         cx,
         gate,
         "an identifier naming the carrier (`UnixCarrier`, `connect_unix`) still counts",
         &[ROW_MATRIX],
-        unix_fixture(
-            "1",
-            Some((
-                "carrier.rs",
-                "pub struct UnixCarrier;\npub fn connect_unix() {}\n",
-            )),
-        ),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        unix_fixture((
+            "carrier.rs",
+            "pub struct UnixCarrier;\npub fn connect_unix() {}\n",
+        )),
+        &["unlisted-cell", &fixture_subject("transport")],
     ));
 
     // AN OS SOCKET TYPE IS NOT THE CARRIER ([`os_words`]; ARCHITECT ruling 2026-09-30, option A,
     // a measurement correction). The connector owns every listener and every dialled socket
     // (BUSBAR-1.6.0.md THE DESIGN, section 8), so its listener file names the standard library's
     // and tokio's `TcpStream`, `TcpListener` and `UdpSocket` as `UnixStream` is named: the
-    // operating system's socket, not the `tcp` transport. The fixture's only real hit is the claim
-    // literal `"tcp"`; its socket types are not hits. The carrier's crate path and an identifier
-    // naming the carrier each RAISE a cell recorded at 1.
-    //
-    // A `busbar-transport-tcp` crate is PLANTED, as the unix fixture plants its carrier: the tcp
-    // transport left this tree for its own repo (66853bf6e1), so without it `tcp` is no transport
-    // needle at all, the claim literal measures nothing, and every case below read the fixture's
-    // own row as a dead cell. And for the reason the unix fixture gives, the mask's arm is RED, not
-    // GREEN: with a tcp carrier planted, the real tree's own `tcp` mentions raise real cells, so
-    // the arm is the fixture recorded one hit ABOVE the claim literal — STALE SLACK with the mask,
-    // and the socket types filling the row (nothing said) without it.
-    let socket_fixture = |count: &'static str, extra: Option<(&'static str, &'static str)>| {
-        let mut files = vec![
-            ("wiring.rs", "pub const CLAIM: &str = \"tcp\";\n"),
-            (
-                "listen.rs",
-                "use std::net::{TcpListener, TcpStream, UdpSocket};\n\
-                 pub fn accept(l: &tokio::net::TcpListener) -> Option<std::net::TcpStream> { None }\n\
-                 pub fn bound(l: TcpListener, s: TcpStream, u: UdpSocket) {}\n",
-            ),
-        ];
+    // operating system's socket, not the `tcp` transport. The fixture holds only the socket types
+    // and no row, and its transport cell stays at zero (GREEN). The carrier's crate path and an
+    // identifier naming the carrier each make it an edge nobody listed (RED).
+    let socket_fixture = |extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![(
+            "listen.rs",
+            "use std::net::{TcpListener, TcpStream, UdpSocket};\n\
+             pub fn accept(l: &tokio::net::TcpListener) -> Option<std::net::TcpStream> { None }\n\
+             pub fn bound(l: TcpListener, s: TcpStream, u: UdpSocket) {}\n",
+        )];
         files.extend(extra);
-        let mut ov = fixture_cell(cx, "transport", count, &files, true);
-        ov.set(
-            "crates/busbar-transport-tcp/Cargo.toml",
-            "[package]\nname = \"busbar-transport-tcp\"\nversion = \"0.0.0\"\n".to_string(),
-        );
-        ov.set(
-            "crates/busbar-transport-tcp/src/lib.rs",
-            "//! Fixture.\n".to_string(),
-        );
-        ov
+        fixture_files(&files)
     };
-    report.push(prove_rows_red(
+    report.push(prove_rows_green(
         cx,
         gate,
         "a connector file naming `TcpStream`, `TcpListener` or `UdpSocket` is not naming the tcp transport",
         &[ROW_MATRIX],
-        socket_fixture("2", None),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "STALE SLACK",
-        ],
+        socket_fixture(None),
     ));
     report.push(prove_rows_red(
         cx,
         gate,
         "beside the socket types, the tcp carrier's crate path still counts",
         &[ROW_MATRIX],
-        socket_fixture(
-            "1",
-            Some(("dial.rs", "use busbar_transport_tcp::Carrier;\n")),
-        ),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        socket_fixture(Some(("dial.rs", "use busbar_transport_tcp::Carrier;\n"))),
+        &["unlisted-cell", &fixture_subject("transport")],
     ));
     report.push(prove_rows_red(
         cx,
         gate,
         "beside the socket types, an identifier naming the tcp carrier (`TcpCarrier`) still counts",
         &[ROW_MATRIX],
-        socket_fixture("1", Some(("carrier.rs", "pub struct TcpCarrier;\n"))),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        socket_fixture(Some(("carrier.rs", "pub struct TcpCarrier;\n"))),
+        &["unlisted-cell", &fixture_subject("transport")],
     ));
 
     // A CONTRACT IDENTIFIER IS THE CONTRACT'S SHAPE, NOT A PLANE'S NAME (the Q77a measurement
-    // correction, [`contract_identifiers`]). The fixture's plane cell is recorded at its one hit;
-    // naming the hook contract's `RoutingDecision` — whose camel half reads as the `decision`
-    // plane's bare id — leaves it there, and a crate's OWN identifier carrying the same word is a
-    // hit exactly as any other spelling is. The red half is the one that proves the mask is no
+    // correction, [`contract_identifiers`]). The fixture names the hook contract's
+    // `RoutingDecision` — whose camel half reads as the `decision` plane's bare id — and nothing
+    // else, and its plane cell stays at zero (GREEN). A crate's OWN identifier carrying the same
+    // word is a hit exactly as any other spelling is (RED): the half that proves the mask is no
     // wider than the contract's exports.
     let contract_ident_fixture = |own: bool| {
-        let mut files = vec![
-            ("wiring.rs", "pub const PLANE: &str = \"llm\";\n"),
-            (
-                "hook.rs",
-                "use busbar_contract::hooks::RoutingDecision;\n\
-                 pub fn verdict(d: RoutingDecision) -> RoutingDecision { d }\n",
-            ),
-        ];
+        let mut files = vec![(
+            "hook.rs",
+            "use busbar_contract::hooks::RoutingDecision;\n\
+             pub fn verdict(d: RoutingDecision) -> RoutingDecision { d }\n",
+        )];
         if own {
             files.push(("own.rs", "pub struct LocalDecision;\n"));
         }
-        fixture_cell(cx, "plane", "1", &files, true)
+        fixture_files(&files)
     };
     report.push(prove_rows_green(
         cx,
@@ -3690,38 +3466,22 @@ pub fn selftest<'a>(
         "the same word in an identifier the contract does not export still counts",
         &[ROW_MATRIX],
         contract_ident_fixture(true),
-        &[
-            "ratchet",
-            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
-            "RAISED",
-        ],
+        &["unlisted-cell", &fixture_subject("plane")],
     ));
 
-    // THE TWO SCANNERS DISAGREEING. `gRPC` reads whole to the window scanner and splits at its own
-    // camel joint for the segment scanner; the scored count is the higher, and the cell must say so.
-    //
-    // `grpc` is transport vocabulary only while a transport carries it: it was a key the http
-    // transport declared, and that crate left the tree, so a `busbar-transport-grpc` carrier is
-    // planted beside the leak, as the unix fixture plants its carrier.
+    // THE SPELLING THE TWO SCANNERS READ DIFFERENTLY IS STILL A HIT. `gRPC` reads whole to the
+    // window scanner and splits at its own camel joint for the segment scanner; the cell takes the
+    // higher, so whichever scanner sees it, the name makes the cell an edge.
     report.push(prove_rows_red(
         cx,
         gate,
-        "the two scanners disagreeing on a spelling, on a cell that does not record it",
+        "a `gRPC` spelling the two scanners read differently still makes a transport edge",
         &[ROW_MATRIX],
-        {
-            let mut ov = plant(
-                cx,
-                "crates/busbar-kernel/src/leak.rs",
-                "// gRPC status codes are not the kernel's business.\n",
-            );
-            ov.set(
-                "crates/busbar-transport-grpc/Cargo.toml",
-                "[package]\nname = \"busbar-transport-grpc\"\nversion = \"0.0.0\"\n",
-            );
-            ov.set("crates/busbar-transport-grpc/src/lib.rs", "//! Fixture.\n");
-            ov
-        },
-        &["measurement-disagreement", "busbar-kernel × transport"],
+        fixture_files(&[(
+            "leak.rs",
+            "// gRPC status codes are not the kernel's business.\n",
+        )]),
+        &["unlisted-cell", &fixture_subject("transport")],
     ));
 
     // AN EDGE CLASS NOBODY WROTE DOWN.
@@ -3737,8 +3497,8 @@ pub fn selftest<'a>(
         &["unlisted-edge", "root -> plane"],
     ));
 
-    // TWO ROWS FOR ONE CELL. The maps would keep the last, so which ceiling binds would be decided
-    // by file order — and a ceiling nobody chose is not a ceiling.
+    // TWO ROWS FOR ONE CELL. The maps would keep the last, so which row binds would be decided by
+    // file order — and a row nobody chose is not a reviewed one.
     report.push(plant_ledger(
         cx,
         gate,
@@ -3747,7 +3507,7 @@ pub fn selftest<'a>(
         cell_anchor(cx, "busbar-kernel", "plane").map(|anchor| {
             let doubled = format!(
                 "{anchor}\n\n[[cell]]\n{}",
-                cell_row("busbar-kernel", "plane", "0")
+                cell_row("busbar-kernel", "plane")
             );
             (anchor, doubled)
         }),
@@ -4048,14 +3808,14 @@ pub fn selftest<'a>(
         ),
     ));
 
-    // ── THE THREE DEAD-ROW RULES, ONE PLANT EACH ─────────────────────────────────────────────────
+    // ── THE DEAD-ROW RULES, ONE PLANT EACH ───────────────────────────────────────────────────
     //
-    // THE RATCHET ONLY HALF RAN. Every case above is about a number going UP; these three are the
-    // half that TIGHTENS, and a mutation campaign found all three unproven — `dead-cell`,
-    // `dead-disagreement` and `dead-edge` each had their `offenders.push` replaced with a `drop`
-    // and the battery stayed green. An allowance that outlives what it allowed is the most durable
-    // kind of hole there is: nothing goes red when the coupling is drained, so the row stays,
-    // and the next crate to grow that coupling back finds the ceiling already written for it.
+    // THE RULE ONLY HALF RAN. Every case above is about an edge APPEARING; these are the half that
+    // TIGHTENS, and a mutation campaign found them unproven — `dead-cell` and `dead-edge` each had
+    // their `offenders.push` replaced with a `drop` and the battery stayed green. An allowance that
+    // outlives what it allowed is the most durable kind of hole there is: nothing goes red when the
+    // coupling is drained, so the row stays, and the next crate to grow that coupling back finds
+    // the allowance already written for it.
     //
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
@@ -4082,39 +3842,6 @@ pub fn selftest<'a>(
         ov,
         &["dead-cell", "busbar-kernel-ledger \u{d7} kernel"],
     ));
-
-    // A `[[disagreement]]` ROW WHOSE TWO SCANNERS HAVE NOTHING LEFT TO DISAGREE ABOUT. The note is
-    // a hand-written sentence about a spelling; when the cell it excuses is gone the sentence is a
-    // standing licence for the next disagreement nobody reads.
-    //
-    // The plant removed `busbar-llm-codec`'s manifest until R7 folded that crate into
-    // `busbar-plane-llm`, after which it removed nothing; then `busbar-kernel-breaker`'s, whose
-    // `× transport` disagreement was `gRPC` and went quiet when the http transport (which declared
-    // the `grpc` key) left the tree, so the row was already dead on the unplanted tree and the
-    // plant added nothing. The subject is now CHOSEN, not named: the first `[[disagreement]]` row
-    // whose cell still disagrees on this tree ([`live_disagreement`]), its crate's manifest removed.
-    let name = "a `[[disagreement]]` row whose cell is gone is a standing licence, and is struck";
-    match live_disagreement(cx) {
-        Ok((krate, kind, manifest)) => {
-            let mut ov = crate::ctx::Overlay::new();
-            ov.remove(&manifest);
-            let cell = format!("{krate} \u{d7} {kind}");
-            report.push(prove_rows_red(
-                cx,
-                gate,
-                name,
-                &[ROW_MATRIX],
-                ov,
-                &["dead-disagreement", cell.as_str()],
-            ));
-        }
-        Err(why) => report.push(super::unplantable(
-            name,
-            &[ROW_MATRIX],
-            &["dead-disagreement"],
-            why,
-        )),
-    }
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
     // `api`, which the fold retired, so it now plants a synthetic row this battery owns
@@ -4588,6 +4315,245 @@ mod tests {
         assert!(
             detail.contains(rel),
             "{row} failed but did not name the plant at {rel}: {detail}"
+        );
+    }
+
+    /// The census exactly as the gate's own `run` builds it: instances assigned, so a wire a crate
+    /// declares is a needle here as it is there.
+    fn crates_of(cx: &Ctx) -> Vec<CrateInfo> {
+        let mut crates = super::super::census(cx).expect("the census reads");
+        let (planes, ports) = super::super::vocabularies(&crates);
+        super::super::assign_instances(&mut crates, &planes, &ports);
+        crates
+    }
+
+    /// One cell's measured count over the real workspace with `ov` laid over it.
+    fn cell_count(ov: crate::ctx::Overlay, krate: &str, kind: &'static str) -> usize {
+        let cx = Ctx::workspace()
+            .expect("the workspace opens")
+            .with_overlay(ov);
+        let crates = crates_of(&cx);
+        let (matrix, _, _) = measure(&cx, &crates).expect("the matrix measures");
+        matrix
+            .get(&(krate.to_string(), kind))
+            .map_or(0, |c| c.count)
+    }
+
+    /// THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP), measured on the cell: a
+    /// quoted map key that IS a path of the file's wire lock is the provider's word and adds nothing
+    /// to `busbar-plane-llm × plane`; the same plane word in a value, a comment, or a key the lock
+    /// does not have still counts.
+    #[test]
+    fn a_dialect_wire_key_is_the_providers_word_and_the_same_word_elsewhere_counts() {
+        let file = "crates/busbar-plane-llm/dialects/openai_responses.toml";
+        let body = Ctx::workspace()
+            .expect("the workspace opens")
+            .read(file)
+            .expect("the dialect map");
+        let with = |line: &str| {
+            let mut ov = crate::ctx::Overlay::new();
+            ov.set(file, format!("{body}\n{line}\n"));
+            cell_count(ov, "busbar-plane-llm", "plane")
+        };
+        let base = cell_count(crate::ctx::Overlay::new(), "busbar-plane-llm", "plane");
+        assert_eq!(
+            with("[unmapped.stream]\n\"input[].type=mcp_call.arguments\" = { no-equivalent = \"x\" }"),
+            base,
+            "a wire-lock key is the provider's word, not a plane coupling"
+        );
+        for (what, line) in [
+            (
+                "a map VALUE",
+                "[unmapped.stream]\n\"input[].type=function_call.arguments\" = { no-equivalent = \"an mcp call\" }",
+            ),
+            ("a comment", "# the mcp tool"),
+            (
+                "a key the wire lock does not have",
+                "[unmapped.stream]\n\"tools[].type=mcp.no_such_member\" = { no-equivalent = \"x\" }",
+            ),
+        ] {
+            assert!(with(line) > base, "the plane word in {what} must still count");
+        }
+    }
+
+    /// ONE WRITTEN NAME, ONE HIT ([`one_needle_per_span`]), measured on the cell itself. The row
+    /// holds presence, so this count is not something the selftest battery can observe any more:
+    /// `busbar_plane_llm::` is the package name, and inside it `plane-llm` and `llm` — it scored 3
+    /// before the span rule and scores 1. The bare id written again on the same line is a second
+    /// name and scores again.
+    #[test]
+    fn a_package_name_scores_once_and_the_bare_id_beside_it_scores_again() {
+        let fixture = instances::FIXTURE_CRATE;
+        assert_eq!(
+            cell_count(
+                fixture_files(&[("wiring.rs", "use busbar_plane_llm::Codec;\n")]),
+                fixture,
+                "plane"
+            ),
+            1,
+            "a package name must score once, not once per shorter needle inside it"
+        );
+        assert_eq!(
+            cell_count(
+                fixture_files(&[(
+                    "wiring.rs",
+                    "use busbar_plane_llm::Codec; // an llm codec\n"
+                )]),
+                fixture,
+                "plane"
+            ),
+            2,
+            "the bare id written beside the package name is a second name"
+        );
+    }
+
+    /// `unix` AS THE OPERATING SYSTEM IS NOT THE CARRIER ([`os_words`]), measured on the cell
+    /// itself. With a `busbar-transport-unix` crate planted so `unix` is a transport needle at
+    /// all, the fixture's OS spellings ([`UNIX_OS_FILE`]) score NOTHING on their own and add
+    /// nothing beside the claim literal `"unix"`, which is a real reference and scores.
+    #[test]
+    fn unix_as_the_operating_system_is_not_the_carrier() {
+        let with_carrier = |files: &[(&str, &str)]| {
+            let mut ov = fixture_files(files);
+            ov.set(
+                "crates/busbar-transport-unix/Cargo.toml",
+                "[package]\nname = \"busbar-transport-unix\"\nversion = \"0.0.0\"\n".to_string(),
+            );
+            ov.set(
+                "crates/busbar-transport-unix/src/lib.rs",
+                "//! Fixture.\n".to_string(),
+            );
+            ov
+        };
+        let fixture = instances::FIXTURE_CRATE;
+        let claim = ("wiring.rs", "pub const CLAIM: &str = \"unix\";\n");
+        let os_only = cell_count(with_carrier(&[UNIX_OS_FILE]), fixture, "transport");
+        let claim_only = cell_count(with_carrier(&[claim]), fixture, "transport");
+        let both = cell_count(with_carrier(&[claim, UNIX_OS_FILE]), fixture, "transport");
+        assert_eq!(
+            os_only, 0,
+            "an OS spelling of `unix` was counted as the carrier"
+        );
+        assert!(
+            claim_only >= 1,
+            "the claim literal `\"unix\"` is the carrier and must count"
+        );
+        assert_eq!(
+            both, claim_only,
+            "the OS spellings beside the claim literal added hits"
+        );
+    }
+
+    /// THE RED ARM OF THE OWNER'S RULING (2026-10-02: "line count shouldnt halt ci"), and the arm
+    /// that keeps the ruling from deleting the gate with it.
+    ///
+    /// (a) A NEW CROSS-KIND EDGE IS STILL DENIED: a plane named in `busbar-kernel-wal`, a cell
+    ///     with no `[[cell]]` row, turns the row FAIL with `unlisted-cell` naming it, and the
+    ///     row's figure (the leading integer the release turnstile reads) rises. The plant was a
+    ///     transport naming a plane until the tcp transport moved to its own repo; both
+    ///     transports left on the tree carry a listed `× plane` cell, and the WAL names no plane.
+    /// (b) MORE HITS IN A LISTED CELL ARE NOT: five hundred lines of plane vocabulary in the
+    ///     composition root, whose `busbar × plane` cell is listed, measurably grow the cell and
+    ///     add NO finding — the findings, tag + subject and whole text alike, are the ones the
+    ///     unplanted tree carries, and the figure does not move.
+    #[test]
+    fn a_new_cross_kind_edge_is_still_denied_and_more_hits_in_a_listed_cell_are_not() {
+        use crate::ledger::Status;
+
+        fn figure(row: &Row) -> usize {
+            if row.status != Status::Fail {
+                return 0;
+            }
+            let digits: String = row
+                .detail
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse().unwrap_or_else(|_| {
+                panic!(
+                    "a FAIL :matrix detail must lead with its finding count: {}",
+                    row.detail
+                )
+            })
+        }
+        fn keys(row: &Row) -> BTreeSet<String> {
+            crate::gates::standing_snapshot::findings(row)
+                .into_iter()
+                .map(|(k, _, _)| k)
+                .collect()
+        }
+
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let reg = super::super::load_registry(&cx).expect("the ledger reads");
+        let base = rule_matrix(&cx, &crates_of(&cx), &reg, false, true);
+        let (_, base_findings) = super::super::debt_free::split_detail(&base.detail);
+
+        // (a) A NEW EDGE.
+        let edge = "kind-isolation:matrix\tunlisted-cell\tbusbar-kernel-wal \u{d7} plane";
+        assert!(
+            !keys(&base).contains(edge),
+            "the unplanted tree already carries {edge}; the plant would prove nothing"
+        );
+        let planted = cx.with_overlay(plant(
+            &cx,
+            "crates/busbar-kernel-wal/src/leak.rs",
+            "//! The llm plane's frames arrive here first.\n",
+        ));
+        let row = rule_matrix(&planted, &crates_of(&planted), &reg, false, true);
+        assert_eq!(
+            row.status,
+            Status::Fail,
+            "a new cross-kind edge passed: {}",
+            row.detail
+        );
+        assert!(
+            keys(&row).contains(edge),
+            "a new cross-kind edge was not named `unlisted-cell`: {}",
+            row.detail.chars().take(600).collect::<String>()
+        );
+        assert!(
+            figure(&row) > figure(&base),
+            "a new cross-kind edge did not raise the row's figure ({} -> {})",
+            figure(&base),
+            figure(&row)
+        );
+
+        // (b) MORE HITS IN A LISTED CELL.
+        assert!(
+            reg.matrix_cells
+                .iter()
+                .any(|c| c.krate == "busbar" && c.kind == "plane"),
+            "`busbar \u{d7} plane` is no longer a listed cell; pick another listed cell"
+        );
+        let rel = "crates/busbar/src/root/planted_bulk_plane_words.rs";
+        let bulk = "// the llm plane, the mcp plane and the a2a plane all pass through here.\n"
+            .repeat(500);
+        let before = cell_count(crate::ctx::Overlay::new(), "busbar", "plane");
+        let after = cell_count(plant(&cx, rel, &bulk), "busbar", "plane");
+        assert!(
+            after >= before + 500,
+            "the bulk plant did not grow the listed cell ({before} -> {after}); it proves nothing"
+        );
+        let planted = cx.with_overlay(plant(&cx, rel, &bulk));
+        let row = rule_matrix(&planted, &crates_of(&planted), &reg, false, true);
+        let (_, findings) = super::super::debt_free::split_detail(&row.detail);
+        assert_eq!(
+            row.status, base.status,
+            "more hits in a listed cell moved the row's status"
+        );
+        assert_eq!(
+            keys(&row),
+            keys(&base),
+            "more hits in a listed cell changed the row's findings (tag + subject)"
+        );
+        assert_eq!(
+            findings, base_findings,
+            "more hits in a listed cell changed a finding's text"
+        );
+        assert_eq!(
+            figure(&row),
+            figure(&base),
+            "more hits in a listed cell moved the row's figure"
         );
     }
 }
