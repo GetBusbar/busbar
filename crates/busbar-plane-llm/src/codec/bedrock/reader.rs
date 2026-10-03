@@ -1189,7 +1189,7 @@ impl ProtocolReader for BedrockReader {
                 // total made the same turn's bill reconcilable buffered and not reconcilable
                 // streamed.
                 let usage_val = data.get(keys::USAGE);
-                let usage = match read_bedrock_usage(usage_val) {
+                let mut usage = match read_bedrock_usage(usage_val) {
                     Ok(usage) => usage,
                     Err(refusal) => {
                         out.push(IrStreamEvent::Error(refusal));
@@ -1199,6 +1199,9 @@ impl ProtocolReader for BedrockReader {
                 // The guardrail policy units ride the same frame's `trace`, as they do buffered.
                 warn_guardrail_units(data);
 
+                if let Some(tier) = read_served_tier(data) {
+                    usage.detail.service_tier = Some(tier);
+                }
                 out.push(IrStreamEvent::MessageDelta {
                     stop_reason: state.pending_stop_reason.take(),
                     stop_sequence: state.pending_stop_sequence.take(),
@@ -1292,8 +1295,10 @@ impl ProtocolReader for BedrockReader {
             "performanceConfig",
         ] {
             if obj.contains_key(dropped) {
-                tracing::warn!(
-                    field = dropped,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire(dropped),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [field = dropped,],
                     "dropping Bedrock-only Converse response member `{dropped}` on a cross-protocol \
                      egress: it has no neutral-IR carrier and no equivalent in any other protocol, \
                      so it cannot be projected to a non-Bedrock client (a same-protocol \
@@ -1358,7 +1363,10 @@ impl ProtocolReader for BedrockReader {
                     if let Some(block) = read_bedrock_reasoning_block(reasoning) {
                         content.push(block);
                     } else {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::THINKING,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "dropping Converse response reasoningContent block with no decodable \
                              member (neither reasoningText nor redactedContent)"
                         );
@@ -1376,7 +1384,10 @@ impl ProtocolReader for BedrockReader {
                     if let Some(block) = read_bedrock_image_block(image) {
                         content.push(block);
                     } else {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::IMAGE,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "dropping Converse response image block with no decodable source \
                              (neither source.bytes nor source.s3Location)"
                         );
@@ -1404,7 +1415,10 @@ impl ProtocolReader for BedrockReader {
         let usage_obj = obj.get(keys::USAGE);
         // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens` — rides the same table
         // as the totals (see `USAGE`). Absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-        let usage = read_bedrock_usage(usage_obj)?;
+        let mut usage = read_bedrock_usage(usage_obj)?;
+        if let Some(tier) = read_served_tier(body) {
+            usage.detail.service_tier = Some(tier);
+        }
         // The guardrail policy units AWS bills beside the tokens ride `trace`, not `usage`.
         warn_guardrail_units(body);
 
@@ -1436,12 +1450,61 @@ impl ProtocolReader for BedrockReader {
 
             request_echo: None,
             stop_detail,
+            safety: super::read_guardrail_verdicts(obj.get(TRACE)),
             ..Default::default()
         })
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolReader> {
         Box::new(self.clone())
+    }
+
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::STREAM_PATHS,
+            code: super::STREAM_CODE,
+            drops: super::STREAM_DROPS,
+        })
+    }
+
+    fn stream_keyed_by_event(&self) -> bool {
+        true
+    }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
     }
 }
 

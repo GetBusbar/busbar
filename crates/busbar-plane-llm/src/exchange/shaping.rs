@@ -47,6 +47,10 @@ pub struct Lane {
     pub path: Option<String>,
     /// The provider's path base, handed to the dialect's own path builder.
     pub path_base: Option<String>,
+    /// The provider's configured tenant (`organization`, `project`), set on every far request.
+    pub organization: Option<String>,
+    /// See `organization`.
+    pub project: Option<String>,
     /// The name the far end knows the model by, when it differs.
     pub upstream_model: Option<String>,
     /// The model's own output-token default.
@@ -164,6 +168,10 @@ struct ProviderCfg {
     path: Option<String>,
     #[serde(default)]
     path_base: Option<String>,
+    #[serde(default)]
+    organization: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
     #[serde(default)]
     error_map: HashMap<String, String>,
     #[serde(default)]
@@ -383,6 +391,8 @@ impl Shaping {
                 dialect,
                 path: p.path.clone(),
                 path_base: p.path_base.clone(),
+                organization: p.organization.clone(),
+                project: p.project.clone(),
                 upstream_model: m.upstream_model.clone(),
                 default_max_tokens: m.default_max_tokens,
                 context_max: context.get(&name).copied().flatten(),

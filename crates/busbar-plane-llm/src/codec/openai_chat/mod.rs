@@ -736,9 +736,10 @@ fn media_part_from_ir(
                     (keys::INPUT_AUDIO): { (keys::DATA): data, (keys::FORMAT): format }
                 })),
                 None => {
-                    tracing::warn!(
-                        media_kind = AUDIO,
-                        mime = media_type.as_str(),
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::AUDIO,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [media_kind = AUDIO, mime = media_type.as_str(),],
                         "dropping audio attachment on OpenAI Chat egress: input_audio.format is a \
                          closed {{wav, mp3}} enum and this mime maps to neither; the block is NOT \
                          emitted (deliberately absent, not an invalid format the API would 400 on)"
@@ -770,13 +771,14 @@ fn media_part_from_ir(
             Some(serde_json::json!({ (keys::TYPE): FILE, (FILE): serde_json::Value::Object(file) }))
         }
         _ => {
-            tracing::warn!(
-                media_kind = kind.as_str(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::block(kind.as_str()),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [media_kind = kind.as_str(), ],
                 "dropping attachment on OpenAI Chat egress: this dialect has content parts for \
                  inline audio (`input_audio`) and files (`file`) only — a video block, or an \
                  attachment carried as a bare URL or a foreign vendor handle, has no part to go in. \
-                 The block is NOT emitted (it is deliberately absent, not replaced by empty text)"
-            );
+                 The block is NOT emitted (it is deliberately absent, not replaced by empty text)");
             None
         }
     }
@@ -802,7 +804,122 @@ fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Read an OpenAI-format block from JSON.
+/// The Chat content-part kinds this reader models.
+const PART_KINDS: &[&str] = &[
+    keys::TEXT,
+    keys::IMAGE_URL,
+    keys::INPUT_AUDIO,
+    FILE,
+    keys::REFUSAL,
+];
+
+/// The Chat request content-part grammar (`codec::drops`). A part of any other kind does not cross
+/// a translate attempt, which names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["messages[]", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: PART_KINDS,
+    companions: &[],
+}];
+
+/// The Chat answer content-part grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    (crate::codec::drops::kind::TEXT, "type=text"),
+    (crate::codec::drops::kind::IMAGE, "type=image_url"),
+    (crate::codec::drops::kind::DOCUMENT, "type=file"),
+    (crate::codec::drops::kind::AUDIO, "type=input_audio"),
+    (crate::codec::drops::kind::TOOL_USE, "tool_calls[]"),
+    (crate::codec::drops::kind::TOOL_RESULT, "role=tool"),
+];
+
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] =
+    &[(crate::codec::drops::name::TOP_LOGPROBS, keys::TOP_LOGPROBS)];
+
+/// The IR request members the reader never sets.
+// No cache marks (`prompt_cache_key` is a routing hint) and no `top_k`.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::TOP_K,
+];
+
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["choices[]", "message", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: PART_KINDS,
+    companions: &[],
+}];
+
+/// What the Chat reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // A spelling hint: the cap itself crosses as `max_tokens`.
+    crate::codec::drops::Parked {
+        key: MAX_COMPLETION_TOKENS_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: crate::codec::dialect::MESSAGE_NAMES_SENTINEL,
+        holds: crate::codec::drops::Holds::Path(crate::codec::dialect::MESSAGE_NAMES_PATH),
+    },
+    crate::codec::drops::Parked {
+        key: MESSAGE_EXTRAS_SENTINEL,
+        holds: crate::codec::drops::Holds::Items("messages[]", &[LEGACY_FUNCTION_ROLE_KEY]),
+    },
+    // The legacy function-calling members: read into `tools` / `tool_choice`, which cross.
+    crate::codec::drops::Parked {
+        key: FUNCTIONS,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::FUNCTION_CALL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // Governed: the usage opt-in is busbar's metering edit for the far end (design F2).
+    crate::codec::drops::Parked {
+        key: keys::STREAM_OPTIONS,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+];
+
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// A chunk's identity, model, clock, index, finish reason, logprobs, usage and served tier are read by
+// the stream reader (the stream rows name only the delta).
+const RESPONSE_CODE: &[&str] = &[];
+const STREAM_CODE: &[&str] = &[
+    "id",
+    "model",
+    CREATED,
+    "object",
+    "choices[].index",
+    "choices[].finish_reason",
+    "choices[].logprobs",
+    "usage",
+    "service_tier",
+];
+
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &["choices[].message.audio.expires_at"];
+const STREAM_DROPS: &[&str] = &[
+    "usage.completion_tokens_details.text_tokens",
+    "usage.prompt_tokens_details.image_tokens",
+    "usage.prompt_tokens_details.text_tokens",
+];
+
+/// Read one OpenAI-format content part: `None` for a part kind this reader does not model, which
+/// is dropped — nothing is put in its place.
+fn read_openai_part(
+    block_val: &serde_json::Value,
+) -> Result<Option<crate::codec::ir::IrBlock>, IrError> {
+    if !REQUEST_BLOCKS.iter().all(|g| g.models(block_val)) {
+        return Ok(None);
+    }
+    read_openai_block(block_val).map(Some)
+}
+
+/// Read an OpenAI-format block of a kind [`REQUEST_BLOCKS`] models.
 fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
@@ -838,8 +955,10 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
             let detail = image_obj.get(keys::DETAIL).and_then(|v| v.as_str());
             let parsed = detail.and_then(crate::codec::ir::IrImageDetail::parse);
             if let (Some(word), None) = (detail, parsed) {
-                tracing::warn!(
-                    detail = word,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire("messages[].content[].image_url.detail"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [detail = word,],
                     "dropping an unknown image_url.detail word: the IR carries auto/low/high only"
                 );
             }
@@ -960,20 +1079,9 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
                 refusal: true,
             })
         }
-        // Forward-compatibility: an unknown/future content-part type (one OpenAI adds after this
-        // build) must not break otherwise-valid conversation history. Degrade gracefully to an empty
-        // Text block — preserving the part's position in the turn without injecting foreign data —
-        // rather than failing the whole request with a ClientError. This is a content-shape match, not
-        // a disposition/breaker match, so a named graceful-degradation arm is correct here.
-        other => {
-            let _ = other;
-            Ok(crate::codec::ir::IrBlock::Text {
-                text: String::new(),
-                cache_control: None,
-                citations: Vec::new(),
-                refusal: false,
-            })
-        }
+        // An unknown/future part kind never reaches here: `read_openai_part` drops it (nothing is
+        // put in its place), so this arm only answers a direct call with a kind outside the grammar.
+        _ => Err(ir_parse_error()),
     }
 }
 
@@ -1557,16 +1665,9 @@ fn read_moderation(
             .and_then(|s| s.get(MODERATION_RESULTS))
             .and_then(|r| r.as_array());
         for r in results.into_iter().flatten() {
-            let categories = r.get(CATEGORIES).and_then(|c| c.as_object());
-            for (category, on) in categories.into_iter().flatten() {
-                if on.as_bool() == Some(true) {
-                    out.push(crate::codec::ir::IrSafetyVerdict {
-                        category: category.clone(),
-                        flagged: true,
-                        blocked: false,
-                    });
-                }
-            }
+            out.extend(crate::codec::ir::IrSafetyVerdict::flagged_categories(
+                r.get(CATEGORIES),
+            ));
         }
     }
     out

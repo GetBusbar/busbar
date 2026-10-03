@@ -132,14 +132,10 @@ async fn a_wrong_typed_stream_options_is_refused_before_any_send() {
     }
 }
 
-/// The injector unit contract on the refused shape: `Err` carrying the caller's bytes verbatim, from
-/// both entry points (the pristine injector defers to the DOM injector on a `stream_options` key).
+/// The injector unit contract on the refused shape: `Err` carrying the caller's bytes verbatim.
 #[test]
-fn the_injectors_answer_err_on_a_wrong_typed_stream_options() {
+fn the_injector_answers_err_on_a_wrong_typed_stream_options() {
     let body: &[u8] = br#"{"stream":true,"stream_options":"x"}"#;
-    let dom = super::try_inject_openai_stream_include_usage(bytes::Bytes::from_static(body));
-    assert_eq!(dom, Err(bytes::Bytes::from_static(body)));
-    let pristine =
-        super::try_inject_openai_stream_include_usage_pristine(bytes::Bytes::from_static(body));
-    assert_eq!(pristine, Err(bytes::Bytes::from_static(body)));
+    let out = super::try_inject_openai_stream_include_usage(bytes::Bytes::from_static(body));
+    assert_eq!(out, Err(bytes::Bytes::from_static(body)));
 }

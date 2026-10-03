@@ -37,9 +37,11 @@ impl ProtocolWriter for CohereWriter {
                     // A non-text system block (image/thinking/tool/…) has no Cohere v2 analog — the
                     // system prompt carries text only. WARN on the drop so the loss is operator-
                     // visible in observability, mirroring the Gemini writer's warn for the same case.
-                    tracing::warn!(
-                        "dropping non-text system block on Cohere egress: Cohere v2 system prompt carries text only"
-                    );
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::block(b.kind_name()),
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [],
+                        "dropping non-text system block on Cohere egress: Cohere v2 system prompt carries text only");
                     None
                 }
             })
@@ -103,7 +105,10 @@ impl ProtocolWriter for CohereWriter {
                                     (keys::TYPE): keys::IMAGE_URL, (keys::IMAGE_URL): image_url
                                 }));
                             }
-                            None => tracing::warn!(
+                            None => crate::codec::drops::writer_drop!(
+                                crate::codec::drops::IMAGE,
+                                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                [],
                                 "dropping unresolvable vendor-scoped image reference on Cohere \
                                  egress: a file_id / s3Location has no cross-vendor analog"
                             ),
@@ -125,8 +130,10 @@ impl ProtocolWriter for CohereWriter {
                         .flatten()
                     {
                         Some(doc) => documents.push(doc),
-                        None => tracing::warn!(
-                            media_kind = kind.as_str(),
+                        None => crate::codec::drops::writer_drop!(
+                            crate::codec::drops::block(kind.as_str()),
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [media_kind = kind.as_str(),],
                             "dropping attachment on Cohere egress: Cohere v2 /chat message \
                              content carries text and image parts only, and this attachment is \
                              not a text document the request's `documents` can carry — it is NOT \
@@ -243,8 +250,10 @@ impl ProtocolWriter for CohereWriter {
                                         (keys::DOCUMENT): value
                                     }));
                                 }
-                                _ => tracing::warn!(
-                                    media_kind = kind.as_str(),
+                                _ => crate::codec::drops::writer_drop!(
+                                    crate::codec::drops::block(kind.as_str()),
+                                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                    [media_kind = kind.as_str(),],
                                     "dropping attachment inside a tool result on Cohere egress: \
                                      Cohere v2 tool content carries text and native `document` \
                                      parts only, and this source has no Cohere document form"
@@ -483,7 +492,10 @@ impl ProtocolWriter for CohereWriter {
         // stripped (`ir/variant.rs`) while the tool_choice directive survived.
         if let Some(tc) = &req.tool_choice {
             if tools.is_empty() {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TOOL_CHOICE,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping tool_choice on Cohere egress: tool_choice has no accompanying tools \
                      (likely because the hosted tools that carried it were stripped on the \
                      cross-protocol seam)"
@@ -505,7 +517,10 @@ impl ProtocolWriter for CohereWriter {
         // Egress: Cohere v2 `/v2/chat` models no parallelism control. `is_some()` gates
         // this to requests that actually carried the flag (owner decision 4: no per-request noise).
         if req.parallel_tool_calls.is_some() {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::PARALLEL_TOOL_CALLS,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping parallel_tool_calls on Cohere egress: /v2/chat has no parallelism \
                  control, so the backend's default parallelism applies"
             );
@@ -1043,10 +1058,12 @@ impl ProtocolWriter for CohereWriter {
         // dialect reports, so a foreign backend's log probabilities have no Cohere form. Dropped,
         // observably.
         if !resp.logprobs.is_empty() {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::LOGPROBS,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping response logprobs on Cohere egress: a Cohere logprobs item needs the token \
-                 ids, which the source dialect has no field for"
-            );
+                 ids, which the source dialect has no field for");
         }
 
         // Cohere format: usage.tokens.input_tokens, usage.tokens.output_tokens

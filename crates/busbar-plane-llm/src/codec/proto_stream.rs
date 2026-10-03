@@ -261,13 +261,29 @@ impl StreamTranslate {
         // `self.tool_id_remap` borrow in `remap_event` below — unlike `Protocol::name(&self) -> &str`,
         // whose return borrows `self`'s (elided) lifetime and so would collide. No allocation per frame.
         let ingress_name = self.ingress.name_static();
-        for ev in self
-            .egress
-            .reader()
-            .read_response_events(event_type, data, &mut self.decode)
-        {
+        // ONE translate attempt per stream: what the caller's dialect will not get is named once per
+        // path for the whole stream (design F3 "Drops"), and read back by [`Self::dropped`].
+        let seam = crate::codec::drops::Seam {
+            direction: crate::codec::drops::Direction::Response,
+            ingress: ingress_name,
+            egress: self.egress.name_static(),
+        };
+        let events = crate::codec::drops::read_stream_frame(
+            seam,
+            self.egress.reader(),
+            event_type,
+            data,
+            &mut self.decode,
+        );
+        for ev in events {
             self.translate_ir_event(ingress_name, ev, out);
         }
+    }
+
+    /// The far-end wire paths this stream dropped on its way to the caller, each warned once; the
+    /// host records one audit row per path at the stream's end.
+    pub fn dropped(&self) -> &[String] {
+        &self.decode.dropped
     }
 
     /// Run ONE decoded IR event through the cross-protocol pipeline (tool-id remap, identity strip,
@@ -1193,6 +1209,9 @@ impl StreamTranslator for StreamTranslate {
     }
     fn set_request_echo(&mut self, ingress_request_body: &serde_json::Value) {
         self.set_request_echo(ingress_request_body)
+    }
+    fn dropped(&self) -> Vec<String> {
+        StreamTranslate::dropped(self).to_vec()
     }
     fn terminal_error_frame(&mut self, err: &IrError) -> Option<(String, serde_json::Value)> {
         self.terminal_error_frame(err)

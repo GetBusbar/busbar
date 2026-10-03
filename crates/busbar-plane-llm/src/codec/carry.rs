@@ -126,8 +126,9 @@ pub const CONTROL_ORDER: &[Slot] = &[
 /// How a dialect handles a control slot beyond its rows (`[controls]` in the mapping file).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Handled {
-    /// Dropped with neither a warn nor an audit entry: the 1.5.5 behaviour, kept as a named waiver
-    /// (`silent = true`, its reason cited in the mapping file).
+    /// No form, and no text of the dialect's own (`silent = true`): 1.5.5 dropped it with neither a
+    /// warn nor an audit entry. A drop is never silent (spec Part 2 #76, design F3 "Drops"), so it
+    /// is dropped like a control with no row: the dialect's `drop_warn` and the seam's audit.
     Silent,
     /// Carried, warned or reported by the named dialect code (`code = "<name>"`).
     Code(&'static str),
@@ -330,7 +331,9 @@ impl Slot {
         }
     }
 
-    /// The slot's name: the IR field's, as warns and the seam's audit name a dropped control.
+    /// The slot's name: the IR field's. A dropped control's warn and audit row name the caller's
+    /// wire path for it ([`crate::codec::drops::wire_path`]), this name only when the caller's
+    /// dialect has no row for the slot.
     pub fn name(self) -> &'static str {
         match self {
             Slot::Metadata => "metadata",
@@ -528,23 +531,25 @@ fn value_of(f: &Field, req: &IrRequest) -> Option<Value> {
 /// The warn of a row dropped under its condition. Its fields are the slot's own (a static field
 /// name per slot, as the writers always spelled them).
 fn warn_drop(d: &DropIf, slot: Slot, req: &IrRequest) {
+    use crate::codec::drops::{member, writer_drop};
+    let diag = &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS;
     match slot {
         // Thinking runs at temperature 1: omitting exactly 1 changes nothing and is not warned.
         Slot::Temperature if req.temperature == Some(1.0) => {}
         Slot::Temperature if d.value => {
-            tracing::warn!(temperature = ?req.temperature, "{}", d.warn);
+            writer_drop!(member(slot.name()), diag, [temperature = ?req.temperature,], "{}", d.warn);
         }
         Slot::TopP if d.value => {
             if let Some(top_p) = req.top_p {
-                tracing::warn!(top_p, "{}", d.warn);
+                writer_drop!(member(slot.name()), diag, [top_p,], "{}", d.warn);
             }
         }
         Slot::TopK if d.value => {
             if let Some(top_k) = req.top_k {
-                tracing::warn!(top_k, "{}", d.warn);
+                writer_drop!(member(slot.name()), diag, [top_k,], "{}", d.warn);
             }
         }
-        _ => tracing::warn!("{}", d.warn),
+        _ => writer_drop!(member(slot.name()), diag, [], "{}", d.warn),
     }
 }
 
@@ -577,18 +582,26 @@ pub fn write_fields(table: Table, req: &IrRequest, egress: Egress, out: &mut Map
         }
         if let (Some(c), Some(n)) = (&f.clamp, v.as_f64()) {
             let (clamped, changed) = clamp(n, c.min, c.max);
+            // A clamp keeps its behaviour and always warns, on the one drop path.
+            let at = crate::codec::drops::member(f.slot.name());
+            let diag = &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS;
             if changed && c.parameter {
-                tracing::warn!(
-                    requested_temperature = n,
-                    clamped_temperature = clamped,
-                    parameter = "temperature",
+                crate::codec::drops::writer_drop!(
+                    at,
+                    diag,
+                    [
+                        requested_temperature = n,
+                        clamped_temperature = clamped,
+                        parameter = "temperature",
+                    ],
                     "{}",
                     c.warn
                 );
             } else if changed {
-                tracing::warn!(
-                    requested_temperature = n,
-                    clamped_temperature = clamped,
+                crate::codec::drops::writer_drop!(
+                    at,
+                    diag,
+                    [requested_temperature = n, clamped_temperature = clamped,],
                     "{}",
                     c.warn
                 );
@@ -608,7 +621,7 @@ pub fn write_fields(table: Table, req: &IrRequest, egress: Egress, out: &mut Map
 
 /// THE DERIVED DROPS: the controls of [`CONTROL_ORDER`] that `req` carries and this dialect cannot
 /// write: no row names the slot (a hook row and a `prim` row carry it), or its word-table row has
-/// no word for the value — unless `controls` names the slot silent or carried by code. The names
+/// no word for the value — unless `controls` names the slot carried by code. The names
 /// are the ones the dialect's `dropped_egress_controls` reports and its warns carry.
 pub fn dropped<'a>(
     table: Table,
@@ -620,7 +633,7 @@ pub fn dropped<'a>(
             return false;
         }
         match handled(controls, slot) {
-            Some(Handled::Silent | Handled::Code(_)) => false,
+            Some(Handled::Code(_)) => false,
             _ => match rows(table).find(|f| f.slot == slot) {
                 None => true,
                 Some(
@@ -653,6 +666,7 @@ pub fn warn_drops(
             (_, Some(drop_warn)) => crate::codec::dialect::warn_dropped([slot.name()], drop_warn),
             (_, None) => tracing::warn!(
                 control = slot.name(),
+                path = %crate::codec::drops::caller_path(slot.name()),
                 "dropping a request control on egress: the dialect has no form for it"
             ),
         }
@@ -662,10 +676,12 @@ pub fn warn_drops(
 /// A dropped control's own warn. With `value`, the warn names the dropped value under the slot's
 /// field (and `parameter`, for a sampling control), as each writer always spelled it.
 fn warn_slot(slot: Slot, text: &str, value: bool, req: &IrRequest) {
+    let path = crate::codec::drops::caller_path(slot.name());
     match (slot, value) {
         (Slot::FrequencyPenalty, true) => {
             if let Some(frequency_penalty) = req.frequency_penalty {
                 tracing::warn!(
+                    path = %path,
                     parameter = "frequency_penalty",
                     frequency_penalty,
                     "{}",
@@ -675,33 +691,40 @@ fn warn_slot(slot: Slot, text: &str, value: bool, req: &IrRequest) {
         }
         (Slot::PresencePenalty, true) => {
             if let Some(presence_penalty) = req.presence_penalty {
-                tracing::warn!(parameter = "presence_penalty", presence_penalty, "{}", text);
+                tracing::warn!(
+                    parameter = "presence_penalty",
+                    presence_penalty,
+                    path = %path,
+                    "{}",
+                    text
+                );
             }
         }
         (Slot::Seed, true) => {
             if let Some(seed) = req.seed {
-                tracing::warn!(parameter = "seed", seed, "{}", text);
+                tracing::warn!(parameter = "seed", seed, path = %path, "{}", text);
             }
         }
         (Slot::N, true) => {
             if let Some(n) = req.n {
-                tracing::warn!(parameter = "n", n, "{}", text);
+                tracing::warn!(parameter = "n", n, path = %path, "{}", text);
             }
         }
         (Slot::ServiceTier, true) => {
             if let Some(tier) = req.service_tier {
-                tracing::warn!(service_tier = tier.as_str(), "{}", text);
+                tracing::warn!(service_tier = tier.as_str(), path = %path, "{}", text);
             }
         }
         (Slot::Stop, true) => {
             let stop_count = req.stop.len();
             tracing::warn!(
+                    path = %path,
                 stop_count,
                 "{}",
                 text.replace("{count}", &stop_count.to_string())
             );
         }
-        _ => tracing::warn!("{}", text),
+        _ => tracing::warn!(path = %path, "{}", text),
     }
 }
 
@@ -713,6 +736,52 @@ pub fn keep_unmodelled(table: Table, obj: &Map<String, Value>, extra: &mut Map<S
             extra.insert(key.clone(), value.clone());
         }
     }
+}
+
+/// Whether `table` has a row at the wire path `path` (`["generationConfig", "topK"]`).
+pub fn maps(table: Table, path: &[&str]) -> bool {
+    rows(table).any(|f| f.path == path)
+}
+
+/// Whether `table` carries the wire path `path` ACROSS dialects: a row that names a slot. A `prim`
+/// row names a member the dialect's own structural code reads and writes; whether that member
+/// crosses is that code's declaration (`codec::drops::Parked`), not the row's.
+pub fn crosses(table: Table, path: &[&str]) -> bool {
+    rows(table).any(|f| f.path == path && !matches!(f.codec, ValueCodec::Prim(_)))
+}
+
+/// THE NAME RESOLVER's table half: the notation-A wire path at which `table` spells the IR name
+/// `name` (a slot's [`Slot::name`] or a `prim` row's name), `None` when no row names it. Slot rows
+/// win over `prim` rows. Of several rows, a member outside every list wins (a request control is a
+/// top-level knob, not a member of each turn); rows that all sit in lists name the path they share,
+/// each step they differ at left out (`messages[].content[].type=text.cache_control` and
+/// `...type=image.cache_control` are `messages[].content[].cache_control`).
+pub fn wire_path(table: Table, name: &str) -> Option<String> {
+    let slot_rows: Vec<&[&str]> = rows(table)
+        .filter(|f| f.slot != Slot::Structure && f.slot.name() == name)
+        .map(|f| f.path)
+        .collect();
+    let paths = if slot_rows.is_empty() {
+        rows(table)
+            .filter(|f| matches!(f.codec, ValueCodec::Prim(p) if p == name))
+            .map(|f| f.path)
+            .collect()
+    } else {
+        slot_rows
+    };
+    let first = *paths.first()?;
+    let in_list = |p: &[&str]| p.iter().any(|step| step.ends_with("[]"));
+    if let Some(top) = paths.iter().find(|p| !in_list(p)) {
+        return Some(top.join("."));
+    }
+    if paths.iter().any(|p| p.len() != first.len()) {
+        return Some(first.join("."));
+    }
+    let shared: Vec<&str> = (0..first.len())
+        .filter(|&i| paths.iter().all(|p| p[i] == first[i]))
+        .map(|i| first[i])
+        .collect();
+    Some(shared.join("."))
 }
 
 /// Whether `key` is a top-level member `table` models (the reader keeps every other member in

@@ -536,6 +536,8 @@ pub struct LaneSpec {
     context_max: Option<usize>,
     path: Option<String>,
     path_base: Option<String>,
+    organization: Option<String>,
+    project: Option<String>,
     auth: Option<String>,
     health: Option<crate::config::HealthCfg>,
     default_max_tokens: Option<u32>,
@@ -571,6 +573,8 @@ impl LaneSpec {
             context_max: None,
             path: None,
             path_base: None,
+            organization: None,
+            project: None,
             auth: None,
             health: None,
             default_max_tokens: None,
@@ -587,6 +591,12 @@ impl LaneSpec {
             client_fault: 0,
             sem: None,
         }
+    }
+    /// The provider's configured tenant (`organization`, `project`).
+    pub fn tenant(mut self, organization: &str, project: &str) -> Self {
+        self.organization = Some(organization.into());
+        self.project = Some(project.into());
+        self
     }
     pub fn provider(mut self, p: &str) -> Self {
         self.provider = p.into();
@@ -689,6 +699,8 @@ impl LaneSpec {
             base_url: self.base_url.trim_end_matches('/').to_string(),
             path: self.path.clone(),
             path_base: self.path_base.clone(),
+            organization: self.organization.clone(),
+            project: self.project.clone(),
             upstream_model: self.upstream_model.clone(),
             api_key: busbar_contract::redacted::Redacted::new(self.api_key.clone()),
             auth_style,

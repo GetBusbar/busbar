@@ -466,10 +466,10 @@ fn native_stream(dialect: &str) -> Vec<u8> {
 }
 
 /// A same-dialect whole body relays untouched (the far end's own bytes, borrowed) and its usage is
-/// read at the end.
+/// read at the end — in every dialect, Bedrock included (no busbar-measured `metrics` is added).
 #[test]
 fn a_same_dialect_whole_body_relays_untouched_and_meters() {
-    for dialect in ["openai", "anthropic", "cohere", "responses", "gemini"] {
+    for dialect in SIX {
         let (_, body) = native_answers(dialect)
             .into_iter()
             .next()
@@ -490,6 +490,63 @@ fn a_same_dialect_whole_body_relays_untouched_and_meters() {
             relay::content_type(dialect, dialect, false, false),
             ContentType::Far
         );
+    }
+}
+
+/// `json` with a member busbar has never heard of spliced in after its first opening brace.
+fn with_unknown_member(json: &[u8]) -> Vec<u8> {
+    let brace = json.iter().position(|b| *b == b'{').expect("an object");
+    let mut out = json[..=brace].to_vec();
+    out.extend_from_slice(br#""zz_never_heard_of":{"b":1,"a":[1.50, "x"]},"#);
+    out.extend_from_slice(&json[brace + 1..]);
+    out
+}
+
+/// SAME-DIALECT IDENTITY, the answer side (DIALECT FIDELITY; DIALECT-FIDELITY-DESIGN F4): in
+/// every dialect a buffered answer and a stream that carry a member busbar has never heard of reach
+/// the caller byte-identical, and are still metered. The RED arm is any reserialize or rebuild on
+/// the relay (a parse-and-write drops the member, sorts the keys, prints `1.50` as `1.5`).
+#[test]
+fn a_same_dialect_answer_carrying_an_unknown_member_reaches_the_caller_byte_identical() {
+    for dialect in SIX {
+        let (_, body) = native_answers(dialect)
+            .into_iter()
+            .next()
+            .expect("an answer");
+        let body = with_unknown_member(&body);
+        let mut r = Relay::new(relay_ctx(dialect, dialect, false));
+        let out = relay_all(&mut r, &body, 9);
+        assert_eq!(out, body, "{dialect}: buffered");
+
+        let native = native_stream(dialect);
+        let far = if dialect == "bedrock" {
+            let mut far = busbar_plane_llm::codec::eventstream::encode_frame(
+                "zzNeverHeardOf",
+                br#"{"zz":{"b":1,"a":[1.50]}}"#,
+            );
+            far.extend_from_slice(&native);
+            far
+        } else {
+            let at = native
+                .windows(5)
+                .position(|w| w == b"data:")
+                .expect("a data line");
+            let mut far = native[..at].to_vec();
+            far.extend_from_slice(&with_unknown_member(&native[at..]));
+            far
+        };
+        let mut ctx = relay_ctx(dialect, dialect, true);
+        ctx.client_include_usage = true;
+        let mut r = Relay::new(ctx);
+        let out = relay_all(&mut r, &far, 7);
+        assert_eq!(out, far, "{dialect}: stream");
+        let mut ctx = relay_ctx(dialect, dialect, true);
+        ctx.client_include_usage = true;
+        let mut r = Relay::new(ctx);
+        for piece in far.chunks(7) {
+            let _ = r.feed(piece);
+        }
+        assert!(r.end().usage.is_some(), "{dialect}: the stream is metered");
     }
 }
 
@@ -580,6 +637,8 @@ fn lane(dialect: &'static str) -> Lane {
         dialect,
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         upstream_model: None,
         default_max_tokens: None,
         context_max: None,
@@ -753,4 +812,94 @@ fn a_reply_that_is_cut_says_so() {
     let cut = reply.cut(&ctx, true);
     assert_eq!(cut.head.map(|h| h.status), Some(502));
     assert_eq!(cut.fault, Some(Fault::Transient("transport")));
+}
+
+// ── the stream's one drop path (design F3 "Drops", DF-MAP-IR-GAPS section E) ─────────────────────
+
+/// A far end's stream of `far`, relayed to a caller of `caller`: the paths the relay dropped.
+fn stream_drops(caller: &str, far: &str, bytes: &[u8]) -> Vec<String> {
+    let mut ctx = relay_ctx(caller, far, true);
+    ctx.client_include_usage = true;
+    let mut r = Relay::new(ctx);
+    for piece in bytes.chunks(7) {
+        let _ = r.feed(piece);
+    }
+    r.end().dropped
+}
+
+/// The far end's spec-shaped stream of `dialect` (the OpenAI stream itself, or as busbar writes it
+/// for that dialect).
+fn far_stream(dialect: &str) -> Vec<u8> {
+    if dialect == "openai" {
+        openai_stream()
+    } else {
+        native_stream(dialect)
+    }
+}
+
+/// RED ARM of the stream walk: a stream of members every dialect's map or code carries drops
+/// nothing, for every translated pair. A walk that named a carried member (a chunk's `id`, a
+/// keepalive, a block index) would fail here.
+#[test]
+fn a_translated_stream_of_carried_members_drops_nothing() {
+    for far in SIX {
+        let bytes = far_stream(far);
+        for caller in SIX.into_iter().filter(|c| *c != far) {
+            assert_eq!(
+                stream_drops(caller, far, &bytes),
+                Vec::<String>::new(),
+                "{far} -> {caller}"
+            );
+        }
+    }
+}
+
+/// A member the caller's dialect has no form for is dropped on the one drop path, named by its wire
+/// path ONCE for the whole stream however many frames carry it. RED before: a stream dropped it
+/// silently (no warn, no path, no audit row).
+#[test]
+fn a_translated_stream_names_each_unmapped_path_once() {
+    let far = String::from_utf8(openai_stream())
+        .unwrap()
+        .replace("\"object\":", "\"obfuscation\":\"x\",\"object\":");
+    assert_eq!(
+        stream_drops("anthropic", "openai", far.as_bytes()),
+        vec!["obfuscation".to_string()]
+    );
+
+    // An event of a kind the far end's reader does not carry: Anthropic's frame is a union on `type`.
+    let mut far = far_stream("anthropic");
+    for _ in 0..2 {
+        far.extend_from_slice(b"event: zz_future\ndata: {\"type\":\"zz_future\",\"x\":1}\n\n");
+    }
+    assert_eq!(
+        stream_drops("openai", "anthropic", &far),
+        vec!["type=zz_future".to_string()]
+    );
+
+    // A Responses refusal streamed as its own event: the stream reader does not carry it.
+    let mut far = far_stream("responses");
+    far.extend_from_slice(
+        b"event: response.refusal.delta\ndata: {\"type\":\"response.refusal.delta\",\"item_id\":\"m1\",\"output_index\":0,\"content_index\":0,\"delta\":\"no\",\"sequence_number\":99}\n\n",
+    );
+    assert!(stream_drops("openai", "responses", &far)
+        .contains(&"type=response.refusal.delta".to_string()));
+
+    // Bedrock's frames are keyed by their event name.
+    let mut far =
+        busbar_plane_llm::codec::eventstream::encode_frame("zzNeverHeardOf", br#"{"zz":{"b":1}}"#);
+    far.extend_from_slice(&far_stream("bedrock"));
+    assert_eq!(
+        stream_drops("anthropic", "bedrock", &far),
+        vec!["zzNeverHeardOf".to_string()]
+    );
+}
+
+/// A same-dialect stream is a relay: its reader is a tap and drops nothing, whatever it carries.
+#[test]
+fn a_same_dialect_stream_drops_nothing() {
+    let far = String::from_utf8(openai_stream())
+        .unwrap()
+        .replace("\"object\":", "\"obfuscation\":\"x\",\"object\":");
+    assert!(stream_drops("openai", "openai", far.as_bytes()).is_empty());
 }

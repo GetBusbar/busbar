@@ -23,6 +23,7 @@ use super::super::refuse::{render, Rendered};
 use super::failure::request_id_field;
 use super::wire;
 use super::wire::head_field;
+use crate::codec::drops;
 use crate::codec::translate::{TranslateCodec as _, TranslateRespInput};
 use crate::codec::DECLS;
 
@@ -66,6 +67,11 @@ pub struct Whole {
     pub answer: Rendered,
     /// Why the far end's dialect refused the body, when it did (for the operator's log).
     pub refused: Option<Refusal>,
+    /// The wire paths of the far end's answer that did not cross to the caller's dialect, on a
+    /// delivered TRANSLATE (design F3 "Drops"): each already warned through the one drop path; the
+    /// host records one audit row per path (`egress.control_unrepresentable`,
+    /// `<path> from <dialect>`, degraded). Empty on a relay and on every end that delivers nothing.
+    pub dropped: Vec<String>,
 }
 
 /// The far end's dialect refusing a whole body.
@@ -129,6 +135,7 @@ fn whole(end: WholeEnd, usage: Option<Billing>, answer: Rendered) -> Whole {
         usage,
         answer,
         refused: None,
+        dropped: Vec::new(),
     }
 }
 
@@ -231,8 +238,8 @@ fn json(
     ingress_serves: bool,
     rv: &Value,
 ) -> Result<Option<Whole>, String> {
-    let (usage, answered) = eh
-        .translate_response(
+    let read = || {
+        let answered = eh.translate_response(
             TranslateRespInput::Json(rv),
             ingress_serves,
             ctx.ingress,
@@ -241,9 +248,25 @@ fn json(
             ctx.wants_stream && !ctx.json_array,
             ctx.elapsed_ms,
             ctx.request,
-        )
-        .map_err(|e| format!("{e:?}"))?;
-    crate::codec::dialect::warn_untranslatable_response_metadata(ctx.egress, ctx.ingress, rv);
+        );
+        if answered.is_ok() {
+            crate::codec::chat_handle::drop_untranslatable_response(ctx.egress, rv);
+        }
+        answered
+    };
+    // A translate attempt's drops go through the one drop path; a same-dialect answer drops
+    // nothing.
+    let (answered, dropped) = if ctx.ingress == ctx.egress {
+        (read(), Vec::new())
+    } else {
+        let seam = drops::Seam {
+            direction: drops::Direction::Response,
+            ingress: ctx.ingress,
+            egress: ctx.egress,
+        };
+        drops::scope(seam, read)
+    };
+    let (usage, answered) = answered.map_err(|e| format!("{e:?}"))?;
     let delivers = matches!(
         answered,
         TranslatedResponse::StreamFrames(_)
@@ -257,7 +280,7 @@ fn json(
             internal(ctx.ingress, 502),
         )));
     }
-    Ok(Some(match answered {
+    let mut w = match answered {
         TranslatedResponse::StreamFrames(frames) => {
             let ct = wire::ingress_stream_content_type(ctx.ingress).unwrap_or(TEXT_EVENT_STREAM);
             whole(
@@ -310,5 +333,9 @@ fn json(
             whole(WholeEnd::Delivered, usage, answer)
         }
         TranslatedResponse::Untranslatable => return Ok(None),
-    }))
+    };
+    if w.end == WholeEnd::Delivered {
+        w.dropped = dropped;
+    }
+    Ok(Some(w))
 }

@@ -2119,6 +2119,91 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "DF-WIRE same-dialect request bodies are the caller's bytes",
+      "kind": "improvement",
+      "changelog": "A same-dialect request reaches the upstream as the caller's own bytes.",
+      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs)",
+      "cells": "^llm\\.fidelity\\|(anthropic|openai|responses|cohere|gemini|bedrock)\\|request-bytes$",
+      "expected_cells": 0,
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "DIALECT-FIDELITY-DESIGN F2/F6 (lane DF-WIRE). Within one dialect the request body is relayed as the caller's bytes; the members busbar governs are edited in place by byte-level member splices (codec/json_splice.rs): the mapped `model` (replaced where it stands, or inserted after the opening brace), the metering `stream_options.include_usage` (set where it stands, or the object inserted after the brace, as 1.5.5's splice already did for a body without `stream_options`), busbar's own router keys, the Gemini/Bedrock `model`/`stream` the arrival carries for routing (removed again, both ride the URL), a `path_base` reshape, and a committed `prompt: rw` rewrite (only the members and elements it changed). 1.5.5 re-serialized every such body with its object keys sorted, numbers and escapes normalized, and so did 1.6.0 before this change; an unchanged body already went out verbatim. Bytes move only for a body that is not already compact and key-sorted. The oracle's client sends compact key-sorted JSON (build-request.py, sort_keys=True), so no recorded cell moves: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. Pinned by lazy_body_tests::a_same_dialect_hop_is_the_callers_bytes_with_governed_splices (six dialects, RED arm: a re-serialize sorts `z` after `a` and prints 1.50 as 1.5), exchange_attempt::a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it, json_splice_tests, inject_include_usage_tests::an_existing_stream_options_is_edited_in_place. A move toward the caller's real protocol bytes: pre-approved by the LLM DIALECT FIDELITY standing rule and R4, no per-item sign-off. The premise probes the same-dialect gemini and openai stream cells, whose upstream body is the caller's.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|gemini|gemini|request|ok",
+            "status": 200
+          },
+          {
+            "cell": "llm|openai|openai|request|ok_stream",
+            "status": 200
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-02",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02) + R4 (HARD RULE invisible to upstreams, 2026-10-02); DIALECT-FIDELITY-DESIGN FINAL F2/F6"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "DF-DROP an untranslatable content block is dropped, not sent as empty text",
+      "kind": "improvement",
+      "changelog": "A request translated between LLM dialects no longer carries an empty text block in place of a content block the target dialect cannot represent, and an answer translated back no longer delivers one; the block is dropped with a warning and an audit row naming its wire path.",
+      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops",
+      "cells": "^llm\\.unmodelled-block\\|(anthropic|openai)\\|(bedrock|cohere|gemini|openai|anthropic)$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "On a TRANSLATE attempt the Anthropic and OpenAI readers put an empty text block ({\"type\":\"text\",\"text\":\"\"}) in place of a content block they do not model (a sourceless document, a block kind added after the build), and the far end's writer sent it: a substitution the LLM DIALECT FIDELITY rule forbids (translate what maps, drop what cannot). The block is now left out of the IR, dropped with a WARN and an egress.control_unrepresentable audit row naming its wire path; a same-dialect relay still carries it. Fixtures: crates/busbar-plane-llm/src/codec/tests/proto/golden/req_a2{b,c,g,o}_degenerate.json. No oracle cell sends an unmodelled block across dialects: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing anthropic-door llm cell.",
+      "premise": {
+        "cell": "llm|anthropic|openai|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-01",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "DF-SITES no value is substituted for one the target dialect cannot carry",
+      "kind": "improvement",
+      "changelog": "A request translated between LLM dialects no longer has a value substituted for one the target dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead of relabelled `png`, and a Gemini `thinkingBudget: -1` (\"the model decides\") is dropped on a target with no such setting instead of sent as the `medium` effort; each drop is warned and audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is answered with the caller's own 400 error instead of being translated.",
+      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
+      "cells": "^llm\\.no-substitution\\|(anthropic|openai|responses|gemini|cohere)\\|(bedrock|openai|responses|anthropic)$",
+      "expected_cells": 0,
+      "classes": [
+        "body",
+        "status"
+      ],
+      "rationale": "Two writer sites put a value of their own in place of the caller's on a TRANSLATE attempt, which F3 forbids. (1) The Bedrock writer relabelled an image whose media type is outside Converse's ImageFormat union {png, jpeg, gif, webp} (or not image/<subtype> at all) as format png and sent its bytes. (2) Every writer without a \"model decides\" form (Chat, Responses, and Anthropic / Bedrock lanes without adaptive thinking) projected Gemini's thinkingBudget -1 (and Anthropic adaptive / Cohere budget-less thinking) onto the effort table's medium entry. Both are now dropped on the one drop path with a WARN and an egress.control_unrepresentable audit row naming the caller's wire path; a format or budget that maps is carried (jpg is jpeg; Cohere and adaptive lanes keep \"model decides\"). Separately, a wrong-typed Gemini thinkingBudget (silently left out) and a wrong-typed Anthropic image media_type (read as \"\" and relabelled png on Bedrock) are refused by the caller's own reader in its native 400 envelope. Tests: crates/busbar-plane-llm/src/codec/tests/drop_writer_tests.rs (no substitution section). No oracle cell sends either value across dialects: the cells are OWED, `cells` names them and expected_cells is 0.",
+      "premise": {
+        "cell": "llm|anthropic|openai|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-01",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }

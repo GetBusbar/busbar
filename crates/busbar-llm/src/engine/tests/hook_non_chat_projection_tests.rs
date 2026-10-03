@@ -28,7 +28,6 @@ fn gate_view(facts: &HookFacts) -> String {
 /// unused for an object body — the value reader is taken).
 fn seam(v: &Value, proto: &str, op: OpVerb) -> HookFacts {
     read_hook_facts(v, &[], APPLICATION_JSON, proto, Some(op))
-        .unwrap_or_else(|_| panic!("the {proto} {op:?} reader refused this body"))
 }
 
 #[test]
@@ -122,8 +121,7 @@ fn transcription_prompt_is_seen_through_the_byte_seam() {
         &ct,
         "openai",
         Some(OpVerb::TRANSCRIPTION),
-    )
-    .expect("the transcription byte reader accepts this multipart body");
+    );
     assert!(
         gate_view(&facts).contains("SCREEN-THIS-PROMPT"),
         "the multipart transcription prompt must be screenable through the byte seam"
@@ -137,7 +135,7 @@ fn absent_semantics_hold_for_opless_and_bodyless() {
     crate::testkit::install_test_seams();
     // No operation (the pre-routing auth capture): Absent.
     assert!(matches!(
-        read_hook_facts(&Value::Null, &[], "", "openai", None).unwrap(),
+        read_hook_facts(&Value::Null, &[], "", "openai", None),
         HookFacts::Absent
     ));
     // A JSON object body but an unregistered protocol: no handler, so Absent (not a rejection).
@@ -149,8 +147,7 @@ fn absent_semantics_hold_for_opless_and_bodyless() {
             APPLICATION_JSON,
             "not-a-protocol",
             Some(OpVerb::EMBEDDINGS)
-        )
-        .unwrap(),
+        ),
         HookFacts::Absent
     ));
 }

@@ -563,8 +563,14 @@ fn gemini_response_citations_survive() {
         .reader()
         .read_response(&cited)
         .expect("read");
-    let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
-        panic!("expected a Text block, got {:?}", ir.content[0]);
+    // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
+    // ride the text block's citations.
+    let Some(crate::codec::ir::IrBlock::Text { citations, .. }) = ir
+        .content
+        .iter()
+        .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+    else {
+        panic!("expected a Text block, got {:?}", ir.content);
     };
     assert_eq!(citations.len(), 1, "citationMetadata must reach the IR");
     assert_eq!(citations[0].url.as_deref(), Some("https://atlas"));
@@ -595,8 +601,14 @@ fn gemini_response_citations_survive() {
         .reader()
         .read_response(&grounded)
         .expect("read");
-    let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
-        panic!("expected a Text block, got {:?}", ir.content[0]);
+    // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
+    // ride the text block's citations.
+    let Some(crate::codec::ir::IrBlock::Text { citations, .. }) = ir
+        .content
+        .iter()
+        .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+    else {
+        panic!("expected a Text block, got {:?}", ir.content);
     };
     assert_eq!(
         citations.len(),
@@ -895,8 +907,14 @@ fn gemini_vertex_grounding_chunk_domain_survives() {
         .reader()
         .read_response(&body)
         .expect("read");
-    let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
-        panic!("expected a Text block, got {:?}", ir.content[0]);
+    // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
+    // ride the text block's citations.
+    let Some(crate::codec::ir::IrBlock::Text { citations, .. }) = ir
+        .content
+        .iter()
+        .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+    else {
+        panic!("expected a Text block, got {:?}", ir.content);
     };
     assert_eq!(citations.len(), 1, "the grounding chunk must reach the IR");
     let carried_domain = citations[0]

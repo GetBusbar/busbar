@@ -63,6 +63,9 @@ pub(crate) struct Lane {
     /// Optional path-BASE override for URL-model protocols (Gemini): replaces the hardcoded base
     /// segment while keeping the per-request `/{model}:verb` suffix (Vertex AI). See `EgressCtx`.
     pub(crate) path_base: Option<String>,
+    /// The provider's configured tenant selectors (OWNER 2026-10-02, tenant selectors are set from
+    /// busbar config), as the head fields this lane's dialect declares; empty when none is set.
+    pub(crate) tenant_headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
     /// Optional active health-probe settings (from the provider's `health:` block). `None` or
     /// `mode: none` means no background probing for this lane.
     pub(crate) health: Option<busbar_kernel::plane_host::HealthInput>,

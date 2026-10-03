@@ -535,8 +535,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "strip_same_proto_usage_fires_without_object_field", "the same-proto usage hide-back"),
     ]),
     ("PB-97", &[
-        ("test", "head_pristine_matches_translate_output", "head_provably_pristine re-emits the retained bytes"),
-        ("test", "non_object_body_is_head_pristine", "a non-object body is pristine"),
+        ("test", "a_same_dialect_hop_is_the_callers_bytes_with_governed_splices", "a same-dialect hop is the caller's bytes with the governed splices only"),
         ("test", "pristine_same_proto_is_byte_identical_body_model", "an unmodified same-dialect request reaches upstream byte-identical"),
         ("test", "pristine_same_proto_is_byte_identical_url_model", "same, with the model on the path"),
         ("test", "claude_on_vertex_drops_model_and_injects_anthropic_version", "the Claude-on-Vertex shim literal"),

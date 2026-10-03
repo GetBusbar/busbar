@@ -11,6 +11,8 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         health: None,
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -32,6 +34,8 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         error_map: None,
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -4358,4 +4362,19 @@ fn warn_invalid_floors_keeps_both_warnings_byte_for_byte() {
             && m[1].contains(&CONFIG_FIRSTPARTY_FLOOR_INVALID.banner().to_string()),
         "{m:?}"
     );
+}
+
+/// The provider's tenant (`organization`, `project`) merges like `path_base`: the deployment's value
+/// wins over the catalog's, and absent everywhere it stays absent.
+#[test]
+fn the_provider_tenant_merges_deployment_over_catalog() {
+    let mut def = provider_def("openai", "https://api.example.com");
+    let mut deploy = provider_deploy("K");
+    assert_eq!(merge_provider_fallback(&def, &deploy).organization, None);
+    def.organization = Some("org-catalog".to_string());
+    def.project = Some("proj-catalog".to_string());
+    deploy.organization = Some("org-deploy".to_string());
+    let merged = merge_provider_fallback(&def, &deploy);
+    assert_eq!(merged.organization.as_deref(), Some("org-deploy"));
+    assert_eq!(merged.project.as_deref(), Some("proj-catalog"));
 }
