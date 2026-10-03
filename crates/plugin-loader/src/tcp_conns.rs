@@ -80,6 +80,8 @@ pub struct TcpConns {
     wake: Arc<dyn Fn(u64) + Send + Sync>,
     tls: Option<Arc<rustls::ClientConfig>>,
     timeouts: Mutex<Vec<u64>>,
+    /// Each declared need's egress class, by owner and need.
+    classes: Mutex<std::collections::HashMap<(InstanceId, NeedId), u32>>,
 }
 
 impl std::fmt::Debug for TcpConns {
@@ -107,6 +109,7 @@ impl TcpConns {
             wake,
             tls: None,
             timeouts: Mutex::new(Vec::new()),
+            classes: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -132,6 +135,64 @@ impl TcpConns {
             tls: Some(Arc::new(config)),
             ..Self::new(wake)
         }
+    }
+}
+
+/// A TLS client config that checks no certificate, only the handshake's signature.
+fn unverified() -> Arc<rustls::ClientConfig> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    Arc::new(
+        rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .expect("the default protocol versions")
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AnyCertificate(provider)))
+            .with_no_client_auth(),
+    )
+}
+
+#[derive(Debug)]
+struct AnyCertificate(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for AnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _: &rustls_pki_types::CertificateDer<'_>,
+        _: &[rustls_pki_types::CertificateDer<'_>],
+        _: &rustls_pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls_pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
     }
 }
 
@@ -314,6 +375,10 @@ impl DeclaredConns for TcpConns {
         if spec.transport != "tcp" {
             return Err(ConnError::Refused);
         }
+        self.classes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((owner, need), spec.egress_class);
         self.slab.declare(owner, need);
         Ok(())
     }
@@ -322,18 +387,35 @@ impl DeclaredConns for TcpConns {
         self.slab.check_need(owner, need).ok().map(Ok)
     }
 
-    /// TLS from the stream's next byte, trusting the table's CA ([`TcpConns::with_roots`]); the
-    /// handshake runs to completion here (a test double may block its caller).
+    /// TLS from the stream's next byte, trusting the table's CA ([`TcpConns::with_roots`]), or,
+    /// on `verify_off` (an operator-infrastructure need's only, as the connector rules), checking
+    /// no certificate; the handshake runs to completion here (a test double may block its caller).
     fn upgrade_secure(
         &self,
         caller: InstanceId,
         conn: ConnId,
         name: Option<&str>,
         _: Option<&str>,
+        verify_off: bool,
         _: u64,
     ) -> Result<(), ConnError> {
-        let config = self.tls.clone().ok_or(ConnError::Refused)?;
-        let (_, c) = self.slab.get(caller, conn)?;
+        let (need, c) = self.slab.get(caller, conn)?;
+        let config = if verify_off {
+            let class = self
+                .classes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&(caller, need))
+                .copied();
+            if class
+                != Some(busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE)
+            {
+                return Err(ConnError::Refused);
+            }
+            unverified()
+        } else {
+            self.tls.clone().ok_or(ConnError::Refused)?
+        };
         let mut c = c.lock().unwrap_or_else(PoisonError::into_inner);
         let server = name.map_or_else(|| host_of(&c.target), str::to_owned);
         let server =

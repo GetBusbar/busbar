@@ -51,7 +51,7 @@ use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, RandomIn,
     ReplyIn, ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, REPLY_ACK,
     REPLY_BODY, REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES,
-    WITHIN_SEPARATOR,
+    UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -394,10 +394,21 @@ extern "C" fn upgrade_secure(
         input,
         out,
         service::UPGRADE_SECURE,
-        size_of::<UpgradeIn>(),
+        UPGRADE_IN_V1_SIZE,
         |id, table, head| {
-            // SAFETY: the head covered an `UpgradeIn`.
-            let i = unsafe { input.cast::<UpgradeIn>().read_unaligned() };
+            // An `in` from before `flags` reads them as 0: only the bytes the head states are read.
+            // SAFETY: an all-zero `UpgradeIn` is a valid value (NULL strings, no flags).
+            let mut i: UpgradeIn = unsafe { std::mem::zeroed() };
+            let given = (head.size as usize).min(size_of::<UpgradeIn>());
+            // SAFETY: the head covered at least `UPGRADE_IN_V1_SIZE` bytes, and states `given`.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    input.cast::<u8>(),
+                    std::ptr::from_mut(&mut i).cast::<u8>(),
+                    given,
+                );
+            }
+            let verify_off = i.flags & UPGRADE_VERIFY_OFF != 0;
             // SAFETY: the caller's strings, live for the call.
             let (Ok(name), Ok(trust)) = (unsafe { optional_text(i.offered_name) }, unsafe {
                 optional_text(i.trust)
@@ -411,8 +422,13 @@ extern "C" fn upgrade_secure(
                 );
             }
             let ticket = conn_ticket(head.handle.ticket);
-            match table.upgrade_secure(id, ConnId(i.stream), name, trust, ticket) {
-                Ok(()) => Answer::ready(0, 0),
+            match table.upgrade_secure(id, ConnId(i.stream), name, trust, verify_off, ticket) {
+                Ok(()) => {
+                    if verify_off {
+                        warn_unverified(ctx);
+                    }
+                    Answer::ready(0, 0)
+                }
                 Err(ConnError::Pending) if head.handle.ticket.is_none() => Answer::with(
                     Outcome::Refused,
                     "an upgrade that would pend is callable only inside a ticketed op",
@@ -421,6 +437,33 @@ extern "C" fn upgrade_secure(
             }
         },
     )
+}
+
+/// The first unverified handshake an instance's connection ran (the operator's opt-in, ARCHITECT
+/// ruling 2026-10-03 on Q-L16-4) is logged at WARN, naming the instance: once per instance.
+fn warn_unverified(ctx: HostCtx) {
+    static WARNED: OnceLock<Mutex<std::collections::HashSet<usize>>> = OnceLock::new();
+    if ctx.ptr.is_null() {
+        return;
+    }
+    let first = WARNED
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(ctx.ptr as usize);
+    if !first {
+        return;
+    }
+    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
+    let wake: &InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    let instance = wake
+        .caller
+        .get()
+        .map_or_else(|| "<unbound>".to_owned(), |c| c.instance.to_string());
+    tracing::warn!(
+        instance = %instance,
+        "plugin instance '{instance}' secures a connection WITHOUT verifying the far end's certificate (operator opt-in, e.g. `#insecure`); its traffic can be intercepted"
+    );
 }
 
 /// The facts strings each stream was answered, held until it closes (`FactsIn::facts`: "the

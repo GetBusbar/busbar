@@ -105,9 +105,23 @@ async fn line(w: &Wire, send: &str) -> RecordStoreResult<String> {
 }
 
 /// The handshake a NEW connection makes (a kept one skips it): optional TLS, then `HELLO`.
-async fn handshake(w: &Wire, tls: bool) -> RecordStoreResult<()> {
-    if tls {
-        w.upgrade_secure(None).await.map_err(|e| failed(&e))?;
+/// How a new connection is secured.
+#[derive(Clone, Copy)]
+enum Tls {
+    Off,
+    Verified,
+    /// The operator's opt-in to an unverified handshake (`#insecure`).
+    Unverified,
+}
+
+async fn handshake(w: &Wire, tls: Tls) -> RecordStoreResult<()> {
+    match tls {
+        Tls::Off => {}
+        Tls::Verified => w.upgrade_secure(None).await.map_err(|e| failed(&e))?,
+        Tls::Unverified => w
+            .upgrade_secure_unverified(None)
+            .await
+            .map_err(|e| failed(&e))?,
     }
     let greeting = line(w, "HELLO").await?;
     if greeting != "WELCOME" {
@@ -123,7 +137,7 @@ async fn ping(
     w: Wire,
     target: String,
     timeout_ms: u32,
-    tls: bool,
+    tls: Tls,
     retry: bool,
 ) -> RecordStoreResult<Vec<String>> {
     w.connect_timed(0, Some(&target), timeout_ms)
@@ -146,6 +160,9 @@ async fn ping(
 /// A store whose `list_denylist` is [`ping`] on its kept set.
 macro_rules! wire_store {
     ($name:ident, $door:ident, max: $max:expr, timeout: $t:expr, tls: $tls:expr, retry: $retry:expr) => {
+        wire_store!($name, $door, max: $max, timeout: $t, tls: $tls, retry: $retry, needs: TCP);
+    };
+    ($name:ident, $door:ident, max: $max:expr, timeout: $t:expr, tls: $tls:expr, retry: $retry:expr, needs: $needs:ident) => {
         struct $name;
         impl $name {
             fn pool() -> &'static Arc<Pool> {
@@ -174,7 +191,7 @@ macro_rules! wire_store {
                 "wire-store",
                 "0",
                 64,
-                needs: super::TCP
+                needs: super::$needs
             );
         }
     };
@@ -214,7 +231,7 @@ fn ping_of(s: &LoadedStore) -> RecordStoreResult<Vec<String>> {
 
 // ── STORE-KEEP ─────────────────────────────────────────────────────────────────────────────────
 
-wire_store!(KeptOne, kept_one, max: 1, timeout: 0, tls: false, retry: false);
+wire_store!(KeptOne, kept_one, max: 1, timeout: 0, tls: Tls::Off, retry: false);
 
 /// RED (STORE-KEEP): three ops are ONE connection, one handshake: the connection is kept.
 #[test]
@@ -236,7 +253,7 @@ fn a_stores_connection_is_kept_across_ops() {
     assert_eq!((KeptOne::pool().live(), KeptOne::pool().idle()), (1, 1));
 }
 
-wire_store!(KeptBounded, kept_bounded, max: 2, timeout: 0, tls: false, retry: false);
+wire_store!(KeptBounded, kept_bounded, max: 2, timeout: 0, tls: Tls::Off, retry: false);
 
 /// Concurrent ops beyond the bound WAIT for a kept connection and all complete; never more than
 /// the bound are established.
@@ -266,7 +283,7 @@ fn concurrent_ops_beyond_the_bound_wait_for_a_kept_connection() {
 
 // ── a kept connection the far end dropped; VALKEY-RETRY ─────────────────────────────────────────
 
-wire_store!(NoRetry, no_retry, max: 1, timeout: 0, tls: false, retry: false);
+wire_store!(NoRetry, no_retry, max: 1, timeout: 0, tls: Tls::Off, retry: false);
 
 /// A kept connection the far end closed fails its op and is not kept: the next op dials fresh.
 #[test]
@@ -290,7 +307,7 @@ fn a_dropped_kept_connection_fails_its_op_and_the_next_dials_fresh() {
     assert_eq!(accepted.load(Ordering::SeqCst), 2);
 }
 
-wire_store!(Retries, retries, max: 1, timeout: 0, tls: false, retry: true);
+wire_store!(Retries, retries, max: 1, timeout: 0, tls: Tls::Off, retry: true);
 
 /// RED (VALKEY-RETRY): a read whose kept connection failed is retried ONCE on a fresh connection.
 #[test]
@@ -314,7 +331,7 @@ fn a_read_on_a_dropped_kept_connection_is_retried_on_a_fresh_one() {
 
 // ── VALKEY-TIMEOUT ──────────────────────────────────────────────────────────────────────────────
 
-wire_store!(Timed, timed, max: 1, timeout: 300, tls: false, retry: false);
+wire_store!(Timed, timed, max: 1, timeout: 300, tls: Tls::Off, retry: false);
 
 /// RED (VALKEY-TIMEOUT): the store's dial timeout reaches the host's table as the open's timeout.
 #[test]
@@ -335,7 +352,7 @@ fn the_stores_dial_timeout_reaches_the_hosts_table() {
 
 // ── VALKEY-UNIX ─────────────────────────────────────────────────────────────────────────────────
 
-wire_store!(OverUnix, over_unix, max: 1, timeout: 0, tls: false, retry: false);
+wire_store!(OverUnix, over_unix, max: 1, timeout: 0, tls: Tls::Off, retry: false);
 
 /// RED (VALKEY-UNIX): a `unix:/path` target is a unix-domain stream through the host's table.
 #[test]
@@ -360,7 +377,7 @@ fn a_unix_target_is_a_unix_domain_stream() {
 
 // ── TLS ─────────────────────────────────────────────────────────────────────────────────────────
 
-wire_store!(OverTls, over_tls, max: 1, timeout: 0, tls: true, retry: false);
+wire_store!(OverTls, over_tls, max: 1, timeout: 0, tls: Tls::Verified, retry: false);
 
 /// RED (TLS): the store's stream secured with TLS (`upgrade_secure`) trusting the test CA carries
 /// the handshake and the ops; the kept connection stays secure (one TLS handshake).
@@ -447,7 +464,7 @@ fn a_tls_secured_stream_carries_the_stores_ops() {
     );
 }
 
-wire_store!(Untrusted, untrusted, max: 1, timeout: 0, tls: true, retry: false);
+wire_store!(Untrusted, untrusted, max: 1, timeout: 0, tls: Tls::Verified, retry: false);
 
 /// Without the CA the handshake is refused: the op fails, in the store's words.
 #[test]
@@ -578,7 +595,7 @@ impl Hooks for BoundedHandshake {
                 w.connect_timed(0, Some(&target), 200)
                     .await
                     .map_err(|e| failed(&e))?;
-                handshake(&w, false).await?;
+                handshake(&w, Tls::Off).await?;
                 w.unbound();
                 line(&w, "ping").await.map(|l| vec![l])
             })
@@ -631,4 +648,113 @@ fn a_bound_covers_the_handshake_after_the_dial() {
     let e = ping_of(&s).expect_err("the handshake never answers");
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     assert!(e.0.contains("deadline passed"), "{e:?}");
+}
+
+// ── verify-off (ARCHITECT ruling 2026-10-03 on Q-L16-4: 1.5.5's `#insecure`) ──────────────────
+
+/// One outbound `tcp` need of class operator-infrastructure (a database).
+const TCP_OPERATOR: &[busbar_contract::abi::host::conn::connector::Need] =
+    &[busbar_contract::abi::host::conn::connector::Need {
+        egress_class: busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
+        ..TCP[0]
+    }];
+
+/// A TLS line backend presenting a SELF-SIGNED `localhost` certificate: its port.
+fn self_signed_tls_backend() -> u16 {
+    let kp = rcgen::KeyPair::generate().expect("key");
+    let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+        .expect("params")
+        .self_signed(&kp)
+        .expect("self-signed");
+    let server = Arc::new(
+        rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("versions")
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls_pki_types::PrivateKeyDer::Pkcs8(kp.serialize_der().into()),
+        )
+        .expect("server config"),
+    );
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = l.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(s) = s else { return };
+            let Ok(conn) = rustls::ServerConnection::new(server.clone()) else {
+                return;
+            };
+            std::thread::spawn(move || {
+                let mut tls = rustls::StreamOwned::new(conn, s);
+                let mut r = Vec::new();
+                let mut byte = [0_u8; 1];
+                use std::io::Read;
+                while tls.read(&mut byte).is_ok_and(|n| n == 1) {
+                    if byte[0] != b'\n' {
+                        r.push(byte[0]);
+                        continue;
+                    }
+                    let got = String::from_utf8_lossy(&r).into_owned();
+                    r.clear();
+                    let reply = if got == "HELLO" {
+                        "WELCOME".to_owned()
+                    } else {
+                        format!("echo {got}")
+                    };
+                    if tls.write_all(format!("{reply}\n").as_bytes()).is_err()
+                        || tls.flush().is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+wire_store!(SelfSignedVerified, self_signed_verified, max: 1, timeout: 0, tls: Tls::Verified, retry: false, needs: TCP_OPERATOR);
+wire_store!(SelfSignedInsecure, self_signed_insecure, max: 1, timeout: 0, tls: Tls::Unverified, retry: false, needs: TCP_OPERATOR);
+wire_store!(InsecureOtherClass, insecure_other_class, max: 1, timeout: 0, tls: Tls::Unverified, retry: false, needs: TCP);
+
+/// RED (Q-L16-4): a self-signed backend is REFUSED by a verifying handshake; with the operator's
+/// verify-off opt-in on an operator-infrastructure need it is ACCEPTED; the opt-in on a need of
+/// another class is REFUSED.
+#[test]
+fn a_self_signed_backend_is_accepted_only_with_verify_off_on_an_operator_need() {
+    let port = self_signed_tls_backend();
+    let target = format!("localhost:{port}");
+    // A CA the backend's certificate does not chain to: the verifying table trusts it alone.
+    let other_ca = rcgen::KeyPair::generate().expect("key");
+    let mut other = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+    other.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let other = other.self_signed(&other_ca).expect("ca").der().to_vec();
+
+    *SelfSignedVerified::target().lock().expect("target") = target.clone();
+    let roots = other.clone();
+    let s = open_over(self_signed_verified::door, move |d| {
+        Arc::new(TcpConns::with_roots(d.conn_waker(), &roots))
+    });
+    assert!(
+        ping_of(&s).is_err(),
+        "a self-signed certificate fails verification"
+    );
+
+    *SelfSignedInsecure::target().lock().expect("target") = target.clone();
+    let roots = other.clone();
+    let s = open_over(self_signed_insecure::door, move |d| {
+        Arc::new(TcpConns::with_roots(d.conn_waker(), &roots))
+    });
+    assert_eq!(
+        ping_of(&s).expect("accepted with the opt-in"),
+        vec!["echo ping".to_string()]
+    );
+
+    *InsecureOtherClass::target().lock().expect("target") = target;
+    let s = open_over(insecure_other_class::door, plain);
+    let e = ping_of(&s).expect_err("verify-off is an operator-infrastructure need's only");
+    assert!(e.0.contains("wire-store: "), "{e:?}");
 }

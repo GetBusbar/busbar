@@ -137,6 +137,71 @@ fn wants_client_cert(
     }
 }
 
+/// THE UNVERIFIED CLIENT CONFIG: the far end's certificate (its chain, its name, its validity) is
+/// NOT checked, only that it signed the handshake. The operator's explicit opt-in for one need
+/// (`UPGRADE_VERIFY_OFF`, 1.5.5's `rediss://…#insecure`; ARCHITECT ruling 2026-10-03 on Q-L16-4),
+/// honoured for an operator-infrastructure need only (`Connector::upgrade_secure`); never a default.
+#[must_use]
+pub fn unverified_client_config() -> rustls::ClientConfig {
+    install_crypto_provider();
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+    rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptsAnyCertificate(provider)))
+        .with_no_client_auth()
+}
+
+/// A verifier that accepts any certificate and checks only the handshake's signature with it.
+#[derive(Debug)]
+struct AcceptsAnyCertificate(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for AcceptsAnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _: &rustls_pki_types::CertificateDer<'_>,
+        _: &[rustls_pki_types::CertificateDer<'_>],
+        _: &rustls_pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls_pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
 /// A server-certificate verifier that runs the ordinary chain-and-name check AND then requires the
 /// peer's SubjectPublicKeyInfo to hash (SHA-256) to one of the pinned values. The pin is layered
 /// OVER the standard verification, never in place of it: a pinned key on an otherwise-invalid chain

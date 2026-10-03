@@ -1941,7 +1941,11 @@ fn compute_layout() -> String {
     );
     record!(s, hconn::StreamIn, [head, stream]);
     record!(s, hconn::IoIn, [head, stream, buf, len]);
-    record!(s, hconn::UpgradeIn, [head, stream, offered_name, trust]);
+    record!(
+        s,
+        hconn::UpgradeIn,
+        [head, stream, offered_name, trust, flags, _reserved]
+    );
     record!(s, hconn::FactsIn, [head, stream, facts]);
     record!(
         s,

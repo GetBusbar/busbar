@@ -352,11 +352,27 @@ impl Connector<'_> {
         name: Option<&str>,
         trust: Option<&str>,
     ) -> Answer<()> {
+        self.upgrade_secure_flagged(stream, name, trust, 0)
+    }
+
+    /// [`Connector::upgrade_secure`] with `UPGRADE_*` `flags`
+    /// ([`UPGRADE_VERIFY_OFF`](crate::abi::host::conn::connector::UPGRADE_VERIFY_OFF): the
+    /// operator's opt-in to an unverified handshake, honoured for an operator-infrastructure need
+    /// only).
+    pub fn upgrade_secure_flagged(
+        &mut self,
+        stream: u64,
+        name: Option<&str>,
+        trust: Option<&str>,
+        flags: u32,
+    ) -> Answer<()> {
         let input = UpgradeIn {
             head: blank_head(),
             stream,
             offered_name: text(name),
             trust: text(trust),
+            flags,
+            _reserved: 0,
         };
         self.call(service::UPGRADE_SECURE, |s| s.upgrade_secure, input)
             .map(|r| r.map(|_| ()))

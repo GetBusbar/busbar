@@ -782,13 +782,27 @@ impl DeclaredConns for Connector {
         conn: ConnId,
         name: Option<&str>,
         trust: Option<&str>,
+        verify_off: bool,
         ticket: Ticket,
     ) -> Result<(), ConnError> {
         let (need, held) = self.slab.get(caller, conn)?;
         if self.framed(caller, need) {
             return Err(ConnError::Refused);
         }
-        let config = {
+        let config = if verify_off {
+            // The operator's opt-in to an unverified handshake: an operator-infrastructure need's
+            // only (ARCHITECT ruling 2026-10-03 on Q-L16-4).
+            let class = self
+                .over
+                .lock()
+                .expect("needs")
+                .get(&(caller, need))
+                .map(|d| d.egress_class);
+            if class != Some(EGRESS_OPERATOR_INFRASTRUCTURE) {
+                return Err(ConnError::Refused);
+            }
+            Arc::new(crate::tls::client::unverified_client_config())
+        } else {
             let declared = self.declared.lock().expect("declared needs");
             let trust_from = declared
                 .get(&(caller, need))

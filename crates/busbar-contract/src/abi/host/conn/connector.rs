@@ -279,7 +279,22 @@ pub struct UpgradeIn {
     pub offered_name: AbiStr,
     /// The trust anchors, by the need's `trust_from` reference; absent = the need's.
     pub trust: AbiStr,
+    /// Appended: `UPGRADE_*` bits ([`UPGRADE_VERIFY_OFF`]); `0` = verify as the need's trust says.
+    /// An `in` that ends before it ([`UPGRADE_IN_V1_SIZE`]) is `0`.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
+
+/// [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's
+/// `rediss://…#insecure`; ARCHITECT ruling 2026-10-03 on Q-L16-4). An operator opt-in the plugin
+/// sets from its settings, never a default: honoured ONLY for a need of class
+/// [`EGRESS_OPERATOR_INFRASTRUCTURE`] (any other is REFUSED), and the host logs a WARN naming the
+/// instance the first time it honours it.
+pub const UPGRADE_VERIFY_OFF: u32 = 1;
+
+/// The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`.
+pub const UPGRADE_IN_V1_SIZE: usize = 64;
 
 /// [`service::FACTS`]'s `in`.
 #[repr(C)]

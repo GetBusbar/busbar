@@ -60,6 +60,7 @@ enum Ask {
     Read,
     Upgrade {
         name: Option<String>,
+        verify_off: bool,
     },
 }
 
@@ -218,6 +219,23 @@ impl Wire {
     pub async fn upgrade_secure(&self, name: Option<&str>) -> Result<(), ConnFailure> {
         self.ask(Ask::Upgrade {
             name: name.map(str::to_owned),
+            verify_off: false,
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// [`Wire::upgrade_secure`] WITHOUT verifying the far end's certificate: the operator's
+    /// explicit opt-in from the store's settings (1.5.5's `rediss://…#insecure`; ARCHITECT ruling
+    /// 2026-10-03 on Q-L16-4), never a default. The host honours it for an operator-infrastructure
+    /// need only and logs a WARN naming the instance.
+    ///
+    /// # Errors
+    /// The connector's failure; REFUSED for a need of any other class.
+    pub async fn upgrade_secure_unverified(&self, name: Option<&str>) -> Result<(), ConnFailure> {
+        self.ask(Ask::Upgrade {
+            name: name.map(str::to_owned),
+            verify_off: true,
         })
         .await
         .map(|_| ())
@@ -763,7 +781,16 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
             Poll::Ready(Err(e)) => Served::Answer(Err(e)),
             Poll::Pending => Served::Pending { wake_at_ns: 0 },
         },
-        Ask::Upgrade { name } => match services.upgrade_secure(stream, name.as_deref(), None) {
+        Ask::Upgrade { name, verify_off } => match services.upgrade_secure_flagged(
+            stream,
+            name.as_deref(),
+            None,
+            if *verify_off {
+                crate::abi::host::conn::connector::UPGRADE_VERIFY_OFF
+            } else {
+                0
+            },
+        ) {
             Poll::Ready(r) => Served::Answer(r.map(|()| 0)),
             Poll::Pending => Served::Pending { wake_at_ns: 0 },
         },

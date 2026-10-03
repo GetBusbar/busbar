@@ -107,9 +107,14 @@ fn raw_connector() -> Connector {
 /// An outbound raw need, the plugin naming its target, its trust from `trust_from`, declared with
 /// `pem` as what that path resolved to.
 fn declare(c: &Connector, trust_from: &str, pem: Option<&str>) {
+    declare_class(c, trust_from, pem, crate::DEFAULT_CLASS);
+}
+
+/// [`declare`] under egress class `class`.
+fn declare_class(c: &Connector, trust_from: &str, pem: Option<&str>, class: u32) {
     let need = ReadNeed {
         direction: DIRECTION_OUTBOUND,
-        egress_class: crate::DEFAULT_CLASS,
+        egress_class: class,
         transport: "bytes".to_owned(),
         auth: String::new(),
         target_from: String::new(),
@@ -141,9 +146,27 @@ fn open(c: &Connector, far: &str) -> ConnId {
 
 /// Drive the upgrade to its answer, as a plugin's re-entries on its ticket would.
 async fn upgrade(c: &Connector, id: ConnId, trust: Option<&str>) -> Result<(), ConnError> {
+    upgrade_with(c, id, trust, false).await
+}
+
+/// [`upgrade`], `verify_off` the operator's opt-in to an unverified handshake.
+async fn upgrade_with(
+    c: &Connector,
+    id: ConnId,
+    trust: Option<&str>,
+    verify_off: bool,
+) -> Result<(), ConnError> {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            match DeclaredConns::upgrade_secure(c, OWNER, id, Some("localhost"), trust, NO_TICKET) {
+            match DeclaredConns::upgrade_secure(
+                c,
+                OWNER,
+                id,
+                Some("localhost"),
+                trust,
+                verify_off,
+                NO_TICKET,
+            ) {
                 Err(ConnError::Pending) => tokio::time::sleep(Duration::from_millis(2)).await,
                 answered => return answered,
             }
@@ -268,5 +291,51 @@ fn an_upgrade_to_a_private_ca_is_refused_without_trust_from_and_accepted_with_it
         send(&c, id, b"hello").await;
         assert_eq!(gather(&c, id, 5).await.as_deref(), Ok(&b"hello"[..]));
         c.close(OWNER, id).unwrap();
+    });
+}
+
+/// A SELF-SIGNED far end (no CA anyone trusts): `localhost`'s certificate signed by its own key.
+fn self_signed() -> (Vec<u8>, Vec<u8>) {
+    let kp = rcgen::KeyPair::generate().unwrap();
+    let cert = rcgen::CertificateParams::new(vec!["localhost".to_owned()])
+        .unwrap()
+        .self_signed(&kp)
+        .unwrap();
+    (cert.der().to_vec(), kp.serialize_der())
+}
+
+/// RED (ARCHITECT ruling 2026-10-03 on Q-L16-4, 1.5.5's `rediss://…#insecure`): a self-signed far
+/// end is REFUSED by a verifying upgrade; with the operator's verify-off opt-in on an
+/// operator-infrastructure need it is ACCEPTED and carries bytes; the opt-in on a need of any other
+/// class is REFUSED.
+#[test]
+fn verify_off_accepts_a_self_signed_far_end_for_operator_infrastructure_only() {
+    let (leaf, key) = self_signed();
+    worker().block_on(async move {
+        let far = far_end(leaf, key, b"").await;
+
+        let c = raw_connector();
+        declare_class(&c, "", None, EGRESS_OPERATOR_INFRASTRUCTURE);
+        let verified = open(&c, &far);
+        assert!(
+            upgrade(&c, verified, None).await.is_err(),
+            "a self-signed certificate fails verification"
+        );
+        let unverified = open(&c, &far);
+        assert_eq!(upgrade_with(&c, unverified, None, true).await, Ok(()));
+        send(&c, unverified, b"hello").await;
+        assert_eq!(
+            gather(&c, unverified, 5).await.as_deref(),
+            Ok(&b"hello"[..])
+        );
+
+        let other = raw_connector();
+        declare_class(&other, "", None, crate::DEFAULT_CLASS);
+        let refused = open(&other, &far);
+        assert_eq!(
+            upgrade_with(&other, refused, None, true).await,
+            Err(ConnError::Refused),
+            "verify-off is an operator-infrastructure need's only"
+        );
     });
 }
