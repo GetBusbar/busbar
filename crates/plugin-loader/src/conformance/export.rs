@@ -6,7 +6,7 @@
 //!
 //! ```json
 //! { "settings": <the settings it opens over>,
-//!   "export": {
+//!   <export>: {        (the section under the kind's config root key, `Kind::Export`)
 //!     "bad_settings": [ { "settings": <settings validate must refuse>,
 //!                         "refusal": "<text the refusal carries>" }, ... ],
 //!     "deliver": [ { "stream": "<an ExportStream token, e.g. logs>",
@@ -59,6 +59,13 @@ use super::{
 };
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::{Bind, Diagnostic, Dropped, EnvelopeSink, Frame, Metric, Plugin, NO_BLOB};
+
+/// This kind's section of the plugin's `conformance.json`, and its instance label: the kind's
+/// config root key, read off the kind list (`busbar_contract::plugin::Kind::verb`).
+const ROOT: &str = match busbar_contract::plugin::Kind::Export.root_key() {
+    Some(key) => key,
+    None => panic!("the export kind has a config root key"),
+};
 
 /// The host's first `scrape` buffer when the inputs name none (the kernel's 64 KiB).
 const SCRAPE_CAP: usize = 64 * 1024;
@@ -362,7 +369,7 @@ fn stream(d: &serde_json::Value) -> u8 {
 }
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
-    let k = s.kind_inputs("export");
+    let k = s.kind_inputs(ROOT);
     assert!(k.is_object(), "conformance.json has no `export` inputs");
     let settings = s.settings();
     let empty = Vec::new();
@@ -407,7 +414,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let tape = Arc::new(Tape::default());
     let b = Bind {
         sink: tape.clone(),
-        ..bind(&d, "export")
+        ..bind(&d, ROOT)
     };
     let p = load::<Export>(s, leg, b).expect("the export door loads");
     let mut r = Recorder::new(crossings(&p));

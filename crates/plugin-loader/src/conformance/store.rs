@@ -15,7 +15,7 @@
 //!
 //! ```json
 //! { "settings": <the settings the store opens over>,
-//!   "store": {
+//!   <store>: {        (the section under the kind's config root key, `Kind::Store`)
 //!     "node": <this node's id: the high half of the op ids the bridge mints>,
 //!     "caps":  { "bucket": "<the capped bucket>", "window_start": <ms>,
 //!                "requests": <its requests cap>, "input": <its `input` class cap> },
@@ -62,6 +62,13 @@ use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::store::{Store, StoreFacts};
 use crate::dispatch::LoadError;
 use crate::store_v3::LoadedStore;
+
+/// This kind's section of the plugin's `conformance.json`, and its instance label: the kind's
+/// config root key, read off the kind list (`busbar_contract::plugin::Kind::verb`).
+const ROOT: &str = match busbar_contract::plugin::Kind::Store.root_key() {
+    Some(key) => key,
+    None => panic!("the store kind has a config root key"),
+};
 
 /// A bridge read answered under a lease: the read, then the `release` of its lease.
 const LEASED: u64 = 2;
@@ -294,7 +301,7 @@ impl<'a> Inputs<'a> {
 }
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
-    let i = Inputs::of(s.kind_inputs("store"));
+    let i = Inputs::of(s.kind_inputs(ROOT));
     let settings = s.settings();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -302,7 +309,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .expect("a runtime");
 
     let d = dispatcher();
-    let p = load::<Store>(s, leg, bind(&d, "store")).expect("the store door loads");
+    let p = load::<Store>(s, leg, bind(&d, ROOT)).expect("the store door loads");
     // The instance's crossing gate, held across `open` (which takes the plugin by value).
     let held = p.clone();
     let mut r = Recorder::new(crossings(&held));
