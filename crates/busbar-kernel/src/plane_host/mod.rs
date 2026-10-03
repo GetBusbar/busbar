@@ -1756,19 +1756,6 @@ impl<'a> HostDispatch<'a> {
         self.app
     }
 
-    /// Borrow a [`HostState`] over this guard's `app` + arena. The raw `HostCtx` materialized from it
-    /// (see [`with_host`](Self::with_host)) is `!Send` and valid only while the returned borrow lives.
-    #[must_use]
-    pub fn host_state(&self) -> HostState<'_> {
-        HostState {
-            app: self.app,
-            scope: &self.scope,
-            emitter: None,
-            caller: None,
-            destinations: None,
-        }
-    }
-
     /// Run `f` SYNCHRONOUSLY with a materialized [`HostCtx`] + the host `&PlaneHostVtable` — the
     /// between-awaits seam a plane call rides. The `HostState` backing the `HostCtx` is stack-pinned
     /// for exactly the duration of `f` (the [`recover`] invariant); the pointer must not escape it. A
@@ -1816,19 +1803,6 @@ impl SendHostDispatch {
         &self.app
     }
 
-    /// Borrow a [`HostState`] over the owned `app` + arena — the materialization seam, called INSIDE
-    /// the blocking closure so the raw `HostCtx` never crosses the `spawn_blocking` boundary.
-    #[must_use]
-    pub fn host_state(&self) -> HostState<'_> {
-        HostState {
-            app: &self.app,
-            scope: &self.scope,
-            emitter: None,
-            caller: None,
-            destinations: None,
-        }
-    }
-
     /// Run `f` synchronously with a materialized [`HostCtx`] + host vtable, INSIDE the blocking body.
     /// The [`HostGeneration`] opens HERE (on the blocking thread the closure actually runs on —
     /// `HostGeneration` is thread-local, so opening it back on the async task's thread in
@@ -1836,81 +1810,6 @@ impl SendHostDispatch {
     /// drops when this call returns.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
         mint(None, None, None, &self.app, &self.scope, f)
-    }
-}
-
-/// A `Send + 'static` route to a host whose lifecycle arena is a [`DurableScope`] the DETACHED runner
-/// owns — the create_task settle path (`mcp::tasks::Runner`). Unlike [`SendHostDispatch`] its arena is
-/// NOT reclaimed at request-future drop: the breaker probe-hold `into_task_dispatch` handed off rides
-/// here and releases only when THIS guard drops WITH the runner (normal end OR a `tasks/cancel` abort),
-/// the v4-arena-bug guard. A `HostState` materialized over `durable.arena()` drives the exact same host
-/// `breaker_settle` seam the per-request path does, so the runner's detached leg can settle the durable
-/// admission through the vtable with no change to the breaker path.
-///
-/// ADDITIVE and UNUSED by the breaker inversion: the guard is REACHABLE at the durable site (the runner
-/// carries one), but `tasks::run` does not yet call settle — the durable scope's drop still reclaims the
-/// probe, exactly as before. Phase-2 CLUSTER-1 flips the detached leg to `settle` through this route.
-pub struct DurableHostDispatch {
-    app: Arc<App>,
-    /// The durable arena holding the handed-off breaker probe-hold; drops (and reclaims) with the guard.
-    durable: DurableScope,
-    /// The durable admission's id — what the detached leg settles by. [`AdmissionId::NONE`] when no
-    /// settling admission was handed off (a degenerate route that won nothing to re-home).
-    admission: busbar_contract::abi::hot::AdmissionId,
-}
-
-impl DurableHostDispatch {
-    /// Open a durable host route owning `app` and the runner's `durable` scope, keyed by the durable
-    /// `admission` id the detached leg settles.
-    #[must_use]
-    pub fn new(
-        app: Arc<App>,
-        durable: DurableScope,
-        admission: busbar_contract::abi::hot::AdmissionId,
-    ) -> Self {
-        DurableHostDispatch {
-            app,
-            durable,
-            admission,
-        }
-    }
-
-    /// The durable admission id the detached leg settles (or [`AdmissionId::NONE`]).
-    #[must_use]
-    pub fn admission(&self) -> busbar_contract::abi::hot::AdmissionId {
-        self.admission
-    }
-
-    /// The durable arena (reclaimed with this guard at task end).
-    #[must_use]
-    pub fn durable(&self) -> &DurableScope {
-        &self.durable
-    }
-
-    /// The live engine snapshot the task was admitted on.
-    #[must_use]
-    pub fn app(&self) -> &App {
-        &self.app
-    }
-
-    /// Borrow a [`HostState`] over the owned `app` + the DURABLE arena — the materialization seam the
-    /// detached leg calls to reach `breaker_settle` for the durable admission.
-    #[must_use]
-    pub fn host_state(&self) -> HostState<'_> {
-        HostState {
-            app: &self.app,
-            scope: self.durable.arena(),
-            emitter: None,
-            caller: None,
-            destinations: None,
-        }
-    }
-
-    /// Run `f` synchronously with a materialized [`HostCtx`] + host vtable over the durable arena. A
-    /// fresh [`HostGeneration`] opens for exactly this call (on this thread) and drops when it
-    /// returns, so a `HostCtx` from a prior/foreign call is refused rather than dereferenced.
-    pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, None, None, &self.app, self.durable.arena(), f)
     }
 }
 
