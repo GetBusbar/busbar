@@ -2639,6 +2639,39 @@ fn plant_ledger<'a>(
     }
 }
 
+/// The first `[[disagreement]]` row whose cell STILL disagrees on this tree, as `(crate, kind,
+/// manifest)`, for the case that kills a row's cell. The root and the contract are passed over:
+/// removing either manifest takes half the census with it, and the case is about one row.
+fn live_disagreement(cx: &Ctx) -> Result<(String, String, String), String> {
+    let crates = super::census(cx)?;
+    let (matrix, _, _) = measure(cx, &crates)?;
+    let text = cx.read(LEDGER)?;
+    for block in text.split("[[disagreement]]").skip(1) {
+        let field = |key: &str| {
+            block.lines().find_map(|l| {
+                let (k, v) = l.split_once('=')?;
+                (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
+            })
+        };
+        let (Some(krate), Some(kind)) = (field("crate"), field("kind")) else {
+            continue;
+        };
+        if krate == "busbar" || krate == "busbar-contract" {
+            continue;
+        }
+        let live = matrix
+            .iter()
+            .any(|((k, kd), c)| *k == krate && *kd == kind && c.disagrees());
+        if let (true, Some(c)) = (live, crates.iter().find(|c| c.name == krate)) {
+            return Ok((krate, kind, c.manifest.clone()));
+        }
+    }
+    Err(format!(
+        "no `[[disagreement]]` row in {LEDGER} outside the root and the contract disagrees on this \
+         tree, so no row can be shown dying"
+    ))
+}
+
 /// THE TREE WITH ALMOST EVERY FILE UNDER `crates/` GONE, for this row's own floor.
 ///
 /// `:matrix` does not walk one extension: it LISTS `crates/` whole, because a plane's name in a
@@ -2814,7 +2847,7 @@ pub fn selftest<'a>(
             cx,
             "transport",
             "1",
-            &[("wire.rs", "pub const WIRE: &str = \"tcp\";\n")],
+            &[("wire.rs", "pub const WIRE: &str = \"stdio\";\n")],
             false,
         ),
         &[
@@ -2927,17 +2960,21 @@ pub fn selftest<'a>(
         &[WIRE_PLANT, "plane"],
     ));
 
-    // A TRANSPORT NAMED INSIDE A PLANE — the same fusion, the other way up.
+    // A TRANSPORT NAMED INSIDE A PLANE — the same fusion, the other way up. The word is a
+    // transport the census holds: `grpc` (and `tcp`, `http`) left this tree with their crates, and
+    // a word no transport crate carries is no needle, so the plant measured nothing.
     report.push(prove_rows_red(
         cx,
         gate,
-        "a transport named inside a plane (`busbar-plane-mcp` says `grpc`)",
+        "a transport named inside a plane (`busbar-plane-mcp` says `stdio`)",
         &[ROW_MATRIX],
-        plant(
+        // Re-pinned to its measurement first, so the plant's one hit is what moves the cell: the
+        // row's ceiling was set while three more transports' words counted in it.
+        row_at_measurement(cx, "busbar-plane-mcp", "transport").layered(&plant(
             cx,
             "crates/busbar-plane-mcp/src/leak.rs",
-            "//! The grpc wire delivers these.\n",
-        ),
+            "//! The stdio wire delivers these.\n",
+        )),
         &["ratchet", "busbar-plane-mcp × transport", "RAISED"],
     ));
 
@@ -3125,7 +3162,8 @@ pub fn selftest<'a>(
     // at its one hit, a registry key `"ws"`. The `http` crate's paths, `axum::http`, HTTP in a
     // comment, a URL scheme, whitespace called `ws`, and a file named `skip_ws.rs` leave it there
     // (GREEN). A crate-rooted path to a `ws` module, and the transport crate's own path, are each
-    // a hit (RED).
+    // a hit (RED). The crate path is `busbar_transport_ws`: the http transport left this tree, and a
+    // crate the census does not hold supplies no needle.
     let colliding_fixture = |extra: Option<(&'static str, &'static str)>| {
         let mut files = vec![
             ("wiring.rs", "pub const T: &str = \"ws\";\n"),
@@ -3165,9 +3203,9 @@ pub fn selftest<'a>(
     report.push(prove_rows_red(
         cx,
         gate,
-        "the http transport crate's own path still counts",
+        "the ws transport crate's own path still counts",
         &[ROW_MATRIX],
-        colliding_fixture(Some(("dial.rs", "use busbar_transport_http::Dial;\n"))),
+        colliding_fixture(Some(("dial.rs", "use busbar_transport_ws::Dial;\n"))),
         &[
             "ratchet",
             &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
@@ -3316,9 +3354,17 @@ pub fn selftest<'a>(
     // (BUSBAR-1.6.0.md THE DESIGN, section 8), so its listener file names the standard library's
     // and tokio's `TcpStream`, `TcpListener` and `UdpSocket` as `UnixStream` is named: the
     // operating system's socket, not the `tcp` transport. The fixture's only real hit is the claim
-    // literal `"tcp"`, recorded at 1; its socket types leave the cell there. The carrier's crate
-    // path and an identifier naming the carrier each RAISE it.
-    let socket_fixture = |extra: Option<(&'static str, &'static str)>| {
+    // literal `"tcp"`; its socket types are not hits. The carrier's crate path and an identifier
+    // naming the carrier each RAISE a cell recorded at 1.
+    //
+    // A `busbar-transport-tcp` crate is PLANTED, as the unix fixture plants its carrier: the tcp
+    // transport left this tree for its own repo (66853bf6e1), so without it `tcp` is no transport
+    // needle at all, the claim literal measures nothing, and every case below read the fixture's
+    // own row as a dead cell. And for the reason the unix fixture gives, the mask's arm is RED, not
+    // GREEN: with a tcp carrier planted, the real tree's own `tcp` mentions raise real cells, so
+    // the arm is the fixture recorded one hit ABOVE the claim literal — STALE SLACK with the mask,
+    // and the socket types filling the row (nothing said) without it.
+    let socket_fixture = |count: &'static str, extra: Option<(&'static str, &'static str)>| {
         let mut files = vec![
             ("wiring.rs", "pub const CLAIM: &str = \"tcp\";\n"),
             (
@@ -3329,21 +3375,38 @@ pub fn selftest<'a>(
             ),
         ];
         files.extend(extra);
-        fixture_cell(cx, "transport", "1", &files, true)
+        let mut ov = fixture_cell(cx, "transport", count, &files, true);
+        ov.set(
+            "crates/busbar-transport-tcp/Cargo.toml",
+            "[package]\nname = \"busbar-transport-tcp\"\nversion = \"0.0.0\"\n".to_string(),
+        );
+        ov.set(
+            "crates/busbar-transport-tcp/src/lib.rs",
+            "//! Fixture.\n".to_string(),
+        );
+        ov
     };
-    report.push(prove_rows_green(
+    report.push(prove_rows_red(
         cx,
         gate,
         "a connector file naming `TcpStream`, `TcpListener` or `UdpSocket` is not naming the tcp transport",
         &[ROW_MATRIX],
-        socket_fixture(None),
+        socket_fixture("2", None),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "STALE SLACK",
+        ],
     ));
     report.push(prove_rows_red(
         cx,
         gate,
         "beside the socket types, the tcp carrier's crate path still counts",
         &[ROW_MATRIX],
-        socket_fixture(Some(("dial.rs", "use busbar_transport_tcp::Carrier;\n"))),
+        socket_fixture(
+            "1",
+            Some(("dial.rs", "use busbar_transport_tcp::Carrier;\n")),
+        ),
         &[
             "ratchet",
             &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
@@ -3355,7 +3418,7 @@ pub fn selftest<'a>(
         gate,
         "beside the socket types, an identifier naming the tcp carrier (`TcpCarrier`) still counts",
         &[ROW_MATRIX],
-        socket_fixture(Some(("carrier.rs", "pub struct TcpCarrier;\n"))),
+        socket_fixture("1", Some(("carrier.rs", "pub struct TcpCarrier;\n"))),
         &[
             "ratchet",
             &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
@@ -3405,16 +3468,28 @@ pub fn selftest<'a>(
 
     // THE TWO SCANNERS DISAGREEING. `gRPC` reads whole to the window scanner and splits at its own
     // camel joint for the segment scanner; the scored count is the higher, and the cell must say so.
+    //
+    // `grpc` is transport vocabulary only while a transport carries it: it was a key the http
+    // transport declared, and that crate left the tree, so a `busbar-transport-grpc` carrier is
+    // planted beside the leak, as the unix fixture plants its carrier.
     report.push(prove_rows_red(
         cx,
         gate,
         "the two scanners disagreeing on a spelling, on a cell that does not record it",
         &[ROW_MATRIX],
-        plant(
-            cx,
-            "crates/busbar-kernel/src/leak.rs",
-            "// gRPC status codes are not the kernel's business.\n",
-        ),
+        {
+            let mut ov = plant(
+                cx,
+                "crates/busbar-kernel/src/leak.rs",
+                "// gRPC status codes are not the kernel's business.\n",
+            );
+            ov.set(
+                "crates/busbar-transport-grpc/Cargo.toml",
+                "[package]\nname = \"busbar-transport-grpc\"\nversion = \"0.0.0\"\n",
+            );
+            ov.set("crates/busbar-transport-grpc/src/lib.rs", "//! Fixture.\n");
+            ov
+        },
         &["measurement-disagreement", "busbar-kernel × transport"],
     ));
 
@@ -3721,22 +3796,33 @@ pub fn selftest<'a>(
     // standing licence for the next disagreement nobody reads.
     //
     // The plant removed `busbar-llm-codec`'s manifest until R7 folded that crate into
-    // `busbar-plane-llm`, after which it removed nothing. `busbar-kernel-breaker × transport`
-    // carries a live `[[disagreement]]` row, and a kernel workflow crate is not a thing a fold
-    // retires.
-    let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-kernel-breaker/Cargo.toml");
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "a `[[disagreement]]` row whose cell is gone is a standing licence, and is struck",
-        &[ROW_MATRIX],
-        ov,
-        &[
-            "dead-disagreement",
-            "busbar-kernel-breaker \u{d7} transport",
-        ],
-    ));
+    // `busbar-plane-llm`, after which it removed nothing; then `busbar-kernel-breaker`'s, whose
+    // `× transport` disagreement was `gRPC` and went quiet when the http transport (which declared
+    // the `grpc` key) left the tree, so the row was already dead on the unplanted tree and the
+    // plant added nothing. The subject is now CHOSEN, not named: the first `[[disagreement]]` row
+    // whose cell still disagrees on this tree ([`live_disagreement`]), its crate's manifest removed.
+    let name = "a `[[disagreement]]` row whose cell is gone is a standing licence, and is struck";
+    match live_disagreement(cx) {
+        Ok((krate, kind, manifest)) => {
+            let mut ov = crate::ctx::Overlay::new();
+            ov.remove(&manifest);
+            let cell = format!("{krate} \u{d7} {kind}");
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                name,
+                &[ROW_MATRIX],
+                ov,
+                &["dead-disagreement", cell.as_str()],
+            ));
+        }
+        Err(why) => report.push(super::unplantable(
+            name,
+            &[ROW_MATRIX],
+            &["dead-disagreement"],
+            why,
+        )),
+    }
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
     // `api`, which the fold retired, so it now plants a synthetic row this battery owns
