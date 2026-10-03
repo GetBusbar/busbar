@@ -61,6 +61,14 @@ fn main() {
             // `-plugin` crate's rlib exports `busbar_plugin_door` (`export_door!`), which two
             // doors in one fat-LTO unit make "symbol multiply defined". Naming the crate would link it.
             if HOT_KINDS.contains(&kind) {
+                // The row's LOGIC crate (the same repo's crate the `-plugin` crate packs; it exports no
+                // door symbol) gives the linked door: `<kind>_linked::{door, KEY}`.
+                if let Some(logic) = snake.strip_suffix("_plugin") {
+                    crates.push_str(&format!(
+                        "#[allow(unused_imports)]\npub(crate) use ::{logic}::linked as {}_linked;\n",
+                        kind.replace('-', "_")
+                    ));
+                }
                 continue;
             }
             let alias = kind.replace('-', "_");

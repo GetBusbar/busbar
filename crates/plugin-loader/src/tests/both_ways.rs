@@ -38,6 +38,15 @@ pub(crate) fn fixture(kind: &str) -> (&'static str, &'static ColdEntry) {
         })
 }
 
+/// The built `cdylib` of the HOT kind `kind`'s row, by the table's crate name.
+pub(crate) fn hot_cdylib(kind: &str) -> PathBuf {
+    let (_, krate) = HOT_FIXTURES
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .unwrap_or_else(|| panic!("no hot `{kind}` row in the both-ways table"));
+    cdylib(krate).unwrap_or_else(|| panic!("the {krate} cdylib is not built: a both-ways proof"))
+}
+
 /// The manifest both doors state for the plugin: a first-party `name`/`alias` of `kind` at payload
 /// schema `abi_version`, with no artifact.
 pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -> Manifest {

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: transport`, BOTH WAYS, THROUGH THE ONE DISPATCHER, OVER THE REAL `tcp` DOOR** (TODO
+//! **`kind: transport`, BOTH WAYS, THROUGH THE ONE DISPATCHER, OVER THE SHIPPED DOOR** (TODO
 //! ABI-b4 for the transport kind; M6/contract: exact crossing counts).
 //!
-//! The subject is the shipped plugin, `busbar-transport-tcp`, not a fixture: its door LINKED (the
+//! The subject is the shipped plugin of the table's `transport` row, not a fixture: its door LINKED (the
 //! `linked::door` a busbar build holds, reached by KIND through the both-ways table's `transport`
-//! row) and DROPPED IN (the pinned `busbar-transport-tcp-plugin` cdylib, found by
+//! row) and DROPPED IN (the row's pinned cdylib, found by
 //! [`both_ways::cdylib`], the same lookup every extracted plugin's dropped leg uses). One script of
 //! the kind's whole table is driven through the dispatcher's crossing against each: `validate` and
-//! `open`; `locate` over a bare authority, a `tcp://` one and three it refuses; every carrier op
+//! `open`; `locate` over a bare authority, a scheme-prefixed one and three it refuses; every carrier op
 //! (REFUSED, the socket being the host's); a framing begun, written to and read through a TIGHT
 //! sink (so every op answers `YIELD_MORE` and is re-driven), ended, encoded over, refused over,
 //! detached and adopted; `finish` twice; `ingest` on a framing nobody began; and `close`.
@@ -21,7 +21,7 @@
 //! arithmetic gives. "Greater than zero" would pass a leg that swallowed or duplicated an op.
 //!
 //! RED ARMS, KEPT: the door asked for as another kind is refused on both legs
-//! ([`the_tcp_door_asked_for_as_another_kind_is_refused_both_ways`]); a transcript that drops one
+//! ([`the_door_asked_for_as_another_kind_is_refused_both_ways`]); a transcript that drops one
 //! crossing, or a count that is off by one, is seen ([`a_miscount_is_seen`]).
 
 use std::mem::zeroed;
@@ -37,17 +37,14 @@ use busbar_contract::abi::transport::{
 };
 
 use super::door_both_ways::{self as both, close, input, line, octets, open, output, same};
-use crate::both_ways::cdylib;
+use crate::both_ways::hot_cdylib;
+use crate::both_ways::transport_linked as shipped;
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::transport::{Transport, TransportFacts};
 use crate::dispatch::{
     load_dropped, load_linked, Frame, InFrame, LinkedRow, LoadError, OutFrame, Plugin,
 };
-use busbar_transport_tcp::linked as tcp;
 use std::sync::atomic::Ordering;
-
-/// The shipped plugin's cdylib crate, by its Cargo name.
-const CDYLIB: &str = "busbar_transport_tcp_plugin";
 
 /// THE CROSSINGS THE SCRIPT MAKES, counted by hand from [`script`]:
 ///
@@ -257,7 +254,7 @@ fn script(p: &Plugin<Transport>) -> Run<'_> {
     r.ops += 1;
 
     // ── locate: two it reads, three it refuses (a path, nothing, a buffer too small) ──
-    r.locate(b"tcp://example.test:80", 64);
+    r.locate(format!("{}://example.test:80", shipped::KEY).as_bytes(), 64);
     r.locate(b"example.test:80", 64);
     r.locate(b"http://example.test/path", 64);
     r.locate(b"", 64);
@@ -383,18 +380,16 @@ fn exact(who: &str, r: &Run<'_>, counted: u64, expected: u64) -> Result<(), Stri
 }
 
 #[test]
-fn a_linked_and_a_dropped_in_tcp_door_frame_identically() {
-    let door = tcp::door;
+fn a_linked_and_a_dropped_in_door_frame_identically() {
+    let door = shipped::door;
     let linked = both::linked::<Transport>(door);
-    let path = cdylib(CDYLIB).unwrap_or_else(|| {
-        panic!("the {CDYLIB} cdylib is not built: this is the dropped-in door's proof")
-    });
+    let path = hot_cdylib("transport");
     let dropped = both::dropped_from::<Transport>(door, &path);
 
     // The Statement each leg's registry view reads: the same claims, the same role.
     let facts = |p: &Plugin<Transport>| p.context::<TransportFacts>().cloned().expect("its tail");
     assert_eq!(facts(&linked.plugin), facts(&dropped.plugin));
-    assert_eq!(facts(&linked.plugin).claims, [tcp::KEY]);
+    assert_eq!(facts(&linked.plugin).claims, [shipped::KEY]);
     assert_eq!(linked.plugin.name(), dropped.plugin.name());
 
     let a = script(&linked.plugin);
@@ -461,7 +456,7 @@ fn a_linked_and_a_dropped_in_tcp_door_frame_identically() {
 /// is refused with the number it saw.
 #[test]
 fn a_miscount_is_seen() {
-    let linked = both::linked::<Transport>(tcp::door);
+    let linked = both::linked::<Transport>(shipped::door);
     let r = script(&linked.plugin);
     let counted = crossings(&linked.plugin);
     assert_eq!(counted, CROSSINGS);
@@ -492,11 +487,11 @@ fn a_miscount_is_seen() {
     );
 }
 
-/// THE RED ARM, KEPT: the tcp door is a transport. Asked for as a hook it is refused, linked (by the
+/// THE RED ARM, KEPT: the row's door is a transport. Asked for as a hook it is refused, linked (by the
 /// door's own kind) and dropped in (by the stated kind, before the library is opened).
 #[test]
-fn the_tcp_door_asked_for_as_another_kind_is_refused_both_ways() {
-    let door = tcp::door;
+fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
+    let door = shipped::door;
     let want = (KindCode::Transport, KindCode::Hook);
     let row = LinkedRow::of(door).expect("the door states itself");
     let linked = both::linked::<Transport>(door);
@@ -504,7 +499,7 @@ fn the_tcp_door_asked_for_as_another_kind_is_refused_both_ways() {
         Err(LoadError::WrongKind { door, want: asked }) => assert_eq!((door, asked), want),
         other => panic!("the linked door loaded as a hook: {:?}", other.err()),
     }
-    let path = cdylib(CDYLIB).unwrap_or_else(|| panic!("the {CDYLIB} cdylib is not built"));
+    let path = hot_cdylib("transport");
     match load_dropped::<Hook>(&path, &row.statement, both::bind(&linked.dispatcher)) {
         Err(LoadError::ManifestKind {
             stated,
