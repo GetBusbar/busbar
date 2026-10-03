@@ -531,7 +531,8 @@ impl ProtocolWriter for BedrockWriter {
                         content_arr.push(serde_json::json!({ (keys::IMAGE): image_block }));
                     }
                 }
-                crate::codec::ir::IrBlock::Json(_) => {
+                crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                     // Structured-json content has no top-level Bedrock response shape (it is only a
                     // tool-result content member); omit it from an assistant response turn.
                 }
@@ -860,7 +861,8 @@ impl BedrockWriter {
                     | crate::codec::ir::IrBlock::Media { cache_control, .. } => {
                         cache_control.as_ref()
                     }
-                    crate::codec::ir::IrBlock::Json(_) => None,
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => None,
                 };
                 // The block's projection may be NOTHING (an image with no Converse source, an audio
                 // attachment); a cachePoint is only placed after a block that was actually written.
@@ -868,6 +870,16 @@ impl BedrockWriter {
                 match block {
                     // COH-17: an empty text block carrying only citations — Converse rejects blank
                     // text, so the carrier is omitted.
+                    // THE SEARCH-RESULT SLOT: a caller's RAG passage (read from an Anthropic
+                    // `search_result`, or a Converse `searchResult` whose parked raw block is not
+                    // here) re-emits as the native `searchResult` block.
+                    b @ crate::codec::ir::IrBlock::Text { .. }
+                        if b.as_search_result().is_some() =>
+                    {
+                        if let Some(sr) = b.as_search_result() {
+                            content_arr.push(super::write_bedrock_search_result(&sr));
+                        }
+                    }
                     b @ crate::codec::ir::IrBlock::Text { .. } if b.is_citation_carrier() => {
                         tracing::warn!(
                             "dropping citations with no text on Bedrock egress: blank text is \
@@ -909,6 +921,13 @@ impl BedrockWriter {
                         let mut inner_content: Vec<serde_json::Value> = Vec::new();
                         for inner_block in content {
                             match inner_block {
+                                b @ crate::codec::ir::IrBlock::Text { .. }
+                                    if b.as_search_result().is_some() =>
+                                {
+                                    if let Some(sr) = b.as_search_result() {
+                                        inner_content.push(super::write_bedrock_search_result(&sr));
+                                    }
+                                }
                                 crate::codec::ir::IrBlock::Text { text, .. } => {
                                     inner_content.push(serde_json::json!({ (keys::TEXT): text }));
                                 }
@@ -917,6 +936,8 @@ impl BedrockWriter {
                                 // decodes). Preserve the actual content instead of collapsing it to
                                 // the constant string `"{}"`: a JSON-string Text-equivalent or a
                                 // structured result that arrives via the IR is re-encoded faithfully.
+                                // A provider-run tool's record has no tool-result content form.
+                                crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
                                 crate::codec::ir::IrBlock::Json(value) => {
                                     // A structured-json tool-result block re-emits as a native
                                     // `{"json": <value>}` block, restoring same-protocol fidelity.
@@ -1047,7 +1068,8 @@ impl BedrockWriter {
                             content_arr.push(b);
                         }
                     }
-                    crate::codec::ir::IrBlock::Json(_) => {
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                         // Structured-json content is only a tool-result content member; it has no
                         // top-level message-content shape, so omit it from a message turn.
                     }

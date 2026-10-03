@@ -387,6 +387,49 @@ pub struct IrResponse {
     /// the nearest coarse variant beside it. `None` == no refinement.
     pub stop_detail: Option<IrStopDetail>,
     pub request_echo: Option<Value>,
+    /// The safety / moderation verdicts the upstream reported on this exchange (ARCHITECT ruling
+    /// 2026-10-02, DF-MAP item 1): the common core only, one per category. Empty == none reported.
+    pub safety: Vec<IrSafetyVerdict>,
+    /// Audio the model produced (ARCHITECT ruling 2026-10-02, DF-MAP item 3). `None` == none.
+    pub audio: Option<IrAudioOutput>,
+}
+
+/// A safety or moderation verdict, the core every dialect that reports one shares (Gemini
+/// `safetyRatings`, the OpenAI family's `moderation`, Bedrock's guardrail trace): which category,
+/// whether it was flagged, whether it blocked content. Scores, probabilities and trace detail are not
+/// comparable across providers and do not cross (ARCHITECT ruling 2026-10-02, DF-MAP item 1).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrSafetyVerdict {
+    /// The category as the provider names it.
+    pub category: String,
+    pub flagged: bool,
+    pub blocked: bool,
+}
+
+/// Audio the model produced in its answer (ARCHITECT ruling 2026-10-02, DF-MAP item 3).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrAudioOutput {
+    /// The audio bytes, base64, as the provider sent them.
+    pub data: Option<String>,
+    /// The audio format word (`wav`, `mp3`, `pcm16`, ...).
+    pub format: Option<String>,
+    /// The spoken text.
+    pub transcript: Option<String>,
+}
+
+/// The kind of a [`IrBlock::HostedToolRecord`]: only web search has a counterpart in more than one
+/// dialect (ARCHITECT ruling 2026-10-02, DF-MAP item 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrHostedToolKind {
+    WebSearch,
+}
+
+/// One result of a hosted search.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrSearchResult {
+    pub url: String,
+    pub title: Option<String>,
+    pub snippet: Option<String>,
 }
 
 /// An empty assistant answer: no content, no stop reason, zero usage, no identity. Exists so a
@@ -409,6 +452,8 @@ impl Default for IrResponse {
             logprobs: Vec::new(),
             request_echo: None,
             stop_detail: None,
+            safety: Vec::new(),
+            audio: None,
         }
     }
 }
@@ -712,9 +757,113 @@ pub enum IrBlock {
     /// stringly-typed smell). Bedrock re-emits it natively; protocols whose tool-result content is
     /// text/image-only drop it with a warn (there is no lossless cross-protocol projection).
     Json(Value),
+    /// A record of a tool the PROVIDER ran (ARCHITECT ruling 2026-10-02, DF-MAP item 2): Anthropic
+    /// `web_search_tool_result`, Responses `web_search_call`, Gemini grounding. Its citations stay on
+    /// the text blocks ([`IrCitation`]).
+    HostedToolRecord {
+        kind: IrHostedToolKind,
+        call_id: Option<String>,
+        status: Option<String>,
+        results: Vec<IrSearchResult>,
+    },
+}
+
+/// THE SEARCH-RESULT SLOT, read back: a caller-supplied RAG passage (Anthropic `search_result`,
+/// Converse `searchResult`; ARCHITECT 2026-10-02, DF-MAP-2) as the parts both wires spell.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrSearchResultParts<'a> {
+    pub source: &'a str,
+    pub title: &'a str,
+    /// The passage text: the block's text parts joined with `\n`, the header line stripped.
+    pub body: &'a str,
+    /// The block's `citations` switch (`{"enabled": bool}`) verbatim, when the caller sent one.
+    pub citations_config: Option<&'a Value>,
 }
 
 impl IrBlock {
+    /// THE SEARCH-RESULT SLOT (ARCHITECT 2026-10-02, DF-MAP-2): one caller-supplied RAG passage —
+    /// Anthropic `search_result`, Converse `searchResult` — modelled as a `Text` block a model of
+    /// any dialect can read (a `title — source` header line, then the passage), carrying ONE
+    /// provenance citation of kind `search_result_location` with no location indices (which is what
+    /// tells it apart from an answer's search-result citation, which always has them). The
+    /// citation's `raw` holds the block's `citations` switch verbatim (`{"enabled": bool}`, spelled
+    /// identically by both wires). A dialect that has the block re-emits it from
+    /// [`IrBlock::as_search_result`]; any other dialect sends the text.
+    pub fn search_result(
+        source: &str,
+        title: &str,
+        body: String,
+        citations_config: Option<Value>,
+        cache_control: Option<CacheControl>,
+    ) -> IrBlock {
+        let header = search_result_header(source, title);
+        let text = if header.is_empty() {
+            body
+        } else if body.is_empty() {
+            header
+        } else {
+            format!("{header}\n{body}")
+        };
+        let citations = if source.is_empty() && title.is_empty() {
+            Vec::new()
+        } else {
+            vec![IrCitation {
+                kind: Some(crate::codec::keys::SEARCH_RESULT_LOCATION.to_string()),
+                title: (!title.is_empty()).then(|| title.to_string()),
+                url: (!source.is_empty()).then(|| source.to_string()),
+                raw: citations_config,
+                ..Default::default()
+            }]
+        };
+        IrBlock::Text {
+            text,
+            cache_control,
+            citations,
+            refusal: false,
+        }
+    }
+
+    /// The search-result slot's parts, or `None` for any other block (see
+    /// [`IrBlock::search_result`]).
+    pub fn as_search_result(&self) -> Option<IrSearchResultParts<'_>> {
+        let IrBlock::Text {
+            text, citations, ..
+        } = self
+        else {
+            return None;
+        };
+        let [c] = citations.as_slice() else {
+            return None;
+        };
+        let provenance_only = c.kind.as_deref() == Some(crate::codec::keys::SEARCH_RESULT_LOCATION)
+            && c.cited_text.is_none()
+            && c.document_index.is_none()
+            && c.start_index.is_none()
+            && c.end_index.is_none()
+            && c.encrypted_index.is_none()
+            && c.domain.is_none()
+            && c.file.is_none();
+        if !provenance_only {
+            return None;
+        }
+        let source = c.url.as_deref().unwrap_or("");
+        let title = c.title.as_deref().unwrap_or("");
+        let header = search_result_header(source, title);
+        let body = if text.as_str() == header {
+            ""
+        } else {
+            text.strip_prefix(header.as_str())
+                .and_then(|t| t.strip_prefix('\n'))
+                .unwrap_or(text)
+        };
+        Some(IrSearchResultParts {
+            source,
+            title,
+            body,
+            citations_config: c.raw.as_ref(),
+        })
+    }
+
     /// Is this block's content OPAQUE to busbar — carried through verbatim, never readable as
     /// plaintext, and therefore never disclosable to an operator's sidecar?
     ///
@@ -795,7 +944,8 @@ impl IrBlock {
             | IrBlock::ToolResult { .. }
             | IrBlock::Image { .. }
             | IrBlock::Media { .. }
-            | IrBlock::Json(_) => false,
+            | IrBlock::Json(_)
+            | IrBlock::HostedToolRecord { .. } => false,
         }
     }
 }
@@ -994,6 +1144,17 @@ pub struct IrCitation {
     /// BED-14: the web source's domain — the Converse `web` citation location's
     /// `domain` member (`{url, domain}`). Only Bedrock carries it natively; `None` elsewhere.
     pub domain: Option<String>,
+    /// A citation of an uploaded file (Responses `file_citation` / `container_file_citation` /
+    /// `file_path`; ARCHITECT ruling 2026-10-02, DF-MAP item 5). `None` for every other location.
+    pub file: Option<IrFileLocation>,
+}
+
+/// Where in an uploaded file a citation points.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrFileLocation {
+    pub file_id: Option<String>,
+    pub filename: Option<String>,
+    pub index: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1203,6 +1364,28 @@ pub struct IrUsageDetail {
     /// `billable_tokens` ignores this field like every other on the struct, so populating it can
     /// never change what busbar bills.
     pub usage_identity_note: Option<UsageIdentityNote>,
+    /// The tokens split by modality (OpenAI `*_tokens_details.{text,image,audio}_tokens`, Gemini
+    /// `*TokensDetails[].{modality,tokenCount}`). PRESENTATION ONLY (ARCHITECT ruling 2026-10-02,
+    /// DF-MAP item 4, MONEY LAW): it creates no meter class, feeds no ledger, and changes no billed
+    /// figure; `billable_tokens` and the facts projection ignore it.
+    pub by_modality: Option<IrUsageByModality>,
+}
+
+/// Token counts by modality, each a slice of a total in [`IrUsage`], never an addition to it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrUsageByModality {
+    pub input: IrModalityCounts,
+    pub output: IrModalityCounts,
+    pub cache: IrModalityCounts,
+}
+
+/// One side's tokens by modality. `None` == the provider did not report that modality.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IrModalityCounts {
+    pub text: Option<u64>,
+    pub image: Option<u64>,
+    pub audio: Option<u64>,
+    pub video: Option<u64>,
 }
 
 /// One provider `usage` block whose per-bucket counts do not sum to the total the provider itself
@@ -1234,9 +1417,8 @@ impl IrUsage {
     /// the Anthropic/Bedrock family (whose cache reads/writes are separate from input). All adds are
     /// `saturating_add`: the operands are UPSTREAM-CONTROLLED counts, so an unchecked `+` could
     /// panic in debug / wrap in release.
-    // Production billing now ledgers the TIER SPLIT (`proxy::usage::tier_tokens`); this total
-    // survives as the normalization contract's test surface (stream translate/fanout tests).
-    #[cfg_attr(not(test), allow(dead_code))]
+    // Production billing ledgers the TIER SPLIT (`proxy::usage::tier_tokens`); this total is what a
+    // provider's stated total is checked against (`usage_count::stated_total_note`).
     pub fn billable_tokens(&self) -> u64 {
         self.input_tokens
             .saturating_add(self.cache_read_input_tokens.unwrap_or(0))
@@ -1917,4 +2099,14 @@ pub enum IrSignatureOrigin {
     OpenAi,
     /// A non-Claude Bedrock reasoning model's signature.
     BedrockOther,
+}
+
+/// The search-result slot's header line: `title — source`, or whichever of the two is present.
+fn search_result_header(source: &str, title: &str) -> String {
+    match (title.is_empty(), source.is_empty()) {
+        (false, false) => format!("{title} — {source}"),
+        (false, true) => title.to_string(),
+        (true, false) => source.to_string(),
+        (true, true) => String::new(),
+    }
 }

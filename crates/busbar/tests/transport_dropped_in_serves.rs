@@ -199,9 +199,35 @@ fn kernel_socket(port: u16) -> bool {
         && probe.bind(&addr.into()).is_ok()
 }
 
-/// Boot, expecting a refusal: the process's exit and what it wrote.
+/// Boot, expecting a refusal: the process's exit and what it wrote. A node that SERVES instead of
+/// refusing never exits, so the wait is bounded: past the deadline the node is killed and the test
+/// fails naming what it wrote, rather than hanging the run.
 fn refused(dir: &Path) -> Output {
-    busbar(dir).output().expect("run busbar")
+    let (out_path, err_path) = (dir.join("refused.out"), dir.join("refused.err"));
+    let mut child = Reap(
+        busbar(dir)
+            .stdout(std::fs::File::create(&out_path).unwrap())
+            .stderr(std::fs::File::create(&err_path).unwrap())
+            .spawn()
+            .expect("spawn busbar"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "busbar did not refuse to boot within 60s (it is serving); stderr:\n{}",
+            std::fs::read_to_string(&err_path).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    Output {
+        status,
+        stdout: std::fs::read(&out_path).unwrap_or_default(),
+        stderr: std::fs::read(&err_path).unwrap_or_default(),
+    }
 }
 
 fn exchange(port: u16) -> Option<Vec<u8>> {

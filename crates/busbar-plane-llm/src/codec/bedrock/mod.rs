@@ -74,6 +74,8 @@ const REASONING_CONFIG: &str = "reasoningConfig";
 const REASONING_CONTENT: &str = "reasoningContent";
 const REASONING_TEXT: &str = "reasoningText";
 const REDACTED_CONTENT: &str = "redactedContent";
+/// A Converse `searchResult` content block (request content and `toolResult` content).
+const SEARCH_RESULT_CAMEL: &str = "searchResult";
 const SEARCH_RESULT_INDEX: &str = "searchResultIndex";
 const SEARCH_RESULT_LOCATION_CAMEL: &str = "searchResultLocation";
 const SERVICE_UNAVAILABLE_EXCEPTION: &str = "serviceUnavailableException";
@@ -704,6 +706,51 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
 /// and is meaningless to any other backend.
 const VENDOR_NAME: &str = "bedrock";
 
+/// A Converse `searchResult` block (`{source, title, content: [{text}], citations: {enabled}}`) ->
+/// THE SEARCH-RESULT SLOT (`IrBlock::search_result`), the same slot an Anthropic `search_result`
+/// reads into, so the passage and its provenance translate both ways. The text parts join with
+/// `\n` in wire order; the `citations` switch rides verbatim.
+fn read_bedrock_search_result(sr: &serde_json::Value) -> crate::codec::ir::IrBlock {
+    let source = sr.get(keys::SOURCE).and_then(|v| v.as_str()).unwrap_or("");
+    let title = sr.get(keys::TITLE).and_then(|v| v.as_str()).unwrap_or("");
+    let body = sr
+        .get(keys::CONTENT)
+        .and_then(|v| v.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get(keys::TEXT).and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    crate::codec::ir::IrBlock::search_result(
+        source,
+        title,
+        body,
+        sr.get(keys::CITATIONS).cloned(),
+        None,
+    )
+}
+
+/// The search-result slot -> a Converse `{"searchResult": {...}}` content block (the inverse of
+/// [`read_bedrock_search_result`]): the passage as one text part, the `citations` switch verbatim.
+fn write_bedrock_search_result(
+    sr: &crate::codec::ir::IrSearchResultParts<'_>,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(keys::SOURCE.to_string(), serde_json::json!(sr.source));
+    obj.insert(keys::TITLE.to_string(), serde_json::json!(sr.title));
+    obj.insert(
+        keys::CONTENT.to_string(),
+        serde_json::json!([{ (keys::TEXT): sr.body }]),
+    );
+    if let Some(cfg) = sr.citations_config {
+        obj.insert(keys::CITATIONS.to_string(), cfg.clone());
+    }
+    serde_json::json!({ (SEARCH_RESULT_CAMEL): obj })
+}
+
 /// Read a native Converse `document` / `video` block body into an [`crate::codec::ir::IrBlock::Media`].
 ///
 /// Converse spells both the same way — `{"format": "pdf", "name": "…", "source": {…}}` — with a
@@ -1138,7 +1185,8 @@ fn set_preceding_block_cache_control(blocks: &mut [crate::codec::ir::IrBlock]) {
                 *cache_control = cc;
             }
             // Json is a tool-result member only; the positional stash carries the marker.
-            crate::codec::ir::IrBlock::Json(_) => {}
+            crate::codec::ir::IrBlock::Json(_)
+            | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
         }
     }
 }
@@ -1623,11 +1671,136 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
+/// Stable identifier of the identity [`read_bedrock_usage`] checks `usage.totalTokens` against,
+/// carried on [`crate::codec::ir::UsageIdentityNote::identity`].
+const BEDROCK_USAGE_IDENTITY: &str = "bedrock.usage";
+
 /// A Bedrock Converse `usage` object (`None` when absent) → the IR usage, through [`USAGE`].
+///
+/// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/bedrock.wire.json`) DECLARES
+/// UNDER `usage` IS LEDGERED OR A SLICE OF A LEDGERED COUNT: `inputTokens` (input),
+/// `outputTokens` (output), `cacheReadInputTokens` (cache read), `cacheWriteInputTokens` (cache
+/// write); `cacheDetails[].inputTokens` is the per-TTL split of the cache write, carried as the 5m
+/// and 1h attribution and ledgered inside the one cache-write class. `totalTokens` is AWS's sum of
+/// the four (cache tokens included, see the writer's `converse_total_tokens`), never a unit: it is
+/// cross-checked against the ledgered classes and a gap is WARN-logged and carried as the usage
+/// identity note, never ledgered. The guardrail policy units ride `trace`, not `usage`: see
+/// [`warn_guardrail_units`].
 fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)
+    let mut ir = crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)?;
+    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
+        VENDOR_NAME,
+        BEDROCK_USAGE_IDENTITY,
+        usage_obj.and_then(|u| u.get(TOTAL_TOKENS_CAMEL)),
+        &ir,
+    );
+    Ok(ir)
+}
+
+/// The members of a Converse `TokenUsage` object: a `usage` object naming none of them is not the
+/// turn's token usage (a guardrail's `invocationMetrics.usage` names policy units instead).
+const TOKEN_USAGE_MEMBERS: &[&str] = &[
+    INPUT_TOKENS_CAMEL,
+    OUTPUT_TOKENS_CAMEL,
+    TOTAL_TOKENS_CAMEL,
+    CACHE_READ_INPUT_TOKENS,
+    CACHE_WRITE_INPUT_TOKENS,
+];
+
+/// `trace.guardrail` members, as the Converse service model spells them.
+const GUARDRAIL: &str = "guardrail";
+const GUARDRAIL_INPUT_ASSESSMENT: &str = "inputAssessment";
+const GUARDRAIL_OUTPUT_ASSESSMENTS: &str = "outputAssessments";
+const GUARDRAIL_INVOCATION_METRICS: &str = "invocationMetrics";
+
+/// Every count of a guardrail assessment's `invocationMetrics.usage` (the service model's
+/// `GuardrailUsage`), as AWS spells it: the policy units AWS bills per policy type, the free
+/// units it reports beside them, and the automated-reasoning policy count.
+const GUARDRAIL_USAGE_COUNTS: &[&str] = &[
+    "topicPolicyUnits",
+    "contentPolicyUnits",
+    "wordPolicyUnits",
+    "sensitiveInformationPolicyUnits",
+    "sensitiveInformationPolicyFreeUnits",
+    "contextualGroundingPolicyUnits",
+    "contentPolicyImageUnits",
+    "automatedReasoningPolicyUnits",
+    "automatedReasoningPolicies",
+];
+
+/// READ EVERY GUARDRAIL POLICY-UNIT COUNT A TURN REPORTS, AND SAY THAT NONE OF IT IS LEDGERED.
+///
+/// A Converse response (or the stream's `metadata` frame) that ran a guardrail carries
+/// `trace.guardrail.inputAssessment.<id>.invocationMetrics.usage` and
+/// `trace.guardrail.outputAssessments.<id>[].invocationMetrics.usage`: the policy units AWS bills
+/// for the guardrail SEPARATELY from the model's tokens, per policy type. They are not tokens, and
+/// no meter class this plane declares holds them (input, output, cache read and cache write are
+/// token classes), so folding them into one would price a policy unit at a token rate. They are
+/// therefore a residual: each count is summed per side over every guardrail and assessment, and
+/// one WARN names them all (`inputAssessment.<count>=n`, `outputAssessments.<count>=n`), so the
+/// gap between the ledger and AWS's invoice is visible rather than silent. A present count that is
+/// not a count is named `unreadable`. Nothing is ledgered; nothing is refused.
+fn warn_guardrail_units(holder: &serde_json::Value) {
+    let Some(guardrail) = holder.get(TRACE).and_then(|t| t.get(GUARDRAIL)) else {
+        return;
+    };
+    let usage_of = |a: &serde_json::Value| {
+        a.get(GUARDRAIL_INVOCATION_METRICS)
+            .and_then(|m| m.get(keys::USAGE))
+            .cloned()
+    };
+    let input: Vec<serde_json::Value> = guardrail
+        .get(GUARDRAIL_INPUT_ASSESSMENT)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(usage_of)
+        .collect();
+    let output: Vec<serde_json::Value> = guardrail
+        .get(GUARDRAIL_OUTPUT_ASSESSMENTS)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter_map(usage_of)
+        .collect();
+    let mut named: Vec<String> = Vec::new();
+    for (side, usages) in [
+        (GUARDRAIL_INPUT_ASSESSMENT, &input),
+        (GUARDRAIL_OUTPUT_ASSESSMENTS, &output),
+    ] {
+        for count in GUARDRAIL_USAGE_COUNTS {
+            let mut sum: Option<u64> = None;
+            let mut unreadable = false;
+            for u in usages {
+                match u.get(*count).filter(|v| !v.is_null()) {
+                    None => {}
+                    Some(v) => match crate::codec::usage_count::read_count_u64(v) {
+                        Some(n) => sum = Some(sum.unwrap_or(0).saturating_add(n)),
+                        None => unreadable = true,
+                    },
+                }
+            }
+            if unreadable {
+                named.push(format!("{side}.{count}=unreadable"));
+            } else if let Some(n) = sum {
+                named.push(format!("{side}.{count}={n}"));
+            }
+        }
+    }
+    if named.is_empty() {
+        return;
+    }
+    let units = named.join(" ");
+    tracing::warn!(
+        protocol = VENDOR_NAME,
+        units = %units,
+        "bedrock guardrail policy units are billed by AWS separately from the model's tokens and \
+         land in no meter class this plane declares: they are not ledgered"
+    );
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.
@@ -2110,7 +2283,8 @@ pub fn bedrock_response_to_eventstream(
             IrBlock::ToolResult { .. }
             | IrBlock::Image { .. }
             | IrBlock::Media { .. }
-            | IrBlock::Json(_) => {}
+            | IrBlock::Json(_)
+            | IrBlock::HostedToolRecord { .. } => {}
         }
     }
 
@@ -2215,6 +2389,10 @@ mod field_carry_tests;
 mod usage_float_tests;
 
 #[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;
+
+#[cfg(test)]
 #[path = "tests/ir_mapping_tests.rs"]
 mod ir_mapping_tests;
 
@@ -2231,3 +2409,8 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+/// The search-result slot: Converse `searchResult` <-> Anthropic `search_result` (DF-MAP-2).
+#[cfg(test)]
+#[path = "tests/search_result_slot_tests.rs"]
+mod search_result_slot_tests;
