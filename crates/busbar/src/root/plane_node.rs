@@ -604,6 +604,7 @@ impl Node {
     /// once the unit has ended (what it consumed, priced at the card pinned at its door, the node's
     /// one pricing site), else the exit's posting as it stood, its audit record sealed with it.
     /// Answers whether the table took the unit. Dropping the future marks its slot for the sweep.
+    #[allow(clippy::too_many_arguments)]
     pub async fn drive_borrowed<U: Units + RouteAwait>(
         &self,
         key: UnitKey,

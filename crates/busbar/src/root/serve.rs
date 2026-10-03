@@ -892,41 +892,24 @@ fn spent() -> Pick {
 
 #[cfg(linked_axis_node)]
 impl FarEnd for DoorFar<'_, '_> {
-    fn member<'a>(
-        &'a self,
-        token: &'a Pass<Route>,
-        attempt_no: u32,
-    ) -> impl std::future::Future<Output = Pick> + Send + 'a {
-        async move {
-            match self.far() {
-                Some(far) => far.member(token, attempt_no).await,
-                None => spent(),
-            }
+    async fn member(&self, token: &Pass<Route>, attempt_no: u32) -> Pick {
+        match self.far() {
+            Some(far) => far.member(token, attempt_no).await,
+            None => spent(),
         }
     }
 
-    fn send<'a>(
-        &'a self,
-        token: &'a Pass<Route>,
-        request: OutboundRequest,
-    ) -> impl std::future::Future<Output = bool> + Send + 'a {
-        async move {
-            match self.far() {
-                Some(far) => far.send(token, request).await,
-                None => false,
-            }
+    async fn send(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
+        match self.far() {
+            Some(far) => far.send(token, request).await,
+            None => false,
         }
     }
 
-    fn next<'a>(
-        &'a self,
-        token: &'a Pass<Route>,
-    ) -> impl std::future::Future<Output = Option<FarPiece>> + Send + 'a {
-        async move {
-            match self.far() {
-                Some(far) => far.next(token).await,
-                None => None,
-            }
+    async fn next(&self, token: &Pass<Route>) -> Option<FarPiece> {
+        match self.far() {
+            Some(far) => far.next(token).await,
+            None => None,
         }
     }
 }

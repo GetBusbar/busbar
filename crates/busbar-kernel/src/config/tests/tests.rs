@@ -3930,7 +3930,7 @@ fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
         "the raw carrier's too"
     );
     assert!(
-        deploy.plane_raw.get("neutral_section").is_none(),
+        !deploy.plane_raw.contains_key("neutral_section"),
         "never raw-carried"
     );
 }
