@@ -639,11 +639,17 @@ async fn a_529_fails_over_with_its_retry_after() {
     );
 }
 
-/// STEP 24, member-401: a withdrawn credential takes the member down (HardDown), and fails over.
+/// STEP 24, member-401 (1.5.5 `route.failover|fb|member-401`: ONE egress, the 401 to the caller,
+/// the member hard-down in every pool): a rejected key takes the member down (HardDown) and the
+/// answer is relayed to the plane, whose verdict renders it — it is NOT failed over, so the next
+/// member is never tried and no fallback pool is spilled into.
 #[tokio::test]
-async fn a_401_takes_the_member_down_and_fails_over() {
+async fn a_401_takes_the_member_down_and_is_relayed_to_the_plane() {
     let r = rig(
-        &[("a.test", Script::Answer(401, None, vec![b"no"]))],
+        &[
+            ("a.test", Script::Answer(401, None, vec![b"no"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
         OnExhausted::Status503,
         None,
     );
@@ -659,10 +665,61 @@ async fn a_401_takes_the_member_down_and_fails_over() {
         }
     );
     assert!(far.send(&t, request()).await);
-    assert!(far.next(&t).await.expect("a piece").fail_over);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over, "a hard-down is the plane's to render: {p:?}");
+    assert_eq!(p.status, Some((401, 2)));
+    assert_eq!(p.bytes, b"no", "the answer reaches the plane as it came");
     assert_eq!(
         *r.book.observed.lock().unwrap(),
         vec![(DestinationId::new(1), Outcome::HardDown)]
+    );
+    assert_eq!(
+        r.table.opened.lock().unwrap().len(),
+        1,
+        "one egress: the next member is never dialled"
+    );
+}
+
+/// A PASSTHROUGH member's 401 is the caller's own key failing (1.5.5's attempt classifier): nothing
+/// is recorded against the member, and the answer is relayed to the plane as it came.
+#[tokio::test]
+async fn a_passthrough_members_401_records_nothing_and_is_relayed() {
+    // m0 (own credential) is overloaded and fails over; m1 is the rig's passthrough member.
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(529, None, vec![b"busy"])),
+            ("b.test", Script::Answer(401, None, vec![b"your key"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        caller_credential: Some(b"caller-key".to_vec().into()),
+        ..route()
+    });
+    let Pick::Member { passthrough, .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(!passthrough);
+    assert!(far.send(&t, request()).await);
+    assert!(far.next(&t).await.expect("a piece").fail_over);
+    let Pick::Member { passthrough, .. } = far.member(&t, 2).await else {
+        panic!("a second member")
+    };
+    assert!(passthrough);
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over, "{p:?}");
+    assert_eq!(p.status, Some((401, 2)));
+    assert_eq!(p.bytes, b"your key");
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )],
+        "the passthrough member's rejected key records nothing"
     );
 }
 

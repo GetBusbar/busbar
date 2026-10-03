@@ -21,10 +21,14 @@
 //!    address and dials exactly it (CONNECTOR-19), so a name's refusal keeps 1.5.5's timing.
 //! 3. [`FarEnd::next`]: the connector's pieces, read through the task's own waker
 //!    ([`PollConns::poll_read`]). On the first status the breaker classifies it (the step-24
-//!    `Disposition`): a success is recorded and spends one unit of the member's lifetime budget; a
-//!    caller fault is relayed to the plane as it came; a transient or hard failure is recorded
-//!    (a 401 takes the member down across every pool) and the piece fails over before the plane
-//!    sees it. A failure before any answer — refused, reset, the attempt's cap — fails over too.
+//!    `Disposition`, 1.5.5's attempt classifier): a success is recorded and spends one unit of the
+//!    member's lifetime budget; a caller fault is relayed to the plane as it came; a hard failure
+//!    (a rejected key: 401/403) takes the member down across every pool and is relayed to the
+//!    plane, whose verdict decides (an auth failure ends the unit, rendered in the caller's own
+//!    dialect; a billing one asks to retry); a passthrough member's 401/403 is the caller's own
+//!    key failing and records nothing; a transient failure is recorded and the piece fails over
+//!    before the plane sees it. A failure before any answer — refused, reset, the attempt's cap —
+//!    fails over too.
 //!
 //! Deadlines are 1.5.5's: the walk's whole budget is the pool's request timeout, measured from the
 //! unit's start; the first answer is bounded by the member's attempt cap (never beyond what the walk
@@ -213,6 +217,8 @@ struct Live {
     record: Dispatched,
     /// Degraded (a terminal's dispatch): an answered failure is relayed, never failed over.
     degraded: bool,
+    /// The member relays the caller's own credential: its 401/403 is the caller's key failing.
+    passthrough: bool,
     /// When the send started, ms.
     anchor_ms: u128,
     /// The far end answered.
@@ -396,6 +402,7 @@ impl EgressFarEnd<'_> {
             conn: None,
             record,
             degraded,
+            passthrough,
             anchor_ms: 0,
             answered: false,
             spent: false,
@@ -789,22 +796,31 @@ impl EgressFarEnd<'_> {
                 head: Vec::new(),
             };
         }
-        let (classified, tripped) = e.breaker.judge(&live.pool, destination, status, now, token);
-        if tripped {
+        let classified = e.breaker.classify(destination, status);
+        let hard = matches!(classified.disposition, Disposition::HardDown);
+        // A passthrough member's rejected key is the CALLER's, not the destination's: nothing is
+        // recorded and the answer goes back as it came (1.5.5's attempt classifier).
+        let callers_key = hard && live.passthrough;
+        if !callers_key
+            && e.breaker
+                .observe(&live.pool, destination, classified.outcome, now, token)
+        {
             e.telemetry.breaker_trip(&pool, destination);
         }
         // A recorded outcome resolves a probe this attempt won. An answer that records NOTHING (the
-        // caller's own fault, a request too large for the window) resolves none, so the probe stays
-        // the attempt's and the settle gives it back, owner-checked: 1.5.5 released it on exactly
-        // these exits or the member stayed wedged half-open (v1.5.5
-        // `crates/busbar/src/proxy/engine/mod.rs:1900-1912`, `:2131-2138`).
-        if !matches!(classified.outcome, Outcome::RecordNothing) {
+        // caller's own fault, a request too large for the window, a passthrough member's rejected
+        // key) resolves none, so the probe stays the attempt's and the settle gives it back,
+        // owner-checked: 1.5.5 released it on exactly these exits or the member stayed wedged
+        // half-open (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1900-1912`, `:2131-2138`).
+        if !callers_key && !matches!(classified.outcome, Outcome::RecordNothing) {
             live.probe = None;
         }
-        // The caller's own fault is not the destination's, and a degraded dispatch relays the
-        // upstream's answer: either reaches the plane as it came.
-        if matches!(classified.disposition, Disposition::ClientFault) || live.degraded {
-            if !matches!(classified.disposition, Disposition::ClientFault) {
+        // The caller's own fault is not the destination's, a hard-down is the plane's to render
+        // (its verdict: an auth failure ends the unit, a billing one retries), and a degraded
+        // dispatch relays the upstream's answer: each reaches the plane as it came.
+        let client_fault = matches!(classified.disposition, Disposition::ClientFault);
+        if client_fault || hard || live.degraded {
+            if !client_fault && !callers_key {
                 e.telemetry
                     .upstream_failure(&pool, destination, classified.label);
             }
