@@ -66,6 +66,8 @@ pub mod reachability;
 pub mod response_header;
 pub mod script_allowlist;
 pub mod seal_witness;
+pub mod secret_accessor_seal;
+pub mod secret_hygiene;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
@@ -299,11 +301,10 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // the base). The rows below were red and on no list, so `--posture` scored them NEW; each is a
     // true finding, named with what it measures and the phase that drains it.
     //
-    // MONEY — DRAIN: Phase 2.
-    // `one-pricing-site`: `busbar_kernel_ledger::cost::price` called from
-    // crates/busbar-core-admin/src/v1/service.rs, outside the reviewed homes — an admin read that
-    // prices on its own path (the BUDGET row: the enforcement path is not the invoice path).
-    "one-pricing-site",
+    // `one-pricing-site` STRUCK (ARCHITECT ruling 2026-09-30, a $ commit landed alone): the admin
+    // usage read built the ledger slice itself and priced it beside the cost unit. The row
+    // projection moved into the cost unit (`busbar_kernel_ledger::cost::MeteredRow`), so admin
+    // hands over its row and prices nothing.
     // `token-sealed` and its three named mints: the Teller's tokens, `KernelSeal::acquire_for_kernel(`,
     // the arrival-hold mint and `SecretOnce::mint(` are spelled outside their one home crate (266,
     // 136, 49 and 5 sites). Item 317: the one deliberate cross-crate hole in the capability model is
@@ -2553,6 +2554,12 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(documented_claims::DocumentedClaimsGate),
         summary: "qa/documented-claims.json: every README/CHANGELOG claim is pinned by a recorded cell or excused, ids address their quotes",
+        name: "secret-hygiene",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(secret_hygiene::SecretHygieneGate::shipped()),
+        summary: "no bare-string secret field, no .expose_secret() at a sink, no secret interpolated \
+                  into a returned message (REPORT-ONLY ledger rows; SECRET_GATE_REPORT_ONLY=0 blocks, #53)",
     },
     Registration {
         name: "script-allowlist",
@@ -2674,6 +2681,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(seal_witness::SealWitnessGate),
         summary: "capability proofs are exactly Pass<stage> + Grant<capability> + one kernel minter (#65/#73)",
+    },
+    Registration {
+        name: "secret-accessor-seal",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(secret_accessor_seal::SecretAccessorSealGate),
+        summary: "no cdylib plugin crate reaches a raw secret accessor (expose/bytes) or KernelSeal::acquire_for_kernel (DECISIONS #40)",
     },
     Registration {
         name: "money-invariants",

@@ -831,6 +831,24 @@ fn replace_once(t: &str, from: &str, to: &str) -> String {
     t.replacen(from, to, 1)
 }
 
+/// Replace the top-level `on:` LINE with `block`, whatever trigger list that line carries (flow
+/// `on: [pull_request, merge_group]` or block `on:`): the anchor is the key, not today's event
+/// list, so adding a trigger cannot silently unprove R1. A block form's indented events stay
+/// below the planted ones, still valid YAML, and the planted `v*` trigger is what R1 must see.
+fn replant_on(t: &str, block: &str) -> String {
+    let mut done = false;
+    let mut out = String::with_capacity(t.len() + block.len());
+    for line in t.split_inclusive('\n') {
+        if !done && (line == "on:\n" || line.starts_with("on: ")) {
+            out.push_str(block);
+            done = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 fn mutations() -> Vec<Mutation> {
     vec![
         Mutation {
@@ -898,13 +916,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R1 a v* tag trigger comes back",
             file: "promote.yml",
             rule: "R1",
-            apply: |t| {
-                replace_once(
-                    t,
-                    "on: pull_request\n",
-                    "on:\n  push:\n    tags:\n      - \"v*\"\n",
-                )
-            },
+            apply: |t| replant_on(t, "on:\n  push:\n    tags:\n      - \"v*\"\n"),
             creates: false,
         },
         Mutation {
@@ -913,13 +925,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R1 a v* tag trigger comes back as a FLOW sequence",
             file: "promote.yml",
             rule: "R1",
-            apply: |t| {
-                replace_once(
-                    t,
-                    "on: pull_request\n",
-                    "on:\n  push:\n    tags: [\"v*\"]\n",
-                )
-            },
+            apply: |t| replant_on(t, "on:\n  push:\n    tags: [\"v*\"]\n"),
             creates: false,
         },
         Mutation {

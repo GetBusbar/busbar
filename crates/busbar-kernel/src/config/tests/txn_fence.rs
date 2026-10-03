@@ -2,7 +2,7 @@
 //!
 //! It is behind the `txn_fence_red` rustc cfg (not a cargo feature, so `--all-features` never
 //! reaches it) and is never part of a normal build.
-//! `scripts/txn-fence.sh` compiles it and asserts the compiler REJECTS it; a green compile is a
+//! `cargo xtask txn-fence` compiles it and asserts the compiler REJECTS it; a green compile is a
 //! failed test, because it would mean the structural half of "blocking-under-the-lock is
 //! impossible" had regressed.
 //!
