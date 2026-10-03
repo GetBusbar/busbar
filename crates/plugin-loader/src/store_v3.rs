@@ -1709,6 +1709,10 @@ mod tests;
 mod conformance_tests;
 
 #[cfg(test)]
+#[path = "tests/store_v3_crossing_conformance_tests.rs"]
+mod crossing_conformance_tests;
+
+#[cfg(test)]
 #[path = "tests/store_v3_deadline_tests.rs"]
 mod deadline_tests;
 
