@@ -229,6 +229,9 @@ tungstenite = { workspace = true }
 # Reached by KIND through `[package.metadata.busbar.both-ways]` below. From its own repo
 # (GetBusbar/busbar-transport-tcp) at the rev the workspace pins.
 busbar-transport-tcp-plugin = { workspace = true }
+# The tcp LOGIC crate (same pin, no door symbol): `transport_door_conformance_tests` drives its linked door
+# against the plugin's cdylib. The `-plugin` crate's rlib is never named (it exports `busbar_plugin_door`).
+busbar-transport-tcp = { workspace = true }
 # The transport adapter's witness (`transport_adapter_tests`) dials through the trait, which takes a
 # sealed destination: the contract's blessed test seal (#65), as the wire crates' own batteries use.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }

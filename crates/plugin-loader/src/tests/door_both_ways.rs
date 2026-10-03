@@ -58,11 +58,17 @@ pub(crate) fn linked<K: Kind>(door: DoorFn) -> Loaded<K> {
 /// (`both_ways::example_cdylib` refuses to skip under CI).
 pub(crate) fn dropped<K: Kind>(door: DoorFn, example: &str) -> Option<Loaded<K>> {
     let path = crate::both_ways::example_cdylib(example)?;
+    Some(dropped_from(door, &path))
+}
+
+/// The `cdylib` at `path` exporting the same `door`, DROPPED IN through [`load_dropped`] against
+/// the rendering `door` states: the real plugin's pinned build, found by `both_ways::cdylib`.
+pub(crate) fn dropped_from<K: Kind>(door: DoorFn, path: &std::path::Path) -> Loaded<K> {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let stated = rendering_of(door).expect("the door renders its Statement");
     let plugin =
-        load_dropped::<K>(&path, &stated, bind(&dispatcher)).expect("the dropped-in door loads");
-    Some(Loaded { plugin, dispatcher })
+        load_dropped::<K>(path, &stated, bind(&dispatcher)).expect("the dropped-in door loads");
+    Loaded { plugin, dispatcher }
 }
 
 /// `bytes` as an octets blob, lent for one call.
