@@ -46,7 +46,7 @@ fn bind(d: &Dispatcher) -> Bind {
 }
 
 /// The shipped build's store: its compiled-in door.
-fn compiled_in() -> LoadedStore {
+pub(super) fn compiled_in() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let row = LinkedRow::of(crate::both_ways::store_fixture::door)
         .expect("the store states its Statement");
@@ -56,7 +56,7 @@ fn compiled_in() -> LoadedStore {
 
 /// The same door, dropped in (the `store_v3_door` example `cdylib`). `None` only in a scoped,
 /// non-CI run that did not build it (`both_ways::example_cdylib` refuses to skip under CI).
-fn dropped_in() -> Option<LoadedStore> {
+pub(super) fn dropped_in() -> Option<LoadedStore> {
     let path = crate::both_ways::example_cdylib("store_v3_door")?;
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
@@ -75,7 +75,7 @@ fn mint() -> OpId {
     )
 }
 
-fn block<T>(f: impl std::future::Future<Output = T>) -> T {
+pub(super) fn block<T>(f: impl std::future::Future<Output = T>) -> T {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -83,11 +83,11 @@ fn block<T>(f: impl std::future::Future<Output = T>) -> T {
         .block_on(f)
 }
 
-fn op(n: u64) -> OpId {
+pub(super) fn op(n: u64) -> OpId {
     OpId::from_parts(2, n)
 }
 
-fn key(id: &str, group: Option<&str>) -> VirtualKey {
+pub(super) fn key(id: &str, group: Option<&str>) -> VirtualKey {
     VirtualKey {
         id: id.to_string(),
         generation_hash: format!("h_{id}"),
@@ -99,7 +99,7 @@ fn key(id: &str, group: Option<&str>) -> VirtualKey {
     }
 }
 
-fn delta(requests: i64, input: i64) -> UsageDelta {
+pub(super) fn delta(requests: i64, input: i64) -> UsageDelta {
     UsageDelta {
         requests,
         billable_requests: requests,
@@ -178,7 +178,7 @@ fn plane(kind: &str, id: &str, parent: Option<&str>, seq: u64, body: &[u8]) -> P
     }
 }
 
-fn cell_key(bucket: &'static str, dimension: Dimension<'static>) -> CellKey<'static> {
+pub(super) fn cell_key(bucket: &'static str, dimension: Dimension<'static>) -> CellKey<'static> {
     CellKey {
         bucket,
         pool: None,
@@ -188,7 +188,10 @@ fn cell_key(bucket: &'static str, dimension: Dimension<'static>) -> CellKey<'sta
 }
 
 /// A result as one transcript line: `Ok` values by `Debug`, errors by their text.
-fn line<T: std::fmt::Debug, E: std::fmt::Display>(what: &str, r: Result<T, E>) -> String {
+pub(super) fn line<T: std::fmt::Debug, E: std::fmt::Display>(
+    what: &str,
+    r: Result<T, E>,
+) -> String {
     match r {
         Ok(v) => format!("{what} = {v:?}"),
         Err(e) => format!("{what} ! {e}"),
