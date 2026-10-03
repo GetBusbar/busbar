@@ -2096,6 +2096,31 @@
       }
     },
     {
+      "id": "#62 a stream the client cancels after its first byte keeps its charge",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20) and #77(2)",
+      "cells": "^route\\.failover\\|fo\\|client-cancel-after-first-byte-stream$",
+      "expected_cells": 0,
+      "classes": [
+        "effects.usage"
+      ],
+      "rationale": "v1.5.5 crates/busbar/src/proxy/response_body.rs:608-617 (FirstByteBody::drop) gave back the request-budget unit of a stream the client cancelled after its first byte. Spec Part 2 #62 (OWNER-LOCKED 2026-09-20: a mid-stream cut, disconnect named among them, is NOT a refund; it bills the streamed units to the cut point) and #77(2) (no refunds, no adjusting lines) govern 1.6.0: the far end settles a cancelled stream like any other end once a byte has streamed (lane-gg-pick, the far end's `delivered` flag). An upstream cut after the first byte of a streamed (SSE) answer already refunded nothing in 1.5.5 (response_body.rs:279-306, the `had_first && is_sse` arm), so on a streamed answer only the client-cancel arm moves. A buffered answer is untouched: a cut or a client cancel at any point still gives the unit back, as 1.5.5's buffered read (engine/mod.rs:329-353, BudgetSpendGuard) and its non-stream body (response_body.rs:358-409, :608-617) did; the far end marks a byte delivered only on a route whose caller asked for a stream. No oracle cell cancels a stream from the client side: the cell is OWED, `cells` names it and expected_cells is 0, the way ORPH-Q3b and AUTH-ROW write owed cells. The premise probes the existing streamed failover cell.",
+      "premise": {
+        "cell": "route.failover|fb|member-down-stream-openai",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-20",
+        "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED) and #77(2); applied by ARCHITECT GG-PICK ruling 2026-10-02"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "S-16 same-dialect response headers are the upstream's, all but the governed",
       "kind": "improvement",
       "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",

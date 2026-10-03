@@ -22,8 +22,15 @@ pub const KIND_INVALID_REQUEST: &str = "invalid_request_error";
 /// The words a shed says when the pool is exhausted.
 pub const DETAIL_OVERLOADED: &str = "The service is temporarily overloaded. Please retry shortly.";
 
+/// The kind an internal failure before any send carries.
+pub const KIND_API_ERROR: &str = "api_error";
+
 /// The words a shed says when the walk deadline passed before an attempt could start.
 pub const DETAIL_REQUEST_TIMEOUT: &str = "The request timed out. Please retry shortly.";
+
+/// The words an internal failure before any send says.
+pub const DETAIL_INTERNAL_ERROR: &str =
+    "We received an unexpected internal error. Please try again.";
 
 /// The words an unreadable body says.
 pub const DETAIL_INVALID_JSON: &str = "We could not parse the JSON body of your request.";
@@ -36,6 +43,9 @@ pub const DETAIL_RESTRICT_NO_LANE: &str =
 
 /// The status every shed above carries.
 pub const STATUS_SERVICE_UNAVAILABLE: u16 = 503;
+
+/// The status an internal failure before any send carries.
+pub const STATUS_INTERNAL_ERROR: u16 = 500;
 
 /// The status a body that could not be read carries.
 pub const STATUS_BAD_REQUEST: u16 = 400;
@@ -119,6 +129,19 @@ impl Shed {
             KIND_OVERLOADED,
             DETAIL_RESTRICT_NO_LANE,
             true,
+        )
+    }
+
+    /// Nothing could be sent and nothing was recorded against the member: the dispatch could not
+    /// be made durable. 1.5.5's own internal failures before a dispatch answered exactly this
+    /// (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1514-1526`, `:1621-1631`).
+    #[must_use]
+    pub fn internal() -> Self {
+        Self::of(
+            STATUS_INTERNAL_ERROR,
+            KIND_API_ERROR,
+            DETAIL_INTERNAL_ERROR,
+            false,
         )
     }
 

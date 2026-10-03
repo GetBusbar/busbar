@@ -280,10 +280,49 @@ fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
         delivered.pieces, 4,
         "only the pieces that fit inside the ceiling are relayed"
     );
+    // A cut answer is a partial one: 1.5.5 recorded the compensating transient on a stream the
+    // ceiling ended (v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-299`).
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![
+            busbar_kernel_egress::ports::Outcome::Success,
+            busbar_kernel_egress::ports::Outcome::Transient { retry_after: None }
+        ],
+        "a cut answer is a partial one: the transfer is recorded as failed"
+    );
+    // And the four pieces that streamed are billed, not refunded (spec Part 2 #62, #77(2)).
+    assert_eq!(node.breaker.budget_net(DestinationId::new(0)), 1);
+}
+
+/// A BUFFERED answer whose deadline passes mid-body delivered nothing to the caller: the cut
+/// records the compensating transient and gives back the unit the head spent, as 1.5.5's buffered
+/// read did on a body that failed mid-transfer (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:329-353`)
+/// and its non-stream passthrough body did on a post-first-byte non-SSE failure
+/// (`crates/busbar/src/proxy/response_body.rs:358-409`).
+#[test]
+fn a_buffered_answer_whose_deadline_passes_mid_body_refunds_the_budget_unit() {
+    let node = one_lane_pool(false);
+    // A far end that never finishes: a piece every quarter of the walk's budget, never completing.
+    node.conns
+        .script("a", drip(20, node.timeout_secs * 1000 / 4, false));
+
+    let outcome = node.route("primary");
+    let Routed::Delivered(delivered) = &outcome else {
+        panic!("the cut answer is handed on, not shed: {outcome:?}");
+    };
+    assert!(delivered.pieces >= 1, "a piece arrived before the cut");
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![
+            busbar_kernel_egress::ports::Outcome::Success,
+            busbar_kernel_egress::ports::Outcome::Transient { retry_after: None }
+        ],
+        "a cut answer is a partial one: the transfer is recorded as failed"
+    );
     assert_eq!(
         node.breaker.budget_net(DestinationId::new(0)),
         0,
-        "a cut answer is a partial one: its budget unit is given back"
+        "nothing reached the caller, so the unit spent on the head is given back"
     );
 }
 

@@ -90,7 +90,9 @@ pub struct Taken {
     /// A terminal's dispatch (a spill, the one breaker bypass, a queued slot): an answered failure
     /// is relayed, never failed over.
     pub degraded: bool,
-    /// The dispatch record's attempt number: the hops the walk had taken when it took this member.
+    /// The dispatch record's attempt number, counted from one across every member the walk takes
+    /// (its own pool and every terminal), as 1.5.5 numbered its attempts (v1.5.5
+    /// `crates/busbar/src/proxy/engine/mod.rs:1364`, `:1448`).
     pub attempt: u32,
 }
 
@@ -138,6 +140,8 @@ pub struct Walk {
     ctx: RequestCtx,
     phase: Phase,
     hops: usize,
+    /// Members taken so far, every path counted.
+    taken: u32,
 }
 
 impl Walk {
@@ -152,6 +156,7 @@ impl Walk {
             ),
             phase: Phase::Primary(pool.to_string()),
             hops: 0,
+            taken: 0,
         }
     }
 
@@ -159,6 +164,11 @@ impl Walk {
     #[must_use]
     pub fn ctx(&self) -> &RequestCtx {
         &self.ctx
+    }
+
+    /// The walk ends here, before its pool's terminal: every step from now answers `shed`.
+    pub fn refuse(&mut self, shed: Shed) {
+        self.phase = Phase::Shed(shed);
     }
 
     /// A refusal for size from `failed` of `pool`: every ADMISSIBLE member whose window is at or
@@ -299,13 +309,14 @@ impl Walk {
         degraded: bool,
     ) -> Taken {
         self.ctx.exclude(member.destination);
+        self.taken = self.taken.saturating_add(1);
         Taken {
             pool: pool.to_string(),
             member,
             permit,
             probe,
             degraded,
-            attempt: u32::try_from(self.hops).unwrap_or(u32::MAX),
+            attempt: self.taken,
         }
     }
 

@@ -870,6 +870,7 @@ each dialect translates, field by field, is listed in the generated
 - On a same-dialect route the caller receives every upstream response header except hop-by-hop
   fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers;
   1.5.5 relayed only Content-Type and the dialect's request-id headers.
+- 1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.
 
 ### Fixed
 
