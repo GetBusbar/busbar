@@ -312,12 +312,11 @@ async fn script(rows: &HookRows, module: &str) -> (Vec<String>, Vec<u64>) {
 /// The suite asked to run against the shipped profile refuses a debug build.
 #[test]
 fn the_suite_runs_in_the_profile_it_was_asked_to() {
-    if std::env::var_os("BUSBAR_EXPECT_RELEASE").is_some() {
-        assert!(
-            !cfg!(debug_assertions),
-            "BUSBAR_EXPECT_RELEASE is set: run this suite with `--release`"
-        );
-    }
+    #[cfg(debug_assertions)]
+    assert!(
+        std::env::var_os("BUSBAR_EXPECT_RELEASE").is_none(),
+        "BUSBAR_EXPECT_RELEASE is set: run this suite with `--release`"
+    );
 }
 
 #[tokio::test]
