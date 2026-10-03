@@ -26,11 +26,11 @@ use std::sync::Arc;
 use busbar_contract::abi::export::CHECK_PHASE_INSTANCES;
 use busbar_contract::export_calls::{parse_families, ExportCalls, ServeRequest};
 
-use super::door_both_ways::bind;
 use crate::both_ways;
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::Plugin;
 use crate::dispatch::{load_dropped, rendering_of, DispatchConfig, Dispatcher};
+use crate::door_both_ways::bind;
 use crate::export_door::{check, ExportInstance};
 
 /// The settings the sink opens on.
