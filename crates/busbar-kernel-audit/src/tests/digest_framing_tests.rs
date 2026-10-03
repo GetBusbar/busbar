@@ -175,3 +175,24 @@ fn every_field_of_a_length_framed_preimage_is_preceded_by_its_own_eight_byte_len
         "an integer framed as its decimal text"
     );
 }
+
+/// The chain's hex SHA-256 moved from RustCrypto `sha2` to ring (ONE crypto backend = ring). Every
+/// chain already on disk was hashed with the old one, so the bytes must be identical: the FIPS 180-2
+/// vector, and RustCrypto computed side by side.
+#[test]
+fn the_chain_digest_is_sha256_byte_for_byte() {
+    use sha2::Digest as _;
+    assert_eq!(
+        crate::digest::sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    for input in [&b""[..], b"abc", &[0xA5u8; 4096]] {
+        assert_eq!(
+            crate::digest::sha256_hex(input),
+            sha2::Sha256::digest(input)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+    }
+}

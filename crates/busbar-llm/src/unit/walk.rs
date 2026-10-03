@@ -59,6 +59,8 @@ pub struct WalkArrival {
     pub caller_token: Option<crate::engine::CallerCredential>,
     /// The request headers, as they arrived.
     pub headers: HeaderMap,
+    /// The request URL's query, as it arrived (`None` when the URL carried none).
+    pub query: Option<String>,
     /// The request body, as it arrived.
     pub body: Bytes,
     /// WHAT THE URL SAID, on the two surfaces whose model rides the path rather than the body.
@@ -168,6 +170,7 @@ pub struct Walk {
     operation: busbar_contract::operation::OpVerb,
     caller_token: Option<crate::engine::CallerCredential>,
     headers: HeaderMap,
+    query: Option<String>,
     body: Bytes,
     path: Option<crate::arrival::PathModelFacts>,
     carry: Mutex<Carry>,
@@ -198,6 +201,7 @@ impl Walk {
             operation,
             caller_token,
             headers,
+            query,
             body,
             path,
         } = arrival;
@@ -210,6 +214,7 @@ impl Walk {
             operation,
             caller_token,
             headers,
+            query,
             body,
             path,
             carry: Mutex::new(Carry::default()),
@@ -545,6 +550,18 @@ impl Walk {
         audited.decision
     }
 
+    /// THE CHARGED TERMINAL FOR A CALLER THAT WENT AWAY: the facts are sealed and nothing is
+    /// posted, so the fee the door charged stays charged. Whatever the carry holds is dropped with
+    /// the unit; there is nobody to give it to.
+    pub fn audit_abandoned(
+        &self,
+        token: &Pass<busbar_contract::caps::step::Audit>,
+        ctx: &crate::unit::audit::AuditCtx<'_>,
+    ) -> SeatVerdict<busbar_contract::caps::step::Audit> {
+        drop(self.take_bytes());
+        crate::unit::audit::audit_abandoned(token, ctx)
+    }
+
     /// THE NOT-CHARGED TERMINAL. Nothing was charged, so nothing is refunded.
     ///
     /// Same shape, same carry, same sealing; the difference is the door, and the door's difference
@@ -632,6 +649,7 @@ impl Walk {
             op,
             destination,
             headers: &self.headers,
+            query: self.query.as_deref(),
             body,
             parsed,
             caller_token: self.caller_token.as_ref(),

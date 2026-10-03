@@ -93,6 +93,8 @@ pub(crate) struct RouteInput<'a> {
     /// The admitted destination — post-downgrade, never the requested one.
     pub(crate) destination: &'a str,
     pub(crate) headers: &'a HeaderMap,
+    /// The request URL's query, as it arrived.
+    pub(crate) query: Option<&'a str>,
     pub(crate) body: Bytes,
     /// The body the Arrival step validated, carried as the lazy head projection. `None` for an
     /// opaque (multipart/binary) body, which relays at the byte level.
@@ -273,6 +275,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         op,
         destination,
         headers,
+        query,
         body,
         mut parsed,
         caller_token,
@@ -327,10 +330,12 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     // Every client header but the per-connection mechanics, the ones the dialects govern and
     // busbar's own (the pool's affinity header), for a same-dialect egress to forward unchanged
     // (busbar is invisible to upstreams).
-    let client_fwd = busbar_kernel::proxy::collect_client_headers(headers, |n| {
-        crate::engine::governed(n) || n.eq_ignore_ascii_case(affinity_header)
-    });
-
+    let client_fwd = crate::engine::ClientFwd {
+        headers: busbar_kernel::proxy::collect_client_headers(headers, |n| {
+            crate::engine::governed(n) || n.eq_ignore_ascii_case(affinity_header)
+        }),
+        query: query.map(str::to_string),
+    };
     // THE PLAN, named before the walk runs it: one leg per candidate the destination resolved to,
     // in the order the walk was handed them. The lane and the dial target are the deployment's own
     // runtime strings, interned once through the node's registration.

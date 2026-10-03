@@ -93,6 +93,9 @@ busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 # depends only on `busbar-contract`, so the edge is acyclic and kernel -> kernel, exactly as the
 # ledger, audit and breaker edges above.
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
+# The egress grant gate (authorization, Part 2 #36), re-exported as `busbar_kernel::egress_grant` for
+# the planes that gate their outbound credential on it.
+busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 # The folded `timing` module (former busbar-timing, OWNER Q70) calls `atexit(3)` for its process-exit
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
@@ -142,8 +145,6 @@ webpki-roots = { workspace = true }
 http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-sha2 = { workspace = true }
-hmac = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
 ed25519-dalek = { workspace = true }
@@ -197,7 +198,7 @@ hooks-ranking = []
 # W4.b P2: substrate absorbed. The neutral capability markers `dispatch`/`relay`/`runtime` (formerly
 # forwarded via `busbar-substrate/*`) are now declared HERE and forward to the pure value crate's
 # same-named markers so the value-side `#[cfg]` sites arm in lock-step, exactly as before.
-plane-mcp = ["egress-seam", "jsonrpc-ingress", "egress-auth-gate", "dispatch"]
+plane-mcp = ["egress-seam", "jsonrpc-ingress", "dispatch"]
 # THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
 # A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
 # Default-on — the shipped engine speaks A2A. With it OFF, `src/a2a` (and its plane-side helper
@@ -209,7 +210,7 @@ plane-mcp = ["egress-seam", "jsonrpc-ingress", "egress-auth-gate", "dispatch"]
 # Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
-plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "egress-auth-gate", "relay"]
+plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "relay"]
 # THE NEUTRAL INBOUND WS-ACCEPT CAPABILITY — arms the core-side `mount_ws_arrivals` seam (router.rs)
 # that mounts a plane's gauntlet-gated inbound-WebSocket arrivals. NAMES NO PLANE: any duplex plane
 # (streaming today, a future telephony/stream plane tomorrow) turns on the same capability. Forwards to
@@ -252,11 +253,7 @@ card-signing = []
 #                   `any(plane-mcp, plane-a2a)`), so its truth value — and the dead-code allowance the
 #                   gated module carries when NO such plane is compiled in — is byte-identical to the
 #                   plane-token gate it replaced, while the gated source names a capability, not a plane.
-#   egress-auth-gate — the outbound trust/egress auth gate (`egress_auth::gate`'s re-export). Served
-#                   ONLY by the trust-fronting planes; enabled by `plane-mcp` OR `plane-a2a` (was
-#                   `any(plane-mcp, plane-a2a)`), byte-identical for the same reason.
 jsonrpc-ingress = []
-egress-auth-gate = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
@@ -274,6 +271,8 @@ test-support = ["dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-ho
 timing = ["dep:libc"]
 
 [dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
+sha2 = { workspace = true }
 # THE PLANE CRATES, pulled in `test-support` so busbar-core's OWN cross-plane integration tests
 # (`src/tests/tests.rs`) can build and downcast the REAL, externally-linked planes instead of the
 # former `#[path]` dual-compile of their sources. This is a DEV-dependency back-edge: busbar-mcp /

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/egress_auth/gate.rs` — THE ONE EGRESS GATE.
+//! Tests for `crates/busbar-kernel-scope/src/egress.rs` — THE ONE EGRESS GATE.
 //!
 //! Two jobs, and the second is the one that makes the unification worth doing:
 //!
@@ -22,10 +22,7 @@
 //! an identity type, and a liveness rule. If the seam only fits things shaped like what already
 //! exists, it is not a seam.
 
-use super::*;
-
-use crate::audit::{verify_chain, Chain};
-use crate::audit_ring::{AuditEntry, AuditInput, OUTCOME_REJECTED};
+use crate::egress::*;
 
 // ══ THE THIRD PLANE ══════════════════════════════════════════════════════════════════════════════
 //
@@ -176,34 +173,12 @@ fn a_third_plane_costs_a_grant_kind_and_nothing_else() {
         );
     }
 
-    // AUDITED, in core's audit vocabulary, on core's hash chain, with no record type, no chain and
-    // no resource spelling written for this plane. `nothing auditing wise should be mcp a2a or llm
-    // specific` is the ruling; this is what it costs a new plane to comply with it: nothing.
+    // AUDITED: the refusal carries core's one audit spelling, so no record type and no resource
+    // spelling is written for this plane. That it lands on core's hash chain tamper-evidently is
+    // `busbar-kernel`'s `audit/tests/chain_tests.rs::an_egress_refusal_is_audited_on_the_chain`.
     let refusal = authorise(&key_with("k-queue", &[]), a_queue(), 0).expect_err("no grants at all");
     assert_eq!(refusal.audit_resource(), "queue_broker:kafka-prod");
     assert_eq!(refusal.caller(), "k-queue");
-
-    let mut chain: Chain<AuditEntry> = Chain::new();
-    let records = vec![chain.append(
-        "admin",
-        AuditInput {
-            ts: 1,
-            action: "queue.egress".to_string(),
-            resource: refusal.audit_resource(),
-            outcome: OUTCOME_REJECTED.to_string(),
-            principal: refusal.caller().to_string(),
-        },
-    )];
-    assert_eq!(verify_chain(&records), Ok(()));
-    assert_eq!(records[0].outcome, OUTCOME_REJECTED);
-    assert_eq!(records[0].resource, "queue_broker:kafka-prod");
-    assert_eq!(records[0].principal, "k-queue");
-
-    // And the audited refusal is TAMPER-EVIDENT for the third plane exactly as it is for the three
-    // real streams: rewriting who was refused breaks the chain.
-    let mut forged = records;
-    forged[0].principal = "someone-else".to_string();
-    verify_chain(&forged).expect_err("an edited egress-refusal record must break the chain");
 }
 
 // ══ THE GATE'S OWN CHECKS ════════════════════════════════════════════════════════════════════════

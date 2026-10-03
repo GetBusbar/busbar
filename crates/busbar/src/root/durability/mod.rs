@@ -150,7 +150,10 @@ mod audit;
 /// impl ([`SharedBook`]). Split out for `structure-lint`; a private child module, as `replay` is, its
 /// items re-exported so no caller's path changes.
 mod book;
-pub use book::{MoneyBook, PostingStamp, Settled, Settling, SharedBook};
+pub use book::{MoneyBook, PostingStamp, Settled, Settling};
+// The pass-through has one caller, the plane node, so it is built where the node is.
+#[cfg(linked_axis_node)]
+pub use book::SharedBook;
 
 /// How many sealed checkpoints a node holds in memory: the latest 1,024, oldest evicted first
 /// (architect ruling 2026-09-26, "checkpoint retention"). The journal holds every one.

@@ -61,7 +61,7 @@
 //! inviting a retry it would have to trust.
 
 // D3 Phase-C: the ask-state seal PODs + crypto (`AskState`, `Rejected`, `Sealer`, mint/open, and the
-// `DERIVE_DOMAIN`/`MAC_DOMAIN`/`HmacSha256` they need) now live in the neutral substrate so a plane
+// `DERIVE_DOMAIN`/`MAC_DOMAIN` and the ring HMAC-SHA256 they need) now live in the neutral substrate so a plane
 // holds the seal without naming core. Re-exported here so every in-core call site (`ask_state_sealer`
 // below, the sibling-crate caller that decides an ask, the tests) is unchanged. The key DERIVATION
 // stays core: `ask_state_sealer` reaches `GovState`'s crate-private signing seed and calls
@@ -69,7 +69,7 @@
 //
 // The neutral ask-state helpers `DEFAULT_TTL_SECS` (the short replay window) and `digest_arguments`
 // (the salient-parameter digest) relocated to the substrate seal beside the PODs — pure `mrtr` data +
-// `sha2`/`hex`, no core reach — and are re-exported here so `crate::plane::approvals::{DEFAULT_TTL_SECS,
+// SHA-256/`hex`, no core reach — and are re-exported here so `crate::plane::approvals::{DEFAULT_TTL_SECS,
 // digest_arguments}` still resolves for the tests and for that sibling-crate caller.
 
 /// SEAM: derive this deployment's ask-state [`Sealer`] from governance's fleet-shared signing
@@ -239,12 +239,8 @@ mod askstate_tests;
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use hmac::digest::KeyInit as _;
-use hmac::{Hmac, Mac as _};
+use ring::hmac;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// The DEFAULT life of a sealed state. Short, per `mrtr.mdx:236`: a caller answering an elicitation
 /// is a human at a prompt, not a batch job, and every second of validity is a second of replay
@@ -258,9 +254,8 @@ pub const DEFAULT_TTL_SECS: u64 = 300;
 /// `serde_json::Value`'s object representation is a `BTreeMap`, so the serialisation is key-ordered
 /// and two equal values digest equally regardless of the order the caller sent them in.
 pub fn digest_arguments(arguments: &serde_json::Value) -> String {
-    let mut h = Sha256::new();
-    h.update(serde_json::to_vec(arguments).unwrap_or_default());
-    hex::encode(h.finalize())
+    let bytes = serde_json::to_vec(arguments).unwrap_or_default();
+    busbar_kernel_ledger::digest::sha256_hex(&bytes)
 }
 
 /// A fresh nonce. `getrandom` is the same fail-closed entropy source key secrets use; a failure is
@@ -423,10 +418,11 @@ impl Sealer {
     /// `pub` (was `pub(crate)` in core) so `busbar_kernel::plane::approvals::ask_state_sealer` — the
     /// one seam that reaches `GovState` — can derive from the crate-private signing seed core-side.
     pub fn derive(signing_secret: &[u8; 32]) -> Self {
-        let mut mac =
-            HmacSha256::new_from_slice(signing_secret).expect("HMAC accepts a key of any length");
-        mac.update(DERIVE_DOMAIN);
-        let out = mac.finalize().into_bytes();
+        let out = hmac::sign(
+            &hmac::Key::new(hmac::HMAC_SHA256, signing_secret),
+            DERIVE_DOMAIN,
+        );
+        let out = out.as_ref();
         let mut key = [0u8; 32];
         key.copy_from_slice(&out[..32]);
         Self { key }
@@ -453,13 +449,12 @@ impl Sealer {
         let tag = URL_SAFE_NO_PAD
             .decode(sig.as_bytes())
             .map_err(|_| Rejected::Malformed)?;
-        let mut mac =
-            HmacSha256::new_from_slice(&self.key).expect("HMAC accepts a key of any length");
-        mac.update(MAC_DOMAIN);
-        mac.update(encoded.as_bytes());
+        let mut signed = Vec::with_capacity(MAC_DOMAIN.len() + encoded.len());
+        signed.extend_from_slice(MAC_DOMAIN);
+        signed.extend_from_slice(encoded.as_bytes());
         // CONSTANT TIME, and it also rejects a tag of the wrong length rather than comparing a
         // prefix. A `==` on `Vec<u8>` would be neither.
-        mac.verify_slice(&tag).map_err(|_| Rejected::BadSignature)?;
+        hmac::verify(&self.mac_key(), &signed, &tag).map_err(|_| Rejected::BadSignature)?;
 
         let payload = URL_SAFE_NO_PAD
             .decode(encoded.as_bytes())
@@ -476,14 +471,17 @@ impl Sealer {
 
     /// The MAC over the domain tag and the encoded payload.
     fn tag(&self, encoded: &[u8]) -> [u8; 32] {
-        let mut mac =
-            HmacSha256::new_from_slice(&self.key).expect("HMAC accepts a key of any length");
+        let mut mac = hmac::Context::with_key(&self.mac_key());
         mac.update(MAC_DOMAIN);
         mac.update(encoded);
-        let out = mac.finalize().into_bytes();
         let mut tag = [0u8; 32];
-        tag.copy_from_slice(&out[..32]);
+        tag.copy_from_slice(&mac.sign().as_ref()[..32]);
         tag
+    }
+
+    /// The HMAC-SHA256 key (ring, the one crypto backend) over the derived bytes.
+    fn mac_key(&self) -> hmac::Key {
+        hmac::Key::new(hmac::HMAC_SHA256, &self.key)
     }
 }
 

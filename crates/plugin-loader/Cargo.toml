@@ -134,7 +134,6 @@ busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 # (DECISIONS #33). Verify + sign only, no key generation and therefore no RNG: the
 # engine-facing half stays RNG-free and `keygen` keeps its OS RNG on the tooling side.
 ed25519-dalek = { workspace = true }
-sha2 = { workspace = true }
 hex = { workspace = true }
 libloading = { workspace = true }
 # `tokio` is `rt`/`time`/`sync` only (spawn_blocking, timeouts, the hook quarantine's wait) — no

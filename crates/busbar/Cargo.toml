@@ -43,7 +43,6 @@ busbar-core-connector = { path = "../busbar-core-connector" }
 # into the fixed-width `reason_hash` the dated rate-card history seals (the same SHA-256 the substrate
 # signs with). These are the composition root's, used only by the admin verb's effect half.
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 hex = { workspace = true }
 # The deployment keyset (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13): `root::keyset` mints the one
 # ed25519 seed that signs the audit chain and the ledger's checkpoints from the OS CSPRNG.
@@ -181,6 +180,8 @@ tracing = { workspace = true }
 # THE COLLECTOR EGRESS POLICY (`root::otlp`, K9e-2): the OTLP endpoint guard, which the host's egress
 # carrier holds a sink that declares `collector` to, parses the target as a URL.
 url = { workspace = true }
+# Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
+idna_adapter = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
 # THE THREAD-PER-CORE BOOT SEAM — the one unix data-plane topology (non-unix keeps the classic
@@ -438,6 +439,8 @@ plane-decisions = "plane_decisions"
 proto-llm = "plane_node"
 
 [dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
+sha2 = { workspace = true }
 # root_listeners_are_the_connectors.rs: the TLS data door's certificate, generated per run.
 rcgen = { workspace = true, features = ["pem"] }
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic

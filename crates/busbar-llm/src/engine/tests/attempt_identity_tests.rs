@@ -562,7 +562,7 @@ async fn run_legacy(case: &Case) -> Observed {
         APPLICATION_JSON,
         None,
         None,
-        &[],
+        &Default::default(),
     )
     .await;
     let observed = observe(result, &*app.store, &upstream).await;
@@ -600,7 +600,7 @@ async fn run_attempt(case: &Case) -> Observed {
         crate::test_support::CHAT,
         APPLICATION_JSON,
         &mut usage_sink,
-        request_ctx.forwarded_client_headers.as_slice(),
+        &request_ctx.forwarded_client,
     )
     .await;
     let observed = observe(result, &*app.store, &upstream).await;

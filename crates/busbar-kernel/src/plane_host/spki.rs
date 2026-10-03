@@ -34,7 +34,6 @@
 //! change without changing the key, so every one of those forms is refused rather than tolerated.
 
 use base64::Engine as _;
-use sha2::{Digest, Sha256};
 
 /// Standard base64 (padded), matching the rendering of every other digest on this plane.
 const B64: base64::engine::general_purpose::GeneralPurpose =
@@ -188,5 +187,6 @@ pub fn subject_public_key_info(cert_der: &[u8]) -> Result<&[u8], SpkiError> {
 /// certificate are the SAME string, which is the whole reason the walk lives in one place.
 pub fn pin(cert_der: &[u8]) -> Result<String, SpkiError> {
     let key_info = subject_public_key_info(cert_der)?;
-    Ok(format!("sha256/{}", B64.encode(Sha256::digest(key_info))))
+    let digest = ring::digest::digest(&ring::digest::SHA256, key_info);
+    Ok(format!("sha256/{}", B64.encode(digest.as_ref())))
 }

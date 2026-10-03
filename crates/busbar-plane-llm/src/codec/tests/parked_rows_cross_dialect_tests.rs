@@ -223,12 +223,40 @@ fn bedrock_output_config_effort_crosses_as_the_reasoning_ask() {
                       "outputConfig": {"effort": "high"}});
     let out = cross("bedrock", "openai", &body);
     assert_eq!(out.get("reasoning_effort"), Some(&json!("high")), "{out}");
-    let out = cross("bedrock", "anthropic", &body);
+    // Anthropic spells an effort word as adaptive thinking + `output_config.effort` only on a lane
+    // whose model declares it (`LaneCaps::anthropic_adaptive_thinking`, ANT-10: `budget_tokens`
+    // 400s there); every other Anthropic lane takes the effort as its numeric thinking budget.
+    let mut req = protocol_for("bedrock")
+        .expect("bedrock")
+        .reader()
+        .read_request(&body)
+        .expect("read");
+    req.extra.clear();
+    let adaptive = busbar_contract::ir::egress_prep::LaneCaps {
+        anthropic_adaptive_thinking: true,
+        ..Default::default()
+    };
+    let out = protocol_for("anthropic")
+        .expect("anthropic")
+        .writer()
+        .write_request_for_lane(&req, "claude-opus-4-7", &adaptive);
     assert_eq!(
         out.pointer("/output_config/effort"),
         Some(&json!("high")),
         "{out}"
     );
+    assert_eq!(
+        out.pointer("/thinking/type"),
+        Some(&json!("adaptive")),
+        "{out}"
+    );
+    let out = cross("bedrock", "anthropic", &body);
+    assert!(
+        out.pointer("/thinking/budget_tokens")
+            .is_some_and(Value::is_u64),
+        "a lane without adaptive thinking takes the effort as a budget: {out}"
+    );
+    assert!(out.pointer("/output_config/effort").is_none(), "{out}");
 
     // An explicit thinking budget in additionalModelRequestFields wins over the effort word.
     let both = json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}],

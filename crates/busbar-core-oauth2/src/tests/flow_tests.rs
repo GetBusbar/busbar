@@ -59,7 +59,7 @@ struct Cookie {
 /// and — more to the point — this file's whole claim is that the cookie reaches the paths that read
 /// it, so the code deciding that has to be visible in the test rather than three crates away.
 #[derive(Default)]
-struct Jar {
+pub(crate) struct Jar {
     cookies: Vec<Cookie>,
     /// `true` when the connection this jar is used over is a secure one. `Secure` cookies are
     /// stored only when it is (RFC 6265bis §5.5), which is what makes a `Secure` attribute on a
@@ -68,7 +68,7 @@ struct Jar {
 }
 
 impl Jar {
-    fn new(secure_connection: bool) -> Self {
+    pub(crate) fn new(secure_connection: bool) -> Self {
         Self {
             cookies: Vec::new(),
             secure_connection,
@@ -79,7 +79,7 @@ impl Jar {
     ///
     /// `Max-Age=0` deletes, which is how a clearing header is honoured rather than stored as a
     /// cookie with an empty value.
-    fn store(&mut self, set_cookie: &str, request_path: &str) {
+    pub(crate) fn store(&mut self, set_cookie: &str, request_path: &str) {
         let mut parts = set_cookie.split(';');
         let (name, value) = parts
             .next()
@@ -124,7 +124,7 @@ impl Jar {
 
     /// The `Cookie` header to send to `request_path`, or `None` when nothing matches — which is the
     /// answer this whole file is about.
-    fn header_for(&self, request_path: &str) -> Option<String> {
+    pub(crate) fn header_for(&self, request_path: &str) -> Option<String> {
         let sent: Vec<String> = self
             .cookies
             .iter()
@@ -165,7 +165,7 @@ fn path_matches(request_path: &str, cookie_path: &str) -> bool {
 ///
 /// Redirects are followed by hand below so every hop's status, `Location` and cookie header can be
 /// asserted on — a client that followed them would hide the exact hop this file is about.
-async fn send(
+pub(crate) async fn send(
     client: &reqwest::Client,
     jar: &mut Jar,
     method: reqwest::Method,
@@ -191,7 +191,7 @@ async fn send(
 }
 
 /// The path component of an absolute URL, or of a path that is already one.
-fn path_of(url: &str) -> String {
+pub(crate) fn path_of(url: &str) -> String {
     let rest = url
         .strip_prefix("http://")
         .or_else(|| url.strip_prefix("https://"));
@@ -209,7 +209,7 @@ fn path_of(url: &str) -> String {
 }
 
 /// One query parameter of a URL, percent-decoded exactly as far as this test needs.
-fn query_param(url: &str, name: &str) -> Option<String> {
+pub(crate) fn query_param(url: &str, name: &str) -> Option<String> {
     url.split(['?', '&'])
         .skip(1)
         .filter_map(|p| p.split_once('='))
@@ -218,7 +218,7 @@ fn query_param(url: &str, name: &str) -> Option<String> {
 }
 
 /// The `Location` of a redirect, as an absolute URL against `origin`.
-fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> String {
+pub(crate) fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> String {
     let raw = headers
         .get(reqwest::header::LOCATION)
         .expect("a redirect carries Location")
@@ -266,6 +266,8 @@ async fn serve_with_admin_chain(
         key_id: None,
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
+        fapi2: false,
+        clients: Vec::new(),
     };
     let app = TestApp::new()
         .admin_chain(admin_chain)
@@ -375,6 +377,8 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
             key_id: None,
             default_grant: Vec::new(),
             access_token_ttl_secs: None,
+            fapi2: false,
+            clients: Vec::new(),
         };
         let id = AsIdentity::from_cfg(&cfg).expect("valid issuer");
         let cookies = session_cookies(&id, "deadbeef");
@@ -798,7 +802,7 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
 }
 
 /// Percent-decoding for the one value this file reads back out of a URL it was handed.
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -1003,6 +1007,8 @@ async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
         key_id: None,
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
+        fapi2: false,
+        clients: Vec::new(),
     };
     let app = TestApp::new().oauth_as(&cfg).build();
 

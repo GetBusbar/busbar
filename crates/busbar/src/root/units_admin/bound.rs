@@ -416,7 +416,6 @@ pub(crate) fn replayable(
     effect: impl FnOnce() -> Result<AdminAnswer, GovernanceError>,
 ) -> Result<Vec<u8>, GovernanceError> {
     use busbar_core_admin::idempotency::Probe;
-    use sha2::Digest as _;
 
     let Some(header) = unit
         .headers
@@ -428,7 +427,7 @@ pub(crate) fn replayable(
         return effect().map(|a| a.pack());
     };
     let name = busbar_core_admin::verb_name(verb).unwrap_or_default();
-    let digest: [u8; 32] = sha2::Sha256::digest(body).into();
+    let digest: [u8; 32] = busbar_kernel_ledger::digest::sha256(body);
     // Scoped to the resolved PRINCIPAL, as the key mint's is: two principals sharing a key value
     // never replay each other's answer.
     match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {

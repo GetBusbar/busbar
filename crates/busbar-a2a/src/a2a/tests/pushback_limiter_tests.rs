@@ -71,3 +71,14 @@ fn an_out_of_order_now_cannot_refill_a_spent_budget() {
         "an unreadable wall clock read as 0 must not wipe task-a's live counter"
     );
 }
+
+/// The push capability's MAC moved from RustCrypto `hmac` to ring (ONE crypto backend = ring). A
+/// token minted before the move must still verify after it, so the MAC must be bit-identical:
+/// HMAC-SHA256 under a fixed key, pinned from an independent implementation (Python `hmac`).
+#[test]
+fn the_push_capability_mac_is_hmac_sha256_byte_for_byte() {
+    assert_eq!(
+        mac_of(&[7u8; 32], "task-1"),
+        "9f28a55a052e22175594eda3a39041cb58ccece4d3a98e7c0ef8d06f89e5c718"
+    );
+}

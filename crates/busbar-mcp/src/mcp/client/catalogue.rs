@@ -86,8 +86,7 @@ pub(crate) struct ToolDef {
 /// operator question those separate answers serve — the operator's question is "is this the same
 /// tool I approved", which is one question.
 pub(crate) fn tool_digest(def: &ToolDef) -> String {
-    use sha2::Digest as _;
-    let mut h = sha2::Sha256::new();
+    let mut h = ring::digest::Context::new(&ring::digest::SHA256);
     // Length-prefixed, so a description ending in what the next field starts with cannot forge the
     // same byte stream as a different split. Concatenating three attacker-influenced strings with a
     // separator the attacker may also type is the classic digest-collision-by-framing bug.
@@ -96,10 +95,10 @@ pub(crate) fn tool_digest(def: &ToolDef) -> String {
         def.description.as_str(),
         &canonical_json(&def.input_schema),
     ] {
-        h.update((part.len() as u64).to_be_bytes());
+        h.update(&(part.len() as u64).to_be_bytes());
         h.update(part.as_bytes());
     }
-    format!("sha256:{}", hex::encode(h.finalize()))
+    format!("sha256:{}", hex::encode(h.finish().as_ref()))
 }
 
 /// Render `value` with every object's keys sorted, recursively. See the module header: this is what

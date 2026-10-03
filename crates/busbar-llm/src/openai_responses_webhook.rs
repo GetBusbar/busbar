@@ -128,23 +128,11 @@ impl ResponsesWebhookEvent {
     }
 }
 
-/// HMAC-SHA256 of `data` under `key`. Mirrors the SigV4 signer's own `hmac` (which is private, so it
-/// cannot be reused): `Hmac::new_from_slice` is infallible for HMAC (any key length is legal), but we
-/// avoid `expect()`/panic on the request path — an unreachable init error yields an empty digest,
-/// which simply fails the signature comparison (a safe refusal) rather than aborting the task.
+/// HMAC-SHA256 of `data` under `key`, on ring (the one crypto backend). Any key length is legal
+/// for HMAC, so there is no fallible step and nothing can panic on the request path.
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
-    use hmac::digest::KeyInit;
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    match <Hmac<Sha256>>::new_from_slice(key) {
-        Ok(mut mac) => {
-            mac.update(data);
-            mac.finalize().into_bytes().to_vec()
-        }
-        // Unreachable (HMAC accepts any key length); return an empty digest so verification FAILS
-        // (SignatureMismatch) rather than panicking on the request path.
-        Err(_) => Vec::new(),
-    }
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    ring::hmac::sign(&key, data).as_ref().to_vec()
 }
 
 /// Decode a `whsec_<base64>` signing secret into its raw key bytes. Returns

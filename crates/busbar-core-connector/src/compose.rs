@@ -616,6 +616,9 @@ impl Connection {
             None => self.sleep = None,
             Some(at) => {
                 if self.sleep.as_ref().is_none_or(|(when, _)| *when != at) {
+                    // A conn driven from a dispatcher worker arms its deadline on the process's
+                    // runtime timer, as its socket is on that runtime's reactor.
+                    let _entered = crate::io::enter_process_runtime();
                     self.sleep = Some((
                         at,
                         Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(at))),

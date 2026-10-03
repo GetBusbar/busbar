@@ -1047,9 +1047,8 @@ fn random_b64url(n_bytes: usize) -> String {
 
 /// The PKCE S256 `code_challenge` = base64url(sha256(code_verifier)).
 fn code_challenge_s256(code_verifier: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(code_verifier.as_bytes());
-    B64.encode(digest)
+    let digest = ring::digest::digest(&ring::digest::SHA256, code_verifier.as_bytes());
+    B64.encode(digest.as_ref())
 }
 
 // ── query parsing + response helpers ─────────────────────────────────────────────────────────────

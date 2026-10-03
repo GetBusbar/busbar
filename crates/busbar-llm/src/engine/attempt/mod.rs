@@ -103,7 +103,7 @@ pub(crate) struct Hop<'a> {
     pub(crate) resolved_gov_key: Option<&'a Arc<busbar_contract::records::VirtualKey>>,
     pub(crate) remaining_secs: u64,
     pub(crate) breaker_cfg: &'a Arc<busbar_kernel::store::BreakerCfg>,
-    pub(crate) client_fwd: &'a [(axum::http::HeaderName, axum::http::HeaderValue)],
+    pub(crate) client_fwd: &'a crate::engine::select::ClientFwd,
     pub(crate) chosen_policy_name: Option<&'static str>,
     pub(crate) metric_pool: &'a str,
     pub(crate) degraded: bool,

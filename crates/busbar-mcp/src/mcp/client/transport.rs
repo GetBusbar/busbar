@@ -250,7 +250,6 @@ pub(crate) mod test_ca {
     pub(crate) static TEST_CA: LazyLock<TestCa> = LazyLock::new(|| {
         use base64::Engine as _;
         use rcgen::{CertificateParams, IsCa, Issuer, KeyPair, PublicKeyData};
-        use sha2::{Digest, Sha256};
 
         let ca_kp = KeyPair::generate().expect("ca key");
         let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
@@ -270,8 +269,10 @@ pub(crate) mod test_ca {
         let trust_anchor_ref = busbar_kernel::plane_host::trust_anchor::register(ca_der);
         let expected_pin = format!(
             "sha256/{}",
-            base64::engine::general_purpose::STANDARD
-                .encode(Sha256::digest(leaf_kp.subject_public_key_info()))
+            base64::engine::general_purpose::STANDARD.encode(ring::digest::digest(
+                &ring::digest::SHA256,
+                &leaf_kp.subject_public_key_info()
+            ))
         );
         TestCa {
             leaf_pem: leaf_cert.pem(),

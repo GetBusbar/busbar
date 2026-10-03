@@ -218,11 +218,28 @@ metrics-util = { version = "0.20.4", default-features = false }
 # off: busbar signs and verifies ES256 only, over `ring`, and `jwt-rsa` would pull the `rsa` crate
 # with its RUSTSEC-2023-0071 signing advisory into a tree that has no use for it. `test-util` (the
 # signer/storage conformance harnesses, dev-dependencies only) is likewise unrenamed.
+#
+# THE FAPI 2.0 SECURITY PROFILE BUILDING BLOCKS (1.6.0, owner ruling 2026-09-19: the code is built
+# to pass the OIDF suite). Each is used only under `oauth_as.fapi2: true`; none adds a crate to the
+# graph (`par = []`, `dpop` and `client-assertion` = `["jwt"]`, already on):
+#
+#   par                RFC 9126 pushed authorization requests: the `/par` endpoint and the
+#                      `require_pushed_authorization_requests` flag FAPI 2.0 s5.3.2.2-3 mandates.
+#   dpop               RFC 9449 sender-constrained tokens (`cnf.jkt`), FAPI 2.0 s5.3.4-2. Verified
+#                      by the ES256 verifier busbar already installs over `ring`.
+#   client-assertion   RFC 7523 `private_key_jwt`, the profile's client authentication.
+#
+# The plain posture's RFC 8414 document stays the bytes it was: the plane serves it with the
+# members these three add removed (`busbar_core_oauth2::plane`), so a deployment that did not ask
+# for the profile advertises none of it.
 oauth-as = { version = "1.0.0", features = [
     "http",
     "jwt",
     "consent",
     "resource-metadata",
+    "par",
+    "dpop",
+    "client-assertion",
 ] }
 # The OpenTelemetry project's own generated OTLP types, DEV-ONLY: the root's OTLP proofs decode what
 # the `otlp` sink (GetBusbar/busbar-export-otlp) posts with the proto's publisher's types, never with the
@@ -288,7 +305,11 @@ serde_urlencoded = "0.7"
 # `serde_yaml::from_str` call site unchanged. Renaming here states the substitution once for the
 # whole workspace instead of re-arguing it in each member.
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
-sha2 = "0.11.0"
+# 0.10, the line every dependency that carries RustCrypto ships (oauth-as, sha1 via axum/tungstenite).
+# busbar's own digests and MACs are on ring (the one crypto backend); sha2 stays only where ring
+# would be a new backend in a plugin's closure (busbar-contract) and as the independent witness the
+# tests compare ring's bytes against.
+sha2 = "0.10"
 smallvec = "1"
 # Raw socket options for the thread-per-core data plane: each per-worker listener sets SO_REUSEPORT
 # so the kernel load-balances connections across the per-worker `TcpListener`s. Binary-only boot seam;
@@ -365,6 +386,11 @@ tungstenite = { version = "0.29", default-features = false }
 # under reqwest's re-export alias, and the egress-symmetry sweep spells the dependency honestly.
 # Already in the lock (reqwest, a2a-lf and friends all resolve it).
 url = "2"
+# THE IDNA BACKEND SELECTOR `idna` itself documents: 1.1.x maps Unicode hostnames through the small
+# unicode-rs crates (unicode-normalization, unicode-bidi) instead of ICU4X's ~20-crate stack, which
+# `url` -> `idna` otherwise links into the binary only for this. UTS #46 processing is unchanged.
+# Pinned exactly: the selection is the version number. Declared by the binary crate (`busbar`).
+idna_adapter = "=1.1.0"
 zeroize = "1"
 
 # ── BUSBAR'S OWN CRATES, AS A PLUGIN REPO NAMES THEM ─────────────────────────────────────────────

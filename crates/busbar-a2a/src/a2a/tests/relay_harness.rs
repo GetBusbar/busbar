@@ -187,7 +187,7 @@ impl RelayTransport for RecordingTransport {
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
         self.record(http_method, url, addr, headers, body, false);
         match &self.outcome {
             Outcome::Answers(status, reply) => Ok(HttpResponse {
@@ -204,7 +204,7 @@ impl RelayTransport for RecordingTransport {
                 client_identity_offered: false,
                 ..Default::default()
             }),
-            Outcome::Fails(err) => Err(err.clone()),
+            Outcome::Fails(err) => Err(err.clone().into()),
             Outcome::AnswersByHost(hosts) => {
                 let host = url.host_str().unwrap_or_default().to_string();
                 let (_, status, reply) = hosts
@@ -359,7 +359,6 @@ impl RelaySeam for RecordingSeam {
 /// would be defeated by `base64` and would say so with a green tick.
 pub(super) fn encodings(secret: &str) -> Vec<(&'static str, Vec<u8>)> {
     use base64::Engine as _;
-    use sha2::Digest as _;
     let mut v = vec![
         ("plain", secret.as_bytes().to_vec()),
         (
@@ -378,9 +377,8 @@ pub(super) fn encodings(secret: &str) -> Vec<(&'static str, Vec<u8>)> {
     ];
     // sha256, because "we only sent a hash of it" is still sending a value derived from a
     // credential to a party that has no business holding one.
-    let mut h = sha2::Sha256::new();
-    h.update(secret.as_bytes());
-    v.push(("sha256-hex", hex::encode(h.finalize()).into_bytes()));
+    let digest = ring::digest::digest(&ring::digest::SHA256, secret.as_bytes());
+    v.push(("sha256-hex", hex::encode(digest.as_ref()).into_bytes()));
     v
 }
 

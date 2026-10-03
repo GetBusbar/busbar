@@ -315,3 +315,46 @@ fn the_pristine_ask_splices_after_the_opening_brace_and_falls_back_to_a_parse() 
     assert_eq!(out, b"[1]");
     assert!(try_inject_stream_include_usage(br#"{"stream_options":"x"}"#.to_vec()).is_err());
 }
+
+/// BUSBAR IS INVISIBLE TO UPSTREAMS, THE URL TOO: a same-dialect attempt carries the caller's own
+/// query, in its order and spelling, but the dialect's governed credential parameters and the ones
+/// the target already sets (busbar's own stream framing); a translated attempt carries none.
+#[test]
+fn the_callers_query_goes_out_on_a_same_dialect_attempt() {
+    assert_eq!(
+        with_caller_query(
+            "gemini",
+            "/v1beta/models/m:streamGenerateContent?alt=sse",
+            "key=secret&alt=json&trace=a%2Fb"
+        ),
+        Some("/v1beta/models/m:streamGenerateContent?alt=sse&trace=a%2Fb".to_string())
+    );
+    assert_eq!(
+        with_caller_query("openai", "/v1/chat/completions", "trace=1&beta=true"),
+        Some("/v1/chat/completions?trace=1&beta=true".to_string())
+    );
+    assert_eq!(with_caller_query("gemini", "/x", "key=secret"), None);
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrive(
+        "POST",
+        "/v1/messages?beta=true",
+        &h,
+        br#"{"model":"claude","max_tokens":5,"messages":[]}"#,
+        &(),
+    )
+    .expect("arrives");
+    let same = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    assert_eq!(same.target, "/v1/messages?beta=true");
+    let crossed = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(crossed.target, "/v1/chat/completions");
+}
+
+/// A signed dialect's attempt carries no caller query until its signer signs the canonical query
+/// (never a query the signature omits).
+#[test]
+fn a_signed_dialects_attempt_carries_no_query_yet() {
+    assert_eq!(
+        with_caller_query("bedrock", "/model/m/converse", "trace=1"),
+        None
+    );
+}

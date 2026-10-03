@@ -200,7 +200,7 @@ impl CimdFetch for Recording {
 async fn the_store_wins_and_every_cimd_failure_reads_as_an_unknown_client() {
     let fetch = Recording::refusing();
     let handle: Arc<Recording> = Arc::clone(&fetch);
-    let store = CimdStore::new(MemoryStorage::new(), ceiling(), handle);
+    let store = CimdStore::new(MemoryStorage::new(), ceiling(), handle, Vec::new());
 
     // An opaque id misses without consulting the fetch.
     let missed = store

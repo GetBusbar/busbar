@@ -45,7 +45,6 @@ tokio-util = { workspace = true }
 # the SHA-256 an SPKI pin is compared under. Both moved here with the outbound trust itself, which a
 # transport no longer holds (TRANSPORT-STACK: TLS is core's connection security).
 webpki-roots = { workspace = true }
-sha2 = { workspace = true }
 # The host's UDP port (`udp`): a non-blocking datagram socket built without a runtime.
 socket2 = { workspace = true }
 # The dtls engine (`dtls`): dimpl for the DTLS state machine, run on ring through the engine's own
@@ -69,6 +68,8 @@ libc = { workspace = true }
 
 
 [dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 # THE UNIVERSAL-NEEDS WITNESS (tests/universal_needs.rs, its only user): the fixture below is loaded
 # dropped in through the real admission, scan and open, never a host written for the test. Dev-only.

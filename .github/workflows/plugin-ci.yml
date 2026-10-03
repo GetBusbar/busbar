@@ -279,7 +279,17 @@ jobs:
       - name: build (the rlib a busbar build links, and the cdylib a signed tarball carries)
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
-        run: cargo build --workspace --locked
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+        run: |
+          set -euo pipefail
+          cargo build --workspace --locked
+          # the door is behind the crate's `dropped-in` feature once the crate declares it; pass it only then
+          # (works before and after the plugin repos gate their export_door!).
+          feat=""
+          if cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
+          # the cdylib a signed tarball carries: rebuilt with the door when the crate declares it
+          [ -z "$feat" ] || cargo build --locked -p "$CRATE" $feat
       - name: "C: build from busbar_plugin.h alone (the library a signed tarball carries)"
         if: inputs.plugin_lang == 'c'
         env:
@@ -367,8 +377,10 @@ jobs:
           set -uo pipefail
           rc=0
           python3 busbar/scripts/fleet/plugin-gates.py netban "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml "$REPO" || rc=1
+          feat=""
+          if (cd plugin && cargo metadata --format-version 1 --no-deps) | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
           (cd plugin && CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
-            cargo build --release --locked -p "$CRATE" --lib) || exit 1
+            cargo build --release --locked -p "$CRATE" --lib $feat) || exit 1
           lib="plugin/target/release/lib${CRATE//-/_}.so"
           [ -f "$lib" ] || { echo "::error::no cdylib at $lib"; exit 1; }
           nm -D --undefined-only "$lib" | awk '{print $NF}' > "$RUNNER_TEMP/undef.txt"
@@ -466,7 +478,17 @@ jobs:
       - name: build
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
-        run: cargo build --workspace --locked
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+        run: |
+          set -euo pipefail
+          cargo build --workspace --locked
+          # the door is behind the crate's `dropped-in` feature once the crate declares it; pass it only then
+          # (works before and after the plugin repos gate their export_door!).
+          feat=""
+          if cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
+          # the cdylib a signed tarball carries: rebuilt with the door when the crate declares it
+          [ -z "$feat" ] || cargo build --locked -p "$CRATE" $feat
       - name: test
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
