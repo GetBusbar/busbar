@@ -33,9 +33,10 @@
 //!    plane's own `the_digest_of_the_cross_language_pin_fixture_is_pinned`. A drift here would make
 //!    the control fail for the wrong reason; this test names that reason instead.
 
-// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
-// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
-#![cfg(all(linked_axis_stdio_serve, feature = "auth-admin-tokens"))]
+// The plane under test owns `tools:`, and no registration axis is that plane's alone, so the file
+// runs on the every-plane build (build.rs emits `linked_every_plane` from
+// `[package.metadata.busbar.linked-axes]`), the composition that always links it.
+#![cfg(all(linked_every_plane, feature = "auth-admin-tokens"))]
 
 mod common;
 

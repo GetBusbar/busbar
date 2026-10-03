@@ -271,8 +271,8 @@ pub trait AuthPlugin: AuthModule + LoginModule {}
 impl<T: AuthModule + LoginModule + ?Sized> AuthPlugin for T {}
 
 /// WHY a chain verdict did not resolve to an admitted identity. The DECISION is closed here; the
-/// WORDS are the caller's — the HTTP middleware renders an RFC 6750 challenge or a native envelope,
-/// and the stdio serve mode a boot-time stderr sentence and a nonzero exit — which is the same
+/// WORDS are the caller's — the HTTP middleware renders an RFC 6750 challenge or a native envelope —
+/// which is the same
 /// decision/vocabulary split `crate::ingress::protocol::CoreRefusal` documents for the ingress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityRefusal {

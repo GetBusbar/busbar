@@ -550,16 +550,13 @@ pub(crate) extern "C-unwind" fn egress_open(
             // gets the scope an operator-configured upstream gets; a plane-chosen URL gets `0`
             // (default-deny: public HTTPS only, a private/loopback or plaintext hop is REFUSED).
             EgressKind::OneShot => open_http(state.scope, d, host_scope(state, d), out),
-            // Phase 2: a governed RAW duplex byte channel. It SHARES the subprocess pipe shape
-            // (`pipe_read`/`pipe_write` keyed by a `PipeId`); only the channel differs — a pinned
-            // socket rather than a child's stdio. The governance path is identical (resolve-then-pin,
-            // SPKI, mTLS, breaker, meter); joining it is append-only (no ABI change). Refused honestly.
-            EgressKind::RawConn => StatusClass::Unsupported,
-            // A governed child process, its stdin/stdout the duplex `PipeId` — spawned ONLY under the
-            // HOST program allowlist. FFI-F3: no operator config wires a subprocess program allowlist
-            // over the FFI seam today, so the host authorizes NO program (`&[]`) and every plane-driven
-            // subprocess open is REFUSED at the allowlist. See [`super::pipe`].
-            EgressKind::Subprocess => super::pipe::open_subprocess(state, d, &[], out),
+            // Phase 2: a governed RAW duplex byte channel (`pipe_read`/`pipe_write` keyed by a
+            // `PipeId`). The governance path is identical (resolve-then-pin, SPKI, mTLS, breaker,
+            // meter); joining it is append-only (no ABI change). Refused honestly. The SUBPROCESS tier
+            // shares the shape and is refused the same way: no operator config ever wired a program
+            // allowlist over the FFI seam (FFI-F3), and busbar's own child-process use is parked out of
+            // 1.6.0 (OWNER 2026-10-02).
+            EgressKind::RawConn | EgressKind::Subprocess => StatusClass::Unsupported,
         }
     })
 }

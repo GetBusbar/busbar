@@ -9,4 +9,3 @@ http -
 sse -
 ws session
 grpc session
-stdio session

@@ -4,7 +4,21 @@
 //! Tests for `crates/busbar-substrate/src/ingress/byte_duplex.rs`.
 
 use super::*;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use futures::channel::mpsc;
+
+/// A session spine over an in-memory MESSAGE sink whose far end stays open for as long as the
+/// returned receiver lives, so a frame written through it lands.
+fn open_shared() -> (Arc<Shared>, mpsc::UnboundedReceiver<Vec<u8>>) {
+    let (tx, rx) = mpsc::unbounded::<Vec<u8>>();
+    (new_shared(Box::new(MessageSink { sink: tx })), rx)
+}
+
+/// A session spine over a MESSAGE sink whose far end is already gone: every frame is refused.
+fn closed_shared() -> Arc<Shared> {
+    let (tx, rx) = mpsc::unbounded::<Vec<u8>>();
+    drop(rx);
+    new_shared(Box::new(MessageSink { sink: tx }))
+}
 
 /// A trivial ECHO plane: no protocol, no wire vocabulary. It echoes an ordinary frame back
 /// verbatim, and — to exercise the correlation table — a frame beginning `call` triggers an
@@ -39,84 +53,10 @@ impl DuplexPlane for EchoPlane {
     }
 }
 
-/// Drive the pump over an in-memory duplex: frames written to the far end come back echoed,
-/// both a mid-stream frame and a final unterminated one, and EOF ends the loop.
-#[tokio::test]
-async fn echo_round_trips_frames_and_stops_on_eof() {
-    let (near, far) = tokio::io::duplex(4096);
-    let (near_r, near_w) = tokio::io::split(near);
-    let pump = tokio::spawn(serve(near_r, near_w, Arc::new(EchoPlane)));
-
-    let (far_r, mut far_w) = tokio::io::split(far);
-    let mut far_r = tokio::io::BufReader::new(far_r);
-
-    far_w.write_all(b"hello\n").await.unwrap();
-    far_w.write_all(b"  \n").await.unwrap(); // a blank line is not a frame
-    far_w.write_all(b"world\n").await.unwrap();
-
-    let mut line = String::new();
-    far_r.read_line(&mut line).await.unwrap();
-    assert_eq!(line, "hello\n");
-    line.clear();
-    far_r.read_line(&mut line).await.unwrap();
-    assert_eq!(line, "world\n", "the blank line produced no frame");
-
-    // A final UNTERMINATED line is still one frame; closing the writer is EOF.
-    far_w.write_all(b"tail").await.unwrap();
-    far_w.shutdown().await.unwrap();
-    drop(far_w);
-    line.clear();
-    far_r.read_line(&mut line).await.unwrap();
-    assert_eq!(line, "tail\n");
-
-    // EOF on the reader ends the pump.
-    tokio::time::timeout(std::time::Duration::from_secs(5), pump)
-        .await
-        .expect("pump did not stop on EOF")
-        .unwrap();
-}
-
-/// Drive the correlation table: a `call` frame makes the pump ISSUE an outbound call, the far
-/// end answers with a `reply:<n> ...` frame, `classify` maps it to the minted `CallRef`, the
-/// transport routes it back to the waiting `issue`, and the answer is re-emitted.
-#[tokio::test]
-async fn correlation_routes_a_reply_to_its_issuer() {
-    let (near, far) = tokio::io::duplex(4096);
-    let (near_r, near_w) = tokio::io::split(near);
-    let pump = tokio::spawn(serve(near_r, near_w, Arc::new(EchoPlane)));
-
-    let (far_r, mut far_w) = tokio::io::split(far);
-    let mut far_r = tokio::io::BufReader::new(far_r);
-
-    far_w.write_all(b"call\n").await.unwrap();
-
-    // The pump issues its outbound call, naming the CallRef it minted.
-    let mut asked = String::new();
-    far_r.read_line(&mut asked).await.unwrap();
-    assert_eq!(asked, "call 1\n", "the transport minted CallRef 1 first");
-
-    // Answer it, tagged with the same ref so classify can pair it.
-    far_w.write_all(b"reply:1 pong\n").await.unwrap();
-
-    // The routed answer is re-emitted by the handler.
-    let mut got = String::new();
-    far_r.read_line(&mut got).await.unwrap();
-    assert_eq!(got, "got reply:1 pong\n");
-
-    far_w.shutdown().await.unwrap();
-    drop(far_w);
-    tokio::time::timeout(std::time::Duration::from_secs(5), pump)
-        .await
-        .expect("pump did not stop on EOF")
-        .unwrap();
-}
-
 /// `CallRef::NONE` is reserved and never minted; the mint is monotonic from 1.
 #[tokio::test]
 async fn mint_is_monotonic_and_never_none() {
-    let (_near, far) = tokio::io::duplex(64);
-    let (_r, w) = tokio::io::split(far);
-    let shared = new_shared(Box::new(NewlineSink { writer: w }));
+    let (shared, _far) = open_shared();
     let handle = DuplexHandle { shared };
     let a = handle.mint();
     let b = handle.mint();
@@ -124,37 +64,6 @@ async fn mint_is_monotonic_and_never_none() {
     assert_eq!(b, CallRef(2));
     assert!(!a.is_none() && !b.is_none());
     assert!(CallRef::NONE.is_none());
-}
-
-/// A PEER THAT NEVER TERMINATES A FRAME must not be able to spend this node's memory. One frame is
-/// one line, so a stream with no `0x0A` in it is a single frame that grows for as long as the peer
-/// keeps writing — the read has to stop somewhere, and the session ends where it stops. Every other
-/// read on the inbound path is capped; this one is the byte pipe's own.
-#[tokio::test]
-async fn an_unterminated_frame_past_the_cap_ends_the_session() {
-    let (near, far) = tokio::io::duplex(64 * 1024);
-    let (near_r, near_w) = tokio::io::split(near);
-    let pump = tokio::spawn(serve(near_r, near_w, Arc::new(EchoPlane)));
-
-    // Well past the cap, with no terminator anywhere and NO close — the peer is simply still typing.
-    let (_far_r, mut far_w) = tokio::io::split(far);
-    let flood = tokio::spawn(async move {
-        let chunk = vec![b'x'; 64 * 1024];
-        let mut written = 0usize;
-        while written <= MAX_FRAME_BYTES + chunk.len() {
-            if far_w.write_all(&chunk).await.is_err() {
-                break;
-            }
-            written += chunk.len();
-        }
-        std::future::pending::<()>().await;
-    });
-
-    tokio::time::timeout(std::time::Duration::from_secs(20), pump)
-        .await
-        .expect("the session ends on an unterminated frame instead of buffering it forever")
-        .unwrap();
-    flood.abort();
 }
 
 /// A plane whose handlers all PARK: each one records its arrival and then never finishes, so the
@@ -180,8 +89,6 @@ impl DuplexPlane for ParkingPlane {
 /// here, so a missing gate shows up as every frame in flight at once.
 #[tokio::test]
 async fn one_session_holds_no_more_handlers_than_its_cap() {
-    use futures::channel::mpsc;
-
     let entered = Arc::new(AtomicU64::new(0));
     let plane = Arc::new(ParkingPlane {
         entered: entered.clone(),
@@ -239,9 +146,7 @@ fn a_finished_handler_leaves_the_inflight_registry_empty() {
     // Driven on its OWN thread, so the handlers make progress concurrently with the dispatch below.
     let driver = std::thread::spawn(move || rt.block_on(std::future::pending::<()>()));
 
-    let (_near, far) = tokio::io::duplex(64);
-    let (_r, w) = tokio::io::split(far);
-    let shared = new_shared(Box::new(NewlineSink { writer: w }));
+    let (shared, _far) = open_shared();
     let handle = DuplexHandle {
         shared: shared.clone(),
     };
@@ -292,9 +197,7 @@ impl DuplexPlane for PanickingPlane {
 /// straggler. The release must run on unwind too.
 #[tokio::test]
 async fn a_panicking_handler_releases_its_inflight_slot() {
-    let (_near, far) = tokio::io::duplex(64);
-    let (_r, w) = tokio::io::split(far);
-    let shared = new_shared(Box::new(NewlineSink { writer: w }));
+    let (shared, _far) = open_shared();
     let handle = DuplexHandle {
         shared: shared.clone(),
     };
@@ -334,9 +237,7 @@ async fn a_panicking_handler_releases_its_inflight_slot() {
 /// entry per call for the life of the session.
 #[tokio::test]
 async fn an_abandoned_issue_leaves_no_registration_behind() {
-    let (_near, far) = tokio::io::duplex(64);
-    let (_r, w) = tokio::io::split(far);
-    let shared = new_shared(Box::new(NewlineSink { writer: w }));
+    let (shared, _far) = open_shared();
     let handle = DuplexHandle {
         shared: shared.clone(),
     };
@@ -357,49 +258,19 @@ async fn an_abandoned_issue_leaves_no_registration_behind() {
     );
 }
 
-/// A writer that REFUSES every write — a closed pipe, in one struct. The flush succeeds, so a test
-/// using it proves the failure is carried from the write itself and not merely from the drain.
-struct BrokenWriter;
-
-impl AsyncWrite for BrokenWriter {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-        _buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::task::Poll::Ready(Err(std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "the far end is gone",
-        )))
-    }
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-}
-
 /// A frame that did NOT reach the wire is REPORTED, not swallowed. The transport has no business
 /// deciding what a lost line costs — that is the caller's to know — but it must say that one was
 /// lost. Before this, a broken pipe and a successful write were indistinguishable to every caller.
 #[tokio::test]
 async fn a_write_that_fails_is_reported_to_the_caller() {
-    let shared = new_shared(Box::new(NewlineSink {
-        writer: BrokenWriter,
-    }));
-    let handle = DuplexHandle { shared };
+    let handle = DuplexHandle {
+        shared: closed_shared(),
+    };
     let err = handle
-        .emit(b"a line nobody will ever read".to_vec())
+        .emit(b"a frame nobody will ever read".to_vec())
         .await
         .expect_err("a refused write must not report success");
-    assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    assert_eq!(err.to_string(), SINK_REFUSED);
 }
 
 /// The FIRST caller policy: a call whose frame never left cannot be answered, so `issue` fails
@@ -407,9 +278,7 @@ async fn a_write_that_fails_is_reported_to_the_caller() {
 /// its registration on the way out, so the correlation table does not leak an entry per lost call.
 #[tokio::test]
 async fn a_call_whose_frame_is_lost_fails_at_once() {
-    let shared = new_shared(Box::new(NewlineSink {
-        writer: BrokenWriter,
-    }));
+    let shared = closed_shared();
     let handle = DuplexHandle {
         shared: shared.clone(),
     };
@@ -429,18 +298,15 @@ async fn a_call_whose_frame_is_lost_fails_at_once() {
 
 /// Drive the pump over an in-memory MESSAGE duplex (each channel item is one frame, no newline
 /// convention — the shape an already-upgraded WebSocket presents): frames sent to the near end come
-/// back echoed verbatim as whole messages, and the stream ending (close) ends the loop. Mirrors
-/// `echo_round_trips_frames_and_stops_on_eof` on the byte path.
+/// back echoed verbatim as whole messages, and the stream ending (close) ends the loop.
 #[tokio::test]
 async fn message_duplex_round_trips_frames_and_stops_on_close() {
-    use futures::channel::mpsc;
-
     // inbound: what the peer sends the pump; outbound: what the pump emits back.
     let (mut in_tx, in_rx) = mpsc::unbounded::<Vec<u8>>();
     let (out_tx, mut out_rx) = mpsc::unbounded::<Vec<u8>>();
     let pump = tokio::spawn(serve_messages(in_rx, out_tx, Arc::new(EchoPlane)));
 
-    // A whole message is one frame — no terminator on the wire, unlike the byte path.
+    // A whole message is one frame — no terminator on the wire.
     in_tx.send(b"hello".to_vec()).await.unwrap();
     assert_eq!(out_rx.next().await.unwrap(), b"hello");
 
@@ -458,11 +324,9 @@ async fn message_duplex_round_trips_frames_and_stops_on_close() {
 /// Drive the correlation table over the MESSAGE duplex: a `call` frame makes the pump ISSUE an
 /// outbound call as one message, the peer answers with a `reply:<n> ...` message, `classify` maps
 /// it to the minted `CallRef`, the transport routes it back to the waiting `issue`, and the answer
-/// is re-emitted — the identical machinery `serve` uses, reached through a different framing.
+/// is re-emitted.
 #[tokio::test]
 async fn message_duplex_correlation_routes_a_reply_to_its_issuer() {
-    use futures::channel::mpsc;
-
     let (mut in_tx, in_rx) = mpsc::unbounded::<Vec<u8>>();
     let (out_tx, mut out_rx) = mpsc::unbounded::<Vec<u8>>();
     let pump = tokio::spawn(serve_messages(in_rx, out_tx, Arc::new(EchoPlane)));
@@ -524,8 +388,6 @@ impl DuplexPlane for CallingPlane {
 /// reader carries on classifying, and every answer reaches the handler that asked for it.
 #[tokio::test]
 async fn a_non_reply_frame_ahead_of_the_answers_does_not_wedge_the_session() {
-    use futures::channel::mpsc;
-
     let finished = Arc::new(AtomicU64::new(0));
     let plane = Arc::new(CallingPlane {
         finished: finished.clone(),
@@ -585,8 +447,6 @@ async fn a_non_reply_frame_ahead_of_the_answers_does_not_wedge_the_session() {
 /// refuse it with.
 #[tokio::test]
 async fn a_peer_past_both_bounds_ends_the_session_rather_than_buffering() {
-    use futures::channel::mpsc;
-
     let entered = Arc::new(AtomicU64::new(0));
     let plane = Arc::new(ParkingPlane {
         entered: entered.clone(),

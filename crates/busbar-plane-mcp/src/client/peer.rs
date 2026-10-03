@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! WHAT A CHILD SENDS BUSBAR — the `busbar-as-client / server-originated` half of the matrix.
+//! WHAT A PEER SENDS BUSBAR — the `busbar-as-client / server-originated` half of the matrix.
+//!
+//! The stream-carrier leg this classifier was first written for (a local child process over stdio)
+//! is parked out of 1.6.0 (OWNER 2026-10-02); the streamable-HTTP leg reads the same classes off an
+//! SSE body, so the table below is the one meaning both carriers share.
 //!
 //! ## The defect this module exists to fix, stated first because it is the whole reason
 //!
-//! `StdioChild::call` used to write one line and read ONE line, and treat that line as the answer.
-//! On streamable HTTP that is right: a POST has exactly one response and a notification arrives on
+//! A stream reader that wrote one line, read ONE line, and treated that line as the answer is right
+//! on streamable HTTP: a POST has exactly one response and a notification arrives on
 //! its own frame. On stdio it is WRONG, and wrong in the worst available way. A child's stdout is
 //! ONE byte stream carrying everything the child ever says: its answers, its log records, its
 //! progress, its list-changed notifications, and — under every revision an installed SDK server
@@ -347,8 +351,7 @@ pub fn answer(
         ),
         AskOutcome::Unsatisfiable => format!(
             "busbar holds the `{kind}` grant for server `{server}` but has no satisfier for that \
-             ask on the stdio leg in this release; the ask terminates here and is not proxied to \
-             busbar's caller."
+             ask on this leg; the ask terminates here and is not proxied to busbar's caller."
         ),
     };
     error_reply(id, ASK_REFUSED, message)
@@ -357,8 +360,7 @@ pub fn answer(
 /// The `-32601` a child gets for a request busbar does not implement.
 ///
 /// ANSWERED rather than dropped, which is the point: a dropped request is a child blocked on a
-/// reply forever, and a hang is a worse diagnosis than a refusal for exactly the reason
-/// the engine's `mcp::client::stdio` inherits stderr.
+/// reply forever, and a hang is a worse diagnosis than a refusal.
 pub fn method_not_found(id: &serde_json::Value, method: &str) -> serde_json::Value {
     error_reply(
         id,

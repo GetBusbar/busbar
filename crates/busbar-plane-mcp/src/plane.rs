@@ -796,17 +796,14 @@ impl Plane for McpPlane {
     }
 
     fn authenticate<'u>(&self, _u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
-        // A locally launched server has no request to carry a header on: its credential is handed to
-        // it when it starts. Everything on the document transport presents a bearer credential.
-        let over_stdio = crate::claims::is_stdio(ctx.transport().key());
-        let alt = if over_stdio { "environment" } else { "bearer" };
+        // Everything this plane is served over presents a bearer credential.
         // A notice asks for nothing, and it used to be narrowed to an invented "anonymous"
         // alternative for that reason. A notice arrives on the SAME claim a request does, though,
         // and that claim declares a scheme; the surface that genuinely carries no credential is the
         // discovery document, and it says so on its own claim. So a notice narrows like everything
         // else on the mount, and what its credential resolves to is the auth unit's answer.
         CredentialLocator {
-            narrowing: Some(SchemeAlt::new(alt)),
+            narrowing: Some(SchemeAlt::new("bearer")),
             from_session: ctx
                 .session()
                 .is_some_and(busbar_contract::unit::SessionView::is_bound),

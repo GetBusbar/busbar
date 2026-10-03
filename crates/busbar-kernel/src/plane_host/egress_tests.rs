@@ -287,15 +287,15 @@ fn open_and_poll_fail_closed_on_null_and_bad_kind() {
                 StatusClass::Unsupported
             );
         }
-        // Subprocess IS wired (the pipe tier), so a non-command target is REFUSED at the host command
-        // allowlist (undecodable blob / not an absolute program), never spawned.
+        // Subprocess shares the pipe shape and no host backs it in this build: Unsupported, never
+        // spawned (busbar's own child-process use is parked out of 1.6.0).
         {
             let url = b"http://example.test/".to_vec();
             let mut d = http_desc(&url);
             d.kind = busbar_contract::abi::hot::RawEgressKind::of(EgressKind::Subprocess);
             assert_eq!(
                 (vt.egress_open.unwrap())(host, &d as *const EgressDesc, &mut out),
-                StatusClass::Refused
+                StatusClass::Unsupported
             );
         }
         // Poll of an unknown id → Gone.

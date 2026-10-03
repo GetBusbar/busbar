@@ -3,8 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::{
-    CARRIER_HTTP, CARRIER_SSE, CARRIER_STDIO, CLAIMS, DEFAULT_METADATA, DEFAULT_MOUNT, SCHEME,
-    SCHEME_ALTS,
+    CARRIER_HTTP, CARRIER_SSE, CLAIMS, DEFAULT_METADATA, DEFAULT_MOUNT, SCHEME, SCHEME_ALTS,
 };
 use busbar_contract::grammar::Selector;
 
@@ -55,22 +54,22 @@ fn the_plane_key_is_the_codecs_own() {
     // may not name the registry row, so the assertion moved rather than being dropped.
 }
 
-/// Every claim names one of the three declared transports and nothing else.
+/// Every claim names one of the two declared transports and nothing else.
 #[test]
 fn every_claim_names_a_declared_transport() {
     for c in CLAIMS {
         assert!(
-            [CARRIER_HTTP, CARRIER_SSE, CARRIER_STDIO].contains(&c.transport),
+            [CARRIER_HTTP, CARRIER_SSE].contains(&c.transport),
             "a claim names the undeclared transport {}",
             c.transport
         );
     }
 }
 
-/// All three transports are claimed, because the codec serves on all three.
+/// Both transports are claimed, because the codec serves on both.
 #[test]
-fn all_three_transports_are_claimed() {
-    for transport in [CARRIER_HTTP, CARRIER_SSE, CARRIER_STDIO] {
+fn both_transports_are_claimed() {
+    for transport in [CARRIER_HTTP, CARRIER_SSE] {
         assert!(
             CLAIMS.iter().any(|c| c.transport == transport),
             "{transport} is served and not claimed"

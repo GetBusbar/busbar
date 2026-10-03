@@ -610,24 +610,6 @@
    ]
   },
   {
-   "id": "crates/busbar-transport-stdio/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-transport-stdio/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-transport-stdio/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-transport-ws/src",
    "kind": "production",
    "paths": [
@@ -1316,36 +1298,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar-plane-streaming/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-stdio/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-stdio/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-stdio/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-stdio/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

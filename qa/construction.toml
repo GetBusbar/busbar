@@ -1867,7 +1867,6 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # OS sockets, TLS, ALPN and pools (busbar-core-connector; BUSBAR-1.6.0.md THE DESIGN, §5) regardless
 # of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
-busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
@@ -2201,7 +2200,6 @@ max_sites = 0
 # nine below, each still forging today.
 known_sites = [
   "crates/busbar-plane-streaming/src/tests/harness.rs",
-  "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-kernel-egress/src/tests/harness.rs",
@@ -2359,7 +2357,6 @@ known_sites = [
   "crates/busbar-kernel/src/plane_host/guard.rs",
   "crates/busbar-kernel/src/plane_host/identity_admit.rs",
   "crates/busbar-kernel/src/plane_host/journal.rs",
-  "crates/busbar-kernel/src/plane_host/pipe.rs",
   "crates/busbar-kernel/src/plane_host/trust.rs",
   "crates/busbar-kernel/src/plane_host/vtable.rs",
   # was crates/busbar-core/src/plane/registry.rs (R099)
@@ -3187,8 +3184,8 @@ plane_crates = 4
 #   * `auth` 2 -> 1. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES": "real
 #     plugins are the examples"; ARCHITECT R-FIX2): `crates/auth-static-plugin` was deleted. The auth
 #     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/busbar-auth-oidc (pinned by
-#     git: busbar-kernel `auth/tests/plugin_chain_tests.rs`, `crates/busbar/tests/mcp_stdio_serve.rs`,
-#     busbar-plugin-loader `auth_conformance_tests`), and the removed ci.yml `plugin-proofs` proves
+#     git: busbar-kernel `auth/tests/plugin_chain_tests.rs` and busbar-plugin-loader
+#     `auth_conformance_tests`), and the removed ci.yml `plugin-proofs` proves
 #     GetBusbar/busbar-auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
 #
 # ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────
@@ -3228,6 +3225,16 @@ plane_crates = 4
 # root's pinned rev (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp) — the loader's both-ways
 # rows `export`, `export-webhook`, `export-scrape`, `export-otlp`. Neither export glob matches a
 # directory in this repo any more: the kind's documented zero.
+# A plugin_kinds floor drops only for a crate that MOVED OUT (pinned back as a git dependency at a
+# rev) or one REMOVED BY A CITED OWNER RULING, named here (ARCHITECT 2026-10-02). `transport` 3 -> 2:
+# busbar-transport-stdio is parked, not moved out: busbar's default build does not link it, and its
+# repo stays a fleet member.
+# qa-names: busbar-transport-stdio -- qa/construction.toml -- parked by owner ruling: the package is not in the workspace, so it cannot resolve; the row names the crate the floor drop excuses
+[[gate.census.parked]]
+crate = "busbar-transport-stdio"
+reason = "parked: the stdio transport leaves the default build and its repo stays a fleet member"
+ruling = "OWNER 2026-10-02"
+
 #
 # transport -1 (EXTRACT-15, TODO PATH TO DEV-GREEN P5 "EXTRACTION TO 15 CRATES", item http): the http
 # transport crate MOVED OUT with its history to GetBusbar/busbar-transport-http and busbar pulls it at one pinned rev

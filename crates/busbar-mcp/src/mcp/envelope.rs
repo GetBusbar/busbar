@@ -359,8 +359,8 @@ pub(crate) async fn rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Respon
 /// `None` means step 13: the method vocabulary does not carry this method, which is
 /// `busbar_kernel::ingress::protocol`'s to answer with `404` + `-32601`. That was always the correct answer
 /// for an unimplemented method and did not have to change when the table gained entries.
-/// `pub(in crate::mcp)` because the STDIO SERVE MODE (`super::stdio_serve`) runs THIS function —
-/// the equality doctrine's teeth: a second transport binds the same dispatch, never a parallel one.
+/// `pub(in crate::mcp)`: the equality doctrine's teeth — any second transport binds THIS dispatch,
+/// never a parallel one.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::mcp) async fn rpc_dispatch(
     engine_host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
@@ -672,7 +672,7 @@ fn request_log(
 /// name pointers from it while being unable to name this crate at all. The client side carried its
 /// own copy until 2026-08-13 and the two DISAGREED — that one did not name the three tasks methods,
 /// so a `tasks/get` went out over streamable HTTP with no `Mcp-Name`, which busbar's own front door
-/// answers `-32020` to. The divergence was invisible on stdio, which has no headers. One definition
+/// answers `-32020` to. One definition
 /// is what makes a third such copy unrepresentable; this path resolves what it always did.
 pub(crate) use busbar_plane_mcp::codec::name_source_of;
 

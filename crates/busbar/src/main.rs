@@ -104,14 +104,6 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
-/// Whether `--mcp-stdio` was passed: boot everything, bind NOTHING, and serve the MCP plane on the
-/// process's own stdin/stdout (see `mcp::stdio_serve`). A scanner like `safe_mode_requested`
-/// rather than a `handle_cli_flags` exit arm, because it modifies how `run()` serves rather than
-/// replacing the run.
-fn stdio_serve_requested(mut args: impl Iterator<Item = String>) -> bool {
-    args.any(|a| a == "--mcp-stdio") // noun-neutrality: frozen-literal pinned-by=crates/busbar/tests/mcp_stdio_serve.rs operator CLI flag (CHANGELOG 1.6.0)
-}
-
 /// Cap on `advanced.worker_threads`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
 /// `main()` for why this exists).
 const MAX_WORKER_THREADS: usize = 128;
@@ -779,9 +771,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Install the tracing subscriber now (stderr fmt always; the `traces` record producer for the
     // export sinks subscribed to it, the `otlp` module's among them) so all subsequent startup and
     // request-path logging is captured.
-    // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
-    // `init_logging`'s `stdout_reserved`.
-    busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()));
+    busbar_kernel::observability::init_logging();
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
@@ -1214,30 +1204,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Fatal if an A2A outbound client identity does not resolve, exactly as before — the refusal text
     // is the plane hook's, propagated through `start_planes`.
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
-
-    // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
-    // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
-    // every frame; what changes is only the transport: busbar is somebody's CHILD PROCESS here, so
-    // it binds no listener at all (a child that opened ports would be a network server its
-    // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
-    // EOF on stdin is the shutdown signal, and the tail below is the listener path's own shutdown
-    // tail: the final budget/metering flush, then the tracer.
-    // The mode exists only when a linked entry serves it. With none there is no dispatch to serve on
-    // stdin/stdout, so the mode is not offered and the build falls through to its listener path.
-    let stdio_serve = LINKED.stdio_serve.first().copied();
-    if let Some(serve) = stdio_serve.filter(|_| stdio_serve_requested(std::env::args())) {
-        // The neutral host factory, minted core-side and threaded into the stdio transport so the plane
-        // re-mints the host over each frame's live snapshot without naming the core factory itself.
-        let factory = busbar_kernel::plane_host::live_host_factory(app_handle.clone());
-        let code = serve(factory).await;
-        if let Some(gov) = app_handle.load().governance.clone() {
-            let n = gov.flush_budgets();
-            tracing::info!(flushed = n, "budget counters flushed on shutdown");
-            let m = gov.flush_metering();
-            tracing::info!(flushed = m, "metering rows flushed on shutdown");
-        }
-        std::process::exit(code);
-    }
 
     // SERVE (one topology; see `main()`). On unix the DATA plane runs on N pinned
     // `current_thread` runtimes — one SO_REUSEPORT listener per worker, kernel fanning connections

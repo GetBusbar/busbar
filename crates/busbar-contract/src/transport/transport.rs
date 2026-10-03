@@ -12,16 +12,14 @@
 //!
 //! The six LLM protocols are six DIALECTS over ONE channel, so transport never varied and was never
 //! modelled. A2A is ONE dialect over THREE (JSON-RPC, HTTP+JSON, gRPC), and gRPC is not the axum
-//! catch-all at all. MCP had the same question latent, and this release ANSWERED it by BUYING the
-//! arm rather than by subtraction: [`Transport::Stdio`] dispatches to a real child-process
-//! supervisor at `mcp/client/stdio.rs`, and the tokio `process` feature is back in
-//! `crates/busbar/Cargo.toml` with the argument its own comment used to demand — a caller.
+//! catch-all at all. MCP had the same question latent: [`Transport::Stdio`] names the child-process
+//! carrier. busbar's own MCP use of it — the child-process supervisor and MCP stdio-serve — is
+//! parked out of 1.6.0 (OWNER 2026-10-02); the variant stays because the stdio transport kind does,
+//! as a dropped-in plugin.
 //!
-//! That history is worth keeping, because it is the axis earning its keep twice. The supervisor was
-//! written once, had NOTHING dispatch to it, and was deleted along with the `process` feature for
-//! exactly that reason. What brought it back was this axis: a place for the arm to hang. Without one
-//! it becomes a second dispatch path beside the matrix — which is precisely how `mcp/` came to hold
-//! 13,069 lines of a core that already existed.
+//! The axis is a place for an arm to hang. Without one a second channel becomes a second dispatch
+//! path beside the matrix — which is precisely how `mcp/` came to hold 13,069 lines of a core that
+//! already existed.
 //!
 //! ## WHY IT IS A TOP-LEVEL MODULE, BESIDE `operation.rs`
 //!
@@ -38,8 +36,7 @@
 //! the axis landed with one variant, the shape was proven by the one that existed, and every later
 //! variant was added by driving a real request down it rather than by anticipating one. A2A's three
 //! bindings arrived on the commits that armed them. `Stdio` arrived the same way, and what it bought
-//! is [`Transport::upstream_wire`] — the ONE match on this axis in the tree — and the deleted
-//! `mcp/client/stdio.rs` supervisor coming back with a caller instead of an `#![allow(dead_code)]`.
+//! is [`Transport::upstream_wire`] — the ONE match on this axis in the tree.
 //!
 //! ## ONE VARIANT, ON PURPOSE
 //!
@@ -166,9 +163,9 @@ pub enum Transport {
     /// status. Nothing below this line knows that, which is the property being bought.
     Grpc,
     /// A CHILD PROCESS with a pipe on each side of it: newline-delimited JSON-RPC on its stdin and
-    /// stdout, which is what MCP's stdio transport is. OUTBOUND ONLY in this build — busbar is the
-    /// parent and the MCP server is the child; busbar is never itself launched as one. See
-    /// `mcp/client/stdio.rs` for why that direction and not the other.
+    /// stdout, which is what MCP's stdio transport is. No 1.6.0 plane dispatches on it: the MCP
+    /// config grammar refuses `transport: stdio` at boot (OWNER 2026-10-02), and the variant stays as
+    /// the stdio transport kind's name.
     ///
     /// The variant that makes the axis earn its keep. Everything [`Transport::Http`] gets for free
     /// from the shared `reqwest` pool — a destination, a connection, a resolver to SSRF-check, a
@@ -206,7 +203,8 @@ pub enum Transport {
 pub enum UpstreamWireKind {
     /// The streamable-HTTP POST wire (`mcp/client/transport.rs`'s `HttpTransport`).
     StreamableHttp,
-    /// The child-process stdin/stdout wire (`mcp/client/stdio.rs`'s `StdioWire`).
+    /// The child-process stdin/stdout wire. No MCP client wire is bound to it in 1.6.0 (OWNER
+    /// 2026-10-02).
     Stdio,
     /// A BIDIRECTIONAL FRAMED BYTE WIRE — the full-duplex channel shape [`Transport::WebSocket`]
     /// selects, distinct from the two request/response wires above because bytes flow both ways over

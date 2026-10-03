@@ -126,7 +126,7 @@ gains no endpoint and no route, and the migrator adds none of them.
 | Section | What it declares | Guide |
 |---|---|---|
 | `mcp:` | Busbar as an MCP server: canonical URI, identity provider, OAuth 2.1 discovery | [MCP](mcp.md) |
-| `tools:` | Registered upstream MCP servers Busbar governs (`transport: stdio` for local ones) | [MCP](mcp.md), [Tool and agent trust](tool-and-agent-trust.md) |
+| `tools:` | Registered upstream MCP servers Busbar governs (over streamable HTTP; a local `transport: stdio` server is refused at boot in 1.6.0) | [MCP](mcp.md), [Tool and agent trust](tool-and-agent-trust.md) |
 | `agents:` | Registered A2A agents, served over JSON-RPC, HTTP+JSON and gRPC | [A2A](a2a.md) |
 | `streams:` | The live-voice plane: full-duplex realtime sessions over one IR | [Voice](voice.md) |
 | `oauth_as:` | The embedded OAuth 2.1 authorization server the MCP door can use | [MCP](mcp.md) |

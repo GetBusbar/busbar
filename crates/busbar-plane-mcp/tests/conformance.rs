@@ -933,36 +933,6 @@ fn the_session_halves_open_fresh() {
     }
 }
 
-/// A locally launched server's units narrow to the alternative that has no request to sit on.
-#[test]
-fn a_local_server_narrows_to_the_environment_alternative() {
-    let plane = McpPlane::EMPTY;
-    let seal = common::TestSeal;
-    let unit = busbar_contract::unit::Unit::new(
-        &seal,
-        busbar_contract::UnitKey::new(1),
-        busbar_contract::unit::Origin::Client,
-        None,
-        None,
-        busbar_contract::wire::Direction::Inbound,
-        Some(common::principal()),
-        ops::OP_TOOL_CALL,
-        busbar_contract::bounded::Ir::new(b"{}", &[]),
-        busbar_contract::bounded::Facts::new(),
-        None,
-    );
-    for (transport, expected) in [("stdio", "environment"), ("http", "bearer")] {
-        let scaffold = Scaffold::new(transport);
-        let ctx = scaffold.ctx();
-        let locator = plane.authenticate(&unit, &ctx);
-        assert_eq!(
-            locator.narrowing.expect("it narrows").as_str(),
-            expected,
-            "{transport} narrowed wrongly"
-        );
-    }
-}
-
 /// Every alternative the plane narrows to is one its claims declare.
 ///
 /// A plane may only narrow within the set its claim declares; anything else is refused at the
@@ -980,7 +950,7 @@ fn every_narrowing_is_declared() {
     let plane = McpPlane::EMPTY;
     let seal = common::TestSeal;
     for op in McpPlane::OP_CLASSES {
-        for transport in ["http", "sse", "stdio"] {
+        for transport in ["http", "sse"] {
             let scaffold = Scaffold::new(transport);
             let ctx = scaffold.ctx();
             let unit = busbar_contract::unit::Unit::new(

@@ -10,16 +10,16 @@
 //! from comparing one: a dispatch path that can see which transport it is on forks at every step it
 //! takes afterwards. So the axis answers the question once —
 //! [`busbar_contract::transport::transport::Transport::upstream_wire`] is the only `match` on it in the tree — and hands back
-//! an implementation of this trait. `mcp/upstream.rs` calls [`McpWire::send`] and cannot tell an
-//! HTTP POST from a child process's stdin, which is the property that keeps stdio from becoming a
-//! second dispatch path beside the first.
+//! an implementation of this trait. `mcp/upstream.rs` calls [`McpWire::send`] and cannot tell which
+//! channel it rides, which is the property that keeps a second transport from becoming a second
+//! dispatch path beside the first.
 //!
 //! ## What a wire may and may not do
 //!
 //! A wire moves BYTES. It does not build the request, read the response's meaning, decide whether
 //! the caller was allowed to make it, or mint anything: those are `jsonrpc`, `egress` and
-//! `dispatch`, and every one of them runs before a wire is reached. The two implementations are
-//! `super::transport::HttpTransport` and `super::stdio::StdioWire`.
+//! `dispatch`, and every one of them runs before a wire is reached. The implementation is
+//! `super::transport::HttpTransport`.
 
 use super::jsonrpc::OutboundRequest;
 use super::pool::McpConnectionPool;
@@ -28,10 +28,9 @@ use std::time::Duration;
 
 /// What came back from an upstream, before JSON-RPC parsing.
 ///
-/// `status` is an HTTP status for the HTTP wire and a SYNTHETIC `200` for stdio, which has no status
-/// line: a stdio peer that answered at all answered, and a peer that did not is a
-/// [`TransportError`] rather than a status code. The field stays because the JSON-RPC layer quotes
-/// it in its malformed-response diagnostics.
+/// `status` is the HTTP status; a peer that did not answer is a [`TransportError`] rather than a
+/// status code. The field stays because the JSON-RPC layer quotes it in its malformed-response
+/// diagnostics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TransportResponse {
     pub(crate) status: u16,
@@ -39,8 +38,7 @@ pub(crate) struct TransportResponse {
     /// THE TRANSPORT-LAYER IDENTITY OF THE PEER THAT ANSWERED THIS LEG: the `sha256/…` SPKI pin
     /// [`busbar_kernel::egress::seam::Buffered::peer_spki`] observed on the TLS hop, verbatim.
     ///
-    /// `None` on stdio (no TLS hop exists to observe) and on an HTTP leg that ran over plaintext or
-    /// whose certificate could not be walked. `super::super::connect::refresh` is this field's
+    /// `None` on an HTTP leg that ran over plaintext or whose certificate could not be walked. `super::super::connect::refresh` is this field's
     /// consumer: a `cert_spki`/`mtls`-pinned registration's declared pin is compared against THIS
     /// value, never against itself, which is what makes the pin an observed fact rather than an
     /// operator's assertion echoed back as its own proof.
@@ -64,12 +62,6 @@ pub(crate) enum TransportError {
     /// The connection failed, timed out, or the body could not be read whole — AFTER the
     /// destination was reached, so the request may have been received and acted on.
     Io(String),
-    /// A SUPERVISED peer declined to be dispatched to: it is not up yet, it is in restart backoff,
-    /// or it crash-looped and the breaker quarantined it. Distinct from [`TransportError::Io`]
-    /// because busbar made no attempt to reach anything — the refusal is busbar's own supervision
-    /// policy talking, and the operator's remedy is to fix the child or re-approve it, not the
-    /// network.
-    Supervision(String),
 }
 
 impl std::fmt::Display for TransportError {
@@ -80,7 +72,6 @@ impl std::fmt::Display for TransportError {
                 write!(f, "MCP upstream could not be reached: {m}")
             }
             TransportError::Io(m) => write!(f, "MCP upstream transport error: {m}"),
-            TransportError::Supervision(m) => write!(f, "MCP upstream is not serving: {m}"),
         }
     }
 }
@@ -89,42 +80,34 @@ impl TransportError {
     /// WAS THIS BUSBAR'S OWN REFUSAL, DECIDED BEFORE ANY SOCKET OPENED — never a fact about the
     /// upstream at all?
     ///
-    /// [`TransportError::Refused`] is the dispatch-time SSRF/redirect guard; [`TransportError::Supervision`]
-    /// is the crash-loop supervisor's own refusal. Neither ever put a byte on a wire: `send`'s own
-    /// telemetry check below draws exactly this line for the SAME reason ("nothing left busbar" vs
-    /// "busbar tried and the network answered") and does not count either one as an upstream failure.
+    /// [`TransportError::Refused`] is the dispatch-time SSRF/redirect guard. It never put a byte on a
+    /// wire: `send`'s own telemetry check below draws exactly this line for the SAME reason ("nothing
+    /// left busbar" vs "busbar tried and the network answered") and does not count it as an upstream
+    /// failure.
     /// A caller that RECORDS what happened — an audit row, not a counter — needs the identical fact:
     /// [`TransportError::Unreachable`] and [`TransportError::Io`] are the opposite arm, because busbar
     /// DID attempt the hop (a connect that failed, a connection that reset mid-response), so a record
     /// of those must say a dispatch was attempted, never that one was refused pre-connect.
     pub(crate) fn is_own_refusal(&self) -> bool {
-        matches!(
-            self,
-            TransportError::Refused(_) | TransportError::Supervision(_)
-        )
+        matches!(self, TransportError::Refused(_))
     }
 }
 
 /// Everything a wire needs about ONE leg that is not in the request itself.
 ///
-/// One struct rather than a widening argument list because the two wires need disjoint halves of it
-/// — HTTP uses the pool and the addressing policy, stdio uses the server id and the spawn recipe —
-/// and a positional signature that grows a parameter per transport is the fork this seam exists to
-/// prevent.
+/// One struct rather than a widening argument list: a positional signature that grows a parameter
+/// per transport is the fork this seam exists to prevent.
 pub(crate) struct WireLeg<'a> {
-    /// The engine-owned pool: pinned HTTP clients, and the live stdio children.
+    /// The engine-owned pool: pinned HTTP clients.
     pub(crate) pool: &'a McpConnectionPool,
-    /// The addressing posture for the dispatch-time SSRF check. Unused by stdio, which reaches no
-    /// address — see `super::stdio` for what stands in its place.
+    /// The addressing posture for the dispatch-time SSRF check.
     pub(crate) policy: SsrfPolicy,
-    /// The wall-clock budget for this leg. Applied by BOTH wires: a child process that stops
-    /// answering is exactly as capable of holding a concurrency slot forever as a hung socket.
+    /// The wall-clock budget for this leg: a peer that stops answering would otherwise hold a
+    /// concurrency slot forever.
     pub(crate) timeout: Duration,
-    /// The registration id. The stdio child pool's key, so one operator registration owns one child
-    /// rather than one per in-flight call.
+    /// The registration id: the pool's refresh-trigger and resource-update key, and the
+    /// `pool` label on the upstream metrics.
     pub(crate) server: &'a str,
-    /// The operator's spawn recipe, present only on a registration whose transport is stdio.
-    pub(crate) command: Option<&'a super::stdio::StdioCommand>,
     /// THE PER-SERVER GRANTS for the three authority asks a peer can make — sampling, elicitation,
     /// roots. All false unless an operator set them.
     ///
@@ -138,7 +121,7 @@ pub(crate) struct WireLeg<'a> {
 /// ONE CHANNEL a built JSON-RPC message can ride.
 ///
 /// Implementors are ZERO-SIZED and hold no per-upstream state: the sockets live in the pool, the
-/// children live in the pool, and the trust lives in the catalogue. A wire is a function with a
+/// trust lives in the catalogue. A wire is a function with a
 /// context handed to it, which is what lets [`wire_for`] return a `&'static` one.
 #[async_trait::async_trait]
 pub(crate) trait McpWire: Send + Sync {
@@ -153,15 +136,9 @@ pub(crate) trait McpWire: Send + Sync {
     ///
     /// ## Why this is a second trait method and not `send` with the result thrown away
     ///
-    /// On stdio the distinction is not cosmetic, it is correctness. A child's stdout is one byte
-    /// stream, and a notification produces no line on it. A `send` that wrote a notification and
-    /// then waited for a line would either time out — retiring a perfectly healthy child, because
-    /// this transport treats a timeout as a crash by design — or, worse, consume the NEXT thing the
-    /// child said and hand it back as the answer to a message that has no answer. Every subsequent
-    /// call on that child would then be served the previous one's response.
-    ///
-    /// On HTTP the difference is smaller and still real: a notification is answered `202` with an
-    /// empty body, and parsing that as a JSON-RPC response is a guaranteed `Malformed`.
+    /// A notification is answered `202` with an empty body, and parsing that as a JSON-RPC response
+    /// is a guaranteed `Malformed`; on a stream carrier a `send` that waited for an answer would
+    /// consume the NEXT thing the peer said as the answer to a message that has none.
     ///
     /// So the distinction is on the VTABLE, decided once by [`super::verb::UpstreamVerb::
     /// is_notification`], rather than at each call site — where it would be one `if` per verb and
@@ -178,7 +155,7 @@ pub(crate) trait McpWire: Send + Sync {
 /// channel with a neutral discriminant (so it names no plane type); this maps that discriminant to
 /// the plane's own zero-sized `&'static dyn McpWire` vtable. The `None` arm is loud for the reason the
 /// old `match` was: an A2A binding is never an MCP client leg, and `mcp/config.rs` refuses any
-/// `transport:` that is not `streamable_http` or `stdio` at boot, so a value reaching it here is a
+/// `transport:` that is not `streamable_http` at boot, so a value reaching it here is a
 /// config-grammar defect, never a silently wrong channel.
 pub(crate) fn wire_for(
     transport: busbar_contract::transport::transport::Transport,
@@ -186,10 +163,9 @@ pub(crate) fn wire_for(
     use busbar_contract::transport::transport::UpstreamWireKind;
     match transport.upstream_wire() {
         Some(UpstreamWireKind::StreamableHttp) => &super::transport::HttpTransport,
-        Some(UpstreamWireKind::Stdio) => &super::stdio::StdioWire,
-        Some(UpstreamWireKind::Duplex) => unreachable!(
-            "transport `{}` is a full-duplex framed wire, not an MCP client leg in this build; \
-             mcp/config.rs refuses any `transport:` that is not `streamable_http` or `stdio` at boot",
+        Some(UpstreamWireKind::Stdio | UpstreamWireKind::Duplex) => unreachable!(
+            "transport `{}` is not an MCP client leg in this build; mcp/config.rs refuses any \
+             `transport:` that is not `streamable_http` at boot",
             transport.name()
         ),
         None => unreachable!(
@@ -223,13 +199,12 @@ pub(crate) fn wire_for(
 /// word (`busbar_contract::transport::transport::Transport::name()`) — both operator-configured, neither caller-supplied,
 /// so the series count is bounded by the config file exactly as `pool` is on the model plane. A
 /// registration is one upstream, so its pool has one lane, and naming the CHANNEL there is what makes
-/// `busbar_upstream_failures_total{pool="fs"}` distinguishable between a child process that keeps
-/// dying and an HTTPS peer that keeps timing out.
+/// `busbar_upstream_failures_total{pool="fs"}` distinguishable by channel.
 ///
 /// ## Which failures are counted, and why not all of them
 ///
 /// [`TransportError::Io`] and [`TransportError::Unreachable`] — the socket failed, the connect was
-/// refused, DNS or TLS never completed, the deadline expired, or a child died mid-exchange. That is
+/// refused, DNS or TLS never completed, or the deadline expired. That is
 /// availability, which is what this family means on the model plane too.
 ///
 /// The two are ONE fact to this counter and two facts to the failover seam, and conflating those
@@ -246,9 +221,6 @@ pub(crate) fn wire_for(
 ///   target). Nothing left busbar and the upstream answered nothing, so counting it would report an
 ///   outage at a peer that was never contacted. (`Unreachable` is the opposite case despite the
 ///   similar words: busbar did try to reach the peer and the network answered.)
-/// * [`TransportError::Supervision`] is busbar's own fast answer from the crash-loop supervisor, and
-///   the crash that armed the supervisor was already counted here as the `Io` failure of the
-///   exchange it killed. Counting the refusal too is double accounting.
 ///
 /// A JSON-RPC error inside a 2xx is not counted either: an upstream that answered `-32601` is
 /// reachable and healthy, which is the distinction [`TransportError`]'s own note is about.

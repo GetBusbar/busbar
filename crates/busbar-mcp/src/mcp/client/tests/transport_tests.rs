@@ -29,7 +29,6 @@ fn leg<'a>(
         policy,
         timeout,
         server: "transport-tests",
-        command: None,
         grants: Default::default(),
     }
 }

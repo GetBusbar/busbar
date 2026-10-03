@@ -67,7 +67,7 @@ rmcp = { workspace = true }
 # serde_yaml, indexmap), the seal/digest crypto (sha2, hex, base64) and the plugin ABI (busbar-contract's
 # `abi`, async-trait) the plane's host calls reach.
 busbar-plugin-loader = { path = "../plugin-loader" }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 # The engine-built token exchange (`upstream::exchange`): request assembly is `http` parts, the

@@ -318,12 +318,12 @@ impl Gate for LinkedDroppedFeaturesGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let bin = "crates/busbar/Cargo.toml";
-        let plugin = "crates/busbar-transport-stdio/Cargo.toml";
-        let edge = "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }";
+        let plugin = "crates/busbar-transport-http/Cargo.toml";
+        let edge = "busbar-transport-http = { path = \"../busbar-transport-http\" }";
         let own = {
             let b = cx.read(bin).unwrap_or_default().replacen(
                 edge,
-                "busbar-transport-stdio = { path = \"../busbar-transport-stdio\", features = [\"planted-linked\"] }",
+                "busbar-transport-http = { path = \"../busbar-transport-http\", features = [\"planted-linked\"] }",
                 1,
             );
             let p = cx.read(plugin).unwrap_or_default();

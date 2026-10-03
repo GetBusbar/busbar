@@ -15,16 +15,14 @@
 //!
 //! ## THE CLASSIFIER IS `super::super::peer`'s, AND THAT IS THE WHOLE DESIGN
 //!
-//! `crate::mcp::client::peer` decides what a peer's message IS and what busbar DOES about it. The
-//! stdio leg reads those messages off a child's stdout; this leg reads them off an SSE body. Two
-//! carriers, one meaning — so `tests/peer_tests.rs` owns the classification and the effect table,
+//! `crate::mcp::client::peer` decides what a peer's message IS and what busbar DOES about it; this
+//! leg reads those messages off an SSE body. `tests/peer_tests.rs` owns the classification and the effect table,
 //! and this file owns the CARRIER: that the frames are found, that the effects land, and that the
 //! answer to the POST survives them all intact.
 //!
 //! ## The one thing that genuinely differs, asserted rather than assumed
 //!
-//! stdio ANSWERS a peer's request, because a child's stdin is a channel busbar can write a reply on
-//! and a child left waiting is a child that hangs. An SSE response body is not a channel — it is the
+//! An SSE response body is not a channel — it is the
 //! answer to a POST already sent — so a request arriving here CANNOT be answered. It is recorded and
 //! dropped, and, critically, never adopted as the answer to what busbar actually asked. Over this
 //! carrier the three authority asks are refused by the absence of any way to satisfy them, which is
@@ -57,7 +55,6 @@ fn leg(pool: &McpConnectionPool) -> WireLeg<'_> {
         },
         timeout: Duration::from_secs(5),
         server: SERVER,
-        command: None,
         // ALL THREE GRANTED, deliberately. This carrier cannot satisfy an authority ask whatever the
         // operator said, and granting them here is what makes that assertion mean something: a
         // refusal under a denied grant would prove only that the grant gate works.
@@ -316,7 +313,7 @@ async fn only_progress_reaches_the_callers_progress_channel() {
 ///
 /// The trigger is attacker-controlled in its TIMING: a peer that wanted busbar to spend the
 /// afternoon re-fetching its tool list would only have to say so repeatedly. The rate limit is
-/// `super::super::catalogue::RefreshGate`'s, on the pool, shared with the stdio leg — and the
+/// `super::super::catalogue::RefreshGate`'s, on the pool — and the
 /// assertion is on what was ACCEPTED rather than on what arrived.
 #[tokio::test]
 async fn a_flood_of_list_changed_frames_brings_exactly_one_refresh_forward() {
@@ -362,7 +359,7 @@ async fn a_flood_of_list_changed_frames_brings_exactly_one_refresh_forward() {
 ///
 /// A property test over the effect table rather than an example, because the hazard is a tenth
 /// notification added with an effect copied from the arm above it. The table is
-/// `super::super::peer`'s and is shared with stdio; this asserts that the HTTP carrier honours it
+/// `super::super::peer`'s; this asserts that the HTTP carrier honours it
 /// rather than having quietly acquired its own opinion.
 #[tokio::test]
 async fn only_the_catalogue_notifications_move_the_catalogue() {

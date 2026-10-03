@@ -115,10 +115,7 @@
 //! tool description rather than the upstream's — applied to the field where it matters most.
 
 use busbar_contract::plane::{BillableClass, PER_REQUEST};
-use busbar_kernel::{
-    diagnostics::PLANE_CALLLOG_ROW_UNREADABLE, plane::registry::PlaneHooks,
-    plane_host::LiveHostFactory,
-};
+use busbar_kernel::{diagnostics::PLANE_CALLLOG_ROW_UNREADABLE, plane::registry::PlaneHooks};
 
 /// THE MCP PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::Mcp` `match`.
@@ -164,13 +161,6 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         trust_keys: config::TRUST_KEYS,
         served_op_classes: &[],
     };
-
-/// [`stdio_serve::serve_stdio`], boxed to the stdio-serve axis's shape ([`crate::linked`]).
-pub fn serve_stdio_boxed(
-    factory: LiveHostFactory,
-) -> futures::future::LocalBoxFuture<'static, i32> {
-    Box::pin(stdio_serve::serve_stdio(factory))
-}
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
 /// [`PLANE_DECLARATION`] and joined to it kernel-side (`PlaneDecl::assemble`). The registration item
@@ -223,7 +213,7 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
     // sweep to spawn at boot. A server nobody calls is never fetched. The daemon this replaced is
     // gone; its removal is the whole of this plane's boot change.
     start: None,
-    on_swap: Some(mcp_on_swap),
+    on_swap: None,
     parse_section: Some(mcp_parse_section),
     parse_endpoint: Some(mcp_parse_endpoint),
     lower_endpoint: Some(mcp_lower_endpoint),
@@ -540,35 +530,6 @@ impl busbar_kernel::plane::config::PlaneEndpointCfg for McpCfg {
     }
 }
 
-/// CARRY THE MCP CONNECTION POOL ACROSS A CONFIG SWAP — retire every stdio child whose registration
-/// is gone from the NEXT generation. The pool deliberately outlives an apply (a socket negotiated
-/// nothing this revision, so reusing it across a config edit is safe and desirable), and the
-/// catalogue does not — so without this, deleting a `tools:` entry would leave its child process
-/// running forever, unreferenced by any live registration and unreachable, which is a leak an
-/// operator has no surface to see or stop. The keep-set is the NEXT catalogue's server ids, so a
-/// registration the operator removed is exactly the child that is dropped; a registration that
-/// survives keeps its live child and the connection reuse the pool exists for.
-///
-/// It reads the NEXT snapshot's own MCP runtime state (`mcp_pool`, `mcp_catalogue`) and nothing that
-/// carries the audit chain or the governance context. The prior snapshot is unread here: the pool is
-/// Arc-carried onto the next snapshot by `App::clone` (a live-config mutation) already, so the work
-/// is a reconciliation of the carried pool to the next catalogue, not a copy from prior to next; the
-/// argument is present for a plane whose swap must DIFF the two generations. When the MCP plane's
-/// pool and catalogue move out of the flat `App` fields into the plane's own slot object, this
-/// downcasts that slot instead of the `App`.
-pub(crate) fn mcp_on_swap(
-    _prior: &dyn busbar_kernel::plane_host::PlaneSlots,
-    next: &dyn busbar_kernel::plane_host::PlaneSlots,
-) {
-    let rt = runtime_slots(next);
-    rt.pool.children.retain(
-        &rt.catalogue
-            .servers()
-            .map(|s| s.id.clone())
-            .collect::<std::collections::BTreeSet<_>>(),
-    );
-}
-
 /// RESTORE THE MCP PLANE'S DURABLE STATE, in order, BEFORE a listener binds — the per-call log, the
 /// upstream-demotion record and the spent-approval ledger, each attached as a write-through sink to
 /// the plane-narrowed store and read back. The narrowed store (task/mcp/demotion/spent methods only,
@@ -868,7 +829,7 @@ pub(crate) struct ProgressChannel {
 
 impl ProgressChannel {
     /// The most progress frames busbar retains for one request. A progress stream is UNTRUSTED
-    /// upstream input — both wires (`client::stdio`, `client::transport`) push whatever the peer
+    /// upstream input — the wire (`client::transport`) pushes whatever the peer
     /// emits, across every round of a multi-round `tools/call`, into this one request-wide channel —
     /// so it is bounded like the plane's other peer-input surfaces (`MAX_INTERLEAVED_MESSAGES`,
     /// `max_upstream_buffered_bytes`). Without it a peer that streams progress without end grows
@@ -951,11 +912,6 @@ pub(crate) use busbar_plane_mcp::{
     adapt, codec as plane_codec, revision, session as session_rules,
 };
 pub(crate) mod sse;
-/// THE STDIO SERVE MODE: busbar as an MCP server on its own stdin/stdout — the same serve
-/// sequence, the same dispatch, a second transport binding. See the module header for the
-/// boot-time governance design. `pub`, not `pub(crate)`: the thin `busbar` binary's `main.rs`
-/// is the `--mcp-stdio` entry point and lives in a different crate after the core split.
-pub mod stdio_serve;
 /// `subscriptions/listen` — THE SERVER-TO-CLIENT CHANNEL of this revision. The GET stream was
 /// removed and the channel MOVED onto a method; see the module header for why that is not the same
 /// thing as the channel being deleted.

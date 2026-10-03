@@ -385,7 +385,7 @@ decisions before streaming.
   and byte quotas; an ungoverned chain is unisolated and says so, with a per-instance boot diagnostic
   latched on the first legacy stream. Sessionless GET+SSE: `MCP-Protocol-Version` present
   (streamable revision) → 405; absent → the legacy 2024-11-05 stream; plain GET or DELETE with no
-  session → 405. Homes: the stdio supervisor is the stdio transport's; RFC 8693 exchange is the auth
+  session → 405. Homes: ~~the stdio supervisor is the stdio transport's;~~ (OWNER 2026-10-02: stdio parked on branch 1.6.x-mcp-stdio, out of 1.6.0) RFC 8693 exchange is the auth
   kind's `exchange()` (F7); the tools grammar is the plane's; the task store is host records.
 - *a2a (A2A-PUSH, FOLD-A2A; ARCHITECT rulings 2026-09-29/30):* a claim may be a path PATTERN (a `{…}`
   segment is a variable), resolved under CG-62's precedence (§2). Push delivery retries at most three times
@@ -579,7 +579,7 @@ transport, auth, target_from, trust_from, egress_class)`. It asks for a raw byte
 wire protocol, framed by the plugin itself) or a framed transport (http).
 
 **The chain is kernel → `busbar-core-connector` → transport plugins.** The kernel knows nothing about
-transport. Transport plugins have two roles: **carriers** (`tcp`, `stdio`) dial, accept, read
+transport. Transport plugins have two roles: **carriers** (`tcp`, `stdio` — available as a plugin; no 1.6.0 plane uses it (OWNER 2026-10-02)) dial, accept, read
 and write; **framers** (`http`, `ws`) are sans-IO state machines. One plugin is one entry, and the
 schemes it serves are its claims — http claims `http`, `https` and `sse` ~~and `grpc`~~ (SUPERSEDED
 2026-09-29 by OWNER ruling: gRPC is its own transport, below); ws claims `ws` and
@@ -1144,7 +1144,7 @@ the three cleanliness crates. Every plugin lives in its own repo, named `busbar-
 | Kind | Plugins |
 |---|---|
 | plane | llm, mcp, a2a, streaming, decisions |
-| transport | tcp, stdio, http, ws, grpc (grpc OWNER 2026-09-29; there is no unix transport, OWNER 2026-09-30, Q127) |
+| transport | tcp, stdio (available as a plugin; no 1.6.0 plane uses it (OWNER 2026-10-02)), http, ws, grpc (grpc OWNER 2026-09-29; there is no unix transport, OWNER 2026-09-30, Q127) |
 | store | memory, postgres, mysql, sqlite, valkey |
 | secret | env, file, vault |
 | auth | admin-tokens, github, ldap, oidc, webhook-signature; the connection-auth styles' crates are an owner question (§6) ~~outbound~~ |
@@ -2356,8 +2356,9 @@ Registered built-in (composition root) or dynamic (loader reads export symbol) �
   `build(BuildCtx{secrets-already-resolved})->opaque_handle`, `hydrate/start`,
 - **admin_routes() + openapi()** — the admin-verb/OpenAPI contribution with the non-vacuity invariant
   (`plane/registry.rs:264-292`); MUST NOT be dropped.
-- ingress, TWO kinds: **route** (HTTP + gRPC-as-axum-POST `a2a/grpc.rs:123`) and **stream** (MCP
-  `stdio_serve`: host owns the pipe, pumps frames into the same `dispatch`; plane never touches the fd).
+- ingress, TWO kinds: **route** (HTTP + gRPC-as-axum-POST `a2a/grpc.rs:123`) and **stream** ~~(MCP
+  `stdio_serve`: host owns the pipe, pumps frames into the same `dispatch`; plane never touches the fd)~~
+  (OWNER 2026-10-02: stdio parked on branch 1.6.x-mcp-stdio, out of 1.6.0).
 
 Every `dispatch(req_bytes, sink)` runs inside a host-owned **DispatchScope** (§4).
 
@@ -2388,7 +2389,7 @@ ingress kinds; hardening note: assert the arena Drop is synchronous on abort in 
 | `breaker_admit(&Key)->AdmissionId`, `breaker_settle(AdmissionId,&Signal)` | POD | arena reclaims on scope-drop; `failover::walk` pool-select + admit + the `pre_admitted` handoff (`relay.rs:1508-1512`) is ONE atomic cluster |
 | `verify_lookup(&Key)->Hit\|Lead\|Follow`, `verify_store(&Key,verdict,ttl)` | POD | host owns cache + single-flight; PLANE fetches. No cycle (verify precedes admission `method.rs:1188`<`1551`; verify fetch takes no admission `connect.rs:273`) |
 | `egress_open(&EgressDesc)->(EgressId,EgressHead)`, `egress_poll`, `egress_write`, `egress_close` | POD hdr + bytes | host owns reqwest + resolve-then-pin + SPKI + mTLS(`client_identity`). `EgressHead` (post-connect, pre-body) carries `observed_spki`. Streaming poll validated (`a2a/transport.rs:612-625` already `chunk().await`+Continue/Stop) |
-| `subprocess_open(&CmdDesc)->PipeId`, `pipe_read/write`, `subprocess_close` | POD hdr + bytes | MCP stdio egress: governed `tokio::process` (host owns lifecycle + COMMAND-ALLOWLIST); server→client sampling over stdio is refused today (`peer.rs:305-330`) so no stdio reentrancy |
+| ~~`subprocess_open(&CmdDesc)->PipeId`, `pipe_read/write`, `subprocess_close`~~ | ~~POD hdr + bytes~~ | ~~MCP stdio egress: governed `tokio::process` (host owns lifecycle + COMMAND-ALLOWLIST); server→client sampling over stdio is refused today (`peer.rs:305-330`) so no stdio reentrancy~~ OWNER 2026-10-02: stdio parked on branch 1.6.x-mcp-stdio, out of 1.6.0; the host backs no subprocess tier (`EgressKind::Subprocess` answers `Unsupported`, `pipe_read`/`pipe_write` unset) |
 | `run_operation(&OpDesc)->OpResult` | POD hdr + bytes | MCP HTTP sampling re-enters busbar's LLM pipeline (`sampling.rs:281`). RR7 hardening: carry a depth-bound + reuse the originating request's budget/audit correlation to avoid double-count |
 | `journal_append(scope, content_suffix_bytes, &FramingDesc)->seq`, `journal_read(q)->rows` | bytes + POD desc | §5. `FramingDesc{ framing: Framing::{LengthPrefixed\|PipeSeparated}, digests_scope: bool }` — host frames the prelude in that stream's framing (ADV-FINAL) |
 | `approvals_redeem`, `quarantine_op`, `auth_resolve`, `metrics_emit`, `clock_now` | POD | **NO `secret_resolve`** (confinement, `host.rs:67-69`). Per-request creds — A2A per-hop bearer `mint_from` (`creds.rs:411`, `receive.rs:1475`), MCP RFC 8693 token-exchange (`egress.rs:62`, `issue.rs:146`) — are NOT build-time. They resolve HOST-SIDE: `egress_open` takes a credential-REF (which pool/hop/exchange); the host mints + injects the header app-layer; the plane passes a ref and NEVER holds plaintext (ADV-FINAL — a confinement *improvement*, not just a removal) |
@@ -2684,7 +2685,7 @@ A carrier is "a source of work-items + a way to emit," decoupled from "a reply i
 |---|---|---|---|---|
 | request/response | yes | remote | llm, mcp(http), a2a(http+grpc-as-POST) | IMPLEMENT |
 | response-stream (req→streamed resp) | yes, streamed | remote | llm-stream, a2a relay, mcp subscribe | IMPLEMENT |
-| duplex-session (independent in/out) | n/a | either | **MCP stdio-serve**, (RTP-class) | **IMPLEMENT** (MCP stdio-serve is its 1.6.0 rider — REPANEL-2 BREAK: busbar-as-MCP-server originates requests + pushes unsolicited notifications; req/resp+stream can't carry it) |
+| duplex-session (independent in/out) | n/a | either | ~~**MCP stdio-serve**,~~ (RTP-class) | ~~**IMPLEMENT** (MCP stdio-serve is its 1.6.0 rider — REPANEL-2 BREAK: busbar-as-MCP-server originates requests + pushes unsolicited notifications; req/resp+stream can't carry it)~~ OWNER 2026-10-02: stdio parked on branch 1.6.x-mcp-stdio, out of 1.6.0; the duplex message pump stays for ws and the streaming plane |
 | subscription/pull (host-initiated, reply-less) | no | host | (MQ-class) | EXTENSION POINT |
 | accept-loop (many concurrent stateful sockets) | protocol | remote | (DB-wire-class) | EXTENSION POINT |
 `PlaneDecl` declares which carrier(s) it provides; the host drives them uniformly.
@@ -2719,7 +2720,7 @@ work-handle at 202 and resumes via nested lookup — NOT reclaimed at future-dro
 | Tier | shape | governs | subsumes |
 |---|---|---|---|
 | HTTP-request | reqwest one-shot + resolve-then-pin + SPKI + mTLS + HTTP head | url/ip/spki | today's mcp/a2a http |
-| governed raw-connection | host opens a pinned, SSRF-checked, metered BYTE channel; plane frames on top; duplex | address/allowlist | **subprocess (MCP stdio) AND raw sockets (DB-wire/tunnel/RTP)** — subprocess is NOT a separate capability |
+| governed raw-connection | host opens a pinned, SSRF-checked, metered BYTE channel; plane frames on top; duplex | address/allowlist | ~~**subprocess (MCP stdio) AND**~~ (OWNER 2026-10-02: stdio parked on branch 1.6.x-mcp-stdio, out of 1.6.0) **raw sockets (DB-wire/tunnel/RTP)** — subprocess is NOT a separate capability |
 Both are `egress_open(&EgressDesc{ kind: Http|RawConn|Subprocess, ... })`; kind is data, the governance
 is one path. Removes the 4 subprocess capability slots as protocol-specific furniture.
 
@@ -2844,10 +2845,10 @@ capabilities are added.
 ## Scope discipline for 1.6.0 (keep it tight — post-re-panel)
 > **SUPERSEDED 2026-09-27 for egress and metering by THE DESIGN §5–§7;** the carrier, scope and WorkItem items stand.
 
-IMPLEMENT: carriers {request/response, response-stream, **duplex-session** (MCP stdio-serve rider)}; the
+IMPLEMENT: carriers {request/response, response-stream, ~~**duplex-session** (MCP stdio-serve rider)~~ (OWNER 2026-10-02: stdio parked on branch 1.6.x-mcp-stdio, out of 1.6.0)}; the
 **WorkItem reserved-shape** (sized/versioned, kind-tagged inbound+emit, witnessed); scopes {dispatch,
-session [riders: MCP stdio-serve + A2A relay], durable [rider: A2A tasks]}; egress {http, raw-connection
-incl subprocess}; metering {**charge only**}; neutral core + trust-family + nested-dispatch (depth-bounded,
+session [riders: ~~MCP stdio-serve +~~ A2A relay], durable [rider: A2A tasks]}; egress {http, raw-connection
+~~incl subprocess~~ (OWNER 2026-10-02: stdio parked on branch 1.6.x-mcp-stdio, out of 1.6.0)}; metering {**charge only**}; neutral core + trust-family + nested-dispatch (depth-bounded,
 RR7) + work-handle.
 NOT BUILT in 1.6.0 (the layout reserves the tag; building one is a future ABI version, never a 1.6.0 patch): subscription/pull + accept-loop carriers; ingress work-item settle (ack/nack/dead-letter);
 ordered-processing lease; **metering reserve/settle (`CostHold`)**. The TAXONOMY + the WorkItem reserved
@@ -4625,6 +4626,12 @@ Other rulings:
 - WIRE-STORE Q8: (b). Contract StoreOpener seam implemented by the root over the ONE Dispatcher plus the registry, installed via RootRows; appbuild calls the opener; kernel stops naming loader. The registry build moves to root (coord BOOT-CHAIN). kernel×plugin-tooling may only fall. Applies to every kind's open path (secret/auth/hook/export same pattern).
 - Opener seam naming: <Kind>Axis in contract (template = ExportAxis: probe/check/open(module,label,settings) -> Arc<dyn <Kind>Calls>), impl in root over ONE Dispatcher + registry, installed via RootRows. Supersedes 'StoreOpener'.
 
+### OWNER 2026-10-02: stdio parked on branch 1.6.x-mcp-stdio, out of 1.6.0
+*"can you just park all stdio in a side branch for 1.6.x ? leave it out of 1.6.0 its got risks i need to think of."* Refined the same day: *"keep busbar-transport-stdio in the release coding path, we just dont compile it in as its unused"*; *"a user may write a plugin needing our stdio transport plugin and thats fine, its there and prod ready"*.
+- **Out of 1.6.0, on branch `1.6.x-mcp-stdio`:** busbar's OWN users of stdio — the MCP plane launching a local server as a child process (`tools.<name>.transport: stdio`, `command:`/`args:`/`env:`/`cwd:`; `busbar-mcp` `client/stdio.rs`), MCP stdio-serve (`busbar --mcp-stdio`, `mcp/stdio_serve.rs`, the MCP plane's `stdio` claim), the kernel's subprocess pipe tier (`plane_host/pipe.rs`), the line-framed `byte_duplex::serve` and the live-host factory that existed only for stdio-serve, and the connector spawn carrier (#223, #255).
+- **Refused, never ignored:** a `tools:` registration naming `transport: stdio` or any launch key fails boot with `stdio MCP servers are not available in 1.6.0`.
+- **The stdio transport stays a full fleet member:** GetBusbar/busbar-transport-stdio is on the `plugins.yaml` roster with CI, signed releases and a published artifact; busbar's default build does not link it (no compiled-in row, no workspace pin). The 72 `mcp|stdio` method-coverage cells are owed work in `qa/method-coverage.missing`.
+
 ### OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (standing; no per-item sign-off)
 *"Every LLM dialect covers 100% of its own protocol. Within the same dialect, everything passes through. Across dialects, we translate what maps and drop what doesn't."*
 - **RELAY (same dialect, decided per attempt):** the client's body bytes go upstream unchanged except GOVERNED byte-level splices at dialect-declared paths (mapped `model`; OpenAI-family `stream_options.include_usage`, metering; hook `rw` edits, spliced per changed block). Never parse-edit-reserialize. Headers per #76. Buffered answers and streams are relayed unchanged; the reader runs as a read-only tap (Part 3 #5) and never refuses or substitutes content it does not model.
@@ -5211,7 +5218,7 @@ live at `/specification/2026-07-28`). Authorization: `/specification/<rev>/basic
 
 | Protocol | Binding (official) | Direction | Spec status | busbar today | Gap | Size | Transport kind |
 |---|---|---|---|---|---|---|---|
-| MCP | stdio (newline-delimited JSON-RPC) | server + client | SHOULD support when possible; unchanged across all revisions | **yes**, both directions — `mcp/stdio_serve.rs` (inbound), `mcp/client/stdio.rs` (outbound, no-shell/absolute-path-only/cleared-env child spawn) | — | — | stdio |
+| MCP | stdio (newline-delimited JSON-RPC) | server + client | SHOULD support when possible; unchanged across all revisions | ~~**yes**, both directions — `mcp/stdio_serve.rs` (inbound), `mcp/client/stdio.rs` (outbound, no-shell/absolute-path-only/cleared-env child spawn)~~ OWNER 2026-10-02: stdio parked on branch 1.6.x-mcp-stdio, out of 1.6.0 | — | — | stdio |
 | MCP | Streamable HTTP, **`2026-07-28`** shape: POST-only endpoint, no sessions, no `initialize` handshake, no `Mcp-Session-Id`, no GET stream/resumability (SEP-2243/SEP-2575) | server + client | current spec's MUST-support HTTP transport | **yes** — `busbar-mcp/src/mcp/mod.rs` targets exactly `2026-07-28` stateless model; SSE retained only as a response *content-type* on POST (`mcp/sse.rs`), negotiated via `Accept` | — | — | http h1/h2 |
 | MCP | Streamable HTTP, **`2025-03-26`/`2025-06-18`/`2025-11-25`** shape: `Mcp-Session-Id` sessions, GET stream for server-initiated messages, SSE resumability via `Last-Event-ID` | server + client | was the current/MUST HTTP transport for ~2.5 years; still what the large majority of *already-deployed* MCP servers/clients speak as of Sept 2026, since `2026-07-28` only just shipped | **no** — busbar jumped straight to `2026-07-28`; no session header, no GET stream, no `Last-Event-ID` resumability anywhere in `busbar-mcp` | **highest-value interop gap in this matrix**: busbar cannot talk session-based Streamable HTTP to the installed base of MCP servers/clients built against 2025-xx revisions | **M** | http h1/h2 (needs GET-stream + session-header + resumability support added back, likely as a compat shim) |
 | MCP | Deprecated HTTP+SSE (`2024-11-05`): two-endpoint SSE-stream + POST model | server + client | deprecated since `2025-03-26`; formally "Deprecated"/removal-eligible as of `2026-07-28`'s feature-lifecycle policy; SHOULD NOT for new implementations, but spec still documents a compat fallback for old peers | **no** — dropped per revision jump | legacy servers/clients on `2024-11-05` unreachable | **M** (bundled with the row above if both are tackled together) | http h1 |
@@ -5256,7 +5263,7 @@ live at `/specification/2026-07-28`). Authorization: `/specification/<rev>/basic
 | Transport kind | Crate | Status |
 |---|---|---|
 | `tcp` | `crates/busbar-transport-tcp` | yes — base byte-stream carrier |
-| `stdio` | `crates/busbar-transport-stdio` | yes — line-framed byte pump |
+| `stdio` | ~~`crates/busbar-transport-stdio`~~ GetBusbar/busbar-transport-stdio (plugin repo) | available as a plugin; no 1.6.0 plane uses it (OWNER 2026-10-02); busbar's default build does not link it |
 | `http` | `crates/busbar-transport-http` | yes — HTTP/1.1 + HTTP/2 (h2c and TLS+ALPN via `hyper::client::conn` h1/h2), SSE module, gRPC module folded in |
 | `ws` | `crates/busbar-transport-ws` | yes — `tokio-tungstenite`-based sans-IO framer, RFC 6455 close codes, TLS via `tokio-rustls` |
 | `grpc` | *(folded into `busbar-transport-http`)* | **in flight** — owner ruled 2026-09-29 to spin out a dedicated `busbar-transport-grpc` door layered on HTTP/2, "like ws on h1"; explicitly scoped as low-cost |

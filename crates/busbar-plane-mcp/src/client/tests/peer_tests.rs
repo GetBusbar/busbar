@@ -4,11 +4,9 @@
 //! WHAT A CHILD SENDS BUSBAR — classification, the deny-by-default gate on the three authority
 //! asks, and the two facts that stop a well-behaved child from desynchronising the stream.
 //!
-//! The paired end-to-end battery is the engine's `mcp::tests/stdio_client_leg_tests.rs`: this file proves
-//! what the classifier DECIDES, that one proves a real child process's real notifications and real
-//! requests reach it. Neither substitutes for the other, and the reason is the one
-//! `stdio_dispatch_tests.rs` records: a complete, adversarially tested classifier that nothing calls
-//! is what the deleted stdio transport was.
+//! The paired end-to-end battery is the engine's `mcp::client::tests/http_peer_tests.rs`: this file
+//! proves what the classifier DECIDES, that one proves a real peer's real notifications reach it over
+//! the streamable-HTTP carrier. Neither substitutes for the other.
 
 use super::super::jsonrpc::ServerAsk;
 use super::super::peer::{

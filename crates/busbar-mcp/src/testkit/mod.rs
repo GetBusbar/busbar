@@ -232,40 +232,6 @@ pub fn mcp_cfg_at(canonical: &str) -> McpCfg {
     }
 }
 
-/// A minimal VALID http `tools:` registration at `url` — its bare presence is enough to put its id in
-/// the next catalogue. For core's plane-swap integration test; the `McpServerDefCfg` fields are
-/// crate-private, so the constructor lives on the plane.
-pub fn swap_test_http_server(url: &str) -> McpServerDefCfg {
-    McpServerDefCfg {
-        url: url.to_string(),
-        pin: crate::mcp::config::ServerPinCfg {
-            mechanism: crate::mcp::config::McpPinMechanism::CertSpki,
-            key: Some("sha256/PEER=".to_string()),
-        },
-        command: None,
-        args: Vec::new(),
-        env: Default::default(),
-        cwd: None,
-        verify_ttl: None,
-        timeout: None,
-        tools_allow: Default::default(),
-        prompts_allow: Default::default(),
-        resources_allow: Default::default(),
-        resource_templates_allow: Default::default(),
-        transport: None,
-        aud: None,
-        grants: Default::default(),
-        roots: Vec::new(),
-        sampling: None,
-        max_input_required_rounds: None,
-        max_caller_ask_rounds: None,
-        allow_private: true,
-        token_exchange: None,
-        upstream_credentials: None,
-        hooks: Vec::new(),
-    }
-}
-
 /// SEED every registered MCP server's verification clock as JUST CHECKED, WITHOUT a sighting, so
 /// verify-on-call reuses the snapshot rather than re-fetching on the next `tools/call`. Relocated here
 /// from busbar-core's `test_support` (it names `mcp::runtime`/`mcp::client` types). Reads the runtime

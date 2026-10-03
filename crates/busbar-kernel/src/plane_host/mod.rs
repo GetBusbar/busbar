@@ -41,7 +41,6 @@ pub mod guard;
 // the A2A plane and the engine name the neutral `busbar_kernel::plane_host::spki` directly.
 pub(crate) mod identity_admit;
 pub mod journal;
-pub mod pipe;
 pub mod scope;
 pub mod session_meter;
 pub mod trust;
@@ -353,9 +352,10 @@ pub fn govern_admit_reason_over(
 /// BLOCKING thread (`spawn_blocking`) — calling `block_on` on a runtime worker would panic. The bridge
 /// is fail-closed: a join panic maps to [`IdentityRefusal::Denied`](crate::auth::IdentityRefusal),
 /// exactly as a chain that could not run denies.
-// Only the inbound stdio admission path consumes this seam today; a build whose planes resolve
-// identity on their own door leaves it with no caller, hence the unconditional dead-code allow (the
-// fn is always compiled — it backs the always-present `EngineHost::identity_admit` impl).
+// No linked plane consumes this seam today (its one caller, the MCP stdio serve mode, is parked out of
+// 1.6.0, OWNER 2026-10-02); a build whose planes resolve identity on their own door
+// leaves it with no caller, hence the unconditional dead-code allow (the fn is always compiled — it
+// backs the always-present `EngineHost::identity_admit` impl and the ABI slot a plugin plane calls).
 #[allow(dead_code)]
 pub async fn identity_admit_over(
     app: Arc<App>,
@@ -1336,7 +1336,7 @@ pub fn engine_host_value(app: &Arc<App>) -> impl busbar_kernel::plane_host::Engi
 }
 
 /// Mint an `Arc<dyn EngineHost>` over the CURRENT snapshot of a live [`AppHandle`] — the form the
-/// route adapter and the detached-runner / stdio paths reach for, which hold a swappable handle
+/// route adapter and the detached-runner paths reach for, which hold a swappable handle
 /// rather than a pinned `Arc<App>`. Loads the handle once; the clock the seam reads is engine-snapshot
 /// independent (it drives the host wall clock), so a later config swap does not change the value.
 #[must_use]
@@ -1344,24 +1344,9 @@ pub fn engine_host_from_handle(
     handle: &Arc<crate::state::AppHandle>,
 ) -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
     // `from_handle` (not `engine_host(&handle.load())`): retains the live handle so `plane_slot_live`
-    // re-reads the CURRENT snapshot on the route/detached-runner/stdio paths, which must see a config
+    // re-reads the CURRENT snapshot on the route/detached-runner paths, which must see a config
     // swap that lands after admission. The bound snapshot stays `handle.load()` — byte-identical.
     Arc::new(EngineHostImpl::from_handle(Arc::clone(handle)))
-}
-
-/// Mint a NEUTRAL [`LiveHostFactory`](busbar_kernel::plane_host::LiveHostFactory) closing over a live
-/// [`AppHandle`](crate::state::AppHandle): each call returns a fresh `from_handle` host whose BOUND
-/// snapshot is the handle's CURRENT load and whose `plane_slot_live` re-reads the live handle — so a
-/// transport that re-mints per frame sees a config swap that lands between calls. Byte-identical to
-/// calling [`engine_host_from_handle`] on each frame, handed to a plane that must not name the handle.
-#[must_use]
-pub fn live_host_factory(
-    handle: std::sync::Arc<crate::state::AppHandle>,
-) -> busbar_kernel::plane_host::LiveHostFactory {
-    std::sync::Arc::new(move || {
-        std::sync::Arc::new(EngineHostImpl::from_handle(std::sync::Arc::clone(&handle)))
-            as Arc<dyn busbar_kernel::plane_host::EngineHost>
-    })
 }
 
 // The request-admission gate verdict is a pure POD naming only `busbar_contract::abi::hot` + std, so it now
@@ -2412,10 +2397,6 @@ pub fn runtime_slot_key(plane_key: &str) -> &'static str {
     interned.insert(composed, leaked);
     leaked
 }
-
-/// A source of freshly live-bound hosts: each call returns a host reading the current snapshot,
-/// so a config swap between calls is seen. Handed to transports that re-mint per frame.
-pub type LiveHostFactory = std::sync::Arc<dyn Fn() -> std::sync::Arc<dyn EngineHost> + Send + Sync>;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // OPAQUE GOVERNANCE HANDLES (App-retype WEDGE 2) — the neutral carrier tokens a plane HOLDS on its

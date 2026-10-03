@@ -104,7 +104,6 @@ kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/inbound_concurrency
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/law7_served_surface.rs	2
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/ledger_identity.rs	6
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/linked_export_sinks_boot_as_their_own_kind.rs	1
-kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/mcp_stdio_serve.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/metrics_scrape_boot_window.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/no_data_dir_neutrality.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/no_state_persist.rs	1

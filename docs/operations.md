@@ -769,25 +769,10 @@ divergence you never want, so the miss is a loud startup error naming the path i
 `BUSBAR_CONFIG=C:\ProgramData\busbar\config.yaml` (or wherever you keep it) and set that
 directory's ACL — see the secret-files row above.
 
-**`transport: stdio` MCP servers on Windows.** Two differences, both consequences of the platform:
-
-- **`command:` must be absolute in the Windows spelling** — `C:\path\to\server.exe` or a UNC
-  `\\host\share\server.exe`. A bare name (resolved via `PATH`), a relative path, and a
-  drive-relative `\foo` (resolved against the *current* drive) are all refused at boot, because each
-  lets the environment rather than the config decide which binary runs.
-- **The child's environment is cleared**, and on Windows that is a bigger deal than on unix. Busbar
-  never hands its own environment to an operator-configured child (it holds provider keys, store
-  credentials and admin tokens), so the child gets **only** what `env:` names. On unix an empty
-  environment is a working one. On Windows the OS itself reads `SystemRoot`/`windir` during DLL
-  resolution and Winsock startup, and interpreter-based servers (Node, Python — most of the
-  installed stdio ecosystem) also want `PATH`, `TEMP`/`TMP` and often `APPDATA`. **Name them
-  explicitly in `env:`** or the child may fail to start, or start and fail on its first socket.
-
-**Not verified on a Windows host.** The stdio transport's spawn/pipe/teardown tests use `/bin/sh`
-fixture children and are `#[cfg(unix)]`, so they compile to nothing on the Windows CI job: that job
-is green while the spawn half is *unexecuted*. The same is true of the plugin-staging lifecycle
-tests. Treat the stdio and plugin-loading behaviour above as reasoned from the platform's
-documented semantics, not as observed. If you run either on Windows, report what you see.
+**Not verified on a Windows host.** The plugin-staging lifecycle tests are `#[cfg(unix)]`, so they
+compile to nothing on the Windows CI job: that job is green while that half is *unexecuted*. Treat
+the plugin-loading behaviour above as reasoned from the platform's documented semantics, not as
+observed. If you run either on Windows, report what you see.
 
 ## Troubleshooting
 

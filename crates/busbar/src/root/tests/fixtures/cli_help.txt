@@ -44,12 +44,6 @@ ENVIRONMENT:
 
 Flags:
     --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
-    --mcp-stdio         serve the MCP plane on THIS PROCESS's stdin/stdout (newline-delimited
-                        JSON-RPC) instead of binding any listener — for an MCP host that runs
-                        busbar as a child process. Requires the `mcp:` block; on a deployment with
-                        a configured `auth.chain`, BUSBAR_MCP_STDIO_CREDENTIAL must carry a
-                        credential the chain admits (audience-bound to mcp.canonical_uri), and the
-                        whole session runs as that key — budgets, audit and hooks apply
 
 ENDPOINTS (once running, listen address from config.yaml `listen`):
     POST /<model>/v1/messages              Anthropic-format ingress (single model)

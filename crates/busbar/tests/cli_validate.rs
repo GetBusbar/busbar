@@ -69,7 +69,7 @@ models:
 /// codecs) the build carries. The empty `providers:`/`models:` pair is written only when the plane
 /// that owns `models:` is linked (`linked_axis_body_ingress`): a plane the build does not link
 /// requires nothing (Law 7).
-#[cfg(linked_axis_stdio_serve)]
+#[cfg(linked_every_plane)]
 fn write_tools_only_configs(dir: &Path, extra: &str) {
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
     let catalog = if cfg!(linked_axis_body_ingress) {
@@ -904,13 +904,13 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
 /// typed (`publish_as: foo_bar` versus server `foo`'s tool `bar`). A check that compared overrides
 /// only to each other would exit 0 here and look correct doing it.
 ///
-/// GATED ON the linked `stdio-serve` axis (`linked_axis_stdio_serve`, emitted by build.rs from
+/// GATED ON the every-plane build (`linked_every_plane`, emitted by build.rs from
 /// `[package.metadata.busbar.linked-axes]`): the collision check lives in the plane that owns
-/// `tools:`, the linked row carrying that axis, and is compiled out with it — a binary without that
+/// `tools:`, which no registration axis names alone, and is compiled out with it — a binary without that
 /// plane has no `tools:` to collide in, so `--validate` exiting 0 there is the correct answer, not the
 /// missed refusal this test exists to pin. The config configures that plane and nothing else (no
 /// provider, no model), so the test runs on every build that links it, whatever else is linked.
-#[cfg(linked_axis_stdio_serve)]
+#[cfg(linked_every_plane)]
 #[test]
 fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     let dir = fixture_dir("publish-as-collision");
@@ -964,6 +964,50 @@ fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     assert_eq!(
         code, 0,
         "distinct published names must validate clean: {stdout}{stderr}"
+    );
+}
+
+/// A LOCAL SERVER FOR BUSBAR TO LAUNCH IS REFUSED AT BOOT, NEVER IGNORED (OWNER 2026-10-02).
+///
+/// A `tools:` registration that names a child process — `transport: stdio`, or a `command:` — is a
+/// server this release does not start, so the config must not validate: an operator whose `command:`
+/// was silently dropped would believe busbar runs a server it never launches. Driven on the real
+/// binary through `--validate`, which reaches the same config resolution boot does. Each key is its
+/// own case so a refusal that stopped firing cannot hide behind one that still does, and the network
+/// registration beside them validates clean, so the refusal is about the launch keys alone.
+///
+/// GATED like the publish-as test above: the plane that owns `tools:` is linked on the every-plane
+/// build.
+#[cfg(linked_every_plane)]
+#[test]
+fn validate_refuses_a_tools_registration_that_names_a_child_process() {
+    let dir = fixture_dir("local-server-refused");
+    let base =
+        "tools:\n  fs:\n    url: \"https://fs.internal/rpc\"\n    pin: { mechanism: unpinned }\n";
+    for launch in [
+        "    transport: stdio\n",
+        "    command: /usr/local/bin/fs-server\n",
+        "    args: [\"--root\", \"/srv\"]\n",
+    ] {
+        write_tools_only_configs(&dir, &format!("{base}{launch}"));
+        let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        let all = format!("{stdout}{stderr}");
+        assert_eq!(
+            code,
+            1,
+            "`{}` must not validate clean: {all}",
+            launch.trim()
+        );
+        assert!(
+            all.contains("not available in 1.6.0") && all.contains("tools.fs"),
+            "the refusal names the registration and says why: {all}"
+        );
+    }
+    write_tools_only_configs(&dir, base);
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "the same registration without a launch key validates clean: {stdout}{stderr}"
     );
 }
 

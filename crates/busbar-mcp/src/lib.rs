@@ -31,7 +31,7 @@
 /// subscription operation cells, the durable record types, the content sanitizer and the
 /// structured-output schema check all live in `busbar-plane-mcp` now — the pure half of this
 /// plugin, split out so `busbar-plane-mcp` can name the codec without linking this crate's axum
-/// routes, stdio serve loop and tokio transports. They are re-exported HERE, under their old names,
+/// routes and tokio transports. They are re-exported HERE, under their old names,
 /// so every caller that spells `busbar_mcp::codec::…` or `busbar_mcp::record::…` resolves exactly
 /// what it always did. The split is a MOVE: no item changed shape crossing it.
 pub mod codec;
@@ -102,21 +102,16 @@ pub use busbar_plane_mcp::PLANE_KEY;
 /// wires, one item per registration axis, read off the crate rather than spelled at the root. The
 /// root's manifest names this crate and the axes it registers on
 /// (`[package.metadata.busbar.linked-axes]`: the plane, the JSON-RPC protocol declaration, the
-/// plane's owned diagnostics, the governed outbound hop it drives through the root-bound egress seam,
-/// and the stdio serve mode); its build script turns that into one table per axis over these items,
+/// plane's owned diagnostics, and the governed outbound hop it drives through the root-bound egress
+/// seam); its build script turns that into one table per axis over these items,
 /// and the root's source names no item of this crate.
 pub mod linked {
     /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
     pub use crate::mcp::{PLANE_DECLARATION, PLANE_HOOKS};
     /// The protocol axis: the one JSON-RPC declaration.
     pub static PROTOCOLS: &[&busbar_contract::protocol::ProtocolDecl] = &[&crate::PROTO_DECL];
-    /// The stdio serve mode: frames on stdin/stdout instead of a listener; the exit code.
-    pub use crate::mcp::serve_stdio_boxed as stdio_serve;
     /// The diagnostics axis.
     pub use crate::DIAGNOSTICS;
-    /// The CLI-help axis: this plane's rows of `busbar --help`, as declared data — `("flag", lines)`
-    /// is a row of the `Flags:` block whose first word is the flag the binary accepts.
-    pub const CLI_HELP: &[(&str, &str)] = &[("flag", busbar_plane_mcp::meta::HELP_FLAGS)];
     /// The claims axis: the pure plane the composition root's boot seal registers, and the claims it
     /// declares.
     pub const PLANE: busbar_plane_mcp::McpPlane = busbar_plane_mcp::McpPlane::EMPTY;

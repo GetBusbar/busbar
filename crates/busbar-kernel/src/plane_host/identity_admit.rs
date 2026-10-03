@@ -60,7 +60,7 @@ fn stash(resolved: Resolved) -> IdentityId {
 /// is single-use), or `None` when the handle is [`IdentityId::NONE`] or unknown (already consumed) — the
 /// fail-closed reading the plane maps to a refusal.
 #[must_use]
-// Consumed only by `identity_admit_over` (the inbound stdio admission path); a build whose planes
+// Consumed only by `identity_admit_over` (the inbound identity admission seam); a build whose planes
 // admit on their own door leaves it uncalled, hence the unconditional dead-code allow.
 #[allow(dead_code)]
 pub(crate) fn take(id: IdentityId) -> Option<Resolved> {

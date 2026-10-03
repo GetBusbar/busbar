@@ -245,6 +245,7 @@ fn lowered_floors(
 /// that lost one directory any other way gets no entry, so its floor drop stays RED.
 fn moved_out_by_kind(cx: &Ctx, cfg: &Cfg, base_doc: &Document, sha: &str) -> BTreeMap<String, i64> {
     let root_manifest = cx.read("Cargo.toml").unwrap_or_default();
+    let parked = parked_crates(&cfg.doc);
     let base_kinds = base_doc.table_or_empty("gate.plugin_kinds");
     let mut out = BTreeMap::new();
     for kind in base_kinds.keys() {
@@ -267,7 +268,7 @@ fn moved_out_by_kind(cx: &Ctx, cfg: &Cfg, base_doc: &Document, sha: &str) -> BTr
                         .map(|n| n.trim().trim_matches('"').to_string())
                 })
         };
-        if let Some(n) = moved_out(&gone, package_at_base, &root_manifest) {
+        if let Some(n) = moved_out(&gone, package_at_base, &root_manifest, &parked) {
             out.insert(format!("plugin_kinds.{kind}"), n as i64);
         }
     }
@@ -277,12 +278,13 @@ fn moved_out_by_kind(cx: &Ctx, cfg: &Cfg, base_doc: &Document, sha: &str) -> BTr
 /// A plugin crate MOVED OUT (TODO PATH TO DEV-GREEN P5: filter-repo into its own repo, pinned back
 /// in busbar as one git dependency at an exact commit). `Some(gone.len())` when every directory in
 /// `gone` is a crate whose package (`package_at_base`) the root manifest now pins as a git
-/// dependency at a `rev`; `None` when any one is not (deleted, renamed, or pulled by branch), and
-/// for an empty `gone`.
+/// dependency at a `rev`, OR a crate a cited owner ruling removed ([`parked_crates`]); `None` when
+/// any one is neither (deleted, renamed, or pulled by branch, with no row), and for an empty `gone`.
 fn moved_out(
     gone: &[String],
     package_at_base: impl Fn(&str) -> Option<String>,
     root_manifest: &str,
+    parked: &[String],
 ) -> Option<usize> {
     if gone.is_empty() {
         return None;
@@ -290,10 +292,27 @@ fn moved_out(
     gone.iter()
         .all(|dir| {
             package_at_base(dir).is_some_and(|name| {
-                crate::gates::workspace_deps::pinned_git_dep(root_manifest, &name)
+                parked.contains(&name)
+                    || crate::gates::workspace_deps::pinned_git_dep(root_manifest, &name)
             })
         })
         .then_some(gone.len())
+}
+
+/// THE SECOND ACCEPTED WAY DOWN (ARCHITECT 2026-10-02): a plugin crate REMOVED BY A CITED OWNER
+/// RULING rather than moved out. Each `[[gate.census.parked]]` row names the `crate` (its package
+/// name), the `reason` and the `ruling` that removed it; a row missing any of the three excuses
+/// nothing, so an unexplained drop with no pin stays RED.
+fn parked_crates(doc: &Document) -> Vec<String> {
+    doc.array_of_tables("gate.census.parked")
+        .into_iter()
+        .filter_map(|row| {
+            let field = |k: &str| row.str_of(k).map(str::trim).filter(|v| !v.is_empty());
+            field("reason")?;
+            field("ruling")?;
+            field("crate").map(str::to_string)
+        })
+        .collect()
 }
 
 /// The directories the globs `globs` matched at commit `sha`: each glob's parent listed at that

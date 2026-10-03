@@ -1050,7 +1050,7 @@ impl Drop for ReaderGuard {
     }
 }
 
-/// See `busbar-transport-stdio`'s identical guard: a write that does not reach a clean completion
+/// A write that does not reach a clean completion
 /// — an error, or this future being dropped mid-send — fences the connection rather than risk a
 /// half-written WS frame being resumed later.
 struct PoisonGuard<'a> {
