@@ -32,6 +32,10 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask proof-manifest --version <v> --out <file> [--sha S] [--run-id ID] [--run-url U] [--staged-json F] [--reports-dir D] [--hits-dir D] [--repo-root D] [--run-cargo|--run-parity|--run-composability] [--mark ID=STATUS]... [--index] [--print]
+  cargo xtask proof-manifest --selftest
+  cargo xtask proof-manifest --check [<manifest.json>...]   (the public-safety guard; no args = docs/proof/*.json)
+  cargo xtask proof-manifest --check-selftest
   cargo xtask loom [<test args>]   (the loom model of the config swap; a run of zero models is red)
   cargo xtask txn-fence   (the transaction compile fence: passes only when the fence fails to compile, for its three reasons)
   cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
@@ -70,6 +74,7 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "readme-assets",
     "install-sizes",
     "ship",
+    "proof-manifest",
     "txn-fence",
     "loom",
 ];
@@ -161,6 +166,13 @@ pub fn main(args: &[String]) -> i32 {
         // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
         // node published, by the published recipe pages alone, and reads no tree.
         Some("audit-verify") => crate::audit_verify::main(&args[1..]),
+        // THE BUILD PROOF DASHBOARD'S COLLATOR (`docs/proof/README.md`). Not a gate: it WRITES
+        // `docs/proof/<version>.json` (and, with `--index`, `index.json`) from the verdicts of
+        // gates it runs or reads, and owns no row set of its own.
+        Some("proof-manifest") => match open_ctx() {
+            Ok(cx) => crate::proof_manifest::main(cx.root(), &args[1..]),
+            Err(code) => code,
+        },
         // THE TRANSACTION COMPILE FENCE. Not a gate: it COMPILES busbar-kernel under a cfg and
         // passes only when that build fails for its three named reasons.
         Some("txn-fence") => crate::txn_fence::main(&args[1..]),
