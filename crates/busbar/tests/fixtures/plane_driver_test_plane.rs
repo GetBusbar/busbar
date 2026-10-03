@@ -300,6 +300,7 @@ static DOOR: Shared<Door> = Shared(Door {
     kind_abi: KindCode::Plane.abi_version(),
     statement: &STATEMENT.0 as *const Statement,
     ops: &OPS.0 as *const Ops as *const OpsHead,
+    ready: None,
 });
 
 static CLAIMS: Shared<[Claim; 1]> = Shared([Claim {

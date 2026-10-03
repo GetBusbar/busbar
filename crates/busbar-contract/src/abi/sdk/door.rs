@@ -56,7 +56,7 @@ use crate::abi::mechanism::door::{
     Door, KindTailHead, MarkWord, MetricFamily, Rewrite, Section, Statement,
 };
 use crate::abi::mechanism::lifecycle::{
-    self as lc, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn,
+    self as lc, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReadyIn, RefreshIn,
     ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use crate::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
@@ -104,6 +104,7 @@ unsafe impl AbiIn for TickIn {}
 unsafe impl AbiIn for DriveIn {}
 unsafe impl AbiIn for CancelIn {}
 unsafe impl AbiIn for ReleaseIn {}
+unsafe impl AbiIn for ReadyIn {}
 unsafe impl AbiOut for OutHead {}
 unsafe impl AbiOut for OpenOut {}
 unsafe impl AbiOut for TickOut {}
@@ -160,6 +161,7 @@ slot_structs!(Lifecycle {
     lc::slot::CANCEL => CancelIn, CancelOut;
     lc::slot::RELEASE => ReleaseIn, OutHead;
     lc::slot::CLOSE => InHead, OutHead;
+    lc::slot::READY => ReadyIn, OutHead;
 });
 
 /// The `in`/`out` of slot `INDEX` (its ABSOLUTE index, the number `InHead::op` carries). A kind
@@ -589,9 +591,14 @@ pub const fn stamp<T: KindOps>(statement: Statement) -> Statement {
     }
 }
 
-/// The [`Door`] of a `T` plugin.
+/// The [`Door`] of a `T` plugin; `ready` is its optional `ready` op (the door's tail), `None` for
+/// a plugin that has none.
 #[must_use]
-pub const fn door<T: KindOps>(statement: &'static Statement, ops: &'static T) -> Door {
+pub const fn door<T: KindOps>(
+    statement: &'static Statement,
+    ops: &'static T,
+    ready: Option<Op>,
+) -> Door {
     Door {
         magic: DOOR_MAGIC,
         mechanism_version: MECHANISM_VERSION,
@@ -600,6 +607,7 @@ pub const fn door<T: KindOps>(statement: &'static Statement, ops: &'static T) ->
         kind_abi: T::KIND.abi_version(),
         statement,
         ops: ptr::from_ref(ops).cast::<OpsHead>(),
+        ready,
     }
 }
 
@@ -632,12 +640,45 @@ pub const fn door<T: KindOps>(statement: &'static Statement, ops: &'static T) ->
 /// * `lifecycle: life(L)` — instead of the nine: the SDK's generic lifecycle slots over the kind's
 ///   [`Life`](crate::abi::sdk::life::Life) `L` (`abi::sdk::life`), every one a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot over `Held<L>`.
+/// * `lifecycle: life(L, ready)` — the same, and the door states `ready`
+///   (`abi::mechanism::lifecycle`, READY): the host calls [`Life::ready`](crate::abi::sdk::life::Life::ready)
+///   after `open`, on a real ticket, before any listener binds, and boot awaits it. Without
+///   `ready` the door states none and the plugin is opened exactly as before.
+/// * `ready: S` (optional, after `lifecycle`) — the door's `ready` as a raw [`Slot`] or a
+///   [`Safe`](crate::abi::sdk::safe::Safe) one reading `ReadyIn` and writing `OutHead`.
 #[macro_export]
 macro_rules! plugin_door {
+    // The door's `ready` entry: none, or the trampoline over the named slot (kind-neutral: the
+    // mechanism's own `ReadyIn`/`OutHead`, whatever the kind).
+    (@ready $capture:ty) => { ::core::option::Option::None };
+    (@ready $capture:ty, $ready:ty) => {
+        $crate::abi::sdk::door::kind_op::<
+            $crate::abi::sdk::door::Lifecycle,
+            $ready,
+            $capture,
+            { $crate::abi::mechanism::lifecycle::slot::READY },
+        >()
+    };
+    (
+        ops: $ops:ty,
+        statement: $statement:expr,
+        lifecycle: life($life:ty, ready)
+        $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
+        $(,)?
+    ) => {
+        $crate::plugin_door! {
+            ops: $ops,
+            statement: $statement,
+            lifecycle: life($life),
+            ready: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Ready<$life>>
+            $(, kind_ops: { $($field : $slot),* })?
+        }
+    };
     (
         ops: $ops:ty,
         statement: $statement:expr,
         lifecycle: life($life:ty)
+        $(, ready: $ready:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
         $(,)?
     ) => {
@@ -655,6 +696,7 @@ macro_rules! plugin_door {
                 release: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Release<$life>>,
                 close: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Close<$life>>,
             }
+            $(, ready: $ready)?
             $(, kind_ops: { $($field : $slot),* })?
         }
     };
@@ -672,6 +714,7 @@ macro_rules! plugin_door {
             release: $release:ty,
             close: $close:ty $(,)?
         }
+        $(, ready: $ready:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
         $(,)?
     ) => {
@@ -699,6 +742,7 @@ macro_rules! plugin_door {
                         || <$cancel as __sdk::Entry>::SAFE
                         || <$release as __sdk::Entry>::SAFE
                         || <$close as __sdk::Entry>::SAFE
+                        $(|| <$ready as __sdk::Entry>::SAFE)?
                         $($(|| <$slot as __sdk::Entry>::SAFE)*)?),
                 "a Safe slot reads the state a Safe open installs: name open as Safe<_> too"
             );
@@ -740,7 +784,11 @@ macro_rules! plugin_door {
                     $field: __sdk::kind_op::<__Ops, $slot, __Capture, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
                 )*)?
             };
-            const __DOOR: &$crate::abi::mechanism::door::Door = &__sdk::door::<__Ops>(__STATEMENT, __OPS);
+            const __DOOR: &$crate::abi::mechanism::door::Door = &__sdk::door::<__Ops>(
+                __STATEMENT,
+                __OPS,
+                $crate::plugin_door!(@ready __Capture $(, $ready)?),
+            );
             __DOOR
         }
     };

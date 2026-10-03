@@ -15,6 +15,16 @@
 //! SLOT LAYOUT. A kind's table is [`OpsHead`] followed by contiguous `Option<Op>` fields: kind op `k`
 //! is at slot index [`LIFECYCLE_SLOTS`]` + k`. [`OpsHead::slots`] and [`OpsHead::size`] must EQUAL
 //! the host's values for that kind's ABI version, or the load is refused.
+//!
+//! READY, THE ONE OPTIONAL LIFECYCLE OP (ARCHITECT 2026-10-02, "discovery at boot"). It is not a
+//! table slot: it rides the door's append-only tail ([`super::door::Door::ready`]), so no kind's
+//! table and no kind op's index moves. A plugin that must reach the network before it serves (a
+//! discovery exchange through its declared need) states it; the host calls it after `open` answered
+//! READY, on a REAL ticket (it may pend, and is resumed after the wake like any op), with the host
+//! tables in [`ReadyIn::host`], before any listener binds, and boot awaits it. READY = the
+//! instance serves; FAILED or REFUSED refuses the boot with the plugin's `OutHead.error` text. A
+//! door without it (NULL, or a door whose `size` ends before it) is opened exactly as before.
+//! `ready` is a lifecycle op: it never overlaps `open`, `refresh`, `retire` or `close`.
 
 use super::call::{Blob, InHead, Op, OutHead};
 use super::ticket::{HostTables, Ticket};
@@ -40,6 +50,9 @@ pub mod slot {
     pub const RELEASE: u32 = 7;
     /// `close`.
     pub const CLOSE: u32 = 8;
+    /// `ready`: the door's optional tail op ([`super::super::door::Door::ready`]), NOT a table
+    /// slot; [`InHead::op`] carries this number on its call.
+    pub const READY: u32 = u32::MAX;
 }
 
 /// How many lifecycle slots [`OpsHead`] holds.
@@ -136,6 +149,17 @@ pub struct OpenOut {
     /// For an `open` that did not answer READY: how many bytes of [`OpenIn::err_buf`] its reason
     /// fills; `0` = none. More than [`OpenIn::err_cap`] is a malformed answer (FAULT).
     pub err_len: usize,
+}
+
+/// `ready`'s `in`; its `out` is [`OutHead`] (FAILED or REFUSED name their text in
+/// `OutHead.error`, the per-call class of memory: valid until the next op on the ticket).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ReadyIn {
+    /// The head; its `ticket` is a real ticket, so the op may pend.
+    pub head: InHead,
+    /// The host tables, the same `open` was handed.
+    pub host: *const HostTables,
 }
 
 /// `retire`'s `in`.

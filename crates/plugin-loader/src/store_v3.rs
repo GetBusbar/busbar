@@ -131,6 +131,8 @@ impl LoadedStore {
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
+        // DISCOVERY AT BOOT: a store door that states `ready` is awaited before it is served.
+        plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
         Ok(Self {
             plugin,
             dispatcher,

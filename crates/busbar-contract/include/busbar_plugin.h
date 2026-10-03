@@ -75,6 +75,7 @@ extern "C" {
 #define BB_MECH_SLOT_CANCEL UINT32_C(6) /* `cancel`. */
 #define BB_MECH_SLOT_RELEASE UINT32_C(7) /* `release`. */
 #define BB_MECH_SLOT_CLOSE UINT32_C(8) /* `close`. */
+#define BB_MECH_SLOT_READY UINT32_C(0xffffffff) /* `ready`: the door's optional tail op ([`super::super::door::Door::ready`]), NOT a table */
 #define BB_MECH_LIFECYCLE_SLOTS UINT32_C(9) /* How many lifecycle slots [`OpsHead`] holds. */
 #define BB_MECH_MECHANISM_VERSION UINT32_C(2) /* The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION` */
 #define BB_MECH_DOOR_MAGIC UINT64_C(0x4c50524142535542) /* ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired */
@@ -701,6 +702,7 @@ typedef struct bb_mech_OpsHead bb_mech_OpsHead;
 typedef struct bb_mech_ValidateIn bb_mech_ValidateIn;
 typedef struct bb_mech_OpenIn bb_mech_OpenIn;
 typedef struct bb_mech_OpenOut bb_mech_OpenOut;
+typedef struct bb_mech_ReadyIn bb_mech_ReadyIn;
 typedef struct bb_mech_GenIn bb_mech_GenIn;
 typedef struct bb_mech_RefreshIn bb_mech_RefreshIn;
 typedef struct bb_mech_TickIn bb_mech_TickIn;
@@ -1059,6 +1061,7 @@ struct bb_mech_Door {
     uint32_t kind_abi;
     const bb_mech_Statement *statement;
     const bb_mech_OpsHead *ops;
+    bb_mech_Op ready;
 };
 
 /* One metric family, declared ONCE in the Statement and validated at `open`; a per-call */
@@ -1174,6 +1177,12 @@ struct bb_mech_OpenOut {
     bb_mech_OutHead head;
     void *instance;
     size_t err_len;
+};
+
+/* `ready`'s `in`; its `out` is [`OutHead`] (FAILED or REFUSED name their text in */
+struct bb_mech_ReadyIn {
+    bb_mech_InHead head;
+    const bb_mech_HostTables *host;
 };
 
 /* `retire`'s `in`. */
@@ -3473,7 +3482,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn records_secret;
 };
 
-/* ---- layout proof: 259 of 262 structures are pinned by the golden ---- */
+/* ---- layout proof: 260 of 263 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -3540,7 +3549,7 @@ BB_ASSERT(offsetof(bb_mech_OutHead, lease) == 16, "bb_mech_OutHead.lease: offset
 BB_ASSERT(offsetof(bb_mech_OutHead, error) == 24, "bb_mech_OutHead.error: offset");
 BB_ASSERT(offsetof(bb_mech_OutHead, envelope) == 40, "bb_mech_OutHead.envelope: offset");
 BB_ASSERT(offsetof(bb_mech_OutHead, extensions) == 72, "bb_mech_OutHead.extensions: offset");
-BB_ASSERT(sizeof(bb_mech_Door) == 40, "bb_mech_Door: size");
+BB_ASSERT(sizeof(bb_mech_Door) == 48, "bb_mech_Door: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_Door) == 8, "bb_mech_Door: alignment");
 BB_ASSERT(offsetof(bb_mech_Door, magic) == 0, "bb_mech_Door.magic: offset");
 BB_ASSERT(offsetof(bb_mech_Door, mechanism_version) == 8, "bb_mech_Door.mechanism_version: offset");
@@ -3549,6 +3558,7 @@ BB_ASSERT(offsetof(bb_mech_Door, kind) == 16, "bb_mech_Door.kind: offset");
 BB_ASSERT(offsetof(bb_mech_Door, kind_abi) == 20, "bb_mech_Door.kind_abi: offset");
 BB_ASSERT(offsetof(bb_mech_Door, statement) == 24, "bb_mech_Door.statement: offset");
 BB_ASSERT(offsetof(bb_mech_Door, ops) == 32, "bb_mech_Door.ops: offset");
+BB_ASSERT(offsetof(bb_mech_Door, ready) == 40, "bb_mech_Door.ready: offset");
 BB_ASSERT(sizeof(bb_mech_MetricFamily) == 72, "bb_mech_MetricFamily: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_MetricFamily) == 8, "bb_mech_MetricFamily: alignment");
 BB_ASSERT(offsetof(bb_mech_MetricFamily, name) == 0, "bb_mech_MetricFamily.name: offset");
@@ -3644,6 +3654,10 @@ BB_ASSERT(BB_ALIGNOF(bb_mech_OpenOut) == 8, "bb_mech_OpenOut: alignment");
 BB_ASSERT(offsetof(bb_mech_OpenOut, head) == 0, "bb_mech_OpenOut.head: offset");
 BB_ASSERT(offsetof(bb_mech_OpenOut, instance) == 96, "bb_mech_OpenOut.instance: offset");
 BB_ASSERT(offsetof(bb_mech_OpenOut, err_len) == 104, "bb_mech_OpenOut.err_len: offset");
+BB_ASSERT(sizeof(bb_mech_ReadyIn) == 96, "bb_mech_ReadyIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_mech_ReadyIn) == 8, "bb_mech_ReadyIn: alignment");
+BB_ASSERT(offsetof(bb_mech_ReadyIn, head) == 0, "bb_mech_ReadyIn.head: offset");
+BB_ASSERT(offsetof(bb_mech_ReadyIn, host) == 88, "bb_mech_ReadyIn.host: offset");
 BB_ASSERT(sizeof(bb_mech_GenIn) == 96, "bb_mech_GenIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_GenIn) == 8, "bb_mech_GenIn: alignment");
 BB_ASSERT(offsetof(bb_mech_GenIn, head) == 0, "bb_mech_GenIn.head: offset");

@@ -8,7 +8,7 @@
 //! finds [`DOOR_SYMBOL`] and runs [`validate`]; [`load_linked`] runs the SAME [`validate`] on a
 //! compiled-in row's door. Both answer the same [`Plugin`]. The door is refused — never guessed,
 //! never a panic — for: a wrong magic, a mechanism or kind ABI version older OR newer than the
-//! host's, an unknown kind or another kind than `K`, a door smaller than the host's, a NULL table,
+//! host's, an unknown kind or another kind than `K`, a door that does not reach its table, a NULL table,
 //! a table whose `slots`/`size` differ from the host's table of `K`, any NULL slot, or a Statement
 //! that is missing, short, disagrees with the door or points at NULL arrays.
 
@@ -180,7 +180,7 @@ pub enum LoadError {
         /// The host's.
         host: u32,
     },
-    /// The door is smaller than the host's.
+    /// The door does not reach its table (`host` is the least size: up to `ops`).
     DoorSize {
         /// The door's.
         door: u32,
@@ -283,7 +283,7 @@ impl fmt::Display for LoadError {
                 "the door's mechanism version {door} is not this host's {host} — {REBUILD}"
             ),
             Self::DoorSize { door, host } => {
-                write!(f, "the door is {door} bytes; this host's is {host}")
+                write!(f, "the door is {door} bytes; this host reads at least {host}")
             }
             Self::UnknownKind(k) => write!(f, "the door names kind {k}, which no kind has"),
             Self::WrongKind { door, want } => {
@@ -334,6 +334,8 @@ pub(crate) struct Validated {
     pub(crate) kind: KindCode,
     pub(crate) statement: Statement,
     pub(crate) slots: Box<[Op]>,
+    /// The door's optional `ready` (its append-only tail); `None` = it has none.
+    pub(crate) ready: Option<Op>,
 }
 
 /// The loaded library, unloaded on the loader's worker when the last instance handle drops.
@@ -555,8 +557,11 @@ pub(crate) fn validate<K: Kind>(door_fn: DoorFn) -> Result<Validated, LoadError>
     validate_door::<K>(door_fn())
 }
 
+/// Where the door's append-only `ready` tail starts: the least size a door states.
+const READY_AT: usize = std::mem::offset_of!(Door, ready);
+
 /// The door's head checks, in the mechanism's order: not NULL, the magic, the mechanism version, a
-/// size that covers the host's, a kind the host has, the kind `want` asks for (any, for `None`), and
+/// size that reaches `ops` (the append-only `ready` tail is optional), a kind the host has, the kind `want` asks for (any, for `None`), and
 /// that kind's ABI version.
 fn read_door(p: *const Door, want: Option<KindCode>) -> Result<(Door, KindCode), LoadError> {
     if p.is_null() {
@@ -580,14 +585,32 @@ fn read_door(p: *const Door, want: Option<KindCode>) -> Result<(Door, KindCode),
             host: MECHANISM_VERSION,
         });
     }
-    if (size as usize) < size_of::<Door>() {
+    // APPEND-ONLY: a door must reach `ops`; the `ready` tail is read only when `size` covers it.
+    if (size as usize) < READY_AT {
         return Err(LoadError::DoorSize {
             door: size,
-            host: size_of::<Door>() as u32,
+            host: READY_AT as u32,
         });
     }
-    // SAFETY: as above; the door covers the host's size.
-    let door = unsafe { p.read_unaligned() };
+    let has_ready = size as usize >= READY_AT + size_of::<Option<Op>>();
+    // SAFETY: as above; the door covers every field up to `ready`, and `ready` itself only when
+    // `has_ready` (an absent tail reads as `None`).
+    let door = unsafe {
+        Door {
+            magic,
+            mechanism_version: mechanism,
+            size,
+            kind: addr_of!((*p).kind).read_unaligned(),
+            kind_abi: addr_of!((*p).kind_abi).read_unaligned(),
+            statement: addr_of!((*p).statement).read_unaligned(),
+            ops: addr_of!((*p).ops).read_unaligned(),
+            ready: if has_ready {
+                addr_of!((*p).ready).read_unaligned()
+            } else {
+                None
+            },
+        }
+    };
     let kind = KindCode::from_raw(door.kind).ok_or(LoadError::UnknownKind(door.kind))?;
     if let Some(want) = want.filter(|w| *w != kind) {
         return Err(LoadError::WrongKind { door: kind, want });
@@ -611,6 +634,7 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
         kind,
         statement,
         slots,
+        ready: door.ready,
     })
 }
 
