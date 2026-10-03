@@ -21,6 +21,7 @@ use super::loader::{
 };
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
+use busbar_kernel::config_validate::deal::{Document, Seat};
 use busbar_kernel::preflight::{Fetched, RegistryIn};
 
 /// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the
@@ -118,12 +119,14 @@ pub fn plugins_fetch(
 /// references stay raw; environment references are interpolated leniently, as the boot's early
 /// reads do). An unreadable file uses nothing: the boot's own load reports why.
 pub fn plan(path: &std::path::Path) -> Uses {
-    document(path).map(|doc| Uses::of(&doc)).unwrap_or_default()
+    document(path)
+        .map(|doc| Uses::of(doc.value()))
+        .unwrap_or_default()
 }
 
-/// The raw document at `path` (secret references raw, environment interpolated leniently); `None`
-/// when it does not read.
-fn document(path: &std::path::Path) -> Option<serde_json::Value> {
+/// The raw document at `path` (secret references raw, environment interpolated leniently), with the
+/// text its position map is read off; `None` when it does not read.
+pub fn document(path: &std::path::Path) -> Option<Document> {
     let raw = std::fs::read_to_string(path).ok()?;
     let text = busbar_kernel::config::interpolate_env_with(
         &raw,
@@ -131,7 +134,62 @@ fn document(path: &std::path::Path) -> Option<serde_json::Value> {
         &mut Vec::new(),
     )
     .ok()?;
-    serde_yaml::from_str::<serde_json::Value>(&text).ok()
+    Document::parse(text).ok()
+}
+
+/// STAGE 3g, THE DEAL AND ITS VALIDATION HALF (`BUSBAR-1.6.0.md` §3): each seat is dealt its own
+/// section (an instance the document writes none for is dealt none) and `validate` asked of its
+/// instance with the section's JSON; the first refusal, naming the operator's file position in
+/// 1.5.5's form (`config.yaml: invalid YAML: <path>: <reason> at line L column C`).
+///
+/// # Errors
+///
+/// The first refusal.
+pub fn validate_dealt<'s>(
+    doc: &Document,
+    seats: impl IntoIterator<Item = (&'s str, Seat<'s>)>,
+    mut validate: impl FnMut(&'s str, &[u8]) -> Result<(), String>,
+) -> Result<(), String> {
+    for (instance, seat) in seats {
+        let Some(section) = doc.deal(seat) else {
+            continue;
+        };
+        let blob = serde_json::to_vec(&section.settings).map_err(|e| e.to_string())?;
+        validate(instance, &blob).map_err(|reason| {
+            format!(
+                "config.yaml: invalid YAML: {}",
+                doc.refuse(&section, &reason)
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// The lifecycle `validate` of one bound door, over `settings` (JSON): its reason when it does not
+/// answer READY.
+fn validate_door(door: &DoorPlane, settings: &[u8]) -> Result<(), String> {
+    use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_JSON};
+    use busbar_contract::abi::mechanism::lifecycle::{slot as life, ValidateIn};
+    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+    let mut err = [0_u8; 1024];
+    let mut i: ValidateIn = blank_in();
+    i.settings = Blob {
+        ptr: settings.as_ptr(),
+        len: settings.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    i.err_buf = err.as_mut_ptr();
+    i.err_cap = err.len();
+    let mut f = super::loader::dispatch::Frame::new(i, blank_out::<OutHead>());
+    let called = door.call(life::VALIDATE, &mut f);
+    if called.outcome == Outcome::Ready {
+        return Ok(());
+    }
+    Err(called.error.map_or_else(
+        || format!("{:?}", called.outcome),
+        |e| String::from_utf8_lossy(&e).into_owned(),
+    ))
 }
 
 /// STAGE 1, DISCOVER (the dropped-in half): every admitted plugin in `registry` whose signed
@@ -244,7 +302,9 @@ pub fn validate(
     registry: &PluginRegistry,
     root: &RootListens<'_>,
 ) -> Result<Stages, String> {
-    let doc = document(path).unwrap_or_default();
+    let doc = document(path)
+        .map(|d| d.value().clone())
+        .unwrap_or_default();
     let root = root_binds(&doc, root);
     stages(&doc, discover(registry)?, root)
 }
@@ -527,6 +587,27 @@ pub fn load_door_planes() {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
     });
+    // Stage 3g: every bound door validates the section dealt to it before anything opens.
+    let path =
+        crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
+    if let Some(doc) = document(std::path::Path::new(&path)) {
+        let seats = doors.iter().map(|c| {
+            (
+                c.name.as_str(),
+                Seat::of(kind_of(c.kind), &c.verbs, &c.name),
+            )
+        });
+        let refused = validate_dealt(&doc, seats, |instance, settings| {
+            bound
+                .iter()
+                .find(|(name, _)| name == instance)
+                .map_or(Ok(()), |(_, door)| validate_door(door, settings))
+        });
+        if let Err(refusal) = refused {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
     let _ = DOOR_PLANES.set(bound);
 }
 
