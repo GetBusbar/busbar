@@ -27,7 +27,7 @@ use super::{EngineHost, MeterPin};
 use crate::billing::Usage;
 use busbar_contract::records::VirtualKey;
 use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, PER_SESSION};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// THE OPEN GATE: an account's dry check and its session count are one step. Held across both, so
@@ -36,13 +36,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// session fee the last open that found room counted (Q44(5)). An open is a session-level event, so
 /// one gate per process costs a lock per session and never one per turn.
 static OPEN_GATE: Mutex<()> = Mutex::new(());
-
-/// The account's session fee, counted at the open, is still owed back if the open fails.
-const OPENED: u8 = 0;
-/// The session is served: its fee is final, and no refund can follow.
-const SERVED: u8 = 1;
-/// The open failed and its fee went back: given back once, never again.
-const REFUNDED: u8 = 2;
 
 /// What a reported turn means for the carrier. The plane never learns why a session must close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,9 +60,9 @@ pub struct SessionAccount {
     /// The clock reading the open's session count landed at: a refund of that count lands in the
     /// same budget window.
     opened_at: u64,
-    /// Where the open's session fee stands: `OPENED`, `SERVED` or `REFUNDED`. Leaves
-    /// `OPENED` once, so a fee is given back at most once and never after the session served.
-    fee: AtomicU8,
+    /// Whether the open's session fee is SETTLED: final once the session served, or given back once
+    /// its open failed. Set once, so a fee is given back at most once and never after a serve.
+    settled: AtomicBool,
 }
 
 impl SessionAccount {
@@ -91,15 +84,14 @@ impl SessionAccount {
             return Ok(None);
         };
         let _gate = OPEN_GATE.lock().unwrap_or_else(PoisonError::into_inner);
-        let opened_at = host.clock_now_secs();
         let account = SessionAccount {
+            opened_at: host.clock_now_secs(),
             host,
             pin,
             key: key.clone(),
             pool: pool.to_string(),
             lane,
-            opened_at,
-            fee: AtomicU8::new(OPENED),
+            settled: AtomicBool::new(false),
         };
         if account.dry() {
             return Err(BudgetRefused);
@@ -113,30 +105,22 @@ impl SessionAccount {
     /// plane's `fees.per_session` prices it at read, and a plane with none reads 0. A lane no plane
     /// qualifies has no session fee to count.
     fn count_open(&self) {
-        let Some(plane) = self.fee_plane() else {
-            return;
-        };
-        let one = Usage {
-            usage_units: std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]),
-        };
-        let lane = plane_fee_lane(plane);
-        self.host.meter_ledger(
-            &self.pin,
-            &self.key,
-            &self.pool,
-            &lane,
-            &one,
-            self.opened_at,
-        );
+        if let Some(plane) = self.fee_plane() {
+            let one = Usage {
+                usage_units: std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]),
+            };
+            let (pin, key, pool) = (&self.pin, &self.key, &self.pool);
+            let lane = plane_fee_lane(plane);
+            self.host
+                .meter_ledger(pin, key, pool, &lane, &one, self.opened_at);
+        }
     }
 
     /// The session is SERVED: its provider leg is up (a socket session) or its one-shot pass answered
     /// success (a mint, an SDP broker). The fee the open counted is final: no refund follows. Marking
     /// it again, from another serving site, changes nothing.
     pub fn served(&self) {
-        let _ = self
-            .fee
-            .compare_exchange(OPENED, SERVED, Ordering::AcqRel, Ordering::Acquire);
+        self.settled.store(true, Ordering::Release);
     }
 
     /// GIVE BACK THE OPEN'S SESSION COUNT (TODO 17(b), ARCHITECT R4): a session whose open failed
@@ -146,24 +130,14 @@ impl SessionAccount {
     /// the window the count landed in. The budget book only: the metering row the count reached
     /// stays, as v1.5.5's fee refund left it.
     pub fn refund_open(&self) {
-        if self
-            .fee
-            .compare_exchange(OPENED, REFUNDED, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        if self.settled.swap(true, Ordering::AcqRel) {
             return;
         }
-        let Some(plane) = self.fee_plane() else {
-            return;
-        };
-        self.host.meter_refund_fee(
-            &self.pin,
-            &self.key,
-            &self.pool,
-            plane,
-            PER_SESSION,
-            self.opened_at,
-        );
+        if let Some(plane) = self.fee_plane() {
+            let (pin, key, pool) = (&self.pin, &self.key, &self.pool);
+            self.host
+                .meter_refund_fee(pin, key, pool, plane, PER_SESSION, self.opened_at);
+        }
     }
 
     /// The plane whose fee lane the session count lands on; `None` for a lane no plane qualifies,
@@ -197,11 +171,8 @@ impl SessionAccount {
             b.pool.as_deref().is_none_or(|p| p == pool)
                 && b.remaining_micros.is_some_and(|r| r <= 0)
         });
-        spent
-            || self
-                .host
-                .rate_headroom(pin, key, Some(pool), now)
-                .is_some_and(|h| h <= 0.0)
+        let headroom = self.host.rate_headroom(pin, key, Some(pool), now);
+        spent || headroom.is_some_and(|h| h <= 0.0)
     }
 }
 

@@ -514,8 +514,9 @@ async fn a_failed_webrtc_mint_refunds_its_session_fee_exactly_once() {
         ..Default::default()
     };
     let meter = || {
+        let host: Arc<FixtureHost> = Arc::clone(&host);
         TurnMeter::new(
-            Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+            host,
             key.clone(),
             "streaming-server",
             crate::OPENAI_REALTIME,
