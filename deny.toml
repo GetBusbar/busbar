@@ -80,6 +80,7 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-export-webhook",
     "https://github.com/GetBusbar/busbar-auth-oidc",
     "https://github.com/GetBusbar/busbar-auth-admin-tokens",
+    "https://github.com/GetBusbar/busbar-secret-env",
     "https://github.com/GetBusbar/busbar-transport-tcp",
     "https://github.com/GetBusbar/busbar-transport-http",
 ]

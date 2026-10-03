@@ -19,8 +19,9 @@
 use std::env;
 use std::path::PathBuf;
 
-/// The HOT-lane kinds (#30): their fixtures carry a `#[repr(C)]` decl, not a cold entry.
-const HOT_KINDS: &[&str] = &["plane", "transport"];
+/// The kinds whose fixture carries a door or a `#[repr(C)]` decl, not a cold entry (plane, transport
+/// and the memory-ABI secret kind).
+const HOT_KINDS: &[&str] = &["plane", "transport", "secret"];
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
