@@ -59,7 +59,6 @@ use futures::task::AtomicWaker;
 use libloading::Library;
 use std::collections::HashMap;
 use std::os::raw::c_void;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
@@ -1049,27 +1048,6 @@ pub fn load_transport_from_bytes(
 ) -> Result<DynTransport, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     wire_up_transport(lib, display.to_string(), manifest_kind, Some(staged))
-}
-
-/// Load a transport from the `cdylib` at `lib_path`. A bare path load has no signed manifest, so the
-/// seam's expected kind (`transport`) is the authority; [`load_transport_from_bytes`] is the real
-/// gate for a dropped-in tarball.
-///
-/// # Errors
-///
-/// As [`load_transport_from_bytes`].
-#[cold]
-#[inline(never)]
-pub fn load_transport(lib_path: &Path) -> Result<DynTransport, String> {
-    let display = lib_path.display().to_string();
-    let lib = crate::dlopen_on_worker(lib_path.as_os_str())
-        .map_err(|e| format!("failed to load transport '{display}': {e}"))?;
-    wire_up_transport(
-        lib,
-        display,
-        busbar_contract::abi::cold::kind::TRANSPORT,
-        None,
-    )
 }
 
 /// Admit a transport decl handed over by address through exactly the admission a dropped-in one

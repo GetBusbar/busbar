@@ -68,7 +68,7 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // A `kind: hook` plugin states its Statement and is opened through the hook axis
         // (`hook_door::HookRows`) on the hook kind's memory ABI; one whose manifest states none is
         // refused there. The payload schema range is the manifest's (C21 narrows it).
-        "hook" => &[1, busbar_contract::abi::cold::hook::HOOK_ABI_VERSION],
+        "hook" => &[1, busbar_contract::abi::hook::ABI_VERSION],
         // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
         // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
         // vocabulary and REMOVED `audit` — an auditor is a projection made of other streams, not a
@@ -513,7 +513,7 @@ impl PluginRegistry {
 
     /// Every DROPPED-IN `kind: hook` row, in scan order: the rows the hook axis reads its
     /// dropped-in candidates from ([`crate::hook_door::HookRows::new`]). The manifest's kind word is
-    /// read here, where every other kind's is ([`Self::open_planes`], [`Self::open_transports`]).
+    /// read here, where every other kind's is ([`Self::open_planes`], [`Self::open_transport_entries`]).
     pub fn dropped_hooks(&self) -> impl Iterator<Item = &LoadablePlugin> {
         self.loadable()
             .iter()
@@ -643,23 +643,6 @@ impl PluginRegistry {
         crate::auth::load_auth_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
     }
 
-    /// M6-COLD-DELETE: open an AUTH row that is on the COLD lane as the contract's `AuthCalls`
-    /// ([`crate::auth_axis::ColdAuth`]), over `settings` (a JSON string's own text, else the
-    /// document, as the cold lane took its config). A memory-ABI row is opened by the composition
-    /// root's auth axis, never here: a door needs the process's dispatcher.
-    pub fn open_auth_calls(
-        &self,
-        name_or_alias: &str,
-        settings: &serde_json::Value,
-    ) -> Result<std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>, String> {
-        let text = match settings {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        let module = self.open_auth(name_or_alias, &text)?;
-        Ok(std::sync::Arc::new(crate::auth_axis::ColdAuth::new(module)))
-    }
-
     /// Open an AUTH plugin as the unified [`busbar_contract::auth::AuthPlugin`] handle (verify + LOGIN) —
     /// identical trust/load pipeline as [`Self::open_auth`], but the returned box KEEPS the
     /// `LoginModule` capability the hosted browser-login flow (`auth.methods`, 1.5.2) drives. Also
@@ -736,16 +719,6 @@ impl PluginRegistry {
             &p.manifest.name,
             &p.manifest.kind,
         )
-    }
-
-    /// Open EVERY loadable transport, in scan (filename) order, through [`Self::open_transport`].
-    /// The first that will not load fails the whole set, naming it.
-    pub fn open_transports(&self) -> Result<Vec<crate::DynTransport>, String> {
-        self.loadable()
-            .iter()
-            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::TRANSPORT)
-            .map(|p| self.open_transport(&p.manifest.name))
-            .collect()
     }
 
     /// Open EVERY loadable transport, in scan order, each through the lane its image speaks: a

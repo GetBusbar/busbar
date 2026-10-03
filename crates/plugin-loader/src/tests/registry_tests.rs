@@ -427,7 +427,7 @@ fn open_store_refuses_non_store_kind() {
     m.kind = "hook".into();
     // Stamp the hook-supported ABI version so the scan admits it and the KIND gate (not the
     // ABI gate) is what rejects.
-    m.abi_version = busbar_contract::abi::cold::hook::HOOK_ABI_VERSION;
+    m.abi_version = busbar_contract::abi::hook::ABI_VERSION;
     let m = sign(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
