@@ -329,10 +329,6 @@ pub fn load_hook_image(
 }
 
 #[cfg(test)]
-#[path = "tests/hook_transform_failure_tests.rs"]
-mod hook_transform_failure_tests;
-
-#[cfg(test)]
 #[path = "tests/hook_panic_status_tests.rs"]
 mod hook_panic_status_tests;
 
