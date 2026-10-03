@@ -10,7 +10,7 @@
 //! zero therefore deletes the ENTIRE call log; every upserted row lands `Active`, and a
 //! terminal-only purge therefore drops nothing, ever, so tasks accumulate without bound.
 //!
-//! These drive the REAL store proof (the store both-ways fixture) over the REAL C ABI (`dlopen` +
+//! These drive the REAL store (`busbar-store-memory`) over the REAL C ABI (`dlopen` +
 //! `busbar_call`), so they assert what a plugin actually receives, not what an in-tree type happens
 //! to serialize to. The store itself already reads the sidecar correctly on its own trait impl (its
 //! in-crate tests pass); only the crossing loses it.

@@ -10,7 +10,7 @@
 //! answering with the plugin's real rows.
 //!
 //! The ABI-2 plugin is modelled the only way it can be from this side of the seam: the in-tree
-//! store proof (the store both-ways fixture) with its `call` seam faked to answer
+//! store (`busbar-store-memory`) with its `call` seam faked to answer
 //! `STATUS_UNSUPPORTED` for the verbs it predates. The store really does load at the
 //! `supported_abi` floor of 2, so the `DynStore` path exercised is the one a real 1.5.x plugin
 //! lands on.

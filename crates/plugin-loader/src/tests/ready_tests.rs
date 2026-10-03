@@ -7,6 +7,10 @@
 //! RED before this: no door could state `ready`, so a plugin that must reach the network before it
 //! serves had nowhere to do it but its first op (the lazy discovery the ruling refuses), and no
 //! refusal of it could stop the boot.
+//!
+//! A failing `ready` refusing the boot is the published suite's RED arm (`red_ready`, run by every
+//! plugin repo); what stays here is the dispatcher's own mechanics: pend and resume on the ticket,
+//! a door without `ready`, `ready` before `open`, and an older door's size.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -58,17 +62,6 @@ fn opened(d: &Dispatcher, door: DoorFn, settings: &'static [u8]) -> Plugin<Secre
 
 fn crossings(p: &Plugin<Secret>) -> u64 {
     p.inner.crossings.load(Ordering::Relaxed)
-}
-
-#[test]
-fn red_a_ready_that_answers_err_refuses_the_boot_with_its_text() {
-    let d = dispatcher();
-    let p = opened(&d, with_ready::door, b"err:discovery answered 503");
-    assert!(p.has_ready());
-    assert_eq!(
-        p.ready(&d, WITHIN),
-        Err("plugin 'ready-witness' ready failed: discovery answered 503".to_string())
-    );
 }
 
 #[test]

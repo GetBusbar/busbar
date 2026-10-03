@@ -59,9 +59,9 @@ impl Slot for PendsTicketless {
 
 mod hung {
     use super::{HangsCall, HangsWriteBehind, PendsTicketless};
-    use crate::both_ways::store_fixture::MemoryStore as M;
     use busbar_contract::abi::sdk::store::door as d;
     use busbar_contract::abi::sdk::Safe as S;
+    use busbar_store_memory::MemoryStore as M;
 
     const TAIL: busbar_contract::abi::store::StoreTail = d::tail::<M>();
     const DIAGS: [busbar_contract::abi::mechanism::call::AbiStr; 2] = d::DIAG_IDS;

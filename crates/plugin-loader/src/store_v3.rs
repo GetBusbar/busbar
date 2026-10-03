@@ -1707,10 +1707,6 @@ fn zeroing(v: Vec<u8>) -> Zeroing {
 mod tests;
 
 #[cfg(test)]
-#[path = "tests/store_v3_conformance_tests.rs"]
-mod conformance_tests;
-
-#[cfg(test)]
 #[path = "tests/store_v3_deadline_tests.rs"]
 mod deadline_tests;
 

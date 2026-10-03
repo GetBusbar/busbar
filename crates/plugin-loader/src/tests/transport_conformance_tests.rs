@@ -18,8 +18,8 @@
 //! one field altered, and the claims tail read claim for claim.
 
 use super::mem_carrier::{self, decl, decl_copy, slots, wait, KEY, NOBODY};
-use crate::both_ways::statement;
 use crate::sign::{validate_structure, Manifest};
+use crate::test_doors::statement;
 use crate::transport::{link_transport, wire_settings, Built, DynTransport};
 use busbar_contract::abi::hot::decl::DeclStr;
 use busbar_contract::abi::hot::transport::{

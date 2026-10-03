@@ -9,10 +9,10 @@
 
 use std::sync::Arc;
 
-use crate::both_ways::{dropped, statement};
 use crate::dispatch::kinds::transport::TransportFacts;
 use crate::dispatch::{in_head, out_head, Adopter, Bind, Frame, NoSink};
 use crate::sign::validate_structure;
+use crate::test_doors::{dropped, statement};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};

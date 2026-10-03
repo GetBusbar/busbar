@@ -26,8 +26,8 @@ fn dispatcher() -> Arc<Dispatcher> {
 
 fn open() -> LoadedStore {
     let d = dispatcher();
-    let row = LinkedRow::of(crate::both_ways::store_fixture::door)
-        .expect("the memory store states its Statement");
+    let row =
+        LinkedRow::of(busbar_store_memory::door).expect("the memory store states its Statement");
     let plugin = load_linked::<Store>(
         &row,
         Bind {
@@ -465,8 +465,8 @@ fn the_ephemeral_store_states_mark_ephemeral_on_its_statement_not_its_tail() {
     use busbar_contract::abi::mechanism::rendering::read;
     use busbar_contract::abi::store::StoreTail;
 
-    let row = LinkedRow::of(crate::both_ways::store_fixture::door)
-        .expect("the memory store states its Statement");
+    let row =
+        LinkedRow::of(busbar_store_memory::door).expect("the memory store states its Statement");
     let st = read(&row.statement).expect("the rendering reads back");
     assert_eq!(st.marks & MARK_EPHEMERAL, MARK_EPHEMERAL);
     assert_eq!(st.kind_tail_size as usize, std::mem::size_of::<StoreTail>());

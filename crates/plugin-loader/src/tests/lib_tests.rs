@@ -31,9 +31,9 @@ pub(crate) fn artifact(key: &str) -> &'static str {
 ///    (`../store-sqlite` relative to this repo, `cargo build --release` there). store-sqlite lives
 ///    entirely in its own repo; its sqlite behaviour is that repo's job (`store-sqlite-plugin/tests/
 ///    e2e.rs`), this crate only loads it.
-/// 2. Otherwise the store BOTH-WAYS PROOF's own cdylib (`[package.metadata.busbar.both-ways]`
-///    `store`, a real workspace store with its dropped-in door) — a workspace member and this crate's
-///    dev-dependency, so `cargo test --workspace` and `cargo test -p busbar-plugin-loader` build it.
+/// 2. Otherwise `busbar-store-memory`'s cdylib (the build's RAM store, a real workspace store with
+///    its dropped-in door) — a workspace member and this crate's dev-dependency, so
+///    `cargo test --workspace` and `cargo test -p busbar-plugin-loader` build it.
 ///
 /// WHERE THE HARD FAILURE FIRES (item 391 — this comment used to name a `dev-gate.yml` that does
 /// not exist, and the only thing setting `DEV_GATE` ran on `qa`, so on every push these tests
@@ -1407,34 +1407,6 @@ fn transport_error_classification() {
     assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
 }
 
-/// END-TO-END over the export kind's REAL sink `cdylib` (the export row of
-/// `[package.metadata.busbar.both-ways]` — the request-log file sink, built from its own repo): load
-/// it through the loader (which queries `Streams` once at load), assert it reports `[Logs]`, then
-/// `Deliver` a request-log line and assert the sink acks (an `Ok(())`). This is the exact seam the
-/// engine's observability export consumes: verified bytes in, a `DynExport` out. Under CI a missing
-/// cdylib is a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
-#[test]
-fn load_and_exercise_export_plugin() {
-    use busbar_contract::abi::export::ExportStream;
-    let Some(path) = super::both_ways::cdylib(super::both_ways::fixture("export").0) else {
-        eprintln!("skip: the export sink cdylib is not built");
-        return;
-    };
-    let bytes = std::fs::read(&path).expect("read the export sink cdylib");
-    let sink = export::load_export_from_bytes(&bytes, "{}", "export-sink", "export")
-        .expect("load the export sink over the ABI");
-
-    // Streams was queried once at load and reports exactly [Logs].
-    assert_eq!(sink.streams(), &[ExportStream::Logs]);
-
-    // A delivery for the declared stream acks (Ok).
-    sink.deliver(
-        ExportStream::Logs,
-        &serde_json::json!({"status": 200, "model": "m"}),
-    )
-    .expect("deliver acks");
-}
-
 // ── A2A TASK DURABILITY OVER THE REAL PLUGIN PATH ───────────────────────────────────────────────
 //
 // The three row types are imported HERE rather than taken from `use super::*`, so this test
@@ -1600,7 +1572,7 @@ pub(crate) fn n_list_call_principals(
     s.list_plane_record_parents("call")
 }
 
-/// The store both-ways proof's cdylib for the tests below that need a real `kind: store` image to
+/// The build's RAM store's cdylib (`busbar-store-memory`, a dev-dependency) for the tests below that need a real `kind: store` image to
 /// stage and wire (never store-specific durability). Under `CI` a missing cdylib is a HARD failure:
 /// it is this crate's own dev-dependency, so `cargo test` always builds it, and its absence means a
 /// broken pipeline rather than a machine without a sibling checkout.
@@ -1608,20 +1580,19 @@ fn store_proof_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = store_proof_candidate();
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
-            "the store both-ways proof's cdylib is not built under CI: `cargo test` must build {} \
-             (checked both the uplifted target dir and target/deps). Refusing to silently skip the \
-             over-the-ABI coverage of the kind:store dlopen seam.",
-            super::both_ways::fixture("store").0
+            "the busbar-store-memory cdylib is not built under CI: `cargo test` must build \
+             busbar_store_memory (checked both the uplifted target dir and target/deps). Refusing \
+             to silently skip the over-the-ABI coverage of the kind:store dlopen seam."
         );
     }
     candidate
 }
 
-/// The store both-ways proof's cdylib (`[package.metadata.busbar.both-ways]` `store`), if built —
+/// The `busbar-store-memory` cdylib, if built —
 /// the newest of the uplifted `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>`
 /// output (a scoped `cargo test -p` only produces the latter). No CI policy here; the callers own that.
 fn store_proof_candidate() -> Option<std::path::PathBuf> {
-    newest_cdylib(super::both_ways::fixture("store").0)
+    newest_cdylib("busbar_store_memory")
 }
 
 /// The newest built `cdylib` of `crate_snake` in this target dir: the uplifted `<profile_dir>/<name>`

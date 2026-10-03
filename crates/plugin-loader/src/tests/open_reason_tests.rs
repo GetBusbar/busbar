@@ -47,7 +47,7 @@ fn bind(d: &Dispatcher) -> Bind {
 
 /// The DROPPED door's `cdylib`, when built (`None` only in a scoped non-CI run).
 fn dropped_path(example: &str) -> Option<PathBuf> {
-    crate::both_ways::example_cdylib(example)
+    crate::dispatch_tests::example_cdylib(example)
 }
 
 /// The store witness's text through the store host ([`LoadedStore::open`]), LINKED and (when

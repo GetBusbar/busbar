@@ -2095,59 +2095,13 @@ mod tests;
 #[path = "tests/loader_seam_tests.rs"]
 mod loader_seam_tests;
 
-/// DECISIONS #11's real test: ONE crate built both ways must be observationally identical. Declared
-/// at the crate root rather than under `export` because it is not a test OF the export seam — it is
-/// a test of the equivalence the two build shapes are supposed to have, and the export kind is
-/// merely the first one with a fixture that can prove it.
+/// The dropped-in door the loader's own tests sign and scan a library through, and the manifest
+/// it states (OWNER 2026-10-03, NO TEST PLUGINS: the cold kinds' both-ways table is gone;
+/// a plugin proves itself against the published suite in its own repo).
 #[cfg(test)]
-#[path = "tests/export_conformance_tests.rs"]
-mod export_conformance_tests;
+#[path = "tests/test_doors.rs"]
+mod test_doors;
 
-/// DECISIONS #11 for `kind: store`: the store both-ways proof, LINKED and `dlopen`ed, must hand back
-/// a key carrying a plane scope grant byte-identically — the scope-kind vocabulary must not depend
-/// on which process registered it (1.6.0 SDK-SCOPEKINDS).
-#[cfg(test)]
-#[path = "tests/store_scope_kind_conformance_tests.rs"]
-mod store_scope_kind_conformance_tests;
-
-/// The cold kinds' both-ways harness (DECISIONS #2 rule (1)): one plugin registered through the
-/// linked door and the dropped-in door, its rows and its opened instance compared.
-#[cfg(test)]
-#[path = "tests/both_ways.rs"]
-mod both_ways;
-
-/// `kind: store` through both doors: one row, one store, one fold over every store operation.
-#[cfg(test)]
-#[path = "tests/store_conformance_tests.rs"]
-mod store_conformance_tests;
-
-/// `kind: secret` and `kind: auth` proven by the REAL plugin repos (GetBusbar/busbar-secret-vault,
-/// GetBusbar/busbar-auth-github): their built cdylibs, dlopened from `BUSBAR_PLUGIN_PROOF_DIR` (the removed ci.yml's
-/// `plugin-proofs` job). `#[ignore]`d without that directory.
-#[cfg(test)]
-#[path = "tests/plugin_proof_tests.rs"]
-mod plugin_proof_tests;
-
-/// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
-/// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
-/// open one module.
-#[cfg(test)]
-#[path = "tests/auth_conformance_tests.rs"]
-mod auth_conformance_tests;
-
-/// `kind: auth` through both doors, VERIFY VERDICTS: the token cases driven to every verdict
-/// (identify, reject, defer) over a second real auth plugin, one wire and one module either way.
-#[cfg(test)]
-#[path = "tests/auth_verify_conformance_tests.rs"]
-mod auth_verify_conformance_tests;
-
-/// `kind: hook` through both doors: one wire, one row, one routing policy.
-#[cfg(test)]
-#[path = "tests/hook_conformance_tests.rs"]
-mod hook_conformance_tests;
-
-/// The dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
-/// arm per mechanism rule.
 /// The dispatcher's test plugin, compiled in: the LINKED door of `dispatch_tests` (the same
 /// source is the `dispatch_test_plugin` example `cdylib`, the DROPPED door).
 #[cfg(test)]
@@ -2193,24 +2147,3 @@ mod dispatch_kind_hook_tests;
 #[cfg(test)]
 #[path = "tests/dispatch_kind_auth_tests.rs"]
 mod dispatch_kind_auth_tests;
-
-/// The both-ways harness on the memory ABI (TODO ABI-b4): one door loaded LINKED and DROPPED IN
-/// through the one dispatcher, one script, two transcripts compared.
-#[cfg(test)]
-#[path = "tests/door_both_ways.rs"]
-mod door_both_ways;
-
-/// `kind: store` through both doors on the memory ABI: get/put identical, a broken store refused.
-#[cfg(test)]
-#[path = "tests/store_door_conformance_tests.rs"]
-mod store_door_conformance_tests;
-
-/// `kind: secret` through both doors on the memory ABI: resolve identical, a broken one refused.
-#[cfg(test)]
-#[path = "tests/secret_door_conformance_tests.rs"]
-mod secret_door_conformance_tests;
-
-/// `kind: hook` through both doors on the memory ABI: decide identical, a broken one refused.
-#[cfg(test)]
-#[path = "tests/hook_door_conformance_tests.rs"]
-mod hook_door_conformance_tests;
