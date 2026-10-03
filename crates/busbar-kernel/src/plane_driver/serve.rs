@@ -430,7 +430,7 @@ pub type DataAnswer = std::pin::Pin<Box<dyn std::future::Future<Output = Respons
 
 /// THE COMPOSITION ROOT'S DATA DOOR: the answer of the door plane whose claim the request
 /// matches, or the request back when no door plane claims it.
-pub type DataDoor = fn(DataRequest) -> Result<DataAnswer, DataRequest>;
+pub type DataDoor = fn(DataRequest) -> Result<DataAnswer, Box<DataRequest>>;
 
 static DATA_DOOR: std::sync::OnceLock<DataDoor> = std::sync::OnceLock::new();
 
@@ -445,9 +445,9 @@ pub fn mount_data(door: DataDoor) -> Result<(), DataDoor> {
 
 /// The data router's fallback asks this first: the claiming door plane's answer, or the request
 /// back (no door mounted, or none claims it).
-pub fn claimed(req: DataRequest) -> Result<DataAnswer, DataRequest> {
+pub fn claimed(req: DataRequest) -> Result<DataAnswer, Box<DataRequest>> {
     match DATA_DOOR.get() {
         Some(door) => door(req),
-        None => Err(req),
+        None => Err(Box::new(req)),
     }
 }

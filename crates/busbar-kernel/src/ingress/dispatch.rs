@@ -51,7 +51,7 @@ pub(crate) async fn protocol_dispatch(
         consumed,
     } = match crate::plane_driver::serve::claimed(offered) {
         Ok(answer) => return answer.await,
-        Err(back) => back,
+        Err(back) => *back,
     };
     let path = uri.path().to_string();
     let Some(proto) = crate::proto::detect_protocol(&path, &headers) else {

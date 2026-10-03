@@ -14,7 +14,6 @@
 //! process, so none sees the refusal.
 
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::{Body, Bytes};
@@ -524,18 +523,18 @@ pub fn mount(served: Served) -> Result<(), String> {
 }
 
 /// The data door the kernel's fallback asks ([`mount`]).
-fn data_door(req: DataRequest) -> Result<DataAnswer, DataRequest> {
+fn data_door(req: DataRequest) -> Result<DataAnswer, Box<DataRequest>> {
     match ROUTES.get() {
         Some(routes) => routes.claimed(req),
-        None => Err(req),
+        None => Err(Box::new(req)),
     }
 }
 
 impl DataRoutes {
     /// The answer of the plane whose claim `req` matches, or `req` back.
-    fn claimed(self: &Arc<Self>, req: DataRequest) -> Result<DataAnswer, DataRequest> {
+    fn claimed(self: &Arc<Self>, req: DataRequest) -> Result<DataAnswer, Box<DataRequest>> {
         let Some((plane, claim)) = self.claim(req.method.as_str(), req.uri.path()) else {
-            return Err(req);
+            return Err(Box::new(req));
         };
         let routes = Arc::clone(self);
         Ok(Box::pin(routes.answer(plane, claim, req)))
