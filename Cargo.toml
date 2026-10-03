@@ -76,6 +76,14 @@ busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", 
 busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
 busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f" }
 busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f" }
+# THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
+# crate's door on the secret axis; the kernel's test build stands their `resolve` in. One rev each.
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "6f9f398e59c9414f27fa9ecb44c8e46412418ffa" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "479c833a108bc5d94e03f754b0a1b5f9ea97c0e3" }
+# The same two crates at the same revs, under the role the kernel's test build gives them (its
+# stand-in secret axis; a kernel source names no plugin). A rev bump moves both lines of its pair.
+fixture-secret-env = { package = "busbar-secret-env", git = "https://github.com/GetBusbar/busbar-secret-env", rev = "6f9f398e59c9414f27fa9ecb44c8e46412418ffa" }
+fixture-secret-file = { package = "busbar-secret-file", git = "https://github.com/GetBusbar/busbar-secret-file", rev = "479c833a108bc5d94e03f754b0a1b5f9ea97c0e3" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.

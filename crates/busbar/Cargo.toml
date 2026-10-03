@@ -120,6 +120,14 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 # THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
 busbar-store-memory = { path = "../store-memory" }
+# THE SECRET SOURCES (`{ env: VAR }`, `{ file: PATH }`), linked in every build through the `secrets`
+# axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the default build;
+# ARCHITECT 2026-10-02 WIRE-SECRET) and loaded through the one loader only when a reference names one.
+# They live in their own repos (GetBusbar/busbar-secret-env, GetBusbar/busbar-secret-file) and are
+# pulled at a PINNED rev; the workspace `[patch]` points the busbar crate they name at this tree.
+# The kernel names neither.
+busbar-secret-env = { workspace = true }
+busbar-secret-file = { workspace = true }
 # THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
@@ -353,6 +361,10 @@ auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
 hooks-ranking = "busbar-hooks-ranking"
+# THE SECRET AXIS: the env and file sources, required dependencies (every build links them; the key
+# names the row). Each is loaded only when a reference names it.
+secret-env = "busbar-secret-env"
+secret-file = "busbar-secret-file"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. Rows share a crate where one crate carries several wires.
@@ -380,6 +392,7 @@ llm-on-driver = "busbar-plane-llm"
 # `auths`: a `kind: auth` plugin's memory-ABI door (`<entry>::door::door`, the one its dropped-in
 # build exports), under its `linked-name` key.
 # `plane-door`: a plane's memory-ABI `door`, bound through the loader's one load (`root::linked`).
+# `secrets`: a `kind: secret` plugin's memory-ABI `door`.
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
@@ -393,6 +406,8 @@ export-otlp = "exports"
 auth-admin-tokens = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
+secret-env = "secrets"
+secret-file = "secrets"
 transport-tcp = "transport transport-door"
 transport-http = "transport"
 transport-sse = "transport"
@@ -410,6 +425,9 @@ busbar-plane-decisions = "crate::root::plane_decisions"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
 transport-grpc = "busbar_transport_http::linked::grpc"
+# A secret plugin's door is its `door` module's.
+busbar-secret-env = "busbar_secret_env::door"
+busbar-secret-file = "busbar_secret_file::door"
 # An auth plugin's entry is its crate root; its memory-ABI door is `<entry>::door::door`.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
 # A plane door row's entry is the module that exports its `door`.
