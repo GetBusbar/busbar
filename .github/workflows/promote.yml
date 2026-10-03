@@ -61,9 +61,12 @@ jobs:
   # commit it judges is the commit the queue lands, and the ladder fast-forwards that sha to dev, where
   # the turnstile fetches what this run stored for it (ARCHITECT 2026-10-02). Its SLSA provenance is
   # minted from `base64-subjects` by the pinned slsa-github-generator once the owner rules on R14 (the
-  # generator must be referenced by tag); until then the suite is not-run, a standing red here.
+  # generator must be referenced by tag); until then the suite is not-run, a standing red here. So until
+  # R14 is ruled the job does not run at all: it is gated by ONE repository variable, SLSA_ENABLED (unset:
+  # off), and the shards no longer wait 6 min for an artifact nothing mints provenance for (run 37082477454).
+  # The suite's verdict does not move either way: no provenance, so slsa-verifier is not-run, never green.
   slsa-build:
-    if: github.event_name == 'merge_group'
+    if: github.event_name == 'merge_group' && vars.SLSA_ENABLED == 'true'
     needs: preflight
     permissions: { contents: read }
     runs-on: ${{ needs.preflight.outputs.runner }}
@@ -87,9 +90,8 @@ jobs:
   # test:workspace's hash partition K, plus the unsplit steps dealt to K; the gates in shard 1, the
   # oracle and conformance in shard 4). Each builds and runs the candidate's code, so it holds NO write
   # token (contents read only, no persisted credentials); its report leaves as an artifact. It waits for
-  # slsa-build in a merge group; on a pull request slsa-build is skipped and the shards run. Which unsplit
-  # steps (and which gate selftests) each shard runs is dealt by measured time (busbar-release crate::deal),
-  # the same in every shard.
+  # slsa-build when that runs (SLSA_ENABLED); skipped, the shards run. Which unsplit steps (and which gate
+  # selftests) each shard runs is dealt by measured time (busbar-release crate::deal), the same in every shard.
   hop-shard:
     name: "hop shard ${{ matrix.shard }}"
     strategy: { fail-fast: false, matrix: { shard: [1, 2, 3, 4] } }
@@ -108,7 +110,7 @@ jobs:
       - { uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020, with: { node-version: 22 } } # v7.0.0
       # The engine job's binaries; hop.sh builds them itself when they do not run here.
       - { continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { name: "engine-${{ env.SHA }}", path: engine } } # v8.0.1
-      - if: github.event_name == 'merge_group'
+      - if: needs.slsa-build.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: { name: "slsa-artifact-${{ env.SHA }}", path: slsa }
       # No debuginfo in the dev/test builds: build_test's all-features, feature-matrix and test builds plus
