@@ -346,9 +346,6 @@ impl EnvelopeSink for PluginLogSink {
         text.extend_from_slice(b": ");
         text.extend_from_slice(d.text);
         self.line(level, &text);
-        // A declared diagnostic is an observation too: it reaches the host's observability (#85)
-        // as well as the plugin's own log.
-        self.metrics.diag(d);
     }
 
     fn dropped(&self, why: Dropped) {

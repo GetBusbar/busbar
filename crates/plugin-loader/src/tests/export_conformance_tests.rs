@@ -1954,19 +1954,21 @@ fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
 }
 
 /// **#85 — AN OPENED SINK'S ENVELOPE REACHES THE HOST'S OBSERVABILITY, NEVER DISCARDED** (ARCHITECT
-/// ruling ENVELOPE 2026-10-03). The opener's default envelope sink is the host's: what an opened
+/// rulings ENVELOPE and ENVELOPE-ALL 2026-10-03). The dispatcher stands the host's observability
+/// before every door's bound sink (the export opener's included): what an opened
 /// instance REPORTS — a metric of a family its Statement declares, a declared diagnostic — is handed
 /// to the installed observer (the one fold every plugin's back-channel takes) under the plugin's
 /// name and kind, named by what its Statement declares; behind `plugins.logs` the declared
 /// diagnostic ALSO lands in the plugin's own log. Driven through the FILE sink's real Statement
 /// (linked and dropped in alike: the sink is built from the stated rendering either door states).
-/// RED: before the ruling the opener bound `NoSink`, and nothing reached the observer.
+/// RED: before the ruling the opener bound `NoSink`, and nothing reached the observer. The binding
+/// itself is held per kind in `observe`'s tests.
 #[test]
 fn an_opened_sinks_envelope_reaches_the_host_observability() {
     use crate::dispatch::EnvelopeSink as _;
     let guard = crate::observe::testing::exclusive();
     let stated = rendering_of(FILE_DOOR).expect("renders");
-    // The opener's sink is built from the stated rendering: the FILE sink's own Statement.
+    // A sink named by the FILE sink's own Statement.
     let sink = crate::observe::EnvelopeObserver::of(
         "busbar-export-file",
         busbar_contract::abi::cold::kind::EXPORT,
@@ -2047,17 +2049,20 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         None,
     )
     .expect("a plugins.logs block");
-    let behind = logs
-        .sink(
-            "export.tail",
-            busbar_contract::abi::mechanism::KindCode::Export,
-            Arc::new(crate::observe::EnvelopeObserver::of(
-                "busbar-export-file",
-                busbar_contract::abi::cold::kind::EXPORT,
-                &stated,
-            )),
-        )
-        .expect("a log sink");
+    // As the dispatcher binds every door: the host's observability before the binder's log sink.
+    let behind = crate::observe::EnvelopeObserver::before(
+        Arc::new(
+            logs.sink(
+                "export.tail",
+                busbar_contract::abi::mechanism::KindCode::Export,
+                Arc::new(crate::dispatch::NoSink),
+            )
+            .expect("a log sink"),
+        ),
+        "busbar-export-file",
+        busbar_contract::abi::cold::kind::EXPORT,
+        Vec::new(),
+    );
     behind.diag(Diagnostic {
         id: 0,
         name: b"BUSBAR-7074",
@@ -2065,7 +2070,15 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         text: b"request-log file open failed; this log was dropped",
     });
     let folds = crate::observe::testing::folds();
+    let logged: String = std::fs::read_dir(&dir)
+        .expect("the log dir")
+        .filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok())
+        .collect();
     let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        logged.contains("BUSBAR-7074: request-log file open failed"),
+        "the plugin log has the line: {logged:?}"
+    );
     assert_eq!(folds.len(), 1, "{folds:?}");
     assert_eq!(folds[0].3[0]["code"], "BUSBAR-7074");
 }

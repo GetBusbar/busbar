@@ -994,6 +994,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
     busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL,
     busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL,
+    busbar_kernel::metrics::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
     busbar_kernel::metrics::JOURNAL_QUARANTINED_TOTAL,
     busbar_kernel::metrics::REQUESTS_TOTAL,
     busbar_kernel::metrics::BREAKER_TRIPS_TOTAL,

@@ -1054,6 +1054,46 @@ impl<K: Kind> std::fmt::Debug for Plugin<K> {
     }
 }
 
+/// The kind's name as the host's observer knows it (the cold wire's kind words).
+fn kind_word(kind: KindCode) -> &'static str {
+    use busbar_contract::abi::cold::kind;
+    match kind {
+        KindCode::Store => kind::STORE,
+        KindCode::Secret => kind::SECRET,
+        KindCode::Auth => kind::AUTH,
+        KindCode::Hook => kind::HOOK,
+        KindCode::Export => kind::EXPORT,
+        KindCode::Plane => kind::PLANE,
+        KindCode::Transport => kind::TRANSPORT,
+    }
+}
+
+/// THE #85 ENVELOPE, OBSERVED FOR EVERY KIND (ARCHITECT ruling ENVELOPE-ALL 2026-10-03): the
+/// binder's sink, with the host's observability standing before it
+/// ([`crate::observe::EnvelopeObserver`]): every metric of a family the Statement declares and every
+/// declared diagnostic reach the installed observer, under the plugin's name and kind, whoever bound
+/// the door, and the binder's sink is still handed every entry.
+fn observed(
+    then: &Arc<dyn EnvelopeSink>,
+    st: &busbar_contract::abi::mechanism::door::Statement,
+    kind: KindCode,
+    name: &[u8],
+) -> Arc<dyn EnvelopeSink> {
+    // SAFETY: `validate` ran `check_statement` on this Statement; the rendering reads its
+    // `'static` lists.
+    let families = unsafe { busbar_contract::abi::mechanism::rendering::render(st) }
+        .ok()
+        .and_then(|b| busbar_contract::abi::mechanism::rendering::read(&b).ok())
+        .map(|r| r.families)
+        .unwrap_or_default();
+    Arc::new(crate::observe::EnvelopeObserver::before(
+        then.clone(),
+        &String::from_utf8_lossy(name),
+        kind_word(kind),
+        families,
+    ))
+}
+
 impl<K: Kind> Plugin<K> {
     pub(crate) fn bind(v: Validated, lib: Option<Lib>, bind: Bind) -> Result<Self, LoadError> {
         let st = v.statement;
@@ -1166,7 +1206,7 @@ impl<K: Kind> Plugin<K> {
                 op_name: K::op_name,
                 unit_of: K::unit_of,
                 context,
-                sink: bind.sink.clone(),
+                sink: observed(&bind.sink, &st, v.kind, name),
                 wake,
                 tables,
                 open_reason: Mutex::new(Vec::new()),
@@ -1177,6 +1217,12 @@ impl<K: Kind> Plugin<K> {
         };
         bind.dispatcher.adopt(&plugin.inner);
         Ok(plugin)
+    }
+
+    /// The envelope sink the dispatcher ingests this instance's replies into (a witness).
+    #[cfg(test)]
+    pub(crate) fn envelope_sink(&self) -> Arc<dyn EnvelopeSink> {
+        self.inner.sink.clone()
     }
 
     /// GRANT this instance the DESTINATIONS its manifest declares (the settings keys that name a
