@@ -370,6 +370,8 @@ const INCOMPLETE_REASON_OTHER: &str = "other";
 /// Top-level `object` field value and vendor tag for the Responses protocol.
 const OBJ_RESPONSE: &str = keys::RESPONSE;
 const VENDOR_NAME: &str = "responses";
+/// The label this dialect's usage counts are logged under (the dialect's module name).
+const COUNT_LABEL: &str = "openai_responses";
 
 /// Synthesized id prefixes (bare prefix without trailing underscore for item ids).
 const RESPONSE_ID_PREFIX: &str = "resp_";
@@ -1316,9 +1318,9 @@ fn read_responses_usage(
     usage: Option<&serde_json::Value>,
     response: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    let mut ir = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
+    let mut ir = crate::codec::usage_count::read_usage(COUNT_LABEL, usage, USAGE)?;
     ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
-        "openai_responses",
+        COUNT_LABEL,
         RESPONSES_USAGE_IDENTITY,
         usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
         &ir,
