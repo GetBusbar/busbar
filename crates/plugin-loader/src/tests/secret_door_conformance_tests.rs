@@ -26,7 +26,7 @@ use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{Frame, Plugin};
 
 #[path = "../../tests/fixtures/secret_door_plugin.rs"]
-mod secret_door_plugin;
+pub(crate) mod secret_door_plugin;
 
 /// The instance's settings: one name and its material.
 const SETTINGS: &[u8] = br#"{"values": {"db": "fixture-material"}}"#;
