@@ -223,7 +223,7 @@ pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::D
 /// them. The nested `candidates[]` lookup is Gemini's own shape and stays here, off core.
 fn vendor_response_metadata(body: &serde_json::Value) -> Vec<&'static str> {
     // Named by wire path, as the drop path reports it.
-    [("safetyRatings", "candidates[].safetyRatings")]
+    [(FIELD_SAFETY_RATINGS, "candidates[].safetyRatings")]
         .into_iter()
         .filter(|(k, _)| {
             body.get(FIELD_CANDIDATES)
@@ -1441,7 +1441,7 @@ fn candidates_absent(data: &serde_json::Value) -> bool {
 /// string (SAFETY / BLOCKLIST / PROHIBITED_CONTENT / OTHER / …) so the caller can map it to a
 /// canonical stop reason. `None` when absent or not a non-empty string.
 fn prompt_block_reason(data: &serde_json::Value) -> Option<&str> {
-    data.get("promptFeedback")
+    data.get(FIELD_PROMPT_FEEDBACK)
         .and_then(|pf| pf.get("blockReason"))
         .and_then(|r| r.as_str())
         .filter(|s| !s.is_empty())
@@ -1781,3 +1781,54 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;
+
+/// The candidate's and the prompt's `safetyRatings[]` -> the IR's safety verdicts (DF-MAP item 1):
+/// the category, and `blocked` as both `flagged` and `blocked`. The probability is Google's own
+/// scale and does not cross.
+fn read_safety_ratings(
+    body: &serde_json::Value,
+    candidate: &serde_json::Value,
+) -> Vec<crate::codec::ir::IrSafetyVerdict> {
+    let prompt = body
+        .get(FIELD_PROMPT_FEEDBACK)
+        .and_then(|p| p.get(FIELD_SAFETY_RATINGS));
+    [candidate.get(FIELD_SAFETY_RATINGS), prompt]
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.as_array())
+        .flatten()
+        .filter_map(|r| {
+            let blocked = r
+                .get(FIELD_BLOCKED)
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
+            Some(crate::codec::ir::IrSafetyVerdict {
+                category: r.get(FIELD_CATEGORY)?.as_str()?.to_string(),
+                flagged: blocked,
+                blocked,
+            })
+        })
+        .collect()
+}
+
+/// The IR's safety verdicts as a candidate's `safetyRatings[]` (`{category, blocked}`; no
+/// probability, since none crossed). `None` when there are none.
+fn write_safety_ratings(safety: &[crate::codec::ir::IrSafetyVerdict]) -> Option<serde_json::Value> {
+    (!safety.is_empty()).then(|| {
+        serde_json::Value::Array(
+            safety
+                .iter()
+                .map(|v| serde_json::json!({ (FIELD_CATEGORY): v.category, (FIELD_BLOCKED): v.blocked }))
+                .collect(),
+        )
+    })
+}
+
+const FIELD_SAFETY_RATINGS: &str = "safetyRatings";
+const FIELD_PROMPT_FEEDBACK: &str = "promptFeedback";
+const FIELD_CATEGORY: &str = "category";
+const FIELD_BLOCKED: &str = "blocked";

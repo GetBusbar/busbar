@@ -1479,6 +1479,9 @@ impl ProtocolWriter for GeminiWriter {
                 serde_json::json!(traffic_type),
             );
         }
+        if let Some(m) = &resp.usage.detail.by_modality {
+            super::usage::write_by_modality(m, &mut usage_metadata);
+        }
         if resp.created.is_some() || resp.model.is_some() {
             // Four additive terms, exactly as Google states them: prompt (cache-inclusive) +
             // candidates + the tool-use prompt term. Thinking is already inside `output_tokens`.
@@ -1509,6 +1512,14 @@ impl ProtocolWriter for GeminiWriter {
         // Gemini's own omission when `responseLogprobs` was not requested.
         if !resp.logprobs.is_empty() {
             candidate[FIELD_LOGPROBS_RESULT] = write_gemini_logprobs_result(&resp.logprobs);
+        }
+        // DF-MAP items 1-2: the hosted web-search records as grounding chunks, the safety verdicts
+        // as safety ratings.
+        if let Some(gm) = super::citations::write_grounding_chunks(&resp.content) {
+            candidate[super::citations::FIELD_GROUNDING_METADATA] = gm;
+        }
+        if let Some(ratings) = super::write_safety_ratings(&resp.safety) {
+            candidate[super::FIELD_SAFETY_RATINGS] = ratings;
         }
         let mut out = serde_json::json!({
             (FIELD_CANDIDATES): [candidate]
