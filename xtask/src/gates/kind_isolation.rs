@@ -710,7 +710,20 @@ const ARCHITECTURE_TCB: &[(&str, &str)] = &[
 ];
 
 /// The verdict a `[[dep]]` row must carry, and the whole vocabulary of them.
-const DEP_VERDICTS: &[&str] = &["allowed", "tcb", "not-allowed", "owner-ruling-pending"];
+const DEP_VERDICTS: &[&str] = &[
+    "allowed",
+    "tcb",
+    "not-allowed",
+    "owner-ruling-pending",
+    BOTH_WAYS_VERDICT,
+];
+
+/// THE BOTH-WAYS PROOF'S VERDICT (spec #2 steps 4-5; ARCHITECT ruling on PR #141, option (e)): the
+/// loader's `[dev-dependencies]` edge to a plugin crate of any kind that its own
+/// `[package.metadata.busbar.both-ways]` table names, used only by a `*_conformance_tests.rs` file
+/// ([`both_ways_witness_edges`]). A row claims it only for such an edge, and such an edge's row
+/// claims nothing else; the shipped half and the ship twin excuse nothing else.
+const BOTH_WAYS_VERDICT: &str = "both-ways";
 
 /// The two halves of the build graph a `[[dep]]` or `[[question]]` row can be about.
 const DEP_HALVES: &[&str] = &["shipped", "test"];
@@ -2485,6 +2498,13 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         Half::Shipped => BTreeSet::new(),
     };
     let measured = measure_edges_granting(crates, half, &granted);
+    // The both-ways proof is the one TEST edge a plugin-tooling crate may take on a plugin crate
+    // (`both_ways_witness_edges`); the shipped half excuses nothing.
+    let witness = match half {
+        Half::Test => both_ways_witness_edges(cx, crates),
+        Half::Shipped => BTreeSet::new(),
+    };
+    let is_witness = |from: &str, to: &str| witness.contains(&(from.to_owned(), to.to_owned()));
     // A ROW REFUSED AT LOAD IS REPORTED, NOT DROPPED. A table that quietly skips what it cannot
     // understand is a table that says yes to it, and the row it skipped is the one somebody wrote
     // to get an edge past this rule. Only the shipped row carries them, so one bad row is one
@@ -2604,7 +2624,7 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     if ship {
         for e in &measured {
             let verdict = verdict_for(&e.class);
-            if verdict != "allowed" {
+            if verdict != "allowed" && !is_witness(&e.from, &e.to) {
                 offenders.push(format!(
                     "ship-edge\t{} -> {}\t{} -> {} is `{verdict}`: the architecture grants no {} \
                      -> {} edge, and the ship criterion is the architecture's graph rather than \
@@ -2658,12 +2678,6 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     // ship twin already reds every edge the architecture withholds, whatever its history.
     //
     // See [`base`] for why a base that cannot be established is RED rather than green.
-    // The cold kinds' both-ways witness is the one TEST edge a plugin-tooling crate may take on a
-    // cold kind (`cold_witness_edges`); the shipped half excuses nothing.
-    let witness = match half {
-        Half::Test => cold_witness_edges(cx, crates),
-        Half::Shipped => BTreeSet::new(),
-    };
     match base::read(cx) {
         Ok(base) => {
             for e in &measured {
@@ -2812,8 +2826,24 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         // A ROW MAY NOT GRANT ITSELF AN EDGE THE ARCHITECTURE DOES NOT. `allowed` and `tcb` are
         // readings of the architecture, not opinions a row is entitled to hold: the class tables
         // are in this file precisely so the ledger cannot edit them.
-        let implied = verdict_for(&e.class);
+        let implied = if is_witness(&e.from, &e.to) {
+            BOTH_WAYS_VERDICT
+        } else {
+            verdict_for(&e.class)
+        };
         match row.verdict.as_str() {
+            v if v == BOTH_WAYS_VERDICT && implied != BOTH_WAYS_VERDICT => offenders.push(format!(
+                "unsupported-verdict\t{} -> {}\tthe row claims `{BOTH_WAYS_VERDICT}`, and the edge \
+                 is not the both-ways proof (spec #2 steps 4-5): a [dev-dependencies] edge of the \
+                 loader on a plugin crate its [package.metadata.busbar.both-ways] table names, used \
+                 only by a `*_conformance_tests.rs` file (the architecture implies `{implied}`).",
+                e.from, e.to
+            )),
+            v if v != BOTH_WAYS_VERDICT && implied == BOTH_WAYS_VERDICT => offenders.push(format!(
+                "unsupported-verdict\t{} -> {}\tthe edge is the both-ways proof (spec #2 steps \
+                 4-5) and the row calls it `{v}`: its verdict is `{BOTH_WAYS_VERDICT}`.",
+                e.from, e.to
+            )),
             "allowed" if implied != "allowed" => offenders.push(format!(
                 "unsupported-verdict\t{} -> {}\tthe row claims `allowed`, and the architecture \
                  grants no {} -> {} edge (it implies `{implied}`). A ledger row cannot grant an \
@@ -5095,15 +5125,18 @@ fn both_ways_transport_fixture(manifest: &str) -> Option<String> {
     both_ways_fixture(manifest, "transport")
 }
 
-/// THE COLD KINDS' BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-STORE queue; spec #2 (4)/(5)), the
-/// cold-lane twin of [`WIRE_FIXTURE_KIND`]'s transport grant. Each row is `(the key a
-/// `[package.metadata.busbar.both-ways]` table names the kind by, the kind this table calls it)`.
-const COLD_WITNESS_KINDS: &[(&str, &str)] = &[
+/// THE BOTH-WAYS PROOF'S KINDS (spec #2 steps 4-5; ARCHITECT 2026-09-27 DOOR-STORE queue, widened to
+/// every plugin kind by the ruling on PR #141, option (e)). Each row is `(the word a
+/// `[package.metadata.busbar.both-ways]` key starts with, the kind this table calls it)`; a key is
+/// `<word>` or `<word>-<proof>` (a second proof of one kind, or a door-ABI plane's `plane-door`).
+const WITNESS_KEY_KINDS: &[(&str, &str)] = &[
     ("store", "store"),
     ("export", "export"),
     ("auth", "auth"),
     ("hook", "hooks"),
     ("secret", "secret"),
+    ("plane", "plane"),
+    ("transport", "transport"),
 ];
 
 /// The `(from, to)` TEST edges that are a cold kind's both-ways witness, and so are not a
@@ -5115,7 +5148,7 @@ const COLD_WITNESS_KINDS: &[(&str, &str)] = &[
 /// rlib and the dropped-in cdylib of one plugin, compared by a conformance test), not a widening of
 /// the plugin wall: a NORMAL edge on the same crate is the shipped half and stays the finding it
 /// always was, as does a dev-edge the table does not name, or one that any other test file uses.
-fn cold_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+fn both_ways_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let mut out = BTreeSet::new();
     for c in crates.iter().filter(|c| c.kind == Some(WIRE_FIXTURE_KIND)) {
@@ -5125,8 +5158,9 @@ fn cold_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, Strin
         let files = cx
             .walk(&WalkSpec::new([format!("{}/src", c.dir)]).ext("rs"))
             .unwrap_or_default();
-        for &(key, kind) in COLD_WITNESS_KINDS {
-            let Some(fixture) = both_ways_fixture(&manifest, key) else {
+        for (key, fixture) in both_ways_rows(&manifest) {
+            let word = key.split('-').next().unwrap_or_default();
+            let Some(&(_, kind)) = WITNESS_KEY_KINDS.iter().find(|(w, _)| *w == word) else {
                 continue;
             };
             let is_dev = c.dev_deps.iter().any(|d| d.pkg == fixture);
@@ -5135,7 +5169,7 @@ fn cold_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, Strin
                 continue;
             }
             let path = format!("{}::", fixture.replace('-', "_"));
-            let alias = format!("{key}_fixture");
+            let alias = format!("{}_fixture", key.replace('-', "_"));
             let users: Vec<String> = files
                 .iter()
                 .filter(|f| {
@@ -5177,7 +5211,7 @@ fn witness_file(kind: Option<&str>) -> Option<&'static str> {
 }
 
 /// THE PLUGIN'S OWN BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-TRANSPORT; spec #2 (4)/(5), #3),
-/// the plugin-side mirror of [`cold_witness_edges`]: a plugin crate of ANY kind proves its linked
+/// the plugin-side mirror of [`both_ways_witness_edges`]: a plugin crate of ANY kind proves its linked
 /// door and its dropped-in door are one plugin in its own `tests/conformance.rs`, over the real
 /// loader rather than a host written for the test. So the `(from, to)` TEST edges returned here
 /// are granted, and no rule of this gate measures them:
@@ -5284,6 +5318,26 @@ fn names_ident(text: &str, ident: &str) -> bool {
         !text[..at].chars().next_back().is_some_and(is_word)
             && !text[at + ident.len()..].chars().next().is_some_and(is_word)
     })
+}
+
+/// Every `(key, crate)` row of a manifest's `[package.metadata.busbar.both-ways]` table, in order.
+fn both_ways_rows(manifest: &str) -> Vec<(String, String)> {
+    let mut in_table = false;
+    let mut rows = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == "[package.metadata.busbar.both-ways]";
+            continue;
+        }
+        if let (true, Some((k, krate))) = (in_table, code.split_once('=')) {
+            rows.push((
+                k.trim().trim_matches('"').to_string(),
+                krate.trim().trim_matches('"').to_string(),
+            ));
+        }
+    }
+    rows
 }
 
 /// The crate a manifest's `[package.metadata.busbar.both-ways]` table names for `key`, read line
@@ -6696,15 +6750,17 @@ impl Gate for KindIsolationGate {
             ));
 
             // THE COLD KINDS' BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-STORE queue). The
-            // loader re-points its `hook` both-ways row at a real hook crate the base never named,
+            // loader adds a `hook-ranking` both-ways row naming a real hook crate the base never named,
             // takes it as a `[dev-dependencies]` edge, and records the row: the conformance test is
             // the fixture's only user, so the edge is #2's witness and not a new forbidden edge…
             let witness = |dev: bool, extra_user: bool| {
                 let rel = "crates/plugin-loader/Cargo.toml";
                 let fixture = "busbar-hooks-ranking = { path = \"../hooks-ranking\" }\n";
+                // A SECOND proof of the kind (`hook-ranking`), so the table's own `hook` fixture stays
+                // the witness its `both-ways` row says it is.
                 let mut m = cx.read(rel).unwrap_or_default().replacen(
                     "hook = \"busbar-hook-test-plugin\"",
-                    "hook = \"busbar-hooks-ranking\"",
+                    "hook = \"busbar-hook-test-plugin\"\nhook-ranking = \"busbar-hooks-ranking\"",
                     1,
                 );
                 m = if dev {
@@ -6729,10 +6785,15 @@ impl Gate for KindIsolationGate {
                     format!(
                         "{}\n\n[[dep]]\nfrom    = \"busbar-plugin-loader\"\nto      = \
                          \"busbar-hooks-ranking\"\nhalf    = \"{}\"\ncount   = \"1\"\nverdict = \
-                         \"not-allowed\"\ncite    = \"planted by the self-test\"\nwhy     = \"the \
+                         \"{}\"\ncite    = \"planted by the self-test\"\nwhy     = \"the \
                          hook kind's both-ways witness\"\ndrain   = \"none\"\n",
                         cx.read(REGISTRY_FILE).unwrap_or_default().trim_end(),
-                        if dev { "test" } else { "shipped" }
+                        if dev { "test" } else { "shipped" },
+                        if dev && !extra_user {
+                            BOTH_WAYS_VERDICT
+                        } else {
+                            "not-allowed"
+                        }
                     ),
                 );
                 if extra_user {
@@ -6742,7 +6803,7 @@ impl Gate for KindIsolationGate {
                         manifest_plus(
                             cx,
                             t,
-                            "fn planted_user() {\n    let _ = super::both_ways::hook_fixture::open;\n}\n",
+                            "fn planted_user() {\n    let _ = super::both_ways::hook_ranking_fixture::open;\n}\n",
                         ),
                     );
                 }
@@ -6780,6 +6841,57 @@ impl Gate for KindIsolationGate {
                 &[
                     "new-forbidden-edge",
                     "busbar-plugin-loader -> busbar-hooks-ranking",
+                ],
+            ));
+
+            // THE GRANT IS THE TABLE'S, FOR EVERY PLUGIN KIND (ARCHITECT ruling on PR #141, option
+            // (e)): a loader dev-edge on a PLANE crate its both-ways table does not name is still a
+            // new forbidden edge…
+            let plane_edge = |table: &str| {
+                let rel = "crates/plugin-loader/Cargo.toml";
+                let m = cx.read(rel).unwrap_or_default().replacen(
+                    &format!("[{table}]\n"),
+                    &format!(
+                        "[{table}]\nbusbar-plane-mcp = {{ path = \"../busbar-plane-mcp\" }}\n"
+                    ),
+                    1,
+                );
+                let mut ov = Overlay::new();
+                ov.set(rel, m);
+                ov
+            };
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "the loader's dev-edge on a plane crate its both-ways table does not name",
+                &[ROW_TEST_DEPS],
+                plane_edge("dev-dependencies"),
+                &[
+                    "new-forbidden-edge",
+                    "busbar-plugin-loader -> busbar-plane-mcp",
+                ],
+            ));
+            // …and a NORMAL edge on its declared `plane-door` fixture is a plane linked into the
+            // product: the production half stays forbidden.
+            let rel = "crates/plugin-loader/Cargo.toml";
+            let mut ov = Overlay::new();
+            ov.set(
+                rel,
+                cx.read(rel).unwrap_or_default().replacen(
+                    "[dependencies]\n",
+                    "[dependencies]\nbusbar-plane-a2a = { path = \"../busbar-plane-a2a\" }\n",
+                    1,
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "plugin tooling taking a NORMAL edge on its declared plane-door fixture",
+                &[ROW_DEPS],
+                ov,
+                &[
+                    "new-forbidden-edge",
+                    "busbar-plugin-loader -> busbar-plane-a2a",
                 ],
             ));
 

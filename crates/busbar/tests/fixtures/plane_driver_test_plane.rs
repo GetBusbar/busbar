@@ -224,6 +224,7 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: &STATUSES.0 as *const RefusalStatus,
     refusal_statuses_len: 3,
+    caller_credential_refusal: NO_STR,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
@@ -356,6 +357,8 @@ struct Unit {
     pended: bool,
     /// The last answer was `more = 1` from this source: the next piece is its re-call.
     more_from: Option<u32>,
+    /// The bytes of a local answer already handed to the host, one reply window at a time.
+    local_sent: usize,
 }
 
 struct Inst {
@@ -667,17 +670,25 @@ extern "C" fn on_piece(
             }
             FROM_CALLER => {
                 u.body.extend_from_slice(piece);
-                if i.flags & PIECE_LAST == 0 {
+                if head.as_slice() == b"/local" && (i.flags & PIECE_LAST != 0 || u.local_sent > 0) {
+                    // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
+                    // with nothing for the far end, one reply window at a time (`more = 1`, and
+                    // EMIT_DONE only on the last window).
+                    let at = u.local_sent;
+                    let n = (u.body.len() - at).min(i.reply_cap);
+                    std::ptr::copy_nonoverlapping(u.body[at..].as_ptr(), i.reply_buf, n);
+                    if at == 0 {
+                        o.reply_status = 200;
+                    }
+                    o.emitted = n as u64;
+                    u.local_sent = at + n;
+                    let more = u.local_sent < u.body.len();
+                    o.more = u32::from(more);
+                    u.more_from = more.then_some(FROM_CALLER);
+                    o.flags = if more { 0 } else { EMIT_DONE };
                     return say(out, Outcome::Ready);
                 }
-                if head.as_slice() == b"/local" {
-                    // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
-                    // with nothing for the far end.
-                    o.reply_status = 200;
-                    let n = u.body.len().min(i.reply_cap);
-                    std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
-                    o.emitted = n as u64;
-                    o.flags = EMIT_DONE;
+                if i.flags & PIECE_LAST == 0 {
                     return say(out, Outcome::Ready);
                 }
                 let mut at = 0;

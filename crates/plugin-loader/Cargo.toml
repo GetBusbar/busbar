@@ -41,6 +41,13 @@ name = "plane_door_plugin"
 path = "tests/fixtures/plane_door_plugin.rs"
 crate-type = ["cdylib"]
 
+# The `plane-door` both-ways fixture DROPPED (`plane_door_conformance_tests`): its export line is
+# written by `build.rs` from the both-ways row. An example, not a crate: it never ships.
+[[example]]
+name = "plane_door_fixture"
+path = "tests/fixtures/plane_door_fixture.rs"
+crate-type = ["cdylib"]
+
 # The plugin-logging witness (`dispatch::log_file`'s both-ways proof): one source,
 # `tests/fixtures/log_witness_plugin.rs`, compiled into the test build as a module (the LINKED door)
 # and built here as a `cdylib` (the DROPPED door). An example, not a crate: `cargo test` builds it and
@@ -228,13 +235,15 @@ tungstenite = { workspace = true }
 busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 # The `kind: transport` BOTH-WAYS fixture (#3, OWNER-LOCKED: a transport is swappable, compiled in
 # OR dropped in): a real shipped transport door. `transport_door_tests` signs a dropped-in door image
-# (found by kind among the example cdylibs a workspace test build emits) into a `plugins/` directory
-# and opens it through the one door.
+# (the plugin repo's cdylib, built under `deps/` by this edge and found by kind) into a `plugins/`
+# directory and opens it through the one door.
+# Reached by KIND through `[package.metadata.busbar.both-ways]` below. From its own repo
+# (GetBusbar/busbar-transport-tcp) at the rev the workspace pins.
+busbar-transport-tcp-plugin = { workspace = true }
+# The `plane-door` BOTH-WAYS fixture (#2 steps (4) and (5); ARCHITECT ruling on PR #141 option (c)): a
+# real plane's memory-ABI door, linked here and built as the `plane_door_fixture` example cdylib.
 # Reached by KIND through `[package.metadata.busbar.both-ways]` below.
-# NOT `dropped-in`: that feature exports the door's one symbol from the linked rlib, a second
-# `busbar_plugin_door` beside the dispatcher's own test plugin in this crate's lib test binary. The
-# dropped-in door is a built example cdylib, dlopened.
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 # The transport adapter's witness (`transport_adapter_tests`) dials through the trait, which takes a
 # sealed destination: the contract's blessed test seal (#65), as the wire crates' own batteries use.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
@@ -272,4 +281,7 @@ hook = "busbar-hook-test-plugin"
 # A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
 # emits only its crate alias and its cdylib name for this row. It is also the one wire crate this
 # crate may take a (dev) edge on — kind-isolation's transport-registration rule reads this row.
-transport = "busbar-transport-tcp"
+transport = "busbar-transport-tcp-plugin"
+# A door-ABI plane's fixture: `build.rs` emits its crate alias and the `plane_door_fixture` example's
+# export line (`plane_door_conformance_tests`).
+plane-door = "busbar-plane-a2a"

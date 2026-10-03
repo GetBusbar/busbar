@@ -6001,6 +6001,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
         record_kinds: &[],
         required_config_sections: &[],
         trust_keys: &[],
+        caller_credential_refusal: None,
         served_op_classes: &[],
     },
     wire_format_names: || &[],

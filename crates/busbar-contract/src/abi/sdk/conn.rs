@@ -80,9 +80,10 @@ unsafe impl Send for Host {}
 unsafe impl Sync for Host {}
 
 impl Host {
-    /// The tables `tables` names.
+    /// The tables `tables` names: a plane door that answers its own `open` (no SDK `Life`) reads its
+    /// host here.
     #[must_use]
-    pub(crate) const fn of(tables: &HostTables) -> Self {
+    pub const fn of(tables: &HostTables) -> Self {
         Self {
             ctx: tables.ctx,
             conns: tables.conns,

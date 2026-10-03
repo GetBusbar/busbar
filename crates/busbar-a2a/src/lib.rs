@@ -43,9 +43,14 @@ pub use busbar_plane_a2a::diagnostics;
 #[path = "tests/diagnostics_page_tests.rs"]
 mod diagnostics_page_tests;
 
-/// THE RELAY'S SSE FRAME READER — the plane's own dialect machinery (#83a, SD-5c): bytes in, whole
-/// events out, for the relay's streaming legs, with the one coded diagnostic it prints.
-pub(crate) mod sse;
+/// The relay's frame reader, defined in the plane crate and re-exported under this path.
+pub(crate) use busbar_plane_a2a::sse;
+
+/// The frame reader's host-side checks: its warning through this crate's warn-capture testkit, and
+/// its diagnostic against the published catalog file.
+#[cfg(test)]
+#[path = "tests/frame_reader_host_tests.rs"]
+mod frame_reader_host_tests;
 
 /// THE HOST WALL CLOCK, whole seconds since the Unix epoch, read through the contract's host
 /// service (`busbar_contract::codec::wall_clock_now`) — the one clock a plane reads. The composition

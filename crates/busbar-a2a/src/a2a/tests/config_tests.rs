@@ -3,8 +3,14 @@
 
 //! The `agents:` section's grammar, and the value rules that make the object pin worth having.
 
-use crate::a2a::config::{
-    policy_for, AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism, DEFAULT_REVERIFY_TTL, TRUST_KEYS,
+use crate::a2a::{
+    config::{
+        AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism, DEFAULT_REVERIFY_TTL,
+        REFUSE_PASSTHROUGH_SECTION, TRUST_KEYS,
+    },
+    door,
+    section::{pin_declaration, policy_for},
+    PLANE_DECLARATION,
 };
 use busbar_kernel::{
     plane::config::{plane_sections, validate_plane_entry, validate_plane_section},
@@ -62,6 +68,7 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
             record_kinds: &[],
             required_config_sections: &[],
             trust_keys: &[],
+            caller_credential_refusal: None,
             served_op_classes: &[],
         },
         wire_format_names: || &["pools_standin"],
@@ -95,13 +102,19 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
 /// (`AgentPinCfg::declaration`), the sequence is `busbar_kernel::trust::declared`'s, and the artifact is
 /// this plane's `Declares` impl in `a2a::pin`.
 fn declared_pin(def: &AgentDefCfg) -> Option<CardPin> {
-    busbar_kernel::trust::declared::declared_pin::<CardPin>(def.pin.declaration())
+    busbar_kernel::trust::declared::declared_pin::<CardPin>(pin_declaration(&def.pin))
 }
 
 /// The section as boot reads it: the kernel's judgement of the keys it owns, then the section parse.
 fn parse(yaml: &str) -> Result<AgentsCfg, String> {
     let value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
-    validate_plane_section("agents", &value, TRUST_KEYS, &plane_sections())?;
+    validate_plane_section(
+        "agents",
+        &value,
+        TRUST_KEYS,
+        PLANE_DECLARATION.caller_credential_refusal,
+        &plane_sections(),
+    )?;
     serde_yaml::from_str::<AgentsCfg>(yaml).map_err(|e| e.to_string())
 }
 
@@ -587,7 +600,7 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
     ];
     // The `agents:` section, carried as its plane's declared config section — the shape the engine
     // folds into the named-map chassis from the registry, whose typed parse the admin write path runs.
-    let agents = crate::a2a::PLANE_DECLARATION.config_section;
+    let agents = PLANE_DECLARATION.config_section;
     for (what, def) in cases {
         assert!(
             engine()
@@ -612,7 +625,7 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
 fn the_section_is_a_first_class_member_of_the_chassis() {
     crate::testkit::install_test_seams();
     let agents = engine()
-        .named_map_section_facts(crate::a2a::PLANE_DECLARATION.config_section)
+        .named_map_section_facts(PLANE_DECLARATION.config_section)
         .expect(
             "a section missing from sections() is a section the router, the OpenAPI generator and \
              the overlay applier all silently skip",
@@ -828,4 +841,37 @@ fn the_admin_write_path_refuses_mutual_tls_without_a_client_identity_too() {
     let err = validate_agent("planner", &def)
         .unwrap_err_display("the admin path must refuse what the file refuses");
     assert!(err.contains("needs `client_identity:`"), "{err}");
+}
+
+/// THE DOOR PATH: the section reaches the door with the kernel's reserved keys stripped, so the
+/// plane never sees a section-level `upstream_credentials: passthrough`, and the kernel refuses it
+/// in the plane's own 1.5.5 sentence before the blob is built.
+#[test]
+fn a_forwarded_caller_credential_is_refused_by_the_kernel_on_the_door_path() {
+    let yaml = r#"
+upstream_credentials: passthrough
+planner:
+  url: "https://x/"
+  pin: { mechanism: unpinned }
+"#;
+    let section: serde_yaml::Value = serde_yaml::from_str(yaml).expect("yaml");
+
+    let mut blob: serde_json::Map<String, serde_json::Value> =
+        serde_yaml::from_value(section.clone()).expect("a mapping");
+    for reserved in busbar_contract::section::RESERVED_SECTION_KEYS {
+        blob.remove(*reserved);
+    }
+    let blob = serde_json::to_vec(&blob).expect("json");
+    door::read_settings(&blob).expect("the plane cannot see the reserved default");
+
+    assert_eq!(
+        validate_plane_section(
+            "agents",
+            &section,
+            TRUST_KEYS,
+            PLANE_DECLARATION.caller_credential_refusal,
+            &plane_sections(),
+        ),
+        Err(REFUSE_PASSTHROUGH_SECTION.to_string())
+    );
 }

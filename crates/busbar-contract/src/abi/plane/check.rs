@@ -26,8 +26,8 @@ use super::{
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
     RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    EMIT_DONE, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    CLAIM_PATTERN, EMIT_DONE, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE,
+    INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
     PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_PIECEWISE,
     SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED,
@@ -43,6 +43,7 @@ use crate::abi::mechanism::check::{
     Filled, MAX_BYTES,
 };
 use crate::abi::mechanism::door::{Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::grammar::{PathSeg, Selector};
 
 /// The most unit counts one answer may carry.
 pub const MAX_UNITS: u64 = 64;
@@ -587,9 +588,10 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     text(s.resource_metadata, "snapshot.resource_metadata")
 }
 
-/// Every snapshot claim: a verb, a target, a carrier, known flags, and a refusal dialect the tail
-/// declares (`0` when the tail declares none). Two claims of one route are not judged here:
-/// overlapping claims resolve by precedence in the kernel's registry.
+/// Every snapshot claim: a verb, a target, a carrier, known flags, never EXACT with PATTERN, and a
+/// refusal dialect the tail declares (`0` when the tail declares none). The target's TEXT is judged
+/// at bind by [`check_claim_target`], once the host has read it. Two claims of one route are not
+/// judged here: overlapping claims resolve by precedence in the kernel's registry.
 ///
 /// # Errors
 ///
@@ -601,7 +603,7 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT),
+            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
@@ -611,8 +613,94 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
                 "claim.refusal_dialect",
             )?;
         }
+        if c.flags & CLAIM_EXACT != 0 && c.flags & CLAIM_PATTERN != 0 {
+            return Err(fault(Rule::Contradiction, "claim.flags"));
+        }
     }
     Ok(())
+}
+
+/// THE PATTERN GRAMMAR, once: the target starts with `/`, and each `/`-separated segment is a
+/// brace-free literal or a whole placeholder `{name}` with a non-empty, brace-free name. A pattern
+/// names at least one placeholder; one that names none is an exact target.
+fn pattern_shape(target: &str) -> Result<(), Fault> {
+    let bad = || fault(Rule::Contradiction, "claim.pattern");
+    let rest = target.strip_prefix('/').ok_or_else(bad)?;
+    let mut placeholders = 0;
+    for seg in rest.split('/') {
+        match seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            Some(n) if !n.is_empty() && !n.contains(['{', '}']) => placeholders += 1,
+            None if !seg.is_empty() && !seg.contains(['{', '}']) => {}
+            _ => return Err(bad()),
+        }
+    }
+    if placeholders == 0 {
+        return Err(fault(Rule::Missing, "claim.pattern"));
+    }
+    Ok(())
+}
+
+/// ONE CLAIM'S TARGET, judged at bind once the host has read it out of the snapshot: the flag pair
+/// ([`CLAIM_EXACT`] never with [`CLAIM_PATTERN`]) and, for a pattern, its grammar
+/// ([`claim_selector`] reads the same one). [`check_claims`] judges the claims' shape without
+/// reading their text; the host runs this on every target it copies into the generation.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for both flags or a malformed pattern, [`Rule::Missing`] for a pattern
+/// with no placeholder.
+pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
+    if flags & CLAIM_EXACT != 0 && flags & CLAIM_PATTERN != 0 {
+        return Err(fault(Rule::Contradiction, "claim.flags"));
+    }
+    if flags & CLAIM_PATTERN != 0 {
+        pattern_shape(target)?;
+    }
+    Ok(())
+}
+
+/// A [`CLAIM_PATTERN`] target read as its segment pattern, by the one grammar
+/// ([`check_claim_target`]): each literal segment is a [`PathSeg::Lit`], each placeholder one
+/// [`PathSeg::Var`].
+///
+/// # Errors
+///
+/// The grammar's fault: [`Rule::Contradiction`] for an empty or half-braced segment,
+/// [`Rule::Missing`] for no placeholder.
+pub fn claim_pattern(target: &'static str) -> Result<Vec<PathSeg>, Fault> {
+    pattern_shape(target)?;
+    Ok(target[1..]
+        .split('/')
+        .map(|seg| {
+            if seg.starts_with('{') {
+                PathSeg::Var
+            } else {
+                PathSeg::Lit(seg)
+            }
+        })
+        .collect())
+}
+
+/// THE HOST'S READING OF ONE PLANE CLAIM as the claim grammar's selector: [`CLAIM_EXACT`] is
+/// [`Selector::ExactPath`], [`CLAIM_PATTERN`] is [`Selector::PathPattern`], and neither is
+/// [`Selector::PrefixOneLevel`]. The registry orders and seals the result as it does every claim.
+/// A pattern's segments are handed to `keep`, which decides how long they live: the host keeps
+/// them with the generation that stated them. The contract holds nothing.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for both flags, or the pattern's own fault ([`claim_pattern`]).
+pub fn claim_selector(
+    target: &'static str,
+    flags: u32,
+    keep: impl FnOnce(Vec<PathSeg>) -> &'static [PathSeg],
+) -> Result<Selector, Fault> {
+    match (flags & CLAIM_EXACT != 0, flags & CLAIM_PATTERN != 0) {
+        (true, true) => Err(fault(Rule::Contradiction, "claim.flags")),
+        (true, false) => Ok(Selector::ExactPath(target)),
+        (false, true) => Ok(Selector::PathPattern(keep(claim_pattern(target)?))),
+        (false, false) => Ok(Selector::PrefixOneLevel(target)),
+    }
 }
 
 /// Every snapshot admin route: a verb, a target and known flags.
@@ -700,7 +788,19 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
         t.refusal_statuses,
         t.refusal_statuses_len,
         "tail.refusal_statuses",
-    )
+    )?;
+    // Absent is NULL; present is a sentence, never an empty one.
+    if t.caller_credential_refusal.ptr.is_null() {
+        text(
+            t.caller_credential_refusal,
+            "tail.caller_credential_refusal",
+        )
+    } else {
+        named(
+            t.caller_credential_refusal,
+            "tail.caller_credential_refusal",
+        )
+    }
 }
 
 /// A plane's Statement sections: each named, known flags, and EXACTLY ONE is the declaring

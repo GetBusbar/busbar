@@ -338,18 +338,10 @@ pub(crate) fn metadata_url(public_url: &str) -> Result<String, ServeError> {
     absolute(public_url, METADATA_PATH)
 }
 
-/// One reading of `public_url`: parse it, replace the path wholesale, drop query and fragment.
-///
-/// The path is REPLACED rather than joined, so a `public_url` carrying a path of its own cannot
-/// produce `/some/prefix/a2a/agents/x` here while the router serves `/a2a/agents/x` — two spellings
-/// of one endpoint, one of which 404s.
+/// One reading of `public_url`, the plane crate's: an unparseable base is refused, naming it.
 fn absolute(public_url: &str, path: &str) -> Result<String, ServeError> {
-    let mut u = url::Url::parse(public_url)
-        .map_err(|_| ServeError::BadPublicUrl(public_url.trim().to_string()))?;
-    u.set_path(path);
-    u.set_query(None);
-    u.set_fragment(None);
-    Ok(u.to_string())
+    super::plane_crate::public::absolute(public_url, path)
+        .ok_or_else(|| ServeError::BadPublicUrl(public_url.trim().to_string()))
 }
 
 /// REWRITE a fronted agent's backend card into the card busbar serves.

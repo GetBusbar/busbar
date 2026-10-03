@@ -80,7 +80,7 @@ pub(crate) struct AgentRegistration {
     /// The operator's standing decision: the locked pin, the approved per-skill digests, the
     /// suspension. THE MACHINE'S TYPE, held, not copied.
     pub(crate) approval: Approval<CardPin>,
-    /// The cadence, lowered from config by [`super::config::policy_for`].
+    /// The cadence, lowered from config by [`super::section::policy_for`].
     pub(crate) reverify: reverify::Policy,
     /// The breaker's trip points.
     pub(crate) thresholds: anomaly::Thresholds,
@@ -248,6 +248,8 @@ impl AgentRegistration {
 // `Approved` registration is ever a candidate. Operator approval is a capability VOUCH as well as an
 // authenticity check, and the anomaly breaker is what catches an agent that betrays the vouch.
 
+// TEMPORARY DUPLICATE of the a2a plane's skill fit (ARCHITECT 2026-10-02, #141 door-only):
+// busbar-a2a names no plane path; this copy ends when FOLD-A2A slice 8 deletes busbar-a2a.
 /// THE SHAPE OF A TASK, as the catalogue is allowed to see it.
 ///
 /// Typed metadata only. There is no `text` member and there is not going to be one: a field for
@@ -398,6 +400,8 @@ impl CatalogueItem for AgentRegistration {
     }
 }
 
+// TEMPORARY DUPLICATE of the a2a plane's skill fit (ARCHITECT 2026-10-02, #141 door-only):
+// busbar-a2a names no plane path; this copy ends when FOLD-A2A slice 8 deletes busbar-a2a.
 /// JUDGE WHETHER AN AGENT CARD MATCHES A TASK SHAPE. Structural, never a score: an agent either can
 /// accept this shape of task or it cannot.
 ///

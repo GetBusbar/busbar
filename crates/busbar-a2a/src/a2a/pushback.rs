@@ -85,9 +85,9 @@ use super::task::TaskState;
 /// and may not name this crate.
 pub(crate) use busbar_plane_a2a::PUSH_PATH_SUFFIX;
 
-/// The scheme busbar names in the config it registers with the backend. RFC 9110's own, because
-/// the value is `<scheme> <credentials>` and that is what the field is for.
-pub(crate) const TOKEN_SCHEME: &str = "Bearer";
+/// The scheme busbar names in the config it registers with the backend: the plane's
+/// ([`super::push::TOKEN_SCHEME`]), RFC 9110's own.
+pub(crate) use super::push::TOKEN_SCHEME;
 
 /// The ceiling on a pushed body. A push notification is one `Task` document; this is the same order
 /// as the notification busbar itself sends (`super::pushdeliver::notification_body`) with room for a

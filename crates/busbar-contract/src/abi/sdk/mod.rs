@@ -73,7 +73,7 @@ pub mod auth_door;
 pub mod store;
 // PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
 pub mod publish;
-pub use publish::Generations;
+pub use publish::{Generations, Keyed};
 // THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
 pub mod life;
 

@@ -73,7 +73,6 @@
 
 use busbar_contract::records::VirtualKey;
 
-use busbar_contract::secret_ref::SecretRef;
 use busbar_kernel::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
 
 /// WHICH OF THIS PLANE'S GRANTS a refusal is about. ONE variant, because this plane requires one
@@ -215,48 +214,9 @@ pub(crate) fn authorise_egress<'a>(
         .map_err(AgentEgressDenied::from)
 }
 
-/// Where a leased credential is placed on the outbound request.
-///
-/// An enum rather than a free-form header name because "put this secret wherever the config says"
-/// is how a credential ends up in a query string, and a query string is in every access log on the
-/// path.
-#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CredentialPlacement {
-    /// `Authorization: Bearer <secret>`.
-    #[default]
-    #[serde(rename = "bearer")]
-    AuthorizationHeader,
-    /// A named header carrying the secret verbatim (`X-API-Key: <secret>`), which is what several
-    /// A2A vendors' `APIKey` security scheme means in practice.
-    Header(String),
-}
-
-impl CredentialPlacement {
-    /// The header this placement writes.
-    pub(crate) fn header_name(&self) -> &str {
-        match self {
-            CredentialPlacement::AuthorizationHeader => "authorization",
-            CredentialPlacement::Header(name) => name.as_str(),
-        }
-    }
-}
-
-/// The HANDLE plus its lease policy, as the registration holds it. Operator INTENT, so it is
-/// overlay state — and the reason `config_validate::secret_refs` now walks the `agents:` arm.
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct OutboundCredential {
-    /// The reference resolved at delegation time. NOT the secret.
-    pub(crate) secret: SecretRef,
-    /// Where the resolved value is placed on the outbound request.
-    #[serde(default)]
-    pub(crate) placement: CredentialPlacement,
-    /// How long a minted lease is usable, in milliseconds. Zero is refused at parse: a lease that
-    /// has expired before it is used is a credential that can never be presented, and an operator
-    /// who wrote `0` meant something they did not get.
-    pub(crate) lease_ttl_ms: u64,
-}
+/// Where a leased credential is placed, and the handle plus its lease policy: the `agents:` grammar's
+/// types, defined in the plane crate and re-exported here.
+pub use super::plane_crate::creds::{CredentialPlacement, OutboundCredential};
 
 /// Why a lease could not be minted or used.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -631,6 +631,43 @@ async fn a_local_answer_ends_the_unit_without_the_far_end() {
     }
 }
 
+/// A LOCAL ANSWER LONGER THAN ONE REPLY WINDOW (ARCHITECT B7, 2026-10-02): the plane answers in
+/// `reply_cap` windows with `more = 1`, and EMIT_DONE only on the last (a done answer may not ask
+/// for more). Every window reaches the caller, in order, and the far end is never sent to.
+#[tokio::test]
+async fn a_local_answer_longer_than_one_reply_window_reaches_the_caller_whole() {
+    for way in ways() {
+        let caps = BufferCaps {
+            reply: 4,
+            ..BufferCaps::default()
+        };
+        let r = rig(way, caps, Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&[], CHUNKS),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/local", b"answered here, in windows"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Completed),
+            "{way:?}: {outcome:?}"
+        );
+        assert_eq!(caller.text(), "answered here, in windows", "{way:?}");
+        assert_eq!(caller.status(), Some(200), "{way:?}");
+        assert!(
+            far.sent().is_empty(),
+            "{way:?}: the far end is never sent to"
+        );
+    }
+}
+
 /// With no member and no local answer the unit has nowhere to go: the walk's exhaustion terminal
 /// ends it (its status and Retry-After, rendered by the plane), and the far end is never sent to.
 #[tokio::test]

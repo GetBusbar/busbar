@@ -13,6 +13,8 @@
 //! received, and does an answer come back in the shape A2A section 11.3 and section 11.6 define?
 
 use super::*;
+use busbar_plane_a2a::rest::REST_RPC_ID;
+use serde_json::json;
 
 /// SECTION 11.3, IN ONE ASSERTION: the success body IS the `result` verbatim. Not "contains", not
 /// "the task inside it" — the same JSON, member for member. This is what makes the TCK's two readers
@@ -139,66 +141,6 @@ fn non_response_frames_are_passed_through() {
             String::from_utf8_lossy(frame)
         );
     }
-}
-
-/// QUERY STRINGS ARE TYPED ON THE WAY INTO THE ENVELOPE. `historyLength=5` means the NUMBER five to
-/// every reader of the composed envelope; left as a string, a filter is silently not applied, which
-/// is the failure mode that errors nowhere.
-#[test]
-fn query_values_are_typed_the_way_the_envelope_wants_them() {
-    assert_eq!(json_scalar("5"), json!(5));
-    assert_eq!(json_scalar("-3"), json!(-3));
-    assert_eq!(json_scalar("true"), json!(true));
-    assert_eq!(json_scalar("false"), json!(false));
-    assert_eq!(json_scalar("ctx-1"), json!("ctx-1"));
-    assert_eq!(json_scalar(""), json!(""));
-}
-
-/// ABSENT IS NOT EMPTY. A query parameter the caller omitted must not appear in the composed params
-/// at all: `historyLength` absent means "no opinion" and is a different request from
-/// `historyLength: null`.
-#[test]
-fn an_omitted_query_parameter_is_absent_from_the_params() {
-    let params = Params::new()
-        .set("id", "t-1")
-        .maybe("historyLength", None)
-        .into_value();
-    assert_eq!(params, json!({"id": "t-1"}));
-
-    let asked = "7".to_string();
-    let params = Params::new()
-        .set("id", "t-1")
-        .maybe("historyLength", Some(&asked))
-        .into_value();
-    assert_eq!(params, json!({"id": "t-1", "historyLength": 7}));
-}
-
-/// THE PATH WINS OVER THE BODY. A `taskId` member in a posted push-notification config must not
-/// re-point the request at a task the caller did not address.
-#[test]
-fn a_body_member_cannot_re_point_the_addressed_task() {
-    let params = Params::new()
-        .merge(&json!({"taskId": "somebody-elses", "url": "https://receiver.example/hook"}))
-        .set("taskId", "the-one-addressed")
-        .into_value();
-    assert_eq!(params["taskId"], "the-one-addressed");
-    assert_eq!(params["url"], "https://receiver.example/hook");
-}
-
-/// AN EMPTY BODY IS NOT A PARSE FAILURE. `POST /tasks/{id}:cancel` carries none, and neither does a
-/// `DELETE`; refusing them for a body they are not supposed to have would refuse the specification's
-/// own request shape.
-#[test]
-fn an_absent_body_composes_empty_params() {
-    assert_eq!(json_body(&axum::body::Bytes::new()), json!({}));
-    assert_eq!(
-        json_body(&axum::body::Bytes::from_static(b"nope")),
-        json!({})
-    );
-    assert_eq!(
-        json_body(&axum::body::Bytes::from_static(b"{\"message\":1}")),
-        json!({"message": 1})
-    );
 }
 
 /// Read a response back as (status, JSON body).

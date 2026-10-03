@@ -979,7 +979,9 @@ busbar-llm = 226
 busbar-mcp = 280
 # busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
 # instead of per signature.
-busbar-a2a = 232
+# LOWERED 232 -> 229 (downward, at the measure) by FOLD-A2A: the door pins and the Origin rule read
+# the plane's and the contract's homes instead of the kernel's.
+busbar-a2a = 229
 busbar-voice = 88
 
 [rules.ports-only-tests]
@@ -1553,7 +1555,7 @@ kernel_crate = "busbar-kernel"
 #    REQUESTS.record append deleted (kernel -178, measured 55605 at predev c8047a086 + this lane).
 # ── LOWERED 55605 -> 55599 by train/cg-65 at the measurement (promote run 36952636512 ceiling-slack): the UNITS_FLOOR
 #    follow-up drains the kernel by 6 (plane_driver/cancel.rs uses money.rs's one billing filter). Lower only.
-kernel_ceiling = 55537
+kernel_ceiling = 55534
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
@@ -1872,6 +1874,9 @@ busbar-transport-stdio = ["tokio", "futures"]
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
 busbar-transport-ws = ["tokio-util", "tokio", "tokio-tungstenite", "futures"]
+# The same ruling applied to a plane: the `agents:` grammar keeps its registrations in the order an
+# operator wrote them (indexmap), and the plane reads its public base URL once (url).
+busbar-plane-a2a = ["indexmap", "url"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
@@ -2737,6 +2742,19 @@ scope_note = "production code only; a test may price whatever it likes to prove 
 entry_verbs = ["cost_price_usage"]
 # The cost unit's own pricing entry points, named as paths.
 entry_path_patterns = ['busbar_kernel_ledger::cost::[A-Za-z0-9_:]*price', 'busbar_kernel_ledger::cost::apply_tier']
+# THE ONE FUNCTION UNDER ANOTHER NAME (ARCHITECT ruling 2026-09-30). The patterns above see a
+# NAME, and a one-line wrapper in the cost unit whose name lacks `price` (`fn f(entries: &[LedgerEntry],
+# view) { price_in_view(entries, view)?.micros_i64() }`) would let a reader price beside the cost
+# unit unseen. So the cost unit `wrapper_home` is read for SHAPE as well: a function
+# there whose signature names one of `wrapper_inputs` (the one function's own input, the ledger
+# slice) and whose body reaches a pricing entry (a call matching a pattern above, one of
+# `wrapper_reaches`, or a wrapper already found) IS a pricing entry, whatever its name, and a call
+# to it outside the homes is counted here. What a reader may call is a cost-unit read that takes
+# the reader's OWN row and builds the slice itself, because then the projection (lane, fee lane,
+# classes) and the price both live in the cost unit.
+wrapper_home = "cost-unit"
+wrapper_inputs = ["LedgerEntry"]
+wrapper_reaches = ['(?<![A-Za-z0-9_])Tally::']
 max_extra_sites = 0
 # The fee fields, and the two crates that may read them. `per_request_fee` is the card's OWN
 # spelling since the cost unit re-labelled `per_request_fee_cents` to it (the fee is carried in the
@@ -3219,6 +3237,10 @@ plane_crates = 4
 # transport -1 (EXTRACT-15, TODO PATH TO DEV-GREEN P5 "EXTRACTION TO 15 CRATES", item http): the http
 # transport crate MOVED OUT with its history to GetBusbar/busbar-transport-http and busbar pulls it at one pinned rev
 # (root Cargo.toml). Its gates run in that repo's plugin CI.
+# transport 3 -> 2 (EXTRACT-15, item tcp): the tcp transport crate MOVED OUT with its history to
+# GetBusbar/busbar-transport-tcp and busbar pulls the logic crate and its -plugin cdylib crate at one pinned
+# rev (root Cargo.toml). Its gates run in that repo's plugin CI. `crates/busbar-transport-*` now matches
+# two: stdio and ws.
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
@@ -3226,7 +3248,7 @@ auth = 0
 secret = 0
 store = 1
 export = 0
-transport = 3
+transport = 2
 loader = 1
 abi = 1
 

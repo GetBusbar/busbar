@@ -42,23 +42,42 @@
 /// The wire dialect's own modules, keeping the `a2a::` parent they carried in the codec crate so
 /// their in-crate paths are the ones every caller already spells.
 pub mod a2a {
+    pub mod agent_card;
     pub mod anomaly;
     pub mod canonical;
     pub mod card;
+    pub mod config;
+    pub mod creds;
+    pub mod public;
     pub mod task;
 }
 
+pub mod arrival;
+pub mod binding;
+pub mod cards;
 pub mod claims;
 pub mod diagnostics;
+pub mod door;
 pub mod facts;
 pub mod frame;
+pub mod identity;
 pub mod jsonrpc;
+pub mod local;
 pub mod meta;
 pub mod ops;
 pub mod plane;
+pub mod plane_door;
+pub mod push;
 pub mod record;
 pub mod records;
+pub mod relay;
+pub mod rest;
+pub mod skill;
+pub mod sse;
 pub mod surface;
+pub mod task_door;
+pub mod task_hop;
+pub mod tasks;
 
 pub use frame::{rewrite, Direction, Frame, Tap, Transform};
 

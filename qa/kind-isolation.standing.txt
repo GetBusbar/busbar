@@ -19,6 +19,8 @@ kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	6
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	3
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	5
 kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
+# FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02): approved rises; the plane-door both-ways proof's wire literals (the https:// vendor URL and the grammar's own http:// sentence) in crates/plugin-loader/src/tests/plane_door_conformance_tests.rs, under option (e)'s grant.
+kind-isolation:matrix	measurement-disagreement	busbar-plugin-loader × transport	2
 kind-isolation:matrix	ratchet	busbar × cleanliness	205
 kind-isolation:matrix	ratchet	busbar × hooks	13
 kind-isolation:matrix	ratchet	busbar-a2a × legacy	12
@@ -35,7 +37,12 @@ kind-isolation:matrix	ratchet	busbar-plane-llm × plane	591
 kind-isolation:matrix	ratchet	busbar-plane-llm × transport	592
 kind-isolation:matrix	ratchet	busbar-plane-mcp × legacy	11
 kind-isolation:matrix	ratchet	busbar-plugin-loader × hooks	3
-kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	62
+# FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02): approved rises; the plane-door both-ways proof moved into the loader (option (c)/(e)): loader × plane +2 over predev's measure (62 -> 64), loader × transport 14 (its claim/carrier words and wire URLs); busbar-plane-a2a × legacy 13, × plane 76, × transport 109 drain at FOLD-A2A slice 8 (busbar-a2a deleted).
+kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	64
+kind-isolation:matrix	ratchet	busbar-plugin-loader × transport	14
+kind-isolation:matrix	ratchet	busbar-plane-a2a × legacy	13
+kind-isolation:matrix	ratchet	busbar-plane-a2a × plane	76
+kind-isolation:matrix	ratchet	busbar-plane-a2a × transport	109
 kind-isolation:matrix	ratchet	busbar-store-memory × plane	6
 kind-isolation:matrix	ratchet	busbar-voice × contract	122
 kind-isolation:matrix	ratchet	busbar-voice × plane	871
@@ -43,7 +50,6 @@ kind-isolation:matrix	unlisted-cell	busbar × legacy	85
 kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
 kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	350
 kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	33
-kind-isolation:matrix	unlisted-cell	busbar-contract × store	1
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × hooks	11
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × kernel	74
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × legacy	19
@@ -86,7 +92,6 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> legacy	22
 kind-isolation:matrix	unlisted-edge	cleanliness -> plane	93
 kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	92
 kind-isolation:matrix	unlisted-edge	cleanliness -> transport	26
-kind-isolation:matrix	unlisted-edge	contract -> store	1
 kind-isolation:matrix	unlisted-edge	hooks -> plane	4
 kind-isolation:matrix	unlisted-edge	kernel -> cleanliness	44
 kind-isolation:matrix	unlisted-edge	kernel -> hooks	34

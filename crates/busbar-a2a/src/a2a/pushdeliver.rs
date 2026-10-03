@@ -71,6 +71,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// its tests.
 pub(super) use busbar_kernel::plane_host::EngineHost;
 
+use super::push::{self, Attempted};
 use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
@@ -80,70 +81,10 @@ use crate::diagnostics::{
 use busbar_contract::diag_debug;
 use busbar_contract::vocab as provenance;
 
-/// THE HEADER EVERY DELIVERY CARRIES, whatever else it carries.
-///
-/// The request's TIME ceiling is the transport's (`transport::RELAY_TIMEOUT`), for the same reason
-/// the relay's is: an unbounded one is a way for a caller to pin a busbar thread by pointing at a
-/// host that accepts and never answers.
-const DELIVERY_HEADERS: &[(&str, &str)] = &[("content-type", "application/json")];
-
-/// The header a webhook credential is presented on. RFC 9110's own, because the value this carries
-/// is `<scheme> <credentials>` and that is exactly what the field is for.
-const AUTHORIZATION_HEADER: &str = "authorization";
-
-/// THE CREDENTIAL THE CALLER ASKED BUSBAR TO PRESENT AT ITS WEBHOOK.
-///
-/// ## Whose credential this is, because that is the whole reason it may be sent
-///
-/// It is not busbar's. It is a secret the CALLER supplied, for the CALLER's own receiver, so that
-/// the receiver can tell a real delivery from anything else that finds the URL. Presenting it is
-/// therefore not the confused-deputy shape `super::creds::authorise_egress` exists to prevent on
-/// the relay path — that is busbar's OWN credential being spent on a host a caller nominated, and
-/// none of busbar's credentials come anywhere near this path. This one goes back to the party that
-/// issued it, at the address that party named, and nowhere else.
-///
-/// Registration used to REFUSE the member out loud on the argument that busbar sends no credential,
-/// which was an honest statement of what the delivery did and an unbuildable position for a
-/// customer: a webhook receiver that cannot authenticate its caller has to treat the URL itself as
-/// the secret, and A2A gives it a field precisely so that it does not have to.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct DeliveryAuth {
-    /// The HTTP authentication scheme, from the IANA registry: `Bearer`, `Basic`, … Case is the
-    /// caller's; RFC 9110 section 11.1 makes scheme names case-insensitive, so it is echoed rather
-    /// than normalised.
-    pub(crate) scheme: String,
-    /// The credential itself. **Never logged, never echoed on a read verb, never persisted.** See
-    /// [`auths`] for where it lives and why that is not a durable store.
-    pub(crate) credentials: String,
-}
-
-impl DeliveryAuth {
-    /// The `Authorization` field value: `<scheme> <credentials>`, or the bare scheme where the
-    /// caller supplied none (the proto marks `credentials` optional, and a scheme with an empty
-    /// value trailing a space is a header a strict receiver rejects).
-    fn header_value(&self) -> String {
-        if self.credentials.is_empty() {
-            self.scheme.clone()
-        } else {
-            format!("{} {}", self.scheme, self.credentials)
-        }
-    }
-}
-
-/// `Debug` IS WRITTEN RATHER THAN DERIVED, and that is the point of writing it. A derived one puts
-/// the credential into the first `tracing` field, `assert_eq!` message or panic payload that ever
-/// touches this struct, and none of those are places a caller's secret may appear. There is no
-/// accessor that returns the credential either — [`DeliveryAuth::header_value`] is the only way out
-/// of this type, and its one caller is the line that writes the request header.
-impl std::fmt::Debug for DeliveryAuth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "DeliveryAuth {{ scheme: {:?}, credentials: <redacted> }}",
-            self.scheme
-        )
-    }
-}
+/// THE CREDENTIAL THE CALLER ASKED BUSBAR TO PRESENT AT ITS WEBHOOK: the plane's
+/// ([`push::DeliveryAuth`]), presented only after the guard has passed. The
+/// request's TIME ceiling is the transport's (`transport::RELAY_TIMEOUT`).
+pub(crate) use super::push::DeliveryAuth;
 
 /// Why a delivery did not happen. Each arm names the thing that failed, because "push failed" alone
 /// tells an operator nothing about whether to fix DNS, fix the receiver, or look at an attack.
@@ -280,67 +221,9 @@ pub(crate) fn auth_for_test(task_id: &str) -> Option<DeliveryAuth> {
         .cloned()
 }
 
-/// THE A2A PUSH NOTIFICATION BODY: the Task, as the protocol defines it, under BUSBAR's identity.
-///
-/// The receiver is the caller's own infrastructure and the ids it knows are the ones busbar issued,
-/// so the backend agent's names for this work must not appear here — the same reason
-/// [`super::relay::rewrite_identity`] exists on the reply path.
-///
-/// # THIS IS NOT A JSON-RPC ENVELOPE, AND THAT IS CORRECT. DO NOT "FIX" IT INTO ONE.
-///
-/// Stated here because the absence looks exactly like the defect this plane's other three response
-/// sites really did have. Every other place busbar puts JSON on this plane's wire is a JSON-RPC
-/// message and is read or written through [`busbar_kernel::ingress::jsonrpc`]; a reviewer who has just been
-/// through those will read the missing `jsonrpc`, `method` and `id` members here as a fourth
-/// instance and add them. It would be a protocol violation.
-///
-/// A push notification is not a request (busbar is not invoking a method on the receiver), it is
-/// not a response (the receiver asked busbar nothing), and there is no request for an `id` to
-/// correlate to — the receiver is not a JSON-RPC peer at all. A2A puts the correlation duty on the
-/// RECEIVER and keys it on the TASK id in this document, not on an envelope id: SPEC 4.3.3,
-/// *"Clients MUST validate the task ID matches an expected task"*. That clause only makes sense
-/// because the task id is the only correlator there is, and it is the `"id"` field below.
-///
-/// # IT IS A `StreamResponse`, AND IT WAS A BARE `Task`, WHICH IS THE ONE MEMBER THAT WAS WRONG
-///
-/// The envelope A2A defines for a delivered event is `StreamResponse`, a `oneof` over `{task,
-/// message, statusUpdate, artifactUpdate}` — so the payload is the task NESTED UNDER `"task"`,
-/// never the task itself. It was the task itself, and the difference is not stylistic: the official
-/// suite runs the delivered body through the specification's own schema, where `StreamResponse` is
-/// `additionalProperties: false` over those four names. Its verdict on the un-nested document,
-/// verbatim:
-///
-/// ```text
-/// $: 'contextId', 'id', 'kind', 'status' do not match any of the regexes:
-///    '^(artifact_update)$', '^(status_update)$'
-/// ```
-///
-/// and on the same document nested under `"task"`, `valid: True`. So a receiver written against the
-/// specification's own generated types could not deserialise a busbar delivery at all.
-///
-/// The other correctness duty is unchanged and still discharged: the ids in this document are
-/// BUSBAR'S, never the backend agent's, because busbar's are the only ones the receiver has ever
-/// been told about and the only ones that will resolve if it calls back.
-pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
-    let doc = serde_json::json!({
-        "task": {
-            "id": task.task_id,
-            "contextId": task.context_id,
-            "kind": "task",
-            "status": {
-                "state": task.state.as_str(),
-                // AN RFC3339 STRING, never the raw `u64`. `TaskStatus.timestamp` is typed a
-                // `Timestamp` in every revision (RFC3339 in the JSON binding, `google.protobuf.Timestamp`
-                // whose ProtoJSON IS an RFC3339 string in the proto binding), so a receiver's generated
-                // types deserialise the field as a date-time and a JSON NUMBER is a type error at the
-                // boundary — the delivery parsed as far as this member and then failed. `task.updated_at`
-                // is whole seconds since the epoch; it is rendered rather than emitted raw.
-                "timestamp": busbar_contract::civil::rfc3339_from_secs(task.updated_at),
-            },
-        }
-    });
-    serde_json::to_vec(&doc).unwrap_or_default()
-}
+/// THE A2A PUSH NOTIFICATION BODY: the plane's ([`push::notification_body`]),
+/// a `StreamResponse` with the task under `"task"`, under busbar's ids. Not a JSON-RPC envelope.
+pub(crate) use super::push::notification_body;
 
 /// DELIVER ONE NOTIFICATION for `task`, re-running the full guard against a FRESH resolution first,
 /// AND RECORD THE OUTCOME on the task's own provenance chain.
@@ -454,10 +337,10 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     let Some(addr) = pinned.addrs.first().copied() else {
         return Err(PushRefusal::Unresolved(pinned.host));
     };
-    let mut headers: Vec<(String, String)> = DELIVERY_HEADERS
-        .iter()
-        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-        .collect();
+    let mut headers = vec![(
+        push::CONTENT_TYPE.0.to_string(),
+        push::CONTENT_TYPE.1.to_string(),
+    )];
     // THE CALLER'S OWN CREDENTIAL, ATTACHED ONLY AFTER THE GUARD HAS PASSED. Reading it here rather
     // than before step 1 is deliberate: the credential must be presented to the address the caller
     // registered and to nothing else, so nothing may put it in a header list that a refused
@@ -468,7 +351,7 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
         .get(&task.task_id)
         .cloned()
     {
-        headers.push((AUTHORIZATION_HEADER.to_string(), auth.header_value()));
+        headers.push((push::AUTHORIZATION.to_string(), auth.header_value()));
     }
     let body = notification_body(task);
     let resp = seam
@@ -491,35 +374,14 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
 
 // ══ BOUNDED RETRY ═══════════════════════════════════════════════════════════════════════════════
 
-/// AT MOST THIS MANY ATTEMPTS, total, for one delivery. ARCHITECT ruling 2026-09-29: 3 attempts,
-/// 250ms then 500ms between them, ±20% jitter.
-const MAX_DELIVERY_ATTEMPTS: u32 = 3;
-
-/// The delay BEFORE the 2nd and 3rd attempts (index 0 and 1), before jitter is applied.
-///
-/// FIXED rather than driven by the receiver's own `Retry-After`: the egress response
-/// (this plane's `HttpResponse`) carries `status, location, body, peer_spki,
-/// client_identity_offered` and NO header map at all, so a `Retry-After` value cannot be read off a
-/// real delivery response today. That type is the LEGACY egress path step 36 deletes, and growing it
-/// for one caller was ruled out (ARCHITECT, 2026-09-29) rather than done here. **Retry-After will be
-/// honoured once push rides the http transport piece — status and retry-after are transport
-/// vocabulary there.** Until then a 429 is retried on this same fixed schedule, exactly like a 5xx.
-const RETRY_DELAYS_MS: [u64; (MAX_DELIVERY_ATTEMPTS - 1) as usize] = [250, 500];
-
-/// The jitter fraction applied to each delay: the actual wait is `base * (1.0 ± JITTER)`.
-const RETRY_JITTER_FRACTION: f64 = 0.20;
-
-/// Whether a refusal is worth a second try.
-///
-/// ONLY a transport-level failure or a 5xx/429 status. [`PushRefusal::Guard`],
-/// [`PushRefusal::Unresolved`], [`PushRefusal::NotAUrl`] and any OTHER 4xx are correctness
-/// refusals — retrying a rejected scheme or a refused SSRF judgement three times would not change
-/// the answer, it would just spend three sockets (or three guard runs) getting the same "no".
+/// Whether a refusal is worth a second try: the plane's rule ([`Attempted::retryable`]), a
+/// transport failure or a 5xx/429 only. A guard refusal, an unresolved host or another 4xx answers
+/// the same "no" again. The schedule is the plane's too: [`push::MAX_ATTEMPTS`] attempts, waiting
+/// [`push::RETRY_DELAYS_MS`] jittered by [`push::jittered_ms`].
 fn is_retryable(refusal: &PushRefusal) -> bool {
     match refusal {
-        PushRefusal::Transport(_) => true,
-        PushRefusal::Status(429) => true,
-        PushRefusal::Status(status) => (500..600).contains(status),
+        PushRefusal::Transport(_) => Attempted::Transport.retryable(),
+        PushRefusal::Status(status) => Attempted::of_status(*status).retryable(),
         PushRefusal::NoCallback
         | PushRefusal::Guard(_)
         | PushRefusal::Unresolved(_)
@@ -527,19 +389,15 @@ fn is_retryable(refusal: &PushRefusal) -> bool {
     }
 }
 
-/// `base_ms`, jittered by up to ±[`RETRY_JITTER_FRACTION`]. Falls back to the UN-jittered delay on a
-/// `getrandom` failure — a delay is a timing nicety, not a security property, so degrading to
-/// exactly `base_ms` rather than refusing to wait at all is the honest floor here.
+/// `base_ms` jittered by the plane's rule over one random byte; the un-jittered delay when the OS
+/// has no randomness (a delay is a timing nicety, not a security property).
 fn jittered_delay(base_ms: u64) -> std::time::Duration {
     let mut byte = [0u8; 1];
-    let signed_unit = if getrandom::fill(&mut byte).is_ok() {
-        // byte[0] in 0..=255 -> a value in [-1.0, 1.0].
-        (f64::from(byte[0]) / 255.0).mul_add(2.0, -1.0)
-    } else {
-        0.0
+    let ms = match getrandom::fill(&mut byte) {
+        Ok(()) => push::jittered_ms(base_ms, byte[0]),
+        Err(_) => base_ms,
     };
-    let scaled = (base_ms as f64) * signed_unit.mul_add(RETRY_JITTER_FRACTION, 1.0);
-    std::time::Duration::from_millis(scaled.max(0.0) as u64)
+    std::time::Duration::from_millis(ms)
 }
 
 /// DELIVER, WITH BOUNDED RETRY, off an async context — the timer between attempts is
@@ -580,8 +438,8 @@ async fn deliver_with_retry(
 
         match &outcome {
             Ok(()) => return outcome,
-            Err(refusal) if attempt_no < MAX_DELIVERY_ATTEMPTS && is_retryable(refusal) => {
-                let delay_ms = RETRY_DELAYS_MS[(attempt_no - 1) as usize];
+            Err(refusal) if attempt_no < push::MAX_ATTEMPTS && is_retryable(refusal) => {
+                let delay_ms = push::RETRY_DELAYS_MS[(attempt_no - 1) as usize];
                 tokio::time::sleep(jittered_delay(delay_ms)).await;
             }
             Err(_) => return outcome,
@@ -598,12 +456,6 @@ struct QueuedDelivery {
     seam: Arc<dyn RelaySeam>,
     task: Task,
 }
-
-/// How many not-yet-attempted notifications one task's queue may hold before the oldest is dropped
-/// to make room. A caller cannot slow busbar down by being slow ([`deliver`]'s own doctrine), and an
-/// UNBOUNDED per-task queue behind a receiver that never answers would be exactly that: memory
-/// growing forever, keyed by a rate the far end controls by holding its socket open.
-const QUEUE_CAPACITY: usize = 64;
 
 /// ONE ENTRY PER TASK THAT HAS EVENTS QUEUED OR A WORKER DRAINING THEM. Removed the moment its
 /// queue empties (see [`drain_queue`]), so a task that stops changing costs nothing here — the same
@@ -644,12 +496,12 @@ pub(crate) fn enqueue(engine_host: Arc<dyn EngineHost>, seam: Arc<dyn RelaySeam>
         let mut queues = queues().lock().unwrap_or_else(|e| e.into_inner());
         let already_running = queues.contains_key(&task_id);
         let queue = queues.entry(task_id.clone()).or_default();
-        if queue.len() >= QUEUE_CAPACITY {
+        if queue.len() >= push::QUEUE_CAPACITY {
             queue.pop_front();
             diag_debug!(
                 A2A_PUSH_QUEUE_DROPPED,
                 task = %task_id,
-                capacity = QUEUE_CAPACITY,
+                capacity = push::QUEUE_CAPACITY,
                 "a2a: the push-delivery queue was full; the oldest queued notification was dropped"
             );
         }

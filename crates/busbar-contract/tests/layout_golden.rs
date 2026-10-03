@@ -1661,7 +1661,8 @@ fn compute_layout() -> String {
             trust_keys,
             trust_keys_len,
             refusal_statuses,
-            refusal_statuses_len
+            refusal_statuses_len,
+            caller_credential_refusal
         ]
     );
     record!(

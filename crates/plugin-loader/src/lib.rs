@@ -2200,6 +2200,11 @@ mod door_both_ways;
 #[path = "tests/store_door_conformance_tests.rs"]
 mod store_door_conformance_tests;
 
+/// A door-ABI plane, both ways: the `plane-door` both-ways fixture linked and dropped in.
+#[cfg(test)]
+#[path = "tests/plane_door_conformance_tests.rs"]
+mod plane_door_conformance_tests;
+
 /// `kind: secret` through both doors on the memory ABI: resolve identical, a broken one refused.
 #[cfg(test)]
 #[path = "tests/secret_door_conformance_tests.rs"]

@@ -50,9 +50,21 @@ pub const KIND_TASK: &str = "task";
 /// The `task_event` kind — the durable task-event record's tag on the store seam.
 pub const KIND_TASK_EVENT: &str = "task_event";
 
+/// The `push_config` kind — a task's push-notification config, held as a host record.
+pub const KIND_PUSH_CONFIG: &str = "push_config";
+
+/// The `card` kind — an agent's verified card, keyed by agent id under the operator's scope (no
+/// principal prefix): the card fetch writes it on the plane's tick, and the plane holds a mirror of
+/// it in memory ([`crate::cards::Cards`]).
+pub const KIND_CARD: &str = "card";
+
 /// The plane-record kinds this plane keeps on the store's plane-record seam — its declaration's
 /// `record_kinds`, so the administrative `plane_record_write` verb writes only these under it.
 pub const RECORD_KINDS: &[&str] = &[KIND_TASK, KIND_TASK_EVENT];
+
+/// The host-record kinds the door's tail states (`PlaneTail::record_kinds`), in order: a record
+/// write names its kind by its index here.
+pub const HELD_KINDS: &[&str] = &[KIND_TASK, KIND_TASK_EVENT, KIND_PUSH_CONFIG, KIND_CARD];
 
 /// The task rows: one per governed exchange this node is tracking.
 pub const SCHEMA_TASK: RecordSchemaId = RecordSchemaId::new(KIND_TASK);
@@ -61,7 +73,7 @@ pub const SCHEMA_TASK: RecordSchemaId = RecordSchemaId::new(KIND_TASK);
 pub const SCHEMA_TASK_EVENT: RecordSchemaId = RecordSchemaId::new(KIND_TASK_EVENT);
 
 /// The push-notification configurations a caller registered against a task.
-pub const SCHEMA_PUSH_CONFIG: RecordSchemaId = RecordSchemaId::new("push_config");
+pub const SCHEMA_PUSH_CONFIG: RecordSchemaId = RecordSchemaId::new(KIND_PUSH_CONFIG);
 
 /// The pinned callback addresses a delivery is allowed to reach.
 pub const SCHEMA_PIN: RecordSchemaId = RecordSchemaId::new("pin");

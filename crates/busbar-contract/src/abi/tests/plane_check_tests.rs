@@ -757,8 +757,8 @@ fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
 fn a_claim_states_only_known_flags() {
     let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
     assert_eq!(check_claims(&[open_exact], 1), Ok(()));
-    // RED: a bit neither CLAIM_OPEN nor CLAIM_EXACT.
-    let unknown = claim("V", "/t", CLAIM_EXACT << 1);
+    // RED: a bit none of CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN.
+    let unknown = claim("V", "/t", CLAIM_PATTERN << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
@@ -781,6 +781,106 @@ fn a_claims_refusal_dialect_is_a_declared_dialect() {
     );
     c.refusal_dialect = 0;
     assert_eq!(check_claims(&[c], 0), Ok(()), "no dialects: 0");
+}
+
+/// A test keeps a pattern's segments for the process.
+fn kept(segments: Vec<crate::grammar::PathSeg>) -> &'static [crate::grammar::PathSeg] {
+    Box::leak(segments.into_boxed_slice())
+}
+
+#[test]
+fn a_pattern_claim_is_never_also_exact() {
+    let pattern = claim("V", "/t/{id}", CLAIM_OPEN | CLAIM_PATTERN);
+    assert_eq!(check_claims(&[pattern], 1), Ok(()));
+    let both = claim("V", "/t/{id}", CLAIM_EXACT | CLAIM_PATTERN);
+    assert_eq!(
+        check_claims(&[both], 1),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(
+        claim_selector("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN, kept).map(|_| ()),
+        f(Rule::Contradiction, "claim.flags")
+    );
+}
+
+#[test]
+fn a_pattern_target_parses_into_literals_and_one_level_placeholders() {
+    use crate::grammar::PathSeg::{Lit, Var};
+    assert_eq!(
+        claim_pattern("/v1/tasks/{id}/configs/{config_id}"),
+        Ok(vec![Lit("v1"), Lit("tasks"), Var, Lit("configs"), Var])
+    );
+    for bad in [
+        "t/{id}", "/t//{id}", "/t/{}", "/t/{id", "/t/id}", "/t/{i}d}", "/t/{id}/",
+    ] {
+        assert_eq!(
+            claim_pattern(bad).map(|_| ()),
+            f(Rule::Contradiction, "claim.pattern"),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        claim_pattern("/t/id").map(|_| ()),
+        f(Rule::Missing, "claim.pattern")
+    );
+}
+
+/// RED: a malformed pattern is refused AT BIND, by the same grammar the selector reads, so a bad
+/// claim never waits for its first route.
+#[test]
+fn a_malformed_pattern_is_refused_at_bind_by_the_selectors_grammar() {
+    for bad in [
+        "t/{id}", "/t//{id}", "/t/{}", "/t/{id", "/t/id}", "/t/{i}d}", "/t/{id}/",
+    ] {
+        let at_bind = check_claim_target(bad, CLAIM_PATTERN);
+        assert_eq!(at_bind, f(Rule::Contradiction, "claim.pattern"), "{bad}");
+        assert_eq!(
+            at_bind,
+            claim_selector(bad, CLAIM_PATTERN, kept).map(|_| ()),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        check_claim_target("/t/id", CLAIM_PATTERN),
+        f(Rule::Missing, "claim.pattern")
+    );
+    assert_eq!(
+        check_claim_target("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(check_claim_target("/t/{id}", CLAIM_PATTERN), Ok(()));
+    assert_eq!(check_claim_target("/t/{id}", CLAIM_EXACT), Ok(()));
+}
+
+#[test]
+fn a_claim_reads_as_the_grammars_selector_by_its_flags() {
+    use crate::grammar::{PathSeg, Selector};
+    assert_eq!(
+        claim_selector("/t", CLAIM_EXACT, kept),
+        Ok(Selector::ExactPath("/t"))
+    );
+    assert_eq!(
+        claim_selector("/t", CLAIM_OPEN, kept),
+        Ok(Selector::PrefixOneLevel("/t"))
+    );
+    assert_eq!(
+        claim_selector("/t/{id}", CLAIM_PATTERN, kept),
+        Ok(Selector::PathPattern(&[PathSeg::Lit("t"), PathSeg::Var]))
+    );
+}
+
+/// RED: a placeholder claims ONE level, non-empty, with no `/`.
+#[test]
+fn a_pattern_claims_one_level_only() {
+    let Ok(crate::grammar::Selector::PathPattern(p)) =
+        claim_selector("/v1/tasks/{id}", CLAIM_PATTERN, kept)
+    else {
+        panic!("a pattern claim reads as a segment pattern");
+    };
+    assert!(crate::grammar::pattern_matches(p, "/v1/tasks/t1"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/t1/x"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks"));
 }
 
 #[test]
@@ -1295,6 +1395,26 @@ fn a_tail_counting_trust_keys_over_a_null_pointer_is_fault() {
     let mut t = tail();
     t.trust_keys_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.trust_keys"));
+}
+
+#[test]
+fn a_tail_caller_credential_refusal_is_absent_or_a_sentence() {
+    assert_eq!(check_tail(&tail()), Ok(()));
+    let mut t = tail();
+    t.caller_credential_refusal = s("refused here");
+    assert_eq!(check_tail(&t), Ok(()));
+    let mut t = tail();
+    t.caller_credential_refusal = s("");
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::Missing, "tail.caller_credential_refusal")
+    );
+    let mut t = tail();
+    t.caller_credential_refusal.len = 1;
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::NullWithCount, "tail.caller_credential_refusal")
+    );
 }
 
 #[test]

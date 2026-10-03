@@ -179,6 +179,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: ptr::null(),
     refusal_statuses_len: 0,
+    // Forwarding the caller's credential is not this plane's to refuse.
+    caller_credential_refusal: NONE,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its need and its tail.

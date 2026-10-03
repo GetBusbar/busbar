@@ -208,7 +208,9 @@ pub use busbar_plane_streaming::codec::PLANE_KEY;
 /// registry key is the first, and both are the plane's [`PLANE_HOOKS`] wire formats.
 pub use busbar_plane_streaming::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 
-// A dialect's provider address rules (the streaming plane's), read by the mount's provider dial.
+// A dialect's provider address rules (the streaming plane's), read by the mount's provider dial
+// (runtime-only, as the mount is).
+#[cfg(feature = "runtime")]
 use busbar_plane_streaming::provider as plane_provider;
 
 // A live session's durable row (the streaming plane's shape), bound by the runtime's session scope.
@@ -340,6 +342,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // `providers`. `models` belongs to the plane that owns it.
         required_config_sections: &[Kind::Transport.root()],
         trust_keys: &[],
+        caller_credential_refusal: None,
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

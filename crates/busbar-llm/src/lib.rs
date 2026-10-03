@@ -291,6 +291,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // this plane refuses a document missing either, with the config grammar's own message.
         required_config_sections: &[Kind::Transport.root(), "models"],
         trust_keys: &[],
+        caller_credential_refusal: None,
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

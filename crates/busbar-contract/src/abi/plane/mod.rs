@@ -170,6 +170,7 @@
 //! | (new) dialects, `dialect_auth`, `route_cost`, `cli_help` | tail |
 //! | (new) needs, consumed sections, egress targets | Statement `needs`, [`SECTION_CONSUMED`](crate::abi::mechanism::door::SECTION_CONSUMED); tail [`PlaneTail::egress_targets`] |
 //! | (new) kernel-owned trust keys | tail [`PlaneTail::trust_keys`] |
+//! | (new) the section-level caller-credential refusal | tail [`PlaneTail::caller_credential_refusal`] |
 //!
 //! KERNEL-OWNED TRUST KEYS. The trust lifecycle (pin, re-verification cadence, demotion) is the
 //! kernel's. A plane whose registrations carry those keys DECLARES them in its tail
@@ -315,8 +316,14 @@ pub const TAIL_PROBES: u32 = 1 << 1;
 /// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
 /// without verifying a caller. Without it, the route takes one.
 pub const CLAIM_OPEN: u32 = 1;
-/// [`Claim::flags`]: the target matches exactly. Without it, the target is a prefix.
+/// [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the
+/// target is a one-level prefix.
 pub const CLAIM_EXACT: u32 = 1 << 1;
+/// [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a
+/// placeholder spelled `{name}` that matches exactly one non-empty segment with no `/`. The host
+/// reads it as the claim grammar's segment pattern ([`check::claim_selector`]), so the registry's
+/// sealed precedence is unchanged: exact beats pattern beats prefix. Never with [`CLAIM_EXACT`].
+pub const CLAIM_PATTERN: u32 = 1 << 2;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
@@ -975,6 +982,10 @@ pub struct PlaneTail {
     pub refusal_statuses: *const RefusalStatus,
     /// How many.
     pub refusal_statuses_len: usize,
+    /// The plane's own sentence refusing the reserved `upstream_credentials: passthrough` section
+    /// default, emitted by the kernel verbatim; NULL when forwarding the caller's credential is
+    /// legitimate on this plane.
+    pub caller_credential_refusal: AbiStr,
 }
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
@@ -990,7 +1001,7 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
-    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`]; any other bit refuses the snapshot.
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`]; any other bit refuses the snapshot.
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
     /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route

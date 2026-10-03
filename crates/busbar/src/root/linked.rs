@@ -451,6 +451,7 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
         record_kinds: list(&stated.record_kinds),
         required_config_sections: list(&stated.required_sections),
         trust_keys: &[],
+        caller_credential_refusal: None,
         metric_families: stated
             .metric_families
             .iter()

@@ -162,6 +162,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         required_config_sections: &[],
         // The pin and `verify_ttl:` are the kernel's to parse and judge; declared here by key.
         trust_keys: config::TRUST_KEYS,
+        caller_credential_refusal: None,
         served_op_classes: &[],
     };
 

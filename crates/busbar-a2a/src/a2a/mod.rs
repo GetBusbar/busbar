@@ -101,6 +101,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         required_config_sections: &[],
         // The pin and the cadence are the kernel's to parse and judge; declared here by key.
         trust_keys: crate::a2a::config::TRUST_KEYS,
+        caller_credential_refusal: Some(config::REFUSE_PASSTHROUGH_SECTION),
         served_op_classes: &[],
     };
 
@@ -223,14 +224,17 @@ fn a2a_parse_section(
     v: &serde_yaml::Value,
 ) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
     serde_yaml::from_value::<crate::a2a::config::AgentsCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_kernel::plane::config::PlaneCfg>)
+        .map(|c| {
+            Box::new(crate::a2a::section::AgentsSection(c))
+                as Box<dyn busbar_kernel::plane::config::PlaneCfg>
+        })
         .map_err(|e| e.to_string())
 }
 
 /// [`busbar_kernel::plane::registry::PlaneDecl::default_section`] hook — the empty `agents:` registry, so an
 /// ABSENT section defaults to `AgentsCfg::default()` byte-identically to the pre-seam typed field.
 fn a2a_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
-    Box::<crate::a2a::config::AgentsCfg>::default()
+    Box::<crate::a2a::section::AgentsSection>::default()
 }
 
 /// PRUNE THE A2A VERIFY-ON-CALL GATES to the agents THIS generation fronts — the
@@ -529,40 +533,21 @@ pub(crate) fn admin_routes(
 }
 
 /// THE A2A TRUST VERBS' OpenAPI FRAGMENT — the two admin paths keyed absolute, merged into the admin
-/// document. Kept beside the routes that answer them so the two cannot drift.
+/// document. The plane states the fragment once (`door::openapi_fragment`); the
+/// engine keys it under the kernel's admin mount.
 // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test.
 #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
 pub(crate) fn openapi_fragment() -> serde_json::Value {
-    let ap = |rel: &str| format!("{}{rel}", busbar_kernel::api::ADMIN_PREFIX);
-    serde_json::json!({
-        ap("/agents/{name}/connect"): {
-            "post": {
-                "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"},
-                }
-            }
-        },
-        ap("/agents/{name}/approve"): {
-            "post": {
-                "summary": "Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK (the registration's state AFTER the approval, read off the live registry)"},
-                }
-            }
-        }
-    })
+    door::openapi_fragment(busbar_kernel::api::ADMIN_PREFIX)
 }
+
+/// The plane crate's `a2a` modules (the `agents:` grammar, the credential types), which the
+/// host-side modules below re-export under their own paths.
+pub(crate) use busbar_plane_a2a::a2a as plane_crate;
+/// The plane's door: the facts it states once, which the engine reads rather than restates.
+pub(crate) use busbar_plane_a2a::door;
+/// The plane's push delivery: the notification, the credential, the retry rule and the queue bound.
+pub(crate) use busbar_plane_a2a::push;
 
 pub mod admin_view;
 /// MOVED to `busbar-plane-a2a` (the wire dialect, #39), re-exported here under its old in-crate path
@@ -572,7 +557,10 @@ pub(crate) use busbar_plane_a2a::a2a::anomaly;
 /// so `super::canonical::…` and `crate::a2a::canonical::…` resolve unchanged.
 pub(crate) use busbar_plane_a2a::a2a::canonical;
 pub(crate) mod card;
-pub mod config;
+/// The `agents:` grammar has ONE home, the plane crate's (`busbar_plane_a2a::a2a::config`), and is
+/// re-exported here under its old in-crate path so `super::config::…` and
+/// `crate::a2a::config::…` resolve unchanged. What the host adds to it is [`section`].
+pub use busbar_plane_a2a::a2a::config;
 pub(crate) mod creds;
 pub(crate) mod fetch;
 pub(crate) mod grpc;
@@ -623,9 +611,16 @@ pub(crate) mod words;
 // before a second copy can drift from the first.
 pub(crate) use busbar_kernel::trust::reverify;
 pub(crate) mod key_info;
+/// The `agents:` section as the host reads it: the kernel's config trait object, reverify policy
+/// and trust declaration over the plane's grammar.
+pub(crate) mod section;
 pub mod serve;
 pub(crate) mod sign;
 pub use busbar_plane_a2a::a2a::task;
 pub(crate) mod transport;
 pub mod verbs;
 pub(crate) mod verify;
+
+#[cfg(test)]
+#[path = "tests/door_pin_tests.rs"]
+mod door_pin_tests;

@@ -561,7 +561,7 @@ impl Wire {
             .unwrap_or("0.3")
     }
 
-    fn refuse(&self) -> Option<Response> {
+    pub(super) fn refuse(&self) -> Option<Response> {
         if let Some(ct) = self.content_type.as_deref() {
             // The media type is everything before the first `;`, case-insensitively. A caller that
             // sent NO `Content-Type` has not sent a WRONG one and is not refused here — the body
@@ -3510,26 +3510,9 @@ fn fail_task(
         .into_response()
 }
 
-/// EVERY PLACE A2A SPELLS "the callback to call when this task moves", in both revisions.
-///
-/// v0.3 puts a `PushNotificationConfig` at `configuration.pushNotificationConfig`. v1.0 puts a
-/// `TaskPushNotificationConfig` at `configuration.taskPushNotificationConfig`, whose own callback
-/// sits either directly on it or under a nested `pushNotificationConfig`, depending on which shape
-/// the client serialises.
-const CALLBACK_POINTERS: [&str; 3] = [
-    "/params/configuration/pushNotificationConfig/url",
-    "/params/configuration/taskPushNotificationConfig/url",
-    "/params/configuration/taskPushNotificationConfig/pushNotificationConfig/url",
-];
-
-/// The CONFIG OBJECTS those three URLs sit in, in the same order, so the URL and the credential
-/// beside it are read out of ONE object rather than by two independent pointer lists that could
-/// pick the URL from one spelling and the credential from another.
-const CALLBACK_CONFIG_POINTERS: [&str; 3] = [
-    "/params/configuration/pushNotificationConfig",
-    "/params/configuration/taskPushNotificationConfig",
-    "/params/configuration/taskPushNotificationConfig/pushNotificationConfig",
-];
+// EVERY PLACE A2A SPELLS a push callback and the config object it sits in, and the stream reading
+// of a method name: the plane's, one home ([`busbar_plane_a2a::skill`]).
+use busbar_plane_a2a::skill::{reads_as_stream, CALLBACK_CONFIG_POINTERS, CALLBACK_POINTERS};
 
 /// THE CALLER'S PUSH-NOTIFICATION CALLBACK URL, if it registered one.
 ///
@@ -3672,26 +3655,6 @@ fn resumable_task(
     candidates.pop()
 }
 
-/// DOES THIS METHOD NAME ASK FOR A STREAM? Both eras of the name, and neither is preferred.
-///
-/// A2A v0.3 names the streaming methods `message/stream` and `tasks/resubscribe`; v1.0 renames them
-/// `SendStreamingMessage` and `SubscribeToTask` — the vocabulary the official TCK and `a2a-go` v2.4
-/// speak. busbar is content-blind on this plane and relays the envelope verbatim, so this is the
-/// ONLY place the method name decides anything about the transport, and reading one vocabulary
-/// means a caller in the other era has its stream dispatched down the unary path with its
-/// `capabilities.streaming` filter never applying.
-///
-/// Listed rather than pattern-matched loosely, so a third spelling is a deliberate edit. Named
-/// rather than inlined so `local_tests::every_a2a_method_is_read_identically_under_both_of_its_live_json_rpc_names`
-/// can drive it: an asymmetry between the two eras is the failure worth locking out, and it cannot
-/// be locked out against an expression buried in a struct literal.
-fn reads_as_stream(method: &str) -> bool {
-    method.ends_with("/stream")
-        || method == "tasks/resubscribe"
-        || method == "SendStreamingMessage"
-        || method == "SubscribeToTask"
-}
-
 #[cfg(all(test, feature = "test-support"))]
 pub(crate) fn reads_as_stream_for_test(method: &str) -> bool {
     reads_as_stream(method)
@@ -3702,6 +3665,8 @@ pub(crate) fn shape_of_for_test(envelope: &serde_json::Value) -> super::registry
     shape_of(envelope)
 }
 
+// TEMPORARY DUPLICATE of the a2a plane's skill fit (ARCHITECT 2026-10-02, #141 door-only):
+// busbar-a2a names no plane path; this copy ends when FOLD-A2A slice 8 deletes busbar-a2a.
 /// The SHAPE of work an inbound envelope is asking for, as the catalogue's filter reads it.
 ///
 /// Read from the request rather than assumed, because the catalogue's whole job is to refuse an
