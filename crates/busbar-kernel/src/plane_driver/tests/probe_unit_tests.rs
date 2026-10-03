@@ -24,7 +24,7 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane_calls::{
-    Answered, Grow, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
+    Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
 };
 
 use super::*;
@@ -133,6 +133,25 @@ impl PlaneCalls for Prober {
 
     fn cancel(&self, _: PlaneTicket) -> Option<u32> {
         None
+    }
+
+    fn declared(&self) -> InstanceDecl {
+        InstanceDecl {
+            label: "prober".into(),
+            ..InstanceDecl::default()
+        }
+    }
+
+    fn driver(&self) -> Option<PlaneTicket> {
+        self.mint()
+    }
+
+    fn tick(&self, _: PlaneTicket, _: u64) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>> {
+        Box::pin(std::future::ready(Some(0)))
+    }
+
+    fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
+        Box::pin(std::future::ready(Vec::new()))
     }
 
     fn mint(&self) -> Option<PlaneTicket> {
@@ -258,7 +277,10 @@ fn probing(hosts: &[(&'static str, Script)], plane: Prober, tail: u32) -> Option
             caller_refs: None,
         },
         till.clone(),
-    );
+        Arc::new(crate::host_services::KernelServices::new()),
+        ("probe", &serde_yaml::Value::Null),
+    )
+    .expect("the instance is admitted");
     let probes = PlaneProbes::new(
         tail,
         Arc::new(driver),

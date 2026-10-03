@@ -6,6 +6,9 @@
 //! and the kernel's plane driver calls through. The kernel names this, the loader names this, and neither
 //! names the other. Nothing here crosses the plugin boundary: the plane's ABI is `abi::plane`.
 //!
+//! A duplex session's pieces ride two request tickets, one per side; its unsolicited output is
+//! named by the instance's one driver ticket's `drive` ([`PlaneCalls::ready`]).
+//!
 //! The pure ops (`arrive`, `refusal`) and the host's own `cancel` are ticketless: they never pend.
 //! `on_piece` and `serve` are submitted on a request ticket and cross on that ticket's worker; the
 //! answer is a future, so the caller's task awaits it and no thread is parked.
@@ -18,6 +21,7 @@
 
 use std::any::Any;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::abi::mechanism::call::Outcome;
@@ -64,6 +68,24 @@ pub type Grow<'a, I, O> = &'a mut dyn FnMut(&O, &mut I);
 /// last crossing returned.
 pub type Lent = Arc<dyn Any + Send + Sync>;
 
+/// WHAT A PLANE INSTANCE DECLARES FOR ITS ADMISSION: its host label and what its Statement tail
+/// states, read once at bind (the words kept for the process): its record kinds, its signing
+/// declaration (domain, key-id prefix), its scope kinds and its trust keys. The kernel admits the
+/// instance from these and its configured section.
+#[derive(Debug, Clone, Default)]
+pub struct InstanceDecl {
+    /// The host's label for the instance: the key every caller-scoped host service answers by.
+    pub label: Arc<str>,
+    /// The record kinds it keeps.
+    pub record_kinds: Vec<&'static str>,
+    /// Its signing domain and key-id prefix; `None` = it signs nothing.
+    pub signing: Option<(&'static str, &'static str)>,
+    /// The grant kinds that admit its traffic.
+    pub scope_kinds: Vec<&'static str>,
+    /// The per-registration keys the kernel parses for the trust lifecycle.
+    pub trust_keys: Vec<crate::plane::TrustKeyDecl>,
+}
+
 /// ONE PLANE INSTANCE'S CALLS, as the kernel's plane driver makes them.
 pub trait PlaneCalls: Send + Sync {
     /// The dispatcher's clock, in nanoseconds: the clock a unit's deadline is on.
@@ -95,6 +117,27 @@ pub trait PlaneCalls: Send + Sync {
 
     /// The unit is over: `ticket` goes back (at once when idle, else when its op ends).
     fn recycle(&self, ticket: Ticket);
+
+    /// What the instance declares for its admission.
+    fn declared(&self) -> InstanceDecl;
+
+    /// The instance's ONE driver ticket, minted: persistent, owned by the instance, outside
+    /// `max_inflight`; every wake on it calls `drive`. `None` when none can be minted.
+    fn driver(&self) -> Option<Ticket>;
+
+    /// Lifecycle `tick` at `now_ns`, submitted on `driver` (the instance's driver ticket, which
+    /// its head carries, so a service that pends inside `tick` is woken through `drive`): the
+    /// `next_tick_ns` a READY or PENDING answer names (`0` = none), or `None` for any other answer.
+    fn tick(
+        &self,
+        driver: Ticket,
+        now_ns: u64,
+    ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>>;
+
+    /// THE READY SESSIONS (R-B): the streams the instance's `drive` named on its driver ticket
+    /// since the last call, each once, waiting until one is named. Empty when the instance is not
+    /// open: nothing more will be named.
+    fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>>;
 
     /// The client of `ticket` went away: an op in flight on it is cancelled on its worker, and its
     /// answer carries the disposition. A message, never a crossing on the calling thread.

@@ -32,7 +32,9 @@
 //! SHORT ANSWERS: `arrive`, `on_piece`, `refusal`, `serve`, `project` and `drive` have the short
 //! path; a FAILED answer of one of them with any `*_needed` non-zero is short.
 
-use busbar_contract::abi::mechanism::call::Outcome;
+use std::sync::Arc;
+
+use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
 use busbar_contract::abi::mechanism::door::Statement;
@@ -51,6 +53,8 @@ use busbar_contract::abi::plane::{
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
     ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, TrustKey,
 };
+use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
+use busbar_contract::plane_calls::InstanceDecl;
 
 use crate::dispatch::{
     in_head, lifecycle_name, out_head, stamp_drive, Answer, Context, DriveFrame, Frame, InFrame,
@@ -93,6 +97,8 @@ pub struct PlaneFacts {
     pub bounds: Bounds,
     /// The tail's refusal statuses, each judged by `check_refusal_statuses` at bind.
     pub refusal_statuses: Vec<RefusalStatus>,
+    /// What the tail declares for the instance's admission (its label is the bind's).
+    pub declared: InstanceDecl,
 }
 
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
@@ -136,10 +142,82 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
+        declared: declared(&tail),
     })
 }
 
+/// A tail string, kept for the process (`""` when absent).
+fn kept(s: AbiStr) -> &'static str {
+    if s.ptr.is_null() || s.len == 0 {
+        return "";
+    }
+    // SAFETY: `check_tail` judged every tail string: a non-NULL span of `len` bytes of `'static`
+    // plugin data, read here while the plugin is loaded and copied.
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    String::from_utf8_lossy(bytes).into_owned().leak()
+}
+
+/// A tail list of `n` `T`s at `p`, copied.
+fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
+    if p.is_null() || n == 0 {
+        return Vec::new();
+    }
+    // SAFETY: `check_tail` refused a NULL list counted non-zero; the list is `'static` plugin data
+    // of `n` entries.
+    unsafe { std::slice::from_raw_parts(p, n) }.to_vec()
+}
+
+/// What the tail declares for the instance's admission: record kinds, signing, scope kinds and the
+/// trust keys (each judged at bind by `check_tail_trust_keys`).
+fn declared(t: &PlaneTail) -> InstanceDecl {
+    let words = |p: *const AbiStr, n: usize| -> Vec<&'static str> {
+        listed(p, n).into_iter().map(kept).collect()
+    };
+    let (domain, prefix) = (kept(t.signing_domain), kept(t.signing_kid_prefix));
+    let trust_keys = listed(t.trust_keys, t.trust_keys_len)
+        .into_iter()
+        .map(|k| TrustKeyDecl {
+            key: kept(k.key),
+            role: match k.role {
+                plane::TRUST_PIN => TrustRole::Pin,
+                plane::TRUST_REVERIFY_TTL => TrustRole::ReverifyTtl,
+                _ => TrustRole::RecoveryBackoff,
+            },
+            fingerprint: k.flags & plane::PIN_FINGERPRINT != 0,
+            default: Some(kept(k.default)).filter(|d| !d.is_empty()),
+            mechanisms: listed(k.mechanisms, k.mechanisms_len)
+                .into_iter()
+                .map(|m| PinMechanismDecl {
+                    token: kept(m.token),
+                    root: m.flags & plane::MECHANISM_ROOT != 0,
+                })
+                .collect::<Vec<_>>()
+                .leak(),
+        })
+        .collect();
+    InstanceDecl {
+        label: Arc::from(""),
+        record_kinds: words(t.record_kinds, t.record_kinds_len),
+        signing: (!domain.is_empty() && !prefix.is_empty()).then_some((domain, prefix)),
+        scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
+        trust_keys,
+    }
+}
+
 impl crate::dispatch::Plugin<Plane> {
+    /// What the instance declares for its admission: its bind label and its tail's facts.
+    pub fn declared(&self) -> InstanceDecl {
+        let mut d = self
+            .inner
+            .context::<PlaneFacts>()
+            .map(|f| f.declared.clone())
+            .unwrap_or_default();
+        if let Some(c) = self.inner.wake.caller.get() {
+            d.label = Arc::clone(&c.instance);
+        }
+        d
+    }
+
     /// The refusal statuses the plane's tail states, as judged at bind.
     pub fn refusal_statuses(&self) -> &[RefusalStatus] {
         self.inner
@@ -351,6 +429,11 @@ impl DriveFrame for PlaneDrive {
         input.sessions_buf = self.sessions.as_mut_ptr();
         input.sessions_cap = self.sessions.len();
         self.frame.heads()
+    }
+
+    fn named(&self) -> &[u64] {
+        let n = self.frame.out.sessions_written as usize;
+        &self.sessions[..n.min(self.sessions.len())]
     }
 }
 

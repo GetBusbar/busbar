@@ -33,8 +33,9 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
+use busbar_contract::plane::{TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::{
-    Answered, Grow, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
+    Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
 };
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 
@@ -85,7 +86,10 @@ pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
             caller_refs: None,
         },
         book.clone(),
-    );
+        services(),
+        ("test_plane", &serde_yaml::Value::Null),
+    )
+    .expect("the instance is admitted");
     Rig {
         plane,
         driver,
@@ -177,6 +181,14 @@ struct Double {
     held: Mutex<HashMap<Ticket, (Arc<Shared>, OnPieceOut)>>,
     next: AtomicU32,
     stats: [AtomicU64; stat::COUNT],
+    /// The driver tickets minted, and every ticket recycled.
+    drivers: Mutex<Vec<Ticket>>,
+    recycled: Mutex<Vec<Ticket>>,
+    /// Each `tick`'s `now_ns`, and the period the next one is asked for (`0` = none).
+    ticks: Mutex<Vec<u64>>,
+    tick_every_ns: AtomicU64,
+    /// What it declares for its admission.
+    declared: InstanceDecl,
 }
 // SAFETY: the held `out`s are plain data the double wrote.
 unsafe impl Send for Double {}
@@ -582,7 +594,35 @@ impl PlaneCalls for Double {
         })
     }
 
-    fn recycle(&self, _ticket: Ticket) {}
+    fn recycle(&self, ticket: Ticket) {
+        self.recycled.lock().unwrap().push(ticket);
+    }
+
+    fn declared(&self) -> InstanceDecl {
+        self.declared.clone()
+    }
+
+    fn driver(&self) -> Option<Ticket> {
+        let t = self.mint()?;
+        self.drivers.lock().unwrap().push(t);
+        Some(t)
+    }
+
+    fn tick(&self, driver: Ticket, now: u64) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>> {
+        assert!(
+            self.drivers.lock().unwrap().contains(&driver),
+            "tick on the driver ticket"
+        );
+        self.ticks.lock().unwrap().push(now);
+        let every = self.tick_every_ns.load(Ordering::SeqCst);
+        let next = if every == 0 { 0 } else { now + every };
+        Box::pin(std::future::ready(Some(next)))
+    }
+
+    /// The double holds no session: its `drive` names none.
+    fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
+        Box::pin(std::future::ready(Vec::new()))
+    }
 
     /// The client-drop path: an op held on `ticket` is cancelled "on its worker" and answers the
     /// plane kind's timeout outcome with the disposition (or FAULT when the cancel FAULTs).
@@ -824,4 +864,158 @@ async fn a_record_write_with_no_record_path_fails_the_unit() {
         !matches!(o, busbar_contract::caps::Outcome::Completed),
         "{o:?}"
     );
+}
+
+// ── the instance's driver ticket ─────────────────────────────────────────────────────────────────
+
+/// The kernel's host services, with no egress class and no store.
+fn services() -> Arc<KernelServices> {
+    Arc::new(KernelServices::new())
+}
+
+fn driven(every_ns: u64) -> (Arc<Double>, Arc<cases::Book>, PlaneDriver) {
+    driven_over(
+        Double::default(),
+        every_ns,
+        services(),
+        &serde_yaml::Value::Null,
+    )
+}
+
+fn driven_over(
+    plane: Double,
+    every_ns: u64,
+    services: Arc<KernelServices>,
+    section: &serde_yaml::Value,
+) -> (Arc<Double>, Arc<cases::Book>, PlaneDriver) {
+    let plane = Arc::new(plane);
+    plane.tick_every_ns.store(every_ns, Ordering::SeqCst);
+    let book = Arc::new(cases::Book::default());
+    let driver = PlaneDriver::new(
+        plane.clone(),
+        DriverConfig {
+            caps: BufferCaps::default(),
+            op_classes: vec![OpClassId::new("call")],
+            status_of: refusal_status,
+            refusal_statuses: cases::statuses(),
+            caller_refs: None,
+        },
+        book.clone(),
+        services,
+        ("tools", section),
+    )
+    .expect("the instance is admitted");
+    (plane, book, driver)
+}
+
+/// The driver mints the instance's ONE driver ticket when it is built (spec :2558, :3315), and
+/// gives it back when it goes. RED before K-TICK: no ticket was minted.
+#[test]
+fn the_driver_mints_the_instance_s_one_driver_ticket_and_recycles_it() {
+    let (plane, _book, driver) = driven(0);
+    let minted = plane.drivers.lock().unwrap().clone();
+    assert_eq!(minted.len(), 1, "one driver ticket per instance");
+    drop(driver);
+    assert!(
+        plane.recycled.lock().unwrap().contains(&minted[0]),
+        "the driver ticket goes back with the driver"
+    );
+}
+
+/// `tick` runs at once, then at the `next_tick_ns` each answer names, never before it; an answer of
+/// `0` ends the schedule (spec :3288, B.3.7).
+#[tokio::test]
+async fn the_driver_ticks_at_each_next_tick_and_stops_at_none() {
+    let (plane, _book, driver) = driven(20_000_000);
+    let run = tokio::time::timeout(Duration::from_millis(130), driver.ticks()).await;
+    assert!(run.is_err(), "a schedule that asks again runs on");
+    let ticks = plane.ticks.lock().unwrap().clone();
+    assert!(ticks.len() >= 3, "ticks: {ticks:?}");
+    for w in ticks.windows(2) {
+        assert!(
+            w[1] >= w[0] + 20_000_000,
+            "a tick before its next_tick_ns: {ticks:?}"
+        );
+    }
+    let (plane, _book, driver) = driven(0);
+    tokio::time::timeout(Duration::from_secs(5), driver.ticks())
+        .await
+        .expect("a schedule answered 0 ends");
+    assert_eq!(
+        plane.ticks.lock().unwrap().len(),
+        1,
+        "no tick after next_tick_ns = 0"
+    );
+}
+
+// ── the instance's admission ────────────────────────────────────────────────────────────────────
+
+/// A plane that keeps `approval` records and re-verifies its registrations every hour.
+fn declaring() -> Double {
+    Double {
+        declared: InstanceDecl {
+            label: Arc::from("inst"),
+            record_kinds: vec!["approval"],
+            signing: None,
+            scope_kinds: vec![],
+            trust_keys: vec![TrustKeyDecl {
+                key: "reverify",
+                role: TrustRole::ReverifyTtl,
+                fingerprint: false,
+                default: None,
+                mechanisms: &[],
+            }],
+        },
+        ..Double::default()
+    }
+}
+
+/// Services over a memory store, run inline.
+fn stored() -> Arc<KernelServices> {
+    let store = Arc::new(MemoryStore::new());
+    Arc::new(
+        KernelServices::new()
+            .with_records(Arc::new(Rows(store.clone())), store)
+            .with_pool(Arc::new(Inline)),
+    )
+}
+
+/// A BUILT DRIVER ADMITS ITS INSTANCE (ARCHITECT S7-TICK scope a): its record kinds and trust
+/// entries reach the kernel's services, so `records.get` and `trust.due` answer it. RED before:
+/// nothing admitted a plane instance, and both answered REFUSED (not admitted).
+#[test]
+fn a_built_driver_admits_its_instance_to_the_host_services() {
+    let services = stored();
+    assert_eq!(
+        services.trust_due(&instance()).outcome,
+        Outcome::Refused,
+        "unadmitted"
+    );
+    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let (_plane, _book, _driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let later: busbar_contract::services::Later = Box::new(|_| {});
+    match services.records_get(&instance(), "approval", b"k", later) {
+        Ran::Now(s) => assert_ne!(s.outcome, Outcome::Refused, "records.get: {:?}", s.error),
+        Ran::Later => {}
+    }
+    assert_eq!(
+        services.trust_due(&instance()).outcome,
+        Outcome::Ready,
+        "trust.due answers"
+    );
+}
+
+/// THE KERNEL TICK MARKS DUE BEFORE THE INSTANCE TICKS (ARCHITECT S7-TICK scope c): a registration
+/// never verified is listed by `trust.due` once a tick ran, not before.
+#[tokio::test]
+async fn a_due_subject_shows_in_trust_due_after_a_tick() {
+    let services = stored();
+    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let due = |s: &KernelServices| s.trust_due(&instance()).bytes;
+    assert!(due(&services).is_empty(), "nothing is due before a tick");
+    tokio::time::timeout(Duration::from_secs(5), driver.ticks())
+        .await
+        .expect("one tick");
+    assert_eq!(due(&services), b"peer".to_vec(), "due after the tick");
 }

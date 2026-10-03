@@ -78,8 +78,8 @@ impl PlaneDriver {
         let token = Pass::<Route>::mint(kernel.seal());
         let body = units.arrival.body.clone();
         let mut run = Pumping::new(self, &token, &units.state, &ctx, ticket, deadline_ns, body);
-        run.lend_unit(CLAIM_PROBE, decoded.dialect, &[]);
-        if let route::End::Cancel(_, None) = units.attempts(&mut run).await {
+        run.lend_unit(CLAIM_PROBE, decoded.dialect, &[], 0);
+        if let route::End::Cancel(_, None) = units.attempts(&mut run, None).await {
             // The deadline or a reload between crossings: the driver's own ticketless cancel.
             let _ = self.cancel_now(ticket);
         }
