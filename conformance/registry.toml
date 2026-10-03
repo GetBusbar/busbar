@@ -138,7 +138,7 @@ tier = "spec-conformant"
 label = "jev"
 verdict = "conformance-verdict-jev"
 public = "true"
-not_run_reason = "no verdict artifact: testing/jev-conformance/jev-conformance.sh (qa-conformance-jev.yml) writes conformance/verdicts/jev.json"
+not_run_reason = "no verdict artifact: `cargo xtask conformance record --suite jev` writes conformance/verdicts/jev.json"
 
 [[suite]]
 id = "oidf-oauth2"
