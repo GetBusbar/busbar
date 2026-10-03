@@ -33,6 +33,7 @@ pub mod load;
 pub mod log_file;
 pub mod plane_calls;
 pub mod plugin;
+pub mod ready;
 pub mod services;
 pub mod ticket;
 pub mod validate;
@@ -49,8 +50,8 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn, TickIn,
-    TickOut, ValidateIn,
+    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReadyIn, RefreshIn, ReleaseIn,
+    TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
@@ -180,6 +181,7 @@ pub fn lifecycle_name(slot: u32) -> &'static str {
         s::CANCEL => "cancel",
         s::RELEASE => "release",
         s::CLOSE => "close",
+        s::READY => "ready",
         _ => "op",
     }
 }
@@ -220,6 +222,7 @@ unsafe impl InFrame for TickIn {}
 unsafe impl InFrame for DriveIn {}
 unsafe impl InFrame for CancelIn {}
 unsafe impl InFrame for ReleaseIn {}
+unsafe impl InFrame for ReadyIn {}
 unsafe impl OutFrame for OutHead {}
 unsafe impl OutFrame for OpenOut {}
 unsafe impl OutFrame for TickOut {}

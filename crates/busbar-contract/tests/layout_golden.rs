@@ -38,8 +38,8 @@ use busbar_contract::abi::mechanism::door::{
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn as MechCancelIn, CancelOut as MechCancelOut, DriveIn as MechDriveIn,
     GenIn as MechGenIn, OpenIn as MechOpenIn, OpenOut as MechOpenOut, OpsHead as MechOpsHead,
-    RefreshIn as MechRefreshIn, ReleaseIn as MechReleaseIn, TickIn as MechTickIn,
-    TickOut as MechTickOut, ValidateIn as MechValidateIn,
+    ReadyIn as MechReadyIn, RefreshIn as MechRefreshIn, ReleaseIn as MechReleaseIn,
+    TickIn as MechTickIn, TickOut as MechTickOut, ValidateIn as MechValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{
     CompletionHandle as MechCompletionHandle, HostCtx as MechHostCtx, HostTables as MechHostTables,
@@ -987,7 +987,8 @@ fn compute_layout() -> String {
             kind,
             kind_abi,
             statement,
-            ops
+            ops,
+            ready
         ]
     );
     record!(
@@ -1084,6 +1085,7 @@ fn compute_layout() -> String {
     record!(s, MechCancelIn, [head, ticket]);
     record!(s, MechCancelOut, [head, disposition, _reserved]);
     record!(s, MechReleaseIn, [head, lease]);
+    record!(s, MechReadyIn, [head, host]);
     record!(s, StoreHostBuf, [ptr, cap]);
     record!(s, StoreHostBlobs, [items, items_cap, bytes]);
     record!(
