@@ -427,10 +427,11 @@ pub struct RootCfg {
     /// as `(section, value)`: its plane's `build` reads it through the same `BuildCtx::endpoint_slot`.
     pub endpoint_resources:
         std::collections::HashMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
-    /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
-    /// downstream re-parses the issuer or re-derives an endpoint path.
-    pub oauth_as: Option<crate::oauth_as::config::AsIdentity>,
+    /// The `oauth_as:` block, OPAQUE to the kernel, or `None` when this deployment is not an
+    /// authorization server. It was handed to its owner (`oauth_as::seam::AsPlaneSeam::check`) and
+    /// accepted by `resolve`, so a value here is a block the owner has already validated, with the
+    /// secret references the owner listed in it.
+    pub oauth_as: Option<crate::oauth_as::seam::CheckedAsBlock>,
     /// The `tools:` named-definition registry — its owning plane's config section, carried through `resolve` VERBATIM.
     ///
     /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
@@ -1179,7 +1180,7 @@ pub struct DeployCfg {
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
-    pub oauth_as: Option<crate::oauth_as::config::OauthAsCfg>,
+    pub oauth_as: Option<serde_yaml::Value>,
     /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — its owning plane's registry: entry name →
     /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
     /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
@@ -2578,9 +2579,27 @@ pub fn resolve(
     // found by an agent that cannot log in and cannot say why.
     let oauth_as = deploy
         .oauth_as
-        .as_ref()
-        .map(crate::oauth_as::config::AsIdentity::from_cfg)
-        .and_then(|identity| identity.map_err(|e| errors.push(e.to_string())).ok());
+        .clone()
+        .filter(|block| !block.is_null())
+        .and_then(|block| {
+            let Some(seam) = crate::oauth_as::seam::seam() else {
+                errors.push(
+                    "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) \
+                     is not linked into this binary"
+                        .to_string(),
+                );
+                return None;
+            };
+            match (seam.check)(&block) {
+                Ok(secret_refs) => {
+                    Some(crate::oauth_as::seam::CheckedAsBlock { block, secret_refs })
+                }
+                Err(e) => {
+                    errors.push(e);
+                    None
+                }
+            }
+        });
 
     if errors.is_empty() {
         // An absent `security:` block is the all-default one: no extra hosts, no allow-all.

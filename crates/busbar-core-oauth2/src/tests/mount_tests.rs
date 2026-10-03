@@ -37,7 +37,7 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::oauth_as::config::{AsIdentity, OauthAsCfg};
+use crate::config::{AsIdentity, OauthAsCfg};
 use busbar_kernel::test_support::TestApp;
 
 use crate::testkit::{oauth_as_plane, TestAppOauthExt};
@@ -56,6 +56,8 @@ fn cfg() -> OauthAsCfg {
         key_id: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
+        fapi2: false,
+        clients: Vec::new(),
     }
 }
 
@@ -75,6 +77,9 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         // Mounted UNCONDITIONALLY: registration is one of the three always-on mechanisms, so the
         // single most dangerous path on this plane is inside every assertion below by construction.
         register_path,
+        // Mounted ONLY under the FAPI 2.0 posture: RFC 9126 PAR is part of that profile and of
+        // nothing else, so the plain server serves no `/par` at all.
+        par_path,
         // ── NOT PATHS: identity, policy and key material. None of these adds a route. ──
         issuer: _,
         // The path COMPONENT of the issuer, which is a prefix the six paths above already carry;
@@ -84,16 +89,24 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         access_token_ttl: _,
         key_id: _,
         signing_key: _,
+        // The posture switch: not a path, but it decides whether `par_path` is one.
+        fapi2,
+        // Operator-provisioned clients: data the store answers lookups from, never a route.
+        clients: _,
     } = id;
 
-    vec![
+    let mut paths = vec![
         metadata_path.clone(),
         authorize_path.clone(),
         token_path.clone(),
         jwks_path.clone(),
         consent_path.clone(),
         register_path.clone(),
-    ]
+    ];
+    if *fapi2 {
+        paths.push(par_path.clone());
+    }
+    paths
 }
 
 /// The CORE ROUTE TABLE of the served router, built by the same function production builds it with.
@@ -198,6 +211,41 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
     );
 }
 
+/// THE FAPI 2.0 POSTURE ADDS EXACTLY ONE ROUTE, `/par`, and the inventory still equals the mount.
+///
+/// RFC 9126 PAR belongs to the profile and to nothing else, so the plain server serves no `/par`
+/// (the inventory test above, `fapi2` off, would name it as a surplus) and the posture adds that one
+/// path and removes none: every plain endpoint keeps serving under the profile.
+#[test]
+fn the_fapi2_posture_adds_exactly_the_par_endpoint() {
+    busbar_kernel::metrics::init();
+    let without = served_paths(&TestApp::new().build());
+    let plain = served_paths(&TestApp::new().oauth_as(&cfg()).build());
+
+    let mut block = cfg();
+    block.fapi2 = true;
+    let fapi2 = served_paths(&TestApp::new().oauth_as(&block).build());
+
+    let added: std::collections::BTreeSet<String> = fapi2.difference(&without).cloned().collect();
+    let expected: std::collections::BTreeSet<String> =
+        inventory(&AsIdentity::from_cfg(&block).expect("valid"))
+            .into_iter()
+            .collect();
+    assert_eq!(
+        added, expected,
+        "under `fapi2: true` the routes `oauth_as:` adds must still be exactly the inventory"
+    );
+    assert_eq!(
+        fapi2.difference(&plain).cloned().collect::<Vec<_>>(),
+        vec!["/par".to_string()],
+        "the posture adds the RFC 9126 endpoint and nothing else"
+    );
+    assert!(
+        plain.is_subset(&fapi2),
+        "the posture removes no plain endpoint"
+    );
+}
+
 /// The layer where this property actually dies. Nothing can mount a plane that was never built, so
 /// the realistic regression is not a stray `.route()` — it is a default on the config, and the
 /// config is where the block is either present or absent.
@@ -219,6 +267,8 @@ fn an_absent_block_resolves_to_no_authorization_server() {
     // block's absence rather than about `resolve` having quietly stopped reading the field at all.
     // Through the document entry point: `oauth_as:` is a 1.6.0-additive key, LIFTED off the
     // document before the frozen structs parse, so a bare `from_value` never sees it.
+    // `resolve` hands the opaque block to its owner through the seam, so the seam is installed.
+    crate::testkit::install_test_seam();
     let deploy: busbar_kernel::config::DeployCfg =
         busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
             "providers": {},
@@ -228,10 +278,11 @@ fn an_absent_block_resolves_to_no_authorization_server() {
         .expect("a deploy config carrying `oauth_as:` parses");
     let resolved = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("a config carrying a well-formed `oauth_as:` resolves");
-    let identity = resolved
+    let checked = resolved
         .oauth_as
         .as_ref()
-        .expect("`oauth_as:` was written, so the resolved config must carry the identity");
+        .expect("`oauth_as:` was written, so the resolved config must carry the accepted block");
+    let identity = crate::config::identity_of(&checked.block).expect("the accepted block is valid");
     assert_eq!(identity.issuer(), ISSUER);
 }
 

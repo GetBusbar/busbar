@@ -11,9 +11,9 @@ use std::sync::Arc;
 use crate::auth::{open_operator, AuthMiddleware};
 use crate::diagnostics::{
     diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
-    GOVERNANCE_STORE_EPHEMERAL, OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH,
-    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
-    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED,
+    GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
+    PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
+    STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
     build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
@@ -1656,23 +1656,25 @@ pub fn build_app_from_config(
     // separately where it could disagree with them.
     let oauth_as_plane = match cfg.oauth_as.as_ref() {
         None => None,
-        Some(identity) => {
-            let key_material = match identity.signing_key() {
-                None => {
-                    diag_warn!(
-                        OAUTH_AS_EPHEMERAL_SIGNING_KEY,
-                        "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
-                         generated. Every token this deployment issues stops verifying when the \
-                         process restarts. Set `oauth_as.signing_key` for anything but a trial."
-                    );
-                    None
-                }
-                Some(reference) => Some(
+        Some(checked) => {
+            // The block is OPAQUE here: its owner (the plane crate, through the seam) names the
+            // secret references it carries, and the kernel resolves each one. A block with no
+            // `signing_key` resolves nothing, and the owner generates an ephemeral key and says so.
+            let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
+                "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) is not \
+                 linked into this binary"
+                    .to_string()
+            })?;
+            let secrets = checked
+                .secret_refs
+                .iter()
+                .map(|(path, reference)| {
                     secret_resolver
                         .resolve_string(reference)
-                        .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
-                ),
-            };
+                        .map(|value| (path.clone(), value))
+                        .map_err(|e| format!("{path}: {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             // busbar's OWN protected resource is a container plane's ingress canonical URI, read back
             // through that plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical
             // URI — so appbuild names no plane-owned resource type. Empty when the `tools:` section is
@@ -1697,16 +1699,7 @@ pub fn build_app_from_config(
             // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
             // that reclaims anything in `oauth-as`, and it runs when it is called and never
             // otherwise; spawned once per generation).
-            let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
-                "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) is not \
-                 linked into this binary"
-                    .to_string()
-            })?;
-            Some((seam.build)(
-                identity,
-                key_material.as_deref(),
-                protected_resources,
-            )?)
+            Some((seam.build)(&checked.block, secrets, protected_resources)?)
         }
     };
 

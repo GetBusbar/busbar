@@ -157,9 +157,11 @@ fn der_encode(fixed: &[u8; 64]) -> Vec<u8> {
 /// (on `oauth-as` 0.9.3); §9.5 holds them identical, so a future bump that moves them fails here
 /// and is queued as a customer-visible change instead of shipping as a recompile.
 ///
-/// Driven through the plane's real `AuthorizationService` (the same `handle` `routes::forward`
-/// hands every request to, unchanged), built by the boot path's own `AsPlane::build` with an
-/// operator-supplied key, so the key coordinates are known and the whole body can be compared.
+/// Driven through `AsPlane::handle`, the one entry `routes::forward` hands every request to, built
+/// by the boot path's own `AsPlane::build` with an operator-supplied key, so the key coordinates are
+/// known and the whole body can be compared. The PLAIN posture (`fapi2` absent): the FAPI 2.0
+/// building blocks `oauth-as` is compiled with (`par`, `dpop`, `client-assertion`) must not move one
+/// byte of the document a deployment that did not ask for them serves.
 #[tokio::test]
 async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     use base64::Engine as _;
@@ -179,15 +181,16 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let (x, y) = (b64.encode(&point[1..33]), b64.encode(&point[33..65]));
 
-    let cfg = busbar_kernel::oauth_as::config::OauthAsCfg {
+    let cfg = crate::config::OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
         signing_key: None,
         key_id: None,
         default_grant: vec!["read".to_string()],
         access_token_ttl_secs: None,
+        fapi2: false,
+        clients: Vec::new(),
     };
-    let identity = busbar_kernel::oauth_as::config::AsIdentity::from_cfg(&cfg)
-        .expect("a valid oauth_as block");
+    let identity = crate::config::AsIdentity::from_cfg(&cfg).expect("a valid oauth_as block");
     let kid = identity.key_id().to_string();
     let (jwks_path, metadata_path) = (
         identity.jwks_path().to_string(),
@@ -201,9 +204,9 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     .expect("the plane builds with an operator-supplied key");
 
     let get = |path: String| {
-        let service = plane.service();
+        let plane = &plane;
         async move {
-            let response = service
+            let response = plane
                 .handle(
                     http::Request::get(path)
                         .body(http_body_util::Empty::<bytes::Bytes>::new())

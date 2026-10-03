@@ -21,13 +21,17 @@
 
 use std::sync::Arc;
 
-use oauth_as::server::{AuthorizationServer, ServerConfig, SystemClock};
+use oauth_as::server::{
+    AssertionAudience, AuthorizationServer, RefreshRotation, ServerConfig, SystemClock,
+};
 use oauth_as::store::MemoryStorage;
 
-use busbar_kernel::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
-use busbar_kernel::oauth_as::config::AsIdentity;
+use crate::config::AsIdentity;
+use busbar_kernel::diagnostics::{
+    diag_debug, diag_warn, OAUTH_AS_EPHEMERAL_SIGNING_KEY, OAUTH_AS_SWEEP_FAILED,
+};
 
-use super::signer::{RingEs256Key, RingEs256Verifier};
+use super::signer::{RingEs256Key, RingEs256Verifier, RingPs256Verifier};
 
 /// The store this plane runs on: [`MemoryStorage`] behind the ONE changed read that serves Client
 /// ID Metadata Documents. See [`super::cimd::CimdStore`].
@@ -50,6 +54,11 @@ pub(crate) struct AsPlane {
     /// screen are a busbar handler and an `oauth-as` callback, and they have to be looking at the
     /// same table.
     sessions: Arc<super::consent::Sessions>,
+    /// The RFC 8414 document the PLAIN posture serves, or `None` under the FAPI 2.0 posture, which
+    /// serves `oauth-as`'s own. See [`plain_metadata`].
+    plain_metadata: Option<bytes::Bytes>,
+    /// The verifiers a DPoP proof at busbar's resource is checked with: the plane's ES256 one.
+    dpop_verifiers: oauth_as::jwt::JwsVerifiers,
 }
 
 /// Why the plane could not be built. Distinct from [`super::config::AsCfgError`] because these are
@@ -150,6 +159,14 @@ impl AsPlane {
             oauth_as::jwt::JwtConfig::new(key, audience).with_jwks_uri(identity.jwks_uri()),
         ));
 
+        // THE FAPI 2.0 SECURITY PROFILE, applied only when the operator wrote `fapi2: true`. Every
+        // write below is inside this branch, so the plain posture builds the `ServerConfig` it
+        // always built. The authorization code lifetime needs no write: `oauth-as`'s default is
+        // already the profile's 60-second ceiling (s5.3.2.1-11).
+        if identity.fapi2() {
+            config = fapi2_posture(config, &identity);
+        }
+
         // The store: `MemoryStorage` behind the CIMD read. The ceiling handed to it is the SAME
         // `default_grant_scopes` the registration config above is built from, so a client arriving
         // by document and one arriving by registration land under one ceiling by construction.
@@ -157,14 +174,17 @@ impl AsPlane {
             MemoryStorage::new(),
             super::policy::default_grant_scopes(&identity),
             Arc::new(super::cimd::GuardedFetch),
+            provisioned_clients(&identity),
         );
         let server = Arc::new(
             AuthorizationServer::new(config, store)
-                // Installed even though nothing on this plane verifies a client signature today:
-                // `oauth-as` refuses every signed credential when no verifier is installed, and the
-                // day `dpop` or `client-assertion` is switched on, a MISSING verifier would be a
-                // silent refusal of every conforming client rather than a build error.
+                // THE ES256 VERIFIER: what checks an RFC 9449 DPoP proof and an RFC 7523
+                // `private_key_jwt` assertion. `oauth-as` refuses every signed credential whose
+                // algorithm has no verifier, and advertises exactly the algorithms that have one.
                 .with_jws_verifier(Arc::new(RingEs256Verifier))
+                // PS256, FAPI 2.0 s5.4.1's other algorithm: an RSA-keyed provisioned client's
+                // assertions and DPoP proofs. The plain posture's document advertises neither list.
+                .with_jws_verifier(Arc::new(RingPs256Verifier))
                 .with_registration_policy(Box::new(super::policy::OpenRegistration)),
         );
 
@@ -177,21 +197,115 @@ impl AsPlane {
             ))
             .build()
             .map_err(AsBuildError::Service)?;
+        let plain_metadata = (!identity.fapi2()).then(|| plain_metadata(&server));
+        let mut dpop_verifiers = oauth_as::jwt::JwsVerifiers::new();
+        dpop_verifiers.install(Arc::new(RingEs256Verifier));
+        dpop_verifiers.install(Arc::new(RingPs256Verifier));
 
         Ok(Self {
             identity,
             service,
             server,
             sessions,
+            plain_metadata,
+            dpop_verifiers,
         })
+    }
+
+    /// RFC 9449 s7 at busbar's own protected resource (the kernel door, `auth::dpop`, through the
+    /// seam). `true` only when every check holds:
+    ///
+    /// * the proof verifies for THIS request line: ES256 signature over its own `jwk`, `typ`,
+    ///   `htm`, `htu` (this plane's origin + the request path), `iat` within the window (s4.3);
+    /// * its `ath` is the SHA-256 of the presented token (s4.3 (11)), which binds it to the token;
+    /// * its key's RFC 7638 thumbprint is the token's `cnf.jkt` (s7.1), which binds the token to it;
+    /// * its `jti` has not been seen (s11.1), claimed in the plane's replay ledger until the proof
+    ///   could no longer pass the `iat` check anyway.
+    ///
+    /// The token's own signature, issuer and audience are NOT judged here: the chain judges them
+    /// next, exactly as it judges a bearer. This is what the token's binding adds, and only that.
+    pub(crate) async fn verify_dpop(
+        &self,
+        presented: busbar_kernel::oauth_as::seam::DpopPresentation,
+    ) -> bool {
+        use base64::Engine as _;
+        use oauth_as::store::Storage as _;
+        let htu = format!("{}{}", self.identity.origin(), presented.path);
+        let Ok(proof) = oauth_as::dpop::verify_proof(
+            &self.dpop_verifiers,
+            &presented.proof,
+            &presented.method,
+            &htu,
+            std::time::SystemTime::now(),
+        ) else {
+            return false;
+        };
+        let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            ring::digest::digest(&ring::digest::SHA256, presented.token.as_bytes()).as_ref(),
+        );
+        let ath_matches = oauth_as::jwt::CompactJws::parse(&presented.proof)
+            .is_ok_and(|jws| jws.claim_str("ath") == Some(ath.as_str()));
+        let bound_to_proof_key =
+            oauth_as::jwt::CompactJws::parse(&presented.token).is_ok_and(|jws| {
+                jws.payload
+                    .get("cnf")
+                    .and_then(|cnf| cnf.get("jkt"))
+                    .and_then(|jkt| jkt.as_str())
+                    == Some(proof.jkt.as_str())
+            });
+        if !ath_matches || !bound_to_proof_key {
+            return false;
+        }
+        // Namespaced apart from the token endpoint's own proof `jti`s, which share the ledger.
+        let replay_id = format!("dpop-resource:{}:{}", proof.jkt, proof.jti);
+        matches!(
+            self.server
+                .store()
+                .claim_replay_id(&replay_id, proof.replay_until)
+                .await,
+            Ok(true)
+        )
+    }
+
+    /// Answer one request: the plane's whole wire surface. The plain posture's metadata document
+    /// is the one answer busbar serves itself ([`plain_metadata`]); every other request is
+    /// `oauth-as`'s, unchanged.
+    pub(crate) async fn handle<B>(&self, request: http::Request<B>) -> oauth_as::http::Response
+    where
+        B: axum::body::HttpBody,
+    {
+        if let Some(document) = &self.plain_metadata {
+            if request.method() == http::Method::GET
+                && request.uri().path() == self.identity.metadata_path()
+            {
+                let mut response =
+                    http::Response::new(oauth_as::http::Body::from(document.clone()));
+                response.headers_mut().insert(
+                    http::header::CONTENT_TYPE,
+                    http::HeaderValue::from_static("application/json;charset=UTF-8"),
+                );
+                return response;
+            }
+        }
+        // Box::pin: the whole `oauth-as` dispatch future (~56 KB monomorphized), boxed at its one
+        // call site, as `routes::forward` did before this method existed.
+        Box::pin(self.service.handle(request)).await
+    }
+
+    /// The display summary of a pushed request that has not been redeemed yet. See
+    /// [`super::cimd::Pushed`].
+    pub(crate) fn pushed(&self, request_uri: &str) -> Option<super::cimd::Pushed> {
+        self.server.store().pushed(request_uri)
+    }
+
+    /// Record that the consent screen showed this pushed request, answering whether it had been
+    /// shown before.
+    pub(crate) fn mark_pushed_shown(&self, request_uri: &str) -> bool {
+        self.server.store().mark_pushed_shown(request_uri)
     }
 
     pub(crate) fn identity(&self) -> &AsIdentity {
         &self.identity
-    }
-
-    pub(crate) fn service(&self) -> &AsService {
-        &self.service
     }
 
     pub(crate) fn server(&self) -> &Arc<AsServer> {
@@ -203,18 +317,159 @@ impl AsPlane {
     }
 }
 
+/// `oauth_as.clients:` as `oauth-as` clients: confidential, authenticating with an RFC 7523
+/// assertion against the configured PUBLIC keys — ES256 for EC keys, PS256 for RSA keys, one
+/// algorithm per client (boot refuses a mix), for the authorization-code and refresh grants,
+/// with the operator's `default_grant` as their whole scope (the same ceiling every other client
+/// lands under). The keys were validated at boot (`AsIdentity::from_cfg`): EC P-256, no `d`.
+fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
+    let ceiling = super::policy::default_grant_scopes(identity);
+    identity
+        .clients
+        .iter()
+        .map(|c| oauth_as::client::Client {
+            client_id: oauth_as::client::ClientId::new(&c.client_id),
+            auth: oauth_as::client::ClientAuth::ConfidentialAssertion {
+                keys: oauth_as::client_assertion::AssertionKeys::PublicKeys {
+                    alg: if c.jwks.keys.first().is_some_and(|k| k.kty == "RSA") {
+                        oauth_as::jwt::JwsAlg::Ps256
+                    } else {
+                        oauth_as::jwt::JwsAlg::Es256
+                    },
+                    keys: c.jwks.keys.iter().map(public_jwk).collect(),
+                },
+            },
+            grant_types: vec![
+                oauth_as::grant::GrantType::AuthorizationCode,
+                oauth_as::grant::GrantType::RefreshToken,
+            ],
+            redirect_uris: c.redirect_uris.clone(),
+            allowed_scopes: ceiling.clone(),
+            default_scopes: ceiling.clone(),
+            name: Some(c.client_id.clone()),
+            registration: None,
+        })
+        .collect()
+}
+
+/// One validated `oauth_as.clients:` key as `oauth-as`'s JWK. `AsIdentity::from_cfg` already
+/// refused every shape but EC P-256 and RSA, so the members read here are present.
+fn public_jwk(k: &crate::config::StaticClientJwk) -> oauth_as::jwt::Jwk {
+    let member = |v: &Option<String>| v.clone().unwrap_or_default();
+    if k.kty == "RSA" {
+        oauth_as::jwt::Jwk::Rsa {
+            n: member(&k.n),
+            e: member(&k.e),
+            kid: k.kid.clone(),
+        }
+    } else {
+        oauth_as::jwt::Jwk::Ec {
+            crv: oauth_as::jwt::EcCurve::P256,
+            x: member(&k.x),
+            y: member(&k.y),
+            kid: k.kid.clone(),
+        }
+    }
+}
+
+/// THE FAPI 2.0 SECURITY PROFILE POSTURE, written onto a plain `ServerConfig`. The values are the
+/// upstream `fapi2_conformance_server` example's, which is the configuration `oauth-as` 1.0.0 was
+/// OpenID-certified under (FAPI2SP OP, private key + DPoP).
+fn fapi2_posture(mut config: ServerConfig, identity: &AsIdentity) -> ServerConfig {
+    // RFC 9126 PAR, MANDATORY (s5.3.2.2-3), with `redirect_uri` required in the push (s5.3.2.2-6).
+    // The endpoint is set to the path `routes::mount` mounts, so the advertised document and the
+    // served route cannot drift. The handle lifetime is `oauth-as`'s 60 s, under s5.3.2.2-12's 600.
+    let mut par = oauth_as::par::ParConfig::new();
+    par.pushed_authorization_request_endpoint = Some(identity.par_endpoint());
+    par.require_pushed_authorization_requests = true;
+    par.require_redirect_uri = true;
+    config.par = Some(Box::new(par));
+    // RFC 9449 on every token request: every token is sender-constrained (s5.3.4-2).
+    config.require_dpop = true;
+    config
+        // s5.3.2.1-9 forbids refresh token rotation. Sound only because the line above binds every
+        // token to its client's DPoP key; the plain posture keeps rotation and reuse detection.
+        .with_refresh_rotation(RefreshRotation::Reuse)
+        // s5.3.2.1-8 / s5.3.3.1-5: a client assertion's `aud` is the issuer, as a string.
+        .with_assertion_audience(AssertionAudience::IssuerOnly)
+        // s5.4.1: ES256 and PS256 only, for every JWS this server verifies or advertises.
+        .with_jws_alg_allow_list(oauth_as::jwt::AlgAllowList::fapi())
+}
+
+/// THE PLAIN POSTURE'S RFC 8414 DOCUMENT: `oauth-as`'s own, less the members the FAPI 2.0
+/// building blocks add to it at COMPILE time (`client_secret_jwt` and `private_key_jwt`, the
+/// assertion and DPoP algorithm lists). Those three cargo features cannot be switched off at
+/// runtime, and a deployment that did not ask for the profile must not advertise it: busbar's own
+/// resource half answers `Bearer` only, so a client that read `dpop_signing_alg_values_supported`
+/// and bound its token would be refused by the very plane the token is for. Serialized exactly as
+/// `oauth-as` serializes its own (`serde_json::to_vec` of the same struct), so the bytes are the
+/// document this posture always served — `signer_tests` pins them.
+fn plain_metadata(server: &AsServer) -> bytes::Bytes {
+    let mut meta = server.metadata();
+    meta.token_endpoint_auth_methods_supported.retain(|m| {
+        m != oauth_as::client_assertion::CLIENT_SECRET_JWT
+            && m != oauth_as::client_assertion::PRIVATE_KEY_JWT
+    });
+    meta.token_endpoint_auth_signing_alg_values_supported = None;
+    meta.dpop_signing_alg_values_supported = None;
+    bytes::Bytes::from(
+        serde_json::to_vec(&meta).expect("the RFC 8414 document is plain JSON and serializes"),
+    )
+}
+
+/// THE SEAM-TYPED DPoP VERIFIER (`AsPlaneSeam::verify_dpop`): downcasts core's type-erased plane
+/// and hands it to [`AsPlane::verify_dpop`]. A plane that is not this crate's verifies nothing.
+pub(crate) fn seam_verify_dpop(
+    plane: &Arc<dyn std::any::Any + Send + Sync>,
+    presented: busbar_kernel::oauth_as::seam::DpopPresentation,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+    let plane = Arc::clone(plane).downcast::<AsPlane>().ok();
+    Box::pin(async move {
+        match plane {
+            Some(plane) => plane.verify_dpop(presented).await,
+            None => false,
+        }
+    })
+}
+
 /// THE SEAM-TYPED BUILDER (`busbar_kernel::oauth_as::seam::AsPlaneSeam::build`): builds the plane AND
 /// spawns its sweeper — the whole "how do I come alive" act `appbuild.rs` used to perform inline
 /// before the extraction — and hands back the type-erased object `App::oauth_as` stores. This is
 /// the function pointer `busbar_core_oauth2::install` actually registers; core cannot call
 /// [`AsPlane::build`] directly, since that would name this crate's type from busbar-core.
 pub(crate) fn seam_build(
-    identity: &AsIdentity,
-    key_material: Option<&str>,
+    block: &serde_yaml::Value,
+    secrets: Vec<(String, String)>,
     protected_resources: Vec<String>,
 ) -> Result<Arc<dyn std::any::Any + Send + Sync>, String> {
-    let plane = AsPlane::build(identity.clone(), key_material, protected_resources)
-        .map_err(|e| e.to_string())?;
+    let identity = crate::config::identity_of(block)?;
+    // The resolved signing-key material, handed back by the kernel under the path `check` reported
+    // the reference at. None configured means an ephemeral key, and that is said at `warn`.
+    let key_material = match identity.signing_key() {
+        None => {
+            diag_warn!(
+                OAUTH_AS_EPHEMERAL_SIGNING_KEY,
+                "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
+                 generated. Every token this deployment issues stops verifying when the \
+                 process restarts. Set `oauth_as.signing_key` for anything but a trial."
+            );
+            None
+        }
+        Some(_) => Some(
+            secrets
+                .iter()
+                .find(|(path, _)| path == crate::config::SIGNING_KEY_PATH)
+                .map(|(_, value)| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "{}: the reference was not resolved",
+                        crate::config::SIGNING_KEY_PATH
+                    )
+                })?,
+        ),
+    };
+    let plane =
+        AsPlane::build(identity, key_material, protected_resources).map_err(|e| e.to_string())?;
     let plane = Arc::new(plane);
     // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and it runs
     // when it is called and never otherwise. Spawned here, once per generation — unchanged from the

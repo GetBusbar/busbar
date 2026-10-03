@@ -46,6 +46,7 @@ http-body-util = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }
 serde = { workspace = true }
+serde_yaml = { workspace = true }
 
 [features]
 # Pulls busbar-core's own `test-support` feature so `testkit` (which names

@@ -58,6 +58,73 @@ pub struct OauthAsCfg {
     /// theft note both ask for it); a client that wants continuity refreshes.
     #[serde(default)]
     pub access_token_ttl_secs: Option<u64>,
+
+    /// The FAPI 2.0 Security Profile posture (`openid=plain_oauth`, `private_key_jwt`, DPoP). OFF
+    /// BY DEFAULT: a block that does not name it is the plain OAuth 2.1 server.
+    ///
+    /// `true` turns on the whole posture at once, because the profile is one contract and a
+    /// half-applied one passes nobody's suite: RFC 9126 PAR routed, advertised and MANDATORY (FAPI
+    /// 2.0 s5.3.2.2-3) with `redirect_uri` required in the push (s5.3.2.2-6); RFC 9449 DPoP required
+    /// on every token request (s5.3.4-2); refresh tokens reused rather than rotated (s5.3.2.1-9,
+    /// sound only because every token is sender-constrained); a client assertion's `aud` must be
+    /// the issuer as a string (s5.3.2.1-8, s5.3.3.1-5); and every JWS this server verifies limited
+    /// to ES256/PS256 (s5.4.1). The authorization code lifetime is already the profile's 60-second
+    /// ceiling (s5.3.2.1-11) in both postures.
+    #[serde(default)]
+    pub fapi2: bool,
+
+    /// OPERATOR-PROVISIONED CLIENTS: confidential `private_key_jwt` (RFC 7523) clients declared
+    /// here rather than registered over the wire. EMPTY BY DEFAULT. RFC 7591 registration cannot
+    /// carry a key (`oauth-as` models no `jwks` there), so this is how a `private_key_jwt` client —
+    /// the FAPI 2.0 profile's client — gets a `client_id`. Each holds only the PUBLIC half of its
+    /// key, and may ask for no more than [`OauthAsCfg::default_grant`].
+    #[serde(default)]
+    pub clients: Vec<StaticClientCfg>,
+}
+
+/// One `oauth_as.clients:` entry.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StaticClientCfg {
+    /// The `client_id` the client authenticates as (its assertion's `iss` and `sub`).
+    pub client_id: String,
+    /// The redirect URIs, matched EXACTLY at the authorization endpoint (OAuth 2.1 s4.1.3).
+    pub redirect_uris: Vec<String>,
+    /// The client's public keys, as RFC 7591 s2 `jwks` spells them.
+    pub jwks: StaticClientJwks,
+}
+
+/// An RFC 7517 JWK Set: `{"keys": [...]}`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StaticClientJwks {
+    pub keys: Vec<StaticClientJwk>,
+}
+
+/// One PUBLIC key: EC P-256 for ES256 (`crv`, `x`, `y`) or RSA for PS256 (`n`, `e`, RFC 7518
+/// s6.3.1), the two algorithms FAPI 2.0 s5.4.1 admits. Not `deny_unknown_fields`: RFC 7517 s4 has a
+/// reader ignore members it does not understand (`use`, `key_ops`, `x5c`, ...), and a JWK pasted
+/// from a client's own tooling carries them. `d` is named so it can be REFUSED: every private JWK
+/// carries it (RFC 7518 s6.2.2.1, s6.3.2.1), and a private key has no business in a config file.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct StaticClientJwk {
+    pub kty: String,
+    #[serde(default)]
+    pub crv: Option<String>,
+    #[serde(default)]
+    pub x: Option<String>,
+    #[serde(default)]
+    pub y: Option<String>,
+    #[serde(default)]
+    pub n: Option<String>,
+    #[serde(default)]
+    pub e: Option<String>,
+    #[serde(default)]
+    pub kid: Option<String>,
+    #[serde(default)]
+    pub alg: Option<String>,
+    #[serde(default)]
+    pub d: Option<String>,
 }
 
 /// Why an `oauth_as:` block was refused at boot. Every arm names the field and what a correct value
@@ -77,6 +144,11 @@ pub enum AsCfgError {
     IssuerHasTrailingSlash(String),
     /// `default_grant` names a scope that is not a legal RFC 6749 §3.3 scope token.
     ScopeNotAToken(String),
+    /// An `oauth_as.clients:` entry is malformed; `why` says how.
+    StaticClient {
+        client_id: String,
+        why: &'static str,
+    },
 }
 
 impl std::fmt::Display for AsCfgError {
@@ -104,6 +176,9 @@ impl std::fmt::Display for AsCfgError {
                  so a trailing slash produces `//name` — a different path from the one clients ask \
                  for. Write it without the slash."
             ),
+            AsCfgError::StaticClient { client_id, why } => {
+                write!(f, "oauth_as.clients entry `{client_id}`: {why}")
+            }
             AsCfgError::ScopeNotAToken(v) => write!(
                 f,
                 "oauth_as.default_grant entry `{v}` is not a scope token. RFC 6749 section 3.3 \
@@ -142,6 +217,14 @@ pub struct AsIdentity {
     pub register_path: String,
     pub jwks_path: String,
     pub consent_path: String,
+    /// The RFC 9126 pushed authorization request endpoint's path. Always DERIVED, like every path
+    /// above; mounted and advertised only under the FAPI 2.0 posture ([`AsIdentity::fapi2`]).
+    pub par_path: String,
+    /// The FAPI 2.0 Security Profile posture, resolved from `oauth_as.fapi2`. See
+    /// [`OauthAsCfg::fapi2`] for everything it turns on.
+    pub fapi2: bool,
+    /// The validated `oauth_as.clients:`. Public keys only: nothing here is a secret.
+    pub clients: Vec<StaticClientCfg>,
     pub default_grant: Vec<String>,
     pub access_token_ttl: std::time::Duration,
     pub key_id: String,
@@ -185,6 +268,7 @@ impl AsIdentity {
                 return Err(AsCfgError::ScopeNotAToken(scope.clone()));
             }
         }
+        validate_clients(&cfg.clients)?;
 
         let issuer_path = path.trim_end_matches('/').to_string();
         let under = |name: &str| format!("{issuer_path}/{name}");
@@ -199,6 +283,9 @@ impl AsIdentity {
             register_path: under("register"),
             jwks_path: under("jwks"),
             consent_path: under("consent"),
+            par_path: under("par"),
+            fapi2: cfg.fapi2,
+            clients: cfg.clients.clone(),
             issuer_path,
             default_grant: cfg.default_grant.clone(),
             access_token_ttl: cfg
@@ -230,6 +317,18 @@ impl AsIdentity {
     pub fn consent_path(&self) -> &str {
         &self.consent_path
     }
+    pub fn par_path(&self) -> &str {
+        &self.par_path
+    }
+    /// The absolute RFC 9126 PAR endpoint URL the metadata advertises. Absolute for the reason
+    /// `jwks_uri` is: it is a value clients compare, derived once here.
+    pub fn par_endpoint(&self) -> String {
+        format!("{}{}", self.origin(), self.par_path)
+    }
+    /// Whether this plane runs the FAPI 2.0 Security Profile posture.
+    pub fn fapi2(&self) -> bool {
+        self.fapi2
+    }
     /// The absolute URL of the consent screen, which is what the authorize endpoint redirects a
     /// browser to. Absolute because the user agent is following it from wherever it started.
     pub fn consent_url(&self) -> String {
@@ -238,8 +337,9 @@ impl AsIdentity {
     pub fn jwks_uri(&self) -> String {
         format!("{}{}", self.origin(), self.jwks_path)
     }
-    /// The issuer's `scheme://authority`, with its path removed.
-    fn origin(&self) -> &str {
+    /// The issuer's `scheme://authority`, with its path removed: the origin busbar's own protected
+    /// resources are served on, which `auth::dpop` makes a proof's `htu` from.
+    pub fn origin(&self) -> &str {
         &self.issuer[..self.issuer.len() - self.issuer_path.len()]
     }
     pub fn default_grant(&self) -> &[String] {
@@ -254,6 +354,103 @@ impl AsIdentity {
     pub fn signing_key(&self) -> Option<&SecretRef> {
         self.signing_key.as_ref()
     }
+}
+
+/// Every `oauth_as.clients:` refusal, at boot, naming the client.
+fn validate_clients(clients: &[StaticClientCfg]) -> Result<(), AsCfgError> {
+    let mut seen = std::collections::HashSet::new();
+    for client in clients {
+        let refuse = |why| AsCfgError::StaticClient {
+            client_id: client.client_id.clone(),
+            why,
+        };
+        if client.client_id.is_empty() {
+            return Err(refuse("client_id is empty"));
+        }
+        if !seen.insert(client.client_id.as_str()) {
+            return Err(refuse("the client_id is declared twice"));
+        }
+        if client.redirect_uris.is_empty() {
+            return Err(refuse(
+                "redirect_uris is empty; the authorization code has nowhere to go",
+            ));
+        }
+        // OAuth 2.1 s4.1.3 / RFC 6749 s3.1.2: absolute, no fragment, matched exactly.
+        if client
+            .redirect_uris
+            .iter()
+            .any(|u| split_absolute(u).is_none() || u.contains('#'))
+        {
+            return Err(refuse(
+                "every redirect_uri must be an absolute http(s) URL with no fragment",
+            ));
+        }
+        if client.jwks.keys.is_empty() {
+            return Err(refuse(
+                "jwks.keys is empty; a private_key_jwt client needs a key",
+            ));
+        }
+        let kty = &client.jwks.keys[0].kty;
+        if client.jwks.keys.iter().any(|k| &k.kty != kty) {
+            return Err(refuse(
+                "a client's keys must share one algorithm: all EC (ES256) or all RSA (PS256)",
+            ));
+        }
+        for key in &client.jwks.keys {
+            if key.d.is_some() {
+                return Err(refuse(
+                    "a jwks key carries `d`, a PRIVATE key. Configure the public half only; the \
+                     private key stays with the client",
+                ));
+            }
+            validate_public_jwk(key).map_err(refuse)?;
+        }
+    }
+    Ok(())
+}
+
+/// The shape of one public key: EC P-256 for ES256, or RSA of at least 2048 bits for PS256.
+fn validate_public_jwk(key: &StaticClientJwk) -> Result<(), &'static str> {
+    let decoded = |v: &Option<String>| {
+        v.as_deref().and_then(|v| {
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, v).ok()
+        })
+    };
+    match key.kty.as_str() {
+        "EC" => {
+            if key.crv.as_deref() != Some("P-256") {
+                return Err("an EC key must be P-256 (ES256)");
+            }
+            if key.alg.as_deref().is_some_and(|alg| alg != "ES256") {
+                return Err("an EC key's `alg`, when given, must be ES256");
+            }
+            let coordinate = |c: &Option<String>| decoded(c).is_some_and(|b| b.len() == 32);
+            if !coordinate(&key.x) || !coordinate(&key.y) {
+                return Err("a P-256 coordinate (`x`, `y`) is 32 bytes of unpadded base64url");
+            }
+        }
+        "RSA" => {
+            // RS256 is what FAPI 2.0 s5.4.1 forbids; an RSA key here signs PS256 or nothing.
+            if key.alg.as_deref().is_some_and(|alg| alg != "PS256") {
+                return Err("an RSA key's `alg`, when given, must be PS256");
+            }
+            let modulus = decoded(&key.n).unwrap_or_default();
+            let significant = modulus.iter().skip_while(|b| **b == 0).collect::<Vec<_>>();
+            let bits = significant.first().map_or(0, |top| {
+                significant.len() * 8 - top.leading_zeros() as usize
+            });
+            if bits < 2048 {
+                return Err(
+                    "an RSA modulus (`n`) must be at least 2048 bits of unpadded base64url",
+                );
+            }
+            if decoded(&key.e).is_none_or(|e| e.iter().all(|b| *b == 0)) {
+                return Err("an RSA key carries its public exponent (`e`)");
+            }
+        }
+        _ => return Err("only EC P-256 (ES256) and RSA (PS256) keys are accepted"),
+    }
+    Ok(())
 }
 
 /// Split an absolute `http(s)` URL into `(origin, path)`, or `None` when it is not one.
@@ -282,6 +479,66 @@ fn is_scope_token(s: &str) -> bool {
             .all(|b| b == 0x21 || (0x23..=0x5B).contains(&b) || (0x5D..=0x7E).contains(&b))
 }
 
-#[cfg(test)]
-#[path = "tests/config_tests.rs"]
-mod config_tests;
+/// THE KERNEL'S ASK, answered here (`busbar_kernel::oauth_as::seam::AsPlaneSeam::check`): the
+/// kernel carries the `oauth_as:` block as an opaque value and hands it to its owner. This parses it
+/// (a malformed or unknown key is refused here), validates it ([`AsIdentity::from_cfg`], the same
+/// refusals with the same text), and returns every secret reference it carries, so the kernel's
+/// `--validate` can resolve them and its boot can resolve the signing key.
+pub(crate) fn seam_check(block: &serde_yaml::Value) -> Result<Vec<(String, SecretRef)>, String> {
+    let identity = identity_of(block)?;
+    Ok(secret_refs(&identity)
+        .into_iter()
+        .map(|(path, key)| (path, key.clone()))
+        .collect())
+}
+
+/// Parse and validate the opaque block into the validated identity.
+pub(crate) fn identity_of(block: &serde_yaml::Value) -> Result<AsIdentity, String> {
+    let cfg: OauthAsCfg =
+        serde_yaml::from_value(block.clone()).map_err(|e| format!("oauth_as: {e}"))?;
+    AsIdentity::from_cfg(&cfg).map_err(|e| e.to_string())
+}
+
+/// Every `SecretRef` the validated `oauth_as:` block carries, as `(config path, reference)`.
+///
+/// THE ES256 SIGNING KEY. `--validate` must be able to resolve it, because the alternative is a
+/// deployment that boots, advertises a JWKS, and fails on the first token request of the day with a
+/// secret module error.
+///
+/// Destructured EXHAUSTIVELY rather than read through `identity.signing_key()`, because the accessor
+/// would keep compiling on the day a second `SecretRef` is added to the validated identity, and that
+/// second secret would then be one `--validate` calls fine and the process fails on at runtime.
+/// Everything below `signing_key` is a derived endpoint path or a policy number, and none of them
+/// can ever carry a credential, but each is named here so that ADDING one is a compile error
+/// somebody has to answer.
+pub(crate) fn secret_refs(identity: &AsIdentity) -> Vec<(String, &SecretRef)> {
+    let AsIdentity {
+        signing_key,
+        // The issuer and the nine paths derived from it. Public by construction: every one of
+        // them is published in the RFC 8414 metadata document.
+        issuer: _,
+        issuer_path: _,
+        metadata_path: _,
+        authorize_path: _,
+        token_path: _,
+        register_path: _,
+        jwks_path: _,
+        consent_path: _,
+        par_path: _,
+        // Policy, not credential: the FAPI 2.0 posture switch, the scope ceiling, the token
+        // lifetime, and the advisory `kid` that appears in every published JWKS entry.
+        fapi2: _,
+        // Operator-provisioned clients: PUBLIC keys only (a configured `d` is a boot refusal).
+        clients: _,
+        default_grant: _,
+        access_token_ttl: _,
+        key_id: _,
+    } = identity;
+    signing_key
+        .iter()
+        .map(|key| (SIGNING_KEY_PATH.to_string(), key))
+        .collect()
+}
+
+/// The config path the signing key's reference is reported under.
+pub(crate) const SIGNING_KEY_PATH: &str = "oauth_as.signing_key";

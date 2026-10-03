@@ -1197,9 +1197,17 @@
           "optional": true,
           "type": "u64"
         },
+        "clients": {
+          "optional": true,
+          "type": "Vec<StaticClientCfg>"
+        },
         "default_grant": {
           "optional": true,
           "type": "Vec<String>"
+        },
+        "fapi2": {
+          "optional": true,
+          "type": "bool"
         },
         "issuer": {
           "optional": false,
@@ -2254,6 +2262,79 @@
       "deserialize": "manual",
       "fields": {},
       "kind": "struct"
+    },
+    "StaticClientCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "client_id": {
+          "optional": false,
+          "type": "String"
+        },
+        "jwks": {
+          "optional": false,
+          "type": "StaticClientJwks"
+        },
+        "redirect_uris": {
+          "optional": false,
+          "type": "Vec<String>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "StaticClientJwk": {
+      "deny_unknown_fields": false,
+      "fields": {
+        "alg": {
+          "optional": true,
+          "type": "String"
+        },
+        "crv": {
+          "optional": true,
+          "type": "String"
+        },
+        "d": {
+          "optional": true,
+          "type": "String"
+        },
+        "e": {
+          "optional": true,
+          "type": "String"
+        },
+        "kid": {
+          "optional": true,
+          "type": "String"
+        },
+        "kty": {
+          "optional": false,
+          "type": "String"
+        },
+        "n": {
+          "optional": true,
+          "type": "String"
+        },
+        "x": {
+          "optional": true,
+          "type": "String"
+        },
+        "y": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "StaticClientJwks": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "keys": {
+          "optional": false,
+          "type": "Vec<StaticClientJwk>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
     },
     "StoreCfg": {
       "deny_unknown_fields": true,
