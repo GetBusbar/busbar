@@ -113,7 +113,7 @@ pub fn derive_spend_micros_row(
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
-) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+) -> Result<i64, busbar_kernel::cost::MoneyError> {
     metered_row(cost, model, b, &std::collections::BTreeMap::new())
         .spend_micros_at_card(cost.card())
 }
@@ -127,7 +127,7 @@ pub fn derive_spend_micros_row_classes(
     model: &str,
     b: &UsageBreakdown,
     classes: &std::collections::BTreeMap<String, u64>,
-) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+) -> Result<i64, busbar_kernel::cost::MoneyError> {
     metered_row(cost, model, b, classes).spend_micros_at_card(cost.card())
 }
 
@@ -143,8 +143,8 @@ fn metered_row<'a>(
     model: &'a str,
     b: &UsageBreakdown,
     classes: &'a std::collections::BTreeMap<String, u64>,
-) -> busbar_kernel_ledger::cost::MeteredRow<'a> {
-    busbar_kernel_ledger::cost::MeteredRow::new(
+) -> busbar_kernel::cost::MeteredRow<'a> {
+    busbar_kernel::cost::MeteredRow::new(
         cost.resolve_model_alias(model),
         row_counts(b)
             .map(|(class, quantity)| (class.to_string(), quantity))
@@ -166,7 +166,7 @@ pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str>
         Some(decl) if !decl.fallback => std::borrow::Cow::Owned(format!(
             "{}{}{model}",
             decl.key,
-            busbar_kernel_ledger::cost::PLANE_LANE_SEP
+            busbar_kernel::governance::PLANE_LANE_SEP
         )),
         _ => std::borrow::Cow::Borrowed(model),
     }
@@ -179,9 +179,9 @@ pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str>
 /// `internal`. Every refusal is logged under `operation`, as before.
 pub(crate) fn usage_refusal(
     operation: &'static str,
-    e: &busbar_kernel_ledger::cost::MoneyError,
+    e: &busbar_kernel::cost::MoneyError,
 ) -> AdminError {
-    use busbar_kernel_ledger::cost::MoneyError;
+    use busbar_kernel::cost::MoneyError;
     diag_error!(ADMIN_STORE_OPERATION_FAILED, operation, error = %e, "admin store operation failed");
     match e {
         MoneyError::ClassUnpriced { lane, class, .. } => AdminError::UnpricedClass {
@@ -225,7 +225,7 @@ pub trait UsageRateHistory: Send + Sync {
     ///
     /// `None` for a node that has resolved no configuration yet — which is a node with no entry a
     /// row could resolve to, not a node whose rows are free.
-    fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>>;
+    fn history(&self) -> Option<Arc<busbar_kernel::cost::History>>;
 }
 
 /// THE PROCESS-WIDE dated-history source, installed once by the composition root.
@@ -391,13 +391,13 @@ fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, u64)> +
 /// number nobody priced. `card` is kept in the signature for the callers that resolved it; the one
 /// function resolves its own.
 pub fn derive_spend_micros_row_at_card(
-    view: &busbar_kernel_ledger::cost::HistoryView<'_>,
+    view: &busbar_kernel::cost::HistoryView<'_>,
     arrived_ms: u64,
-    _card: &busbar_kernel_ledger::cost::RateCard,
+    _card: &busbar_kernel::cost::RateCard,
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
-) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+) -> Result<i64, busbar_kernel::cost::MoneyError> {
     metered_row(cost, model, b, &std::collections::BTreeMap::new())
         .spend_micros_in_view(arrived_ms, view)
 }
@@ -407,14 +407,14 @@ pub fn derive_spend_micros_row_at_card(
 /// FEE LANE for a plane's fee row (its session count) — priced by the one function at the card in
 /// force at the row's instant, exactly as the budget book prices the same counts.
 pub fn derive_spend_micros_row_classes_at_card(
-    view: &busbar_kernel_ledger::cost::HistoryView<'_>,
+    view: &busbar_kernel::cost::HistoryView<'_>,
     arrived_ms: u64,
-    _card: &busbar_kernel_ledger::cost::RateCard,
+    _card: &busbar_kernel::cost::RateCard,
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
     classes: &std::collections::BTreeMap<String, u64>,
-) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+) -> Result<i64, busbar_kernel::cost::MoneyError> {
     metered_row(cost, model, b, classes).spend_micros_in_view(arrived_ms, view)
 }
 

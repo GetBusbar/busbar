@@ -1292,11 +1292,11 @@ impl AdminService {
     /// confident wrong answer. A refusal rather than an empty body, because an empty body is a
     /// silent zero wearing a different hat (#42).
     fn validated_snapshot(
-        history: Option<&busbar_kernel_ledger::cost::History>,
+        history: Option<&busbar_kernel::cost::History>,
         seq: u64,
-    ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AdminError> {
+    ) -> Result<busbar_kernel::cost::HistorySeq, AdminError> {
         let head = history
-            .and_then(busbar_kernel_ledger::cost::History::head)
+            .and_then(busbar_kernel::cost::History::head)
             .ok_or_else(|| {
                 AdminError::Validation(
                     "as_of names a rate-card history snapshot; this node has resolved no \
@@ -1310,7 +1310,7 @@ impl AdminService {
                  not exist is refused, never answered at the head"
             )));
         }
-        Ok(busbar_kernel_ledger::cost::HistorySeq(seq))
+        Ok(busbar_kernel::cost::HistorySeq(seq))
     }
 
     /// `GET /api/v1/admin/usage` — the fleet METERING read (FinOps surface): the current UTC-day
@@ -1520,7 +1520,7 @@ impl AdminService {
                     Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
                         v, at, card, &cost, &lane, &row_view, classes,
                     ),
-                    None => Err(busbar_kernel_ledger::cost::MoneyError::NoCardInForce { at }),
+                    None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
                 },
                 None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
             };
