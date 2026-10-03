@@ -440,8 +440,8 @@ impl ProtocolWriter for AnthropicWriter {
         // alongside thinking, so when the ask IS emitted those knobs are omitted (warned) below.
         let mut thinking_emitted = false;
         match req.reasoning {
-            // Reasoning switched OFF (IR-09, ANT-09) — matched FIRST: `to_budget` would read it as a
-            // zero budget and drop it, losing the caller's "off" on a reasoning-by-default model.
+            // Reasoning switched OFF (IR-09, ANT-09) — matched FIRST: it has no budget, and the
+            // caller's "off" must reach a reasoning-by-default model.
             // Not an emitted thinking ask, so the sampling knobs below stay.
             // A lane whose model cannot switch thinking off (`LaneCaps::thinking_always_on`)
             // rejects `{type:"disabled"}`: the ask is omitted with a warn and the
@@ -482,7 +482,19 @@ impl ProtocolWriter for AnthropicWriter {
                 );
                 thinking_emitted = true;
             }
-            // A numeric ask on every lane, and EVERY ask on a lane without adaptive thinking
+            // "The model decides" on a lane without adaptive thinking: `budget_tokens` has no
+            // "model decides" value, so the ask is DROPPED (design F3: never a table entry put in
+            // its place) and the model runs at its default.
+            Some(crate::codec::ir::IrReasoningAsk::Dynamic) => {
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::REASONING,
+                    &crate::codec::diagnostics::IR_DROP_REASONING,
+                    [],
+                    "dropping a \"model decides\" reasoning ask on Anthropic egress: this lane does \
+                     not declare adaptive thinking and budget_tokens has no dynamic form"
+                );
+            }
+            // A numeric ask on every lane, and every word ask on a lane without adaptive thinking
             // (`LaneCaps::anthropic_adaptive_thinking` false — the pre-capability default, and the
             // only on-mode Haiku 4.5 / Sonnet 4.5 / Opus 4.5 and older accept): `budget_tokens`, a
             // word projected through the operator's effort table.
@@ -490,35 +502,31 @@ impl ProtocolWriter for AnthropicWriter {
                 let table = req
                     .reasoning_budgets
                     .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
-                if matches!(ask, crate::codec::ir::IrReasoningAsk::Dynamic) {
-                    tracing::warn!(
-                        "gemini dynamic thinking (-1) has no Anthropic analog on this lane; \
-                         projecting as the 'medium' effort budget"
-                    );
-                }
-                let want = ask.to_budget(table);
-                let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
-                let budget = cap.map_or(want, |c| want.min(c));
-                if budget >= 1024 {
-                    if budget != want {
+                // `Off` and `Dynamic` are matched above; every other ask has a table entry.
+                if let Some(want) = ask.to_budget(table) {
+                    let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
+                    let budget = cap.map_or(want, |c| want.min(c));
+                    if budget >= 1024 {
+                        if budget != want {
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::REASONING,
+                                &crate::codec::diagnostics::IR_DROP_REASONING,
+                                [requested_budget = want, clamped_budget = budget, max_tokens = ?req.max_tokens, ],
+                                "thinking budget clamped to fit under max_tokens");
+                        }
+                        out.insert(
+                            keys::THINKING.to_string(),
+                            serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
+                        );
+                        thinking_emitted = true;
+                    } else {
                         crate::codec::drops::writer_drop!(
                             crate::codec::drops::REASONING,
                             &crate::codec::diagnostics::IR_DROP_REASONING,
-                            [requested_budget = want, clamped_budget = budget, max_tokens = ?req.max_tokens, ],
-                            "thinking budget clamped to fit under max_tokens");
+                            [max_tokens = ?req.max_tokens, ],
+                            "dropping reasoning ask on Anthropic egress: max_tokens leaves no room for \
+                             the 1024-token thinking minimum");
                     }
-                    out.insert(
-                        keys::THINKING.to_string(),
-                        serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
-                    );
-                    thinking_emitted = true;
-                } else {
-                    crate::codec::drops::writer_drop!(
-                        crate::codec::drops::REASONING,
-                        &crate::codec::diagnostics::IR_DROP_REASONING,
-                        [max_tokens = ?req.max_tokens, ],
-                        "dropping reasoning ask on Anthropic egress: max_tokens leaves no room for \
-                         the 1024-token thinking minimum");
                 }
             }
             None => {}

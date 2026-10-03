@@ -2178,6 +2178,32 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "DF-SITES no value is substituted for one the target dialect cannot carry",
+      "kind": "improvement",
+      "changelog": "A request translated between LLM dialects no longer has a value substituted for one the target dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead of relabelled png, and a Gemini thinkingBudget -1 (\"the model decides\") is dropped on a target with no such setting instead of sent as the medium effort; each drop is warned and audited by its wire path. A wrong-typed Gemini thinkingBudget or Anthropic image media_type is answered with the caller's own 400 error instead of being translated.",
+      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
+      "cells": "^llm\\.no-substitution\\|(anthropic|openai|responses|gemini|cohere)\\|(bedrock|openai|responses|anthropic)$",
+      "expected_cells": 0,
+      "classes": [
+        "body",
+        "status"
+      ],
+      "rationale": "Two writer sites put a value of their own in place of the caller's on a TRANSLATE attempt, which F3 forbids. (1) The Bedrock writer relabelled an image whose media type is outside Converse's ImageFormat union {png, jpeg, gif, webp} (or not image/<subtype> at all) as format png and sent its bytes. (2) Every writer without a \"model decides\" form (Chat, Responses, and Anthropic / Bedrock lanes without adaptive thinking) projected Gemini's thinkingBudget -1 (and Anthropic adaptive / Cohere budget-less thinking) onto the effort table's medium entry. Both are now dropped on the one drop path with a WARN and an egress.control_unrepresentable audit row naming the caller's wire path; a format or budget that maps is carried (jpg is jpeg; Cohere and adaptive lanes keep \"model decides\"). Separately, a wrong-typed Gemini thinkingBudget (silently left out) and a wrong-typed Anthropic image media_type (read as \"\" and relabelled png on Bedrock) are refused by the caller's own reader in its native 400 envelope. Tests: crates/busbar-plane-llm/src/codec/tests/drop_writer_tests.rs (no substitution section). No oracle cell sends either value across dialects: the cells are OWED, `cells` names them and expected_cells is 0.",
+      "premise": {
+        "cell": "llm|anthropic|openai|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-01",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }

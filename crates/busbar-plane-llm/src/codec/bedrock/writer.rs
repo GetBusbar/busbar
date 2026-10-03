@@ -1243,31 +1243,45 @@ impl BedrockWriter {
             Some(crate::codec::ir::IrReasoningAsk::Dynamic) if caps.anthropic_adaptive_thinking => {
                 thinking = Some(serde_json::json!({ (keys::TYPE): super::THINKING_TYPE_ADAPTIVE }));
             }
+            // "The model decides" on a lane without adaptive thinking: `budget_tokens` has no
+            // "model decides" value, so the ask is DROPPED (design F3: never a table entry put in
+            // its place) and the model runs at its default.
+            Some(crate::codec::ir::IrReasoningAsk::Dynamic) => {
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::REASONING,
+                    &crate::codec::diagnostics::IR_DROP_REASONING,
+                    [],
+                    "dropping a \"model decides\" reasoning ask on Bedrock egress: this lane does \
+                     not declare adaptive thinking and budget_tokens has no dynamic form"
+                );
+            }
             Some(ask) => {
                 let table = req
                     .reasoning_budgets
                     .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
-                let want = ask.to_budget(table);
-                let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
-                let budget = cap.map_or(want, |c| want.min(c));
-                if budget >= 1024 {
-                    if budget != want {
+                // `Off` and `Dynamic` are matched above; every other ask has a table entry.
+                if let Some(want) = ask.to_budget(table) {
+                    let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
+                    let budget = cap.map_or(want, |c| want.min(c));
+                    if budget >= 1024 {
+                        if budget != want {
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::REASONING,
+                                &crate::codec::diagnostics::IR_DROP_REASONING,
+                                [requested_budget = want, clamped_budget = budget, max_tokens = ?req.max_tokens, ],
+                                "thinking budget clamped to fit under maxTokens on Bedrock egress");
+                        }
+                        thinking = Some(
+                            serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
+                        );
+                    } else {
                         crate::codec::drops::writer_drop!(
                             crate::codec::drops::REASONING,
                             &crate::codec::diagnostics::IR_DROP_REASONING,
-                            [requested_budget = want, clamped_budget = budget, max_tokens = ?req.max_tokens, ],
-                            "thinking budget clamped to fit under maxTokens on Bedrock egress");
+                            [max_tokens = ?req.max_tokens, ],
+                            "dropping reasoning ask on Bedrock egress: maxTokens leaves no room for the \
+                             1024-token thinking minimum");
                     }
-                    thinking = Some(
-                        serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
-                    );
-                } else {
-                    crate::codec::drops::writer_drop!(
-                        crate::codec::drops::REASONING,
-                        &crate::codec::diagnostics::IR_DROP_REASONING,
-                        [max_tokens = ?req.max_tokens, ],
-                        "dropping reasoning ask on Bedrock egress: maxTokens leaves no room for the \
-                         1024-token thinking minimum");
                 }
             }
         }

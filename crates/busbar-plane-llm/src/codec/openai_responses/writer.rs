@@ -580,10 +580,23 @@ impl ProtocolWriter for ResponsesWriter {
                 let table = req
                     .reasoning_budgets
                     .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
-                out.insert(
-                    keys::REASONING.to_string(),
-                    serde_json::json!({(keys::EFFORT): ask.to_effort(table).as_three_word_str()}),
-                );
+                match ask.to_effort(table) {
+                    Some(effort) => {
+                        out.insert(
+                            keys::REASONING.to_string(),
+                            serde_json::json!({(keys::EFFORT): effort.as_three_word_str()}),
+                        );
+                    }
+                    // "The model decides" (`Off` is matched above) has no effort word: DROPPED,
+                    // never a word put in its place (design F3); the model runs at its default.
+                    None => crate::codec::drops::writer_drop!(
+                        crate::codec::drops::REASONING,
+                        &crate::codec::diagnostics::IR_DROP_REASONING,
+                        [],
+                        "dropping a \"model decides\" reasoning ask on Responses egress: \
+                         reasoning.effort has no dynamic form"
+                    ),
+                }
             }
         }
 

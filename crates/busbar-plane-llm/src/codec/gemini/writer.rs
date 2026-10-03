@@ -668,7 +668,7 @@ impl ProtocolWriter for GeminiWriter {
                         None
                     }
                 }
-                other => Some(i64::from(other.to_budget(table))),
+                other => other.to_budget(table).map(i64::from),
             };
             // Only SYNTHESIZE a thinkingConfig when the request did not already carry a native
             // Gemini one (i.e. this is a CROSS-protocol ask — `extra` is cleared at the seam, so
