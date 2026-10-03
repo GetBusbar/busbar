@@ -3236,12 +3236,16 @@ plane_crates = 4
 # GetBusbar/busbar-transport-tcp and busbar pulls the logic crate and its -plugin cdylib crate at one pinned
 # rev (root Cargo.toml). Its gates run in that repo's plugin CI. `crates/busbar-transport-*` now matches
 # two: stdio and ws.
+# store 1 -> 0 (EXTRACT-15, TODO PATH TO DEV-GREEN P5 "EXTRACTION TO 14 CRATES", item store-memory): the memory
+# store crate MOVED OUT with its history to GetBusbar/busbar-store-memory and busbar pulls the logic crate and its
+# -plugin cdylib crate at one pinned rev (root Cargo.toml). Its gates run in that repo's plugin CI.
+# `crates/store-*` now matches no directory: the kind's documented zero in this repo.
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
 auth = 0
 secret = 0
-store = 1
+store = 0
 export = 0
 transport = 2
 loader = 1

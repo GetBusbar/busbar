@@ -716,14 +716,6 @@ count = "13"
 
 
 [[cell]]
-crate = "busbar-store-memory"
-kind = "plane"
-count = "1"
-
-
-
-
-[[cell]]
 crate = "busbar-transport-stdio"
 kind = "plane"
 count = "1"
@@ -1171,17 +1163,6 @@ verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 — kernel -> plugin-tooling is a granted class (the loop names the author-side plugin machinery face)."
 why     = "busbar-kernel names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-store-memory"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECT K5/K5b/K5c/K5d rulings (b17f0a2c1, 0ade205df): the composition root links the build's default store as a row of its linked tables (roster def 1); the kernel names neither crate in production. `kernel -> store` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict stays the one the architecture implies; the row holds a TEST-SUPPORT stand-in edge, not a shipped coupling."
-why     = "busbar-kernel names busbar-store-memory as `fixture-store`: declared normal, optional in the shipped graph, enabled ONLY by the kernel's `test-support` feature (`dep:fixture-store`) — a test build has no root, so this fixture stands in for the row the root links (`preflight::install_linked_rows`); no kernel source names the plugin, and no default or shipped feature turns the edge on. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "delete the `fixture-store` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their linked rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-store-memory)."
-
 
 [[dep]]
 from    = "busbar-a2a"
@@ -1670,16 +1651,6 @@ drain   = "none: BUSBAR-1.6.0.md grants this class (roster def 1). What this row
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-store-memory"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECT 2026-09-25 \"K5d residue\" (decisions.md): roster def 1 — the composition root is 'the only place that names which crates exist and wires them at boot', so root -> every plugin-kind crate it links is a granted class (ARCHITECTURE_ALLOWED root -> store). K5d (b17f0a2c1, 0ade205df) moved the default store onto the root's linked tables ([package.metadata.busbar.linked] store-memory)."
-why     = "busbar names busbar-store-memory: declared normal in the shipped graph, so the composition root links the build's default store as a row of the store axis, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class (roster def 1). What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
 to      = "busbar-plugin-example-plane"
 half    = "test"
 count   = "1"
@@ -1687,16 +1658,6 @@ verdict = "allowed"
 cite    = "ARCHITECT 2026-09-25 (K4 residue, decisions.md, L5 intake): \"busbar -> busbar-plugin-example-plane test edge [[dep]] row\"; BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes (`root -> plugin-tooling` is granted)."
 why     = "busbar names busbar-plugin-example-plane: declared dev in the test graph so the root's tests load the example plane plugin through the plugin path, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-store-memory"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). ARCHITECT 2026-09-25 (K5 residue, decisions.md): \"the export precedent's admission applies to every kind's fixture\"; the fixture is the crate plugin-loader's own [package.metadata.busbar.both-ways] names for `store` — since DOOR-STORE (R-FIX1/R-FIX2; owner FIXTURES ruling \"store: store-memory + store-*\") the REAL default store with its dropped-in door, replacing busbar-store-example-plugin on this ONE edge (a move, not a second edge). `plugin-tooling -> store` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
-why     = "busbar-plugin-loader names busbar-store-memory: declared dev in the test graph so the store conformance tests can link the COMPILED-IN `store` proof (its rlib: `linked::STORE`, `BUSBAR_COLD_ENTRY`) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `store` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-core-admin"

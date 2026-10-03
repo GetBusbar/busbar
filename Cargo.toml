@@ -28,7 +28,6 @@ members = [
     "crates/hook-test-plugin",
     "crates/plane-example",
     "crates/hooks-ranking",
-    "crates/store-memory",
     "crates/busbar-transport-ws",
     "crates/busbar-transport-stdio",
     "testing/ws-conformance/subject",
@@ -84,6 +83,15 @@ busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-expo
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
 busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "89d08ebcb91e5b2d4001b667fba151d9bc09d22d" }
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "89d08ebcb91e5b2d4001b667fba151d9bc09d22d" }
+# THE MEMORY STORE (kind: store), the default governance store: one pin for the logic crate the root and
+# the kernel's test support link, and the cdylib crate the loader's cold-lane proof builds (M6 deletes
+# that lane). Same repo, same rev, one resolved copy.
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "6f4063c53d66307dca195ab4a24fc3a5320b0c97" }
+# The kernel's test-support names the store under the role it plays (`fixture-store`: no source in the
+# kernel names the instance), and a workspace-inherited dependency cannot be renamed in the member, so
+# the role name is a row of its own: SAME package, SAME rev as the row above (a bump is both lines).
+fixture-store = { package = "busbar-store-memory", git = "https://github.com/GetBusbar/busbar-store-memory", rev = "6f4063c53d66307dca195ab4a24fc3a5320b0c97" }
+busbar-store-memory-plugin = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "6f4063c53d66307dca195ab4a24fc3a5320b0c97" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all

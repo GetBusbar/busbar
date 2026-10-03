@@ -102,7 +102,7 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # root, so these fixtures stand in, under `test-support` (which the dev-dependency cycle through the
 # plane crates turns on for this crate's own tests). Renamed to the role they play: no source here
 # names the plugin.
-fixture-store = { package = "busbar-store-memory", path = "../store-memory", optional = true }
+fixture-store = { workspace = true, optional = true }
 fixture-hook = { package = "busbar-hooks-ranking", path = "../hooks-ranking", optional = true }
 axum = { workspace = true }
 tower = { workspace = true }

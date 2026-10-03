@@ -751,24 +751,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/store-memory/src",
-   "kind": "production",
-   "paths": [
-    "crates/store-memory/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/store-memory/src/tests"
-   ]
-  },
-  {
    "id": "xtask/src",
    "kind": "production",
    "paths": [
@@ -1466,36 +1448,6 @@
    "kind": "test",
    "paths": [
     "crates/plugin-loader/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/store-memory/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/store-memory/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/store-memory/tests",
-   "kind": "test",
-   "paths": [
-    "crates/store-memory/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

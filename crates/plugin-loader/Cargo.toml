@@ -196,7 +196,7 @@ busbar-export-otlp-plugin = { workspace = true }
 # (deleted at M6). The store v3 door DROPPED IN is the `store_v3_door` example below, not the crate's own
 # `dropped-in` feature: that exports `busbar_plugin_door` from the rlib too, which this test build's
 # own linked fixtures already define.
-busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"] }
+busbar-store-memory-plugin = { workspace = true, features = ["cold-dropped-in"] }
 # NO `kind: secret` fixture: the in-tree secret fixture is deleted (owner, 1.6.0-QUESTIONS.md
 # "FIXTURES": "real plugins are the examples"). The secret kind is proven by the REAL plugin repo
 # (GetBusbar/busbar-secret-vault) — `plugin_proof_tests` dlopens its built cdylib from
@@ -257,7 +257,7 @@ libc = { workspace = true }
 # test source names a plugin instance. A fixture here is also a dev-dependency above: the linked door
 # needs its `rlib`, the dropped-in door its `cdylib`.
 [package.metadata.busbar.both-ways]
-store = "busbar-store-memory"
+store = "busbar-store-memory-plugin"
 export = "busbar-export-file-plugin"
 export-webhook = "busbar-export-webhook-plugin"
 export-scrape = "busbar-export-prometheus-plugin"

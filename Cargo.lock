@@ -949,7 +949,7 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin-example-plane",
- "busbar-store-memory",
+ "busbar-store-memory-plugin",
  "busbar-transport-tcp-plugin",
  "ed25519-dalek",
  "flate2",
@@ -973,10 +973,18 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.5.0"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=6f4063c53d66307dca195ab4a24fc3a5320b0c97#6f4063c53d66307dca195ab4a24fc3a5320b0c97"
 dependencies = [
  "busbar-contract",
- "serde",
- "serde_json",
+]
+
+[[package]]
+name = "busbar-store-memory-plugin"
+version = "1.5.0"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=6f4063c53d66307dca195ab4a24fc3a5320b0c97#6f4063c53d66307dca195ab4a24fc3a5320b0c97"
+dependencies = [
+ "busbar-contract",
+ "busbar-store-memory",
 ]
 
 [[package]]

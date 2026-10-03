@@ -36,7 +36,6 @@ kind-isolation:matrix	ratchet	busbar-plane-llm × transport	592
 kind-isolation:matrix	ratchet	busbar-plane-mcp × legacy	11
 kind-isolation:matrix	ratchet	busbar-plugin-loader × hooks	3
 kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	62
-kind-isolation:matrix	ratchet	busbar-store-memory × plane	6
 kind-isolation:matrix	ratchet	busbar-voice × contract	122
 kind-isolation:matrix	ratchet	busbar-voice × plane	871
 kind-isolation:matrix	unlisted-cell	busbar × legacy	85

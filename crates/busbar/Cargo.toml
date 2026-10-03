@@ -116,7 +116,7 @@ busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 # THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
-busbar-store-memory = { path = "../store-memory" }
+busbar-store-memory = { workspace = true }
 # THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
