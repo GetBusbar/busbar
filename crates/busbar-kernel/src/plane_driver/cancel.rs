@@ -69,6 +69,20 @@ pub trait MoneySeam: Send + Sync {
     /// money steps exactly as a returned end is. Runs inside a `Drop`: it must not panic, await or
     /// cross a plugin.
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended);
+
+    /// A duplex session opens under its unit's one admission (THE DESIGN §7: the kernel's session
+    /// account, one sealed line at the end). REFUSES by default: session money is K6-4's, and until
+    /// a money seam states it no session runs unbilled.
+    fn session_opened(&self, ctx: &UnitCtx) -> Result<(), ReasonCode> {
+        let _ = ctx;
+        Err(ReasonCode::Unpriced)
+    }
+
+    /// The session's one cleanup ran: it is over. Runs inside a `Drop`: it must not panic, await
+    /// or cross a plugin.
+    fn session_ended(&self, ctx: &UnitCtx) {
+        let _ = ctx;
+    }
 }
 
 /// The driver's own facts about a unit (never the plane's word alone).

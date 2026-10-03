@@ -148,6 +148,12 @@ pub trait DriveFrame: Send {
     /// Connection class, the ticket; its `driver` field) and answer its heads, `in` first, then
     /// `out` and the `out`'s size.
     fn prepare(&mut self, driver: Ticket, flags: u32) -> (*mut InHead, *mut OutHead, u32);
+
+    /// The names its last READY answer wrote (a plane's ready sessions); none for a kind whose
+    /// `drive` names nothing.
+    fn named(&self) -> &[u64] {
+        &[]
+    }
 }
 
 impl DriveFrame for Frame<DriveIn, OutHead> {

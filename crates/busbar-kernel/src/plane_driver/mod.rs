@@ -32,7 +32,10 @@
 //! is built, persistent, outside `max_inflight`, recycled when the driver goes. [`PlaneDriver::ticks`]
 //! runs the instance's lifecycle `tick` on it at each `next_tick_ns` the last answered (the first at
 //! once; `0` = no more), so a conn read or a host service that pends inside `tick` is woken through
-//! `drive`. A session's unsolicited output (R-B) wakes the same ticket.
+//! `drive`. A session's unsolicited output (R-B) wakes the same ticket: [`PlaneDriver::drives`]
+//! wakes each session its `drive` names, and the session collects its output.
+//!
+//! DUPLEX SESSIONS (K6): [`PlaneUnits::session`], after `open_unit` admitted the unit.
 //!
 //! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
 //! ([`KernelServices::admit`]) from what it declares ([`PlaneCalls::declared`], its Statement tail)
@@ -47,6 +50,7 @@ mod money;
 mod route;
 pub mod serve;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::{
@@ -65,7 +69,7 @@ use busbar_contract::caps::{
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
@@ -73,7 +77,7 @@ pub use far_end::{
     AuthBinding, Egress, EgressFarEnd, MemberRoute, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
-pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
+pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, SessionCaller};
 
 use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
@@ -181,6 +185,8 @@ pub struct PlaneDriver {
     records: Option<(Arc<KernelServices>, Caller)>,
     driver: Option<Ticket>,
     services: Arc<KernelServices>,
+    /// The open duplex sessions, by stream: what wakes each when `drive` names it (R-B).
+    sessions: Mutex<HashMap<u64, Arc<Notify>>>,
 }
 
 impl Drop for PlaneDriver {
@@ -241,6 +247,7 @@ impl PlaneDriver {
             records: None,
             driver,
             services,
+            sessions: Mutex::default(),
         })
     }
 
@@ -595,9 +602,9 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
             let caller_ref = st.caller_ref.clone();
             drop(st);
-            run.lend_unit(self.arrival.claim, dialect, &caller_ref);
+            run.lend_unit(self.arrival.claim, dialect, &caller_ref, 0);
         }
-        let end = self.attempts(&mut run).await;
+        let end = self.attempts(&mut run, None).await;
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
             route::End::Failed(reason) => StepAnswer::refuse(token, Refusal::new(reason)),

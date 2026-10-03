@@ -325,6 +325,8 @@ pub(crate) struct Instance {
     /// crossing and held, at one address, until the `open` completes (a PENDING `open` keeps what
     /// it was lent), then handed to the caller as the reason. Empty at any other time.
     open_reason: Mutex<Vec<u8>>,
+    /// What its driver ticket's READY `drive` answers named, until the host collects them.
+    pub(crate) driven: super::worker::Driven,
     /// Last: the library outlives everything above.
     _lib: Option<Lib>,
 }
@@ -1002,6 +1004,7 @@ impl<K: Kind> Plugin<K> {
                 wake,
                 tables,
                 open_reason: Mutex::new(Vec::new()),
+                driven: super::worker::Driven::default(),
                 _lib: lib,
             }),
             _k: PhantomData,

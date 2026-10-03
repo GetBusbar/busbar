@@ -5,7 +5,8 @@
 //! compiled into this test) and DROPPED (its `cdylib`, dlopened), each loaded through the one
 //! path, handed to the kernel's plane driver as the contract's `PlaneCalls`, and driven by the one
 //! loop (`run_unit_async` / `open_unit`) through every case in `plane_driver_cases.rs`. Beside
-//! them: a plane's `drive` through the dispatcher's own driver ticket, and the crossing's cost.
+//! them: a plane's `drive` through the dispatcher's own driver ticket, the crossing's cost, and
+//! the duplex session (K6) the driver pumps after `open_unit` admitted it.
 
 #[path = "../../busbar-kernel/tests/common/mod.rs"]
 mod common;
@@ -224,6 +225,14 @@ pub(crate) struct Rig {
 impl Rig {
     pub(crate) fn stats(&self) -> [u64; cases::stat::COUNT] {
         stats(&self.plugin)
+    }
+
+    /// The plane's session counters (`/sessions`), in [`plane::Sessions`] order.
+    fn sessions(&self) -> [u64; plane::SESSIONS] {
+        let all = arrive_at(&self.plugin, "/sessions");
+        let mut out = [0; plane::SESSIONS];
+        out.copy_from_slice(&all[..plane::SESSIONS]);
+        out
     }
 }
 
@@ -872,5 +881,326 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
             None,
             "{way:?}: withdrawn, nothing mounts"
         );
+    }
+}
+
+// ── duplex sessions (K6) ─────────────────────────────────────────────────────────────────────────
+
+/// One line of a session caller's script.
+#[derive(Debug, Clone, Copy)]
+enum Line {
+    /// Send this piece.
+    Send(&'static [u8]),
+    /// Wait until the plane has written this to the caller.
+    Hear(&'static str),
+    /// Never send another piece (the caller holds the session open).
+    Hold,
+}
+
+/// A session's caller: it sends its script's pieces, waits where the script says, and keeps what
+/// the plane wrote to it. Its side ends when the script does.
+struct Scripted {
+    script: Mutex<std::collections::VecDeque<Line>>,
+    heard: Mutex<Vec<u8>>,
+}
+
+impl Scripted {
+    fn new<const N: usize>(lines: [Line; N]) -> Self {
+        Scripted {
+            script: Mutex::new(lines.into_iter().collect()),
+            heard: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn heard(&self) -> String {
+        String::from_utf8_lossy(&self.heard.lock().unwrap()).into_owned()
+    }
+}
+
+impl busbar_kernel::plane_driver::CallerEnd for Scripted {
+    fn head(&self, _status: u32, _fields: Vec<(Vec<u8>, Vec<u8>)>) {}
+
+    async fn write(&self, bytes: &[u8]) -> bool {
+        self.heard.lock().unwrap().extend_from_slice(bytes);
+        true
+    }
+}
+
+impl busbar_kernel::plane_driver::SessionCaller for Scripted {
+    /// Cancel-safe: a line leaves the script only once it is answered.
+    async fn read(&self) -> Option<Vec<u8>> {
+        loop {
+            let front = self.script.lock().unwrap().front().copied();
+            match front {
+                None => return None,
+                Some(Line::Send(piece)) => {
+                    self.script.lock().unwrap().pop_front();
+                    return Some(piece.to_vec());
+                }
+                Some(Line::Hear(text)) if self.heard().contains(text) => {
+                    self.script.lock().unwrap().pop_front();
+                }
+                Some(Line::Hear(_)) => tokio::time::sleep(Duration::from_millis(2)).await,
+                Some(Line::Hold) => std::future::pending::<()>().await,
+            }
+        }
+    }
+}
+
+/// Open a session on `r`'s driver through the one loop's opener (unit `key`, its stream), then pump
+/// it under the admission it handed back.
+async fn session(
+    r: &Rig,
+    far: &cases::Far,
+    caller: &Scripted,
+    key: u64,
+) -> Result<(), busbar_contract::caps::ReasonCode> {
+    use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
+    use busbar_kernel::teller::{open_unit, AccrualMeter, Kernel, Run, SessionOpen};
+    let steps = common::TestUnits::passing();
+    let units = r
+        .driver
+        .unit(&steps, far, caller, cases::arrival("/call", b""), 0);
+    let kernel = Kernel::new();
+    let (gauge, canary, leases, meter) = (
+        ConcurrencyGauge::new(),
+        busbar_contract::caps::Canary::new(),
+        LeaseCell::new(),
+        AccrualMeter::new(),
+    );
+    let cell = common::cell(&kernel);
+    let run = Run {
+        cell: &cell,
+        parent: None,
+        leases: &leases,
+        gauge: &gauge,
+        canary: &canary,
+        meter: &meter,
+    };
+    let ctx = common::ctx(key);
+    let SessionOpen::Admitted {
+        route,
+        destinations,
+    } = open_unit(&kernel, &units, &ctx, run)
+    else {
+        panic!("the session is admitted");
+    };
+    units.session(&route, &ctx, &destinations).await
+}
+
+/// The lane the test steps' Verify seals: the one destination a session's turns may reach.
+const SEALED: &str = "fixture-lane";
+
+/// A DUPLEX SESSION, both ways (K6): the caller's pieces cross on the session's caller-side
+/// ticket, under the unit's stream, and the plane's answers reach the caller; the caller's last
+/// piece ends it, and its one cleanup runs once. Nothing reaches the far end without a turn.
+#[tokio::test]
+async fn a_duplex_session_answers_its_caller_and_cleans_up_once() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), cases::Book::default());
+        let far = cases::Far::new(&[SEALED], &[b"x"]);
+        let caller = Scripted::new([Line::Send(b"hi"), Line::Hear("echo:hi")]);
+        let ended = tokio::time::timeout(Duration::from_secs(5), session(&r, &far, &caller, 31))
+            .await
+            .expect("the session ends with its caller");
+        assert_eq!(ended, Ok(()), "{way:?}");
+        assert_eq!(caller.heard(), "echo:hi", "{way:?}");
+        assert_eq!(r.stats()[cases::stat::UNIT], 31, "{way:?}: the unit's key");
+        assert_eq!(
+            r.sessions()[plane::Sessions::Tickets as usize],
+            1,
+            "{way:?}: the caller's pieces crossed on one ticket"
+        );
+        assert!(far.sent().is_empty(), "{way:?}: no turn, no far end");
+        assert_eq!(
+            r.book
+                .sessions_ended
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{way:?}: one cleanup"
+        );
+        assert_eq!(
+            r.stats()[cases::stat::CANCELS],
+            0,
+            "{way:?}: nothing to cancel"
+        );
+    }
+}
+
+/// UNSOLICITED OUTPUT (R-B), both ways: the plane holds output for a session and wakes the
+/// instance's ONE driver ticket; its `drive` names the session, the driver wakes it, and the
+/// session collects the output (`FROM_KERNEL`, no bytes) on its own caller-side ticket, so the
+/// caller hears it. No ticket of the session's own is a driver ticket. RED without the fan-out
+/// (`PlaneDriver::drives`, or the loader handing `drive`'s names on): the caller never hears it.
+#[tokio::test]
+async fn unsolicited_output_reaches_the_caller_through_the_instances_one_driver_ticket() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), cases::Book::default());
+        // The plane learns its driver ticket from its first tick.
+        tokio::time::timeout(Duration::from_secs(5), r.driver.ticks())
+            .await
+            .expect("one tick");
+        let far = cases::Far::new(&[SEALED], &[b"x"]);
+        let caller = Scripted::new([Line::Send(b"push:hello"), Line::Hear("hello")]);
+        let ended = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                biased;
+                ended = session(&r, &far, &caller, 32) => ended,
+                () = r.driver.drives() => Err(busbar_contract::caps::ReasonCode::TaskLost),
+            }
+        })
+        .await
+        .expect("the session's unsolicited output was collected");
+        assert_eq!(ended, Ok(()), "{way:?}");
+        assert_eq!(caller.heard(), "hello", "{way:?}");
+        let s = r.sessions();
+        assert_eq!(s[plane::Sessions::Collects as usize], 1, "{way:?}");
+        assert_eq!(
+            s[plane::Sessions::Tickets as usize],
+            1,
+            "{way:?}: collected on the session's caller-side ticket"
+        );
+        assert!(r.stats()[cases::stat::DRIVES] >= 1, "{way:?}: drive ran");
+    }
+}
+
+/// A TURN LEG IS A ROUTE WALK under the session's one admission, inside the destination set
+/// sealed at the open, both ways: the caller's piece the plane binds for the far end is walked on
+/// the session's far-side ticket; the walk's member outside the sealed set is passed over without
+/// a crossing, and the far end's answer reaches the caller. RED without the sealed-set check: the
+/// first attempt goes to the outsider.
+#[tokio::test]
+async fn a_turn_leg_walks_inside_the_destination_set_sealed_at_the_open() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), cases::Book::default());
+        let far = cases::Far::new(&["outsider", SEALED], &[b"pong"]);
+        let caller = Scripted::new([Line::Send(b"far:ping"), Line::Hear("far-said:pong")]);
+        let ended = tokio::time::timeout(Duration::from_secs(5), session(&r, &far, &caller, 33))
+            .await
+            .expect("the turn's answer reached the caller");
+        assert_eq!(ended, Ok(()), "{way:?}");
+        assert_eq!(caller.heard(), "far-said:pong", "{way:?}");
+        let sent = far.sent();
+        assert_eq!(sent.len(), 1, "{way:?}: one send");
+        assert_eq!(sent[0].member, SEALED, "{way:?}: inside the sealed set");
+        assert_eq!(
+            sent[0].attempt_no, 2,
+            "{way:?}: the outsider was the first pick"
+        );
+        assert_eq!(sent[0].verb, b"POST", "{way:?}");
+        assert_eq!(sent[0].target, b"/far/turn", "{way:?}");
+        assert_eq!(sent[0].body, b"ping", "{way:?}");
+        let s = r.sessions();
+        assert_eq!(
+            s[plane::Sessions::Attempts as usize],
+            1,
+            "{way:?}: only the sealed member was crossed"
+        );
+        assert_eq!(
+            s[plane::Sessions::Tickets as usize],
+            2,
+            "{way:?}: one ticket per side"
+        );
+    }
+}
+
+/// CLEANUP RUNS EXACTLY ONCE when the session's caller drops it mid-flight, both ways: the guard
+/// runs the session's cleanup once, its two tickets are buried (nothing crosses inside a `Drop`),
+/// and the sweep cancels each once; nothing runs it again.
+#[tokio::test]
+async fn a_dropped_session_cleans_up_exactly_once() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), cases::Book::default());
+        let far = cases::Far::new(&[SEALED], &[b"x"]);
+        let caller = Scripted::new([Line::Send(b"hi"), Line::Hold]);
+        let held =
+            tokio::time::timeout(Duration::from_millis(300), session(&r, &far, &caller, 34)).await;
+        assert!(held.is_err(), "{way:?}: the session was still open");
+        assert_eq!(caller.heard(), "echo:hi", "{way:?}");
+        let ended = || {
+            r.book
+                .sessions_ended
+                .load(std::sync::atomic::Ordering::SeqCst)
+        };
+        assert_eq!(ended(), 1, "{way:?}: the dropped session's one cleanup");
+        assert_eq!(r.driver.buried(), 2, "{way:?}: one ticket per side, buried");
+        r.driver.sweep();
+        assert_eq!(r.driver.buried(), 0, "{way:?}");
+        assert_eq!(
+            r.stats()[cases::stat::CANCELS],
+            2,
+            "{way:?}: each side cancelled once"
+        );
+        r.driver.sweep();
+        assert_eq!(ended(), 1, "{way:?}: and never again");
+        assert_eq!(r.stats()[cases::stat::CANCELS], 2, "{way:?}");
+    }
+}
+
+/// A money seam that states no session money.
+struct Unstated;
+
+impl busbar_kernel::plane_driver::MoneySeam for Unstated {
+    fn checkpoint(
+        &self,
+        _: &busbar_kernel::teller::UnitCtx,
+        _: &[UnitCount],
+    ) -> busbar_kernel::plane_driver::Checkpoint {
+        busbar_kernel::plane_driver::Checkpoint::Continue
+    }
+    fn cancelled(
+        &self,
+        _: &busbar_kernel::teller::UnitCtx,
+        _: &busbar_kernel::plane_driver::CancelBill,
+    ) {
+    }
+    fn abandoned(&self, _: &busbar_kernel::teller::UnitCtx, _: busbar_kernel::teller::Ended) {}
+}
+
+/// THE SESSION MONEY GUARD (K6-4 not landed): under a money seam that states no session money a
+/// session is refused at its open as `Unpriced`, before any ticket is minted or piece crosses.
+#[tokio::test]
+async fn a_session_is_refused_while_its_money_is_unstated() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
+            workers: 2,
+            ..DispatchConfig::default()
+        }));
+        let plugin = load(way, &dispatcher);
+        let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1));
+        let refusal_statuses = calls.refusal_statuses();
+        let driver = PlaneDriver::new(
+            calls,
+            DriverConfig {
+                caps: BufferCaps::default(),
+                op_classes: vec![OpClassId::new("call")],
+                status_of: refusal_status,
+                refusal_statuses,
+                caller_refs: None,
+            },
+            Arc::new(Unstated),
+            services(),
+            ("test_plane", &serde_yaml::Value::Null),
+        )
+        .expect("the instance is admitted");
+        let r = Rig {
+            plugin,
+            driver,
+            book: Arc::new(cases::Book::default()),
+        };
+        let far = cases::Far::new(&[SEALED], &[b"x"]);
+        let caller = Scripted::new([Line::Send(b"hi")]);
+        let ended = session(&r, &far, &caller, 35).await;
+        assert_eq!(
+            ended,
+            Err(busbar_contract::caps::ReasonCode::Unpriced),
+            "{way:?}"
+        );
+        assert_eq!(
+            r.stats()[cases::stat::ON_PIECES],
+            0,
+            "{way:?}: no piece crossed"
+        );
+        assert_eq!(caller.heard(), "", "{way:?}");
     }
 }
