@@ -16,6 +16,31 @@ use busbar_kernel::store::{BreakerCfg, LaneRuntime};
 
 use crate::store::HealthState;
 
+/// The selection every resident plane drives, composed here exactly as the MCP and A2A dispatch
+/// paths compose it (`mcp/reroute.rs`, `a2a/route.rs`): [`InOrder`] over `members:`, the ONE loop
+/// [`walk_with`], and a breaker-only admission per candidate. The planes reach the breaker through
+/// the host `breaker_admit` seam; that seam's body is [`LaneRuntime::try_admit_breaker`], called here
+/// directly. (The kernel's own one-line spelling of this composition, `failover::walk`, had no
+/// production caller and is deleted; these tests now pin the live pieces it named.)
+fn walk_in_order<'a, C: Candidate>(
+    store: &dyn LaneRuntime,
+    pool: &str,
+    members: &'a [C],
+    attempt: &Attempt<'_>,
+    now: u64,
+) -> Result<Admitted<'a, C, Option<u64>>, Refusal> {
+    let mut order = InOrder::new(attempt.tried, members.len());
+    let mut passed_over = Vec::new();
+    walk_with(
+        pool,
+        members,
+        attempt,
+        &mut order,
+        &mut passed_over,
+        &mut |_position, member| store.try_admit_breaker(pool, member.lane(), now),
+    )
+}
+
 /// A store with `n` lanes and nothing else. `make_lane_data_with_weight` is a plane's own
 /// test lane constructor, reused verbatim: the LANE TABLE is the same table, which is half the reason
 /// the breaker below is provably the same breaker.
@@ -123,7 +148,7 @@ fn first_plane_a_dead_upstream_fails_fast_and_is_named() {
         lane: 0,
         pin: Some(SEARCH_DIGEST),
     }];
-    let err = walk(
+    let err = walk_in_order(
         &store,
         "plane-a/pool:search",
         &members,
@@ -169,7 +194,7 @@ fn second_plane_a_dead_upstream_fails_fast_and_is_named() {
         lane: 0,
         card_fingerprint: Some("sha256:cafe0000"),
     }];
-    let err = walk(
+    let err = walk_in_order(
         &store,
         "plane-b/pool:planner",
         &members,
@@ -222,7 +247,7 @@ fn the_seam_and_the_model_plane_share_one_breaker_cell() {
         lane: 0,
         pin: Some(SEARCH_DIGEST),
     }];
-    match walk(
+    match walk_in_order(
         &store,
         POOL,
         &members,
@@ -260,7 +285,7 @@ fn your_search_server_in_two_regions_one_dies_and_the_agent_never_learns() {
     store.force_open_in(POOL, 0, now + 60);
 
     let members = two_regions();
-    let admitted = walk(
+    let admitted = walk_in_order(
         &store,
         POOL,
         &members,
@@ -311,7 +336,7 @@ fn two_registrations_of_one_agent_reroute_the_same_way() {
     store.force_open_in(POOL, 0, now + 60);
 
     let members = two_agent_regions();
-    let admitted = walk(
+    let admitted = walk_in_order(
         &store,
         POOL,
         &members,
@@ -343,7 +368,7 @@ fn a_transient_failure_trips_the_primary_and_the_next_request_reroutes() {
     };
 
     // Request one lands on the primary.
-    let first = walk(
+    let first = walk_in_order(
         &store,
         POOL,
         &members,
@@ -380,7 +405,7 @@ fn a_transient_failure_trips_the_primary_and_the_next_request_reroutes() {
     );
 
     // Request two — a NEW request, nothing sent — reroutes before its first byte.
-    let second = walk(
+    let second = walk_in_order(
         &store,
         POOL,
         &members,
@@ -424,7 +449,7 @@ fn a_non_repeatable_call_is_not_retried_by_default() {
     assert!(store.try_admit_breaker(POOL, 1, now).is_ok());
     store.release_probe_in(POOL, 1);
 
-    let err = walk(
+    let err = walk_in_order(
         &store,
         POOL,
         &members,
@@ -467,7 +492,7 @@ fn a_declared_repeatable_read_is_retried_after_a_failed_dispatch() {
     const POOL: &str = "plane-a/pool:search";
     let members = two_regions();
 
-    let admitted = walk(
+    let admitted = walk_in_order(
         &store,
         POOL,
         &members,
@@ -490,7 +515,7 @@ fn the_first_selection_is_never_a_repeat() {
     let store = store_with(2);
     let now = 8_000;
     let members = two_regions();
-    let admitted = walk(
+    let admitted = walk_in_order(
         &store,
         "plane-a/pool:search",
         &members,
@@ -531,7 +556,7 @@ fn two_different_servers_are_refused_however_the_operator_declared_them() {
             pin: Some("sha256:deadbeef"),
         },
     ];
-    let err = walk(
+    let err = walk_in_order(
         &store,
         POOL,
         &members,
@@ -579,7 +604,7 @@ fn an_unapproved_candidate_never_matches_not_even_another_unapproved_one() {
             pin: None,
         },
     ];
-    let err = walk(
+    let err = walk_in_order(
         &store,
         POOL,
         &members,
@@ -604,7 +629,7 @@ fn an_unapproved_candidate_never_matches_not_even_another_unapproved_one() {
 fn an_empty_pool_is_an_operator_error_and_says_so() {
     let store = store_with(1);
     let members: Vec<ToolServer> = Vec::new();
-    let err = walk(
+    let err = walk_in_order(
         &store,
         "plane-a/pool:nothing",
         &members,
@@ -673,7 +698,7 @@ fn a_third_plane_costs_a_candidate_type_and_nothing_else() {
     ];
 
     // SELECT + ADMIT — inherited.
-    let first = walk(
+    let first = walk_in_order(
         &store,
         POOL,
         &members,
@@ -707,7 +732,7 @@ fn a_third_plane_costs_a_candidate_type_and_nothing_else() {
     ));
 
     // REROUTE — inherited.
-    let second = walk(
+    let second = walk_in_order(
         &store,
         POOL,
         &members,
@@ -723,7 +748,7 @@ fn a_third_plane_costs_a_candidate_type_and_nothing_else() {
     assert_eq!(second.candidate().name(), "madrid");
 
     // …and so is the SAFETY RULE, without this plane writing a retry policy.
-    let err = walk(
+    let err = walk_in_order(
         &store,
         POOL,
         &members,
@@ -751,7 +776,7 @@ fn a_third_plane_costs_a_candidate_type_and_nothing_else() {
             ephemeris: Some("tle:43013"),
         },
     ];
-    let err = walk(
+    let err = walk_in_order(
         &store,
         POOL,
         &wrong,

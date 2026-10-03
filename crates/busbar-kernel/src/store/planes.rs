@@ -13,7 +13,7 @@
 //! onto the one cell store, and the FSM transitions all run in `store::in_memory`.
 //!
 //! This is deliberately NOT failover and NOT pools: nothing here SELECTS among candidates. The
-//! selection loop is [`crate::failover::walk`], which the reroute-parity unit mounts on every plane
+//! selection loop is [`crate::failover::walk_with`], which the reroute-parity unit mounts on every plane
 //! consumer's dispatch path; it reaches these same cells through [`PlaneBreakers::runtime`] and this
 //! module stays what it was — a plane consumer's handle on the one cell store, plus the recording
 //! half of the disposition pipeline.
@@ -158,7 +158,7 @@ impl PlaneBreakers {
                 //
                 // This is a per-BREAKER setting, not a per-cell one, so it is set for the
                 // conservative case and a pooled cell inherits it: a pooled member is deprioritised
-                // by a TRIP, which `failover::walk` already routes around, rather than by a
+                // by a TRIP, which `failover::walk_with` already routes around, rather than by a
                 // sub-threshold bench. So these cells refuse on a TRIP and nothing less:
                 // error-rate >= 0.5 over >= 5 outcomes in 30s, exactly the contract ADR-0002 and
                 // `docs/circuit-breaker.md` publish for this plane. An upstream's own `Retry-After`
@@ -184,7 +184,7 @@ impl PlaneBreakers {
     /// the cell wedges HalfOpen. Production call sites use [`Self::admit`], whose RAII token cannot be
     /// leaked by a dropped future — and which releases nothing on the `None` path.
     // One plane consumer admits directly through this RAII pair, while another reaches the same
-    // cell via `failover::walk` + [`Self::adopt`]. So with the first plane consumer's feature off
+    // cell via `failover::walk_with` + [`Self::adopt`]. So with the first plane consumer's feature off
     // (and the second's on) neither this nor [`Self::admit`] has a caller.
     #[allow(dead_code)]
     pub(crate) fn try_admit(&self, key: &str, lane: usize) -> Result<Option<u64>, Unavailable> {

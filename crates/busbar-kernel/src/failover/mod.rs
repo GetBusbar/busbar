@@ -44,7 +44,7 @@
 //! > **Interchangeability is a CHECKABLE FACT, not an operator's assertion. Two candidates are
 //! > interchangeable iff the pins busbar already computes AGREE.**
 //!
-//! [`walk`] enforces exactly that: every failover hop must present the SAME `interchange_key` as the
+//! [`walk_with`] enforces exactly that: every failover hop must present the SAME `interchange_key` as the
 //! primary, and a candidate that presents `None` (nothing approved yet) or a different key is
 //! REFUSED — [`Refusal::NotInterchangeable`] — rather than quietly served. An operator declaring a
 //! pool has therefore asserted only *"these two names are the same deployment"*; busbar checks the
@@ -125,7 +125,7 @@ use busbar_kernel::store::LaneRuntime;
 // Phase-B B1: the candidate/stage/refusal/admitted/attempt/order/walk_with FAMILY relocated to
 // `busbar-substrate`; this glob keeps `crate::failover::X` resolving for every in-core caller. The
 // serde config type (`CandidatePoolCfg`) and the disposition halves a plugin's dispatch engine drives
-// (`walk`, `record_outcome`, `record_success`) stay here, over `busbar_kernel::store::LaneRuntime`
+// (`record_outcome`, `record_success`) stay here, over `busbar_kernel::store::LaneRuntime`
 // and `crate::breaker`. Glob, so the re-export is never an unused import when a plane consumer is out.
 
 /// ONE POOL OF INTERCHANGEABLE UPSTREAMS, as the operator writes it — the ENTIRE config vocabulary
@@ -194,38 +194,6 @@ impl CandidatePoolCfg {
             Repeatable::No
         }
     }
-}
-
-/// THE SEAM'S SPELLING OF [`walk_with`]: the operator's `members:` order, admitted breaker-only.
-///
-/// A plugin's entry point when it wants breaker-only admission over its own declared order. It adds
-/// NO selection logic — it names the two things a plugin supplies ([`InOrder`] and
-/// [`LaneRuntime::try_admit_breaker`]) and hands them to the one loop.
-// No production caller now: both planes drive [`walk_with`] with the host `breaker_admit` seam
-// directly (CLUSTER-1), so the breaker-only spelling survives only for the failover unit tests, which
-// drive it under `#[cfg(test)]`.
-// `pub` (was `pub(crate)`): a disposition half a plane's relocating engine drives. A `pub` fn is
-// never dead, so the `not(test)` dead-code allow is a harmless no-op the Phase-6 tighten-back drops.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn walk<'a, C: Candidate>(
-    store: &dyn LaneRuntime,
-    pool: &str,
-    members: &'a [C],
-    attempt: &Attempt<'_>,
-    now: u64,
-) -> Result<Admitted<'a, C, Option<u64>>, Refusal> {
-    let mut order = InOrder::new(attempt.tried, members.len());
-    // These planes render their refusal from `Refusal` itself (which already carries every reason by
-    // name), so the positional buffer is local and dropped here.
-    let mut passed_over = Vec::new();
-    walk_with(
-        pool,
-        members,
-        attempt,
-        &mut order,
-        &mut passed_over,
-        &mut |_position, member| store.try_admit_breaker(pool, member.lane(), now),
-    )
 }
 
 /// RECORD WHAT THE UPSTREAM DID, through the ONE classifier and onto the ONE breaker cell.
@@ -331,7 +299,7 @@ pub const DEFAULT_FAILOVER_CAP: usize = 3;
 /// interchangeability check, the retry-safety rule, the breaker admission and the disposition are all
 /// inherited from this module, and the circuit breaker itself is
 /// [`LaneRuntime::try_admit_breaker`] — the same one the model plane has always used, called from
-/// [`walk`] and from nowhere else on these planes.
+/// [`walk_with`]'s `admit` and from nowhere else on these planes.
 pub trait Candidate {
     /// The operator-facing name of this candidate, for refusals and audit rows. A plane spells its own
     /// (`"search-eu"`, `"planner@eu"`); core never parses it.
@@ -534,7 +502,7 @@ impl<'a, C: Candidate> Admitted<'a, C, u64> {
 
 /// WHAT THIS REQUEST HAS ALREADY DONE, and what it is allowed to do next.
 ///
-/// The four facts [`walk`] needs about the REQUEST, as opposed to the pool — bundled because they
+/// The four facts [`walk_with`] needs about the REQUEST, as opposed to the pool — bundled because they
 /// travel together and are meaningless apart: `stage` and `repeatable` are only ever read against
 /// each other, and both are only ever consulted because `tried` is non-empty. A caller building one
 /// of these has the whole safety question in front of it in one place, rather than four positional
@@ -579,7 +547,7 @@ pub trait Order {
 
 /// THE OPERATOR'S ORDER: `members:` as written, skipping anything already `tried`.
 ///
-/// The MCP and A2A order, and the one the seam's own [`walk`] uses. `members[0]` is the primary and
+/// The MCP and A2A order. `members[0]` is the primary and
 /// the rest are its declared twins, so "first admissible in declaration order" is the whole policy —
 /// there is no weighting to apply because two deployments of ONE image are not a load-balancing
 /// decision, they are a same-or-nothing choice.
@@ -623,7 +591,7 @@ impl Order for InOrder<'_> {
 /// through THE circuit breaker.
 ///
 /// There is exactly ONE selection loop and this is it. Every plane reaches it: MCP and A2A through
-/// [`walk`], the model plane through `proxy::select::pick_among`, which supplies an SWRR [`Order`]
+/// [`InOrder`] + [`LaneRuntime::try_admit_breaker`], the model plane through `proxy::select::pick_among`, which supplies an SWRR [`Order`]
 /// and the permit-carrying admission and owns NO loop of its own.
 ///
 /// The order of the checks is the contract, because the first failure is what the operator is told:
