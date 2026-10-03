@@ -164,7 +164,8 @@ unsafe fn copied(ptr: *const u8, len: usize) -> String {
     if ptr.is_null() || len == 0 {
         return String::new();
     }
-    String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    // SAFETY: the caller's.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr, len) }).into_owned()
 }
 
 /// A list's pointer; NULL when empty.
@@ -185,7 +186,7 @@ struct Snapshot {
 }
 
 fn snapshot(families: &serde_json::Value) -> Snapshot {
-    let families: &[serde_json::Value] = families.as_array().map_or(&[], Vec::as_slice);
+    let families: &[serde_json::Value] = families.as_array().map_or(&[][..], Vec::as_slice);
     let mut labels = Vec::new();
     for f in families {
         for s in f
@@ -565,7 +566,7 @@ fn contract(fold: &Fold, k: &serde_json::Value) {
             );
         }
     }
-    for (i, _) in arr("scrape").iter().enumerate() {
+    for i in 0..arr("scrape").len() {
         let line = at(&format!("scrape #{i}"));
         assert!(
             line.starts_with("Ready lease=false ") && line.contains(" equal=true "),
