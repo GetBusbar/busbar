@@ -32,13 +32,18 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask loom [<test args>]   (the loom model of the config swap; a run of zero models is red)
+  cargo xtask txn-fence   (the transaction compile fence: passes only when the fence fails to compile, for its three reasons)
   cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
   cargo xtask plugin-gates <depwall|netban|cdeps|imports|parity|bothways|declares|selftest> <args...>
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
+  cargo xtask conformance record --suite <id>|--all [--recording <dir>] [--out <dir>]
   cargo xtask dialect wire [--write | --diff] <dialect|all>
   cargo xtask dialect wire --diff-files <old.wire.json> <new.wire.json>
   cargo xtask dialect compile
+  cargo xtask readme-assets [<outdir>]   (redraw the README SVGs from assets/readme/data.json + install.json)
+  cargo xtask install-sizes [--check]    (re-measure the image sizes from the registries into assets/readme/install.json)
   cargo xtask [--root <worktree>] ship \"<PR title>\" [--body <file>]   (lane-* only: merge predev, pre-flight, push, PR, auto-merge)
   cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
 
@@ -62,8 +67,13 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "root",
     "perf-ab",
     "perf-ab-mock",
+    "secret-hygiene-scan3",
     "dialect",
+    "readme-assets",
+    "install-sizes",
     "ship",
+    "txn-fence",
+    "loom",
 ];
 
 pub fn main(args: &[String]) -> i32 {
@@ -94,6 +104,9 @@ pub fn main(args: &[String]) -> i32 {
         // as the one command a change under `abi/` ends with.
         Some("abi-header") => gate(args),
         Some("selftest") => selftest_cmd(&args[1..]),
+        // CHECK 3 against named files (the retro-proof), the script's `--scan3`. A debugging aid,
+        // not a gate: it prints findings and owns no rows.
+        Some("secret-hygiene-scan3") => crate::gates::secret_hygiene::scan3_main(&args[1..]),
         // The pre-registry spelling, kept byte-identical: `cargo xtask denylist` prints exactly
         // what it always printed, so nothing that reads its output has to move on the same day the
         // registry arrives.
@@ -136,12 +149,28 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::dialect::main(&cx, &args[1..]),
             Err(code) => code,
         },
+        // THE README GENERATORS. Not gates: a human runs them after a re-measure. `readme-assets`
+        // WRITES the figure SVGs from `assets/readme/data.json`; `install-sizes` reads the image
+        // registries and WRITES `assets/readme/install.json` (or, with `--check`, reports drift).
+        Some("readme-assets") => match open_ctx() {
+            Ok(cx) => crate::readme_assets::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        Some("install-sizes") => match open_ctx() {
+            Ok(cx) => crate::install_sizes::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
         // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
         // node published, by the published recipe pages alone, and reads no tree.
         Some("audit-verify") => crate::audit_verify::main(&args[1..]),
         // THE PLUGIN FLEET'S GATES (depwall, netban, cdeps, imports, parity, bothways, declares,
         // selftest): pure functions over cargo metadata, nm output and the two lockfiles. Not a gate.
         Some("plugin-gates") => crate::fleet::plugin_gates::main(&args[1..]),
+        // THE TRANSACTION COMPILE FENCE. Not a gate: it COMPILES busbar-kernel under a cfg and
+        // passes only when that build fails for its three named reasons.
+        Some("txn-fence") => crate::txn_fence::main(&args[1..]),
+        // THE LOOM MODEL of the config swap (slow, exhaustive; refuses a run that ran no model).
+        Some("loom") => crate::loom::main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,
