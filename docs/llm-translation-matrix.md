@@ -20,7 +20,7 @@ it; `-` means the dialect has no form for it.
 | bedrock | response | 20 | 0 |
 | bedrock | stream | 7 | 0 |
 | cohere | request | 38 | 0 |
-| cohere | response | 14 | 0 |
+| cohere | response | 15 | 0 |
 | cohere | stream | 11 | 0 |
 | gemini | request | 41 | 1 |
 | gemini | response | 34 | 1 |
@@ -145,7 +145,7 @@ it; `-` means the dialect has no form for it.
 | audio_tokens | - | - | - | - | `usage.prompt_tokens_details.audio_tokens`<br>`usage.completion_tokens_details.audio_tokens` | - |
 | avg_logprobs | - | - | - | `candidates[].avgLogprobs` | - | - |
 | block_reason | - | - | - | `promptFeedback.blockReason` | - | - |
-| cache_read_tokens | `usage.cache_read_input_tokens` | `usage.cacheReadInputTokens` | - | `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` | `usage.input_tokens_details.cached_tokens` |
+| cache_read_tokens | `usage.cache_read_input_tokens` | `usage.cacheReadInputTokens` | `usage.cached_tokens` | `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` | `usage.input_tokens_details.cached_tokens` |
 | cache_write_tokens | `usage.cache_creation_input_tokens` | `usage.cacheWriteInputTokens` | - | - | `usage.prompt_tokens_details.cache_write_tokens` | `usage.input_tokens_details.cache_write_tokens` |
 | call_id | - | - | - | - | - | `output[].type=function_call.call_id` |
 | citation_metadata | - | - | - | `candidates[].citationMetadata` | - | - |

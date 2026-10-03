@@ -1276,3 +1276,8 @@ mod ir_mapping_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+/// DF-MAP audit: the answer slots on the Cohere wire, and the cache-read count row.
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;
