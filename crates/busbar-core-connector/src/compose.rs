@@ -10,7 +10,9 @@
 //!
 //! The socket is the host's, non-blocking, its readiness on the dialling worker's reactor
 //! ([`crate::io`]); connection security is `rustls` driven sans-IO here, with the protocol offer
-//! (ALPN) the entry's registration states; the framer is the entry's table ([`crate::framer`]).
+//! (ALPN) the entry's `locate` answered (THE DESIGN, connections: "the ALPN offer is the
+//! framer's"; the registration's offer stands only for an entry that answers none); the framer is
+//! the entry's table ([`crate::framer`]).
 //! The connection is a state machine the caller polls — it holds no thread and no task, and every
 //! wait is Pending with the caller's waker registered on the socket or the timer:
 //!
@@ -87,9 +89,10 @@ pub struct Dial {
     /// The target, as the entry's `locate` reads it.
     pub target: String,
     /// The client TLS config, where the target asks for connection security (its ALPN offer is
-    /// set per dial from `alpn`).
+    /// set per dial: the entry's own, else `alpn`).
     pub tls: Option<Arc<rustls::ClientConfig>>,
-    /// The protocols offered in the TLS handshake, most preferred first.
+    /// The protocols offered in the TLS handshake, most preferred first, where the entry's
+    /// `locate` answers no offer of its own.
     pub alpn: Vec<Vec<u8>>,
     /// The bound on the open: connect and handshake.
     pub open_timeout: Duration,
@@ -156,6 +159,9 @@ pub struct Connection {
     head_words: HeadWords,
     /// Writes the caller made before the framing began, in order: `(stream, bytes, end)`.
     early: Vec<(u64, Vec<u8>, bool, bool)>,
+    /// The stream the dialled connection's CURRENT exchange rides: [`EXCHANGE_STREAM`] for the
+    /// first, the next number for each exchange a reuse opens on it ([`Connection::reuse`]).
+    exchange: u64,
     open_deadline: Option<Instant>,
     framer_deadline: Option<Instant>,
     sleep: Option<(Instant, Pin<Box<tokio::time::Sleep>>)>,
@@ -291,6 +297,27 @@ impl Planned {
         self.located.secure
     }
 
+    /// The name the entry located for connection security, where it names one.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.located.name.as_deref()
+    }
+
+    /// Send this dial's first message as a NEW exchange on `conn`, an open connection to the same
+    /// place (the pool's): no socket, no handshake, no judgement.
+    ///
+    /// # Errors
+    ///
+    /// The connection is not open, or the entry refused the message.
+    pub fn reuse(self, conn: &mut Connection) -> Result<(), Failure> {
+        let Dial {
+            opening,
+            head_words,
+            ..
+        } = self.dial;
+        conn.reuse(opening, head_words)
+    }
+
     /// Dial exactly `addr` — the address judged for [`Self::authority`] — with the name the entry
     /// located offered to connection security: a non-blocking connect registered on the calling
     /// worker's reactor. The connection comes back at once, its open in flight.
@@ -310,7 +337,13 @@ impl Planned {
                 Failure::Refused("the target asks for connection security and none is set".into())
             })?;
             let mut config = (*base).clone();
-            config.alpn_protocols.clone_from(&dial.alpn);
+            // THE OFFER IS THE FRAMER'S: what its `locate` answered, most preferred first; the
+            // registration's stands only for an entry that answers none.
+            config.alpn_protocols = if located.offer.is_empty() {
+                dial.alpn.clone()
+            } else {
+                located.offer.clone()
+            };
             let host = located.name.clone().unwrap_or_else(|| {
                 located
                     .authority
@@ -349,6 +382,7 @@ impl Planned {
             opening: dial.opening,
             head_words: dial.head_words,
             early: Vec::new(),
+            exchange: EXCHANGE_STREAM,
             open_deadline: Some(Instant::now() + dial.open_timeout),
             framer_deadline: None,
             sleep: None,
@@ -491,6 +525,7 @@ impl Connection {
             opening: None,
             head_words: HeadWords::default(),
             early: Vec::new(),
+            exchange: EXCHANGE_STREAM,
             open_deadline: Some(Instant::now() + accept.handshake_timeout),
             framer_deadline: None,
             sleep: None,
@@ -507,6 +542,67 @@ impl Connection {
     #[must_use]
     pub fn is_open(&self) -> bool {
         matches!(self.phase, Phase::Open)
+    }
+
+    /// Whether this connection was dialled (its exchanges are the caller's requests), not accepted.
+    #[must_use]
+    pub fn dialled(&self) -> bool {
+        self.side == SIDE_DIAL
+    }
+
+    /// The stream the dialled connection's current exchange rides.
+    #[must_use]
+    pub fn exchange(&self) -> u64 {
+        self.exchange
+    }
+
+    /// Whether the connection can carry another exchange now: dialled, framed and open, with
+    /// nothing left unread and nothing held back for the socket.
+    #[must_use]
+    pub fn reusable(&self) -> bool {
+        self.dialled()
+            && self.framing.is_some()
+            && matches!(self.phase, Phase::Open)
+            && self.inbox.is_empty()
+            && self.early.is_empty()
+    }
+
+    /// Take in whatever the far end sent while the connection sat idle (its goodbye, a closed
+    /// socket, a settings change), without waiting, and answer whether it can still carry an
+    /// exchange.
+    pub fn fresh(&mut self) -> bool {
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        loop {
+            match self.drive(&mut cx) {
+                Ok(true) if self.inbox.is_empty() => {}
+                Ok(_) => return self.reusable(),
+                Err(f) => {
+                    self.phase = Phase::Failed(f);
+                    return false;
+                }
+            }
+        }
+    }
+
+    /// Open a NEW exchange on this open dialled connection: `opening`, encoded with its head words
+    /// by the entry, emitted on the next stream. The framer speaks whatever the connection agreed
+    /// (on HTTP/2, a new stream on the same connection).
+    ///
+    /// # Errors
+    ///
+    /// The connection cannot carry another exchange, or the entry refused the message.
+    pub fn reuse(
+        &mut self,
+        opening: Option<Opening>,
+        head_words: HeadWords,
+    ) -> Result<(), Failure> {
+        if !self.reusable() {
+            return Err(Failure::Closed);
+        }
+        self.exchange += 1;
+        self.opening = opening;
+        self.head_words = head_words;
+        self.send_opening()
     }
 }
 
@@ -673,7 +769,7 @@ impl Connection {
         text: bool,
         cx: &mut Context<'_>,
     ) -> Result<usize, Failure> {
-        self.emit(EXCHANGE_STREAM, bytes, end, text, cx)
+        self.emit(self.exchange, bytes, end, text, cx)
     }
 
     /// Offer `bytes` on `stream` (`end` = the stream's message is complete, `text` = it is a text
@@ -871,6 +967,17 @@ impl Connection {
         self.framing = Some(framing);
         self.phase = Phase::Open;
         self.absorb(y)?;
+        self.send_opening()?;
+        for (stream, bytes, end, text) in std::mem::take(&mut self.early) {
+            let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
+            let y = framing.emit(stream, &bytes, end, text).map_err(failed)?;
+            self.absorb(y)?;
+        }
+        Ok(())
+    }
+
+    /// Send the first message of the current exchange, if one is held, on its stream.
+    fn send_opening(&mut self) -> Result<(), Failure> {
         if let Some((fields, body)) = self.opening.take() {
             let (method, target) = std::mem::take(&mut self.head_words);
             if !fields.is_empty() || !body.is_empty() || !method.is_empty() || !target.is_empty() {
@@ -883,15 +990,10 @@ impl Connection {
                         .map_err(|e| Failure::Refused(e.to_string()))?;
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
                 let y = framing
-                    .emit(EXCHANGE_STREAM, &message, true, false)
+                    .emit(self.exchange, &message, true, false)
                     .map_err(failed)?;
                 self.absorb(y)?;
             }
-        }
-        for (stream, bytes, end, text) in std::mem::take(&mut self.early) {
-            let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-            let y = framing.emit(stream, &bytes, end, text).map_err(failed)?;
-            self.absorb(y)?;
         }
         Ok(())
     }

@@ -34,6 +34,8 @@ pub struct Knobs {
     pub head: bool,
     /// Every frame the framing yields is a text message (`PIECE_TEXT`), as ws states one.
     pub text: bool,
+    /// `locate` answers this protocol offer (ProtocolNameList bytes).
+    pub offer: Option<&'static [u8]>,
 }
 
 #[derive(Default)]
@@ -201,6 +203,17 @@ impl FramerDoor for TestDoor {
                         std::ptr::copy_nonoverlapping(name.as_ptr(), i.name_buf, name.len());
                     }
                     o.name_written = name.len() as u64;
+                }
+                if let Some(offer) = self.knobs.offer {
+                    // SAFETY: host buffer of `alpn_cap` bytes; the test's offers fit.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            offer.as_ptr(),
+                            i.alpn_buf,
+                            offer.len().min(i.alpn_cap),
+                        );
+                    }
+                    o.alpn_written = offer.len() as u64;
                 }
                 ("locate", ok)
             }

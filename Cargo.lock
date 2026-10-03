@@ -365,6 +365,8 @@ dependencies = [
  "prost",
  "rcgen",
  "reqwest",
+ "rustls",
+ "rustls-pki-types",
  "serde_json",
  "serde_yaml_ng",
  "sha2",
@@ -372,6 +374,7 @@ dependencies = [
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
+ "tokio-rustls",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -1062,7 +1065,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=fa7d85930c01fa403ccb47f2602de884c40f4cf3#fa7d85930c01fa403ccb47f2602de884c40f4cf3"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=cf99376d7c424e3484e9c4c2ed7302e22a5430b5#cf99376d7c424e3484e9c4c2ed7302e22a5430b5"
 dependencies = [
  "busbar-contract",
  "bytes",

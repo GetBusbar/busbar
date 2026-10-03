@@ -19,13 +19,25 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
 fn the_process_has_one_connector_and_every_path_takes_it() {
     let doors = crate::LINKED_TRANSPORT_DOORS;
     assert!(!doors.is_empty(), "this build links a transport door");
-    let built = process::build(|| entries(doors), judge(), &[], Arc::new(|_| {}));
+    let built = process::build(
+        || entries(doors, &TransportSettings::default()),
+        judge(),
+        &[],
+        Arc::new(|_| {}),
+        PoolPosture::NONE,
+    );
     let built = built.expect("the linked doors build a connector");
     let installed = install(Arc::clone(&built)).expect("the first install is the one");
     assert!(Arc::ptr_eq(installed, &built));
     assert!(Arc::ptr_eq(the(), &built), "the() is the installed one");
-    let second = process::build(|| entries(doors), judge(), &[], Arc::new(|_| {}))
-        .expect("a second one builds");
+    let second = process::build(
+        || entries(doors, &TransportSettings::default()),
+        judge(),
+        &[],
+        Arc::new(|_| {}),
+        PoolPosture::NONE,
+    )
+    .expect("a second one builds");
     assert!(install(second).is_err(), "a second connector is refused");
     assert!(Arc::ptr_eq(the(), &built));
 }

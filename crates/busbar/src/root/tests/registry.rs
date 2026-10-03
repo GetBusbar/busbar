@@ -847,7 +847,11 @@ fn dropped_doors() -> &'static [DroppedDoor] {
             .map(|(plugin, key)| DroppedDoor {
                 key,
                 composes_over: Vec::new(),
-                wire: crate::root::doors::host_wire(plugin).expect("the door serves"),
+                wire: crate::root::doors::host_wire(
+                    plugin,
+                    &busbar_contract::transport::TransportSettings::default(),
+                )
+                .expect("the door serves"),
             })
             .collect()
     });

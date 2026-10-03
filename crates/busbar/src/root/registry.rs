@@ -424,7 +424,7 @@ pub fn seal(
 /// refused to boot has no boot to log. Nothing is written on the success path; the sealed registry
 /// is handed back for the listeners to serve from.
 pub fn seal_or_exit(linked: &Linked, settings: TransportSettings) -> BootRegistry {
-    let dropped = crate::root::boot::dropped_transports();
+    let dropped = crate::root::boot::dropped_transports(&settings);
     seal(linked, dropped, settings).unwrap_or_else(|refusal| {
         eprintln!("busbar: the composition root did not seal: {refusal}");
         std::process::exit(2);

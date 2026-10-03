@@ -150,10 +150,16 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     })
     .expect("the guard");
     let connector = busbar_core_connector::process::build(
-        || crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS),
+        || {
+            crate::root::connector::entries(
+                crate::LINKED_TRANSPORT_DOORS,
+                &busbar_contract::transport::TransportSettings::default(),
+            )
+        },
         judge,
         &[],
         Arc::new(|_| {}),
+        busbar_core_connector::pool::PoolPosture::NONE,
     )
     .expect("the connector builds");
 

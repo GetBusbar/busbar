@@ -118,6 +118,19 @@ pub struct Got {
     /// On the head's first piece: the far end's reason phrase, exactly as sent (the stream's head
     /// slots), where the wire has one.
     pub reason: Option<Vec<u8>>,
+    /// The stream FAILED (`PIECE_STREAM_FAILED`): this is its last piece and the bytes are the
+    /// reason; its siblings on the connection carry on.
+    pub failed: bool,
+}
+
+impl Got {
+    /// Whether this piece ENDS its stream whole: the EMPTY payload piece that closes a stream's
+    /// frames (`busbar_contract::abi::transport`, "streams end by piece"). An empty fields piece is
+    /// an empty head, never the end, and a failed stream's piece ends it failed.
+    #[must_use]
+    pub fn ends_stream(&self) -> bool {
+        self.end_of_frame && self.bytes.is_empty() && !self.fields && !self.failed
+    }
 }
 
 /// A stream's head typed slots (`HeadSlots`), copied out of the host's buffers: an accepted
@@ -394,6 +407,7 @@ impl Buffers {
                 fields: p.flags & PIECE_FIELDS != 0,
                 text: p.flags & PIECE_TEXT != 0,
                 reason: None,
+                failed: p.flags & PIECE_STREAM_FAILED != 0,
             });
         }
         let heads = self
@@ -547,32 +561,56 @@ pub struct Located {
     pub name: Option<String>,
     /// The target asks for connection security.
     pub secure: bool,
+    /// The entry's protocol offer for the handshake (ALPN), most preferred first; empty = it makes
+    /// none (THE DESIGN, connections: "the ALPN offer is the framer's").
+    pub offer: Vec<Vec<u8>>,
 }
 
-/// `locate`: where `target` is, per the entry. One re-call with the sizes a short answer names.
+/// A protocol offer in the handshake's ProtocolNameList encoding (each name led by its one-byte
+/// length), read into its names; `None` where the bytes are not such a list.
+fn protocol_names(mut b: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let mut names = Vec::new();
+    while let Some((&len, rest)) = b.split_first() {
+        let len = usize::from(len);
+        if len == 0 || rest.len() < len {
+            return None;
+        }
+        names.push(rest[..len].to_vec());
+        b = &rest[len..];
+    }
+    Some(names)
+}
+
+/// `locate`: where `target` is, per the entry, and its protocol offer. One re-call with the sizes a
+/// short answer names.
 ///
 /// # Errors
 ///
-/// The entry refused the target.
+/// The entry refused the target, or answered an offer that is not a protocol list.
 pub fn locate(door: &dyn FramerDoor, target: &str) -> Result<Located, Refused> {
-    let (mut auth_cap, mut name_cap) = (256_usize, 256_usize);
+    let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
     for _ in 0..2 {
         let mut authority = vec![0_u8; auth_cap];
         let mut name = vec![0_u8; name_cap];
+        let mut alpn = vec![0_u8; alpn_cap];
         let mut i: LocateIn = blank_in();
         i.target = abi(target.as_bytes());
         i.authority_buf = authority.as_mut_ptr();
         i.authority_cap = authority.len();
         i.name_buf = name.as_mut_ptr();
         i.name_cap = name.len();
+        i.alpn_buf = alpn.as_mut_ptr();
+        i.alpn_cap = alpn.len();
         let mut o: LocateOut = blank_out();
         let c = door.cross(Call::Locate(&mut i, &mut o));
-        let short = o.authority_needed > auth_cap as u64 || o.name_needed > name_cap as u64;
+        let short = o.authority_needed > auth_cap as u64
+            || o.name_needed > name_cap as u64
+            || o.alpn_needed > alpn_cap as u64;
         if c.outcome == Outcome::Failed && short {
-            auth_cap = usize::try_from(o.authority_needed)
-                .unwrap_or(0)
-                .max(auth_cap);
-            name_cap = usize::try_from(o.name_needed).unwrap_or(0).max(name_cap);
+            let grow = |needed: u64, cap: usize| usize::try_from(needed).unwrap_or(0).max(cap);
+            auth_cap = grow(o.authority_needed, auth_cap);
+            name_cap = grow(o.name_needed, name_cap);
+            alpn_cap = grow(o.alpn_needed, alpn_cap);
             continue;
         }
         ready(c)?;
@@ -580,10 +618,18 @@ pub fn locate(door: &dyn FramerDoor, target: &str) -> Result<Located, Refused> {
             String::from_utf8_lossy(b.get(..usize::try_from(n).unwrap_or(0)).unwrap_or_default())
                 .into_owned()
         };
+        let offered = alpn
+            .get(..usize::try_from(o.alpn_written).unwrap_or(usize::MAX))
+            .and_then(protocol_names)
+            .ok_or_else(|| Refused {
+                outcome: Outcome::Fault,
+                error: "the framer's protocol offer is not a protocol list".into(),
+            })?;
         return Ok(Located {
             authority: text(&authority, o.authority_written),
             name: (o.has_name != 0).then(|| text(&name, o.name_written)),
             secure: o.secure != 0,
+            offer: offered,
         });
     }
     Err(Refused {

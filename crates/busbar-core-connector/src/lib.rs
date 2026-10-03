@@ -23,7 +23,8 @@
 //! * [`io`] is readiness on the per-worker reactor (`io.{register, poll_ready, clear_ready,
 //!   deregister}`); [`socket`] the host's OS sockets; [`stream`] a host socket as a byte stream.
 //! * [`framer`] drives one transport entry's framer table host-side; [`compose`] builds a dialled
-//!   connection as socket -> \[TLS\] -> framer; [`listen`] binds one listener per inbound need and
+//!   connection as socket -> \[TLS\] -> framer; [`pool`] keeps a dialled connection whose exchange
+//!   finished whole for the next open to the same place; [`listen`] binds one listener per inbound need and
 //!   composes each accepted connection the same way, begun on the accept side; [`registry`] is the
 //!   view of which entry serves which scheme; [`wire`] presents a framer entry over host sockets to
 //!   the kernel's transport seam.
@@ -46,6 +47,7 @@ pub mod framer;
 pub mod guard;
 pub mod io;
 pub mod listen;
+pub mod pool;
 pub mod process;
 pub mod registry;
 pub mod socket;
@@ -56,6 +58,7 @@ pub mod wire;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
@@ -78,6 +81,7 @@ use crate::compose::{
 };
 use crate::framer::FramerDoor;
 use crate::listen::{AcceptLimits, Listening};
+use crate::pool::{PoolKey, PoolPosture, Pools};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket.
@@ -207,6 +211,28 @@ struct Held {
     rest: Mutex<(Option<Piece>, Vec<u8>, bool)>,
     /// The far end's reason phrase, held until its head's last piece is read.
     reason: Mutex<Option<Vec<u8>>>,
+    /// Where a dialled connection goes back to when its exchange finished whole: its pool shard
+    /// and key (`None` = never pooled).
+    pooled: Option<(usize, PoolKey)>,
+    /// The dialled exchange ended WHOLE (its stream's end was read).
+    whole: AtomicBool,
+}
+
+impl Held {
+    fn over(
+        conn: Option<Connection>,
+        judging: Option<Judging>,
+        pooled: Option<(usize, PoolKey)>,
+    ) -> Self {
+        Held {
+            conn: Mutex::new(conn),
+            judging: Mutex::new(judging),
+            rest: Mutex::new((None, Vec::new(), false)),
+            reason: Mutex::new(None),
+            pooled,
+            whole: AtomicBool::new(false),
+        }
+    }
 }
 
 impl std::fmt::Debug for Held {
@@ -233,6 +259,8 @@ pub struct Connector {
     judge: Arc<dyn DialJudge>,
     /// One listener per inbound need.
     listeners: Listeners,
+    /// The per-worker pools of dialled connections.
+    pools: Pools,
 }
 
 impl std::fmt::Debug for Connector {
@@ -252,6 +280,7 @@ impl Default for Connector {
             wake: Arc::new(|_| {}),
             judge: Arc::new(LiteralsOnly(guard::Guard::default())),
             listeners: Mutex::new(HashMap::new()),
+            pools: Pools::new(PoolPosture::NONE),
         }
     }
 }
@@ -313,6 +342,15 @@ impl Connector {
             judge,
             ..Self::default()
         }
+    }
+
+    /// The same connector keeping dialled connections under `posture` (the deployment's
+    /// `limits.pool_max_idle_per_host` / `limits.pool_idle_timeout_secs`): an open to a place a
+    /// finished exchange's connection went back to rides that connection ([`pool`]).
+    #[must_use]
+    pub fn pooling(mut self, posture: PoolPosture) -> Self {
+        self.pools = Pools::new(posture);
+        self
     }
 
     /// The need `owner` declared as `need`, whole, as [`DeclaredConns::declare`] received it.
@@ -545,16 +583,9 @@ impl Connector {
             Poll::Pending => Err(ConnError::Pending),
             Poll::Ready(Err(f)) => Err(map(&f)),
             Poll::Ready(Ok(a)) => {
-                let id = self.slab.insert(
-                    owner,
-                    need,
-                    Held {
-                        conn: Mutex::new(Some(a.conn)),
-                        judging: Mutex::new(None),
-                        rest: Mutex::new((None, Vec::new(), false)),
-                        reason: Mutex::new(None),
-                    },
-                )?;
+                let id = self
+                    .slab
+                    .insert(owner, need, Held::over(Some(a.conn), None, None))?;
                 Ok((id, a.peer))
             }
         }
@@ -668,6 +699,34 @@ impl Connector {
                             retry_after_secs: None,
                             reason: None,
                         });
+                    }
+                    // A DIALLED exchange's stream ending whole is the exchange's completion
+                    // (`busbar_contract::abi::transport`, "streams end by piece"): the caller
+                    // has the whole answer, and the connection may carry the next one.
+                    Poll::Ready(Ok(Some(got)))
+                        if c.dialled() && got.stream == c.exchange() && got.ends_stream() =>
+                    {
+                        rest.2 = true;
+                        held.whole.store(true, Ordering::Release);
+                        return Ok(Piece {
+                            kind: PieceKind::Completion,
+                            stream: StreamId(got.stream),
+                            len: 0,
+                            end: true,
+                            status: None,
+                            status_code: None,
+                            status_namespace: None,
+                            retry_after_secs: None,
+                            reason: None,
+                        });
+                    }
+                    // Its stream FAILED (the framer's reason is never the caller's payload): the
+                    // exchange fails, and the connection is not kept.
+                    Poll::Ready(Ok(Some(got)))
+                        if c.dialled() && got.stream == c.exchange() && got.failed =>
+                    {
+                        rest.2 = true;
+                        return Err(ConnError::Fault);
                     }
                     // The far end's head (and its trailers) arrive as the framer's field block:
                     // a Fields piece, the head ahead of the first Body piece.
@@ -1005,6 +1064,32 @@ impl Conns for Connector {
         if egress_class == EGRESS_OPEN_WEB && !planned.secure() {
             return Err(ConnError::Refused);
         }
+        // THE POOL: a connection an earlier exchange to the same place finished on, on this
+        // worker's shard, carries this one (judged, pinned and secured when it was dialled, under
+        // the same class); a dial pinned `within` an address set is never pooled.
+        let pooled = (self.pools.keeps() && desc.within.is_empty()).then(|| {
+            (
+                self.pools.shard(),
+                PoolKey {
+                    door: Arc::as_ptr(&door).cast::<()>() as usize,
+                    authority: planned.authority().to_ascii_lowercase(),
+                    secure: planned.secure(),
+                    name: planned.name().map(str::to_owned),
+                    class: (judged_class, egress_class),
+                },
+            )
+        });
+        if let Some((shard, key)) = &pooled {
+            if let Some(mut conn) = self.pools.take(*shard, key) {
+                if let Err(f) = planned.reuse(&mut conn) {
+                    conn.close();
+                    return Err(map(&f));
+                }
+                return self
+                    .slab
+                    .insert(caller, need, Held::over(Some(conn), None, pooled));
+            }
+        }
         let answer: Answer = Arc::new(Mutex::new((None, None)));
         let later = Arc::clone(&answer);
         let judged = self.judge.judge_dial(
@@ -1038,16 +1123,8 @@ impl Conns for Connector {
                 }),
             ),
         };
-        self.slab.insert(
-            caller,
-            need,
-            Held {
-                conn: Mutex::new(conn),
-                judging: Mutex::new(judging),
-                rest: Mutex::new((None, Vec::new(), false)),
-                reason: Mutex::new(None),
-            },
-        )
+        self.slab
+            .insert(caller, need, Held::over(conn, judging, pooled))
     }
 
     /// A write is taken whole, short, or (no room under
@@ -1150,7 +1227,14 @@ impl Conns for Connector {
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError> {
         let held = self.slab.remove(caller, conn)?;
         if let Some(c) = held.conn.lock().expect("connection").take() {
-            c.close();
+            // An exchange that finished whole hands its connection back to the pool it came
+            // from; any other close closes it.
+            match &held.pooled {
+                Some((shard, key)) if held.whole.load(Ordering::Acquire) && c.reusable() => {
+                    self.pools.park(*shard, key.clone(), c);
+                }
+                _ => c.close(),
+            }
         }
         Ok(())
     }
