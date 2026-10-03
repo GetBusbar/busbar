@@ -11,11 +11,12 @@
 //! Every call runs on the dispatcher's workers, off the caller's own, and is bounded by the
 //! call's `budget` — the hook's `timeout_ms` — which is the op's DEADLINE on the dispatcher: the
 //! op is cancelled at `timeout_ms`, exactly as 1.5.5's per-hook timeout behaved (ARCHITECT
-//! Q-SO6). QUARANTINE is the dispatcher watchdog's alone: a crossing that outlives its class
-//! budget faults the instance, and the implementation brings a FRESH instance back after a
-//! backoff through one trial call. There is one watchdog mechanism; no instance carries a watchdog
-//! budget of its own. A call made while quarantined waits for the trial window within its own
-//! budget, never beyond it.
+//! Q-SO6). QUARANTINE is the dispatcher watchdog's alone: a crossing that outlives its watch
+//! budget — the longer of the Call class budget and the call's `budget` (the design's hook kind
+//! as ruled: "The watchdog's budget is the hook's `timeout_ms`"; HOOKCAP-Q1) — faults the
+//! instance, and the implementation brings a FRESH instance back after a backoff through one
+//! trial call. There is one watchdog mechanism; the hook's budget rides each op it watches. A
+//! call made while quarantined waits for the trial window within its own budget, never beyond it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -123,7 +124,8 @@ pub trait HookAxis: Send + Sync {
     /// OPEN one instance of `module` with `settings` (the operator's section, secrets resolved),
     /// under the host's instance `label` (unique per opened instance: the name every host service
     /// keys its caller by). `budget` is the instance's call budget (its `timeout_ms`): every call's
-    /// dispatcher deadline; the watchdog runs on its class budgets, not this. A management instance
+    /// dispatcher deadline, and the watchdog's budget over its crossings wherever it is longer than
+    /// the Call class budget (the design's hook kind as ruled). A management instance
     /// (configure/status/describe) is just another instance.
     ///
     /// # Errors

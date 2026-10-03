@@ -15,11 +15,17 @@
 //!   deadline on the dispatcher: cancelled at `timeout_ms`, as 1.5.5's per-hook timeout (Q-SO6).
 //!   A `decide`/`transform` answer that is SHORT is re-submitted once on the same ticket over the
 //!   frame's regrown buffers (the short-buffer rule).
+//! * THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (THE DESIGN §11.7; HOOKCAP-Q1): each op is
+//!   submitted with the call's `budget` as its watch budget, so the one watchdog faults a hook
+//!   crossing only past the longer of that and the Call class budget. A hook slower than the class
+//!   budget but inside its `timeout_ms` is not quarantined, as in 1.5.5.
+//! * THE `max_inflight` CAP IS BACKPRESSURE, NOT A LATCH (1.5.5's `MAX_INFLIGHT_HOOK_CALLS`): a call
+//!   the full cap REFUSES waits for a unit within its own budget, then answers `TimedOut`.
 //! * QUARANTINE (THE DESIGN §11.11, R2): an instance the dispatcher's watchdog faulted (a crossing
-//!   past its class budget; the one watchdog, no per-instance budget) is never called again. The
-//!   next call waits for the trial window — 1 s after the fault, doubling to 30 s on each failed
-//!   trial — within its own budget and never beyond it, then binds and opens a FRESH instance
-//!   through the same door and makes one trial call on it.
+//!   past its watch budget) is never called again. The next call — and one that was waiting for a
+//!   unit when the fault came — waits for the trial window — 1 s after the fault, doubling to 30 s
+//!   on each failed trial — within its own budget and never beyond it, then binds and opens a FRESH
+//!   instance through the same door and makes one trial call on it.
 //! * A plugin's leased answer (`status`, `describe`) is copied, then its lease released.
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -291,102 +297,116 @@ impl Inner {
         O: OutFrame + Copy,
     {
         let deadline = Instant::now() + budget;
-        let plugin = self.live(deadline).await.map_err(Answered::Broken)?;
-        let workers = self.dispatcher.workers().max(1);
-        let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
-        let Some(ticket) = self.dispatcher.mint(worker) else {
-            return Err(Answered::Broken(format!(
-                "hook '{}' could not be called: no ticket",
-                self.name
-            )));
-        };
-        let mut guard = Ticketed {
-            dispatcher: Arc::clone(&self.dispatcher),
-            ticket,
-            answered: false,
-        };
         let deadline_ns =
             now_ns().saturating_add(u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX));
         let mut lent = lent;
         let mut first = true;
-        let mut slot_wait = SLOT_WAIT_FIRST;
-        let mut retried_free = false;
-        loop {
-            let reply = self.dispatcher.submit_lent(
-                &plugin,
-                ticket,
-                s,
-                make(),
-                DeadlineClass::Call,
-                deadline_ns,
-                Arc::clone(&lent),
-            );
-            // THE BUDGET CUTS THE WAIT, NOT THE PLUGIN: a hook that is still inside its slot when the
-            // deadline passes answers the caller `TimedOut` then, never after (1.5.5's timeout
-            // behaviour, frozen); the dropped guard tells the dispatcher no one is waiting.
-            let Ok(done) =
-                tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), reply)
-                    .await
-            else {
-                return Err(Answered::TimedOut);
+        'route: loop {
+            let plugin = self.live(deadline).await.map_err(Answered::Broken)?;
+            let workers = self.dispatcher.workers().max(1);
+            let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
+            let Some(ticket) = self.dispatcher.mint(worker) else {
+                return Err(Answered::Broken(format!(
+                    "hook '{}' could not be called: no ticket",
+                    self.name
+                )));
             };
-            // THE CAP IS BACKPRESSURE, NOT A LATCH (1.5.5's `MAX_INFLIGHT_HOOK_CALLS`, frozen): an
-            // instance whose `max_inflight` units are all held REFUSES the op and never calls the
-            // plugin. The call waits for a unit under its own budget — the units come back as the
-            // ops holding them return — and fails `TimedOut` on that budget, never at once and never
-            // past it. A refusal with a unit free (one came back since) is tried again once at once;
-            // any other refusal is the plugin's answer.
-            if done.outcome == Outcome::Refused && !plugin.is_faulted() {
-                if plugin.inflight() < plugin.max_inflight() {
-                    if !retried_free {
-                        retried_free = true;
+            let mut guard = Ticketed {
+                dispatcher: Arc::clone(&self.dispatcher),
+                ticket,
+                answered: false,
+            };
+            let mut slot_wait = SLOT_WAIT_FIRST;
+            let mut retried_free = false;
+            loop {
+                // An instance the watchdog faulted while this call waited for a unit never got
+                // this op: the call is one made while quarantined, so it waits for the trial window
+                // within its own budget (R2) instead of answering FAULT for a crossing it never made.
+                if plugin.is_faulted() {
+                    guard.answered = true;
+                    continue 'route;
+                }
+                // THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (`BUSBAR-1.6.0.md` §11.7): the
+                // call's budget rides the op, so a hook slower than the Call class budget but inside
+                // its own `timeout_ms` is never quarantined, as in 1.5.5.
+                let reply = self.dispatcher.submit_watched(
+                    &plugin,
+                    ticket,
+                    s,
+                    make(),
+                    DeadlineClass::Call,
+                    deadline_ns,
+                    Arc::clone(&lent),
+                    budget,
+                );
+                // THE BUDGET CUTS THE WAIT, NOT THE PLUGIN: a hook that is still inside its slot
+                // when the deadline passes answers the caller `TimedOut` then, never after (1.5.5's
+                // timeout behaviour, frozen); the dropped guard tells the dispatcher no one is
+                // waiting.
+                let Ok(done) =
+                    tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), reply)
+                        .await
+                else {
+                    return Err(Answered::TimedOut);
+                };
+                // THE CAP IS BACKPRESSURE, NOT A LATCH (1.5.5's `MAX_INFLIGHT_HOOK_CALLS`, frozen):
+                // an instance whose `max_inflight` units are all held REFUSES the op and never calls
+                // the plugin. The call waits for a unit under its own budget — the units come back
+                // as the ops holding them return — and fails `TimedOut` on that budget, never at
+                // once and never past it. A refusal with a unit free (one came back since) is tried
+                // again once at once; any other refusal is the plugin's answer.
+                if done.outcome == Outcome::Refused && !plugin.is_faulted() {
+                    if plugin.inflight() < plugin.max_inflight() {
+                        if !retried_free {
+                            retried_free = true;
+                            continue;
+                        }
+                    } else {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        if left.is_zero() {
+                            return Err(Answered::TimedOut);
+                        }
+                        tokio::time::sleep(slot_wait.min(left)).await;
+                        slot_wait = (slot_wait * 2).min(SLOT_WAIT_MAX);
+                        retried_free = false;
                         continue;
                     }
-                } else {
-                    let left = deadline.saturating_duration_since(Instant::now());
-                    if left.is_zero() {
-                        return Err(Answered::TimedOut);
+                }
+                let out = done.frame.as_ref().map(|f| f.out);
+                if done.short && first {
+                    if let Some(grown) = out.as_ref().and_then(&mut regrow) {
+                        first = false;
+                        lent = grown;
+                        continue;
                     }
-                    tokio::time::sleep(slot_wait.min(left)).await;
-                    slot_wait = (slot_wait * 2).min(SLOT_WAIT_MAX);
-                    retried_free = false;
-                    continue;
                 }
+                guard.answered = true;
+                return match (done.outcome, out) {
+                    (Outcome::Ready | Outcome::Failed, _) if done.disposition.is_some() => {
+                        Err(Answered::TimedOut)
+                    }
+                    (Outcome::Ready | Outcome::Failed, Some(out)) => Ok(Submitted {
+                        plugin,
+                        outcome: done.outcome,
+                        out,
+                        error: text(done.error),
+                        lease: done.lease,
+                        lent,
+                    }),
+                    (Outcome::Fault, _) => {
+                        self.faulted(&plugin);
+                        Err(Answered::Broken(format!(
+                            "hook '{}' broke the hook kind's contract (FAULT)",
+                            self.name
+                        )))
+                    }
+                    (o, _) => Err(Answered::Broken(format!(
+                        "hook '{}' answered {o:?}{}",
+                        self.name,
+                        text(done.error).map_or_else(String::new, |t| format!(": {t}"))
+                    ))),
+                };
             }
-            let out = done.frame.as_ref().map(|f| f.out);
-            if done.short && first {
-                if let Some(grown) = out.as_ref().and_then(&mut regrow) {
-                    first = false;
-                    lent = grown;
-                    continue;
-                }
-            }
-            guard.answered = true;
-            return match (done.outcome, out) {
-                (Outcome::Ready | Outcome::Failed, _) if done.disposition.is_some() => {
-                    Err(Answered::TimedOut)
-                }
-                (Outcome::Ready | Outcome::Failed, Some(out)) => Ok(Submitted {
-                    plugin,
-                    outcome: done.outcome,
-                    out,
-                    error: text(done.error),
-                    lease: done.lease,
-                    lent,
-                }),
-                (Outcome::Fault, _) => {
-                    self.faulted(&plugin);
-                    Err(Answered::Broken(format!(
-                        "hook '{}' broke the hook kind's contract (FAULT)",
-                        self.name
-                    )))
-                }
-                (o, _) => Err(Answered::Broken(format!(
-                    "hook '{}' answered {o:?}{}",
-                    self.name,
-                    text(done.error).map_or_else(String::new, |t| format!(": {t}"))
-                ))),
-            };
         }
     }
 }
