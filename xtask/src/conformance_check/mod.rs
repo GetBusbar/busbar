@@ -54,7 +54,8 @@ usage:
   cargo xtask conformance check --suite <id> [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --musts       [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --suite all   [--sha <sha>] [--manifest <path>] [--format=tsv]
-  cargo xtask conformance check --selftest";
+  cargo xtask conformance check --selftest
+  cargo xtask conformance record --suite <id>|--all [--recording <dir>] [--out <dir>]";
 
 /// One resolved manifest row, as this command reads it. Deliberately narrower than
 /// [`crate::gates::conformance_sync::render::Suite`] — this command does not touch the registry,
@@ -70,6 +71,8 @@ struct SuiteEntry {
 pub fn main(cx: &Ctx, args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("check") => check_cmd(cx, &args[1..]),
+        // The PRODUCER of the verdicts this command and `gate conformance-sync` read.
+        Some("record") => crate::conformance_record::main(cx, &args[1..]),
         Some(other) => {
             eprintln!("xtask conformance: unknown subcommand `{other}`");
             eprintln!("{USAGE}");
