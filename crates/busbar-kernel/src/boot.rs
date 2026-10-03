@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// (a)), so only the audit block below — which IS the chain — holds the full `Store`.
 pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     // DURABLE AUDIT (#17): the admin audit log's ONE durable path is the neutral journal seam
-    // ([`crate::plane::auditlog`]). Register the `audit` stream, run the ONE-TIME legacy-table →
+    // ([`crate::audit::auditlog`]). Register the `audit` stream, run the ONE-TIME legacy-table →
     // `plane_records` migration (idempotent; a no-op on a migrated / fresh / memory store), and RESTORE
     // the audit log FROM `plane_records` — seeding both the seam chain position (so a later append
     // continues the same chain) and the `AUDIT_LOG` read-model ring `GET /audit` serves. The RAM
@@ -40,7 +40,7 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     // the FULL `Store` (the legacy `list_audit` table it copies from), the one durable-state block that
     // must hold what every plane hook is narrowed away from.
     if let Some(gov) = app.governance.as_ref() {
-        crate::plane::auditlog::register_and_migrate(app, &gov.store());
+        crate::audit::auditlog::register_and_migrate(app, &gov.store());
     }
 
     // THE PLANE HYDRATION FOLD. Each plane restores its OWN durable state through the `hydrate` hook
