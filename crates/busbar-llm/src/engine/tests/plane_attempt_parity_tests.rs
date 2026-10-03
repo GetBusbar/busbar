@@ -21,6 +21,8 @@ fn plane_lane(dialect: &'static str, model: &str, path: Option<&str>, base: Opti
         dialect,
         path: path.map(str::to_string),
         path_base: base.map(str::to_string),
+        organization: None,
+        project: None,
         upstream_model: None,
         default_max_tokens: None,
         context_max: None,

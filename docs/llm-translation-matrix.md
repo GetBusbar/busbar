@@ -17,18 +17,18 @@ it; `-` means the dialect has no form for it.
 | anthropic | response | 20 | 0 |
 | anthropic | stream | 10 | 0 |
 | bedrock | request | 60 | 0 |
-| bedrock | response | 13 | 1 |
-| bedrock | stream | 6 | 0 |
+| bedrock | response | 20 | 0 |
+| bedrock | stream | 7 | 0 |
 | cohere | request | 38 | 0 |
-| cohere | response | 14 | 0 |
+| cohere | response | 15 | 0 |
 | cohere | stream | 11 | 0 |
 | gemini | request | 41 | 1 |
-| gemini | response | 21 | 1 |
+| gemini | response | 34 | 1 |
 | openai_chat | request | 70 | 1 |
 | openai_chat | response | 34 | 1 |
 | openai_chat | stream | 4 | 0 |
 | openai_responses | request | 46 | 5 |
-| openai_responses | response | 28 | 3 |
+| openai_responses | response | 40 | 3 |
 | openai_responses | stream | 13 | 0 |
 
 ## request
@@ -145,7 +145,7 @@ it; `-` means the dialect has no form for it.
 | audio_tokens | - | - | - | - | `usage.prompt_tokens_details.audio_tokens`<br>`usage.completion_tokens_details.audio_tokens` | - |
 | avg_logprobs | - | - | - | `candidates[].avgLogprobs` | - | - |
 | block_reason | - | - | - | `promptFeedback.blockReason` | - | - |
-| cache_read_tokens | `usage.cache_read_input_tokens` | `usage.cacheReadInputTokens` | - | `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` | `usage.input_tokens_details.cached_tokens` |
+| cache_read_tokens | `usage.cache_read_input_tokens` | `usage.cacheReadInputTokens` | `usage.cached_tokens` | `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` | `usage.input_tokens_details.cached_tokens` |
 | cache_write_tokens | `usage.cache_creation_input_tokens` | `usage.cacheWriteInputTokens` | - | - | `usage.prompt_tokens_details.cache_write_tokens` | `usage.input_tokens_details.cache_write_tokens` |
 | call_id | - | - | - | - | - | `output[].type=function_call.call_id` |
 | citation_metadata | - | - | - | `candidates[].citationMetadata` | - | - |
@@ -158,6 +158,7 @@ it; `-` means the dialect has no form for it.
 | ephemeral_1h_input_tokens | `usage.cache_creation.ephemeral_1h_input_tokens` | - | - | - | - | - |
 | ephemeral_5m_input_tokens | `usage.cache_creation.ephemeral_5m_input_tokens` | - | - | - | - | - |
 | error | - | - | - | - | - | `error` |
+| file_citation | - | - | - | - | - | `output[].type=message.content[].type=output_text.annotations[].type=file_citation`<br>`output[].type=message.content[].type=output_text.annotations[].type=file_citation.file_id`<br>`output[].type=message.content[].type=output_text.annotations[].type=file_citation.filename`<br>`output[].type=message.content[].type=output_text.annotations[].type=file_citation.index`<br>`output[].type=message.content[].type=output_text.annotations[].type=container_file_citation`<br>`output[].type=message.content[].type=output_text.annotations[].type=file_path` |
 | finish_reason | `stop_reason` | `stopReason` | `finish_reason` | `candidates[].finishReason` | `choices[].finish_reason` | - |
 | grounding_metadata | - | - | - | `candidates[].groundingMetadata` | - | - |
 | guardrail | - | `trace.guardrail` | - | - | - | - |
@@ -185,9 +186,9 @@ it; `-` means the dialect has no form for it.
 | response_id | - | - | - | `responseId` | - | - |
 | role | `role` | `output.message.role` | `message.role` | - | `choices[].message.role` | - |
 | safety_ratings | - | - | - | `candidates[].safetyRatings`<br>`promptFeedback.safetyRatings` | - | - |
-| safety_verdict | - | - | - | - | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | - |
+| safety_verdict | - | `trace.guardrail.inputAssessment{}.contentPolicy.filters[].type`<br>`trace.guardrail.inputAssessment{}.contentPolicy.filters[].action`<br>`trace.guardrail.inputAssessment{}.contentPolicy.filters[].detected`<br>`trace.guardrail.outputAssessments{}[].contentPolicy.filters[].type`<br>`trace.guardrail.outputAssessments{}[].contentPolicy.filters[].action`<br>`trace.guardrail.outputAssessments{}[].contentPolicy.filters[].detected` | - | `candidates[].safetyRatings[].category`<br>`candidates[].safetyRatings[].blocked`<br>`promptFeedback.safetyRatings[].category`<br>`promptFeedback.safetyRatings[].blocked` | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | `moderation.input.type=moderation_result.categories`<br>`moderation.output.type=moderation_result.categories` |
 | search_units | - | - | `usage.billed_units.search_units` | - | - | - |
-| served_tier | `usage.service_tier` | - | - | - | `service_tier` | `service_tier` |
+| served_tier | `usage.service_tier` | `serviceTier.type` | - | `usageMetadata.serviceTier` | `service_tier` | `service_tier` |
 | status | - | - | - | - | - | `status`<br>`output[].type=message.status`<br>`output[].type=web_search_call.status` |
 | stop_sequence | `stop_sequence` | - | - | - | - | - |
 | summary | - | - | - | - | - | `output[].type=reasoning.summary` |
@@ -199,8 +200,8 @@ it; `-` means the dialect has no form for it.
 | tool_use_prompt_token_count | - | - | - | `usageMetadata.toolUsePromptTokenCount` | - | - |
 | total_tokens | - | `usage.totalTokens` | - | `usageMetadata.totalTokenCount` | `usage.total_tokens` | `usage.total_tokens` |
 | type | `type` | - | - | - | - | - |
-| usage_by_modality | - | - | - | - | `usage.prompt_tokens_details.text_tokens`<br>`usage.prompt_tokens_details.image_tokens`<br>`usage.completion_tokens_details.text_tokens` | - |
-| web_search | `content[].type=web_search_tool_result`<br>`content[].type=web_search_tool_result.tool_use_id`<br>`content[].type=web_search_tool_result.content[].url`<br>`content[].type=web_search_tool_result.content[].title`<br>`content[].type=web_search_tool_result.content.error_code` | - | - | - | - | - |
+| usage_by_modality | - | - | - | `usageMetadata.promptTokensDetails[].modality`<br>`usageMetadata.promptTokensDetails[].tokenCount`<br>`usageMetadata.candidatesTokensDetails[].modality`<br>`usageMetadata.candidatesTokensDetails[].tokenCount`<br>`usageMetadata.cacheTokensDetails[].modality`<br>`usageMetadata.cacheTokensDetails[].tokenCount` | `usage.prompt_tokens_details.text_tokens`<br>`usage.prompt_tokens_details.image_tokens`<br>`usage.completion_tokens_details.text_tokens` | - |
+| web_search | `content[].type=web_search_tool_result`<br>`content[].type=web_search_tool_result.tool_use_id`<br>`content[].type=web_search_tool_result.content[].url`<br>`content[].type=web_search_tool_result.content[].title`<br>`content[].type=web_search_tool_result.content.error_code` | - | - | `candidates[].groundingMetadata.groundingChunks[].web.uri`<br>`candidates[].groundingMetadata.groundingChunks[].web.title` | - | `output[].type=web_search_call`<br>`output[].type=web_search_call.id`<br>`output[].type=web_search_call.status`<br>`output[].type=web_search_call.action.type=search.sources[].url` |
 | web_search_requests | `usage.server_tool_use.web_search_requests` | - | - | - | - | - |
 
 ## stream
@@ -233,6 +234,7 @@ it; `-` means the dialect has no form for it.
 | metadata | - | `metadata` | - | code `gemini_labels` | - | - |
 | refusal | - | - | - | - | `choices[].delta.refusal` | - |
 | role | - | - | - | - | `choices[].delta.role` | - |
+| served_tier | - | `metadata.serviceTier.type` | - | - | - | - |
 | signature_delta | `type=content_block_delta.delta.type=signature_delta` | - | - | - | - | - |
 | text_delta | `type=content_block_delta.delta.type=text_delta` | - | - | - | - | - |
 | thinking_delta | `type=content_block_delta.delta.type=thinking_delta` | - | - | - | - | - |

@@ -85,6 +85,7 @@ pub mod hooks;
 pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;
+pub mod legacy;
 pub mod linked;
 pub(crate) mod loader;
 pub mod migration;

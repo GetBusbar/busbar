@@ -77,6 +77,7 @@ drop_warn = "dropping a request control on Cohere egress: Cohere v2 /chat has no
 "usage.billed_units.input_tokens" = { prim = "input_tokens" }
 "usage.billed_units.output_tokens" = { prim = "output_tokens" }
 "usage.billed_units.classifications" = { prim = "classifications" }
+"usage.cached_tokens" = { prim = "cache_read_tokens" }
 
 # The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
 [rows.stream]

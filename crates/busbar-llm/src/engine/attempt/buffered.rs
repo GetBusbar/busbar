@@ -84,6 +84,8 @@ pub(crate) async fn translate_response_cross_protocol(
     ingress_request_body: Option<Value>,
     // THE REPORT-BACK CELL, filled at whichever exit below actually ends this response.
     tap: &TapCell,
+    // The caller's key, for the audit row of each answer member that did not cross.
+    caller_key_id: &str,
 ) -> Response {
     let lane = &EngineTables::new(rt).lanes()[i];
     let egress_name = lane.protocol;
@@ -124,9 +126,20 @@ pub(crate) async fn translate_response_cross_protocol(
         usage,
         answer,
         refused,
+        dropped,
     } = w;
     match end {
         WholeEnd::Delivered => {
+            // The answer's drops (design F3 "Drops"), already warned: one audit row per wire path,
+            // the twin of the request seam's rows.
+            for path in dropped {
+                host.audit_record(
+                    "egress.control_unrepresentable",
+                    &format!("{path} from {egress_name}"),
+                    busbar_contract::vocab::OUTCOME_DEGRADED,
+                    caller_key_id,
+                );
+            }
             // THE REPORT-BACK, on the delivery: the whole answer is in hand and is about to be
             // relayed, and the tap reads the SAME `usage` the accrual is made from.
             tap.report(TapReport {

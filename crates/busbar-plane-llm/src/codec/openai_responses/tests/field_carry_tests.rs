@@ -940,31 +940,49 @@ fn responses_response_output_items_emitted() {
     );
 }
 
-/// responses/response/output[].type=web_search_call.{id,status} — a hosted-tool invocation record
-/// with no neutral IR form and no cross-protocol analog: DOCUMENTED DROP+WARN. The assistant's own
+/// responses/response/output[].type=file_search_call — a hosted-tool invocation record with no
+/// neutral IR form and no cross-protocol analog: DOCUMENTED DROP+WARN. A `web_search_call` is not
+/// dropped: DF-MAP item 2 reads it into the IR's hosted web-search record. The assistant's own
 /// message/tool/reasoning output is unaffected.
 #[test]
-fn responses_response_web_search_call_dropped_with_warn() {
+fn responses_response_hosted_tool_item_dropped_with_warn() {
     let body = serde_json::json!({
         "status": "completed",
         "output": [
+            { "type": "file_search_call", "id": "fs_1", "status": "completed" },
             { "type": "web_search_call", "id": "ws_1", "status": "completed" },
             { "type": "message", "role": "assistant",
               "content": [{ "type": "output_text", "text": "kept", "annotations": [] }] }
         ],
         "usage": { "input_tokens": 1, "output_tokens": 1 }
     });
-    let (ir, cap) = with_warns(|| ResponsesReader.read_response(&body).expect("read_response"));
+    // The drop is a TRANSLATE attempt's (design F3 "Drops"): read inside one, it is warned and
+    // named by its wire path; a same-dialect relay's tap says nothing.
+    let seam = crate::codec::drops::Seam {
+        direction: crate::codec::drops::Direction::Response,
+        ingress: "openai",
+        egress: "responses",
+    };
+    let ((ir, cap), dropped) = crate::codec::drops::scope(seam, || {
+        with_warns(|| ResponsesReader.read_response(&body).expect("read_response"))
+    });
+    assert_eq!(dropped, vec!["output[].type=file_search_call".to_string()]);
 
     assert!(
         ir.content
             .iter()
             .any(|b| matches!(b, crate::codec::ir::IrBlock::Text { text, .. } if text == "kept")),
-        "the assistant message must survive even as web_search_call drops: {ir:?}"
+        "the assistant message must survive even as file_search_call drops: {ir:?}"
     );
     assert!(
-        cap.contains("web_search_call"),
-        "dropping a web_search_call output item must warn, naming the type: {:?}",
+        ir.content
+            .iter()
+            .any(|b| matches!(b, crate::codec::ir::IrBlock::HostedToolRecord { .. })),
+        "a web_search_call is carried as the hosted web-search record: {ir:?}"
+    );
+    assert!(
+        cap.contains("file_search_call"),
+        "dropping a file_search_call output item must warn, naming the type: {:?}",
         cap.messages()
     );
 }

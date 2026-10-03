@@ -260,45 +260,6 @@ impl LazyBody {
     }
 }
 
-/// HEAD-LEVEL mirror of `translate_request_cross_protocol`'s SAME-PROTOCOL invalidator set (#1-#4
-/// of the request short-circuit contract, plus the Vertex-Anthropic body transform), evaluated on
-/// top-level point reads only — so hop 1 of a same-protocol dispatch can re-emit the retained bytes
-/// WITHOUT ever materializing the DOM.
-///
-/// SOUNDNESS (one-sided by design): this returns `true` ONLY when the full translate path would
-/// provably leave the body pristine (and therefore re-emit the retained bytes itself). Any doubt
-/// returns `false`, which sends the request down the unchanged materialize-and-translate path —
-/// a slower CORRECT answer, never a wrong relay. Concretely:
-///   - #1: any registered array-stream shim key present at the top level → not pristine.
-///   - #2: `stream` present and the egress (== ingress) is path-model → not pristine.
-///   - #3: modeled on the DEFAULT `rewrite_model_if_needed` (no change iff the body's top-level
-///     `model` is exactly the lane's wire model string). `BedrockWriter`'s no-op override can only
-///     make FEWER changes than the default, so treating every writer as the default is sound — a
-///     Bedrock body without `model` reads "would change" here and takes the full path, where the
-///     real no-op override still yields the byte short-circuit inside translate.
-///   - Vertex-Anthropic (`path_base` on an anthropic lane) always mutates an object body.
-///   - #4: same-protocol path-model with a body `model` → stripped → not pristine.
-///
-/// A NON-OBJECT top level is pristine: every invalidator no-ops (`as_object_mut` fails), exactly
-/// as the full path concludes.
-///
-/// The parity test `head_pristine_matches_translate_output` pins this mirror against the real
-/// translate seam so the two cannot silently drift.
-pub(crate) fn head_provably_pristine(rt: &Arc<NativeRuntime>, i: usize, probe: &Value) -> bool {
-    let lane = &EngineTables::new(rt).lanes()[i];
-    crate::engine::xchg::attempt::provably_pristine(
-        crate::engine::xchg::shaping::FarShape {
-            dialect: lane.protocol,
-            wire_model: lane.wire_model(),
-            default_max_tokens: lane.default_max_tokens,
-            prompt_caching: lane.prompt_caching,
-            caps: lane.lane_caps,
-            path_base: lane.path_base.as_deref(),
-        },
-        probe,
-    )
-}
-
 #[cfg(test)]
 #[path = "tests/lazy_body_tests.rs"]
 mod lazy_body_tests;

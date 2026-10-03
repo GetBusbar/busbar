@@ -222,15 +222,184 @@ pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::D
 /// Reported so the cross-protocol seam can LOG that they were dropped — no other protocol can carry
 /// them. The nested `candidates[]` lookup is Gemini's own shape and stays here, off core.
 fn vendor_response_metadata(body: &serde_json::Value) -> Vec<&'static str> {
-    ["safetyRatings"]
+    // Named by wire path, as the drop path reports it.
+    [(FIELD_SAFETY_RATINGS, "candidates[].safetyRatings")]
         .into_iter()
-        .filter(|k| {
+        .filter(|(k, _)| {
             body.get(FIELD_CANDIDATES)
                 .and_then(|c| c.as_array())
                 .is_some_and(|cands| cands.iter().any(|c| c.get(k).is_some()))
         })
+        .map(|(_, path)| path)
         .collect()
 }
+
+/// The wire word `responseJsonSchema`.
+const FIELD_RESPONSE_JSON_SCHEMA: &str = "responseJsonSchema";
+
+/// The part kinds the request reader models; a `thought` part is a text part.
+const REQUEST_PART_KINDS: &[&str] = &[
+    keys::TEXT,
+    FIELD_FUNCTION_CALL,
+    FIELD_FUNCTION_RESPONSE,
+    FIELD_INLINE_DATA,
+    FIELD_FILE_DATA,
+];
+
+/// The members a part carries beside its kind.
+const PART_COMPANIONS: &[&str] = &[FIELD_THOUGHT, FIELD_THOUGHT_SIGNATURE];
+
+/// The Gemini request content grammar (`codec::drops`): a union keyed by its kind member. A part of
+/// any other kind (the code-interpreter's `executableCode` / `codeExecutionResult`) does not cross
+/// a translate attempt, which names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["contents[]", "parts[]"],
+        tag: None,
+        modelled: REQUEST_PART_KINDS,
+        companions: PART_COMPANIONS,
+    },
+    crate::codec::drops::Blocks {
+        at: &[FIELD_SYSTEM_INSTRUCTION, "parts[]"],
+        tag: None,
+        modelled: &[keys::TEXT],
+        companions: PART_COMPANIONS,
+    },
+];
+
+/// The Gemini answer content grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    (crate::codec::drops::kind::TEXT, keys::TEXT),
+    (crate::codec::drops::kind::IMAGE, FIELD_INLINE_DATA),
+    (crate::codec::drops::kind::DOCUMENT, FIELD_INLINE_DATA),
+    (crate::codec::drops::kind::AUDIO, FIELD_INLINE_DATA),
+    (crate::codec::drops::kind::VIDEO, FIELD_INLINE_DATA),
+    (crate::codec::drops::kind::THINKING, FIELD_THOUGHT),
+    (crate::codec::drops::kind::TOOL_USE, FIELD_FUNCTION_CALL),
+    (
+        crate::codec::drops::kind::TOOL_RESULT,
+        FIELD_FUNCTION_RESPONSE,
+    ),
+];
+
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (
+        crate::codec::drops::name::TOOL_CHOICE,
+        "toolConfig.functionCallingConfig",
+    ),
+    (
+        crate::codec::drops::name::RESPONSE_FORMAT,
+        "generationConfig.responseSchema",
+    ),
+    (crate::codec::drops::name::METADATA, FIELD_LABELS),
+    (
+        crate::codec::drops::name::TOP_LOGPROBS,
+        "generationConfig.logprobs",
+    ),
+    (
+        crate::codec::drops::name::OUTPUT_MODALITIES,
+        "generationConfig.responseModalities",
+    ),
+];
+
+/// The IR request members the reader never sets.
+// `cachedContent` names a stored cache, not a block's cache mark; no parallel-call switch.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::PARALLEL_TOOL_CALLS,
+];
+
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["candidates[]", "content", "parts[]"],
+    tag: None,
+    modelled: &[
+        keys::TEXT,
+        FIELD_FUNCTION_CALL,
+        FIELD_INLINE_DATA,
+        FIELD_FILE_DATA,
+    ],
+    companions: PART_COMPANIONS,
+}];
+
+/// What the Gemini reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // The model and the stream ask are the route's (they ride the URL).
+    crate::codec::drops::Parked {
+        key: keys::MODEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::STREAM,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // `labels` crosses as the caller metadata.
+    crate::codec::drops::Parked {
+        key: FIELD_LABELS,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // The members of `generationConfig` the reader's own code carries; the map file maps the rest
+    // of what crosses.
+    crate::codec::drops::Parked {
+        key: FIELD_GENERATION_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[
+            FIELD_MAX_OUTPUT_TOKENS,
+            FIELD_RESPONSE_MIME_TYPE,
+            FIELD_RESPONSE_SCHEMA,
+            FIELD_RESPONSE_JSON_SCHEMA,
+            FIELD_RESPONSE_LOGPROBS,
+            keys::LOGPROBS,
+            FIELD_THINKING_CONFIG,
+            FIELD_RESPONSE_MODALITIES,
+        ]),
+    },
+    crate::codec::drops::Parked {
+        key: keys::TOOL_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[FIELD_FUNCTION_CALLING_CONFIG]),
+    },
+];
+
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// The per-modality output split is read into the usage detail. A stream frame is an answer.
+const RESPONSE_CODE: &[&str] = &["usageMetadata.candidatesTokensDetails"];
+
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "candidates[].citationMetadata.citationSources[].license",
+    "candidates[].content.parts[].audioTranscription",
+    "candidates[].content.parts[].codeExecutionResult",
+    "candidates[].content.parts[].executableCode",
+    "candidates[].content.parts[].functionResponse.scheduling",
+    "candidates[].content.parts[].functionResponse.willContinue",
+    "candidates[].content.parts[].mediaProcessing",
+    "candidates[].content.parts[].mediaResolution",
+    "candidates[].content.parts[].partMetadata",
+    "candidates[].content.parts[].speechMetadata",
+    "candidates[].content.parts[].toolCall",
+    "candidates[].content.parts[].toolResponse",
+    "candidates[].content.parts[].videoMetadata",
+    "candidates[].groundingMetadata.googleMapsWidgetContextToken",
+    "candidates[].groundingMetadata.groundingChunks[].image.imageUri",
+    "candidates[].groundingMetadata.groundingChunks[].image.sourceUri",
+    "candidates[].groundingMetadata.groundingChunks[].maps",
+    "candidates[].groundingMetadata.groundingChunks[].retrievedContext.customMetadata",
+    "candidates[].groundingMetadata.groundingChunks[].retrievedContext.fileSearchStore",
+    "candidates[].groundingMetadata.groundingChunks[].retrievedContext.mediaId",
+    "candidates[].groundingMetadata.groundingChunks[].retrievedContext.pageNumber",
+    "candidates[].groundingMetadata.groundingSupports[].confidenceScores",
+    "candidates[].groundingMetadata.groundingSupports[].renderedParts",
+    "candidates[].groundingMetadata.groundingSupports[].segment.partIndex",
+    "candidates[].groundingMetadata.imageSearchQueries",
+    "candidates[].groundingMetadata.retrievalMetadata",
+    "candidates[].groundingMetadata.searchEntryPoint",
+    "candidates[].groundingMetadata.webSearchQueries",
+    "candidates[].logprobsResult.chosenCandidates[].tokenId",
+    "candidates[].logprobsResult.logProbabilitySum",
+    "candidates[].logprobsResult.topCandidates[].candidates[].tokenId",
+];
 
 /// Router-internal shim key the gemini ingress route injects into the request body when the client
 /// sent a streaming `:streamGenerateContent` request WITHOUT `?alt=sse` (so the response must be the
@@ -490,16 +659,12 @@ const FIELD_CHOSEN_CANDIDATES: &str = "chosenCandidates";
 const FIELD_CITATION_METADATA: &str = "citationMetadata";
 /// The wire word `citationSources`.
 const FIELD_CITATION_SOURCES: &str = "citationSources";
-/// The wire word `codeExecutionResult`.
-const FIELD_CODE_EXECUTION_RESULT: &str = "codeExecutionResult";
 /// The wire word `contents`.
 const FIELD_CONTENTS: &str = "contents";
 /// The wire word `details`.
 const FIELD_DETAILS: &str = "details";
 /// The wire word `endIndex`.
 const FIELD_END_INDEX: &str = "endIndex";
-/// The wire word `executableCode`.
-const FIELD_EXECUTABLE_CODE: &str = "executableCode";
 /// The wire word `fileData`.
 const FIELD_FILE_DATA: &str = "fileData";
 /// The wire word `fileUri`.
@@ -988,6 +1153,29 @@ fn read_gemini_thinking_level(level: &str) -> Option<crate::codec::ir::IrReasoni
     Some(crate::codec::ir::IrReasoningAsk::Effort(effort))
 }
 
+/// Read `generationConfig.thinkingConfig.thinkingBudget` as Gemini's API does (an int32 in proto3
+/// JSON: a number with no fraction, or a decimal string): `-1` ("the model decides"), `0` (off) or a
+/// positive token count. `None` for anything else (wrong-typed, fractional, below -1, beyond the
+/// int32 range), which the reader answers with Gemini's error envelope.
+fn read_gemini_thinking_budget(v: &serde_json::Value) -> Option<i32> {
+    let n = match v {
+        serde_json::Value::Number(n) => match n.as_i64() {
+            Some(i) => i,
+            None => {
+                let f = n.as_f64()?;
+                if f.fract() != 0.0 || !f.is_finite() {
+                    return None;
+                }
+                // An integral float in int32 range; anything wider fails `try_from` below.
+                f as i64
+            }
+        },
+        serde_json::Value::String(s) => s.trim().parse::<i64>().ok()?,
+        _ => return None,
+    };
+    i32::try_from(n).ok().filter(|n| *n >= -1)
+}
+
 /// Normalize a Gemini OpenAPI-subset `Schema` (`parameters`, `responseSchema`) into JSON Schema for
 /// the IR (IR audit GEM-11). Gemini's native enum spells types in upper case (`OBJECT`, `STRING`, …)
 /// and marks optional-null with `nullable: true`; every foreign target validates JSON Schema, where
@@ -1320,7 +1508,7 @@ fn candidates_absent(data: &serde_json::Value) -> bool {
 /// string (SAFETY / BLOCKLIST / PROHIBITED_CONTENT / OTHER / …) so the caller can map it to a
 /// canonical stop reason. `None` when absent or not a non-empty string.
 fn prompt_block_reason(data: &serde_json::Value) -> Option<&str> {
-    data.get("promptFeedback")
+    data.get(FIELD_PROMPT_FEEDBACK)
         .and_then(|pf| pf.get("blockReason"))
         .and_then(|r| r.as_str())
         .filter(|s| !s.is_empty())
@@ -1660,3 +1848,54 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;
+
+/// The candidate's and the prompt's `safetyRatings[]` -> the IR's safety verdicts (DF-MAP item 1):
+/// the category, and `blocked` as both `flagged` and `blocked`. The probability is Google's own
+/// scale and does not cross.
+fn read_safety_ratings(
+    body: &serde_json::Value,
+    candidate: &serde_json::Value,
+) -> Vec<crate::codec::ir::IrSafetyVerdict> {
+    let prompt = body
+        .get(FIELD_PROMPT_FEEDBACK)
+        .and_then(|p| p.get(FIELD_SAFETY_RATINGS));
+    [candidate.get(FIELD_SAFETY_RATINGS), prompt]
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.as_array())
+        .flatten()
+        .filter_map(|r| {
+            let blocked = r
+                .get(FIELD_BLOCKED)
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
+            Some(crate::codec::ir::IrSafetyVerdict {
+                category: r.get(FIELD_CATEGORY)?.as_str()?.to_string(),
+                flagged: blocked,
+                blocked,
+            })
+        })
+        .collect()
+}
+
+/// The IR's safety verdicts as a candidate's `safetyRatings[]` (`{category, blocked}`; no
+/// probability, since none crossed). `None` when there are none.
+fn write_safety_ratings(safety: &[crate::codec::ir::IrSafetyVerdict]) -> Option<serde_json::Value> {
+    (!safety.is_empty()).then(|| {
+        serde_json::Value::Array(
+            safety
+                .iter()
+                .map(|v| serde_json::json!({ (FIELD_CATEGORY): v.category, (FIELD_BLOCKED): v.blocked }))
+                .collect(),
+        )
+    })
+}
+
+const FIELD_SAFETY_RATINGS: &str = "safetyRatings";
+const FIELD_PROMPT_FEEDBACK: &str = "promptFeedback";
+const FIELD_CATEGORY: &str = "category";
+const FIELD_BLOCKED: &str = "blocked";

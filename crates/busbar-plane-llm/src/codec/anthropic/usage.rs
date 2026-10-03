@@ -185,8 +185,10 @@ pub(super) fn anthropic_served_tier(tier: Option<&str>) -> Option<&'static str> 
         _ => None,
     };
     if mapped.is_none() {
-        tracing::warn!(
-            service_tier = word,
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::SERVICE_TIER,
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [service_tier = word,],
             "dropping usage.service_tier on Anthropic response egress: Anthropic names only \
              standard / priority / batch"
         );

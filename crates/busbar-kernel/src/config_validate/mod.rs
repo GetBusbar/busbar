@@ -1194,7 +1194,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if any_passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
                 let resolved_key =
-                    crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
+                    crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                         .unwrap_or_default();
                 if !resolved_key.trim().is_empty() {
                     diag_warn!(
@@ -1843,7 +1843,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // per-reference). A non-built-in module additionally requires the plugin subsystem, which the
     // shared `plugins_preflight` verifies against the registry at boot.
     for module in cfg.secrets.keys() {
-        if crate::preflight::builtin_secret(module).is_some() {
+        if crate::config::secret::is_linked_secret(module) {
             errors.push(format!(
                 "secrets.{module}: the built-in '{module}' secret module takes no module-level \
                  config; its settings (`key` / `path`) belong on each individual secret reference, \
@@ -2386,7 +2386,7 @@ fn validate_providers_with(
             // colon-split lives only in `build()`, which `--validate` never reaches, so a malformed
             // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
             // resolves (an unset var can't be validated — caught at boot).
-            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
+            let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
                 if let Err(e) =
@@ -2417,7 +2417,7 @@ fn validate_providers_with(
                      service-account JSON or key file), so there is nothing to declare keyless"
                 ));
             }
-            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
+            let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
                 // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,

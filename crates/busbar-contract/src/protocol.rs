@@ -238,6 +238,12 @@ pub trait StreamTranslator: Send {
     fn terminal_error_frame(&mut self, _err: &IrError) -> Option<(String, serde_json::Value)> {
         None
     }
+    /// The far-end wire paths this stream dropped on its way to the caller (a TRANSLATE attempt's
+    /// one drop path), each already warned once; the host records one audit row per path at the
+    /// stream's end. Default: none.
+    fn dropped(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// How tightly a protocol CLAIMS an inbound request, for the generic detection fold. A LOWER value

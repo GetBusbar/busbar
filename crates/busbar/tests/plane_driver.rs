@@ -22,13 +22,22 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneOpenIn, PlaneOpenOut, UnitCount,
     FROM_FAR_END,
 };
 use busbar_contract::caps::OpClassId;
+use busbar_contract::conn::{
+    ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
+    PieceKind,
+};
+use busbar_contract::ids::StreamId;
+use busbar_contract::transport::ConnFacts;
+use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 use busbar_plugin_loader::dispatch::{
+    conn_services::ticket_of,
     in_head,
     kinds::plane::{OwnedSnapshot, Plane},
     load_dropped, load_linked, now_ns as dispatch_now, out_head,
@@ -82,21 +91,32 @@ fn load(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
 
 /// [`load`], with the #85 envelope going to `sink`.
 fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> Plugin<Plane> {
-    load_open(way, dispatcher, sink).0
+    load_open(way, dispatcher, sink, None).0
 }
 
-/// [`load_with`], and the first generation's snapshot as the host copied it.
+/// [`load_with`], its need declared on `conns` when given.
+fn load_over(
+    way: Way,
+    dispatcher: &Dispatcher,
+    sink: Arc<dyn EnvelopeSink>,
+    conns: Option<Arc<dyn DeclaredConns>>,
+) -> Plugin<Plane> {
+    load_open(way, dispatcher, sink, conns).0
+}
+
+/// [`load_over`], and the first generation's snapshot as the host copied it.
 fn load_open(
     way: Way,
     dispatcher: &Dispatcher,
     sink: Arc<dyn EnvelopeSink>,
+    conns: Option<Arc<dyn DeclaredConns>>,
 ) -> (Plugin<Plane>, OwnedSnapshot) {
     let bind = Bind {
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink,
         dispatcher: dispatcher.adopter(),
-        conns: None,
+        conns,
     };
     let plugin = match way {
         Way::Linked => {
@@ -231,7 +251,10 @@ pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
             caller_refs: None,
         },
         book.clone(),
-    );
+        services(),
+        ("test_plane", &serde_yaml::Value::Null),
+    )
+    .expect("the instance is admitted");
     Rig {
         plugin,
         driver,
@@ -280,7 +303,12 @@ fn a_plane_driven_through_its_driver_ticket_answers_under_its_own_frame() {
 
 /// Wake ticket `t` through the plane (only a plugin holds the host's wake).
 fn wake(plugin: &Plugin<Plane>, t: busbar_contract::abi::mechanism::ticket::Ticket) {
-    let target = format!("/wake:{}:{}", t.slot, t.generation).into_bytes();
+    arrive_at(plugin, &format!("/wake:{}:{}", t.slot, t.generation));
+}
+
+/// One `arrive` on `target`, READY.
+fn arrive_at(plugin: &Plugin<Plane>, target: &str) -> [u64; 8] {
+    let target = target.as_bytes().to_vec();
     let mut units = [UnitCount {
         class: 0,
         source: 0,
@@ -312,6 +340,7 @@ fn wake(plugin: &Plugin<Plane>, t: busbar_contract::abi::mechanism::ticket::Tick
         plugin.call(slot::ARRIVE, &mut frame).outcome,
         AbiOutcome::Ready
     );
+    units.map(|u| u.amount)
 }
 
 fn zero_arrive_out() -> ArriveOut {
@@ -327,6 +356,260 @@ fn zero_arrive_out() -> ArriveOut {
         _reserved: 0,
         correlation: 0,
         cancels: 0,
+    }
+}
+
+// ── the instance's driver ticket: tick and drive ────────────────────────────────────────────────
+
+/// The plane's tick counters (`/ticks`).
+fn ticked(plugin: &Plugin<Plane>) -> [u64; plane::TICKED] {
+    let all = arrive_at(plugin, "/ticks");
+    let mut out = [0; plane::TICKED];
+    out.copy_from_slice(&all[..plane::TICKED]);
+    out
+}
+
+/// The kernel's driver of `plugin`'s instance, on the dispatcher's one worker (worker 0).
+fn driver_of(plugin: &Plugin<Plane>, dispatcher: Arc<Dispatcher>) -> PlaneDriver {
+    let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 0));
+    let refusal_statuses = calls.refusal_statuses();
+    PlaneDriver::new(
+        calls,
+        DriverConfig {
+            caps: BufferCaps::default(),
+            op_classes: vec![OpClassId::new("call")],
+            status_of: refusal_status,
+            refusal_statuses,
+            caller_refs: None,
+        },
+        Arc::new(cases::Book::default()),
+        services(),
+        ("test_plane", &serde_yaml::Value::Null),
+    )
+    .expect("the instance is admitted")
+}
+
+/// The kernel's host services, with no egress class and no store.
+fn services() -> Arc<KernelServices> {
+    Arc::new(KernelServices::new())
+}
+
+/// Wait up to 5 s for `done`.
+fn until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// THE KERNEL TICKS A PLANE INSTANCE (spec :3288, B.3.7): at once, then at each `next_tick_ns` it
+/// answered, never before it, on the instance's driver ticket (the head carries it); dropping the
+/// driver ends the schedule. RED before K-TICK: nothing ever called `tick`.
+#[tokio::test]
+async fn the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let plugin = load(way, &dispatcher);
+        arrive_at(&plugin, "/tick-every:20");
+        let driver = driver_of(&plugin, dispatcher.clone());
+        let ran = tokio::time::timeout(Duration::from_millis(150), driver.ticks()).await;
+        assert!(
+            ran.is_err(),
+            "{way:?}: a plane that asks again is ticked again"
+        );
+        let t = ticked(&plugin);
+        assert!(
+            t[plane::Ticked::Ticks as usize] >= 3,
+            "{way:?}: ticks {t:?}"
+        );
+        assert_eq!(
+            t[plane::Ticked::Early as usize],
+            0,
+            "{way:?}: a tick before its time"
+        );
+        assert_ne!(
+            t[plane::Ticked::Ticket as usize],
+            0,
+            "{way:?}: tick crossed on a ticket"
+        );
+        assert_eq!(
+            plugin.inflight(),
+            0,
+            "{way:?}: a tick holds no max_inflight slot"
+        );
+    }
+}
+
+/// A plane that answers `next_tick_ns = 0` is ticked once and never again.
+#[tokio::test]
+async fn no_tick_follows_a_tick_that_asks_for_none() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let plugin = load(way, &dispatcher);
+        let driver = driver_of(&plugin, dispatcher.clone());
+        tokio::time::timeout(Duration::from_secs(5), driver.ticks())
+            .await
+            .expect("the schedule ends at next_tick_ns = 0");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(ticked(&plugin)[plane::Ticked::Ticks as usize], 1, "{way:?}");
+    }
+}
+
+/// A connection table whose read pends (interest under the caller's ticket) until bytes are put.
+#[derive(Default)]
+struct Far {
+    slab: ConnSlab<()>,
+    bytes: Mutex<Option<Vec<u8>>>,
+    waiting: Mutex<Vec<u64>>,
+    /// Connections opened (each ESTABLISH that ran).
+    opened: Mutex<u32>,
+}
+
+impl DeclaredConns for Far {
+    fn declare(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        _: &ReadNeed,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<(), ConnError> {
+        self.slab.declare(owner, need);
+        Ok(())
+    }
+    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
+        self.slab.check_need(owner, need).ok().map(Ok)
+    }
+    /// The test plane's need is over the one wire this table serves.
+    fn serves_scheme(&self, _: &str) -> bool {
+        true
+    }
+}
+
+impl Conns for Far {
+    fn open(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        _: &OpenDesc<'_>,
+    ) -> Result<ConnId, ConnError> {
+        self.slab.check_need(caller, need)?;
+        *self.opened.lock().unwrap() += 1;
+        self.slab.insert(caller, need, ())
+    }
+    fn write(
+        &self,
+        c: InstanceId,
+        id: ConnId,
+        b: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
+        self.slab.get(c, id).map(|_| b.len())
+    }
+    fn read(&self, c: InstanceId, id: ConnId, t: u64, buf: &mut [u8]) -> Result<Piece, ConnError> {
+        self.slab.get(c, id)?;
+        let Some(bytes) = self.bytes.lock().unwrap().take() else {
+            self.waiting.lock().unwrap().push(t);
+            return Err(ConnError::Pending);
+        };
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Ok(Piece {
+            kind: PieceKind::Body,
+            stream: StreamId(0),
+            len: bytes.len(),
+            end: true,
+            status: None,
+            status_code: None,
+            status_namespace: None,
+            retry_after_secs: None,
+            reason: None,
+        })
+    }
+    fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
+        Err(ConnError::Pending)
+    }
+    fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
+        Err(ConnError::Closed)
+    }
+    fn close(&self, c: InstanceId, id: ConnId) -> Result<(), ConnError> {
+        self.slab.remove(c, id).map(|_| ())
+    }
+}
+
+/// A HOP INSIDE `tick` PENDS AND RESUMES THROUGH `drive` (ARCHITECT S7-TICK; spec :3314-3316):
+/// the plane ESTABLISHes its need (READY: the table holds the dial) and READs it inside `tick`; the
+/// read is PENDING on the instance's driver ticket, not refused for want of one, and `tick` answers
+/// PENDING, which ends it (a driver ticket's op is never resumed: what pended goes on through
+/// `drive`); the table's wake on that ticket calls `drive`, whose read on the driver ticket gets the
+/// bytes. RED before K-TICK: no `tick` ran, so nothing pended; with a PENDING tick held open, the
+/// schedule never ends.
+#[tokio::test]
+async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let far = Arc::new(Far::default());
+        let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
+        arrive_at(&plugin, "/tick-read");
+        let driver = driver_of(&plugin, dispatcher.clone());
+        tokio::time::timeout(Duration::from_secs(5), driver.ticks())
+            .await
+            .expect("one tick");
+        let t = ticked(&plugin);
+        assert_eq!(
+            t[plane::Ticked::ReadPended as usize],
+            1,
+            "{way:?}: the read pended: {t:?}"
+        );
+        let waiting = far.waiting.lock().unwrap().clone();
+        let ticket = t[plane::Ticked::Ticket as usize];
+        assert_eq!(
+            waiting,
+            vec![ticket],
+            "{way:?}: interest under the driver ticket"
+        );
+        *far.bytes.lock().unwrap() = Some(b"hello".to_vec());
+        // The table's readiness wake, on the ticket it registered.
+        wake(&plugin, ticket_of(ticket));
+        until("drive read the bytes", || {
+            ticked(&plugin)[plane::Ticked::DriveRead as usize] == 5
+        });
+        assert!(
+            stats(&plugin)[cases::stat::DRIVES] >= 1,
+            "{way:?}: drive ran"
+        );
+    }
+}
+
+/// EACH TICK STARTS A NEW CYCLE ON THE DRIVER TICKET (ARCHITECT S7-TICK (iii)): the services'
+/// kept answers under the driver ticket are forgotten when the next tick starts, so the second
+/// tick's ESTABLISH (handle 1 again) runs afresh instead of answering the first tick's stream; the
+/// cycle's kept count reaches the dispatcher's high-water gauge. RED before: the driver ticket is
+/// never recycled, the second ESTABLISH replayed the first one's answer (one connection opened) and
+/// the kept answers grew without bound.
+#[tokio::test]
+async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let far = Arc::new(Far::default());
+        let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
+        let driver = driver_of(&plugin, dispatcher.clone());
+        for _ in 0..2 {
+            arrive_at(&plugin, "/tick-read");
+            tokio::time::timeout(Duration::from_secs(5), driver.ticks())
+                .await
+                .expect("one tick");
+        }
+        assert_eq!(
+            *far.opened.lock().unwrap(),
+            2,
+            "{way:?}: each tick's ESTABLISH ran"
+        );
+        assert!(
+            dispatcher.stats().driver_kept_high >= 1,
+            "{way:?}: the first cycle's kept ESTABLISH answer is counted"
+        );
     }
 }
 
@@ -456,7 +739,7 @@ fn serve_table(
         workers: 2,
         ..DispatchConfig::default()
     }));
-    let (plugin, snapshot) = load_open(way, &dispatcher, Arc::new(NoSink));
+    let (plugin, snapshot) = load_open(way, &dispatcher, Arc::new(NoSink), None);
     let routes = snapshot
         .admin_routes
         .iter()

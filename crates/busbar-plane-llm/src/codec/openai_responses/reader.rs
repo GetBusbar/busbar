@@ -395,9 +395,11 @@ impl ProtocolReader for ResponsesReader {
                                 .and_then(|i| i.as_str())
                                 .is_some_and(|i| !i.is_empty())
                             {
-                                tracing::warn!(
-                                    reasoning_id =
-                                        item.get(keys::ID).and_then(|i| i.as_str()).unwrap_or(""),
+                                crate::codec::drops::writer_drop!(
+                                    crate::codec::drops::wire("input[].id"),
+                                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                    [reasoning_id =
+                                        item.get(keys::ID).and_then(|i| i.as_str()).unwrap_or(""),],
                                     "dropping reasoning input item `id` on Responses ir parse: the \
                                      IR Thinking block models no reasoning-item id; the reasoning \
                                      text/encrypted_content survive, the specific id is re-minted"
@@ -1557,10 +1559,13 @@ impl ProtocolReader for ResponsesReader {
                                         // `annotations` is a sibling key on this same content-part
                                         // object. See `read_url_annotations` for why offsets are
                                         // deliberately not carried.
-                                        let citations = block_item
+                                        let mut citations = block_item
                                             .get(keys::ANNOTATIONS)
                                             .map(super::super::url_citation_wire::read_url_annotations)
                                             .unwrap_or_default();
+                                        citations.extend(super::read_file_annotations(
+                                            block_item.get(keys::ANNOTATIONS),
+                                        ));
                                         // RSP-03: the part's token `logprobs` join the response's
                                         // one IR logprob run, in part order — the writer's inverse
                                         // attaches that run to the first text part.
@@ -1679,6 +1684,11 @@ impl ProtocolReader for ResponsesReader {
                         }
                     }
 
+                    // A provider-run WEB SEARCH (DF-MAP item 2): the IR's hosted web-search record,
+                    // its sources as results.
+                    super::ITEM_TYPE_WEB_SEARCH_CALL => {
+                        content.push(super::read_web_search_call(item));
+                    }
                     // A HOSTED-tool output item (`web_search_call`, `file_search_call`,
                     // `code_interpreter_call`, `computer_call`, `mcp_call`, …). These carry the
                     // provider-side execution of a built-in tool (an `id` and a `status`, plus
@@ -1689,14 +1699,17 @@ impl ProtocolReader for ResponsesReader {
                     // never silently: a hosted-tool run that vanished with no log is exactly the
                     // invisible floor-drop this work exists to eliminate. The assistant's actual
                     // message/tool-call/reasoning output is still carried by the arms above.
+                    // On a translate attempt it goes through the one drop path (WARN + audit
+                    // row naming `output[].type=<item>`); a same-dialect relay's tap says nothing.
                     other => {
-                        tracing::warn!(
-                            item_type = other,
-                            "dropping unmodeled Responses output item on ir parse: a hosted-tool \
-                             invocation record (e.g. web_search_call) has no neutral IR form and no \
-                             cross-protocol analog; the assistant message/function_call/reasoning \
-                             output is unaffected"
-                        );
+                        crate::codec::drops::note(crate::codec::drops::Dropped::new(
+                            format!("output[].type={other}"),
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            "dropping an unmodeled Responses output item on the cross-protocol \
+                             seam: a hosted-tool invocation record (e.g. web_search_call) has no \
+                             neutral IR form and no cross-protocol analog; the assistant \
+                             message/function_call/reasoning output is unaffected",
+                        ));
                     }
                 }
             }
@@ -1764,7 +1777,10 @@ impl ProtocolReader for ResponsesReader {
             .get(keys::INSTRUCTIONS)
             .is_some_and(|v| !v.is_null() && v != &serde_json::json!(""))
         {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire(keys::INSTRUCTIONS),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping response `instructions` echo on Responses ir parse: IrResponse models no \
                  request-echo slot; the request-side instructions are carried on the request hop"
             );
@@ -1774,7 +1790,10 @@ impl ProtocolReader for ResponsesReader {
             .and_then(|m| m.as_object())
             .is_some_and(|m| !m.is_empty())
         {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire(keys::METADATA),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping response `metadata` echo on Responses ir parse: IrResponse models no \
                  request-echo slot; the request-side metadata is carried on the request hop"
             );
@@ -1791,14 +1810,20 @@ impl ProtocolReader for ResponsesReader {
             .get(PREVIOUS_RESPONSE_ID)
             .is_some_and(|v| !v.is_null() && v != &serde_json::json!(""))
         {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire(PREVIOUS_RESPONSE_ID),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping response `previous_response_id` echo on Responses ir parse: IrResponse \
                  models no request-echo slot; the stateful linkage rides `response.id` (carried) \
                  and the request-side `previous_response_id` is carried on the request hop"
             );
         }
         if obj.get(FIELD_STORE).is_some_and(|v| !v.is_null()) {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire(FIELD_STORE),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping response `store` echo on Responses ir parse: IrResponse models no \
                  request-echo slot; the request-side `store` flag is carried on the request hop"
             );
@@ -1818,6 +1843,7 @@ impl ProtocolReader for ResponsesReader {
 
             request_echo: None,
             stop_detail: None,
+            safety: super::read_moderation(body),
             ..Default::default()
         })
     }
@@ -1832,6 +1858,50 @@ impl ProtocolReader for ResponsesReader {
 
     fn clone_box(&self) -> Box<dyn ProtocolReader> {
         Box::new(self.clone())
+    }
+
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::STREAM_PATHS,
+            code: super::STREAM_CODE,
+            drops: super::STREAM_DROPS,
+        })
+    }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
     }
 }
 

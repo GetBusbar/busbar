@@ -81,6 +81,18 @@ park = true
 
 # The answer members the dialect's reader and writer carry (`prim`: code carries them).
 [rows.response]
+"output[].type=web_search_call" = { ir = "web_search" }
+"output[].type=web_search_call.id" = { ir = "web_search" }
+"output[].type=web_search_call.status" = { ir = "web_search" }
+"output[].type=web_search_call.action.type=search.sources[].url" = { ir = "web_search" }
+"output[].type=message.content[].type=output_text.annotations[].type=file_citation" = { ir = "file_citation" }
+"output[].type=message.content[].type=output_text.annotations[].type=file_citation.file_id" = { ir = "file_citation" }
+"output[].type=message.content[].type=output_text.annotations[].type=file_citation.filename" = { ir = "file_citation" }
+"output[].type=message.content[].type=output_text.annotations[].type=file_citation.index" = { ir = "file_citation" }
+"output[].type=message.content[].type=output_text.annotations[].type=container_file_citation" = { ir = "file_citation" }
+"output[].type=message.content[].type=output_text.annotations[].type=file_path" = { ir = "file_citation" }
+"moderation.input.type=moderation_result.categories" = { ir = "safety_verdict" }
+"moderation.output.type=moderation_result.categories" = { ir = "safety_verdict" }
 "usage.output_tokens_details.reasoning_tokens" = { prim = "reasoning_tokens" }
 "usage.input_tokens" = { prim = "input_tokens" }
 "usage.output_tokens" = { prim = "output_tokens" }

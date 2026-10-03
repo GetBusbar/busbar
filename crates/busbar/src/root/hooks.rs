@@ -33,7 +33,7 @@ pub fn axis(registry: &Arc<PluginRegistry>) -> Result<Arc<dyn HookAxis>, String>
         Some(registry.as_ref()),
         crate::root::dispatch::dispatcher(),
     )?
-    .with_logs(crate::root::linked::plugin_logs().clone())
+    .with_logs(crate::root::boot::plugin_logs().clone())
     .with_conns(conns);
     Ok(Arc::new(rows))
 }

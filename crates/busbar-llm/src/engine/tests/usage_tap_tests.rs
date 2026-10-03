@@ -117,8 +117,7 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
         super::APPLICATION_JSON,
         "gemini",
         Some(busbar_contract::operation::OpVerb::CHAT),
-    )
-    .expect("the gemini reader accepts this body");
+    );
     let p = f.prompt();
     assert_eq!(
         p.messages[1].0, "assistant",

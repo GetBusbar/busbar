@@ -23,6 +23,7 @@ use serde_json::Value;
 
 use super::arrive::Arrived;
 use super::shaping::{FarShape, Lane, Shaping};
+use crate::codec::json_splice::{self, Edit};
 use crate::codec::translate::{TranslateCodec as _, TranslateReqInput, TranslateReqReject};
 use crate::codec::DECLS;
 use crate::dialect::DIALECTS;
@@ -53,9 +54,10 @@ pub struct FarRequest {
     pub body: Vec<u8>,
     /// The body went out as the caller sent it.
     pub pristine: bool,
-    /// Controls the far end's dialect cannot represent, dropped from the request (the kernel
-    /// records each: `egress.control_unrepresentable`, `<control> on <dialect>`, degraded).
-    pub dropped_controls: Vec<&'static str>,
+    /// What did not cross to the far end's dialect: the controls it cannot represent, then every
+    /// other dropped member by its wire path (`codec::drops`). The kernel records each:
+    /// `egress.control_unrepresentable`, `<control or path> on <dialect>`, degraded.
+    pub dropped_controls: Vec<String>,
 }
 
 /// The caller's stream intent, read off the caller's body before any rewrite.
@@ -65,8 +67,6 @@ pub struct StreamIntent {
     pub wants_stream: bool,
     /// The caller asked for usage in the stream itself.
     pub client_include_usage: bool,
-    /// The caller sent `stream_options` at all.
-    pub client_has_stream_options: bool,
 }
 
 /// The caller's stream intent under `handler` (an operation that never streams asks for none).
@@ -78,12 +78,9 @@ pub fn stream_intent(handler: &dyn OperationHandler, body: Option<&Value>) -> St
             .and_then(|v| v.pointer("/stream_options/include_usage"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
-    let client_has_stream_options =
-        wants_stream && body.is_some_and(|v| v.get("stream_options").is_some());
     StreamIntent {
         wants_stream,
         client_include_usage,
-        client_has_stream_options,
     }
 }
 
@@ -154,46 +151,119 @@ pub fn translate_reject(envelope: &'static str, reject: TranslateReqReject) -> A
     }
 }
 
-/// A same-dialect body the far end would receive unchanged, proved from its top-level keys alone:
-/// no router shim key, no `stream` key for a path-model far end, the lane's wire model as the
-/// body's model, no path-base reshape, and no body `model` for a path-model far end. One-sided:
-/// `false` means "translate and see".
-#[must_use]
-pub fn provably_pristine(lane: FarShape<'_>, body: &Value) -> bool {
-    let Some(obj) = body.as_object() else {
-        return true;
-    };
-    let shims = DECLS.iter().filter_map(|d| d.array_stream_shim_key);
-    for k in shims {
-        if obj.contains_key(k) {
-            return false;
-        }
-    }
-    let far = decl(lane.dialect);
-    let model_in_url = far.is_some_and(|d| d.has_model_in_url);
-    if model_in_url && obj.contains_key("stream") {
-        return false;
-    }
-    if obj.get("model").and_then(Value::as_str) != Some(lane.wire_model) {
-        return false;
-    }
-    if lane.path_base.is_some() && far.is_some_and(|d| d.reshapes_body_at_path_base) {
-        return false;
-    }
-    if model_in_url && obj.contains_key("model") {
-        return false;
-    }
-    true
+/// Whether a caller's body is JSON, by the arrival's own rule: a path-model arrival always is (its
+/// model and stream were spliced into it), a body-model one when its content type says so or names
+/// none.
+fn relays_json(ingress: &str, content_type: &str) -> bool {
+    decl(ingress).is_some_and(|d| d.has_model_in_url)
+        || content_type.starts_with(APPLICATION_JSON)
+        || content_type.is_empty()
 }
 
-/// A same-dialect path-model body carries its model in the URL, never in the body.
-pub fn strip_same_protocol_model_shim(v: &mut Value, ingress: &str) -> bool {
-    if decl(ingress).is_some_and(|d| d.has_model_in_url) {
-        if let Some(obj) = v.as_object_mut() {
-            return obj.remove("model").is_some();
-        }
+/// The members a far end at a `path_base` needs reshaped, read off its own writer: each member the
+/// reshape removes and each it sets (Claude-on-Vertex: no `model`, an `anthropic_version`).
+fn path_base_members(far: &ProtocolDecl) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut probe = serde_json::json!({ "model": "" });
+    let reshaped = far
+        .dialect()
+        .is_some_and(|dc| dc.reshape_for_path_base(&mut probe));
+    let Some(obj) = probe.as_object().filter(|_| reshaped) else {
+        return Vec::new();
+    };
+    let mut members: Vec<(String, Option<Vec<u8>>)> = obj
+        .iter()
+        .filter_map(|(k, v)| Some((k.clone(), Some(serde_json::to_vec(v).ok()?))))
+        .filter(|(k, v)| k.as_str() != "model" || v.as_deref() != Some(b"\"\"".as_slice()))
+        .collect();
+    if !obj.contains_key("model") {
+        members.push(("model".to_string(), None));
     }
-    false
+    members
+}
+
+/// The common relay, proved without allocating: a body-model object that carries none of busbar's
+/// router keys and already names the lane's wire model (its last `model`, as a last-wins reader
+/// sees it). `false` means "splice and see"; a body that is not an object needs no splice.
+fn needs_no_splice(lane: FarShape<'_>, hop_bytes: &[u8]) -> bool {
+    let wire = lane.wire_model.as_bytes();
+    let plain = !wire.iter().any(|c| *c == b'"' || *c == b'\\' || *c < 0x20);
+    let mut router_key = false;
+    let mut model_is_wire = false;
+    let scanned = json_splice::scan_object(hop_bytes, 0, |m| {
+        if DECLS
+            .iter()
+            .filter_map(|d| d.array_stream_shim_key)
+            .any(|k| m.is(k))
+        {
+            router_key = true;
+        }
+        if m.is("model") {
+            let v = &hop_bytes[m.value_start..m.value_end];
+            model_is_wire = plain
+                && v.len() == wire.len() + 2
+                && v.first() == Some(&b'"')
+                && v.last() == Some(&b'"')
+                && &v[1..v.len() - 1] == wire;
+        }
+    });
+    scanned.is_none() || (!router_key && model_is_wire)
+}
+
+/// THE RELAY of one same-dialect body: the caller's bytes with the governed splices only, each a
+/// byte-level member edit (`json_splice`), never a re-serialization (DIALECT FIDELITY, owner
+/// 2026-10-02; DIALECT-FIDELITY-DESIGN F2). The governed members: busbar's own router keys (never a
+/// far end's); for a path-model far end the `model` and `stream` the arrival spliced in (both ride
+/// the URL); for a body-model far end the mapped `model`, and a `path_base` far end's reshape.
+/// A body that is not a JSON object goes out as the caller sent it.
+#[must_use]
+pub fn relay_request<'a>(
+    lane: FarShape<'_>,
+    content_type: &str,
+    hop_bytes: &'a [u8],
+) -> Translated<'a> {
+    let unchanged = Translated {
+        bytes: Cow::Borrowed(hop_bytes),
+        pristine: true,
+    };
+    let Some(far) = decl(lane.dialect) else {
+        return unchanged;
+    };
+    if !relays_json(lane.dialect, content_type) {
+        return unchanged;
+    }
+    if !far.has_model_in_url && lane.path_base.is_none() && needs_no_splice(lane, hop_bytes) {
+        return unchanged;
+    }
+    let model = serde_json::to_vec(lane.wire_model).unwrap_or_default();
+    let reshape = if lane.path_base.is_some() {
+        path_base_members(far)
+    } else {
+        Vec::new()
+    };
+    let mut edits: Vec<Edit<'_>> = DECLS
+        .iter()
+        .filter_map(|d| d.array_stream_shim_key)
+        .map(Edit::Remove)
+        .collect();
+    if far.has_model_in_url {
+        edits.push(Edit::Remove("stream"));
+        edits.push(Edit::Remove("model"));
+    } else {
+        edits.push(Edit::Set("model", Cow::Borrowed(&model)));
+    }
+    for (k, v) in &reshape {
+        edits.push(match v {
+            Some(v) => Edit::Set(k, Cow::Borrowed(v)),
+            None => Edit::Remove(k),
+        });
+    }
+    match json_splice::apply_top(hop_bytes, &edits) {
+        Some(bytes) => Translated {
+            bytes: Cow::Owned(bytes),
+            pristine: false,
+        },
+        None => unchanged,
+    }
 }
 
 /// What the far end is sent for one hop's body.
@@ -214,8 +284,8 @@ pub struct Translation<'a> {
     pub outcome: Result<Translated<'a>, Answer>,
     /// A JSON request was read for a far end of another dialect.
     pub crossed: bool,
-    /// Controls the far end's dialect cannot represent.
-    pub dropped_controls: Vec<&'static str>,
+    /// What did not cross to the far end's dialect (see [`FarRequest::dropped_controls`]).
+    pub dropped_controls: Vec<String>,
 }
 
 fn static_name(name: &str) -> &'static str {
@@ -223,7 +293,8 @@ fn static_name(name: &str) -> &'static str {
 }
 
 /// THE TRANSLATION OF ONE HOP'S BODY for the far end `lane`: `body` is the caller's JSON (`None`
-/// for an opaque body, or for a hop proved pristine), `hop_bytes` the caller's bytes.
+/// for an opaque body; never read within one dialect, which relays `hop_bytes` with its governed
+/// splices, [`relay_request`]), `hop_bytes` the caller's bytes.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn translate_request<'a>(
@@ -274,8 +345,11 @@ fn translate_into<'a>(
     hop_bytes: &'a [u8],
 ) -> Result<Translated<'a>, Answer> {
     let egress = lane.dialect;
+    if ingress == egress {
+        return Ok(relay_request(lane, content_type, hop_bytes));
+    }
     let far = decl(egress);
-    let prep = (ingress != egress).then(|| EgressPrep {
+    let prep = EgressPrep {
         ingress_protocol: envelope,
         egress_requires_max_tokens: far.is_some_and(|d| d.requires_max_tokens),
         lane_default_max_tokens: lane.default_max_tokens,
@@ -288,91 +362,36 @@ fn translate_into<'a>(
         lane_caps: lane.caps,
         thought_signature_fill: far.is_some_and(|d| d.fills_thought_signature)
             && lane.path_base.is_none(),
-    });
+    };
     let handler_of = |p: &str| {
         decl(p)
             .and_then(|d| d.handler)
             .and_then(|rh| rh.operation_handler(operation))
     };
-    let Some(mut body) = body else {
-        if let Some(prep) = &prep {
-            let (Some(ih), Some(_eh)) = (handler_of(ingress), handler_of(egress)) else {
-                return Err(answer(
-                    envelope,
-                    404,
-                    KIND_NOT_FOUND,
-                    DETAIL_MODEL_UNSUPPORTED_OPERATION,
-                ));
-            };
-            let translated = ih
-                .translate_request(
-                    TranslateReqInput::Opaque {
-                        bytes: hop_bytes,
-                        content_type,
-                    },
-                    Some(egress),
-                    prep,
-                    lane.wire_model,
-                )
-                .map_err(|e| translate_reject(envelope, e))?;
-            let bytes = match translated.wire {
-                EgressWire::Bytes(b) => Cow::Owned(b.as_slice().to_vec()),
-                EgressWire::Json(v) => {
-                    Cow::Owned(crate::codec::json::to_vec(&v).map_err(|_| internal(envelope))?)
-                }
-                EgressWire::Unrepresentable { reason } => {
-                    return Err(translate_reject(
-                        envelope,
-                        TranslateReqReject::Unrepresentable(reason),
-                    ))
-                }
-            };
-            return Ok(Translated {
-                bytes,
-                pristine: false,
-            });
-        }
-        return Ok(Translated {
-            bytes: Cow::Borrowed(hop_bytes),
-            pristine: true,
-        });
-    };
-    let mut pristine = true;
-    if let Some(prep) = &prep {
-        t.crossed = true;
-        let Some(ingress_dialect) = decl(ingress).and_then(|d| d.dialect()) else {
-            return Err(answer(
-                envelope,
-                400,
-                KIND_INVALID_REQUEST,
-                DETAIL_INTERNAL_ERROR,
-            ));
-        };
-        let _ = ingress_dialect.requested_candidate_count(&body);
-        let Some(ingress_handler) = handler_of(ingress) else {
+    let Some(body) = body else {
+        let (Some(ih), Some(_eh)) = (handler_of(ingress), handler_of(egress)) else {
             return Err(answer(
                 envelope,
                 404,
                 KIND_NOT_FOUND,
-                DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
+                DETAIL_MODEL_UNSUPPORTED_OPERATION,
             ));
         };
-        let translated = ingress_handler
+        let translated = ih
             .translate_request(
-                TranslateReqInput::Json(&body),
-                handler_of(egress).map(|_| egress),
-                prep,
+                TranslateReqInput::Opaque {
+                    bytes: hop_bytes,
+                    content_type,
+                },
+                Some(egress),
+                &prep,
                 lane.wire_model,
             )
             .map_err(|e| translate_reject(envelope, e))?;
-        t.dropped_controls = translated.dropped_controls;
-        match translated.wire {
-            EgressWire::Json(written) => body = written,
-            EgressWire::Bytes(b) => {
-                return Ok(Translated {
-                    bytes: Cow::Owned(b.as_slice().to_vec()),
-                    pristine: false,
-                })
+        let bytes = match translated.wire {
+            EgressWire::Bytes(b) => Cow::Owned(b.as_slice().to_vec()),
+            EgressWire::Json(v) => {
+                Cow::Owned(crate::codec::json::to_vec(&v).map_err(|_| internal(envelope))?)
             }
             EgressWire::Unrepresentable { reason } => {
                 return Err(translate_reject(
@@ -380,29 +399,61 @@ fn translate_into<'a>(
                     TranslateReqReject::Unrepresentable(reason),
                 ))
             }
-        }
-        pristine = false;
-    }
-    pristine &= !crate::codec::wire_shim::strip_router_shim_keys(&mut body, egress);
-    let far_dialect = far.and_then(|d| d.dialect());
-    pristine &= !far_dialect
-        .as_ref()
-        .is_some_and(|dc| dc.rewrite_model_if_needed(&mut body, lane.wire_model));
-    if lane.path_base.is_some()
-        && far_dialect
-            .as_ref()
-            .is_some_and(|dc| dc.reshape_for_path_base(&mut body))
-    {
-        pristine = false;
-    }
-    if ingress == egress {
-        pristine &= !strip_same_protocol_model_shim(&mut body, ingress);
-    }
-    if ingress == egress && pristine {
+        };
         return Ok(Translated {
-            bytes: Cow::Borrowed(hop_bytes),
-            pristine: true,
+            bytes,
+            pristine: false,
         });
+    };
+    t.crossed = true;
+    let Some(ingress_dialect) = decl(ingress).and_then(|d| d.dialect()) else {
+        return Err(answer(
+            envelope,
+            400,
+            KIND_INVALID_REQUEST,
+            DETAIL_INTERNAL_ERROR,
+        ));
+    };
+    let _ = ingress_dialect.requested_candidate_count(&body);
+    let Some(ingress_handler) = handler_of(ingress) else {
+        return Err(answer(
+            envelope,
+            404,
+            KIND_NOT_FOUND,
+            DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
+        ));
+    };
+    let translated = ingress_handler
+        .translate_request(
+            TranslateReqInput::Json(&body),
+            handler_of(egress).map(|_| egress),
+            &prep,
+            lane.wire_model,
+        )
+        .map_err(|e| translate_reject(envelope, e))?;
+    t.dropped_controls = translated.dropped_controls;
+    let mut body = match translated.wire {
+        EgressWire::Json(written) => written,
+        EgressWire::Bytes(b) => {
+            return Ok(Translated {
+                bytes: Cow::Owned(b.as_slice().to_vec()),
+                pristine: false,
+            })
+        }
+        EgressWire::Unrepresentable { reason } => {
+            return Err(translate_reject(
+                envelope,
+                TranslateReqReject::Unrepresentable(reason),
+            ))
+        }
+    };
+    crate::codec::wire_shim::strip_router_shim_keys(&mut body, egress);
+    let far_dialect = far.and_then(|d| d.dialect());
+    if let Some(dc) = far_dialect.as_ref() {
+        dc.rewrite_model_if_needed(&mut body, lane.wire_model);
+        if lane.path_base.is_some() {
+            dc.reshape_for_path_base(&mut body);
+        }
     }
     let bytes = crate::codec::json::to_vec(&body).map_err(|_| internal(envelope))?;
     Ok(Translated {
@@ -529,6 +580,29 @@ pub fn with_caller_query(dialect: &str, target: &str, caller_query: &str) -> Opt
     Some(format!("{target}{sep}{}", added.join("&")))
 }
 
+/// The tenant head fields busbar sets for a far end of `dialect` from the provider's config: each
+/// selector the dialect declares whose config key (`organization`, `project`) has a value.
+#[must_use]
+pub fn tenant_fields<'a>(
+    dialect: &str,
+    organization: Option<&'a str>,
+    project: Option<&'a str>,
+) -> Vec<(&'static str, &'a str)> {
+    crate::dialect::dialect(dialect)
+        .map(|d| d.tenant_headers)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|(key, header)| {
+            let value = match *key {
+                "organization" => organization,
+                "project" => project,
+                _ => None,
+            };
+            value.map(|v| (*header, v))
+        })
+        .collect()
+}
+
 /// A value a head field can carry as text: visible ASCII and the tab.
 fn legal_field_value(v: &[u8]) -> bool {
     v.iter().all(|b| *b == b'\t' || (0x20..0x7f).contains(b))
@@ -577,11 +651,20 @@ fn head_fields(
             .to_vec(),
     );
     let content_type = ("content-type".to_string(), content_type.into_bytes());
+    // The provider's tenant selectors, from busbar's config (the caller's are governed).
+    let tenant = tenant_fields(
+        egress,
+        lane.organization.as_deref(),
+        lane.project.as_deref(),
+    )
+    .into_iter()
+    .map(|(n, v)| (n.to_string(), v.as_bytes().to_vec()));
     // A native client's user-agent, never a UA-less request (1.5.5's bytes); a same-dialect
     // caller's own replaces it below.
     let user_agent = ("user-agent".to_string(), user_agent.as_bytes().to_vec());
     let mut fields = vec![content_type, user_agent, accept];
     if arrived.dialect != egress {
+        fields.extend(tenant);
         return Ok(fields);
     }
     // The caller's fields, in the order the caller sent them; a repeated name keeps every value.
@@ -594,6 +677,7 @@ fn head_fields(
         .collect();
     fields.retain(|(own, _)| !forwarded.iter().any(|(name, _)| name == own));
     fields.extend(forwarded);
+    fields.extend(tenant);
     Ok(fields)
 }
 
@@ -617,39 +701,25 @@ pub fn build(
         .ok_or_else(|| internal(ingress))?;
     let body_is_json = arrived.parsed.is_some();
     let intent = stream_intent(handler, arrived.parsed.as_ref());
-    let pristine_head = ingress == lane.dialect
-        && arrived
-            .parsed
-            .as_ref()
-            .is_some_and(|v| provably_pristine(lane.shape(), v));
-    let hop_v = if pristine_head || !body_is_json {
+    let relay = ingress == lane.dialect;
+    let hop_v = if relay || !body_is_json {
         None
     } else {
         arrived.parsed.clone()
     };
     let reasoning = shaping.reasoning(pool, member).unwrap_or(lane.reasoning);
-    let (translated, dropped_controls) = if pristine_head {
-        (
-            Translated {
-                bytes: Cow::Borrowed(arrived.body.as_slice()),
-                pristine: true,
-            },
-            Vec::new(),
-        )
-    } else {
-        let t = translate_request(
-            ingress,
-            arrived.operation,
-            lane.shape(),
-            shaping.default_max_tokens,
-            shaping.reasoning_budgets,
-            reasoning,
-            hop_v,
-            &arrived.content_type,
-            &arrived.body,
-        );
-        (t.outcome?, t.dropped_controls)
-    };
+    let t = translate_request(
+        ingress,
+        arrived.operation,
+        lane.shape(),
+        shaping.default_max_tokens,
+        shaping.reasoning_budgets,
+        reasoning,
+        hop_v,
+        &arrived.content_type,
+        &arrived.body,
+    );
+    let (translated, dropped_controls) = (t.outcome?, t.dropped_controls);
     let pristine = translated.pristine;
     let body = inject_stream_usage(
         ingress,
@@ -693,7 +763,7 @@ pub const DETAIL_STREAM_OPTIONS_NOT_OBJECT: &str =
     "Invalid type for 'stream_options': expected an object.";
 
 /// A streamed request to a far end that reports usage only when asked is asked, unless the caller
-/// asked already.
+/// asked already: the governed METERING edit (`stream_options.include_usage`), a byte splice.
 fn inject_stream_usage(
     ingress: &'static str,
     lane: &Lane,
@@ -708,12 +778,7 @@ fn inject_stream_usage(
     {
         return Ok(payload);
     }
-    let injected = if intent.client_has_stream_options {
-        try_inject_stream_include_usage(payload)
-    } else {
-        try_inject_stream_include_usage_pristine(payload)
-    };
-    injected.map_err(|_unmeterable| {
+    try_inject_stream_include_usage(payload).map_err(|_unmeterable| {
         answer(
             ingress,
             400,
@@ -723,76 +788,42 @@ fn inject_stream_usage(
     })
 }
 
+/// The member a streamed request is asked for its usage with, and the object it lives in.
+const STREAM_OPTIONS: &str = "stream_options";
+/// The opt-in member itself.
+const INCLUDE_USAGE: &str = "include_usage";
+
 /// Ask a streamed request for its usage: `stream_options.include_usage = true`, the object made
-/// when absent or null. `Err` carries the payload back verbatim when `stream_options` is not an
-/// object (the request cannot be asked, and the caller refuses it rather than bill it blind); a
-/// payload that is not a JSON object goes out unchanged.
+/// when absent or null. A byte-level splice over the payload (every other byte stays): the member is
+/// set where it stands, or inserted after the opening brace. `Err` carries the payload back verbatim
+/// when `stream_options` is not an object (the request cannot be asked, and the caller refuses it
+/// rather than bill it blind); a payload that is not a JSON object goes out unchanged.
 ///
 /// # Errors
 ///
 /// The payload, verbatim, when its `stream_options` is not an object.
 pub fn try_inject_stream_include_usage(payload: Vec<u8>) -> Result<Vec<u8>, Vec<u8>> {
-    let mut v: Value = match crate::codec::json::parse(&payload) {
-        Ok(v) => v,
-        Err(_) => return Ok(payload),
-    };
-    let Some(obj) = v.as_object_mut() else {
+    let Some(top) = json_splice::object_at(&payload, 0) else {
         return Ok(payload);
     };
-    let so = obj
-        .entry("stream_options".to_string())
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    if so.is_null() {
-        *so = Value::Object(serde_json::Map::new());
-    }
-    let Some(so_obj) = so.as_object_mut() else {
-        return Err(payload);
-    };
-    so_obj.insert("include_usage".to_string(), Value::Bool(true));
-    match crate::codec::json::to_vec(&v) {
-        Ok(bytes) => Ok(bytes),
-        Err(_) => Ok(payload),
-    }
-}
-
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return needle.is_empty();
-    }
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
-/// The same ask without a parse when the caller's bytes provably carry no `stream_options`: the
-/// member is spliced in after the object's opening brace, so every other byte stays the caller's.
-/// Anything else falls back to [`try_inject_stream_include_usage`].
-///
-/// # Errors
-///
-/// As [`try_inject_stream_include_usage`].
-pub fn try_inject_stream_include_usage_pristine(payload: Vec<u8>) -> Result<Vec<u8>, Vec<u8>> {
-    const INSERT: &[u8] = br#""stream_options":{"include_usage":true},"#;
-    if contains_subslice(&payload, br#""stream_options""#) {
-        return try_inject_stream_include_usage(payload);
-    }
-    let mut i = 0usize;
-    while i < payload.len() && payload[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    let opens_object = payload.get(i) == Some(&b'{');
-    let next = {
-        let mut j = i + 1;
-        while j < payload.len() && payload[j].is_ascii_whitespace() {
-            j += 1;
+    let value: Cow<'_, [u8]> = match top.last(STREAM_OPTIONS) {
+        None => Cow::Borrowed(br#"{"include_usage":true}"#),
+        Some(m) if &payload[m.value_start..m.value_end] == b"null" => {
+            Cow::Borrowed(br#"{"include_usage":true}"#)
         }
-        payload.get(j).copied()
+        Some(m) => {
+            let Some(inner) = json_splice::object_at(&payload[..m.value_end], m.value_start) else {
+                return Err(payload);
+            };
+            let set = [Edit::Set(INCLUDE_USAGE, Cow::Borrowed(b"true"))];
+            match json_splice::apply(&payload[..m.value_end], &inner, &set) {
+                Some(edited) => Cow::Owned(edited[m.value_start..].to_vec()),
+                None => Cow::Borrowed(&payload[m.value_start..m.value_end]),
+            }
+        }
     };
-    if !opens_object || next != Some(b'"') {
-        return try_inject_stream_include_usage(payload);
-    }
-    let brace_end = i + 1;
-    let mut out = Vec::with_capacity(payload.len() + INSERT.len());
-    out.extend_from_slice(&payload[..brace_end]);
-    out.extend_from_slice(INSERT);
-    out.extend_from_slice(&payload[brace_end..]);
-    Ok(out)
+    let set = [Edit::Set(STREAM_OPTIONS, value)];
+    let out = json_splice::apply(&payload, &top, &set);
+    drop(set);
+    Ok(out.unwrap_or(payload))
 }

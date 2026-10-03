@@ -23,7 +23,8 @@ This page is the short version. Where the two differ, Part 6 wins.
    ```
 
    Builds, tests, clippy, the gates and the oracle run in CI (`.github/workflows/promote.yml`).
-3. Ship it: `cargo xtask ship "<PR title>" [--body <file>]`. It merges `origin/predev`, runs the
+3. Ship it from the lane's worktree with the release CLI (a clone of GetBusbar/busbar-release):
+   `busbar-release ship "<PR title>" [--body <file>]`. It merges `origin/predev`, runs the
    pre-flight, commits its changes, pushes, opens (or reuses) the PR into `predev` and turns on
    auto-merge. Then stop; CI is the proof and a red comes back as a task.
 4. The PR body says what changed, why, and the ruling or issue it implements. No AI attribution.

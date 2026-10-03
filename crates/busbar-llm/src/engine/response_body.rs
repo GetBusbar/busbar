@@ -410,6 +410,24 @@ where
                     if let Some(reason) = end.stream_fault {
                         this.record_transient(reason);
                     }
+                    // The stream's drops (design F3 "Drops"), already warned once each: one audit row
+                    // per wire path, the twin of the buffered answer's rows.
+                    if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
+                        if let Some(lane) = EngineTables::new(rt).lanes().get(this.lane_idx) {
+                            let caller = this
+                                .usage_sink
+                                .as_ref()
+                                .map_or("anonymous", |s| s.key.id.as_str());
+                            for path in &end.dropped {
+                                host.audit_record(
+                                    "egress.control_unrepresentable",
+                                    &format!("{path} from {}", lane.protocol),
+                                    busbar_contract::vocab::OUTCOME_DEGRADED,
+                                    caller,
+                                );
+                            }
+                        }
+                    }
                     drop(this.permit.take());
                     this.ended = true;
                     if end.generation_failed {

@@ -48,7 +48,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use busbar_contract::abi::host::service::{self as svc, ItemSpan, MAX_SPANS};
@@ -97,6 +97,40 @@ pub trait DestJudge: Send + Sync {
     ///
     /// The refusal of the first refused address.
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal>;
+    /// A config commit: the deployment's destinations are now `d`. A judge that re-reads its
+    /// metadata lists at every commit (as 1.5.5 did) takes them from here; the default keeps what
+    /// it was built with.
+    fn destinations_applied(&self, d: &crate::config::Destinations) {
+        let _ = d;
+    }
+}
+
+/// The process's destination judges that hear every config commit
+/// ([`install_dest_judge_commits`]), held weakly: a judge dropped stops hearing.
+static COMMIT_LISTENERS: Mutex<Vec<std::sync::Weak<dyn DestJudge>>> = Mutex::new(Vec::new());
+
+/// Install `judge` as one that hears every config commit ([`DestJudge::destinations_applied`]):
+/// the root's one, at boot, before the boot build commits.
+pub fn install_dest_judge_commits(judge: &Arc<dyn DestJudge>) {
+    COMMIT_LISTENERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Arc::downgrade(judge));
+}
+
+/// Raise a config commit: every installed judge still alive hears `d`. Called at the commit
+/// (`InstalledLimits::keep`), so a rejected apply leaves the lists in force.
+pub(crate) fn destinations_applied(d: &crate::config::Destinations) {
+    let live: Vec<Arc<dyn DestJudge>> = {
+        let mut held = COMMIT_LISTENERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.retain(|j| j.strong_count() > 0);
+        held.iter().filter_map(std::sync::Weak::upgrade).collect()
+    };
+    for judge in live {
+        judge.destinations_applied(d);
+    }
 }
 
 /// A destination judge's refusal of an answer: the `DEST_*` verdict and the guard's sentence.
@@ -339,15 +373,15 @@ pub struct KernelServices {
     wall_ms: WallMs,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
     records: Option<Records>,
-    pool: Option<Arc<dyn Offload>>,
+    pool: OnceLock<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
     units: Arc<crate::host_units::UnitRecords>,
     batcher: Arc<WriteBehind>,
-    signer: Option<Arc<dyn SignKey>>,
+    signer: OnceLock<Arc<dyn SignKey>>,
     trust: TrustBook,
-    demotions: Option<Demotions>,
     /// The destination guard; when set it IS the judge (`dest.judge`, [`Self::judge_dial`]).
     judge: Option<Arc<dyn DestJudge>>,
+    demotions: OnceLock<Demotions>,
 }
 
 /// The durable demotion record, and the instance its unprefixed rows belong to.
@@ -380,14 +414,14 @@ impl KernelServices {
             wall_ms: Arc::new(system_wall_ms),
             instances: Mutex::default(),
             records: None,
-            pool: None,
+            pool: OnceLock::new(),
             pending: Arc::default(),
             units: Arc::default(),
             batcher: Arc::default(),
-            signer: None,
+            signer: OnceLock::new(),
             trust: TrustBook::default(),
-            demotions: None,
             judge: None,
+            demotions: OnceLock::new(),
         }
     }
 
@@ -414,14 +448,14 @@ impl KernelServices {
     /// reach a store are REFUSED.
     #[must_use]
     pub fn with_pool(mut self, pool: Arc<dyn Offload>) -> Self {
-        self.pool = Some(pool);
+        self.pool = OnceLock::from(pool);
         self
     }
 
     /// Serve `sign` with `signer`. Without it `sign` is REFUSED.
     #[must_use]
     pub fn with_signer(mut self, signer: Arc<dyn SignKey>) -> Self {
-        self.signer = Some(signer);
+        self.signer = OnceLock::from(signer);
         self
     }
 
@@ -436,11 +470,40 @@ impl KernelServices {
         demotions: Arc<DemotionRecord>,
         default_instance: &str,
     ) -> Self {
-        self.demotions = Some(Demotions {
+        self.demotions = OnceLock::from(Demotions {
             record: demotions,
             default_instance: Arc::from(default_instance),
         });
         self
+    }
+
+    /// THE LATE ATTACH (ARCHITECT S7-TICK 2026-10-01, ruling A). The services are composed before
+    /// any plugin is bound; the pool, the signer and the durable demotion record are built later,
+    /// with the first app, and each lives for the process (an apply reuses all three). Each attaches
+    /// ONCE, as its `with_*` would have set it; a second attach is refused (`false`) and changes
+    /// nothing. Until attached, the services that need it answer REFUSED, as unattached.
+    pub fn attach_pool(&self, pool: Arc<dyn Offload>) -> bool {
+        self.pool.set(pool).is_ok()
+    }
+
+    /// The signer, attached late; see [`Self::attach_pool`].
+    pub fn attach_signer(&self, signer: Arc<dyn SignKey>) -> bool {
+        self.signer.set(signer).is_ok()
+    }
+
+    /// The durable demotion record, attached late, as [`Self::with_demotions`] states it; see
+    /// [`Self::attach_pool`]. An instance admitted before it attached replayed no row.
+    pub fn attach_demotions(&self, demotions: Arc<DemotionRecord>, default_instance: &str) -> bool {
+        self.demotions
+            .set(Demotions {
+                record: demotions,
+                default_instance: Arc::from(default_instance),
+            })
+            .is_ok()
+    }
+
+    fn pool(&self) -> Option<&dyn Offload> {
+        self.pool.get().map(|p| &**p)
     }
 
     /// Read the wall clock through `wall_ms`.
@@ -470,7 +533,7 @@ impl KernelServices {
             });
         }
         let key: Arc<str> = Arc::from(instance);
-        let (rows, default) = self.demotions.as_ref().map_or_else(
+        let (rows, default) = self.demotions.get().map_or_else(
             || (Vec::new(), false),
             |d| (d.record.list(), *d.default_instance == *instance),
         );
@@ -621,7 +684,7 @@ impl KernelServices {
         if ttl_ms == 0 || key.is_empty() || !self.lock_instances().contains_key(instance) {
             return refused;
         }
-        let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool.as_deref()) else {
+        let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool()) else {
             return refused;
         };
         let rows = Arc::clone(&records.reads);
@@ -671,7 +734,7 @@ impl KernelServices {
     /// The kernel tick, every [`crate::host_records::FLUSH_INTERVAL`]: start a flush of the queued
     /// record writes when none runs, so writes a refused flush left queued still reach the store.
     pub fn flush_tick(&self) {
-        if let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool.as_deref()) {
+        if let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool()) {
             if self.batcher.start() {
                 self.start_flush(records, pool);
             }
@@ -721,10 +784,7 @@ impl KernelServices {
             .records
             .as_ref()
             .ok_or_else(|| Stored::refused(NO_STORE))?;
-        let pool = self
-            .pool
-            .as_deref()
-            .ok_or_else(|| Stored::refused(NO_POOL))?;
+        let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
         Ok((schema, records, pool))
     }
 }
@@ -969,7 +1029,7 @@ impl HostServices for KernelServices {
         };
         let Some((kid, sig)) = self
             .signer
-            .as_ref()
+            .get()
             .and_then(|s| s.sign(&signing.domain, data))
         else {
             return Stored::refused(NO_KEY);
@@ -982,7 +1042,7 @@ impl HostServices for KernelServices {
 
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
         // A durable record with no pool to write it on: nothing is judged.
-        let durable = match (self.demotions.as_ref(), self.pool.as_deref()) {
+        let durable = match (self.demotions.get(), self.pool()) {
             (Some(_), None) => return Ran::Now(Stored::refused(NO_POOL)),
             (Some(d), Some(pool)) => Some((d, pool)),
             (None, _) => None,

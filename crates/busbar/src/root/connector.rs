@@ -72,14 +72,19 @@ pub fn entries(doors: &[(&str, DoorFn)]) -> Result<Vec<Entry>, String> {
         .collect()
 }
 
-/// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built once from
-/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. An allowlist entry the guard
-/// cannot read refuses the boot, naming it.
+/// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built at boot from
+/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load, and installed to hear every config
+/// commit: its metadata lists (`security.*`, `providers.<p>.allow_metadata_hosts`) are re-read at
+/// each one, as 1.5.5 re-read them at every reload. An allowlist entry the guard cannot read
+/// refuses the boot, naming it.
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
-    guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
+    let judge = guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
         eprintln!("busbar: config errors:\n  - {refusal}");
         std::process::exit(2);
-    })
+    });
+    let commits: Arc<dyn DestJudge> = judge.clone();
+    busbar_kernel::host_services::install_dest_judge_commits(&commits);
+    judge
 }
 
 /// The one guard `d` states, or the refusal naming its bad allowlist entry (`--validate`).

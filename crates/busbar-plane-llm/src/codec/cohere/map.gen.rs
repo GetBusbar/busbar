@@ -61,6 +61,40 @@ pub(crate) const ROWS_STRUCTURE: &[Field] = &[
     row(&["logprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),
 ];
 
+/// The response wire paths this dialect carries (the drop walk's map).
+pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "message.tool_plan",
+    "message.role",
+    "message.content",
+    "usage.billed_units.search_units",
+    "usage.tokens.input_tokens",
+    "usage.tokens.output_tokens",
+    "message.citations",
+    "id",
+    "finish_reason",
+    "message.tool_calls",
+    "logprobs",
+    "usage.billed_units.input_tokens",
+    "usage.billed_units.output_tokens",
+    "usage.billed_units.classifications",
+    "usage.cached_tokens",
+];
+
+/// The stream wire paths this dialect carries (the drop walk's map).
+pub(crate) const STREAM_PATHS: &[&str] = &[
+    "type=tool-plan-delta",
+    "type=citation-start",
+    "type=message-start",
+    "type=content-start",
+    "type=content-delta",
+    "type=content-end",
+    "type=tool-call-start",
+    "type=tool-call-delta",
+    "type=tool-call-end",
+    "type=citation-end",
+    "type=message-end",
+];
+
 /// The request table, walked in order.
 pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, ROWS_PENALTIES, ROWS_BLOCKS];
 

@@ -61,7 +61,6 @@ pub mod rx;
 pub mod scan;
 pub mod selftest;
 pub mod sha256;
-pub mod ship;
 pub mod toml_doc;
 pub mod toml_lite;
 pub mod txn_fence;

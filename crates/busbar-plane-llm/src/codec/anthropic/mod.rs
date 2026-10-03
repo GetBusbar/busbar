@@ -342,9 +342,151 @@ const BLOCK_TYPE_REDACTED_THINKING: &str = "redacted_thinking";
 /// its own protocol's round-trip instead of being destroyed.
 const ANTHROPIC_UNMODELED_BLOCKS_SENTINEL: &str = "__busbar_anthropic_unmodeled_blocks";
 
-/// The native Anthropic content-block `type` values [`read_block`] models. Anything else degrades
-/// to an empty Text placeholder there; used here to find which raw blocks need parking under
-/// [`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`] without duplicating `read_block`'s parse logic.
+/// Every content-block kind [`read_block`] reads (the request and answer grammar, `codec::drops`).
+/// A block of any other kind does not cross a translate attempt, which names it.
+const BLOCK_KINDS: &[&str] = &[
+    keys::TEXT,
+    keys::THINKING,
+    STOP_TOOL_USE,
+    TOOL_RESULT,
+    keys::IMAGE,
+    BLOCK_TYPE_DOCUMENT,
+    BLOCK_TYPE_SEARCH_RESULT,
+    BLOCK_TYPE_REDACTED_THINKING,
+    WEB_SEARCH_TOOL_RESULT,
+];
+
+/// The request content-block grammar: the turns' blocks and the system blocks.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["messages[]", "content[]"],
+        tag: Some(keys::TYPE),
+        modelled: BLOCK_KINDS,
+        companions: &[],
+    },
+    crate::codec::drops::Blocks {
+        at: &["system[]"],
+        tag: Some(keys::TYPE),
+        modelled: BLOCK_KINDS,
+        companions: &[],
+    },
+];
+
+/// The answer content-block grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    (crate::codec::drops::kind::TEXT, "type=text"),
+    (crate::codec::drops::kind::IMAGE, "type=image"),
+    (crate::codec::drops::kind::DOCUMENT, "type=document"),
+    (crate::codec::drops::kind::THINKING, "type=thinking"),
+    (crate::codec::drops::kind::TOOL_USE, "type=tool_use"),
+    (crate::codec::drops::kind::TOOL_RESULT, "type=tool_result"),
+];
+
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    // `disable_parallel_tool_use`, inside whichever `tool_choice` arm the caller sent.
+    (
+        crate::codec::drops::name::PARALLEL_TOOL_CALLS,
+        "tool_choice.disable_parallel_tool_use",
+    ),
+    (
+        crate::codec::drops::name::RESPONSE_FORMAT,
+        "output_config.format",
+    ),
+];
+
+/// The IR request members the reader never sets.
+// No candidate count, logprobs or output modalities; `metadata` holds only `user_id`, which is the
+// IR's `user`.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::N,
+    crate::codec::drops::name::METADATA,
+    crate::codec::drops::name::TOP_LOGPROBS,
+    crate::codec::drops::name::OUTPUT_MODALITIES,
+    crate::codec::drops::name::LOGPROBS,
+];
+
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["content[]"],
+    tag: Some(keys::TYPE),
+    modelled: BLOCK_KINDS,
+    companions: &[],
+}];
+
+/// What the Anthropic reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // The raw unmodelled blocks, for a same-dialect write; `REQUEST_BLOCKS` names them.
+    crate::codec::drops::Parked {
+        key: ANTHROPIC_UNMODELED_BLOCKS_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // The thinking ask and the legacy structured-output spelling cross as the IR's reasoning and
+    // response format.
+    crate::codec::drops::Parked {
+        key: keys::THINKING,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::OUTPUT_FORMAT,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: keys::OUTPUT_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[keys::EFFORT, keys::FORMAT]),
+    },
+    crate::codec::drops::Parked {
+        key: keys::METADATA,
+        holds: crate::codec::drops::Holds::Members(&[USER_ID]),
+    },
+];
+
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// `stop_details` (the refusal category) is read beside the stop reason; the stream's block index is
+// structure; `ping` is a keepalive and `error` the terminal error, both carried by code.
+const RESPONSE_CODE: &[&str] = &[STOP_DETAILS];
+const STREAM_CODE: &[&str] = &["type=content_block_delta.index", "type=ping", "type=error"];
+
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "content[].type=bash_code_execution_tool_result",
+    "content[].type=code_execution_tool_result",
+    "content[].type=container_upload",
+    "content[].type=server_tool_use.caller.type=code_execution_20250825.tool_id",
+    "content[].type=server_tool_use.caller.type=code_execution_20260120",
+    "content[].type=text_editor_code_execution_tool_result",
+    "content[].type=tool_search_tool_result",
+    "content[].type=tool_use.caller.type=code_execution_20250825.tool_id",
+    "content[].type=tool_use.caller.type=code_execution_20260120",
+    "content[].type=tool_use.toolset_name",
+    "content[].type=web_fetch_tool_result",
+    "content[].type=web_search_tool_result.caller.type=code_execution_20250825.tool_id",
+    "content[].type=web_search_tool_result.caller.type=code_execution_20260120",
+    "content[].type=web_search_tool_result.content[].encrypted_content",
+    "content[].type=web_search_tool_result.content[].page_age",
+];
+const STREAM_DROPS: &[&str] = &[
+    "type=content_block_start.content_block.type=bash_code_execution_tool_result",
+    "type=content_block_start.content_block.type=code_execution_tool_result",
+    "type=content_block_start.content_block.type=container_upload",
+    "type=content_block_start.content_block.type=server_tool_use.caller.type=code_execution_20250825.tool_id",
+    "type=content_block_start.content_block.type=server_tool_use.caller.type=code_execution_20260120",
+    "type=content_block_start.content_block.type=text_editor_code_execution_tool_result",
+    "type=content_block_start.content_block.type=tool_search_tool_result",
+    "type=content_block_start.content_block.type=tool_use.caller.type=code_execution_20250825.tool_id",
+    "type=content_block_start.content_block.type=tool_use.caller.type=code_execution_20260120",
+    "type=content_block_start.content_block.type=tool_use.toolset_name",
+    "type=content_block_start.content_block.type=web_fetch_tool_result",
+    "type=content_block_start.content_block.type=web_search_tool_result",
+    "type=message_delta.delta.container.expires_at",
+    "type=message_delta.delta.container.skills",
+];
+
+/// The native Anthropic content-block `type` values [`read_block`] holds whole in the IR; used to
+/// find which raw blocks need parking under [`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`] without
+/// duplicating `read_block`'s parse logic.
 fn is_modeled_anthropic_block_type(t: &str) -> bool {
     matches!(
         t,
@@ -418,10 +560,14 @@ fn inline_document_source(media_type: &str, data: &str) -> Option<serde_json::Va
 /// deliberately NOT in [`is_modeled_anthropic_block_type`].
 const BLOCK_TYPE_SEARCH_RESULT: &str = "search_result";
 
-/// Scan a message's RAW `content` array (as read from the wire, BEFORE `read_block` parses it) for
-/// unmodeled blocks, pushing `{"m","i","block"}` sentinel entries for each. `read_block` parses
-/// every raw block 1:1 with no filtering, so a raw-array index always matches the parsed
-/// `IrMessage.content` index at the same position — no separate index bookkeeping needed.
+/// The stash entry member marking a raw block the IR does not hold at all (an insertion, not a
+/// replacement, on a same-dialect write).
+const STASH_INSERT: &str = "insert";
+
+/// Scan a message's RAW `content` array (as read from the wire, BEFORE `read_blocks` parses it) for
+/// blocks the IR does not hold whole, pushing `{"m","i","block"}` sentinel entries for each (`i` is
+/// the RAW index). A block [`read_blocks`] leaves out of the IR is marked `"insert": true`; every
+/// other entry replaces the IR block standing at that raw position.
 fn stash_unmodeled_blocks(
     msg_val: &serde_json::Value,
     m: usize,
@@ -446,7 +592,14 @@ fn stash_unmodeled_blocks(
         // case keeps the modelled-not-stashed contract its round-trip test pins.
         let document_needs_stash = block_type == BLOCK_TYPE_DOCUMENT
             && (block_val.get(keys::CONTEXT).is_some() || block_val.get(keys::CITATIONS).is_some());
-        if !is_modeled_anthropic_block_type(block_type) || document_needs_stash {
+        if !is_read_into_ir(block_val) {
+            // Not in the IR at all: a same-dialect write INSERTS it back at raw index `i`.
+            sink.push(serde_json::json!({
+                (keys::M): m, (keys::I): i, (keys::BLOCK): block_val, (STASH_INSERT): true
+            }));
+        } else if !is_modeled_anthropic_block_type(block_type) || document_needs_stash {
+            // In the IR, but not whole: a same-dialect write REPLACES the IR block at raw index
+            // `i` with the original.
             sink.push(serde_json::json!({ (keys::M): m, (keys::I): i, (keys::BLOCK): block_val }));
         }
     }
@@ -462,10 +615,32 @@ fn find_stashed_block(
     sentinel.iter().find_map(|entry| {
         let em = entry.get(keys::M)?.as_u64()? as usize;
         let ei = entry.get(keys::I)?.as_u64()? as usize;
-        (em == m && ei == i)
+        (em == m && ei == i && !is_insert(entry))
             .then(|| entry.get(keys::BLOCK).cloned())
             .flatten()
     })
+}
+
+/// Whether a stash entry is a block the IR does not hold at all.
+fn is_insert(entry: &serde_json::Value) -> bool {
+    entry.get(STASH_INSERT).and_then(|v| v.as_bool()) == Some(true)
+}
+
+/// The blocks of turn `m` the IR does not hold at all, by raw index, in order.
+fn stashed_inserts(sentinel: &[serde_json::Value], m: usize) -> Vec<(usize, serde_json::Value)> {
+    let mut out: Vec<(usize, serde_json::Value)> = sentinel
+        .iter()
+        .filter(|entry| is_insert(entry))
+        .filter_map(|entry| {
+            let em = entry.get(keys::M)?.as_u64()? as usize;
+            let ei = entry.get(keys::I)?.as_u64()? as usize;
+            (em == m)
+                .then(|| Some((ei, entry.get(keys::BLOCK)?.clone())))
+                .flatten()
+        })
+        .collect();
+    out.sort_by_key(|(i, _)| *i);
+    out
 }
 
 /// Anthropic error `type` strings used in error envelopes and in-stream error events. Values
@@ -721,7 +896,10 @@ fn stream_error_type(err: &IrError) -> &'static str {
 /// must carry each result's `encrypted_content`, which only Anthropic mints (DF-MAP item 2). The
 /// record is dropped, observably; its citations still ride the text blocks.
 fn warn_hosted_record_dropped() {
-    tracing::warn!(
+    crate::codec::drops::writer_drop!(
+        crate::codec::drops::HOSTED_TOOL,
+        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+        [],
         "dropping a hosted web-search record on Anthropic egress: a web_search_tool_result needs \
          the encrypted_content only Anthropic mints (lossy-by-target)"
     );
@@ -1091,12 +1269,13 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                             (keys::SOURCE): { (keys::TYPE): keys::BASE64, (MEDIA_TYPE): format!("image/{subtype}"), (keys::DATA): data }
                         }),
                         None => {
-                            tracing::warn!(
-                                media_type = %media_type,
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::IMAGE,
+                                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                [media_type = %media_type, ],
                                 "dropping image block on Anthropic egress: media_type is not one of \
                                  image/{{jpeg,png,gif,webp}}, the only set Anthropic accepts — \
-                                 emitting it verbatim would 400 the backend"
-                            );
+                                 emitting it verbatim would 400 the backend");
                             serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "" })
                         }
                     }
@@ -1135,8 +1314,10 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             // they get here so nothing is emitted for them; the placeholder below is defensive for a
             // direct `write_block` call.
             if *kind != crate::codec::ir::IrMediaKind::Document {
-                tracing::warn!(
-                    media_kind = kind.as_str(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::block(kind.as_str()),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [media_kind = kind.as_str(),],
                     "dropping attachment on Anthropic egress: the Messages API has a `document` \
                      content block and NO audio or video block, so this attachment has no native \
                      slot; it is NOT emitted"
@@ -1304,31 +1485,35 @@ fn attachment_is_sendable(block: &crate::codec::ir::IrBlock) -> bool {
                 if *vendor == VENDOR_NAME {
                     return true;
                 }
-                tracing::warn!(
-                    vendor = %vendor,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::IMAGE,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [vendor = %vendor, ],
                     "dropping unresolvable vendor-scoped image reference on Anthropic egress: a \
                      Responses input_image.file_id or a Bedrock s3Location has no cross-vendor analog; \
-                     the block is NOT emitted"
-                );
+                     the block is NOT emitted");
                 false
             }
             crate::codec::ir::IrImageSource::Base64 { media_type, .. } => {
                 if crate::codec::ir::image_subtype_if_supported(media_type).is_some() {
                     return true;
                 }
-                tracing::warn!(
-                    media_type = %media_type,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::IMAGE,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [media_type = %media_type, ],
                     "dropping image block from anthropic request egress: media_type is not one of \
-                     image/{{jpeg,png,gif,webp}} and anthropic 400s anything else"
-                );
+                     image/{{jpeg,png,gif,webp}} and anthropic 400s anything else");
                 false
             }
             crate::codec::ir::IrImageSource::Url(_) => true,
         },
         crate::codec::ir::IrBlock::Media { kind, source, .. } => {
             if *kind != crate::codec::ir::IrMediaKind::Document {
-                tracing::warn!(
-                    media_kind = kind.as_str(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::block(kind.as_str()),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [media_kind = kind.as_str(),],
                     "dropping attachment from anthropic request egress: the Messages API has no \
                      audio or video content block"
                 );
@@ -1338,23 +1523,25 @@ fn attachment_is_sendable(block: &crate::codec::ir::IrBlock) -> bool {
                 crate::codec::ir::IrImageSource::Vendor { vendor, .. }
                     if *vendor != VENDOR_NAME =>
                 {
-                    tracing::warn!(
-                        vendor = %vendor,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::DOCUMENT,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [vendor = %vendor, ],
                         "dropping document attachment from anthropic request egress: the source is \
-                         a foreign vendor file handle anthropic's backend cannot resolve"
-                    );
+                         a foreign vendor file handle anthropic's backend cannot resolve");
                     false
                 }
                 crate::codec::ir::IrImageSource::Base64 { media_type, data } => {
                     if inline_document_source(media_type, data).is_some() {
                         return true;
                     }
-                    tracing::warn!(
-                        media_type = %media_type,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::DOCUMENT,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [media_type = %media_type, ],
                         "dropping document attachment from anthropic request egress: anthropic has \
                          an inline document source only for application/pdf (base64) and UTF-8 \
-                         text (text source); this mime has no native slot"
-                    );
+                         text (text source); this mime has no native slot");
                     false
                 }
                 _ => true,
@@ -1431,11 +1618,23 @@ fn write_message(
     // position `read_request` recorded, which is the RAW pre-filter content index; collapsing
     // dropped blocks out of the index space here would misalign every stash lookup after the
     // first drop.
-    let blocks: Vec<serde_json::Value> = msg
-        .content
-        .iter()
-        .enumerate()
-        .filter_map(|(i, block)| {
+    // The IR holds no block for a raw block it did not read; those come back at their raw
+    // positions (a same-dialect write), so the walk counts RAW positions, not IR indexes.
+    let mut inserts = stashed_inserts(unmodeled_sentinel, m)
+        .into_iter()
+        .peekable();
+    let mut raw = 0usize;
+    let mut blocks: Vec<serde_json::Value> = Vec::with_capacity(msg.content.len());
+    for block in &msg.content {
+        while inserts.peek().is_some_and(|(at, _)| *at <= raw) {
+            if let Some((_, b)) = inserts.next() {
+                blocks.push(b);
+            }
+            raw += 1;
+        }
+        let i = raw;
+        raw += 1;
+        let written: Option<serde_json::Value> = 'block: {
             if let crate::codec::ir::IrBlock::Thinking {
                 signature,
                 redacted: false,
@@ -1451,34 +1650,41 @@ fn write_message(
                     .is_some_and(|o| o != crate::codec::ir::IrSignatureOrigin::Anthropic);
                 if signature.is_none() || foreign {
                     dropped_unsigned_thinking += 1;
-                    return None;
+                    break 'block None;
                 }
             }
             if !attachment_is_sendable(block) {
-                return None;
+                break 'block None;
             }
             if block.is_citation_carrier() {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TEXT,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping citations with no text on Anthropic egress: an empty text block is \
                      rejected (COH-17)"
                 );
-                return None;
+                break 'block None;
             }
-            // A parked unmodeled block (e.g. `document`) at this exact position: splice the
-            // ORIGINAL raw block back rather than emitting `write_block`'s empty-Text placeholder.
-            if let Some(raw) = find_stashed_block(unmodeled_sentinel, m, i) {
-                return Some(raw);
+            // A parked block (e.g. a `document` with `context`) at this exact raw position: splice
+            // the ORIGINAL raw block back in place of its IR projection.
+            if let Some(original) = find_stashed_block(unmodeled_sentinel, m, i) {
+                break 'block Some(original);
             }
             if let crate::codec::ir::IrBlock::HostedToolRecord { .. } = block {
                 warn_hosted_record_dropped();
-                return None;
+                break 'block None;
             }
             Some(write_block(block))
-        })
-        .collect();
+        };
+        blocks.extend(written);
+    }
+    blocks.extend(inserts.map(|(_, b)| b));
     if dropped_unsigned_thinking > 0 {
-        tracing::warn!(
-            dropped = dropped_unsigned_thinking,
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::THINKING,
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [dropped = dropped_unsigned_thinking,],
             "dropped assistant thinking block(s) with no Anthropic signature (none, or another \
              vendor's, IR-18) from anthropic request egress (anthropic rejects them with a 400)"
         );
@@ -1509,10 +1715,12 @@ fn write_tool(tool: &crate::codec::ir::IrTool) -> Option<serde_json::Value> {
         if anthropic_shaped {
             return Some(hosted.clone());
         }
-        tracing::warn!(
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::TOOLS,
+            &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+            [],
             "dropping a hosted tool on Anthropic egress: it is not an Anthropic-defined tool and has \
-             no Anthropic projection"
-        );
+             no Anthropic projection");
         return None;
     }
     let mut obj = serde_json::Map::new();

@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 458
+   "test": 457
   }
  },
  "dropped_since_last_write": [],
@@ -4475,15 +4475,8 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "head_pristine_matches_translate_output",
-     "proves": "head_provably_pristine re-emits the retained bytes",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "non_object_body_is_head_pristine",
-     "proves": "a non-object body is pristine",
+     "ref": "a_same_dialect_hop_is_the_callers_bytes_with_governed_splices",
+     "proves": "a same-dialect hop is the caller's bytes with the governed splices only",
      "source": "curated",
      "status": "mapped"
     },
@@ -4524,7 +4517,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:head_pristine_matches_translate_output, test:non_object_body_is_head_pristine, test:pristine_same_proto_is_byte_identical_body_model, test:pristine_same_proto_is_byte_identical_url_model, test:claude_on_vertex_drops_model_and_injects_anthropic_version, test:invalidator_3_model_rewrite_forces_non_pristine, test:invalidator_4_same_proto_model_shim_strip_forces_non_pristine"
+   "verdict_detail": "test:a_same_dialect_hop_is_the_callers_bytes_with_governed_splices, test:pristine_same_proto_is_byte_identical_body_model, test:pristine_same_proto_is_byte_identical_url_model, test:claude_on_vertex_drops_model_and_injects_anthropic_version, test:invalidator_3_model_rewrite_forces_non_pristine, test:invalidator_4_same_proto_model_shim_strip_forces_non_pristine"
   },
   {
    "id": "PB-98",

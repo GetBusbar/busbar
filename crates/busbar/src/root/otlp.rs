@@ -3,7 +3,7 @@
 
 //! THE COLLECTOR EGRESS POLICY (`EgressPolicy::Collector`, K9e-2) — the OTLP endpoint guard 1.5.x
 //! ran on `observability.otlp_endpoint` / `export.<name>.settings.url`, kept verbatim and now
-//! applied by the host's egress carrier ([`crate::root::linked::HostEgressCarrier`]) to every
+//! applied by the host's egress carrier ([`crate::root::boot::HostEgressCarrier`]) to every
 //! request a first-party sink that declared the policy asks it to admit or carry — the
 //! `busbar-export-otlp` plugin (`module: otlp`) among them. The span exporter that ran it before
 //! is gone: spans leave as `traces` records the plugin encodes (owner answer Q75).

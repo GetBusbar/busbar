@@ -130,7 +130,10 @@ impl ProtocolWriter for GeminiWriter {
                     // block WITH a warn (matching cohere's warn for the same case) rather than
                     // vanishing silently — a system array with a non-text block is degenerate.
                     _ => {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::block(block.kind_name()),
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "dropping non-text system block on Gemini egress: systemInstruction \
                              carries text only"
                         );
@@ -355,10 +358,12 @@ impl ProtocolWriter for GeminiWriter {
                         // A Responses `file_id` / Bedrock `s3Location` reference has no Gemini
                         // projection — emitting it would corrupt the part. Drop with a warn.
                         crate::codec::ir::IrImageSource::Vendor { .. } => {
-                            tracing::warn!(
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::IMAGE,
+                                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                [],
                                 "dropping unresolvable vendor-scoped image reference on Gemini \
-                                 egress: a file_id / s3Location has no cross-vendor analog"
-                            );
+                                 egress: a file_id / s3Location has no cross-vendor analog");
                         }
                     },
                     // Gemini is the ONE dialect in the matrix whose attachment slots are
@@ -381,12 +386,13 @@ impl ProtocolWriter for GeminiWriter {
                             }))
                         }
                         crate::codec::ir::IrImageSource::Vendor { .. } => {
-                            tracing::warn!(
-                                media_kind = kind.as_str(),
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::block(kind.as_str()),
+                                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                [media_kind = kind.as_str(), ],
                                 "dropping attachment on Gemini egress: the source is a vendor-scoped \
                                  file handle (an OpenAI/Anthropic file_id, a Bedrock s3Location) that \
-                                 Gemini's backend cannot resolve; the block is NOT emitted"
-                            );
+                                 Gemini's backend cannot resolve; the block is NOT emitted");
                         }
                     },
                     crate::codec::ir::IrBlock::Json(_) | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
@@ -414,11 +420,12 @@ impl ProtocolWriter for GeminiWriter {
                             (Some(sig), None | Some(crate::codec::ir::IrSignatureOrigin::Gemini)) => {
                                 part.insert(FIELD_THOUGHT_SIGNATURE.to_string(), serde_json::json!(sig));
                             }
-                            (Some(_), Some(origin)) => tracing::warn!(
-                                ?origin,
+                            (Some(_), Some(origin)) => crate::codec::drops::writer_drop!(
+                                crate::codec::drops::THINKING,
+                                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                [?origin, ],
                                 "dropping a foreign reasoning signature on Gemini egress: only a \
-                                 Gemini-minted thoughtSignature is valid there"
-                            ),
+                                 Gemini-minted thoughtSignature is valid there"),
                             (None, _) => {}
                         }
                         parts_arr.push(serde_json::Value::Object(part));
@@ -524,7 +531,10 @@ impl ProtocolWriter for GeminiWriter {
             // stripped (`ir/variant.rs`) while the tool_choice directive survived. Drop with a warn
             // rather than emitting a directive over an empty tool set.
             if func_tools.is_empty() {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TOOL_CHOICE,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping tool_choice on Gemini egress: a functionCallingConfig with no \
                      accompanying tools is meaningless (likely because the hosted tools that \
                      carried it were stripped on the cross-protocol seam)"
@@ -550,10 +560,12 @@ impl ProtocolWriter for GeminiWriter {
         // NOT touched here (owner decision 4: a warn on EVERY request would be noise). The
         // `is_some()` gate means this can only fire on a request that actually carried the flag.
         if req.parallel_tool_calls.is_some() {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::PARALLEL_TOOL_CALLS,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping parallel_tool_calls on Gemini egress: generateContent has no parallelism \
-                 control, so the backend's default parallelism applies"
-            );
+                 control, so the backend's default parallelism applies");
         }
 
         // generationConfig{maxOutputTokens, temperature, topP, topK, stopSequences, …}
@@ -613,9 +625,10 @@ impl ProtocolWriter for GeminiWriter {
             const GEMINI_MAX_TOP_LOGPROBS: u32 = 5;
             let clamped = top_logprobs.min(GEMINI_MAX_TOP_LOGPROBS);
             if clamped != top_logprobs {
-                tracing::warn!(
-                    requested = top_logprobs,
-                    clamped,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TOP_LOGPROBS,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [requested = top_logprobs, clamped,],
                     "clamping top_logprobs to Gemini's max (5)"
                 );
             }
@@ -645,15 +658,17 @@ impl ProtocolWriter for GeminiWriter {
                     if gemini_model_accepts_thinking_off(model) {
                         Some(0)
                     } else {
-                        tracing::warn!(
-                            model,
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::REASONING,
+                            &crate::codec::diagnostics::IR_DROP_REASONING,
+                            [model,],
                             "dropping a reasoning-off ask on Gemini egress: thinkingBudget 0 is \
                              accepted only by the gemini-2.5-flash family"
                         );
                         None
                     }
                 }
-                other => Some(i64::from(other.to_budget(table))),
+                other => other.to_budget(table).map(i64::from),
             };
             // Only SYNTHESIZE a thinkingConfig when the request did not already carry a native
             // Gemini one (i.e. this is a CROSS-protocol ask — `extra` is cleared at the seam, so
@@ -1479,6 +1494,9 @@ impl ProtocolWriter for GeminiWriter {
                 serde_json::json!(traffic_type),
             );
         }
+        if let Some(m) = &resp.usage.detail.by_modality {
+            super::usage::write_by_modality(m, &mut usage_metadata);
+        }
         if resp.created.is_some() || resp.model.is_some() {
             // Four additive terms, exactly as Google states them: prompt (cache-inclusive) +
             // candidates + the tool-use prompt term. Thinking is already inside `output_tokens`.
@@ -1509,6 +1527,14 @@ impl ProtocolWriter for GeminiWriter {
         // Gemini's own omission when `responseLogprobs` was not requested.
         if !resp.logprobs.is_empty() {
             candidate[FIELD_LOGPROBS_RESULT] = write_gemini_logprobs_result(&resp.logprobs);
+        }
+        // DF-MAP items 1-2: the hosted web-search records as grounding chunks, the safety verdicts
+        // as safety ratings.
+        if let Some(gm) = super::citations::write_grounding_chunks(&resp.content) {
+            candidate[super::citations::FIELD_GROUNDING_METADATA] = gm;
+        }
+        if let Some(ratings) = super::write_safety_ratings(&resp.safety) {
+            candidate[super::FIELD_SAFETY_RATINGS] = ratings;
         }
         let mut out = serde_json::json!({
             (FIELD_CANDIDATES): [candidate]

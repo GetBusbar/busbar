@@ -74,6 +74,19 @@ park = true
 
 # The answer members the dialect's reader and writer carry (`prim`: code carries them).
 [rows.response]
+"candidates[].groundingMetadata.groundingChunks[].web.uri" = { ir = "web_search" }
+"candidates[].groundingMetadata.groundingChunks[].web.title" = { ir = "web_search" }
+"candidates[].safetyRatings[].category" = { ir = "safety_verdict" }
+"candidates[].safetyRatings[].blocked" = { ir = "safety_verdict" }
+"promptFeedback.safetyRatings[].category" = { ir = "safety_verdict" }
+"promptFeedback.safetyRatings[].blocked" = { ir = "safety_verdict" }
+"usageMetadata.promptTokensDetails[].modality" = { ir = "usage_by_modality" }
+"usageMetadata.promptTokensDetails[].tokenCount" = { ir = "usage_by_modality" }
+"usageMetadata.candidatesTokensDetails[].modality" = { ir = "usage_by_modality" }
+"usageMetadata.candidatesTokensDetails[].tokenCount" = { ir = "usage_by_modality" }
+"usageMetadata.cacheTokensDetails[].modality" = { ir = "usage_by_modality" }
+"usageMetadata.cacheTokensDetails[].tokenCount" = { ir = "usage_by_modality" }
+"usageMetadata.serviceTier" = { prim = "served_tier" }
 "usageMetadata.thoughtsTokenCount" = { prim = "reasoning_tokens" }
 "usageMetadata.promptTokenCount" = { prim = "input_tokens" }
 "usageMetadata.candidatesTokenCount" = { prim = "output_tokens" }

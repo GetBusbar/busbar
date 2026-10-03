@@ -18,6 +18,9 @@ use busbar_kernel::host_services::KernelServices;
 use crate::guard::{Guard, Resolve, Resolved};
 use crate::process::GuardJudge;
 
+/// The provider class, the one class the 1.5.5 carve-outs speak for.
+const P: u32 = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+
 /// A resolver that holds every resolution for the test to answer.
 #[derive(Default)]
 struct HandResolver {
@@ -292,6 +295,7 @@ fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
 /// off for `dest.judge` and for the connector's dial alike (both are `judge_dial`): a metadata
 /// literal is admitted and pinned, a metadata name is resolved and its metadata answer pinned.
 /// RED on the judge that lifted only the denylist and kept the address guard's own metadata refusal.
+/// The overrides are a provider dial's only (ARCHITECT ruling on #413): every other class refuses.
 #[test]
 fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
     let r = Arc::new(HandResolver::default());
@@ -304,11 +308,18 @@ fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
     );
     let imds: SocketAddr = "169.254.169.254:80".parse().unwrap();
     assert_eq!(
-        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
+        s.judge_dial("169.254.169.254:80", P, Box::new(|_| {})),
         Some(Ok(imds))
     );
+    for class in [0, 2, 3, 4] {
+        assert_eq!(
+            s.judge_dial("169.254.169.254:80", class, Box::new(|_| {})),
+            Some(Err(svc::DEST_METADATA)),
+            "class {class}"
+        );
+    }
     let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://169.254.169.254/latest", 0, true, Some(later)));
+    let got = verdict_now(s.dest_judge("https://169.254.169.254/latest", P, true, Some(later)));
     assert_eq!(got.value, svc::DEST_ALLOWED);
 
     let pinned = Arc::new(Mutex::new(None));
@@ -316,7 +327,7 @@ fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
     assert!(s
         .judge_dial(
             "metadata.google.internal:80",
-            0,
+            P,
             Box::new(move |v| *slot.lock().unwrap() = Some(v)),
         )
         .is_none());
@@ -326,7 +337,8 @@ fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
 }
 
 /// A CARVE-OUT lifts exactly what it names: `allow_metadata_hosts: [169.254.169.254]` admits that
-/// address (literal, or answered for a name) and nothing else on the list.
+/// address (literal, or answered for a name) and nothing else on the list, for a provider dial;
+/// every other class refuses it.
 #[test]
 fn a_metadata_carve_out_admits_only_what_it_names() {
     let r = Arc::new(HandResolver::default());
@@ -338,11 +350,15 @@ fn a_metadata_carve_out_admits_only_what_it_names() {
         },
     );
     assert_eq!(
-        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
+        s.judge_dial("169.254.169.254:80", P, Box::new(|_| {})),
         Some(Ok("169.254.169.254:80".parse().unwrap()))
     );
     assert_eq!(
-        s.judge_dial("100.100.100.200:80", 0, Box::new(|_| {})),
+        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
+        Some(Err(svc::DEST_METADATA))
+    );
+    assert_eq!(
+        s.judge_dial("100.100.100.200:80", P, Box::new(|_| {})),
         Some(Err(svc::DEST_METADATA))
     );
     let pinned = Arc::new(Mutex::new(None));
@@ -350,7 +366,7 @@ fn a_metadata_carve_out_admits_only_what_it_names() {
     assert!(s
         .judge_dial(
             "rebind.example:80",
-            0,
+            P,
             Box::new(move |v| *slot.lock().unwrap() = Some(v))
         )
         .is_none());

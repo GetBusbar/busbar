@@ -175,10 +175,22 @@ fn dest_judge_asks_the_deployments_one_guard() {
         svc::DEST_NO_HOST,
         "a class the guard does not know dials nothing"
     );
-    // `allow_all_metadata` is 1.5.5's nuclear override: the metadata guard is fully disabled, the
-    // operator's additions and the metadata address alike; with it off the address stays refused.
+    // `allow_all_metadata` is 1.5.5's nuclear override: for a provider dial the metadata guard is
+    // fully disabled, the operator's additions and the metadata address alike; every other class
+    // still refuses; with it off the address stays refused.
     let open = kernel(&["metadata.corp.example"], true);
-    let admitted = |dest| verdict(&open, dest, DEFAULT_EGRESS_CLASS).value;
+    let provider = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+    let admitted = |dest| verdict(&open, dest, provider).value;
+    assert_eq!(
+        verdict(
+            &open,
+            "https://169.254.169.254/latest/meta-data/",
+            DEFAULT_EGRESS_CLASS
+        )
+        .value,
+        svc::DEST_METADATA,
+        "allow_all_metadata speaks for provider dials only"
+    );
     assert_eq!(
         admitted("https://metadata.corp.example/"),
         svc::DEST_ALLOWED
@@ -272,4 +284,139 @@ async fn an_ingress_head_the_wire_cannot_carry_is_a_plane_fault() {
         refusal_status(ReasonCode::PlanePanic)
     );
     assert!(response.headers().is_empty());
+}
+
+// ── the late attach (ARCHITECT S7-TICK 2026-10-01, ruling A) ─────────────────────────────────────
+
+/// The composed kernel services are kept whole for the plane driver, installed once.
+#[test]
+fn the_composed_kernel_services_are_kept_for_the_driver() {
+    let late = LateServices::new();
+    assert!(late.kernel().is_none(), "nothing before the compose");
+    let composed = Arc::new(kernel(&[], false));
+    late.install_kernel(Arc::clone(&composed))
+        .expect("the install");
+    assert!(Arc::ptr_eq(&late.kernel().expect("kept"), &composed));
+    assert!(late.is_installed());
+    assert_eq!(
+        late.install_kernel(Arc::new(kernel(&[], false))),
+        Err(AlreadyInstalled)
+    );
+}
+
+/// A signer that signs every domain: the key id `kid`, the bytes back as the signature.
+struct Signs;
+
+impl SignKey for Signs {
+    fn sign(&self, _: &str, data: &[u8]) -> Option<(String, Vec<u8>)> {
+        Some(("kid".to_string(), data.to_vec()))
+    }
+}
+
+fn plane(section: &'static str, record_kinds: &'static [&'static str]) -> PlaneDeclaration {
+    PlaneDeclaration {
+        key: section,
+        fallback: false,
+        config_section: section,
+        scope_kinds: &[],
+        subject_noun: section,
+        admin_noun: section,
+        audit_kind: section,
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+        metric_families: &[],
+        record_kinds,
+        required_config_sections: &[],
+        trust_keys: &[],
+        served_op_classes: &[],
+    }
+}
+
+/// The unprefixed demotion rows belong to the ONE plane declaring the demotion record kind.
+#[test]
+fn the_demotion_owner_is_the_one_plane_declaring_the_demotion_kind() {
+    let (owner, other) = (plane("owner", &[KIND_DEMOTION]), plane("other", &["call"]));
+    let twin = plane("twin", &[KIND_DEMOTION]);
+    assert_eq!(demotion_owner(&[&other, &owner]), Some("owner"));
+    assert_eq!(demotion_owner(&[&other]), None);
+    assert_eq!(demotion_owner(&[&owner, &twin]), None, "two owners: none");
+}
+
+/// Before the attach an admitted instance's `sign` is REFUSED and its trust state changes are not
+/// written down; after it, `sign` is READY under the instance's prefix and a cleared quarantine
+/// is written through the pool before it answers. A second attach changes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
+    use busbar_kernel::host_services::{InstanceFacts, Signing};
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::TrustEntry;
+    let late = LateServices::new();
+    late.install_kernel(Arc::new(kernel(&[], false)))
+        .expect("the install");
+    let k = late.kernel().expect("kept");
+    let entry = TrustEntry {
+        pin: None,
+        policy: Policy {
+            ttl_ms: 0,
+            recovery_backoff_ms: 0,
+        },
+    };
+    let facts = InstanceFacts {
+        signing: Some(Signing {
+            domain: "cards".to_string(),
+            kid_prefix: "k:".to_string(),
+        }),
+        trust: vec![("peer".to_string(), entry)],
+        ..InstanceFacts::default()
+    };
+    k.admit("owner", facts).expect("admitted");
+    let caller = Caller {
+        instance: Arc::from("owner"),
+        plugin: Arc::from("the-plugin"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    let sight = |hash| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        match late.trust_sight(
+            &caller,
+            "peer",
+            hash,
+            Box::new(move |s| tx.send(s).unwrap()),
+        ) {
+            Ran::Now(s) => (s.value, false),
+            Ran::Later => (
+                rx.recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+                    .value,
+                true,
+            ),
+        }
+    };
+    assert_eq!(late.sign(&caller, b"data").outcome, Outcome::Refused);
+    assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
+    assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
+    let demotions = Arc::new(DemotionRecord::default());
+    attach(
+        &late,
+        Some(Arc::new(Signs)),
+        &demotions,
+        &[&plane("owner", &[KIND_DEMOTION])],
+    );
+    let signed = late.sign(&caller, b"data");
+    assert_eq!(
+        (signed.outcome, signed.bytes),
+        (Outcome::Ready, b"k:kiddata".to_vec())
+    );
+    assert_eq!(
+        sight("h1"),
+        (svc::TRUST_SAME, true),
+        "the clearing is written first"
+    );
+    assert!(
+        !k.attach_signer(Arc::new(Signs)),
+        "a second attach is refused"
+    );
 }

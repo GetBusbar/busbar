@@ -480,6 +480,10 @@ pub struct InstalledLimits {
     /// The rates this build STAGED with the holder (made durable before the caller persists):
     /// withdrawn if this handle is dropped unkept, published by [`InstalledLimits::keep`].
     staged: StagedRates,
+    /// The destinations this configuration states, raised to the destination judge at the commit
+    /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
+    /// rejected apply must not leave them in force.
+    destinations: config::Destinations,
 }
 
 /// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
@@ -527,8 +531,10 @@ impl InstalledLimits {
             guard,
             rates,
             mut staged,
+            destinations,
         } = self;
         guard.commit();
+        crate::host_services::destinations_applied(&destinations);
         staged.armed = false;
         crate::rate_apply::rates_applied(&rates.raw());
     }
@@ -560,6 +566,7 @@ pub fn build_app_from_config(
     // for process-wide limits the same way it holds for everything else, including when it is the
     // PERSIST that refused.
     let limits_guard = limits::InstallGuard::install(&cfg.limits);
+    let destinations = cfg.destinations();
     // The config version this App will carry — computed ONCE up front because hook-transport
     // resolution stamps it into every socket configure preamble (the preamble's
     // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
@@ -856,6 +863,8 @@ pub fn build_app_from_config(
             base_url,
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
+            organization: provider_cfg.organization.clone(),
+            project: provider_cfg.project.clone(),
             upstream_model: ld.upstream_model.clone(),
             api_key: busbar_contract::redacted::Redacted::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
@@ -2068,6 +2077,7 @@ pub fn build_app_from_config(
             guard: limits_guard,
             rates: resolved_rates,
             staged,
+            destinations,
         },
     ))
 }

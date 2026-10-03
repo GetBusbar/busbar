@@ -222,11 +222,14 @@ impl ProtocolReader for CohereReader {
                                         // non-text block in the system array has no representation and
                                         // is dropped. Keep the drop, but surface it: a silent loss of
                                         // a system instruction block is otherwise invisible.
-                                        tracing::warn!(
-                                            block_type = bo
-                                                .get(keys::TYPE)
-                                                .and_then(|t| t.as_str())
-                                                .unwrap_or("<missing>"),
+                                        let block_type = bo
+                                            .get(keys::TYPE)
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("<missing>");
+                                        crate::codec::drops::writer_drop!(
+                                            crate::codec::drops::wire("messages[].content[]"),
+                                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                            [block_type,],
                                             "dropping non-text block in cohere system array (cohere \
                                              system is text-only)"
                                         );
@@ -1225,6 +1228,50 @@ impl ProtocolReader for CohereReader {
 
     fn clone_box(&self) -> Box<dyn ProtocolReader> {
         Box::new(self.clone())
+    }
+
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::STREAM_PATHS,
+            code: super::STREAM_CODE,
+            drops: super::STREAM_DROPS,
+        })
+    }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
     }
 
     fn read_response(

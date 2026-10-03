@@ -473,27 +473,9 @@ impl ProtocolReader for GeminiReader {
                         else if let Some(block) = read_gemini_media_part(part) {
                             msg_content.push(block);
                         }
-                        // Code-execution parts (`executableCode` / `codeExecutionResult`) are the
-                        // Gemini code-interpreter tool's model-authored artifacts, replayed in the
-                        // conversation history. No other dialect in the matrix has a native slot for
-                        // them, so on a CROSS-protocol egress they have nowhere to go: drop WITH a
-                        // warn naming the construct (drop-with-warn convention) rather than vanishing
-                        // silently or corrupting them into a text part. Same-protocol Gemini→Gemini
-                        // relay is byte-verbatim and never reaches this reader, so nothing is lost
-                        // there. Kept AFTER the content arms above so a normal part is unaffected.
-                        else if part.get(FIELD_EXECUTABLE_CODE).is_some() {
-                            tracing::warn!(
-                                "dropping gemini executableCode part on cross-protocol ingress: the \
-                                 code-interpreter tool's model-authored code has no cross-protocol \
-                                 analog and is NOT carried (same-protocol relay preserves it verbatim)"
-                            );
-                        } else if part.get(FIELD_CODE_EXECUTION_RESULT).is_some() {
-                            tracing::warn!(
-                                "dropping gemini codeExecutionResult part on cross-protocol ingress: \
-                                 the code-interpreter tool's execution output has no cross-protocol \
-                                 analog and is NOT carried (same-protocol relay preserves it verbatim)"
-                            );
-                        }
+                        // Any other part (the code-interpreter's `executableCode` /
+                        // `codeExecutionResult`, a future kind) has no IR form: it is not read, and
+                        // a translate attempt names the drop (`REQUEST_BLOCKS`).
                     }
                 }
 
@@ -598,17 +580,19 @@ impl ProtocolReader for GeminiReader {
         let thinking_config = obj
             .get(FIELD_GENERATION_CONFIG)
             .and_then(|gc| gc.get(FIELD_THINKING_CONFIG));
-        let reasoning = match thinking_config.and_then(|tc| tc.get(FIELD_THINKING_BUDGET)) {
-            Some(budget) => budget.as_i64().and_then(|n| match n {
+        let reasoning = match thinking_config
+            .and_then(|tc| tc.get(FIELD_THINKING_BUDGET))
+            .filter(|b| !b.is_null())
+        {
+            // A budget that is not an int32 Gemini accepts is the caller's error, answered in
+            // Gemini's own error envelope (spec Part 2 #76), never silently left out.
+            Some(budget) => match read_gemini_thinking_budget(budget).ok_or_else(ir_parse_error)? {
                 -1 => Some(crate::codec::ir::IrReasoningAsk::Dynamic),
                 // 0 = thinking explicitly switched off (IR-09): a foreign reasoning-by-default
                 // backend must be told, not left to think.
                 0 => Some(crate::codec::ir::IrReasoningAsk::Off),
-                n if n > 0 => u32::try_from(n)
-                    .ok()
-                    .map(crate::codec::ir::IrReasoningAsk::Budget),
-                _ => None,
-            }),
+                n => Some(crate::codec::ir::IrReasoningAsk::Budget(n.unsigned_abs())),
+            },
             // Gemini 3's word-form knob, `thinkingLevel`, is the effort ask (GEM-09). The API
             // takes one of the two, so a budget, when present, is the ask.
             None => thinking_config
@@ -833,8 +817,10 @@ impl ProtocolReader for GeminiReader {
         if let Some(cands) = candidates {
             if cands.len() > 1 && !state.multi_candidate_warned {
                 state.multi_candidate_warned = true;
-                tracing::warn!(
-                    candidates = cands.len(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire("candidates[]"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [candidates = cands.len(),],
                     "gemini stream chunk carried multiple candidates; only candidates[0] survives IR translation — a cross-protocol hop drops the rest (a same-protocol relay preserves all)"
                 );
             }
@@ -987,8 +973,12 @@ impl ProtocolReader for GeminiReader {
                                     && !state.tool_frame_cap_warned
                                 {
                                     state.tool_frame_cap_warned = true;
-                                    tracing::warn!(
-                                        cap = MAX_GEMINI_TOOL_FRAMES,
+                                    crate::codec::drops::writer_drop!(
+                                        crate::codec::drops::wire(
+                                            "candidates[].content.parts[].functionCall"
+                                        ),
+                                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                        [cap = MAX_GEMINI_TOOL_FRAMES,],
                                         "gemini stream exceeded MAX_GEMINI_TOOL_FRAMES concurrent tool-call frames; new functionCall parts are being dropped for the rest of this stream"
                                     );
                                 }
@@ -1342,6 +1332,7 @@ impl ProtocolReader for GeminiReader {
                     created: None,
                     system_fingerprint: None,
                     stop_sequence: None,
+                    safety: super::read_safety_ratings(body, &serde_json::Value::Null),
 
                     request_echo: None,
                     stop_detail: None,
@@ -1363,8 +1354,10 @@ impl ProtocolReader for GeminiReader {
         // cross-protocol hop. Warn so the truncation is observable rather than silent (same-proto
         // passthrough preserves all candidates and never reaches here).
         if candidates.len() > 1 {
-            tracing::warn!(
-                candidates = candidates.len(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire("candidates[]"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [candidates = candidates.len(),],
                 "gemini response carried multiple candidates; only the first is translated cross-protocol (the rest are dropped)"
             );
         }
@@ -1378,6 +1371,9 @@ impl ProtocolReader for GeminiReader {
         // STREAMING reader, which guards content with `if let Some(content)` and skips it when absent.
         // Hard-failing here turned a legitimate filtered response into a spurious 500.
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
+        // A Google-Search-grounded answer: the IR's hosted web-search record, ahead of the text
+        // (DF-MAP item 2; its spans keep riding the text blocks' citations).
+        content.extend(super::citations::read_grounding_record(candidate));
         // Per-response tool-call index feeding `synth_tool_call_id` (Gemini carries no tool id).
         let mut tool_call_index: usize = 0;
         // This response's own `responseId`, salted into every synthesized tool-call id below so a
@@ -1489,24 +1485,9 @@ impl ProtocolReader for GeminiReader {
                     content.push(block);
                 }
 
-                // Code-execution parts the model authored (`executableCode` / `codeExecutionResult`,
-                // emitted by Gemini's code-interpreter tool). No cross-protocol dialect has a native
-                // slot, so drop WITH a warn on cross-protocol egress rather than corrupting them into
-                // text. Same-protocol Gemini→Gemini relay is byte-verbatim and never reaches here.
-                if part.get(FIELD_EXECUTABLE_CODE).is_some() {
-                    tracing::warn!(
-                        "dropping gemini executableCode part on cross-protocol egress: the \
-                         code-interpreter tool's model-authored code has no cross-protocol analog \
-                         and is NOT carried (same-protocol relay preserves it verbatim)"
-                    );
-                }
-                if part.get(FIELD_CODE_EXECUTION_RESULT).is_some() {
-                    tracing::warn!(
-                        "dropping gemini codeExecutionResult part on cross-protocol egress: the \
-                         code-interpreter tool's execution output has no cross-protocol analog and \
-                         is NOT carried (same-protocol relay preserves it verbatim)"
-                    );
-                }
+                // Any other part (the code-interpreter's `executableCode` /
+                // `codeExecutionResult`, a future kind) has no IR form: a translate attempt names
+                // the drop (`RESPONSE_BLOCKS`).
             }
         }
 
@@ -1596,6 +1577,7 @@ impl ProtocolReader for GeminiReader {
                 .and_then(gemini_rfc3339_to_epoch),
             system_fingerprint: None,
             stop_sequence: None,
+            safety: super::read_safety_ratings(body, candidate),
 
             request_echo: None,
             stop_detail: None,
@@ -1613,6 +1595,50 @@ impl ProtocolReader for GeminiReader {
 
     fn clone_box(&self) -> Box<dyn ProtocolReader> {
         Box::new(self.clone())
+    }
+
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
+        })
+    }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
     }
 }
 

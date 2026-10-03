@@ -71,6 +71,8 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         error_map,
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         token_url: None,
         scope: None,
         subject: None,

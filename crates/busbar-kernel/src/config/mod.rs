@@ -10,6 +10,8 @@ pub mod overlay;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub mod groups;
+/// The root legacy table the composition root hands in, and the one rewrite over it.
+pub mod legacy;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
 pub mod migrate_export;
@@ -2022,6 +2024,11 @@ pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -
             .path_base
             .clone()
             .or_else(|| def.path_base.clone()),
+        organization: deploy_cfg
+            .organization
+            .clone()
+            .or_else(|| def.organization.clone()),
+        project: deploy_cfg.project.clone().or_else(|| def.project.clone()),
         token_url: deploy_cfg
             .token_url
             .clone()
