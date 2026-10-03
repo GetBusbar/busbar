@@ -1,5 +1,9 @@
 # History rewrite: closing the empty-bodied commit bodies
 
+> HISTORICAL. `integration/oracle-phase0` is no longer a branch on origin, so there is nothing left
+> to rewrite. The tool this procedure runs, `scripts/history-rewrite-empty-bodies.sh`, was removed;
+> it is at a594b00894.
+
 ## What gets rewritten
 
 Three landed commits on `integration/oracle-phase0` carry a subject line but no rationale in the

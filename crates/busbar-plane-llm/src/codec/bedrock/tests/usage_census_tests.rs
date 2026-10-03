@@ -205,7 +205,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_named_residual() {
         let (class, guardrail) = class_of(field);
         let mut usage = base.clone();
         let mut trace = None;
-        let mut baseline = before.clone();
+        let mut baseline = before;
         let mut ttl_5m = None;
         let (moved, gap) = match class {
             Class::Ledgered(di, dc, dw, dout) => {
