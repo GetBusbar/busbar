@@ -2,7 +2,7 @@
 # busbar. Each plugin repo's own `.github/workflows/ci.yml` is a thin caller rendered by
 # `busbar-release plugin sync` (GetBusbar/busbar-release template/) from plugins.yaml, and it takes this
 # file AT THE BUSBAR COMMIT THE REPO PINS (`@<.busbar-ref field 1>`): the CI logic, the gates
-# (scripts/fleet/plugin-gates.py), the dependency policy (.github/fleet/deps.toml) and the contract a
+# (`cargo xtask plugin-gates`), the dependency policy (.github/fleet/deps.toml) and the contract a
 # plugin compiles against move together, and a change here reaches a plugin repo only when its pin
 # moves (OWNER 2026-10-02: the reusable plugin workflows stay in busbar, called by path at the pin).
 # The plugin repo owns its tests; this file owns the harness. Before this file every repo carried
@@ -13,7 +13,8 @@
 # whose cdylib a signed tarball carries) whose busbar dependencies are `git` dependencies on
 # GetBusbar/busbar at `.busbar-ref` field 1. Nothing here checks busbar out beside the plugin to BUILD
 # it: a checkout at the pin exists only for the end-to-end tests that boot a real busbar binary
-# (`busbar_checkout: true`) and for the fleet scripts.
+# (`busbar_checkout: true`), for the fleet scripts and for the plugin gates, `cargo xtask plugin-gates`
+# built from that checkout.
 #
 # The jobs, in the order a red is cheapest to read:
 #   pin        scripts/fleet/pin-check.sh: .busbar-ref, every manifest rev, Cargo.lock and every
@@ -200,28 +201,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
-      - name: busbar at the pin (the real binaries the end-to-end tests build and boot, the signing gate, the C path's header and conformance)
-        if: inputs.busbar_checkout || env.SIGNING_GATE == 'true' || inputs.plugin_lang == 'c'
+      - name: busbar at the pin (the gates' cargo xtask, the policy, lock, loader and golden; the real binaries the end-to-end tests build and boot, the signing gate, the C path's header and conformance)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
           ref: ${{ needs.pin.outputs.sha }}
           path: busbar
-      - name: busbar's policy, lock, loader and golden at the pin (read-only, for the gates)
-        if: ${{ !(inputs.busbar_checkout || env.SIGNING_GATE == 'true' || inputs.plugin_lang == 'c') }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: GetBusbar/busbar
-          ref: ${{ needs.pin.outputs.sha }}
-          path: busbar
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            /Cargo.lock
-            /.github/fleet/
-            /scripts/fleet/
-            /crates/plugin-loader/src/registry.rs
-            /crates/busbar-contract/src/
-            /testing/shadow-oracle/golden/
       - name: does the repo have its crates yet
         id: crates
         working-directory: plugin
@@ -232,8 +217,6 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "::notice::no crates yet (plugins.yaml pending_crate): the pin job is this repo's whole proof"
           fi
-      - name: the gates' own selftest (every gate RED on its planted defect before any verdict counts)
-        run: python3 busbar/scripts/fleet/plugin-gates.py selftest
       - name: the test environment (only the variables that apply are SET; an empty one reads as set)
         env:
           SERVICE: ${{ inputs.service }}
@@ -266,8 +249,15 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: ${{ inputs.plugin_lang == 'c' && 'busbar' || ((inputs.busbar_checkout || env.SIGNING_GATE == 'true') && fromJSON('"plugin\nbusbar"') || 'plugin') }}
+          workspaces: ${{ inputs.plugin_lang == 'c' && 'busbar' || fromJSON('"plugin\nbusbar"') }}
           key: busbar-${{ needs.pin.outputs.sha }}
+      - name: the plugin gates at the pin (cargo xtask plugin-gates), and their own selftest (every gate RED on its planted defect before any verdict counts)
+        working-directory: busbar
+        run: |
+          set -euo pipefail
+          cargo build --locked -q -p xtask
+          echo "PLUGIN_GATES=$GITHUB_WORKSPACE/busbar/target/debug/xtask" >> "$GITHUB_ENV"
+          target/debug/xtask plugin-gates selftest
       - name: fmt
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
@@ -337,18 +327,39 @@ jobs:
         env:
           EXTRA: ${{ inputs.extra_test }}
         run: bash -c "$EXTRA"
-      - name: both-ways conformance (linked door vs built cdylib, one transcript, a RED arm beside it; both must RUN)
+      - name: "the published conformance suite at the pin: linked and dropped in, both folds compared, exact crossing counts, release build, RED arms kept (every test must RUN, and a moved count must FAIL)"
+        # busbar PUBLISHES the suite (busbar-plugin-loader's `conformance` feature, TODO ABI-b4) and
+        # the plugin RUNS it (OWNER 2026-10-03: plugins test themselves against busbar). The plugin's
+        # `tests/conformance.rs` is `conformance_suite! { door, cdylib, inputs }`: its linked door
+        # and its built cdylib, each through the one loader, driven by its kind's script; every step's
+        # crossings EXACTLY at the script's pin (M6/contract, the RELEASE build: never "above 0"),
+        # the two folds equal. Then the RED run: the same arm with one pinned count moved
+        # (BUSBAR_CONFORMANCE_RED=count) must FAIL, on the comparator, in this run.
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         working-directory: plugin
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
         run: |
           set -euo pipefail
-          cargo test --workspace --locked --test conformance -- --list > "$RUNNER_TEMP/conformance.list" \
-            || { echo "::error::no conformance target (<plugin crate>/tests/conformance.rs)"; exit 1; }
-          python3 "$GITHUB_WORKSPACE/busbar/scripts/fleet/plugin-gates.py" bothways "$RUNNER_TEMP/conformance.list"
-          out="$(cargo test --workspace --locked --test conformance 2>&1 | tee /dev/stderr)"
-          passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
-          [ "$passed" -ge 2 ] || { echo "::error::the conformance target ran $passed test(s); both arms must RUN"; exit 1; }
-          echo "conformance: $passed test(s) passed"
+          suite="the_linked_and_the_dropped_in_door_are_one_plugin red_a_moved_crossing_count_is_refused red_a_door_at_another_kind_abi_is_refused red_a_failing_ready_refuses_the_boot the_suite_runs_in_the_profile_it_was_asked_to"
+          list="$RUNNER_TEMP/conformance.list"
+          cargo test --release --locked -p "$CRATE" --test conformance -- --list > "$list" \
+            || { echo "::error::no conformance target ($CRATE/tests/conformance.rs: busbar_plugin_loader::conformance_suite!)"; exit 1; }
+          "$PLUGIN_GATES" plugin-gates bothways "$list"
+          for t in $suite; do
+            grep -qx "$t: test" "$list" || { echo "::error::the published suite's test '$t' is not in the conformance target"; exit 1; }
+          done
+          out="$(BUSBAR_EXPECT_RELEASE=1 cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee /dev/stderr)"
+          for t in $suite; do
+            printf '%s\n' "$out" | grep -qx "test $t ... ok" || { echo "::error::the published suite's test '$t' did not RUN green"; exit 1; }
+          done
+          if red="$(BUSBAR_CONFORMANCE_RED=count BUSBAR_EXPECT_RELEASE=1 cargo test --release --locked -p "$CRATE" --test conformance -- --exact the_linked_and_the_dropped_in_door_are_one_plugin 2>&1)"; then
+            printf '%s\n' "$red" >&2
+            echo "::error::RED: the both-ways arm passed with a pinned crossing count moved"; exit 1
+          fi
+          printf '%s\n' "$red" | grep -q "crossing(s), pinned" \
+            || { printf '%s\n' "$red" >&2; echo "::error::RED: the moved count failed for another reason than the exact comparator"; exit 1; }
+          echo "conformance: the published suite ran green; the moved count was refused"
       - name: cargo deny (the rendered deny.toml; busbar's .github/fleet/deps.toml at the pin)
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         working-directory: plugin
@@ -364,10 +375,20 @@ jobs:
         id: meta
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         working-directory: plugin
-        run: cargo metadata --format-version 1 --locked --filter-platform x86_64-unknown-linux-gnu > "$RUNNER_TEMP/meta.json"
+        run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 --locked --filter-platform x86_64-unknown-linux-gnu > "$RUNNER_TEMP/meta.json"
+          # The gates read the SHIPPED closure: `cargo metadata`'s resolve unifies features across
+          # dev-dependencies and lists optional deps a dev-dependency switches on, `cargo tree` with
+          # the dev edges left out does not. One tree per workspace member.
+          : > "$RUNNER_TEMP/tree.txt"
+          for pkg in $(cargo metadata --format-version 1 --locked --no-deps | jq -r '.packages[].name'); do
+            cargo tree --locked --package "$pkg" --edges normal,build --target all --prefix none --format '{p}|{f}' >> "$RUNNER_TEMP/tree.txt"
+          done
       - name: dep-wall (busbar-contract plus third-party; no kernel/core crate, no other plugin; Part 2 #40)
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
-        run: python3 busbar/scripts/fleet/plugin-gates.py depwall "$RUNNER_TEMP/meta.json" "${{ github.event.repository.name }}"
+        run: |
+          "$PLUGIN_GATES" plugin-gates depwall "$RUNNER_TEMP/meta.json" "${{ github.event.repository.name }}" --tree "$RUNNER_TEMP/tree.txt"
       - name: socket/TLS ban (BUSBAR-1.6.0.md line 3980; the shipped closure, then the post-LTO import scan)
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
         env:
@@ -376,7 +397,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          python3 busbar/scripts/fleet/plugin-gates.py netban "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml "$REPO" || rc=1
+          "$PLUGIN_GATES" plugin-gates netban "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml "$REPO" --tree "$RUNNER_TEMP/tree.txt" || rc=1
           feat=""
           if (cd plugin && cargo metadata --format-version 1 --no-deps) | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
           (cd plugin && CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
@@ -385,15 +406,17 @@ jobs:
           [ -f "$lib" ] || { echo "::error::no cdylib at $lib"; exit 1; }
           nm -D --undefined-only "$lib" | awk '{print $NF}' > "$RUNNER_TEMP/undef.txt"
           readelf -d "$lib" | sed -nE 's/.*\(NEEDED\).*\[(.*)\].*/\1/p' > "$RUNNER_TEMP/needed.txt"
-          python3 busbar/scripts/fleet/plugin-gates.py imports "$RUNNER_TEMP/undef.txt" "$RUNNER_TEMP/needed.txt" busbar/.github/fleet/deps.toml "$REPO" || rc=1
+          "$PLUGIN_GATES" plugin-gates imports "$RUNNER_TEMP/undef.txt" "$RUNNER_TEMP/needed.txt" busbar/.github/fleet/deps.toml "$REPO" || rc=1
           rm -rf plugin/target/release
           exit $rc
       - name: C-dependency allow-list (bundled + pinned; .github/fleet/deps.toml [c-deps])
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
-        run: python3 busbar/scripts/fleet/plugin-gates.py cdeps "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml
+        run: |
+          "$PLUGIN_GATES" plugin-gates cdeps "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml --tree "$RUNNER_TEMP/tree.txt"
       - name: Cargo.lock parity with busbar's lock at the pin (RED)
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
-        run: python3 busbar/scripts/fleet/plugin-gates.py parity plugin/Cargo.lock busbar/Cargo.lock
+        run: |
+          "$PLUGIN_GATES" plugin-gates parity plugin/Cargo.lock busbar/Cargo.lock
       - name: declares.json states the kind's contract ABI at the pin
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         env:
@@ -402,7 +425,7 @@ jobs:
           set -euo pipefail
           f="$(cd plugin && git ls-files | grep -E '(^|/)declares\.json$' | head -n1)"
           [ -n "$f" ] || { echo "::error::no declares.json in the repo"; exit 1; }
-          python3 busbar/scripts/fleet/plugin-gates.py declares busbar "$KIND" "plugin/$f"
+          "$PLUGIN_GATES" plugin-gates declares busbar "$KIND" "plugin/$f"
 
       - name: "C: the kind's conformance through load_dropped at the pin, RED arm kept (both must RUN)"
         if: ${{ !cancelled() && inputs.plugin_lang == 'c' }}

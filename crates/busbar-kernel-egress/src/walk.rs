@@ -160,6 +160,24 @@ impl Walk {
         }
     }
 
+    /// A walk with no pool to walk, bounded by `budget_secs` from now: one health probe's (K7). Its
+    /// one member is the caller's to take, never picked here, so every step answers the shed a probe
+    /// that brought no answer ends on (it has nowhere to fail over to), or the request timeout once
+    /// the bound has passed.
+    #[must_use]
+    pub fn pinned(ports: &WalkPorts<'_>, budget_secs: u64) -> Self {
+        Self {
+            ctx: RequestCtx::new(
+                budget_secs,
+                ports.clock.now_secs(),
+                ports.clock.now_millis(),
+            ),
+            phase: Phase::Shed(Shed::empty_pool()),
+            hops: 0,
+            taken: 0,
+        }
+    }
+
     /// The request context: the deadline and everything the walk has excluded.
     #[must_use]
     pub fn ctx(&self) -> &RequestCtx {

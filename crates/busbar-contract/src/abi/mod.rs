@@ -245,7 +245,10 @@ pub const ABI_MAJOR: u32 = 2;
 /// keep appends safe): the framer clock seam — `hot::transport::WireFramerOut` appends the host's time
 /// at the call and `wake_at`, `hot::transport::FramerSlots` appends `tick`, and a slot table ending
 /// before `tick` keeps no deadline — and the connection table, `host::conn::ConnSlots`, the one table
-/// every plugin of every kind reaches the network through.
+/// every plugin of every kind reaches the network through. And the mechanism's optional `ready`
+/// (ARCHITECT 2026-10-02, discovery at boot): `mechanism::door::Door` appends `ready` after `ops`,
+/// with its `in` `mechanism::lifecycle::ReadyIn` — a door ending before it states none and loads
+/// exactly as before; no table slot and no kind op moves.
 pub const ABI_MINOR: u32 = 34;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,

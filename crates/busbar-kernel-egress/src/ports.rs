@@ -237,6 +237,15 @@ pub trait Breaker: Send + Sync {
         (classified, tripped)
     }
 
+    /// Side-effect-free: whether the breaker suppresses `destination` in ANY cell — the health
+    /// prober's `dead`-mode trigger (1.5.5 `lane_needs_probe`).
+    fn suppressing(&self, destination: DestinationId, now: u64) -> bool;
+
+    /// A health probe's answer, already classified, recorded on EVERY cell of `destination`: a
+    /// probe tests the shared upstream, so a success recovers a suppressed member everywhere and a
+    /// client fault records nothing (1.5.5 `health.rs`).
+    fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>);
+
     /// Release a probe that was won but never dispatched. Owner-checked against the epoch that was
     /// captured at the win, so a late release cannot revert a newer probe.
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64);

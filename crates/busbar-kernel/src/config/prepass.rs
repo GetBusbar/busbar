@@ -89,7 +89,7 @@ impl LiftableSection for EndpointSection {
     }
 }
 
-impl LiftableSection for Option<crate::oauth_as::config::OauthAsCfg> {
+impl LiftableSection for Option<serde_yaml::Value> {
     fn bank(self, into: &mut Lifted) {
         into.oauth_as = Some(self);
     }
@@ -201,7 +201,7 @@ const AUTH_LIFTS: &[(&str, Dest)] = &[(LIFTED_AUTH_KEYS[0], Dest::AuthPolicy)];
 #[derive(Default)]
 pub(crate) struct Lifted {
     endpoint: Option<EndpointSection>,
-    oauth_as: Option<Option<crate::oauth_as::config::OauthAsCfg>>,
+    oauth_as: Option<Option<serde_yaml::Value>>,
     tools: Option<ToolsSection>,
     agents: Option<AgentsSection>,
     declared: DeclaredSections,
@@ -264,9 +264,7 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
         let (key, lifted) = (self.key, self.lifted);
         match self.dest {
             Dest::Endpoint => EndpointSection::deserialize(de)?.bank(lifted),
-            Dest::OauthAs => {
-                Option::<crate::oauth_as::config::OauthAsCfg>::deserialize(de)?.bank(lifted)
-            }
+            Dest::OauthAs => Option::<serde_yaml::Value>::deserialize(de)?.bank(lifted),
             Dest::Tools => lift_plane::<ToolsSection, D>(key, de, lifted)?,
             Dest::Agents => lift_plane::<AgentsSection, D>(key, de, lifted)?,
             Dest::Declared => {

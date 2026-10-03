@@ -3,7 +3,7 @@
 //! OWNER 2026-10-02: "drop as much python ... as possible to rust" and "minimal to no .sh". A
 //! product check or gate is `cargo xtask`; release tooling is busbar-release. Every `.py`, `.sh` and
 //! `.bash` file still tracked here is listed in `qa/scripts-allowlist.toml` with a class (`port`,
-//! `keep`, `external`, `retire`) and a reason, and the list only shrinks: a port or a deletion
+//! `keep`, `external`, `retire`, `oracle-driver`) and a reason, and the list only shrinks: a port or a deletion
 //! strikes its entry in the same commit.
 //!
 //! Four rows:
@@ -36,7 +36,7 @@ pub const ALLOWLIST: &str = "qa/scripts-allowlist.toml";
 const SUFFIXES: [&str; 3] = [".py", ".sh", ".bash"];
 
 /// The classes an entry may carry.
-const CLASSES: [&str; 4] = ["port", "keep", "external", "retire"];
+const CLASSES: [&str; 5] = ["port", "keep", "external", "retire", "oracle-driver"];
 
 /// The shortest reason that is a reason rather than a shrug.
 pub const MIN_REASON: usize = 30;

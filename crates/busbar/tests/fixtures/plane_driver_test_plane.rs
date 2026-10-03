@@ -20,6 +20,13 @@
 //! ticket `tick` was handed (a READ that pends makes that `tick` answer PENDING), and a `drive`
 //! reads that stream again on its driver ticket. `/ticks`
 //! answers the tick counters, in [`Ticked`] order.
+//!
+//! A DUPLEX SESSION's pieces (those with a stream) are answered by [`session_piece`]: a caller piece
+//! `far:<x>` is bound for the far end (`POST /far/turn`, body `x`), `push:<x>` is held as the
+//! session's unsolicited output and the instance's driver ticket woken (its `drive` then names the
+//! session, and the collection `FROM_KERNEL` answers `x`), any other piece is echoed `echo:<x>`, and
+//! the caller's last piece ends the reply. A far-end piece is answered `far-said:<x>`. `/sessions`
+//! answers the session counters, in [`Sessions`] order.
 
 #![allow(clippy::missing_safety_doc, unsafe_op_in_unsafe_fn)]
 
@@ -52,9 +59,10 @@ use busbar_contract::abi::plane::{
     OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail,
     RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED, AUDIT_NONE,
     AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL,
-    REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_WHOLE, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
@@ -101,6 +109,19 @@ pub enum Ticked {
 }
 /// How many counters `/ticks` answers.
 pub const TICKED: usize = 6;
+
+/// The counters `/sessions` answers, in this order.
+#[derive(Debug, Clone, Copy)]
+pub enum Sessions {
+    /// The distinct tickets the last session's pieces crossed on.
+    Tickets = 0,
+    /// Collections of unsolicited output (`FROM_KERNEL`, no attempt).
+    Collects = 1,
+    /// ATTEMPT pieces of a session's turn legs.
+    Attempts = 2,
+}
+/// How many counters `/sessions` answers.
+pub const SESSIONS: usize = 3;
 
 struct Shared<T>(T);
 // SAFETY: immutable `'static` data (pointers into other statics).
@@ -219,7 +240,7 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
         _reserved: 0,
     },
     flags: 0,
-    ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM,
+    ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM | INGRESS_DUPLEX_SESSION,
     dispatch_shape: SHAPE_WHOLE,
     _reserved: 0,
     scope: s(b"test"),
@@ -348,6 +369,7 @@ static DOOR: Shared<Door> = Shared(Door {
     kind_abi: KindCode::Plane.abi_version(),
     statement: &STATEMENT.0 as *const Statement,
     ops: &OPS.0 as *const Ops as *const OpsHead,
+    ready: None,
 });
 
 static CLAIMS: Shared<[Claim; 1]> = Shared([Claim {
@@ -429,6 +451,13 @@ struct Inst {
     /// The stream a `tick`'s READ left pending (`0` = none).
     stream: AtomicU64,
     ticked: [AtomicU64; TICKED],
+    /// The instance's driver ticket, as its last `tick` was handed it.
+    driver: Mutex<Ticket>,
+    /// Each session's unsolicited output, until it is collected.
+    outbox: Mutex<HashMap<u64, Vec<u8>>>,
+    /// The tickets each session's pieces crossed on.
+    session_tickets: Mutex<HashMap<u64, Vec<Ticket>>>,
+    sessions: [AtomicU64; SESSIONS],
 }
 // SAFETY: the snapshot's pointers are `'static`; `ctx` is opaque; the wake is callable anywhere.
 unsafe impl Send for Inst {}
@@ -523,6 +552,10 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             tick_read: AtomicBool::new(false),
             stream: AtomicU64::new(0),
             ticked: Default::default(),
+            driver: Mutex::new(Ticket::NONE),
+            outbox: Mutex::new(HashMap::new()),
+            session_tickets: Mutex::new(HashMap::new()),
+            sessions: Default::default(),
             drive_metric: Box::new(Mutex::new(MetricEntry {
                 family_idx: 0,
                 kind: METRIC_SET,
@@ -567,11 +600,16 @@ extern "C" fn drive(instance: *mut c_void, input: *const c_void, out: *mut c_voi
         let head = &*input.cast::<busbar_contract::abi::mechanism::call::InHead>();
         if head.size as usize >= std::mem::size_of::<PlaneDriveIn>() {
             let i = &*input.cast::<PlaneDriveIn>();
-            if i.sessions_cap > 0
-                && (*out.cast::<OutHead>()).size as usize >= std::mem::size_of::<PlaneDriveOut>()
-            {
-                *i.sessions_buf = 7;
-                (*out.cast::<PlaneDriveOut>()).sessions_written = 1;
+            if (*out.cast::<OutHead>()).size as usize >= std::mem::size_of::<PlaneDriveOut>() {
+                // The sessions with output held, as many as the host's buffer takes.
+                let outbox = me.outbox.lock().unwrap();
+                let ready = outbox.iter().filter(|(_, held)| !held.is_empty());
+                let mut named = 0;
+                for (stream, _) in ready.take(i.sessions_cap) {
+                    *i.sessions_buf.add(named) = *stream;
+                    named += 1;
+                }
+                (*out.cast::<PlaneDriveOut>()).sessions_written = named as u32;
             }
         }
         let mut metric = me.drive_metric.lock().unwrap();
@@ -668,6 +706,12 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 }
                 vec![estimate(0, reading.wall_ns), estimate(1, reading.mono_ns)]
             }
+            b"/sessions" => me
+                .sessions
+                .iter()
+                .enumerate()
+                .map(|(k, v)| estimate(k as u32, v.load(Ordering::SeqCst)))
+                .collect(),
             b"/ticks" => me
                 .ticked
                 .iter()
@@ -735,6 +779,9 @@ extern "C" fn on_piece(
             return RawOutcome::of(Outcome::Fault);
         };
         me.tickets.lock().unwrap().insert(t, i.unit);
+        if i.stream != 0 {
+            return session_piece(me, i, o, t, out);
+        }
         let mut units = me.units.lock().unwrap();
         let u = units.entry(i.unit).or_default();
         let piece = bytes(i.bytes);
@@ -876,6 +923,82 @@ extern "C" fn on_piece(
         }
         say(out, Outcome::Ready)
     }
+}
+
+/// Emit `b` toward the caller (or, with [`EMIT_TO_FAR_END`], toward the far end), cut to the reply
+/// buffer.
+unsafe fn emit(i: &OnPieceIn, o: &mut OnPieceOut, b: &[u8]) {
+    let n = b.len().min(i.reply_cap);
+    std::ptr::copy_nonoverlapping(b.as_ptr(), i.reply_buf, n);
+    o.emitted = n as u64;
+}
+
+/// One piece of a duplex session (see the module's documentation).
+unsafe fn session_piece(
+    me: &'static Inst,
+    i: &OnPieceIn,
+    o: &mut OnPieceOut,
+    t: Ticket,
+    out: *mut c_void,
+) -> RawOutcome {
+    {
+        let mut seen = me.session_tickets.lock().unwrap();
+        let tickets = seen.entry(i.stream).or_default();
+        if !tickets.contains(&t) {
+            tickets.push(t);
+        }
+        let n = tickets.len() as u64;
+        me.sessions[Sessions::Tickets as usize].store(n, Ordering::SeqCst);
+    }
+    let count = |c: Sessions| me.sessions[c as usize].fetch_add(1, Ordering::SeqCst);
+    let piece = bytes(i.bytes);
+    match i.from {
+        FROM_KERNEL if i.attempt_no > 0 => {
+            count(Sessions::Attempts);
+        }
+        FROM_KERNEL => {
+            count(Sessions::Collects);
+            let held = me
+                .outbox
+                .lock()
+                .unwrap()
+                .remove(&i.stream)
+                .unwrap_or_default();
+            emit(i, o, &held);
+        }
+        FROM_CALLER if i.flags & PIECE_LAST != 0 => o.flags = EMIT_DONE,
+        FROM_CALLER => {
+            if let Some(body) = piece.strip_prefix(b"far:") {
+                let mut at = 0;
+                o.verb = put(i, &mut at, b"POST");
+                o.target = put(i, &mut at, b"/far/turn");
+                o.arena_written = at as u64;
+                emit(i, o, body);
+                o.flags = EMIT_TO_FAR_END;
+            } else if let Some(held) = piece.strip_prefix(b"push:") {
+                let mut outbox = me.outbox.lock().unwrap();
+                outbox.entry(i.stream).or_default().extend_from_slice(held);
+                drop(outbox);
+                me.count(Stat::HostCalls);
+                (me.wake)(me.ctx, *me.driver.lock().unwrap());
+            } else {
+                emit(i, o, &[b"echo:".as_slice(), piece].concat());
+            }
+        }
+        _ => {
+            emit(i, o, &[b"far-said:".as_slice(), piece].concat());
+            *i.units_buf = UnitCount {
+                class: 0,
+                source: UNITS_REPORTED,
+                amount: o.emitted,
+            };
+            o.units_written = 1;
+            if i.flags & PIECE_LAST != 0 {
+                o.flags = EMIT_DONE;
+            }
+        }
+    }
+    say(out, Outcome::Ready)
 }
 
 extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
@@ -1043,6 +1166,7 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
         let me = inst(instance);
         let i = &*input.cast::<TickIn>();
         let t = i.head.ticket;
+        *me.driver.lock().unwrap() = t;
         let n = |c: Ticked| &me.ticked[c as usize];
         n(Ticked::Ticks).fetch_add(1, Ordering::SeqCst);
         n(Ticked::Ticket).store(

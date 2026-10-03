@@ -6,6 +6,9 @@
 //! and the kernel's plane driver calls through. The kernel names this, the loader names this, and neither
 //! names the other. Nothing here crosses the plugin boundary: the plane's ABI is `abi::plane`.
 //!
+//! A duplex session's pieces ride two request tickets, one per side; its unsolicited output is
+//! named by the instance's one driver ticket's `drive` ([`PlaneCalls::ready`]).
+//!
 //! The pure ops (`arrive`, `refusal`) and the host's own `cancel` are ticketless: they never pend.
 //! `on_piece` and `serve` are submitted on a request ticket and cross on that ticket's worker; the
 //! answer is a future, so the caller's task awaits it and no thread is parked.
@@ -130,6 +133,11 @@ pub trait PlaneCalls: Send + Sync {
         driver: Ticket,
         now_ns: u64,
     ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>>;
+
+    /// THE READY SESSIONS (R-B): the streams the instance's `drive` named on its driver ticket
+    /// since the last call, each once, waiting until one is named. Empty when the instance is not
+    /// open: nothing more will be named.
+    fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>>;
 
     /// The client of `ticket` went away: an op in flight on it is cancelled on its worker, and its
     /// answer carries the disposition. A message, never a crossing on the calling thread.

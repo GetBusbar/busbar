@@ -457,7 +457,7 @@ use crate::abi::hook::{
     CandidateStatic as HookCandidateStatic, DecideIn, MessageView as HookMessageView, NotifyIn,
     PromptView as HookPromptView, RequestView as HookRequestView, SignalEntry as HookSignalEntry,
 };
-use crate::abi::mechanism::lifecycle::{OpenIn, RefreshIn, ValidateIn};
+use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
     ArriveIn, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn, ServeIn,
@@ -476,6 +476,7 @@ lend! {
         buf(err_buf, err_cap) -> u8;
     }
     RefreshIn { list(secrets, secrets_len) -> Blob; }
+    ReadyIn { one(host) -> HostTables; }
     // THE AUTH KIND (`abi::auth`): `verify`'s field lines and strip array, a login's requested
     // scopes and submitted form fields, and the host's identity buffer.
     VerifyIn {

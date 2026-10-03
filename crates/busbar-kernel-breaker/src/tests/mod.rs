@@ -36,6 +36,11 @@ fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         .collect()
 }
 
+/// The probe fold's one test that takes no token (it reads a crate-private cell census); the ones
+/// that drive the `Pass<Route>`-taking seam run in busbar-kernel (`src/tests/members/breaker/`),
+/// where the token comes from the kernel's test token helper.
+mod probe;
+
 // ── Ported: classification pipeline ─────────────────────────────────────────────────────────────
 
 #[test]

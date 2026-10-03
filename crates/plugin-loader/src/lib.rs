@@ -39,10 +39,17 @@ pub mod auth_door;
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
 pub mod boot;
 pub mod carrier;
+/// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
+/// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
+/// dev-dependency turns it on; no busbar build ships it.
+#[cfg(feature = "conformance")]
+pub mod conformance;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
 pub mod dispatch;
 pub mod export;
+pub mod export_axis;
+pub mod export_door;
 pub mod fetch;
 mod ffi_thread;
 pub mod highwater;
@@ -87,11 +94,26 @@ impl LinkedPlugin {
     /// payload schema this loader speaks for the kind, published by busbar — the manifest its release
     /// tarball states — over `entry`, the boundary its `cdylib` exports under the frozen symbols.
     pub fn first_party(kind: &str, name: &str, alias: &str, entry: &'static ColdEntry) -> Self {
+        Self::first_party_on(kind, name, alias, LinkedEntry::Boundary(entry))
+    }
+
+    /// A FIRST-PARTY memory-ABI plugin a build links, as [`LinkedPlugin::first_party`] states it,
+    /// over its `door` (`plugin_door!`): the same door its `cdylib` exports.
+    pub fn first_party_door(
+        kind: &str,
+        name: &str,
+        alias: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Self {
+        Self::first_party_on(kind, name, alias, LinkedEntry::Door(door))
+    }
+
+    fn first_party_on(kind: &str, name: &str, alias: &str, entry: LinkedEntry) -> Self {
         let mut row = LinkedPlugin::store(name, |_| Err(String::new()), false);
         row.manifest.alias = alias.into();
         row.manifest.kind = kind.into();
         row.manifest.abi_version = supported_abi(kind).iter().copied().max().unwrap_or(0);
-        row.entry = LinkedEntry::Boundary(entry);
+        row.entry = entry;
         row
     }
 }

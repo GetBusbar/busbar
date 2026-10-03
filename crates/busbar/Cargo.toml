@@ -393,6 +393,7 @@ llm-on-driver = "busbar-plane-llm"
 # build exports), under its `linked-name` key.
 # `plane-door`: a plane's memory-ABI `door`, bound through the loader's one load (`root::linked`).
 # `secrets`: a `kind: secret` plugin's memory-ABI `door`.
+# `export-doors`: a memory-ABI `kind: export` sink's `NAME`, `ALIAS`, `DECLARES` and `door`.
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
@@ -401,8 +402,8 @@ plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session
 plane-decisions = "plane claims"
 export-file = "exports"
 export-webhook = "exports"
-export-prometheus = "exports"
-export-otlp = "exports"
+export-prometheus = "export-doors"
+export-otlp = "export-doors"
 auth-admin-tokens = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
@@ -433,6 +434,9 @@ busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
 # A plane door row's entry is the module that exports its `door`.
 plane-decisions-door = "busbar_plane_decisions::plane_door"
 llm-on-driver = "busbar_plane_llm::plane_door"
+# A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
+busbar-export-prometheus = "busbar_export_prometheus::door"
+busbar-export-otlp = "busbar_export_otlp::door"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]
@@ -538,9 +542,10 @@ busbar-auth-oidc = { workspace = true, features = ["testkit"] }
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.
 tower = { workspace = true, features = ["util"] }
 # The `traces` stream's both-doors proof (`tests/traces_stream_both_doors.rs`, K9a S7 + K9e-2): the
-# OTLP sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-otlp` edge above —
-# its linked row and its dropped-in library both fed the kernel's traces producer, both posting to a
-# local collector — and the subscriber that test installs the producer under.
+# OTLP sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-otlp` edge above
+# — the shipped binary links the sink's door and has its dropped-in library in `plugins/`, both
+# posting to a local collector. `tests/boot_lines_neutrality.rs` reads the boot's lines through the
+# subscriber.
 busbar-export-otlp-plugin = { workspace = true }
 tracing-subscriber = { workspace = true }
 # What that test and `tests/export_otlp_delivers_spans.rs` (the shipped binary posting to a local

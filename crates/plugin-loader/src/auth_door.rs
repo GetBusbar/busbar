@@ -196,8 +196,12 @@ impl Held {
         let strip =
             Box::into_raw(vec![unnamed; strip_cap as usize].into_boxed_slice()).cast::<StripName>();
         let mut held = Self {
-            // The host's request carries no credential of its own: none is lent.
-            credential: Vec::new(),
+            // The candidate the host extracted, lent as `verify`'s `credential` blob.
+            credential: req
+                .credential
+                .as_ref()
+                .map(|c| c.expose_secret().clone())
+                .unwrap_or_default(),
             lines: req
                 .lines
                 .iter()
@@ -670,7 +674,7 @@ impl AuthCalls for AuthInstance {
     }
 
     fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
-        let presented = false;
+        let presented = request.credential.is_some();
         let plugin = &self.shared.plugin;
         let held = Held::new(request, IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX);
         let mut f = Frame::new(held.input(presented), identify_out());
@@ -700,7 +704,7 @@ impl AuthCalls for AuthInstance {
         let Some(ticket) = sh.ticket() else {
             return Box::new(Settled(Some(Verified::Overloaded.into())));
         };
-        let presented = false;
+        let presented = request.credential.is_some();
         let held = Held::new(&request, IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX);
         let reply = sh.submit(ticket, &held, presented);
         Box::new(Submitted {

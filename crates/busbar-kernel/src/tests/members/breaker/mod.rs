@@ -4,3 +4,4 @@
 //! `busbar-kernel-breaker`'s tests that mint the unit's `Pass<Route>`.
 
 mod breaker_unit_tests;
+mod probe_tests;

@@ -29,12 +29,14 @@ pub mod config_schema;
 pub mod conformance_sync;
 pub mod construction;
 pub mod contract_stateless;
+pub mod deferral_words;
 pub mod denylist_gate;
 pub mod dep_wall;
 pub mod design_bindings;
 pub mod design_docs_allowlist;
 pub mod dialect_coverage;
 pub mod dialect_map;
+pub mod documented_claims;
 pub mod door_only;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
@@ -2529,11 +2531,25 @@ pub static REGISTRY: &[Registration] = &[
         summary: "how the tree is BUILT, against BUSBAR-1.6.0.md and qa/construction.toml",
     },
     Registration {
+        name: "deferral-words",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(deferral_words::DeferralWordsGate),
+        summary: "DECISIONS #15 banned-word shapes over the 1.6.0 docs (report-only) + the pinned positive control",
+    },
+    Registration {
         name: "design-docs-allowlist",
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(design_docs_allowlist::DesignDocsAllowlistGate),
         summary: "docs/design holds the spec, the TODO, QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only",
+    },
+    Registration {
+        name: "documented-claims",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(documented_claims::DocumentedClaimsGate),
+        summary: "qa/documented-claims.json: every README/CHANGELOG claim is pinned by a recorded cell or excused, ids address their quotes",
     },
     Registration {
         name: "secret-hygiene",

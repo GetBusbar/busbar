@@ -3,7 +3,7 @@
 
 //! THE BOOT REFUSALS, and the one path everybody gets backwards.
 
-use super::{AsCfgError, AsIdentity, OauthAsCfg, StaticClientCfg};
+use crate::config::{AsCfgError, AsIdentity, OauthAsCfg, StaticClientCfg};
 
 fn cfg(issuer: &str) -> OauthAsCfg {
     OauthAsCfg {
@@ -311,4 +311,70 @@ fn a_malformed_rsa_static_client_is_refused_at_boot() {
     let mut mixed = client(rsa_jwk());
     mixed["jwks"]["keys"] = serde_json::json!([rsa_jwk(), public_jwk()]);
     refused(mixed, "one client, one algorithm");
+}
+
+// THE KERNEL HANDS THE BLOCK TO ITS OWNER. The kernel carries `oauth_as:` as an opaque value and
+// `config::resolve` asks this crate (through the seam) to refuse it, so these run `resolve` itself:
+// a refusal that only held when the kernel named `AsIdentity` would pass the tests above and fail
+// here.
+
+fn resolve_block(block: serde_json::Value) -> Result<busbar_kernel::config::RootCfg, Vec<String>> {
+    crate::testkit::install_test_seam();
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "oauth_as": block,
+    }))
+    .expect("the document parses: the block is opaque to the kernel's own parse");
+    busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
+}
+
+/// An invalid `oauth_as:` block is refused by `resolve` with the owner's text, word for word.
+#[test]
+fn an_invalid_block_is_refused_at_resolve_with_this_crates_text() {
+    let refused = resolve_block(serde_json::json!({ "issuer": "https://gw.example.com/" }))
+        .expect_err("a trailing slash must refuse the whole config");
+    assert_eq!(
+        refused,
+        vec![AsCfgError::IssuerHasTrailingSlash("https://gw.example.com/".into()).to_string()]
+    );
+    let refused = resolve_block(serde_json::json!({ "issuer": "" })).expect_err("empty issuer");
+    assert_eq!(refused, vec![AsCfgError::MissingIssuer.to_string()]);
+}
+
+/// A block the owner cannot even parse (an unknown key) is refused at resolve and names the block.
+#[test]
+fn an_unknown_key_in_the_block_is_refused_at_resolve() {
+    let refused = resolve_block(serde_json::json!({
+        "issuer": "https://gw.example.com",
+        "not_a_key": true,
+    }))
+    .expect_err("deny_unknown_fields must hold in the owner's parse");
+    assert_eq!(refused.len(), 1);
+    assert!(
+        refused[0].starts_with("oauth_as: ") && refused[0].contains("not_a_key"),
+        "{refused:?}"
+    );
+}
+
+/// `--validate` and boot resolve the signing key, so the owner must list it at its config path, and
+/// a block without one lists nothing.
+#[test]
+fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
+    let resolved = resolve_block(serde_json::json!({
+        "issuer": "https://gw.example.com",
+        "signing_key": { "env": "AS_SIGNING_KEY" },
+    }))
+    .expect("valid");
+    let checked = resolved.oauth_as.expect("accepted");
+    let paths: Vec<&str> = checked
+        .secret_refs
+        .iter()
+        .map(|(p, _)| p.as_str())
+        .collect();
+    assert_eq!(paths, ["oauth_as.signing_key"]);
+
+    let resolved =
+        resolve_block(serde_json::json!({ "issuer": "https://gw.example.com" })).expect("valid");
+    assert!(resolved.oauth_as.expect("accepted").secret_refs.is_empty());
 }

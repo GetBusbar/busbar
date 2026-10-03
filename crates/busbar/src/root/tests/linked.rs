@@ -54,6 +54,7 @@ pub(super) fn linked(
         stdio_serve: &[],
         cli_help: &[],
         exports: &[],
+        export_doors: &[],
         stores: &[],
         hook_doors: &[],
         auths: &[],
@@ -869,9 +870,15 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
 #[test]
 fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
     let release = test_plugins::key(7);
-    for &(name, alias, ..) in crate::LINKED.exports {
+    let linked = crate::LINKED
+        .exports
+        .iter()
+        .map(|&(name, alias, ..)| (name, alias));
+    let doors = crate::LINKED.export_doors.iter().map(|d| (d.name, d.alias));
+    for (name, alias) in linked.chain(doors) {
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
-        let rows = linked_exports(crate::LINKED.exports).expect("the linked export rows");
+        let rows = linked_exports(crate::LINKED.exports, crate::LINKED.export_doors)
+            .expect("the linked export rows");
         let both = scan().link(rows).expect("the linked door admits them");
         let answering = |r: &PluginRegistry| r.resolve(alias).map(|p| p.manifest.name.clone());
         assert_eq!(answering(&both).as_deref(), Some(name), "{alias}");

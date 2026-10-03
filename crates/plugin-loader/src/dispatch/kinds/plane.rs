@@ -464,6 +464,11 @@ impl DriveFrame for PlaneDrive {
         input.sessions_cap = self.sessions.len();
         self.frame.heads()
     }
+
+    fn named(&self) -> &[u64] {
+        let n = self.frame.out.sessions_written as usize;
+        &self.sessions[..n.min(self.sessions.len())]
+    }
 }
 
 /// `arrive`: the expected units over the host's `units_buf`, `units_cap` from `ArriveIn`.
