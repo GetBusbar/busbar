@@ -13,8 +13,8 @@
 //! request budget and a hard-down trip are lane-global (they trip every pool's cell at once).
 //!
 //! This is a MOVE, not a rewrite: the state machine in [`cell`] (trip condition, escalating
-//! cooldown with jitter, the Retry-After floor, half-open recovery) and the classifier in
-//! [`classify`] are byte-identical to 1.5.5's `busbar-core::store::in_memory::breaker` and
+//! cooldown with jitter, the Retry-After floor, half-open recovery) and the normalizer in
+//! [`normalize`] are byte-identical to 1.5.5's `busbar-core::store::in_memory::breaker` and
 //! `busbar-substrate::breaker`. See each module's doc comment for the handful of call-site
 //! adaptations required by depending on no workspace crate but `busbar-contract` (no `axum`, no `tracing`, no
 //! SWRR/pool-selection state, which belongs to the egress unit).

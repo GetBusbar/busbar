@@ -8,8 +8,9 @@
 //! adaptation is that the unrecognized-`error_map` report is the caller's (`unrecognized`), since
 //! this unit takes no logging dependency.
 //!
-//! [`crate::classify`] is this unit's own classifier over its own raw-error record; the two read a
-//! status-less error (0) and the obsolete HTTP-date forms differently, so they are not merged here.
+//! This is the ONE HTTP-status ladder the breaker keeps: the egress port's
+//! [`crate::port::classify_upstream`] reads it too (of two implementations, the served one is the
+//! base; the port's former copy is deleted).
 
 use busbar_contract::http;
 use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError, StatusClass};

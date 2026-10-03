@@ -3,8 +3,8 @@
 //! The first block ports every classification test from
 //! `busbar-substrate::tests::breaker_tests` (1.5.5's
 //! `crates/busbar-substrate/src/tests/breaker_tests.rs`) verbatim in assertion, adapted only for
-//! this crate's dependency-free signatures (`normalize_raw_error` takes a [`classify::Diagnostics`]
-//! sink instead of nothing/`tracing`; `parse_retry_after` takes a `&str` instead of an
+//! this crate's dependency-free signatures (`normalize::normalize_raw_error` takes an
+//! unrecognized-value callback instead of nothing/`tracing`; `parse_retry_after` takes a `&str` instead of an
 //! `axum::http::HeaderMap`). Not ported: `retry_after_accepts_the_http_date_form` and
 //! `a_past_http_date_retry_after_floors_at_zero` used the `httpdate` crate to FORMAT a date to feed
 //! back in — this crate has no `httpdate` dependency, so those two are reproduced against
@@ -18,12 +18,12 @@
 use crate::budget::LifetimeBudget;
 use crate::cell::{BreakerCell, BreakerState, FailureEffect, ProbeAdmit};
 use crate::cfg::{BreakerCfg, TripConfig, TripMode};
-use crate::classify::{
-    classify, normalize_raw_error, status_class_from_str, CanonicalSignal, Disposition,
-    NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
-};
+use crate::classify::{classify, Disposition, StatusClass};
+use crate::normalize::normalize_raw_error;
 use crate::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
 use busbar_contract::caps::{KernelSeal, Pass, Route};
+use busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH;
+use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError};
 use std::collections::HashMap;
 
 /// A fixed "now" for the tests that need one but are not ABOUT it — the kernel supplies this value
@@ -44,6 +44,7 @@ fn route_token() -> Pass<Route> {
     Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
+mod one_breaker;
 mod probe;
 
 // ── Ported: classification pipeline ─────────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ fn test_structured_type_drives_error_map() {
         retry_after_secs: None,
     };
     let map = err_map(&[("model_overloaded", "overloaded")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &map, &|_| {});
     assert_eq!(sig.class, StatusClass::Overloaded);
     assert_eq!(sig.provider_signal.as_deref(), Some("model_overloaded"));
 }
@@ -71,7 +72,7 @@ fn test_provider_code_wins_over_structured_type() {
         retry_after_secs: None,
     };
     let map = err_map(&[("1302", "rate_limit"), ("server_error", "server_error")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &map, &|_| {});
     assert_eq!(sig.class, StatusClass::RateLimit);
 }
 
@@ -83,7 +84,7 @@ fn test_builtin_context_length_on_real_400_classifies_context_length() {
         structured_type: None,
         retry_after_secs: None,
     };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &HashMap::new(), &|_| {});
     assert_eq!(sig.class, StatusClass::ContextLength);
     assert_eq!(
         sig.provider_signal.as_deref(),
@@ -99,7 +100,7 @@ fn test_builtin_context_length_not_recognized_on_5xx() {
         structured_type: None,
         retry_after_secs: None,
     };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &HashMap::new(), &|_| {});
     assert_eq!(sig.class, StatusClass::ServerError);
 }
 
@@ -112,7 +113,7 @@ fn test_operator_error_map_overrides_builtin_context_length() {
         retry_after_secs: None,
     };
     let map = err_map(&[(PROVIDER_CODE_CONTEXT_LENGTH, "client_error")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &map, &|_| {});
     assert_eq!(sig.class, StatusClass::ClientError);
 }
 
@@ -125,7 +126,7 @@ fn test_operator_map_context_length_on_5xx_is_penalized() {
         retry_after_secs: None,
     };
     let map = err_map(&[("1234", "context_length")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &map, &|_| {});
     assert_eq!(sig.class, StatusClass::ServerError);
     assert_eq!(classify(&sig), Disposition::TransientUpstream);
 }
@@ -139,7 +140,7 @@ fn test_operator_map_context_length_on_400_still_classifies_context_length() {
         retry_after_secs: None,
     };
     let map = err_map(&[("1234", "context_length")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &map, &|_| {});
     assert_eq!(sig.class, StatusClass::ContextLength);
 }
 
@@ -152,7 +153,7 @@ fn test_structured_type_context_length_on_5xx_is_penalized() {
         retry_after_secs: None,
     };
     let map = err_map(&[("ctx_overflow", "context_length")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &map, &|_| {});
     assert_eq!(sig.class, StatusClass::ServerError);
     assert_eq!(classify(&sig), Disposition::TransientUpstream);
 }
@@ -165,7 +166,7 @@ fn test_builtin_context_length_not_recognized_on_non_request_size_4xx() {
         structured_type: None,
         retry_after_secs: None,
     };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &HashMap::new(), &|_| {});
     assert_eq!(sig.class, StatusClass::Auth);
 }
 
@@ -177,7 +178,7 @@ fn test_builtin_context_length_recognized_on_413() {
         structured_type: None,
         retry_after_secs: None,
     };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &HashMap::new(), &|_| {});
     assert_eq!(sig.class, StatusClass::ContextLength);
 }
 
@@ -189,38 +190,38 @@ fn test_unmapped_structured_type_falls_through_to_http() {
         structured_type: Some("something_unmapped".to_string()),
         retry_after_secs: None,
     };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
+    let sig = normalize_raw_error(&raw, &HashMap::new(), &|_| {});
     assert_eq!(sig.class, StatusClass::RateLimit);
 }
 
 #[test]
 fn status_class_from_str_maps_known_values_and_rejects_unknown() {
     assert!(matches!(
-        status_class_from_str("rate_limit"),
+        StatusClass::parse("rate_limit"),
         Some(StatusClass::RateLimit)
     ));
     assert!(matches!(
-        status_class_from_str("overloaded"),
+        StatusClass::parse("overloaded"),
         Some(StatusClass::Overloaded)
     ));
     assert!(matches!(
-        status_class_from_str("server_error"),
+        StatusClass::parse("server_error"),
         Some(StatusClass::ServerError)
     ));
     assert!(matches!(
-        status_class_from_str("timeout"),
+        StatusClass::parse("timeout"),
         Some(StatusClass::Timeout)
     ));
     assert!(matches!(
-        status_class_from_str("network"),
+        StatusClass::parse("network"),
         Some(StatusClass::Network)
     ));
     assert!(matches!(
-        status_class_from_str("auth"),
+        StatusClass::parse("auth"),
         Some(StatusClass::Auth)
     ));
-    assert!(status_class_from_str("not_a_class").is_none());
-    assert!(status_class_from_str("").is_none());
+    assert!(StatusClass::parse("not_a_class").is_none());
+    assert!(StatusClass::parse("").is_none());
 }
 
 #[test]

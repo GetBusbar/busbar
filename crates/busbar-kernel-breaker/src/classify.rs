@@ -1,22 +1,16 @@
 //! The protocol-agnostic disposition classifier — Stage 2 of the two-stage pipeline that turns an
-//! upstream error into the fact the breaker state machine acts on.
+//! upstream error into the fact the breaker state machine acts on — and the `grpc-status` table.
 //!
-//! Moved byte-identical from `busbar-substrate::breaker` (1.5.5's
-//! `crates/busbar-substrate/src/breaker.rs`). Stage 1 (per-protocol extraction of a
-//! [`RawUpstreamError`] from a response) stays with the plane's wire/dialect code; this module
-//! starts from the already-extracted raw error.
+//! Stage 1b, the HTTP-status ladder and the operator `error_map`, is [`crate::normalize`]: the
+//! served path's normalizer, and the ONLY one (of two implementations of one thing, the served one
+//! is the base). This module used to carry a second copy over its own raw-error and signal
+//! types, reached only through [`crate::port::classify_upstream`]; that copy is deleted and the port
+//! reads the served one. The signal types are the contract's.
 //!
-//! One call-site adaptation from the source, which does not change the classification arithmetic
-//! itself:
-//! - the "operator `error_map` points at an unrecognized class" diagnostic is delivered through an
-//!   injectable [`Diagnostics`] sink rather than `tracing::warn!`, since this crate takes no
-//!   logging dependency. `// contract:` — a caller wires a real sink (or the kernel's diagnostics
-//!   seam, once one exists) in; [`NoopDiagnostics`] preserves today's "silently ignored" behavior
-//!   for the return value, which is what the state machine's byte-identical requirement is about.
-
-/// Anthropic's non-standard 529 overload status — not in the IANA registry, but documented by
-/// Anthropic as their server-overloaded signal, distinct from 503.
-const HTTP_OVERLOADED: u16 = 529;
+//! The "operator `error_map` points at an unrecognized class" diagnostic is delivered through an
+//! injectable [`Diagnostics`] sink rather than `tracing::warn!`, since this crate takes no logging
+//! dependency. `// contract:` a caller wires a real sink in; [`NoopDiagnostics`] preserves the
+//! "silently ignored" behavior for the return value.
 
 /// The status class and the disposition, as the contract owns them.
 ///
@@ -27,11 +21,7 @@ const HTTP_OVERLOADED: u16 = 529;
 /// still does.
 pub use busbar_contract::upstream::{Disposition, StatusClass};
 
-/// Convert a wire token to a [`StatusClass`]. `None` for anything unrecognized (e.g. a typo'd
-/// operator `error_map` entry).
-pub fn status_class_from_str(s: &str) -> Option<StatusClass> {
-    StatusClass::parse(s)
-}
+use busbar_contract::upstream::CanonicalSignal;
 
 /// A sink for the one diagnostic this module raises: an operator `error_map` entry names a string
 /// that is not a recognized [`StatusClass`]. `// contract:` a real deployment wires this to its own
@@ -188,137 +178,4 @@ pub fn grpc_status_class(code: u8) -> StatusClass {
         i += 1;
     }
     StatusClass::ClientError
-}
-
-/// The raw upstream error extracted from a response by the (out-of-scope) per-protocol Stage 1.
-#[derive(Debug, Clone)]
-pub struct RawUpstreamError {
-    /// The HTTP status the upstream returned.
-    pub http_status: u16,
-    /// A provider-specific error CODE (e.g. a numeric `code` field), checked against `error_map`.
-    pub provider_code: Option<String>,
-    /// A provider-specific structured error TYPE (e.g. `error.type`), checked against `error_map`
-    /// as a second signal when the code doesn't match.
-    pub structured_type: Option<String>,
-    /// The upstream `Retry-After` value in whole seconds, when present and already parsed by the
-    /// caller (see [`crate::normalize::parse_retry_after`]).
-    pub retry_after_secs: Option<u64>,
-}
-
-/// The wire literal upstream APIs recognize for a context-length rejection.
-/// Kept here (not owned by a wire/dialect crate) because [`normalize_raw_error`]'s built-in
-/// recognition names it directly; a dialect crate importing this constant, rather than
-/// hand-copying the literal, is how the spelling stays single-sourced.
-pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
-
-/// Classify a raw upstream error into a [`CanonicalSignal`] using an operator `error_map`. Stage 1b
-/// (the provider normalizer): data-driven mapping from raw errors to [`StatusClass`], with a
-/// built-in fallback to HTTP-status classification.
-pub fn normalize_raw_error(
-    raw: &RawUpstreamError,
-    error_map: &std::collections::HashMap<String, String>,
-    diagnostics: &dyn Diagnostics,
-) -> CanonicalSignal {
-    // Step 1: a provider error code mapped in error_map refines (overrides) the HTTP-status default.
-    let provider_signal = if let Some(ref code) = raw.provider_code {
-        if let Some(mapped_class) = error_map.get(code) {
-            if let Some(class) = status_class_from_str(mapped_class) {
-                // CLASS guard: a mapping to `context_length` on a 5xx must never mask a real
-                // upstream outage — suppress the early return and fall through to HTTP
-                // classification so the lane is penalized; every other mapped class returns early.
-                if !(class == StatusClass::ContextLength && (500..600).contains(&raw.http_status)) {
-                    return CanonicalSignal {
-                        class,
-                        provider_signal: Some(code.clone()),
-                        retry_after: raw.retry_after_secs,
-                    };
-                }
-            } else {
-                diagnostics.unrecognized_error_map_value(mapped_class);
-            }
-        }
-        // The built-in canonical context-length code, recognized ONLY on the precise
-        // oversized-request statuses (400 Bad Request / 413 Payload Too Large) — never a 5xx (an
-        // upstream server failure) or any other status that happens to carry the code.
-        if code == PROVIDER_CODE_CONTEXT_LENGTH
-            && (raw.http_status == 400 || raw.http_status == 413)
-        {
-            return CanonicalSignal {
-                class: StatusClass::ContextLength,
-                provider_signal: Some(code.clone()),
-                retry_after: raw.retry_after_secs,
-            };
-        }
-        Some(code.clone())
-    } else {
-        None
-    };
-
-    // Step 1b: the provider's structured error TYPE is a second data-driven signal — the explicit
-    // code (above) wins; this refines when the code didn't match.
-    if let Some(ref ty) = raw.structured_type {
-        let mapped = error_map.get(ty).and_then(|m| {
-            let class = status_class_from_str(m);
-            if class.is_none() {
-                diagnostics.unrecognized_error_map_value(m);
-            }
-            class
-        });
-        if let Some(class) = mapped {
-            // Same CLASS guard as the code path.
-            if !(class == StatusClass::ContextLength && (500..600).contains(&raw.http_status)) {
-                return CanonicalSignal {
-                    class,
-                    provider_signal: provider_signal.or_else(|| Some(ty.clone())),
-                    retry_after: raw.retry_after_secs,
-                };
-            }
-        }
-    }
-
-    // Step 2: classify by HTTP status (universal spec fallback; exhaustive).
-    let http_status = raw.http_status;
-    let class = if http_status == 401 || http_status == 403 {
-        StatusClass::Auth
-    } else if http_status == 429 {
-        StatusClass::RateLimit
-    } else if http_status == 408 {
-        StatusClass::Timeout
-    } else if http_status == HTTP_OVERLOADED {
-        StatusClass::Overloaded
-    } else if (500..600).contains(&http_status) {
-        StatusClass::ServerError
-    } else if (400..500).contains(&http_status) {
-        // True 4xx (other than 401/403/408/429 above) — the caller's fault.
-        StatusClass::ClientError
-    } else if http_status == 0 {
-        // No status at all: the upstream never answered (connection refused/reset, transport
-        // error, timeout with no response) — a failure OF the destination, which is what
-        // `StatusClass::Network` (a transient upstream failure that trips the cell) exists for.
-        // 1.5.5 mapped this (`a2a::relay::classify_hop`'s Transport arm) to Network; before this
-        // arm it fell to the 2xx/3xx arm below as `ClientFault`/RecordNothing and never tripped.
-        StatusClass::Network
-    } else {
-        // An unexpected non-error status (2xx/3xx) reaching the error path — the destination is not
-        // at fault, so record nothing and relay as-is (the closest available disposition).
-        StatusClass::ClientError
-    };
-
-    CanonicalSignal {
-        class,
-        provider_signal,
-        retry_after: raw.retry_after_secs,
-    }
-}
-
-/// The canonical signal Stage 1 (out of scope here) hands to [`classify`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalSignal {
-    /// The normalized status class.
-    pub class: StatusClass,
-    /// The provider code or structured type that drove the classification, if any (diagnostic
-    /// only — never read by `classify`).
-    pub provider_signal: Option<String>,
-    /// The upstream's requested Retry-After, in seconds, if any.
-    pub retry_after: Option<u64>,
 }

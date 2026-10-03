@@ -12,14 +12,12 @@
 //! `ClientFault` records nothing and relays; `TransientUpstream` carries the upstream's own
 //! `Retry-After` through as the cooldown floor; `HardDown` trips every pool cell for the
 //! destination; `ContextLength` records nothing and fails over. [`classify_upstream`] composes that
-//! fold with [`crate::classify::normalize_raw_error`] and [`crate::classify::classify`] into the one
-//! call a caller needs. It is a pure function over the status alone: the unit keeps no per-destination
+//! fold with [`crate::normalize::normalize_raw_error`] (the served path's normalizer, the one HTTP
+//! ladder this unit keeps) and [`crate::classify::classify`] into the one call a caller needs. It is a pure function over the status alone: the unit keeps no per-destination
 //! `error_map`, because reading an error body against the operator's map is the plane's classifier's
 //! work and the unit takes that classifier's verdict.
 //!
-//! This module takes no dependency beyond [`crate::classify`] and [`crate::Outcome`] — in
-//! particular, it names no `busbar-contract` type in its own signatures (the crate's `Cargo.toml` names that
-//! contract as its only workspace dependency). The egress unit's own `UpstreamStatus` additionally carries
+//! Its own signatures name no transport-contract type. The egress unit's own `UpstreamStatus` additionally carries
 //! the transport's coarse status-class reading (`busbar_contract::WireStatusClass`); a caller that has
 //! that reading folds it into [`UpstreamStatus::code`] itself before calling in — exactly the kind
 //! of narrowing an integrator's adapter does, alongside the `DestinationId` width narrowing.
@@ -30,6 +28,7 @@
 
 use crate::classify::{self, Disposition};
 use crate::Outcome;
+use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError, StatusClass};
 
 /// The numbering an upstream status was spelled in, carried WITH the number.
 ///
@@ -138,23 +137,31 @@ pub fn classify_upstream(
     // about HTTP's numbering, and a gRPC code walking through it lands wherever its digits happen
     // to fall.
     let sig = match status.code {
-        Some(UpstreamCode::Grpc(code)) => classify::CanonicalSignal {
+        Some(UpstreamCode::Grpc(code)) => CanonicalSignal {
             class: classify::grpc_status_class(code),
             provider_signal: None,
             retry_after: status.retry_after,
         },
-        http => {
-            let http_status = match http {
-                Some(UpstreamCode::Http(code)) => Some(code),
-                _ => None,
-            };
-            let raw = classify::RawUpstreamError {
-                http_status: http_status.unwrap_or(0),
-                provider_code: http_status.map(|c| c.to_string()),
+        // No number at all: the upstream never answered (refused, reset, a transport error, a
+        // timeout with no response) — a failure OF the destination, which `Network` (transient,
+        // trips the cell) exists for, as 1.5.5's relay read a transport refusal. Decided here,
+        // before the HTTP ladder, because the ladder is the served path's and its callers always
+        // hold a real status.
+        None => CanonicalSignal {
+            class: StatusClass::Network,
+            provider_signal: None,
+            retry_after: status.retry_after,
+        },
+        Some(UpstreamCode::Http(code)) => {
+            let raw = RawUpstreamError {
+                http_status: code,
+                provider_code: Some(code.to_string()),
                 structured_type: None,
                 retry_after_secs: status.retry_after,
             };
-            classify::normalize_raw_error(&raw, error_map, diagnostics)
+            crate::normalize::normalize_raw_error(&raw, error_map, &|value| {
+                diagnostics.unrecognized_error_map_value(value);
+            })
         }
     };
     let disposition = classify::classify(&sig);
