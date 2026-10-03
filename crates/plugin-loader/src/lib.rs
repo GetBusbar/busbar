@@ -2122,6 +2122,11 @@ mod store_scope_kind_conformance_tests;
 #[path = "tests/both_ways.rs"]
 mod both_ways;
 
+/// No rlib the test binary links exports `busbar_plugin_door` (the fat-LTO duplicate-symbol guard).
+#[cfg(test)]
+#[path = "tests/door_symbol_tests.rs"]
+mod door_symbol_tests;
+
 /// `kind: store` through both doors: one row, one store, one fold over every store operation.
 #[cfg(test)]
 #[path = "tests/store_conformance_tests.rs"]
@@ -2211,6 +2216,12 @@ mod store_door_conformance_tests;
 #[cfg(test)]
 #[path = "tests/secret_door_conformance_tests.rs"]
 mod secret_door_conformance_tests;
+
+/// `kind: transport` over the REAL `tcp` door, both ways: the shipped linked door against the pinned
+/// cdylib, one script, equal transcripts and exact crossing counts.
+#[cfg(test)]
+#[path = "tests/transport_door_conformance_tests.rs"]
+mod transport_door_conformance_tests;
 
 /// `kind: hook` through both doors on the memory ABI: decide identical, a broken one refused.
 #[cfg(test)]

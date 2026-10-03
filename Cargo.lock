@@ -998,7 +998,9 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin-example-plane",
+ "busbar-secret-env",
  "busbar-store-memory",
+ "busbar-transport-tcp",
  "busbar-transport-tcp-plugin",
  "ed25519-dalek",
  "flate2",
@@ -1016,6 +1018,15 @@ dependencies = [
  "tokio",
  "tracing",
  "tungstenite",
+]
+
+[[package]]
+name = "busbar-secret-env"
+version = "1.0.0"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=495318c9fa50c42b28705208fd02e83e3f363312#495318c9fa50c42b28705208fd02e83e3f363312"
+dependencies = [
+ "busbar-contract",
+ "serde_json",
 ]
 
 [[package]]
