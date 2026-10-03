@@ -329,7 +329,7 @@ fn a_snapshot_above_the_head_sees_the_whole_history() {
     assert_eq!(above.card_at(120).expect("covered").0, HistorySeq(2));
 }
 
-/// **THE ONE CARD A CORRECTION'S WINDOW RESOLVES TO** (MONEY-AUDIT D-1): the entry pricing every
+/// **THE ONE CARD A CORRECTION'S WINDOW RESOLVES TO** (#79): the entry pricing every
 /// instant of the window, or nothing when a second entry resolves part of it or the window runs past
 /// the entry's end.
 #[test]
@@ -382,9 +382,9 @@ fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
     );
 }
 
-/// **WHERE A CORRECTION WOULD CUT INSIDE A ROW** (#32, MONEY-AUDIT D-2). Rows are 1,000-wide buckets
-/// here, one per price era; everything before 5,000 may be stored. An edit at 2,500 appended on time
-/// opened an era there; an amendment back-dated to 3,200 did not (units from 3,200 accrued before it).
+/// **WHERE A CORRECTION WOULD CUT INSIDE A ROW** (OWNER ruling #32, 2026-09-29). Rows are
+/// 1,000-wide buckets here, one per price era; everything before 5,000 may be stored. An edit at
+/// 2,500 appended on time opened an era there; an amendment back-dated to 3,200 did not (units from 3,200 accrued before it).
 #[test]
 fn correction_cut_names_a_boundary_inside_a_row() {
     let mut history = History::opening(card_at(2.0), 0);

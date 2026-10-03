@@ -3872,7 +3872,7 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
     }
 }
 
-/// A history whose opening card prices two flat lanes, a flat fee of 3 and the `mcp` plane's own
+/// A history whose opening card prices two flat lanes, a flat fee of 3 and the `plane-b` plane's own
 /// card — the shape a correction of one cell must leave standing everywhere it does not name.
 #[cfg(test)]
 fn a_full_card_history() -> crate::root::kernel::RootHistory {
@@ -3899,7 +3899,7 @@ fn a_full_card_history() -> crate::root::kernel::RootHistory {
                 },
             ),
             (
-                "mcp\u{1f}search",
+                "plane-b\u{1f}search",
                 TierRates {
                     input: 5.0,
                     output: 6.0,
@@ -3937,13 +3937,13 @@ fn priced_at(
     nanos_of_exact(tally.exact()?)
 }
 
-/// **A CORRECTION OF ONE CELL REPRICES THAT CELL AND NOTHING ELSE** (MONEY-AUDIT D-1; #79 "a
+/// **A CORRECTION OF ONE CELL REPRICES THAT CELL AND NOTHING ELSE** (#79 "a
 /// correction reprices exactly its window", #42 "never a silent 0", #44).
 ///
 /// THE DEFECT THIS CLOSES. The corrected card was built from the cells the body named ALONE, with
 /// the fee defaulting to 0, and it out-ranked the whole card for its window: correcting `gpt`/`input`
 /// priced every request's fee at 0, refused `gpt`/`output` and every `claude` class (a served unit
-/// turned into a refusal), and priced every `mcp` row at 0 (no plane card on the correction). The
+/// turned into a refusal), and priced every `plane-b` row at 0 (no plane card on the correction). The
 /// corrected card is now the card in force with the named cell set.
 #[test]
 fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
@@ -3956,7 +3956,7 @@ fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
     };
     let gpt_output = configured(&history, "gpt", "output");
     let claude_input = configured(&history, "claude", "input");
-    let mcp_input = configured(&history, "mcp\u{1f}search", "input");
+    let plane_b_input = configured(&history, "plane-b\u{1f}search", "input");
 
     amend_through_a_journal(&history, &a_correction_body(), 6, a_sealed_operator())
         .expect("the correction applies");
@@ -3972,7 +3972,7 @@ fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
     for (lane, class, want) in [
         ("gpt", "output", gpt_output),
         ("claude", "input", claude_input),
-        ("mcp\u{1f}search", "input", mcp_input),
+        ("plane-b\u{1f}search", "input", plane_b_input),
     ] {
         assert_eq!(
             priced_at(&history, lane, class, 1_000, 1, inside),
@@ -3996,7 +3996,7 @@ fn a_fee_or_plane_correction_moves_only_what_it_names() {
         "effective_from": 0,
         "effective_until": 86_400_000,
         "per_request_fee": 7,
-        "rates": [ { "lane": "mcp\u{1f}search", "class": "input", "micro_per_unit": 9.0 } ],
+        "rates": [ { "lane": "plane-b\u{1f}search", "class": "input", "micro_per_unit": 9.0 } ],
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": a_test_operator_fingerprint(),
     }));
@@ -4008,12 +4008,12 @@ fn a_fee_or_plane_correction_moves_only_what_it_names() {
         "gpt/output keeps its configured rate; the fee is the corrected 7"
     );
     assert_eq!(
-        priced_at(&history, "mcp\u{1f}search", "input", 1_000, 0, 5_000),
+        priced_at(&history, "plane-b\u{1f}search", "input", 1_000, 0, 5_000),
         Ok(9_000_000),
         "the plane's own cell is corrected"
     );
     assert_eq!(
-        priced_at(&history, "mcp\u{1f}search", "output", 1_000, 0, 5_000),
+        priced_at(&history, "plane-b\u{1f}search", "output", 1_000, 0, 5_000),
         Ok(6_000_000),
         "the plane's other cell is kept"
     );
@@ -4044,7 +4044,7 @@ fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
     let body = signed_correction(serde_json::json!({
         "effective_from": 0,
         "effective_until": 86_400_000,
-        "rates": [ { "lane": "a2a\u{1f}agent", "class": "bytes", "micro_per_unit": 1.0 } ],
+        "rates": [ { "lane": "plane-c\u{1f}hop", "class": "bytes", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": a_test_operator_fingerprint(),
     }));
@@ -4095,8 +4095,9 @@ fn amend_at(
     (result, records)
 }
 
-/// **A RETROACTIVE RATE CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS REFUSED** (#32,
-/// MONEY-AUDIT D-2).
+/// **A RETROACTIVE RATE CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS REFUSED** (OWNER
+/// ruling #32, 2026-09-29: "a retroactive RATE correction that would cut inside a stored row is
+/// refused").
 ///
 /// A metering row is one UTC day per price era, priced at its own first instant. Before this
 /// refusal a correction `[day 1 12:00, 18:00)` answered 200 and repriced nothing (the day-1 row
@@ -4902,7 +4903,7 @@ fn a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports() {
                 )],
                 fee: Some(0),
             },
-            |_| Ok::<(), ()>(()),
+            |_, _| Ok::<(), ()>(()),
         )
         .expect("the fixture has an opening entry to correct");
 

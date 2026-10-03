@@ -1513,9 +1513,9 @@ fn amend_rate_history_effect(
     // correct: a correction that cannot say what it corrects is malformed (`Validation`, 400), and
     // nothing is recorded or appended. Split it at the boundary and sign each part.
     //
-    // A CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS REFUSED (#32): a metering row is one UTC
-    // day per price era priced at its own first instant, so a boundary inside one reprices the whole
-    // row or none of it. Refused the same way, before anything is recorded.
+    // A CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS REFUSED (OWNER ruling #32, 2026-09-29): a
+    // metering row is one UTC day per price era priced at its own first instant, so a boundary
+    // inside one reprices the whole row or none of it. Refused the same way, before anything is recorded.
     if history.is_empty() {
         return Err(GovernanceError::NotFound);
     }
@@ -1535,12 +1535,12 @@ fn amend_rate_history_effect(
         fee: per_request_fee,
     };
     let seq = history
-        .amend(&correction, |card| {
+        .amend(&correction, |card, base| {
             let record = AmendmentRecord {
                 effective_from,
                 effective_until,
                 amended_at_ms: appended_at_ms,
-                over_card_in_force: true,
+                sealed_over: Some(base),
                 sealed_fee: card.fee(),
                 rates: correction
                     .cells
@@ -1632,8 +1632,9 @@ fn dual_control_word(dual_control: busbar_core_admin::DualControl) -> &'static s
 /// `v2` states, per cell, whether the sealed card PRICED it: a `v1` record wrote an unpriced cell
 /// as nanos 0, which a restart read back as a free cell where the live card refused it (#42).
 ///
-/// `v3` records a correction OVER THE CARD IN FORCE ([`AmendmentRecord::over_card_in_force`]): its
-/// cells are set on the card that priced the window, every other cell and plane card kept.
+/// `v3` records a correction OVER THE CARD IN FORCE ([`AmendmentRecord::sealed_over`]): its cells
+/// are set on the card that priced the window, every other cell and plane card kept, and it names
+/// that card's entry and digest so a restart rebuilds it over that card or refuses it.
 pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v3";
 
 /// The `v2` tag: a record whose cells were the WHOLE sealed card, still read and rebuilt as that.
@@ -1654,10 +1655,12 @@ pub struct AmendmentRecord {
     pub effective_until: Option<u64>,
     /// When the correction was admitted, milliseconds.
     pub amended_at_ms: u64,
-    /// `true` (every record this node writes): the cells are set OVER the card in force for the
-    /// window, and a restart rebuilds the entry that way. `false` for a `v1`/`v2` record, whose
-    /// cells and fee were the whole card it sealed.
-    pub over_card_in_force: bool,
+    /// `Some` (every record this node writes, `v3`): the cells are set OVER the card in force for
+    /// the window, and this is that card's entry number and digest, written at amend time. A
+    /// restart rebuilds the entry over the entry at that number holding that card, or refuses it
+    /// ([`crate::root::kernel::CorrectionRefused`]). `None` for a `v1`/`v2` record, whose cells
+    /// and fee were the whole card it sealed.
+    pub sealed_over: Option<crate::root::kernel::CorrectionBase>,
     /// THE SEALED CARD'S FEE, MINOR UNITS — named `sealed_fee` and not the wire spelling.
     ///
     /// This is the journal's own internal record shape, not the wire: it stores what the sealed
@@ -1691,7 +1694,7 @@ pub struct AmendmentRecord {
 #[must_use]
 pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
     let mut body = busbar_kernel_wal::BodyWriter::new();
-    body.text(if record.over_card_in_force {
+    body.text(if record.sealed_over.is_some() {
         AMENDMENT_RECORD_TAG
     } else {
         AMENDMENT_RECORD_TAG_V2
@@ -1700,6 +1703,10 @@ pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
     body.num(u64::from(record.effective_until.is_some()));
     body.num(record.effective_until.unwrap_or(0));
     body.num(record.amended_at_ms);
+    if let Some(base) = &record.sealed_over {
+        body.num(base.seq.get());
+        body.bytes(&base.card_digest);
+    }
     body.figure(i128::from(record.sealed_fee));
     body.num(record.rates.len() as u64);
     for (lane, class, nanos) in &record.rates {
@@ -1745,7 +1752,7 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
         }
     }
     let mut r = Reader(body);
-    let (v2, over_card_in_force) = match r.text()?.as_str() {
+    let (v2, v3) = match r.text()?.as_str() {
         AMENDMENT_RECORD_TAG => (true, true),
         AMENDMENT_RECORD_TAG_V2 => (true, false),
         AMENDMENT_RECORD_TAG_V1 => (false, false),
@@ -1755,6 +1762,14 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
     let has_until = r.num()?;
     let until = r.num()?;
     let amended_at_ms = r.num()?;
+    let sealed_over = if v3 {
+        Some(crate::root::kernel::CorrectionBase {
+            seq: busbar_kernel_ledger::cost::HistorySeq(r.num()?),
+            card_digest: r.bytes()?.try_into().ok()?,
+        })
+    } else {
+        None
+    };
     let sealed_fee = i64::try_from(r.figure()?).ok()?;
     let n = r.num()?;
     let mut rates = Vec::new();
@@ -1773,7 +1788,7 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
         effective_from,
         effective_until: (has_until == 1).then_some(until),
         amended_at_ms,
-        over_card_in_force,
+        sealed_over,
         sealed_fee,
         rates,
         operator_fingerprint: r.text()?,

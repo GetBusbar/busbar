@@ -386,7 +386,7 @@ fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
     );
 }
 
-/// **A CORRECTED CARD IS THE CARD WITH THE NAMED CELLS SET** (MONEY-AUDIT D-1): every other lane,
+/// **A CORRECTED CARD IS THE CARD WITH THE NAMED CELLS SET** (#79): every other lane,
 /// class and plane card and the unnamed fee stay; a named fee replaces the fee; a cell on a plane
 /// with no present card, or naming no lane, has nowhere to land.
 #[test]
@@ -402,7 +402,7 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
         Some([
             ("gpt", tiers(2.0, 8.0)),
             ("claude", tiers(3.0, 15.0)),
-            ("mcp\u{1f}search", tiers(5.0, 6.0)),
+            ("plane-b\u{1f}search", tiers(5.0, 6.0)),
         ]),
         3,
     );
@@ -418,17 +418,26 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
     assert_eq!(nanos(&corrected, "gpt", "input"), Some(1_000));
     assert_eq!(nanos(&corrected, "gpt", "output"), Some(8_000));
     assert_eq!(nanos(&corrected, "claude", "output"), Some(15_000));
-    assert_eq!(nanos(&corrected, "mcp\u{1f}search", "input"), Some(5_000));
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "input"),
+        Some(5_000)
+    );
     assert_eq!(corrected.fee(), 3, "a fee it does not name is kept");
 
     let corrected = card
         .corrected(
-            [(LaneClass::new("mcp\u{1f}search", "input"), 9_000)],
+            [(LaneClass::new("plane-b\u{1f}search", "input"), 9_000)],
             Some(7),
         )
-        .expect("the mcp card is present");
-    assert_eq!(nanos(&corrected, "mcp\u{1f}search", "input"), Some(9_000));
-    assert_eq!(nanos(&corrected, "mcp\u{1f}search", "output"), Some(6_000));
+        .expect("plane-b's card is present");
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "input"),
+        Some(9_000)
+    );
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "output"),
+        Some(6_000)
+    );
     assert_eq!(
         nanos(&corrected, "gpt", "input"),
         Some(2_000),
@@ -437,7 +446,7 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
     assert_eq!(corrected.fee(), 7, "a named fee replaces the fee");
 
     assert!(
-        card.corrected([(LaneClass::new("a2a\u{1f}agent", "bytes"), 1)], None)
+        card.corrected([(LaneClass::new("plane-c\u{1f}hop", "bytes"), 1)], None)
             .is_none(),
         "a plane with no card of its own has billing off; a correction cannot switch it on"
     );
@@ -448,7 +457,7 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
         "an absent flat card has nowhere for a cell to land"
     );
     assert!(
-        card.corrected([(LaneClass::new("mcp\u{1f}", "input"), 1)], None)
+        card.corrected([(LaneClass::new("plane-b\u{1f}", "input"), 1)], None)
             .is_none(),
         "a cell naming no lane"
     );
@@ -458,5 +467,71 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
             .map(|c| (c.fee(), c.pricing_enabled())),
         Some((5, false)),
         "a fee alone corrects an absent card's fee and leaves billing off"
+    );
+}
+
+/// **A CORRECTED CELL IS NO LONGER A REFUSED ONE** (#79, #42). A card that could not represent
+/// its configured `gpt`/`input` leaves that cell UNPRICED and lists it in `refused_cells`; a
+/// signed correction that prices the cell takes it off the list, on the flat card and on a plane's
+/// own card alike, and leaves every refused cell it did not name on it.
+#[test]
+fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
+    use crate::cost::TierRates;
+    let unrepresentable = 0.0001;
+    let card = RateCard::from_config(
+        Some([
+            (
+                "gpt",
+                TierRates {
+                    input: unrepresentable,
+                    output: unrepresentable,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+            (
+                "plane-b\u{1f}search",
+                TierRates {
+                    input: unrepresentable,
+                    output: 1.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+        ]),
+        0,
+    );
+    let plane_refused = |card: &RateCard| {
+        card.plane_lane("plane-b\u{1f}search")
+            .0
+            .refused_cells()
+            .to_vec()
+    };
+    assert_eq!(
+        card.refused_cells(),
+        [
+            LaneClass::new("gpt", "input"),
+            LaneClass::new("gpt", "output")
+        ]
+    );
+    assert_eq!(plane_refused(&card), [LaneClass::new("search", "input")]);
+
+    let corrected = card
+        .corrected(
+            [
+                (LaneClass::new("gpt", "input"), 1_000),
+                (LaneClass::new("plane-b\u{1f}search", "input"), 9_000),
+            ],
+            None,
+        )
+        .expect("both cards are present");
+    assert_eq!(
+        corrected.refused_cells(),
+        [LaneClass::new("gpt", "output")],
+        "the corrected cell is priced, so it is not refused; the cell it did not name still is"
+    );
+    assert!(
+        plane_refused(&corrected).is_empty(),
+        "the plane's corrected cell is not refused either"
     );
 }

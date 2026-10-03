@@ -304,7 +304,8 @@ impl HistoryView<'_> {
         (base_reaches_end && !outranked).then_some(base)
     }
 
-    /// **THE BOUNDARY OF A CORRECTION THAT WOULD CUT INSIDE A ROW** (#32), or `None` when neither
+    /// **THE BOUNDARY OF A CORRECTION THAT WOULD CUT INSIDE A ROW** (OWNER ruling #32, 2026-09-29),
+    /// or `None` when neither
     /// does.
     ///
     /// A metering row aggregates one `bucket_ms` bucket (a UTC day) per price era, and it is priced
