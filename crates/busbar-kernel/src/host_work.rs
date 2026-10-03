@@ -15,7 +15,9 @@
 //!   principal of the unit that opened it ([`owner_of`]). `work.find` answers only within both,
 //!   and every denial is the same READY absent answer.
 //! * **The bound refuses at admission; nothing evicts.** At [`WorkBounds::max_live`] live handles
-//!   an instance's next `work.open` is refused; a live handle is never dropped. Retention bounds
+//!   an instance's next `work.open` is refused; a live handle is never dropped. Each instance's
+//!   bounds are its section's reserved `work:` sub-key ([`WorkBounds::of_section`]), the host's
+//!   where it states none. Retention bounds
 //!   only settled handles ([`WorkBounds::retain_ms`]), and the sweep runs from a `work.open` (a
 //!   submit), never from a read or a timer.
 //! * **Durable before answered.** Every open and settle is written to the store before it is
@@ -62,6 +64,67 @@ impl Default for WorkBounds {
             max_live: 4096,
             retain_ms: 300_000,
         }
+    }
+}
+
+impl WorkBounds {
+    /// THE PLANE'S OWN BOUNDS: its section's reserved `work: {max_live, retain_s}` sub-key
+    /// (`busbar_contract::section::RESERVED_WORK_KEY`), each key it leaves out taken from
+    /// `fallback` (the host's bounds); no `work:` at all is `fallback` whole.
+    ///
+    /// # Errors
+    ///
+    /// The refusal naming the key: `work:` that is not a map, a key it does not know, a
+    /// `max_live` that is not a whole number above zero, a `retain_s` that is not a whole number
+    /// of seconds (or overflows in milliseconds).
+    pub fn of_section(
+        section: &str,
+        value: &serde_yaml::Value,
+        fallback: Self,
+    ) -> Result<Self, String> {
+        use busbar_contract::section::{RESERVED_WORK_KEY, WORK_MAX_LIVE_KEY, WORK_RETAIN_S_KEY};
+        let Some(work) = value.get(RESERVED_WORK_KEY) else {
+            return Ok(fallback);
+        };
+        let at = format!("`{section}.{RESERVED_WORK_KEY}`");
+        let map = work.as_mapping().ok_or_else(|| {
+            format!(
+                "{at}: the reserved work bounds must be a map of \
+                 `{WORK_MAX_LIVE_KEY}` and `{WORK_RETAIN_S_KEY}`"
+            )
+        })?;
+        let mut bounds = fallback;
+        for (key, v) in map {
+            match key.as_str() {
+                Some(WORK_MAX_LIVE_KEY) => {
+                    bounds.max_live = v
+                        .as_u64()
+                        .filter(|n| *n > 0)
+                        .and_then(|n| usize::try_from(n).ok())
+                        .ok_or_else(|| {
+                            format!("{at}.{WORK_MAX_LIVE_KEY}: must be a whole number above zero")
+                        })?;
+                }
+                Some(WORK_RETAIN_S_KEY) => {
+                    bounds.retain_ms =
+                        v.as_u64()
+                            .and_then(|s| s.checked_mul(1000))
+                            .ok_or_else(|| {
+                                format!(
+                                    "{at}.{WORK_RETAIN_S_KEY}: must be a whole number of seconds"
+                                )
+                            })?;
+                }
+                _ => {
+                    let named = key.as_str().unwrap_or("?");
+                    return Err(format!(
+                        "{at}: `{named}` is not a work bound \
+                         (`{WORK_MAX_LIVE_KEY}`, `{WORK_RETAIN_S_KEY}`)"
+                    ));
+                }
+            }
+        }
+        Ok(bounds)
     }
 }
 

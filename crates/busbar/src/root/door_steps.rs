@@ -32,7 +32,7 @@ use busbar_contract::caps::{
 use busbar_contract::records::VirtualKey;
 use busbar_contract::section::{
     MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, RESERVED_MODELS_KEY,
-    RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
+    RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
 };
 use busbar_contract::MeterClassId;
 use busbar_kernel::config::groups::ExhaustionMode;
@@ -80,7 +80,11 @@ impl DoorPools {
             None => map
                 .keys()
                 .filter_map(key)
-                .filter(|k| k != RESERVED_POOLS_KEY && !RESERVED_SECTION_KEYS.contains(&k.as_str()))
+                .filter(|k| {
+                    k != RESERVED_POOLS_KEY
+                        && k != RESERVED_WORK_KEY
+                        && !RESERVED_SECTION_KEYS.contains(&k.as_str())
+                })
                 .collect(),
         };
         let pools = map

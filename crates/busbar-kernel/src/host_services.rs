@@ -487,6 +487,9 @@ pub struct KernelServices {
     /// The work book behind `work.*`, and its bounds.
     work: Arc<WorkBook>,
     work_bounds: WorkBounds,
+    /// Each instance's own work bounds (its section's `work:`), by label; [`Self::default_work_bounds`]
+    /// where none is bound.
+    bounds_of: Mutex<HashMap<Arc<str>, WorkBounds>>,
     /// The root's nested-dispatch seam, attached once, and the permits nested units run under.
     nest: OnceLock<Arc<dyn NestRoute>>,
     nested: Arc<crate::pump::NestedPool>,
@@ -532,6 +535,7 @@ impl KernelServices {
             demotions: OnceLock::new(),
             work: Arc::default(),
             work_bounds: WorkBounds::default(),
+            bounds_of: Mutex::default(),
             nest: OnceLock::new(),
             nested: Arc::new(crate::pump::NestedPool::new(
                 NEST_CONCURRENCY,
@@ -563,6 +567,32 @@ impl KernelServices {
     #[must_use]
     pub fn work(&self) -> &Arc<WorkBook> {
         &self.work
+    }
+
+    /// The host's work bounds: every instance's that binds none of its own.
+    #[must_use]
+    pub fn default_work_bounds(&self) -> WorkBounds {
+        self.work_bounds
+    }
+
+    /// Bound the work of the instance labelled `instance` at `bounds` (its section's `work:`,
+    /// [`WorkBounds::of_section`]); re-binding replaces them.
+    pub fn bound_work(&self, instance: &str, bounds: WorkBounds) {
+        self.bounds_of
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(Arc::from(instance), bounds);
+    }
+
+    /// The work bounds of the instance labelled `instance`: its own, else the host's.
+    #[must_use]
+    pub fn work_bounds_of(&self, instance: &str) -> WorkBounds {
+        self.bounds_of
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(instance)
+            .copied()
+            .unwrap_or(self.work_bounds)
     }
 
     /// The same services judging every destination through `judge` (the connector's guard).
@@ -1401,7 +1431,7 @@ impl HostServices for KernelServices {
         };
         let book = Arc::clone(&self.work);
         let rows = Arc::clone(&records.reads);
-        let bounds = self.work_bounds;
+        let bounds = self.work_bounds_of(&caller.instance);
         let wall_ms = Arc::clone(&self.wall_ms);
         let instance = Arc::clone(&caller.instance);
         let (kind, record) = (kind.to_string(), record.to_vec());
@@ -1475,7 +1505,7 @@ impl HostServices for KernelServices {
         };
         let book = Arc::clone(&self.work);
         let rows = Arc::clone(&records.reads);
-        let retain_ms = self.work_bounds.retain_ms;
+        let retain_ms = self.work_bounds_of(&caller.instance).retain_ms;
         let wall_ms = Arc::clone(&self.wall_ms);
         let instance = Arc::clone(&caller.instance);
         submit(pool, later, move || {

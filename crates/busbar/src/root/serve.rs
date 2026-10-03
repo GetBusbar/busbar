@@ -661,7 +661,12 @@ pub fn compose_planes(
 
 /// `open` the plane, generation 1, its settings `section` as JSON; the snapshot it published.
 fn open(plugin: &DoorPlane, section: &serde_yaml::Value) -> Result<OwnedSnapshot, String> {
-    let settings = serde_json::to_vec(section).map_err(|e| format!("its section: {e}"))?;
+    // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
+    let mut section = section.clone();
+    if let Some(map) = section.as_mapping_mut() {
+        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
+    }
+    let settings = serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))?;
     let mut frame = Frame::new(
         PlaneOpenIn {
             open: OpenIn {

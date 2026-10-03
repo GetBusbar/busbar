@@ -402,3 +402,42 @@ fn a_row_round_trips_and_a_tombstone_reads_as_nothing() {
     assert_ne!(owner_of(Some("alice")), owner_of(None));
     assert_ne!(owner_of(Some("")), owner_of(None));
 }
+
+#[test]
+fn a_sections_work_bounds_fall_back_to_the_hosts_key_by_key() {
+    let host = WorkBounds {
+        max_live: 9,
+        retain_ms: 5_000,
+    };
+    let of = |yaml: &str| {
+        let v: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        WorkBounds::of_section("p", &v, host)
+    };
+    assert_eq!(of("entry: {}"), Ok(host), "no work: is the host's whole");
+    assert_eq!(
+        of("work: {max_live: 2, retain_s: 60}"),
+        Ok(WorkBounds {
+            max_live: 2,
+            retain_ms: 60_000
+        })
+    );
+    assert_eq!(
+        of("work: {retain_s: 0}"),
+        Ok(WorkBounds {
+            max_live: 9,
+            retain_ms: 0
+        })
+    );
+    for bad in [
+        "work: [1]",
+        "work: {max_live: 0}",
+        "work: {max_live: -3}",
+        "work: {max_live: 1.5}",
+        "work: {retain_s: soon}",
+        "work: {retain_s: 18446744073709551615}",
+        "work: {live: 1}",
+    ] {
+        let refused = of(bad).expect_err(bad);
+        assert!(refused.starts_with("`p.work`"), "{bad}: {refused}");
+    }
+}

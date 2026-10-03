@@ -223,7 +223,8 @@ impl PlaneDriver {
     ///
     /// # Errors
     ///
-    /// The section's trust keys break their rule, or `services` refused the admission.
+    /// The section's trust keys or its reserved `work:` bounds break their rule, or `services`
+    /// refused the admission.
     pub fn new(
         calls: Arc<dyn PlaneCalls>,
         config: DriverConfig,
@@ -248,7 +249,15 @@ impl PlaneDriver {
             scope_kinds: d.scope_kinds.iter().map(|k| (*k).to_string()).collect(),
             record_chains: d.record_chains.clone(),
         };
+        // The instance's own work bounds (its section's reserved `work:`), the host's where it
+        // states none; a section that misstates them refuses the instance.
+        let work = crate::host_work::WorkBounds::of_section(
+            section.0,
+            section.1,
+            services.default_work_bounds(),
+        )?;
         services.admit(&d.label, facts).map_err(|e| e.to_string())?;
+        services.bound_work(&d.label, work);
         let driver = calls.driver();
         Ok(PlaneDriver {
             calls,
