@@ -393,7 +393,7 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     let strict = Guard::default();
     let p = EGRESS_PROVIDER;
     assert_eq!(
-        verdict(strict.judge_answer("llm.internal", &[ip("10.0.0.5")], p)),
+        verdict(strict.judge_answer("model.internal", &[ip("10.0.0.5")], p)),
         Some(DEST_INTERNAL)
     );
     assert_eq!(
@@ -404,9 +404,9 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
         strict.judge_name("localhost", p).unwrap_err().verdict,
         DEST_INTERNAL
     );
-    let allowed = guard(true, &["llm.internal", "127.0.0.1", "localhost"]);
+    let allowed = guard(true, &["model.internal", "127.0.0.1", "localhost"]);
     assert_eq!(
-        allowed.judge_answer("llm.internal", &[ip("10.0.0.5")], p),
+        allowed.judge_answer("model.internal", &[ip("10.0.0.5")], p),
         Ok(())
     );
     assert_eq!(
@@ -415,7 +415,7 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     );
     assert_eq!(allowed.judge_name("localhost", p), Ok(None));
     assert_eq!(
-        verdict(allowed.judge_answer("llm.internal", &[ip("169.254.169.254")], p)),
+        verdict(allowed.judge_answer("model.internal", &[ip("169.254.169.254")], p)),
         Some(DEST_METADATA),
         "a host entry never admits a metadata answer"
     );
@@ -429,12 +429,12 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     })
     .unwrap();
     assert_eq!(
-        verdict(carved.judge_answer("llm.internal", &[ip("169.254.169.254")], p)),
+        verdict(carved.judge_answer("model.internal", &[ip("169.254.169.254")], p)),
         Some(DEST_METADATA),
         "another provider's carve-out admits nothing here"
     );
     assert_eq!(
-        verdict(carved.judge_answer("llm.internal", &[ip("10.0.0.5")], p)),
+        verdict(carved.judge_answer("model.internal", &[ip("10.0.0.5")], p)),
         Some(DEST_INTERNAL),
         "a metadata carve-out is no private allowance"
     );

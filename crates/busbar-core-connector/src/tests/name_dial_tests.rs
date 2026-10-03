@@ -480,8 +480,8 @@ fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
     use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
     worker().block_on(async {
         let (port, accepted) = counting_echo().await;
-        let target = format!("llm.test:{port}");
-        let names = || Arc::new(Table(vec![("llm.test", [127, 0, 0, 1].into())]));
+        let target = format!("model.test:{port}");
+        let names = || Arc::new(Table(vec![("model.test", [127, 0, 0, 1].into())]));
         let strict = connector_over(&[], names(), Arc::default());
         strict
             .declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target)
@@ -492,7 +492,7 @@ fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
         assert_eq!(read_direct(&strict, id).await, Err(ConnError::Refused));
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing was dialled");
-        let allowed = connector_over(&["llm.test"], names(), Arc::default());
+        let allowed = connector_over(&["model.test"], names(), Arc::default());
         allowed
             .declare_need_to(OWNER, NEED, "bytes", EGRESS_PROVIDER, &target)
             .expect("the provider need declares");
