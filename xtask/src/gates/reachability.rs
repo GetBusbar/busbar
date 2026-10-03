@@ -1122,7 +1122,8 @@ fn door_serve(files: &[Scanned], items: &[Item], live: &BTreeSet<usize>) -> Door
         )),
         1 => Ok(places.iter().next().cloned().unwrap_or_default()),
         n => Err(format!(
-            "`{DRIVER_TYPE}` is built in {n} places reached from fn main() ({}); spec K5 composes              the door planes in ONE",
+            "`{DRIVER_TYPE}` is built in {n} places reached from fn main() ({}); spec K5 composes \
+             the door planes in ONE",
             places
                 .iter()
                 .map(|(rel, item)| format!("`{item}` in {rel}"))
@@ -1139,14 +1140,15 @@ fn door_serve(files: &[Scanned], items: &[Item], live: &BTreeSet<usize>) -> Door
             .find_map(|(fi, f)| {
                 f.lines.iter().enumerate().find_map(|(i, l)| {
                     let reached = enclosing_item(items, fi, i).filter(|n| live.contains(n))?;
-                    (!f.is_test_line(i) && l.counted.contains(DRIVE_CALL)).then(|| {
-                        format!("{}:{} (in `{}`)", f.rel, l.no, items[reached].name)
-                    })
+                    (!f.is_test_line(i) && l.counted.contains(DRIVE_CALL))
+                        .then(|| format!("{}:{} (in `{}`)", f.rel, l.no, items[reached].name))
                 })
             })
             .ok_or_else(|| {
                 format!(
-                    "the drivers `{item}` ({rel}) builds are driven by nothing: no line reached                      from fn main() in that module runs a unit (`{DRIVE_CALL}`) — a driver with no                      data route is not a unit path"
+                    "the drivers `{item}` ({rel}) builds are driven by nothing: no line reached \
+                     from fn main() in that module runs a unit (`{DRIVE_CALL}`) — a driver with no \
+                     data route is not a unit path"
                 )
             }),
     };

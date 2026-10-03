@@ -226,57 +226,57 @@ impl Runner {
         let a2a = bin_dir.join("a2a").to_string_lossy().into_owned();
         let leg =
             |name: &str, argv: &[&str], cwd: Option<&Path>| self.leg(rig, name, argv, cwd, &env);
-        let mut controls: Vec<(&str, Option<i32>)> = Vec::new();
-
         // The battery's own machinery, each guard made to fail.
-        controls.push((
-            "harness-selftest",
-            leg(
+        let mut controls: Vec<(&str, Option<i32>)> = vec![
+            (
                 "harness-selftest",
-                &["python3", "testing/a2a-harness/scripts/harness-selftest.py"],
-                None,
+                leg(
+                    "harness-selftest",
+                    &["python3", "testing/a2a-harness/scripts/harness-selftest.py"],
+                    None,
+                ),
             ),
-        ));
-        controls.push((
-            "tck-baseline-selftest",
-            leg(
+            (
                 "tck-baseline-selftest",
-                &["python3", "testing/a2a-tck/check-baseline-selftest.py"],
-                None,
+                leg(
+                    "tck-baseline-selftest",
+                    &["python3", "testing/a2a-tck/check-baseline-selftest.py"],
+                    None,
+                ),
             ),
-        ));
-        controls.push((
-            "subject-selftest",
-            leg(
+            (
                 "subject-selftest",
-                &["bash", "scripts/a2a-subject/boot.sh", "--selftest"],
-                None,
+                leg(
+                    "subject-selftest",
+                    &["bash", "scripts/a2a-subject/boot.sh", "--selftest"],
+                    None,
+                ),
             ),
-        ));
-        controls.push((
-            "install-control-go",
-            leg(
+            (
                 "install-control-go",
-                &[
-                    "bash",
-                    "testing/a2a-harness/scripts/install-control.sh",
-                    "go",
-                ],
-                None,
+                leg(
+                    "install-control-go",
+                    &[
+                        "bash",
+                        "testing/a2a-harness/scripts/install-control.sh",
+                        "go",
+                    ],
+                    None,
+                ),
             ),
-        ));
-        controls.push((
-            "install-control-python",
-            leg(
+            (
                 "install-control-python",
-                &[
-                    "bash",
-                    "testing/a2a-harness/scripts/install-control.sh",
-                    "python",
-                ],
-                None,
+                leg(
+                    "install-control-python",
+                    &[
+                        "bash",
+                        "testing/a2a-harness/scripts/install-control.sh",
+                        "python",
+                    ],
+                    None,
+                ),
             ),
-        ));
+        ];
 
         // Instrument 1 against a2a-go, both bindings, each held to its pinned baseline.
         for (binding, extra, baseline) in [

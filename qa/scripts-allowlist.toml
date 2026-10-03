@@ -652,11 +652,6 @@ class = "port"
 reason = "the store functional fixtures the oracle sources (harness-rev hashes lib.sh and verdict.sh): moves into busbar-release-oracle"
 
 [[script]]
-path = "testing/jev-conformance/jev-conformance.sh"
-class = "port"
-reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first"
-
-[[script]]
 path = "testing/llm-conformance/fixtures/gen-errors-fixture.py"
 class = "port"
 reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first"

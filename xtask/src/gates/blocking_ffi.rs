@@ -403,6 +403,41 @@ struct FileScan {
     lost_track: Option<String>,
 }
 
+/// [`scan_file`]'s answer for one file, MEMOISED on its path and bytes.
+///
+/// The gate re-scanned every candidate file of the tree on every run, and a self-test case is a run
+/// over a tree one planted file away from the last: the battery paid for the whole tree's scan once
+/// per case, and went over its work-unit budget (9 189 of 9 000, 2026-10-02) doing it. The scan is
+/// a pure function of `(path, bytes)` — the seam table it reads is a constant — so every case after
+/// the first re-reads only what it planted; the verdict over the hits is still taken fresh on
+/// every run.
+static SCAN_MEMO: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::BTreeMap<u64, std::sync::Arc<FileScan>>>,
+> = std::sync::OnceLock::new();
+
+fn scan_file_memo(rel: &str, text: &str) -> std::sync::Arc<FileScan> {
+    use std::hash::{Hash, Hasher};
+    let key = {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        rel.hash(&mut h);
+        text.hash(&mut h);
+        h.finish()
+    };
+    let memo = SCAN_MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the scan memo mutex is never poisoned")
+        .get(&key)
+    {
+        return std::sync::Arc::clone(found);
+    }
+    let scan = std::sync::Arc::new(scan_file(rel, text));
+    memo.lock()
+        .expect("the scan memo mutex is never poisoned")
+        .insert(key, std::sync::Arc::clone(&scan));
+    scan
+}
+
 fn scan_file(rel: &str, text: &str) -> FileScan {
     let table = seams();
     let mut hits = Vec::new();
@@ -642,12 +677,12 @@ impl Gate for BlockingFfiGate {
         let mut hits = Vec::new();
         let mut broke = Vec::new();
         for f in &files {
-            let scan = scan_file(&f.rel_str(), &f.text);
-            match scan.lost_track {
+            let scan = scan_file_memo(&f.rel_str(), &f.text);
+            match &scan.lost_track {
                 // A FILE THE SCANNER DID NOT GET THROUGH CONTRIBUTES NO FINDINGS AND IS NOT CLEAN.
                 // Banking its empty output as "no findings" is the defect this row exists for.
-                Some(why) => broke.push(why),
-                None => hits.extend(scan.hits),
+                Some(why) => broke.push(why.clone()),
+                None => hits.extend(scan.hits.iter().cloned()),
             }
         }
         hits.sort();
