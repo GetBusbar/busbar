@@ -923,6 +923,74 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Where the writes in segment `index` under `dir` end: the last frame holding a non-zero byte.
+fn written_end(dir: &std::path::Path, index: u64) -> usize {
+    let factory = busbar_kernel_wal::DirectoryFactory::new(dir).expect("the journal directory");
+    let bytes = std::fs::read(factory.segment_path(index)).expect("the segment reads");
+    let last = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    last.div_ceil(busbar_kernel_wal::FRAME_BYTES) * busbar_kernel_wal::FRAME_BYTES
+}
+
+/// Lay the log under `dir` out as a roll at byte `at` of segment zero would have: everything from
+/// `at` on moves, frame for frame, to the start of segment one. Exactly the bytes a log at a
+/// ceiling of `at` writes — the next batch that does not fit goes to the next segment's offset zero.
+fn roll_at(dir: &std::path::Path, at: usize) {
+    let factory = busbar_kernel_wal::DirectoryFactory::new(dir).expect("the journal directory");
+    let end = written_end(dir, 0);
+    let first = factory.segment_path(0);
+    let bytes = std::fs::read(&first).expect("the segment reads");
+    assert!(end > at, "the second process wrote past the roll point");
+    std::fs::write(factory.segment_path(1), &bytes[at..end]).expect("segment one");
+    std::fs::write(&first, &bytes[..at]).expect("segment zero, cut at the roll");
+}
+
+/// **A RESTART AFTER A SEGMENT ROLL PRICES AT THE CARD IN FORCE, NOT THE NEWEST SEGMENT'S** (#79,
+/// MONEY-AUDIT E1).
+///
+/// Card A is journalled at the first boot, in segment zero. The log rolls; a million tokens are
+/// earned at A, card B (5) is applied and a million more are earned. The restart has to read the
+/// chain from segment zero: a replay of the newest segment alone finds card B as the opening entry
+/// and reprices the A-era posting at 5 — 10,000,000,000 where 8,000,000,000 was served.
+#[test]
+fn a_restart_after_a_roll_prices_every_posting_at_the_card_in_force_when_it_arrived() {
+    let dir = journal_dir("restart-after-a-roll");
+
+    // THE FIRST PROCESS: boots at A and journals it.
+    {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        drop(boot_book(holder, &dir));
+    }
+    let roll = written_end(&dir, 0);
+
+    // THE SECOND: boots at the same price, earns at A, applies B, earns at B.
+    let figures_before = {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A + 1);
+        let book = boot_book(holder, &dir);
+        settle(&book, "flat", FLAT_LANE, 1_000_000, 3_000_000_000, EARNED_A);
+        apply_at(holder, 5.0, APPLIED_B);
+        settle(&book, "flat", FLAT_LANE, 1_000_000, 5_000_000_000, EARNED_B);
+        settled(&book, "flat")
+    };
+    assert_eq!(figures_before, 8_000_000_000);
+    roll_at(&dir, roll);
+
+    // THE RESTART reads both segments.
+    let holder = process_holder();
+    apply_at(holder, 5.0, REBOOT);
+    let book = boot_book(holder, &dir);
+    assert_eq!(
+        settled(&book, "flat"),
+        figures_before,
+        "a restart after a roll repriced a posting at a card that was not in force when it arrived"
+    );
+    assert_eq!(cards_on_chain(&book), 2, "card A from segment zero, card B");
+    assert!(book.lock().expect("the book").restart_findings.is_empty());
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A holder that was not armed — every test holder, and a build with no root ledger — rebuilds
 /// nothing and journals nothing; a node with NO data directory keeps the boot card from instant
 /// zero exactly as the previous release did, and writes no card anywhere.

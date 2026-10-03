@@ -295,6 +295,7 @@ impl Wal {
     /// the end of the log, so a caller that resumes a chain from it resumes from the newest record
     /// rather than from one somewhere in the middle. It is not the whole log: everything in the
     /// segments before it is still on the medium and is simply not what a resume needs.
+    /// [`Wal::read_back`] is the read of the whole log.
     pub fn recovered(&self) -> &[Record] {
         &self.recovered
     }
@@ -526,9 +527,37 @@ impl Wal {
         }
     }
 
-    /// Read every record the log holds in its current segment, verifying as it goes.
+    /// Read every record the log holds, OLDEST SEGMENT FIRST, verifying as it goes.
+    ///
+    /// The whole log, not the segment being written: once the log has rolled, the records before
+    /// the roll are history a reader of the chain needs — the card a posting priced at, the hold a
+    /// predecessor opened, the audit chain's start. Every earlier segment the factory still has is
+    /// scanned before the current one (a data directory keeps every one; a memory factory keeps only
+    /// what is still resident, because a node with no disk keeps its history in its store).
+    ///
+    /// Each `(node, node_seq)` comes back once, the first time it was written. A batch a poisoned
+    /// segment lost is written again, whole, on the next segment, and its bytes may have reached the
+    /// poisoned one in full before the sync failed — the same record in two segments, which is one
+    /// record.
+    ///
+    /// `records` is the whole log; every other field of the answer describes the CURRENT segment,
+    /// which is the one appending resumes in.
     pub fn read_back(&self) -> io::Result<Recovered> {
-        crate::recover::scan(&self.segment)
+        let mut seen: HashSet<(u64, u64)> = HashSet::new();
+        let mut records = Vec::new();
+        for index in 0..self.segment.index() {
+            let Some(backend) = self.factory.existing(index)? else {
+                continue;
+            };
+            let earlier = Segment::open_at(backend, index, 0, self.ceiling)?;
+            let scanned = crate::recover::scan(&earlier)?.records;
+            records.extend(scanned.into_iter().filter(|r| seen.insert(r.identity())));
+        }
+        let mut current = crate::recover::scan(&self.segment)?;
+        let tail = std::mem::take(&mut current.records);
+        records.extend(tail.into_iter().filter(|r| seen.insert(r.identity())));
+        current.records = records;
+        Ok(current)
     }
 
     /// Offer the store what it is owed: whatever a refusal retained, then `batch`, as one batch in

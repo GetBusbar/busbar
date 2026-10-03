@@ -153,6 +153,10 @@ impl SegmentFactory for FaultyFactory {
         self.inner.highest_index()
     }
 
+    fn existing(&self, index: u64) -> io::Result<Option<Box<dyn SegmentBackend>>> {
+        self.inner.existing(index)
+    }
+
     fn is_durable(&self) -> bool {
         true
     }

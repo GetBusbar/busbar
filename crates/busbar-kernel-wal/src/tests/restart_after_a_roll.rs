@@ -206,6 +206,62 @@ fn a_restart_steps_back_over_a_segment_a_roll_opened_and_never_wrote_to() {
     assert_resumed(before, resumed, &whole_log(segments));
 }
 
+/// THE CHAIN A RESTART READS BACK IS THE WHOLE LOG, not the segment it resumed in.
+///
+/// Resuming at the end of the log is half of a restart; the other half is everything a boot reads
+/// off the chain — the rate card a posting priced at, the holds a predecessor left open, the audit
+/// chain's start, the migration marker. Those can sit in any segment, so a replay that read only
+/// the newest one would reprice, re-open and re-number from the middle of the history, and verify
+/// clean while doing it, because a run cut at a segment boundary still links.
+#[test]
+fn a_file_backed_restart_after_a_roll_replays_every_segment_oldest_first() {
+    let dir = TempDir::in_build_dir("replay-after-a-roll");
+
+    let mut journal = Journal::over(open_over_dir(dir.path()), NODE);
+    write(&mut journal, 400, 0x11);
+    assert!(
+        journal.log().segments_used() > 1,
+        "the run has to cross a roll for this to be the restart it claims to be"
+    );
+    drop(journal);
+
+    let mut reopened = Journal::over(open_over_dir(dir.path()), NODE);
+    write(&mut reopened, 40, 0x22);
+    let chain = reopened
+        .replay()
+        .expect("the log reads back")
+        .expect("the chain verifies end to end");
+    assert_eq!(
+        chain.len(),
+        440,
+        "every record written before and after the restart, in every segment"
+    );
+    for (i, record) in chain.iter().enumerate() {
+        assert_eq!(record.node_seq, i as u64 + 1, "oldest segment first");
+    }
+    assert_eq!(
+        chain[0].body,
+        vec![0x11, 0],
+        "the first record of segment zero"
+    );
+}
+
+/// The same on the memory backing, read by a log that has not restarted: a roll in process must not
+/// hide what came before it from a reader of the chain either.
+#[test]
+fn a_memory_backed_replay_after_a_roll_reads_every_resident_segment() {
+    let factory = MemoryFactory::retaining();
+    let mut journal = Journal::over(open_over_memory(&factory), NODE);
+    write(&mut journal, 400, 0x11);
+    assert!(journal.log().segments_used() > 1);
+    let chain = journal
+        .replay()
+        .expect("the log reads back")
+        .expect("the chain verifies end to end");
+    assert_eq!(chain.len(), 400);
+    assert_eq!(chain[0].node_seq, 1);
+}
+
 fn open_over_dir(dir: &std::path::Path) -> Wal {
     let factory = DirectoryFactory::new(dir).expect("the data directory opens");
     Wal::with_parts(
