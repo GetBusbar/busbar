@@ -333,41 +333,38 @@ async fn the_compiled_in_and_the_dropped_in_hook_answer_the_same_request_set_ide
 
     // The script reached every answer it names: equal transcripts of failures would prove nothing.
     // The unknown index 9 is the host's to drop, so the plugin's own order still carries it.
+    assert_eq!(linked[0], format!("name: {NAME}"));
     assert!(
-        linked[1].starts_with("name: ") && linked[1].ends_with(NAME),
+        linked[1].contains("Ready")
+            && linked[1].contains("verbs=0x1 ")
+            && linked[1].contains("order=[9, 1, 0]"),
         "{}",
         linked[1]
     );
     assert!(
-        linked[2].contains("Ready") && linked[2].contains("verbs=0x1 "),
+        linked[2].contains("Ready")
+            && linked[2].contains("verbs=0x14 ")
+            && linked[2].contains("status=429")
+            && linked[2].contains("blocked by test gate"),
         "{}",
         linked[2]
     );
-    assert!(linked[2].contains("order=[9, 1, 0]"), "{}", linked[2]);
     assert!(
         linked[3].contains("Ready")
-            && linked[3].contains("verbs=0x14 ")
-            && linked[3].contains("status=429")
-            && linked[3].contains("blocked by test gate"),
+            && linked[3].contains("verbs=0x1 ")
+            && linked[3].contains("rewritten by test gate"),
         "{}",
         linked[3]
     );
     assert!(
         linked[4].contains("Ready")
-            && linked[4].contains("verbs=0x1 ")
-            && linked[4].contains("rewritten by test gate"),
+            && linked[4].contains("status=451")
+            && linked[4].contains("screened"),
         "{}",
         linked[4]
     );
-    assert!(
-        linked[5].contains("Ready")
-            && linked[5].contains("status=451")
-            && linked[5].contains("screened"),
-        "{}",
-        linked[5]
-    );
-    assert!(linked[7].contains("verbs=0x2 "), "{}", linked[7]);
-    assert_eq!(linked[8], "timeout: decide: timed out");
+    assert!(linked[6].contains("verbs=0x2 "), "{}", linked[6]);
+    assert_eq!(linked[7], "timeout: decide: timed out");
 }
 
 /// A request that crosses is counted once through each build, however many are sent: the count is
