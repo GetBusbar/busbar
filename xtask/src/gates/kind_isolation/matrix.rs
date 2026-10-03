@@ -11,6 +11,24 @@
 //! counted it. A gate that measures the wires and not the place the wires are joined is a gate that
 //! reports the tidy half of the tree.
 //!
+//! ## REPORT-ONLY (owner 2026-10-03: the matrix is a measured to-do list, not a gate; Cargo.toml
+//! ## excluded)
+//!
+//! This row is MEASURED on every run and its number is printed (the total and the ten heaviest
+//! cells with their heaviest file in the row's detail; every cell and every `file:line` in
+//! `--report`), but it NEVER FAILS the gate: not on the per-push registration, not on the ship
+//! twin, and not as a "figure rose" in the turnstile (a PASS row carries no figure to compare).
+//! The ceiling comparison below is still evaluated, and its findings are carried in the detail as
+//! REPORT-ONLY text; they are not a verdict. Every other kind-isolation row (`:deps`, `:test-deps`,
+//! `:closure`, `:vocab`, `:registry`, the edge census, ship-edge, unlisted-dep-edge, the
+//! disagreement-free dead-kind rules) gates exactly as before. The one FAIL this row still emits
+//! is a scan that could not run, because a refusal is not a reading.
+//!
+//! The self-test proves the COUNTING without a gate: its subject runs this same rule with the
+//! findings as FAIL rows ([`rule_matrix`]'s `gating`), which is the one observable a planted case
+//! has, and one case reads the registered gate and asserts that a planted name RAISES the reported
+//! total while the row stays PASS.
+//!
 //! ## THE MATRIX
 //!
 //! For EVERY kind `K` in the kind table and EVERY crate `C` under `crates/`, this row measures
@@ -52,9 +70,8 @@
 //!
 //! ## WHAT IS SCANNED: EVERYTHING, INCLUDING COMMENTS, INCLUDING TESTS
 //!
-//! Every `.rs` and every `.toml` under the crate, whole text — identifiers, string literals, doc
-//! comments, ordinary comments, `#[cfg(feature = …)]` attributes, Cargo dependency names, Cargo
-//! feature names — AND the file's own path, so `root/voice_serve.rs` is a hit before a byte of it
+//! Every `.rs` and every `.toml` under the crate EXCEPT `Cargo.toml`, whole text — identifiers, string literals, doc
+//! comments, ordinary comments, `#[cfg(feature = …)]` attributes — AND the file's own path, so `root/voice_serve.rs` is a hit before a byte of it
 //! is read. Nothing is stripped: a plane named in a doc comment of the kernel is the kernel's
 //! reader being taught a plane, and the incident that motivated this row (`root-voice-serve`, a
 //! plane-named accept loop behind a plane-named feature) named its plane in the filename, the
@@ -64,6 +81,14 @@
 //! naming a plane; the only place tests may legitimately name planes is the composition root's,
 //! because the root's tests drive the assembly — and that is a LISTED cell with a citation, not a
 //! silent `continue` in this file.
+//!
+//! **`Cargo.toml` IS NOT SCANNED (owner 2026-10-03: "Cargo.toml is ignored blanketly from this
+//! check").** The composition root must name every compiled-in plugin crate in its manifest's
+//! dependency and feature lines (owner rule: every plugin can be compiled in or dropped in), so a
+//! manifest name is the mechanism, not coupling. Dependency edges are still policed where they
+//! belong: `kind-isolation:deps`, `:test-deps`, the edge census, `ship-edge` and
+//! `unlisted-dep-edge` read cargo metadata and are unchanged. Every other `.toml` (`qa/*.toml`,
+//! dialect and plugin manifests) is still scanned.
 //!
 //! ## NO SILENT EXEMPTIONS: `qa/kind-isolation.toml` IS THE WHOLE ALLOWANCE
 //!
@@ -102,7 +127,7 @@
 //! seven plugin kinds is not counted in the `contract` column. #40(a) makes `busbar-contract` the
 //! only crate a plugin may name, so that column in a plugin crate measures the wall standing, not a
 //! coupling; the exemption is the kind table's own `is_the_wall`, it covers no other pair, and a
-//! ledger row that still records such a cell or class is RED (`rule-granted-cell`/`-edge`).
+//! ledger row that still records such a cell or class is a finding (`rule-granted-cell`/`-edge`).
 //!
 //! The ship twin owes the same row at ZERO everywhere, and owes it without consulting the ledger:
 //! `qa/kind-isolation.toml` is a record of what 1.6.0 still has to delete, not a shape it is
@@ -126,6 +151,7 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 const MIN_SCANNED: usize = 600;
 
 mod auth_words;
+mod external;
 mod instances;
 mod os_words;
 mod vendors;
@@ -493,11 +519,6 @@ fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
 struct Cell {
     /// The HIGHEST of the scanners, never the lowest.
     count: usize,
-    /// The slice of `count` that landed inside a `Cargo.toml`. Manifest edges are already
-    /// governed by `kind-isolation:deps`; `count - manifest` is the SOURCE-only count the
-    /// law0-neutral-instance class measures, so a dependency name does not double-count
-    /// against a ceiling that dependency scanning already owns.
-    manifest: usize,
     by_segments: usize,
     by_windows: usize,
     /// The third scanner: the line as the COMPILER sees it, escapes decoded and adjacent literals
@@ -614,10 +635,18 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     // coupling ([`super::conformance_witness_edges`]).
     let granted = super::conformance_witness_edges(cx, crates);
 
+    // The external crate roots each crate's manifest declares ([`external`]).
+    let tree: BTreeSet<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+    let mut externals: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
     let mut matrix: Matrix = BTreeMap::new();
     let mut wire_locks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (rel, text) in &files {
         let rel = rel.clone();
+        // OWNER 2026-10-03: "Cargo.toml is ignored blanketly from this check" (see the module doc).
+        if is_cargo_manifest(&rel) {
+            continue;
+        }
         let Some(dir) = owning_dir(&rel) else {
             continue;
         };
@@ -648,6 +677,19 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         } else {
             mask_identifiers(text, &contract)
         };
+        // A name inside a path rooted at an EXTERNAL crate is that crate's word (`std::process::
+        // Stdio`), and `busbar_kernel::audit` is a module of the kernel facade, not a sibling crate.
+        let roots = externals.entry(dir.clone()).or_insert_with(|| {
+            external::external_roots(
+                c.deps
+                    .iter()
+                    .chain(&c.dev_deps)
+                    .map(|d| (d.pkg.as_str(), d.key.as_str())),
+                &tree,
+            )
+        });
+        let masked = external::mask_external_paths(&rel, &masked, roots);
+        let masked = external::mask_kernel_facade(&rel, &masked);
         // English words that are also instance names are not counted as English prose.
         let masked = mask_english_prose(&rel, &masked);
         // Instance ids that are also a crate's or an abbreviation's name count only as references.
@@ -683,9 +725,6 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
             cell.by_decoded += h.by_decoded;
             let n = h.by_segments.max(h.by_windows).max(h.by_decoded);
             cell.count += n;
-            if rel.ends_with("Cargo.toml") {
-                cell.manifest += n;
-            }
             let mut mark = String::new();
             if h.by_segments != h.by_windows {
                 mark.push_str("\t[scanners disagree]");
@@ -703,6 +742,12 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         }
     }
     Ok((matrix, files.len(), skipped))
+}
+
+/// Is `rel` a Cargo manifest, by file name? The matrix does not count these (owner 2026-10-03).
+/// Only the exact name `Cargo.toml`: every other `.toml` is still scanned.
+fn is_cargo_manifest(rel: &str) -> bool {
+    rel == "Cargo.toml" || rel.ends_with("/Cargo.toml")
 }
 
 /// Where the wire locks live, one `<lock>.wire.json` per dialect (see [`crate::wire_lock`]).
@@ -2024,8 +2069,8 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
 
 /// THE LAW 0/1 ARMED CLASS — evaluated UNCONDITIONALLY of the `[[cell]]` ledger: a NEUTRAL
 /// crate's ceiling against [`instance_vocab_kinds`] is 0, and no ledger row can raise it.
-/// Cargo.toml is excepted (`cell.manifest`) because a manifest edge is already governed by
-/// `kind-isolation:deps`; arming it here too would double-count the same dependency name.
+/// Cargo.toml is not read by the matrix at all (owner 2026-10-03, see [`is_cargo_manifest`]); a
+/// manifest edge is governed by `kind-isolation:deps`.
 ///
 /// `enforced` is the readiness gate: `None` means every `Family::Neutral` crate is checked
 /// (the ship twin, which owes zero everywhere unconditionally); `Some(list)` restricts the
@@ -2040,7 +2085,7 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
         if !is_neutral || !instance_vocab_kinds().contains(kind) {
             continue;
         }
-        let source_count = cell.count - cell.manifest; // Cargo-exempt
+        let source_count = cell.count;
         if source_count == 0 {
             continue;
         }
@@ -2058,17 +2103,123 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
     offenders
 }
 
-pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, ship: bool) -> Row {
+/// THE MATRIX ROW, AS THE GATE EMITS IT: a measured to-do list, not a gate (owner 2026-10-03).
+///
+/// The row is measured on every run and its number is in the row's detail, but it never fails: a
+/// finding the ledger comparison raises is carried in the detail as `REPORT-ONLY` text and the row
+/// is PASS. The only FAIL this row still emits is a scan that could not run (a refusal is not a
+/// reading). `gating` is the self-test subject's setting: the proofs of the counting and of the
+/// ledger comparison run the same rule with its findings as FAIL, because a red is the one
+/// observable a planted case has. No production registration sets it.
+pub fn rule_matrix(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &super::KindRegistry,
+    ship: bool,
+    gating: bool,
+) -> Row {
+    let (row, reading) = measured_row(cx, crates, reg, ship);
+    match reading {
+        Some(r) if !gating => {
+            let verdict = if row.status == crate::ledger::Status::Fail {
+                "findings"
+            } else {
+                "no findings"
+            };
+            Row::pass(
+                ROW_MATRIX,
+                "report-only: the matrix is a measured to-do list, not a gate (owner 2026-10-03)",
+                format!(
+                    "{MEASURED_PREFIX}{} hit(s) over {} cell(s). Top cells: {}. REPORT-ONLY, \
+                     {verdict} (not evaluated as a gate; the full list is `--report`): {}",
+                    r.total,
+                    r.cells,
+                    r.top,
+                    row.detail.chars().take(1200).collect::<String>()
+                ),
+            )
+        }
+        _ => row,
+    }
+}
+
+/// What the report-only detail opens with, so a caller (and the self-test) reads the number back.
+const MEASURED_PREFIX: &str = "MEASURED ";
+
+/// The matrix total in a report-only row's detail, `None` for any other row.
+fn measured_total(row: &Row) -> Option<usize> {
+    row.detail
+        .strip_prefix(MEASURED_PREFIX)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The numbers a report-only row carries.
+struct Reading {
+    total: usize,
+    cells: usize,
+    /// The ten heaviest cells, `crate x kind = n (heaviest file)`.
+    top: String,
+}
+
+fn reading_of(matrix: &Matrix, total: usize) -> Reading {
+    let mut cells: Vec<(&(String, &'static str), &Cell)> = matrix.iter().collect();
+    cells.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(a.0.cmp(b.0)));
+    let top = cells
+        .iter()
+        .take(10)
+        .map(|((krate, kind), c)| {
+            let mut per_file: BTreeMap<&str, usize> = BTreeMap::new();
+            for h in &c.hits {
+                let mut f = h.split('\t');
+                let Some(at) = f.nth(1).and_then(|p| p.rsplit_once(':').map(|(f, _)| f)) else {
+                    continue;
+                };
+                let n = f
+                    .next()
+                    .and_then(|n| n.trim_end_matches('x').parse::<usize>().ok())
+                    .unwrap_or(1);
+                *per_file.entry(at).or_default() += n;
+            }
+            let heaviest = per_file
+                .into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+                .map(|(f, n)| format!(" ({f}: {n})"))
+                .unwrap_or_default();
+            format!("{krate} \u{d7} {kind} = {}{heaviest}", c.count)
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    Reading {
+        total,
+        cells: matrix.len(),
+        top,
+    }
+}
+
+/// The measurement and the ledger comparison, with the figures a report-only row carries (`None`
+/// for a scan that could not run, which stays a FAIL).
+fn measured_row(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &super::KindRegistry,
+    ship: bool,
+) -> (Row, Option<Reading>) {
     let (matrix, scanned, skipped) = match measure(cx, crates) {
         Ok(m) => m,
         Err(e) => {
-            return Row::fail(
-                ROW_MATRIX,
-                "the kind × crate scan could not run",
-                format!(
+            return (
+                Row::fail(
+                    ROW_MATRIX,
+                    "the kind × crate scan could not run",
+                    format!(
                     "{e} — a scan of no files names no coupling, which is indistinguishable from a \
                      tree that has none."
                 ),
+                ),
+                None,
             )
         }
     };
@@ -2079,10 +2230,13 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let (files, _) = match scan_set(cx) {
         Ok(f) => f,
         Err(e) => {
-            return Row::fail(
-                ROW_MATRIX,
-                "the kind × crate scan could not run",
-                format!("{e} — the instance axes read the same scan set, and it did not read."),
+            return (
+                Row::fail(
+                    ROW_MATRIX,
+                    "the kind × crate scan could not run",
+                    format!("{e} — the instance axes read the same scan set, and it did not read."),
+                ),
+                None,
             )
         }
     };
@@ -2095,12 +2249,15 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let vendor = match vendors::offenders(cx, crates, &files) {
         Ok(v) => v,
         Err(e) => {
-            return Row::fail(
-                ROW_MATRIX,
-                "the kind × crate scan could not run",
-                format!(
+            return (
+                Row::fail(
+                    ROW_MATRIX,
+                    "the kind × crate scan could not run",
+                    format!(
                     "{e} — the vendor-name scan did not run, and an unrun scan is not a clean one."
                 ),
+                ),
+                None,
             )
         }
     };
@@ -2108,10 +2265,13 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     // THE SHIP TWIN OWES ZERO EVERYWHERE, and owes it without consulting the ledger.
     if ship {
         if total == 0 && inst_total == 0 && ivocab.unattributed.is_empty() && vendor.is_empty() {
-            return Row::pass(
-                ROW_MATRIX,
-                "no crate names another kind's vocabulary anywhere",
-                format!("{scanned} file(s) scanned, every cell of the matrix is 0"),
+            return (
+                Row::pass(
+                    ROW_MATRIX,
+                    "no crate names another kind's vocabulary anywhere",
+                    format!("{scanned} file(s) scanned, every cell of the matrix is 0"),
+                ),
+                Some(reading_of(&matrix, total)),
             );
         }
         let worst: Vec<String> = matrix
@@ -2124,19 +2284,22 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         law0.extend(instances::law0(&inst, None));
         law0.extend(ivocab.unattributed.iter().cloned());
         law0.extend(vendor.iter().cloned());
-        return Row::fail(
-            ROW_MATRIX,
-            "a crate still names another kind's vocabulary",
-            format!(
-                "ship-ceiling 0: {total} hit(s) over {} cell(s): {}{}",
-                matrix.len(),
-                worst.join(" | "),
-                if law0.is_empty() {
-                    String::new()
-                } else {
-                    format!(" || {}", law0.join(" || "))
-                }
+        return (
+            Row::fail(
+                ROW_MATRIX,
+                "a crate still names another kind's vocabulary",
+                format!(
+                    "ship-ceiling 0: {total} hit(s) over {} cell(s): {}{}",
+                    matrix.len(),
+                    worst.join(" | "),
+                    if law0.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" || {}", law0.join(" || "))
+                    }
+                ),
             ),
+            Some(reading_of(&matrix, total)),
         );
     }
 
@@ -2275,7 +2438,9 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     // it goes to stdout, where a reader is.
     if cx.env().report_only {
         println!(
-            "\nTHE MATRIX (crate, kind, count, per scanner):\n{}",
+            "\nTHE MATRIX, REPORT-ONLY, MEASURED TOTAL {total} hit(s) over {} cell(s) (crate, kind, count, \
+             per scanner):\n{}",
+            matrix.len(),
             render_matrix(&matrix)
         );
         println!(
@@ -2306,22 +2471,28 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
 
     if !offenders.is_empty() {
         offenders.sort();
-        return Row::fail(
-            ROW_MATRIX,
-            "the kind × crate vocabulary matrix does not match its ledger",
-            format!(
-                "{} finding(s) over {} cell(s), {scanned} file(s) scanned: {}",
-                offenders.len(),
-                matrix.len(),
-                offenders.join(" | ")
+        return (
+            Row::fail(
+                ROW_MATRIX,
+                "the kind × crate vocabulary matrix does not match its ledger",
+                format!(
+                    "{} finding(s) over {} cell(s), {scanned} file(s) scanned: {}",
+                    offenders.len(),
+                    matrix.len(),
+                    offenders.join(" | ")
+                ),
             ),
+            Some(reading_of(&matrix, total)),
         );
     }
 
-    Row::pass(
-        ROW_MATRIX,
-        "every crate's naming of every other kind is a listed edge",
-        format!("every non-zero cell has its {LEDGER} row; {headline}"),
+    (
+        Row::pass(
+            ROW_MATRIX,
+            "every crate's naming of every other kind is a listed edge",
+            format!("every non-zero cell has its {LEDGER} row; {headline}"),
+        ),
+        Some(reading_of(&matrix, total)),
     )
 }
 
@@ -2576,14 +2747,74 @@ pub(super) fn cell_subst(
     Ok((anchor, planted))
 }
 
+/// THE REPORT ASSERTION: the registered gate's row stays PASS under `plant` and the total in its
+/// detail goes UP. Green is "the row did not fail and the number rose"; anything else is red, and
+/// names which half did not hold.
+fn report_only_total_rises<'a>(
+    cx: &Ctx,
+    registered: &'a dyn crate::gates::Gate,
+    name: &str,
+    overlay: crate::ctx::Overlay,
+) -> crate::gates::CasePlan<'a> {
+    use crate::gates::{execute, Case, CasePlan, Expect};
+    use crate::ledger::Status;
+    let name = name.to_string();
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let reading = |cx: &Ctx| -> Result<usize, String> {
+            let verdict = execute(registered, cx);
+            let row = verdict
+                .rows
+                .iter()
+                .find(|r| r.id == ROW_MATRIX)
+                .ok_or_else(|| "the gate emitted no matrix row".to_string())?;
+            if row.status != Status::Pass {
+                return Err(format!("the matrix row is {:?}, not PASS", row.status));
+            }
+            measured_total(row)
+                .ok_or_else(|| "the matrix row carries no measured total".to_string())
+        };
+        let got = match (reading(&cx), reading(&cx.with_overlay(overlay))) {
+            (Ok(before), Ok(after)) if after > before => Expect::Green,
+            (Ok(before), Ok(after)) => Expect::Red {
+                naming: vec![format!("the total did not rise: {before} -> {after}")],
+            },
+            (Err(why), _) | (_, Err(why)) => Expect::Red { naming: vec![why] },
+        };
+        Case {
+            name,
+            covers: vec![ROW_MATRIX.to_string()],
+            expected: Expect::Green,
+            got,
+        }
+    })
+}
+
 /// Every RED case this row owes, and the GREEN one it is measured against.
 pub fn selftest<'a>(
     cx: &'a Ctx,
     gate: &'a dyn crate::gates::Gate,
+    registered: &'a dyn crate::gates::Gate,
     ship: bool,
     report: &mut crate::gates::Report<'a>,
 ) {
     use crate::gates::{prove_rows_green, prove_rows_red};
+
+    // THE ROW IS REPORT-ONLY, AND ITS NUMBER STILL COUNTS (owner 2026-10-03: "the matrix is a
+    // measured to-do list, not a gate"). `gate` (the subject below) runs the rule with its findings
+    // as FAIL rows so a planted case can observe a red; `registered` is the gate as it is
+    // registered, and this case reads what it reports: the row does not fail over a planted plane
+    // name in a `.rs` file, and the measured total it carries RISES by it.
+    report.push(report_only_total_rises(
+        cx,
+        registered,
+        "REPORT-ONLY: a plane named in a .rs file raises the measured total and does not fail the row",
+        wire_plant(
+            cx,
+            "src/names_a_plane.rs",
+            "pub const P: &str = \"busbar-plane-mcp\";\n",
+        ),
+    ));
 
     // THE SHIP TWIN OWES A DIFFERENT PROOF, because it is RED on this tree ON PURPOSE. Every case
     // below is about the LEDGER, and the ship twin does not read the ledger — planting a row
@@ -3364,19 +3595,80 @@ pub fn selftest<'a>(
         &[WIRE_PLANT, "plane"],
     ));
 
-    // THE CARGO PROSE FIELDS. `description`, `keywords` and `readme` are shipped to the registry
-    // under the crate's name, and they are read on exactly the same terms as its source.
+    // `Cargo.toml` IS NOT SCANNED (owner 2026-10-03: "Cargo.toml is ignored blanketly from this
+    // check"). The composition root names every compiled-in plugin in its manifest on purpose.
+    // GREEN: a plane named in a dependency line, a feature and a `description` of a transport's
+    // manifest does not move the matrix. RED, beside it: the same name in a `.rs` file still does.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a plane named in a Cargo.toml dependency, feature and description is not counted -- the manifest is the mechanism",
+        &[ROW_MATRIX],
+        {
+            let manifest = format!("crates/{WIRE_PLANT}/Cargo.toml");
+            plant(
+                cx,
+                &manifest,
+                &format!(
+                    "[package]\ndescription = \"the wire the llm plane rides\"\nkeywords = [\"mcp\"]\nname = \"{WIRE_PLANT}\"\nversion = \"0.0.0\"\n\n[features]\nmcp-plane = [\"dep:busbar-plane-mcp\"]\n\n[dependencies.busbar-plane-mcp]\npath = \"../busbar-plane-mcp\"\noptional = true\n"
+                ),
+            )
+        },
+    ));
     report.push(prove_rows_red(
         cx,
         gate,
-        "a plane named in a transport's Cargo `description`/`keywords` -- shipped prose is scanned",
+        "a plane named in a .rs file is still counted -- only Cargo.toml is exempt",
         &[ROW_MATRIX],
         wire_plant(
             cx,
-            "Cargo.toml",
-            "description = \"the wire the llm plane rides\"\nkeywords = [\"mcp\"]\n",
+            "src/names_a_plane.rs",
+            "pub const P: &str = \"busbar-plane-mcp\";\n",
         ),
         &[WIRE_PLANT, "plane"],
+    ));
+
+    // EXTERNAL CRATES' PATHS ([`external`]). GREEN: the standard library's `Stdio` is not the stdio
+    // transport. RED, beside it, so no real hit is masked with it: the stdio transport's own crate
+    // path, and a local module named `stdio`, still count.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "`std::process::Stdio` is the standard library's, not the stdio transport",
+        &[ROW_MATRIX],
+        wire_plant(
+            cx,
+            "src/spawn.rs",
+            "use std::process::{Command, Stdio};\nfn f() { let _ = std::process::Stdio::piped(); let _ = Stdio::null(); }\n",
+        ),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the stdio transport's own crate path is still counted beside a std Stdio",
+        &[ROW_MATRIX],
+        wire_plant(
+            cx,
+            "src/spawn.rs",
+            "use std::process::Stdio;\nuse busbar_transport_stdio::Run;\n",
+        ),
+        &[WIRE_PLANT, "transport"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a local `mod stdio` is still counted -- only an external crate's path is masked",
+        &[ROW_MATRIX],
+        wire_plant(cx, "src/lib.rs", "mod stdio;\nfn f() { stdio::run(); }\n"),
+        &[WIRE_PLANT, "transport"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a kernel sibling's crate path (`busbar_kernel_audit::`) is still counted; only the facade's module is masked",
+        &[ROW_MATRIX],
+        wire_plant(cx, "src/lib.rs", "use busbar_kernel_audit::Sink;\n"),
+        &[WIRE_PLANT, "kernel"],
     ));
 
     // -- THE SPELLING THE COMPILER READS AND THE SCANNER DID NOT --------------------------------
@@ -3931,7 +4223,7 @@ mod tests {
         let reg = super::super::load_registry(&cx).expect("the ledger reads");
         let crates = super::super::census(&cx).expect("the census reads");
         let rel = "crates/store-memory/src/vendor.rs";
-        let base = rule_matrix(&cx, &crates, &reg, false);
+        let base = rule_matrix(&cx, &crates, &reg, false, true);
         assert!(
             !base.detail.contains(rel),
             "the unplanted tree already names {rel}"
@@ -3942,7 +4234,7 @@ mod tests {
             "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
         ));
         let crates = super::super::census(&planted).expect("the census reads");
-        let row = rule_matrix(&planted, &crates, &reg, false);
+        let row = rule_matrix(&planted, &crates, &reg, false, true);
         let finding = format!("vendor-name\tbusbar-store-memory\t{rel}:1");
         assert!(
             row.detail.contains(&finding),
@@ -4193,7 +4485,7 @@ mod tests {
 
         let cx = Ctx::workspace().expect("the workspace opens");
         let reg = super::super::load_registry(&cx).expect("the ledger reads");
-        let base = rule_matrix(&cx, &crates_of(&cx), &reg, false);
+        let base = rule_matrix(&cx, &crates_of(&cx), &reg, false, true);
         let (_, base_findings) = super::super::debt_free::split_detail(&base.detail);
 
         // (a) A NEW EDGE.
@@ -4207,7 +4499,7 @@ mod tests {
             "crates/busbar-kernel-wal/src/leak.rs",
             "//! The llm plane's frames arrive here first.\n",
         ));
-        let row = rule_matrix(&planted, &crates_of(&planted), &reg, false);
+        let row = rule_matrix(&planted, &crates_of(&planted), &reg, false, true);
         assert_eq!(
             row.status,
             Status::Fail,
@@ -4243,7 +4535,7 @@ mod tests {
             "the bulk plant did not grow the listed cell ({before} -> {after}); it proves nothing"
         );
         let planted = cx.with_overlay(plant(&cx, rel, &bulk));
-        let row = rule_matrix(&planted, &crates_of(&planted), &reg, false);
+        let row = rule_matrix(&planted, &crates_of(&planted), &reg, false, true);
         let (_, findings) = super::super::debt_free::split_detail(&row.detail);
         assert_eq!(
             row.status, base.status,

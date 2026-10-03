@@ -244,9 +244,10 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "kind-isolation",
-        why: "RED on the Phase 4 drain debt and on nothing new. `:deps`, `:test-deps`, `:closure` \
-              and `:matrix` carry the measured coupling the Phase 4 kind-isolation drain removes \
-              (their rises await owner questions Q77/Q77a). They are excused FINDING BY FINDING: \
+        why: "RED on the Phase 4 drain debt and on nothing new. `:deps`, `:test-deps` and `:closure` \
+              carry the measured coupling the Phase 4 kind-isolation drain removes (their rises \
+              await owner questions Q77/Q77a). `:matrix` is no longer excused here because it no \
+              longer fails: it is report-only (owner 2026-10-03). They are excused FINDING BY FINDING: \
               every finding they carry must be in qa/kind-isolation.standing.txt at or below its \
               recorded figure. A new edge, cell or rise reds the posture, and every other row \
               blocks exactly as it always did. The snapshot only shrinks: `--posture \
@@ -256,7 +257,6 @@ pub const REPORT_ONLY: &[Posture] = &[
                 "kind-isolation:deps",
                 "kind-isolation:test-deps",
                 "kind-isolation:closure",
-                "kind-isolation:matrix",
             ],
             file: "qa/kind-isolation.standing.txt",
         }),
