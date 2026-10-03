@@ -19,13 +19,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
-use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut, CLAIM_EXACT, CLAIM_OPEN};
-use busbar_contract::auth::AuthPrincipal;
-use busbar_contract::caps::{OpClassId, Pass, PrincipalId, ReasonCode, Route};
+use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
+use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
@@ -33,23 +31,35 @@ use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
 use busbar_kernel::plane::store::KIND_DEMOTION;
 use busbar_kernel::plane::DemotionRecord;
-use busbar_kernel::plane_driver::serve::{
-    publish, DataAnswer, DataRequest, ServeRoute, ServeTable,
-};
+use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
 use busbar_kernel::plane_driver::{
-    refusal_status, Arrival, BufferCaps, CallerEnd, DriverConfig, Egress, EgressFarEnd, FarEnd,
-    FarPiece, HeadFields, MoneySeam, OutboundRequest, Pick, PlaneDriver, PlaneMoney, Rendered,
-    UnitRoute,
+    refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
+    PlaneDriver, PlaneMoney, Rendered,
 };
 use tokio::sync::{mpsc, oneshot};
 
-use crate::root::door_steps::{
-    door_facts, egress_pool, DoorCaller, DoorFacts, DoorPools, DoorSteps,
-};
+use crate::root::door_steps::{door_facts, DoorFacts, DoorPools};
 use crate::root::linked::DoorPlane;
 use crate::root::loader::dispatch::kinds::plane::OwnedSnapshot;
 use crate::root::loader::dispatch::plane_calls::PlaneInstance;
+// The data routes drive their units on the node: what only they name.
+#[cfg(linked_axis_node)]
+use crate::root::door_steps::{egress_pool, DoorCaller, DoorSteps};
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
+#[cfg(linked_axis_node)]
+use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
+#[cfg(linked_axis_node)]
+use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN};
+#[cfg(linked_axis_node)]
+use busbar_contract::auth::AuthPrincipal;
+#[cfg(linked_axis_node)]
+use busbar_contract::caps::{Pass, PrincipalId, Route};
+#[cfg(linked_axis_node)]
+use busbar_kernel::plane_driver::serve::{DataAnswer, DataRequest};
+#[cfg(linked_axis_node)]
+use busbar_kernel::plane_driver::{
+    Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
+};
 
 /// The egress class `dest.judge` applies when a plugin names none: the deployment's own stance.
 pub const DEFAULT_EGRESS_CLASS: u32 = 0;
