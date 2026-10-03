@@ -644,8 +644,18 @@ fn plane_fees() -> busbar_kernel::config::PlaneFeesMap {
     )])
 }
 
-/// The engine resolving the deployment at `price`, heard by `holder` at `at`.
+/// The engine resolving the deployment at `price`, heard by `holder` at `at`. Whether the holder
+/// took the card is read off the history (`holder.len()`), never off the answer.
 fn apply_at(holder: &RootHistory, price: f64, at: u64) {
+    let _ = try_apply_at(holder, price, at);
+}
+
+/// [`apply_at`], answering the holder's verdict.
+fn try_apply_at(
+    holder: &RootHistory,
+    price: f64,
+    at: u64,
+) -> Result<busbar_kernel_ledger::cost::HistorySeq, CardRefused> {
     let lanes = lanes_at(price);
     let fees = plane_fees();
     holder.apply_rates(
@@ -657,7 +667,7 @@ fn apply_at(holder: &RootHistory, price: f64, at: u64) {
             plane_fees: &fees,
         },
         at,
-    );
+    )
 }
 
 /// A PROCESS'S holder: fresh, armed as the production boot arms `ROOT_CARD`, and `'static` as the
@@ -991,6 +1001,581 @@ fn a_restart_after_a_roll_prices_every_posting_at_the_card_in_force_when_it_arri
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A store that takes nothing: a memory-buffered journal over it refuses every append.
+struct RefusingShipper;
+
+impl busbar_kernel_wal::Shipper for RefusingShipper {
+    fn ship(
+        &mut self,
+        _records: &[busbar_kernel_wal::Record],
+    ) -> Result<(), busbar_kernel_wal::ShipError> {
+        Err(busbar_kernel_wal::ShipError::Unavailable(
+            "the store is not answering".into(),
+        ))
+    }
+}
+
+/// The flat lane's input price in force at `at` on `holder`'s history.
+fn flat_price_at(holder: &RootHistory, at: u64) -> Option<u64> {
+    holder
+        .history()
+        .expect("a history")
+        .current()
+        .card_at(at)
+        .and_then(|(_, card)| {
+            card.lane_rates(FLAT_LANE)
+                .map(|r| r.nanos_per_unit("input"))
+        })
+}
+
+/// **JOURNAL FIRST, PUBLISH SECOND** (MONEY-AUDIT D-6): a config rate apply whose journal append
+/// fails is REFUSED and the card in force is unchanged. RED arm: the card was published first and
+/// the journal failure only logged, so the node priced an era its restart could not reproduce —
+/// every row earned under it repriced at the card before.
+#[test]
+fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
+    let dir = journal_dir("refused-apply");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    assert_eq!(cards_on_chain(&book), 1, "the boot card is journalled");
+    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::memory_buffered_to(
+        7,
+        Box::new(RefusingShipper),
+        busbar_kernel::store::now_ms,
+    );
+    apply_at(holder, 5.0, APPLIED_B);
+    assert_eq!(
+        holder.len(),
+        3,
+        "the refused card lands with the card in force put back behind it, as the chain holds them"
+    );
+    assert_eq!(
+        flat_price_at(holder, EARNED_B),
+        Some(3_000),
+        "the card in force is the one the journal holds"
+    );
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A store whose answer the test flips: refusing, a memory-buffered journal over it retains every
+/// batch and re-offers it on the next append; answering, the retained batch lands.
+struct SwitchShipper(Arc<std::sync::atomic::AtomicBool>);
+
+impl busbar_kernel_wal::Shipper for SwitchShipper {
+    fn ship(
+        &mut self,
+        _records: &[busbar_kernel_wal::Record],
+    ) -> Result<(), busbar_kernel_wal::ShipError> {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(busbar_kernel_wal::ShipError::Unavailable(
+                "the store is not answering".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Every record the book's chain holds.
+fn chain_records(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+) -> Vec<busbar_kernel_wal::JournalRecord> {
+    book.lock()
+        .expect("the book")
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies")
+}
+
+/// The dated history a restart rebuilds from `records`, and nothing else: no boot card is held.
+fn rebuilt_from(
+    records: &[busbar_kernel_wal::JournalRecord],
+) -> busbar_kernel_ledger::cost::History {
+    RootHistory::restore(super::journalled_cards(records), Vec::new()).0
+}
+
+/// The flat lane's input price in force at `at` on `history`.
+fn flat_price_on(history: &busbar_kernel_ledger::cost::History, at: u64) -> Option<u64> {
+    history.current().card_at(at).and_then(|(_, card)| {
+        card.lane_rates(FLAT_LANE)
+            .map(|r| r.nanos_per_unit("input"))
+    })
+}
+
+/// The policy epochs of the config cards on `records`, in chain order.
+fn config_epochs(records: &[busbar_kernel_wal::JournalRecord]) -> Vec<u64> {
+    super::journalled_cards(records)
+        .into_iter()
+        .filter_map(|card| match card {
+            super::JournalledCard::Applied(applied) => Some(applied.policy_epoch),
+            super::JournalledCard::Amended(_) => None,
+        })
+        .collect()
+}
+
+/// **A REFUSED APPLY IS IN DOUBT, NOT ABSENT** (REV-293 #1, MONEY-AUDIT D-6). The journal chains a
+/// record BEFORE the log is asked to take it and the log RETAINS a refused batch, offering it again
+/// on the next append (`busbar-kernel-wal` `Journal::append`, `Wal::append_batch`): a card the
+/// journal answered `DurabilityLost` for is on the chain and lands with the next posting. So the
+/// live history must price every instant exactly as the history a restart rebuilds from the chain:
+/// the refused card goes on it together with the card in force put back at the same instant, and
+/// no later apply reuses the refused record's policy epoch.
+///
+/// RED arm: the refused card was left off the live history only — the rebuilt history priced
+/// `EARNED_B` at the refused card (5,000) where the live node priced it at the card in force
+/// (3,000), and the next apply journalled a second config entry under the refused one's epoch.
+#[test]
+fn a_refused_rate_apply_prices_live_exactly_as_the_rebuilt_chain_does() {
+    let dir = journal_dir("in-doubt-apply");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    let boot = chain_records(&book);
+    let refusing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::memory_buffered_to(
+        7,
+        Box::new(SwitchShipper(Arc::clone(&refusing))),
+        busbar_kernel::store::now_ms,
+    );
+    assert!(
+        matches!(
+            try_apply_at(holder, 5.0, APPLIED_B),
+            Err(CardRefused::Lost(_))
+        ),
+        "a refused card is answered as in doubt"
+    );
+    assert_eq!(
+        flat_price_at(holder, EARNED_B),
+        Some(3_000),
+        "the card in force prices the refused card's era"
+    );
+
+    // THE RETRY LANDS: the chain holds the boot card and everything the refusal retained.
+    let landed: Vec<_> = boot
+        .iter()
+        .chain(chain_records(&book).iter())
+        .cloned()
+        .collect();
+    let rebuilt = rebuilt_from(&landed);
+    assert_eq!(
+        flat_price_on(&rebuilt, EARNED_B),
+        flat_price_at(holder, EARNED_B),
+        "a restart reprices the refused card's era at a card the live node never priced under"
+    );
+    assert_eq!(
+        rebuilt.len(),
+        holder.len(),
+        "the live history and the rebuilt one agree entry for entry"
+    );
+    // THE RETRY NEVER LANDS: the boot card prices the era on the chain too.
+    assert_eq!(flat_price_on(&rebuilt_from(&boot), EARNED_B), Some(3_000));
+
+    // The store answers again: the next apply lands, behind what the refusal retained.
+    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(try_apply_at(holder, 7.0, REBOOT).is_ok());
+    let chain: Vec<_> = boot
+        .iter()
+        .chain(chain_records(&book).iter())
+        .cloned()
+        .collect();
+    let epochs = config_epochs(&chain);
+    let mut distinct = epochs.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        epochs.len(),
+        "two config entries on the chain share one policy epoch: {epochs:?}"
+    );
+    let rebuilt = rebuilt_from(&chain);
+    assert_eq!(rebuilt.len(), holder.len());
+    for at in [EARNED_A, EARNED_B, REBOOT] {
+        assert_eq!(
+            flat_price_on(&rebuilt, at),
+            flat_price_at(holder, at),
+            "live and rebuilt disagree at {at}"
+        );
+    }
+    assert_eq!(flat_price_at(holder, REBOOT), Some(7_000));
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A disk the test can break: while `failing`, every write, sync and resize on a segment fails (the
+/// segment poisons) and no fresh segment opens, so a poisoned log cannot roll.
+struct BreakableDisk {
+    failing: Arc<std::sync::atomic::AtomicBool>,
+    highest: Option<u64>,
+}
+
+struct BreakableSegment {
+    inner: busbar_kernel_wal::MemorySegment,
+    failing: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl BreakableSegment {
+    fn check(&self) -> std::io::Result<()> {
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::other("the disk is gone"));
+        }
+        Ok(())
+    }
+}
+
+impl busbar_kernel_wal::SegmentBackend for BreakableSegment {
+    fn write_all_at(&mut self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+        self.check()?;
+        self.inner.write_all_at(offset, bytes)
+    }
+    fn sync(&mut self) -> std::io::Result<()> {
+        self.check()?;
+        self.inner.sync()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read_at(offset, buf)
+    }
+    fn len(&self) -> std::io::Result<u64> {
+        self.inner.len()
+    }
+    fn set_len(&mut self, len: u64) -> std::io::Result<()> {
+        self.check()?;
+        self.inner.set_len(len)
+    }
+}
+
+impl busbar_kernel_wal::SegmentFactory for BreakableDisk {
+    fn open(&mut self, index: u64) -> std::io::Result<Box<dyn busbar_kernel_wal::SegmentBackend>> {
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::other("no segment opens on a gone disk"));
+        }
+        self.highest = Some(self.highest.map_or(index, |h| h.max(index)));
+        Ok(Box::new(BreakableSegment {
+            inner: busbar_kernel_wal::MemorySegment::new(),
+            failing: Arc::clone(&self.failing),
+        }))
+    }
+    fn highest_index(&self) -> std::io::Result<Option<u64>> {
+        Ok(self.highest)
+    }
+    // This disk keeps no segment once it has handed it to the log (every `open` is a fresh
+    // memory segment), so it holds nothing earlier a reader could reach — and the test never
+    // replays it.
+    fn existing(
+        &self,
+        _index: u64,
+    ) -> std::io::Result<Option<Box<dyn busbar_kernel_wal::SegmentBackend>>> {
+        Ok(None)
+    }
+    fn is_durable(&self) -> bool {
+        true
+    }
+    fn segment_file(&self, _index: u64) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn quarantine(
+        &mut self,
+        _index: u64,
+        _offset: u64,
+        _unix_ms: u64,
+        _bytes: &[u8],
+    ) -> std::io::Result<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
+}
+
+/// **A CARD THE LOG DROPPED OUTRIGHT IS NEVER PUBLISHED** (REV-293 #1, REV-309 #1: the truly
+/// dropped path fails closed). A poisoned segment that no fresh one can replace refuses the batch
+/// BEFORE the log retains it (`Wal::append_batch`), so that record can never land: the apply is
+/// refused as `Dropped`, nothing goes on the live history — neither the card nor a put-back — and
+/// the card in force prices on. Answering it as in doubt would publish an entry no chain will hold.
+#[test]
+fn a_rate_card_the_log_drops_outright_is_never_published() {
+    use busbar_contract::caps::{DurableWrite, KernelSeal};
+    let dir = journal_dir("dropped-apply");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let log = busbar_kernel_wal::Wal::with_parts(
+        Box::new(BreakableDisk {
+            failing: Arc::clone(&failing),
+            highest: None,
+        }),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        busbar_kernel_wal::Mode::OnDisk,
+        busbar_kernel_wal::SEGMENT_BYTES,
+        busbar_kernel::store::now_ms,
+    )
+    .expect("the log opens");
+    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::over(log, 7);
+    failing.store(true, std::sync::atomic::Ordering::SeqCst);
+    // The disk goes: the write in flight poisons the segment (retained, owed), and from here no
+    // fresh segment opens.
+    let token = Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel());
+    assert!(book
+        .lock()
+        .expect("the book")
+        .journal
+        .append(
+            &token,
+            busbar_contract::caps::StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                busbar_kernel_wal::RecordClass::Policy,
+                b"in flight".to_vec(),
+            )],
+        )
+        .is_err());
+    assert!(
+        matches!(
+            try_apply_at(holder, 5.0, APPLIED_B),
+            Err(CardRefused::Dropped(_))
+        ),
+        "a card the log could not retain is answered as dropped"
+    );
+    assert_eq!(holder.len(), 1, "nothing is published for a dropped card");
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    let owed_cards = book
+        .lock()
+        .expect("the book")
+        .journal
+        .log()
+        .owed()
+        .iter()
+        .filter_map(|r| busbar_kernel_wal::JournalRecord::decode(&r.body).ok())
+        .filter(|r| super::CardApplied::from_body(&r.body).is_some())
+        .count();
+    assert_eq!(owed_cards, 0, "and the log owes no card");
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An apply between the boot's rebuild and the book's bind has no journal to go on: it is refused,
+/// and the first apply after the bind is journalled and published.
+#[test]
+fn a_rate_apply_before_the_book_is_bound_is_refused() {
+    let dir = journal_dir("unbound-apply");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = crate::root::durability::build_with_cards(
+        &crate::root::durability::DurabilityConfig {
+            data_dir: Some(dir.clone()),
+        },
+        7,
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        Box::new(move || holder.pin()),
+        Some(holder),
+    )
+    .expect("the journal opens");
+    apply_at(holder, 5.0, APPLIED_B);
+    assert_eq!(holder.len(), 1, "no journal bound, no card published");
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    let book = Arc::new(Mutex::new(book));
+    holder.bind_journal(&book);
+    apply_at(holder, 5.0, EARNED_B);
+    assert_eq!(holder.len(), 2);
+    assert_eq!(
+        cards_on_chain(&book),
+        2,
+        "the boot card and the bound apply"
+    );
+    assert_eq!(flat_price_at(holder, REBOOT), Some(5_000));
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The engine staging the deployment at `price` with `holder` at `at`, ahead of the save.
+fn stage_at(holder: &RootHistory, price: f64, at: u64) -> Result<(), super::CardRefused> {
+    let lanes = lanes_at(price);
+    let fees = plane_fees();
+    holder.stage_rates(
+        &busbar_kernel::rate_apply::RawRates {
+            lanes: &lanes,
+            units: &[("gpt".to_string(), "search_units".to_string(), 2_000)],
+            flat_minor: 4,
+            present: true,
+            plane_fees: &fees,
+        },
+        at,
+    )
+}
+
+/// **A STAGED CARD WHOSE CONFIG CHANGE DID NOT COMMIT NEVER PRICES AN INSTANT** (MONEY-AUDIT D-6,
+/// ARCHITECT ruling 2026-10-02): staged, it is on the journal and not published; withdrawn, the
+/// card in force goes back on the chain at the staged card's own instant, so the history a restart
+/// rebuilds is the live one, entry for entry. A staged card that commits is published as
+/// journalled: no second record, dated at its staging.
+#[test]
+fn a_staged_card_whose_change_did_not_commit_never_prices_an_instant() {
+    let dir = journal_dir("staged-withdrawn");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    stage_at(holder, 5.0, APPLIED_B).expect("the journal takes the staged card");
+    assert_eq!(
+        flat_price_at(holder, EARNED_B),
+        Some(3_000),
+        "a staged card is not published"
+    );
+    holder.withdraw_staged(APPLIED_B + 1);
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    let live = holder.len();
+    assert_eq!(
+        cards_on_chain(&book),
+        3,
+        "the boot card, the staged card, its withdrawal"
+    );
+    drop(book);
+
+    let restarted = process_holder();
+    apply_at(restarted, 3.0, REBOOT);
+    let book = boot_book(restarted, &dir);
+    assert_eq!(
+        flat_price_at(restarted, EARNED_B),
+        Some(3_000),
+        "a restart priced an instant at a card whose change never committed"
+    );
+    assert_eq!(
+        restarted.len(),
+        live,
+        "the live history is the one the chain rebuilds"
+    );
+
+    stage_at(restarted, 7.0, REBOOT_CHANGED).expect("the journal takes the staged card");
+    apply_at(restarted, 7.0, REBOOT_CHANGED + 5);
+    assert_eq!(flat_price_at(restarted, REBOOT_CHANGED), Some(7_000));
+    assert_eq!(
+        cards_on_chain(&book),
+        4,
+        "the commit wrote no second record"
+    );
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The book's chain swapped for a memory-buffered one over a store the test flips (refusing at
+/// first, as `refusing` says), answering the flag.
+fn swap_to_switchable_store(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    refusing: bool,
+) -> Arc<std::sync::atomic::AtomicBool> {
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(refusing));
+    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::memory_buffered_to(
+        7,
+        Box::new(SwitchShipper(Arc::clone(&flag))),
+        busbar_kernel::store::now_ms,
+    );
+    flag
+}
+
+/// **A REFUSED STAGE IS IN DOUBT, NOT ABSENT** (REV-309 #1, MONEY-AUDIT D-6). The staged card's
+/// record is chained and the log retains it, so it lands with the next append; a restart then took
+/// it as the newest journalled config card and priced every instant from its staging at a card
+/// neither the configuration nor the live history ever held. The refused stage now withdraws as it
+/// refuses: the card in force goes back behind the staged card at the same instant, and both land
+/// live, so the live history prices as the rebuilt chain does — and the refused record's epoch is
+/// spent.
+///
+/// RED arm: `stage_at` returned the refusal with the live history untouched while the chain held
+/// the staged card — the rebuilt history priced `EARNED_B` at 5,000 against the live 3,000.
+#[test]
+fn a_refused_stage_prices_live_exactly_as_the_rebuilt_chain_does() {
+    let dir = journal_dir("refused-stage");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    let boot = chain_records(&book);
+    let refusing = swap_to_switchable_store(&book, true);
+    assert!(
+        matches!(
+            stage_at(holder, 5.0, APPLIED_B),
+            Err(super::CardRefused::Lost(_))
+        ),
+        "a refused stage refuses the config change, in doubt"
+    );
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    let landed: Vec<_> = boot
+        .iter()
+        .chain(chain_records(&book).iter())
+        .cloned()
+        .collect();
+    let rebuilt = rebuilt_from(&landed);
+    assert_eq!(
+        flat_price_on(&rebuilt, EARNED_B),
+        flat_price_at(holder, EARNED_B),
+        "a restart priced the refused stage's era at a card that was never in force"
+    );
+    assert_eq!(
+        rebuilt.len(),
+        holder.len(),
+        "the live history and the rebuilt one agree entry for entry"
+    );
+
+    // The store answers again: the next change lands behind what the refusal retained.
+    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+    stage_at(holder, 7.0, REBOOT).expect("the journal takes the staged card");
+    assert!(try_apply_at(holder, 7.0, REBOOT + 5).is_ok());
+    let chain: Vec<_> = boot
+        .iter()
+        .chain(chain_records(&book).iter())
+        .cloned()
+        .collect();
+    let epochs = config_epochs(&chain);
+    let mut distinct = epochs.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        epochs.len(),
+        "two config entries on the chain share one policy epoch: {epochs:?}"
+    );
+    let rebuilt = rebuilt_from(&chain);
+    assert_eq!(rebuilt.len(), holder.len());
+    for at in [EARNED_A, EARNED_B, REBOOT, REBOOT_CHANGED] {
+        assert_eq!(
+            flat_price_on(&rebuilt, at),
+            flat_price_at(holder, at),
+            "live and rebuilt disagree at {at}"
+        );
+    }
+    assert_eq!(flat_price_at(holder, REBOOT_CHANGED), Some(7_000));
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A WITHDRAWAL THE JOURNAL LEAVES IN DOUBT STILL LANDS BOTH ENTRIES LIVE** (REV-309 #2). The
+/// put-back is retained behind the staged card and lands with it, so the live history takes both —
+/// otherwise a restart rebuilds staged + put-back while the live node holds neither, and the entry
+/// numbers invoices cite diverge.
+///
+/// RED arm (the PR head): the refused put-back logged and returned with no in-memory append — live
+/// one entry, rebuilt three.
+#[test]
+fn a_withdrawal_the_journal_leaves_in_doubt_still_lands_both_entries_live() {
+    let dir = journal_dir("withdraw-in-doubt");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    let boot = chain_records(&book);
+    let refusing = swap_to_switchable_store(&book, false);
+    stage_at(holder, 5.0, APPLIED_B).expect("the journal takes the staged card");
+    refusing.store(true, std::sync::atomic::Ordering::SeqCst);
+    holder.withdraw_staged(APPLIED_B + 1);
+    let landed: Vec<_> = boot
+        .iter()
+        .chain(chain_records(&book).iter())
+        .cloned()
+        .collect();
+    let rebuilt = rebuilt_from(&landed);
+    assert_eq!(rebuilt.len(), holder.len(), "entry for entry");
+    assert_eq!(flat_price_on(&rebuilt, EARNED_B), Some(3_000));
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A holder that was not armed — every test holder, and a build with no root ledger — rebuilds
 /// nothing and journals nothing; a node with NO data directory keeps the boot card from instant
 /// zero exactly as the previous release did, and writes no card anywhere.
@@ -1246,7 +1831,7 @@ fn a_back_dated_correction_survives_a_restart() {
 fn applying_rates_registers_the_classes_a_unit_may_report() {
     let fees = plane_fees();
     let lanes = lanes_at(1.0);
-    process_holder().apply_rates(
+    let _ = process_holder().apply_rates(
         &busbar_kernel::rate_apply::RawRates {
             lanes: &lanes,
             units: &[(
