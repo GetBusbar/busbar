@@ -715,6 +715,70 @@ pub struct DataRoutes {
     post: Arc<crate::root::plane_node::NodeEndPost>,
     /// The card history a unit is pinned to at its door: the process's (`ROOT_CARD`).
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
+    /// The data listener's sealed guest list and each plane line's claim: what a nested unit's
+    /// claim is matched against (`unit.nest`, [`DoorNests`]).
+    guests: busbar_kernel::guest::GuestList,
+    of_line: std::collections::HashMap<(String, u32), DoorClaim>,
+    /// The generation each unit in flight was admitted against, by unit key: a nested unit is
+    /// admitted against its parent's.
+    frames: Mutex<std::collections::HashMap<u64, Arc<busbar_kernel::state::App>>>,
+}
+
+/// A unit's generation, kept in [`DataRoutes::frames`] while the unit runs.
+#[cfg(linked_axis_node)]
+struct UnitFrame<'r> {
+    routes: &'r DataRoutes,
+    unit: u64,
+}
+
+#[cfg(linked_axis_node)]
+impl Drop for UnitFrame<'_> {
+    fn drop(&mut self) {
+        self.routes.frames_lock().remove(&self.unit);
+    }
+}
+
+/// The most bytes of a nested unit's reply the parent is handed (its whole reply, buffered: THE
+/// DESIGN D6): the services' byte bound.
+#[cfg(linked_axis_node)]
+const NEST_REPLY_MAX: usize = 16 << 20;
+
+/// `unit.nest`'s refusal of a claim nothing on the data listener serves.
+pub const NEST_UNSERVED: &str = "no plane serves the nested unit's claim";
+/// `unit.nest`'s refusal when the parent is no longer in flight on the node.
+pub const NEST_PARENT_GONE: &str = "the nested unit's parent is not in flight";
+/// `unit.nest`'s FAILED answer of a child whose reply could not be read whole.
+pub const NEST_UNREAD: &str = "the nested unit's reply could not be read";
+
+/// THE ROOT'S NESTED-DISPATCH SEAM (THE DESIGN §11.12 unit row; ARCHITECT H3 "NestRoute root seam";
+/// ARCHITECT round 4 (c)): a nested unit's claim matched on the data listener's guest list, the
+/// child driven on the process's one node as a door unit of the plane that claims it, under the
+/// parent's principal and generation, its hold cell accruing against the parent's, its whole reply
+/// buffered and handed back. The kernel never learns what the child is.
+#[cfg(linked_axis_node)]
+pub struct DoorNests {
+    routes: std::sync::Weak<DataRoutes>,
+    runtime: tokio::runtime::Handle,
+}
+
+#[cfg(linked_axis_node)]
+impl busbar_kernel::host_services::NestRoute for DoorNests {
+    fn nest(
+        &self,
+        nest: busbar_kernel::host_services::Nest,
+        done: busbar_kernel::host_services::NestDone,
+    ) {
+        let Some(routes) = self.routes.upgrade() else {
+            done(busbar_kernel::host_services::NestReply::Unserved(
+                NEST_UNSERVED,
+            ));
+            return;
+        };
+        drop(
+            self.runtime
+                .spawn(async move { done(routes.nested(nest).await) }),
+        );
+    }
 }
 
 #[cfg(linked_axis_node)]
@@ -933,7 +997,6 @@ pub fn door_routes(
         ))
     });
     let instances: Vec<String> = served.planes.iter().map(|p| p.instance.clone()).collect();
-    let routes = Arc::new(DataRoutes { served, post, pin });
     // Every mount: an exact line at its one path; a subtree line at its target and its tail.
     let mut mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut of_line: HashMap<(String, u32), (RouteAuth, DoorClaim)> = HashMap::new();
@@ -984,6 +1047,26 @@ pub fn door_routes(
                 mounts.push((path.clone(), method, *auth, *door));
             }
         }
+    }
+    let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
+    let routes = Arc::new(DataRoutes {
+        served,
+        post,
+        pin,
+        guests,
+        of_line: of_line
+            .into_iter()
+            .map(|(line, (_, door))| (line, door))
+            .collect(),
+        frames: Mutex::default(),
+    });
+    // THE NESTED-DISPATCH SEAM, attached once to the kernel's services: `unit.nest` runs a child
+    // on these routes, on the runtime the routes are built on.
+    if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
+        let _attached = kernel.attach_nest(Arc::new(DoorNests {
+            routes: Arc::downgrade(&routes),
+            runtime,
+        }));
     }
     Ok(mounts
         .into_iter()
@@ -1070,10 +1153,103 @@ impl DataRoutes {
         let (caller, reply) = IngressCaller::new();
         let unit = async move {
             let caller = caller;
-            self.drive(plane, app, principal, key, open, &caller, arrival)
+            self.drive(plane, app, principal, key, open, &caller, arrival, None)
                 .await
         };
         reply.answer(Box::pin(unit)).await
+    }
+
+    fn frames_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Arc<busbar_kernel::state::App>>>
+    {
+        self.frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// ONE NESTED UNIT (`unit.nest`): its claim matched on the guest list, driven as a door unit of
+    /// the plane that claims it under the parent's principal and generation, a child of the
+    /// parent's hold cell, one level deeper; its whole reply read and handed back.
+    async fn nested(
+        self: Arc<Self>,
+        nest: busbar_kernel::host_services::Nest,
+    ) -> busbar_kernel::host_services::NestReply {
+        use busbar_kernel::guest::{Claimant, Matched};
+        use busbar_kernel::host_services::NestReply;
+        let path = nest.ask.target.split('?').next().unwrap_or_default();
+        let door = match self.guests.matched(&nest.ask.verb, path, &[]) {
+            Matched::Line(line) => match &line.claimant {
+                Claimant::Plane(instance) => self
+                    .of_line
+                    .get(&(instance.clone(), line.route.rung))
+                    .copied(),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((plane, claim)) = door else {
+            return NestReply::Unserved(NEST_UNSERVED);
+        };
+        let parent_key = busbar_contract::UnitKey::new(nest.parent);
+        let (Some(app), Some(parent)) = (
+            self.frames_lock().get(&nest.parent).cloned(),
+            self.post.node().parent(parent_key),
+        ) else {
+            return NestReply::Unserved(NEST_PARENT_GONE);
+        };
+        let principal = match nest.principal.as_deref() {
+            Some(key) => PrincipalId::new(key.id.as_str()),
+            None => PrincipalId::new(AuthPrincipal(None).actor_id()),
+        };
+        let open = self.served.planes[plane]
+            .snapshot
+            .claims
+            .get(claim as usize)
+            .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
+        let arrival = Arrival {
+            claim,
+            method: nest.ask.verb.into_bytes(),
+            target: nest.ask.target.into_bytes(),
+            fields: Vec::new(),
+            body: Arc::from(nest.ask.body),
+        };
+        let nesting = Nesting {
+            parent,
+            depth: nest.depth,
+        };
+        let key = nest.principal;
+        let (caller, reply) = IngressCaller::new();
+        let routes = Arc::clone(&self);
+        let unit = async move {
+            let caller = caller;
+            routes
+                .drive(
+                    plane,
+                    app,
+                    principal,
+                    key,
+                    open,
+                    &caller,
+                    arrival,
+                    Some(nesting),
+                )
+                .await
+        };
+        let response = reply.answer(Box::pin(unit)).await;
+        let (parts, body) = response.into_parts();
+        let Ok(body) = axum::body::to_bytes(body, NEST_REPLY_MAX).await else {
+            return NestReply::Unserved(NEST_UNREAD);
+        };
+        NestReply::Answered {
+            status: u32::from(parts.status.as_u16()),
+            fields: parts
+                .headers
+                .iter()
+                .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+                .collect(),
+            body: body.to_vec(),
+        }
     }
 
     /// THE UNIT, on the process's one node (SERVE-WIRE step 33): its kernel steps over the plane's
@@ -1081,6 +1257,9 @@ impl DataRoutes {
     /// borrowed drive; its one line posted there with what it consumed; its money settled on the
     /// money steps by its caller status (the ledger and the plane's fee rule). What it rendered for
     /// its caller, when it ended before any byte.
+    ///
+    /// A NESTED unit (`nesting`) is a child of its parent: it runs one level deeper, its door
+    /// accrues against the parent's hold cell, and the node drives it under the parent.
     #[allow(clippy::too_many_arguments)]
     async fn drive(
         &self,
@@ -1091,12 +1270,19 @@ impl DataRoutes {
         open: bool,
         caller: &IngressCaller,
         arrival: Arrival,
+        nesting: Option<Nesting>,
     ) -> Option<Rendered> {
         let served = &self.served.planes[plane];
         let node = self.post.node();
         let unit = node.mint();
         let arrived = node.arrived();
-        let steps = DoorSteps::new(
+        // The unit's generation, for a child it nests to be admitted against.
+        self.frames_lock().insert(unit.get(), Arc::clone(&app));
+        let _frame = UnitFrame {
+            routes: self,
+            unit: unit.get(),
+        };
+        let mut steps = DoorSteps::new(
             &served.facts,
             &served.pools,
             node.resolver(),
@@ -1108,8 +1294,12 @@ impl DataRoutes {
                 open,
                 arrived: arrived.secs(),
                 records: Some(Arc::clone(served.kernel.units())),
+                depth: nesting.as_ref().map_or(0, |n| n.depth),
             },
         );
+        if let Some(n) = &nesting {
+            steps = steps.under(n.parent.cell());
+        }
         let far = DoorFar {
             egress: served.egress.as_deref(),
             steps: &steps,
@@ -1130,6 +1320,7 @@ impl DataRoutes {
                 &units,
                 late,
                 (self.pin)(),
+                nesting.as_ref().map(|n| &n.parent),
             )
             .await;
         let rendered = units.take_rendered();
@@ -1141,6 +1332,13 @@ impl DataRoutes {
         served.money.settle_end(unit, status);
         rendered
     }
+}
+
+/// A nested unit's place: its parent, live on the node, and its depth.
+#[cfg(linked_axis_node)]
+struct Nesting {
+    parent: crate::root::plane_node::Parent,
+    depth: u32,
 }
 
 /// WHAT A DOOR UNIT CONSUMED, as the node's report (its one line, priced at the card pinned at its

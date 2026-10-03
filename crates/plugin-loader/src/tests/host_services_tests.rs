@@ -171,9 +171,25 @@ impl HostServices for Provider {
         Ran::Later
     }
 
-    /// Not served by the double: refused, as the loader refuses a slot with no service.
-    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
-        Ran::Now(Stored::refused(UNIMPLEMENTED))
+    /// Records `<unit> <verb> <target> <body>`; answers status 201, the body `child`, no field.
+    fn unit_nest(&self, c: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
+        let arg = [
+            format!("{unit:?} {} {} ", ask.verb, ask.target).as_bytes(),
+            &ask.body,
+        ]
+        .concat();
+        self.saw(c, "unit.nest", &arg);
+        let mut stored = Stored::ready(201);
+        stored.bytes = b"child".to_vec();
+        stored.spans = vec![ItemSpan {
+            key: Span {
+                offset: busbar_contract::abi::mechanism::check::SPAN_ABSENT,
+                len: 0,
+            },
+            value: Span { offset: 0, len: 5 },
+        }];
+        later(stored);
+        Ran::Later
     }
 
     /// Records `<unit> <kind> <record>`; answers handle 5 and the reference `ref` in span 0.
@@ -1258,5 +1274,41 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
             ("work.settle", "5 done".to_string()),
             ("work.resume", "Some(9) 5".to_string()),
         ]
+    );
+}
+
+/// `unit.nest` reaches the kernel as its caller with the unit its crossing serves, and delivers the
+/// child's whole reply into the caller's buffers.
+#[test]
+fn unit_nest_reaches_the_kernel_with_the_unit_its_crossing_serves() {
+    let d = double();
+    let mut buf = [0u8; 8];
+    let mut spans = [ItemSpan {
+        key: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+    }; 2];
+    let body = b"ask";
+    let i = svc::UnitNestIn {
+        head: head(op::UNIT_NEST, TICKET, 0, size_of::<svc::UnitNestIn>()),
+        verb: text("POST"),
+        target: text("/child"),
+        body: blob(body),
+        into: bufs(&mut buf, &mut spans),
+    };
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(11));
+        HOST_SLOTS.unit_nest.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+    };
+    assert_eq!((ret.outcome(), o.value, o.items), (Outcome::Ready, 201, 1));
+    assert_eq!(&buf[..5], b"child");
+    assert!(svc::check_unit_nest(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().as_slice(),
+        &[(
+            "double".to_string(),
+            "unit.nest",
+            b"Some(11) POST /child ask".to_vec()
+        )]
     );
 }

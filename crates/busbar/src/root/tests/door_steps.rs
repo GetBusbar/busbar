@@ -255,6 +255,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 open: false,
                 arrived: 0,
                 records: Some(std::sync::Arc::clone(&records)),
+                depth: 0,
             },
         )
     };

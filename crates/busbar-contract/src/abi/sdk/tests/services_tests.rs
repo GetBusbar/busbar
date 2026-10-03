@@ -1152,3 +1152,61 @@ fn the_work_wrappers_read_the_reference_and_the_found_record() {
         Poll::Ready(Err(ServiceError::Unserved))
     );
 }
+
+/// A host whose nested unit answers 201, body `ok`, one field `a: b`.
+extern "C" fn nests(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `UnitNestIn` naming its live buffers, and a live `out`.
+    unsafe {
+        let i = input.cast::<UnitNestIn>().read_unaligned();
+        let bytes = b"okab";
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), i.into.buf, bytes.len());
+        let span = |k: (u32, u32), v: (u32, u32)| ItemSpan {
+            key: Span {
+                offset: k.0,
+                len: k.1,
+            },
+            value: Span {
+                offset: v.0,
+                len: v.1,
+            },
+        };
+        i.into.spans.write_unaligned(span((SPAN_ABSENT, 0), (0, 2)));
+        i.into.spans.add(1).write_unaligned(span((2, 1), (3, 1)));
+        (*out).value = 201;
+        (*out).len = bytes.len() as u64;
+        (*out).items = 2;
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+#[test]
+fn the_nest_wrapper_reads_the_childs_status_body_and_fields() {
+    let t = HostSlots {
+        unit_nest: Some(nests),
+        ..table(None)
+    };
+    let handle = CompletionHandle {
+        ticket: Ticket {
+            slot: 1,
+            generation: 1,
+        },
+        seq: 0,
+        _reserved: 0,
+    };
+    let empty = ItemSpan {
+        key: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+    };
+    let (mut buf, mut spans) = ([0u8; 8], [empty; 2]);
+    let Poll::Ready(Ok(nested)) =
+        services(&t).unit_nest(handle, "POST", "/child", b"x", &mut buf, &mut spans)
+    else {
+        panic!("the nest answered");
+    };
+    assert_eq!((nested.status, nested.body), (201, b"ok".as_slice()));
+    assert_eq!(
+        nested.fields().collect::<Vec<_>>(),
+        vec![(b"a".as_slice(), b"b".as_slice())]
+    );
+}

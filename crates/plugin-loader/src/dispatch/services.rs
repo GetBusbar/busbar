@@ -17,8 +17,8 @@
 //! * **Served so far:** `clock.now`, `dest.judge`, `records.get`/`records.list`/`records.claim`,
 //!   `sign`, `trust.sight`, `trust.due`, `trust.verify`, `records.secret` (to the credential
 //!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise) and `work.open` /
-//!   `work.find` / `work.settle` / `work.resume` (for the unit the crossing serves). Every other
-//!   slot answers REFUSED ([`UNIMPLEMENTED`]).
+//!   `work.find` / `work.settle` / `work.resume` and `unit.nest` (for the unit the crossing
+//!   serves). Every other slot answers REFUSED ([`UNIMPLEMENTED`]).
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -37,7 +37,7 @@ use busbar_contract::abi::host::service::{
     check_work_record, may_pend, op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn,
     HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn,
     ServiceBufs, ServiceHead, ServiceOut, SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn,
-    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
+    UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -917,6 +917,39 @@ extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
+extern "C" fn unit_nest(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::UNIT_NEST,
+        size_of::<UnitNestIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `UnitNestIn`.
+            let i = unsafe { input.cast::<UnitNestIn>().read_unaligned() };
+            let (Some(verb), Some(target), Some(body)) = (
+                text_of(i.verb, "unit_nest.verb"),
+                text_of(i.target, "unit_nest.target"),
+                blob_of(i.body, "unit_nest.body"),
+            ) else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            let ask = NestAsk { verb, target, body };
+            // SAFETY: `into` checked above; the caller's buffers, where the whole reply goes.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.unit_nest(&caller, unit, ask, later)
+                })
+            }
+        },
+    )
+}
+
 /// The refusal of a `work.open` or `work.settle` record past `MAX_WORK_RECORD`, before anything is
 /// opened or settled.
 pub const WORK_RECORD_TOO_LONG: &str = "the work record is longer than MAX_WORK_RECORD";
@@ -1047,7 +1080,6 @@ macro_rules! unimplemented_slot {
 }
 
 unimplemented_slot! {
-    unit_nest = UNIT_NEST, UnitNestIn;
     verify_lookup = VERIFY_LOOKUP, VerifyLookupIn;
     verify_store = VERIFY_STORE, VerifyStoreIn;
     content_scan = CONTENT_SCAN, ContentScanIn;

@@ -21,12 +21,12 @@ use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
-    check_records_list, check_trust_due, check_trust_sight, check_trust_verify, check_work_find,
-    check_work_open, check_work_resume, check_work_settle, op, ClockNowIn, ClockReading,
-    DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn,
+    check_records_list, check_trust_due, check_trust_sight, check_trust_verify, check_unit_nest,
+    check_work_find, check_work_open, check_work_resume, check_work_settle, op, ClockNowIn,
+    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn,
     RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, TrustDueIn,
-    TrustSightIn, TrustVerifyIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT,
-    CLAIM_WON, DEST_RESOLVE, ENTITLED, FOUND,
+    TrustSightIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn,
+    ABSENT, CLAIM_WON, DEST_RESOLVE, ENTITLED, FOUND,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -616,6 +616,51 @@ impl Services {
         }))
     }
 
+    /// `unit.nest`: run a nested unit on whatever serves the claim `verb` `target` names, as a
+    /// child of the unit the op serves (its principal, its scope, its admission chain), with
+    /// `body`. Ready: the child's whole reply, a view into the caller's preallocated `buf` and
+    /// `spans` (at least one, plus one per head field it keeps). May pend; a short answer is
+    /// [`ServiceError::Short`]: re-call once, same handle, with the sizes it names.
+    pub fn unit_nest<'b>(
+        &self,
+        handle: CompletionHandle,
+        verb: &str,
+        target: &str,
+        body: &[u8],
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Pend<Nested<'b>> {
+        let input = UnitNestIn {
+            head: head::<UnitNestIn>(op::UNIT_NEST, handle),
+            verb: text(verb),
+            target: text(target),
+            body: blob(body, BLOB_OCTETS),
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(op::UNIT_NEST, |t| t.unit_nest, &input, check_unit_nest);
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        Poll::Ready(crossed.and_then(move |c| {
+            let out = ready(c)?;
+            let bytes = &buf[..out.len as usize];
+            let spans = &spans[..out.items as usize];
+            let (first, fields) = spans.split_first().ok_or(ServiceError::Broken)?;
+            let at = first.value.offset as usize;
+            let body = bytes
+                .get(at..at.saturating_add(first.value.len as usize))
+                .filter(|_| first.value.offset != SPAN_ABSENT)
+                .ok_or(ServiceError::Broken)?;
+            Ok(Nested {
+                status: out.value,
+                body,
+                bytes,
+                fields,
+            })
+        }))
+    }
+
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
     /// outcome, the `out` and how it filled the caller's buffers.
     fn cross<I>(
@@ -703,6 +748,33 @@ const fn blob(b: &[u8], fmt: u32) -> Blob {
         len: b.len(),
         fmt,
         flags: 0,
+    }
+}
+
+/// What `unit.nest` answered: the child's status, body and head fields, views into the caller's
+/// buffers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Nested<'b> {
+    /// The child's status.
+    pub status: u64,
+    /// The child's body.
+    pub body: &'b [u8],
+    bytes: &'b [u8],
+    fields: &'b [ItemSpan],
+}
+
+impl<'b> Nested<'b> {
+    /// The child's head fields, name and value, in its order.
+    pub fn fields(&self) -> impl Iterator<Item = (&'b [u8], &'b [u8])> + 'b {
+        let bytes = self.bytes;
+        self.fields.iter().filter_map(move |s| {
+            let range =
+                |o: u32, n: u32| bytes.get(o as usize..(o as usize).checked_add(n as usize)?);
+            Some((
+                range(s.key.offset, s.key.len)?,
+                range(s.value.offset, s.value.len)?,
+            ))
+        })
     }
 }
 

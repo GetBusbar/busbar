@@ -128,6 +128,64 @@ impl std::fmt::Display for DestRefusal {
 
 impl std::error::Error for DestRefusal {}
 
+/// THE ROOT'S NESTED-DISPATCH SEAM (THE DESIGN §11.12 unit row; ARCHITECT H3 "NestRoute root
+/// seam"): `unit.nest` hands the composition root the child to run, and the root runs it on
+/// whatever serves the claim it names, as a child of `parent` under its principal, its scope and its
+/// admission chain. The kernel never learns what the child is.
+pub trait NestRoute: Send + Sync {
+    /// Run `nest`, and answer `done` once, from any thread, with the child's whole reply.
+    fn nest(&self, nest: Nest, done: NestDone);
+}
+
+/// One nested unit, as the kernel hands it to the root.
+#[derive(Debug, Clone)]
+pub struct Nest {
+    /// The parent unit, by the key the kernel minted for it.
+    pub parent: u64,
+    /// The child's depth: one more than its parent's.
+    pub depth: u32,
+    /// The parent's verified principal (`None` = ungoverned), the child's own.
+    pub principal: Option<Arc<busbar_contract::records::VirtualKey>>,
+    /// The claim and body.
+    pub ask: NestAsk,
+}
+
+/// What a nested unit answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NestReply {
+    /// The child ran (or was refused) and this is its whole reply: its status, head fields and
+    /// body.
+    Answered {
+        /// The status.
+        status: u32,
+        /// The head fields, name and value.
+        fields: Vec<(Vec<u8>, Vec<u8>)>,
+        /// The body.
+        body: Vec<u8>,
+    },
+    /// Nothing serves the claim, or the child could not be run; REFUSED with this reason.
+    Unserved(&'static str),
+}
+
+/// Where a nested unit's reply goes, once.
+pub type NestDone = Box<dyn FnOnce(NestReply) + Send>;
+
+/// The deepest a nested unit may be (a unit a caller sent is depth 0).
+pub const NEST_DEPTH_MAX: u32 = 3;
+/// How many nested units may run at once on the node.
+pub const NEST_CONCURRENCY: usize = 256;
+
+/// The refusal of `unit.nest` from a crossing that serves no unit in flight.
+pub const NEST_NO_UNIT: &str = "the crossing serves no unit in flight";
+/// The refusal of `unit.nest` past [`NEST_DEPTH_MAX`].
+pub const NEST_TOO_DEEP: &str = "the nested unit would be deeper than the nesting cap";
+/// The refusal of `unit.nest` when [`NEST_CONCURRENCY`] nested units already run.
+pub const NEST_FULL: &str = "the node runs as many nested units as it holds";
+/// The refusal of `unit.nest` on services the root installed no nested-dispatch seam on.
+pub const NO_NEST_ROUTE: &str = "no nested dispatch is installed";
+/// The FAILED answer of a nested unit whose reply was dropped unanswered.
+pub const NEST_DROPPED: &str = "the nested unit ended with no reply";
+
 /// What `dest.judge` answers on services built without a destination judge.
 pub const NO_DEST_JUDGE: &str = "no destination judge is installed";
 
@@ -223,6 +281,68 @@ impl Drop for Unrun {
             batcher.abandon();
         }
     }
+}
+
+/// A nested unit's owed answer and its permit. Answered or dropped, the permit goes back once;
+/// dropped unanswered it answers FAILED, so the parent is never left waiting.
+struct OwedNest {
+    later: Option<Later>,
+    pool: Arc<crate::pump::NestedPool>,
+    permit: Option<crate::pump::NestedPermit>,
+}
+
+impl OwedNest {
+    fn answer(mut self, reply: NestReply) {
+        self.release();
+        if let Some(later) = self.later.take() {
+            later(nested_answer(reply));
+        }
+    }
+
+    fn release(&mut self) {
+        if let Some(p) = self.permit.take() {
+            self.pool.leave(p);
+        }
+    }
+}
+
+impl Drop for OwedNest {
+    fn drop(&mut self) {
+        self.release();
+        if let Some(later) = self.later.take() {
+            later(failed(NEST_DROPPED));
+        }
+    }
+}
+
+/// `unit.nest`'s stored answer: `value` = the status; span `0`'s value the body (its key absent),
+/// each span after it one head field.
+fn nested_answer(reply: NestReply) -> Stored {
+    let (status, fields, body) = match reply {
+        NestReply::Answered {
+            status,
+            fields,
+            body,
+        } => (status, fields, body),
+        NestReply::Unserved(why) => return Stored::refused(why),
+    };
+    let mut s = Stored::ready(u64::from(status));
+    let len = body.len();
+    s.bytes = body;
+    s.spans.push(ItemSpan {
+        key: absent_span(),
+        ..span(0, 0, 0, len)
+    });
+    // At most as many fields as one answer carries spans, beside the body's.
+    let most = usize::try_from(MAX_SPANS).unwrap_or(usize::MAX) - 1;
+    for (name, value) in fields.into_iter().take(most) {
+        let at = s.bytes.len();
+        s.bytes.extend_from_slice(&name);
+        s.bytes.extend_from_slice(&value);
+        s.spans
+            .push(span(at, name.len(), at + name.len(), value.len()));
+    }
+    s
 }
 
 /// A claim's owed answer. Dropped unanswered (the pool refused its job) it answers Taken.
@@ -367,6 +487,9 @@ pub struct KernelServices {
     /// The work book behind `work.*`, and its bounds.
     work: Arc<WorkBook>,
     work_bounds: WorkBounds,
+    /// The root's nested-dispatch seam, attached once, and the permits nested units run under.
+    nest: OnceLock<Arc<dyn NestRoute>>,
+    nested: Arc<crate::pump::NestedPool>,
 }
 
 /// The durable demotion record, and the instance its unprefixed rows belong to.
@@ -409,7 +532,24 @@ impl KernelServices {
             demotions: OnceLock::new(),
             work: Arc::default(),
             work_bounds: WorkBounds::default(),
+            nest: OnceLock::new(),
+            nested: Arc::new(crate::pump::NestedPool::new(
+                NEST_CONCURRENCY,
+                NEST_DEPTH_MAX as usize + 1,
+            )),
         }
+    }
+
+    /// THE NESTED-DISPATCH SEAM, attached late by the root once its door routes exist (see
+    /// [`Self::attach_pool`]): once; a second attach is refused (`false`) and changes nothing.
+    pub fn attach_nest(&self, route: Arc<dyn NestRoute>) -> bool {
+        self.nest.set(route).is_ok()
+    }
+
+    /// The permits nested units run under (how many are out is `size - available`).
+    #[must_use]
+    pub fn nested(&self) -> &Arc<crate::pump::NestedPool> {
+        &self.nested
     }
 
     /// Bound every instance's work at `bounds` (the legacy registries' bounds until then).
@@ -1201,8 +1341,41 @@ impl HostServices for KernelServices {
         }
     }
 
-    fn unit_nest(&self, _caller: &Caller, _unit: Option<u64>, _ask: NestAsk, _later: Later) -> Ran {
-        Ran::Now(Stored::refused(busbar_contract::services::UNSERVED))
+    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
+        if self.facts(caller).is_none() {
+            return Ran::Now(Stored::refused(NOT_ADMITTED));
+        }
+        // THE PARENT: the unit the calling crossing serves, while it is in flight. Its record is
+        // the child's principal and the depth the cap reads.
+        let Some((parent, record)) = unit.and_then(|u| Some((u, self.units.get(u)?))) else {
+            return Ran::Now(Stored::refused(NEST_NO_UNIT));
+        };
+        let Some(route) = self.nest.get() else {
+            return Ran::Now(Stored::refused(NO_NEST_ROUTE));
+        };
+        let depth = record.depth.saturating_add(1);
+        let permit = match self.nested.enter(depth as usize) {
+            Ok(p) => p,
+            Err(busbar_contract::caps::ReasonCode::InFlightCap) => {
+                return Ran::Now(Stored::refused(NEST_FULL))
+            }
+            Err(_) => return Ran::Now(Stored::refused(NEST_TOO_DEEP)),
+        };
+        let owed = OwedNest {
+            later: Some(later),
+            pool: Arc::clone(&self.nested),
+            permit: Some(permit),
+        };
+        route.nest(
+            Nest {
+                parent,
+                depth,
+                principal: record.principal.clone(),
+                ask,
+            },
+            Box::new(move |reply| owed.answer(reply)),
+        );
+        Ran::Later
     }
 
     fn work_open(
@@ -1456,3 +1629,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/trust_verify_tests.rs"]
 mod trust_verify_tests;
+
+#[cfg(test)]
+#[path = "tests/host_nest_tests.rs"]
+mod host_nest_tests;

@@ -357,6 +357,10 @@ pub struct DoorSteps<'s> {
     /// The host's unit records: a host service the plane calls inside the unit's crossings
     /// (`entitlement.check`) answers for the principal recorded here.
     records: Option<Arc<busbar_kernel::host_units::UnitRecords>>,
+    /// How deep the unit is nested.
+    depth: u32,
+    /// A nested unit's parent's hold cell: its door accrues against the parent's admission.
+    parent: Option<&'s busbar_contract::caps::HoldCell>,
     unit: Mutex<DoorUnit>,
 }
 
@@ -382,6 +386,8 @@ pub struct DoorCaller {
     pub arrived: u64,
     /// The host's unit records the unit's principal is written on while it runs.
     pub records: Option<Arc<busbar_kernel::host_units::UnitRecords>>,
+    /// How deep the unit is nested (`0` for a unit a caller sent), written on its record.
+    pub depth: u32,
 }
 
 impl<'s> DoorSteps<'s> {
@@ -408,8 +414,20 @@ impl<'s> DoorSteps<'s> {
             open: caller.open,
             arrived: caller.arrived,
             records: caller.records,
+            depth: caller.depth,
+            parent: None,
             unit: Mutex::new(DoorUnit::default()),
         }
+    }
+
+    /// The same steps for a NESTED unit (`unit.nest`, THE DESIGN §11.12 unit row): a child of the
+    /// unit whose hold cell is `parent`, so its door accrues against the parent's admission (an
+    /// accrual of nothing at admission; its reported units are its own line, at its end, under the
+    /// same principal) rather than opening a reservation of its own.
+    #[must_use]
+    pub fn under(mut self, parent: &'s busbar_contract::caps::HoldCell) -> Self {
+        self.parent = Some(parent);
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, DoorUnit> {
@@ -569,7 +587,7 @@ impl Units for DoorSteps<'_> {
                         ctx.key.get(),
                         busbar_kernel::host_units::UnitRecord {
                             principal: self.key.clone(),
-                            depth: 0,
+                            depth: self.depth,
                         },
                     );
                     self.lock().recorded = Some(ctx.key.get());
@@ -648,7 +666,18 @@ impl Units for DoorSteps<'_> {
             return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
         }
         // The door reserves nothing: the unit's hold opens at zero and the money steps ledger what
-        // the plane reported, at its end.
+        // the plane reported, at its end. A NESTED unit accrues against its parent's admission
+        // instead (zero at admission, ARCHITECT H3): one admission chain, its posting into the
+        // parent's hold. A parent that already exited, or any refusal of the accrual, leaves the
+        // child its own zero hold: it posts on its own.
+        if let Some(cell) = self.parent {
+            if let Ok(accrual) = cell.accrue_child(principal, 0, admit) {
+                return SeatVerdict::proceed(
+                    token,
+                    busbar_contract::caps::Admission::Accrual(accrual),
+                );
+            }
+        }
         SeatVerdict::proceed(
             token,
             busbar_kernel::door::admitted_at_zero(admit, principal.clone()),
