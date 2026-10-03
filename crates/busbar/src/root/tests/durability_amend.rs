@@ -52,7 +52,7 @@ fn priced(c: &ClassCounts) -> u128 {
     nanos_of_exact(tally.exact().expect("in range")).expect("in range")
 }
 
-/// The node's boot, as `compose_boot_book` and `open_boot_book` run it: build over the data
+/// The node's boot, as `root::boot::compose_book` and `root::boot::book` run it: build over the data
 /// directory, rebuild the node amendment journal, share the book, bind it.
 fn boot(dir: &std::path::Path) -> Arc<Mutex<Durability>> {
     let mut durability = build_for_node(
