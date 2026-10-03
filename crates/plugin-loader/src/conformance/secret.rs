@@ -6,7 +6,7 @@
 //! ```json
 //! { "settings": <the settings it opens over>,
 //!   "secret": {
-//!     "bad_settings": ["<settings it must refuse: validate, open and refresh FAIL>", ...],
+//!     "bad_settings": ["<settings `validate` must refuse (FAILED, naming why)>", ...],
 //!     "known":     { "resolve": <resolve settings>, "material": "<what it resolves to>" },
 //!     "unknown":   <resolve settings naming a secret it does not hold: FAILED, NOT_FOUND>,
 //!     "malformed": <resolve settings that are not a reference: FAILED, INVALID> } }
@@ -102,8 +102,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     r.line("validate", 1, || called(&validate(&p, &settings)));
     r.line("resolve unopened", 1, || resolve(&p, &known, &material).0);
-    r.line("open bad", 1, || called(&open(&p, &bad[0])));
     r.line("open", 1, || called(&open(&p, &settings)));
+    r.line("open again", 1, || called(&open(&p, &settings)));
     ready_step(&mut r, s, &p, &d);
     let first = r.step("resolve known", 1, || resolve(&p, &known, &material));
     let second = r.step("resolve known again", 1, || resolve(&p, &known, &material));
@@ -138,7 +138,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: a known name
 /// is READY with its material, leased and flagged secret; an unknown one is NOT_FOUND, a malformed
-/// one INVALID, neither leased; a refused `validate` names why; a closed instance serves nothing.
+/// one INVALID, neither leased; a refused `validate` names why; an instance opens once; a closed
+/// instance serves nothing. (A `refresh` over the bad settings is recorded, not judged: a plugin
+/// whose settings carry nothing it reads may accept them.)
 fn contract(fold: &Fold) {
     let at = |label: &str| {
         fold.iter()
@@ -192,7 +194,11 @@ fn contract(fold: &Fold) {
         refused.starts_with("Failed lease=false ") && refused.len() > "Failed lease=false ".len(),
         "a refused validate names why: {refused}"
     );
-    assert!(at("open bad").starts_with("Failed "), "{}", at("open bad"));
+    assert!(
+        at("open again").starts_with("Refused "),
+        "one open per instance: {}",
+        at("open again")
+    );
     assert!(
         at("release again").starts_with("Refused "),
         "{}",
