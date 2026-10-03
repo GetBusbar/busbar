@@ -49,10 +49,10 @@ fn ws_door() -> Arc<dyn FramerDoor> {
 
 /// Offer one whole message on `stream`, waiting for the socket to take what the write buffer
 /// cannot hold yet.
-async fn send(conn: &mut Connection, stream: u64, bytes: &[u8]) -> Result<(), Failure> {
+async fn send(conn: &mut Connection, stream: u64, bytes: &[u8], text: bool) -> Result<(), Failure> {
     let mut off = 0;
     poll_fn(|cx| loop {
-        let took = match conn.emit(stream, &bytes[off..], true, cx) {
+        let took = match conn.emit(stream, &bytes[off..], true, text, cx) {
             Ok(n) => n,
             Err(f) => return Poll::Ready(Err(f)),
         };
@@ -70,17 +70,22 @@ async fn send(conn: &mut Connection, stream: u64, bytes: &[u8]) -> Result<(), Fa
 /// Echo every message on `conn`, whole, on the stream it came on.
 async fn echo(mut conn: Connection) {
     let mut message: Vec<u8> = Vec::new();
+    // A message keeps the type its first frame carried (text or binary); the echo answers in kind.
+    let mut text = false;
     while let Ok(Some(piece)) = poll_fn(|cx| conn.poll_piece(cx)).await {
         // A field block (a head) is the handshake's, not a message.
         if piece.fields {
             continue;
+        }
+        if message.is_empty() {
+            text = piece.text;
         }
         message.extend_from_slice(&piece.bytes);
         if !piece.end_of_frame {
             continue;
         }
         let whole = std::mem::take(&mut message);
-        if send(&mut conn, piece.stream, &whole).await.is_err() {
+        if send(&mut conn, piece.stream, &whole, text).await.is_err() {
             break;
         }
     }
