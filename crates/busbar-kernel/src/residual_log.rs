@@ -551,6 +551,8 @@ pub fn emit(
 /// BOOT: register the residual stream (the host attaches the governance store as its sink) and
 /// REPLAY it from the store, so every principal's chain continues where the last process stopped.
 /// With no governance store the stream still registers and keeps its positions in RAM.
+/// The replay summary logs at `debug!`: an LLM-only boot on a durable store prints no line 1.5.5
+/// never printed (the same neutrality the root boot applies to its seal line).
 pub(crate) fn register_and_restore(app: &Arc<crate::state::App>) {
     register_residual_stream_as(KIND_ID_RESIDUAL, app);
     let Some(gov) = app.governance.as_ref() else {
@@ -559,7 +561,7 @@ pub(crate) fn register_and_restore(app: &Arc<crate::state::App>) {
     let store = crate::plane::store::PlaneStoreView::narrow(gov.store());
     crate::plane_host::with_dispatch_scope(app, |host, _| {
         match RESIDUALS.restore_from_store(host, store.as_ref()) {
-            Ok(r) if r.records > 0 || r.unreadable > 0 => tracing::info!(
+            Ok(r) if r.records > 0 || r.unreadable > 0 => tracing::debug!(
                 principals = r.principals,
                 records = r.records,
                 unreadable = r.unreadable,
