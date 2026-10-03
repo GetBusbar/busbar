@@ -226,7 +226,7 @@ pub(crate) async fn dispatch_degraded(
     op: Op,
     req_content_type: &str,
     usage_sink: &mut Option<UsageSink>,
-    client_fwd: &[(axum::http::HeaderName, axum::http::HeaderValue)],
+    client_fwd: &crate::engine::select::ClientFwd,
 ) -> Result<Response, ()> {
     let hop_v: Option<Value> = match busbar_plane_llm::codec::json::parse(body) {
         Ok(v) => Some(v),

@@ -59,6 +59,8 @@ pub struct WalkArrival {
     pub caller_token: Option<crate::engine::CallerCredential>,
     /// The request headers, as they arrived.
     pub headers: HeaderMap,
+    /// The request URL's query, as it arrived (`None` when the URL carried none).
+    pub query: Option<String>,
     /// The request body, as it arrived.
     pub body: Bytes,
     /// WHAT THE URL SAID, on the two surfaces whose model rides the path rather than the body.
@@ -168,6 +170,7 @@ pub struct Walk {
     operation: busbar_contract::operation::OpVerb,
     caller_token: Option<crate::engine::CallerCredential>,
     headers: HeaderMap,
+    query: Option<String>,
     body: Bytes,
     path: Option<crate::arrival::PathModelFacts>,
     carry: Mutex<Carry>,
@@ -198,6 +201,7 @@ impl Walk {
             operation,
             caller_token,
             headers,
+            query,
             body,
             path,
         } = arrival;
@@ -210,6 +214,7 @@ impl Walk {
             operation,
             caller_token,
             headers,
+            query,
             body,
             path,
             carry: Mutex::new(Carry::default()),
@@ -644,6 +649,7 @@ impl Walk {
             op,
             destination,
             headers: &self.headers,
+            query: self.query.as_deref(),
             body,
             parsed,
             caller_token: self.caller_token.as_ref(),

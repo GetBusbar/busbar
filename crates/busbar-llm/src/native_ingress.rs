@@ -205,9 +205,14 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
             // Busbar is invisible to upstreams: every client header but the per-connection mechanics,
             // the ones the dialects govern and busbar's own (the pool's affinity header), forwarded
             // later by a same-dialect egress only.
-            busbar_kernel::proxy::collect_client_headers(headers, |n| {
-                crate::engine::governed(n) || n.eq_ignore_ascii_case(affinity_header)
-            }),
+            crate::engine::ClientFwd {
+                headers: busbar_kernel::proxy::collect_client_headers(headers, |n| {
+                    crate::engine::governed(n) || n.eq_ignore_ascii_case(affinity_header)
+                }),
+                // This gauntlet entry is handed no URL (its callers resolved the operation already);
+                // the loop's route step carries the caller's query.
+                query: None,
+            },
         )
         .await;
 

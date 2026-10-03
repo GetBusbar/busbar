@@ -157,7 +157,7 @@ pub(crate) async fn handle_queue(
                     op,
                     req_content_type,
                     &mut usage_sink,
-                    request_ctx.forwarded_client_headers.as_slice(),
+                    &request_ctx.forwarded_client,
                 )
                 .await
                 {

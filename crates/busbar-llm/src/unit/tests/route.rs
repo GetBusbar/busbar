@@ -229,7 +229,7 @@ async fn leg_live(proto: &'static str, fixture: Fixture) -> Observed {
         proto,
         crate::test_support::CHAT,
         None,
-        Vec::new(),
+        Default::default(),
     )
     .await;
     let drawn = host.next_request_id() - before - 1;
@@ -260,6 +260,7 @@ async fn leg_unit(proto: &'static str, fixture: Fixture) -> Observed {
             op: crate::test_support::CHAT,
             destination: "p",
             headers: &headers,
+            query: None,
             body: body.clone(),
             parsed: LazyBody::parse(&body).ok(),
             caller_token: None,
@@ -360,6 +361,7 @@ async fn route_step_pick_order_matches_the_live_forward() {
                         op: crate::test_support::CHAT,
                         destination: "p",
                         headers: &headers,
+                        query: None,
                         body: body.clone(),
                         parsed: LazyBody::parse(&body).ok(),
                         caller_token: None,
@@ -390,7 +392,7 @@ async fn route_step_pick_order_matches_the_live_forward() {
                     proto,
                     crate::test_support::CHAT,
                     None,
-                    Vec::new(),
+                    Default::default(),
                 )
                 .await
             };
@@ -445,6 +447,7 @@ async fn route_step_refuses_an_unresolved_destination_without_a_terminal() {
             op: crate::test_support::CHAT,
             destination: "nope",
             headers: &headers,
+            query: None,
             body: body.clone(),
             parsed: LazyBody::parse(&body).ok(),
             caller_token: None,
@@ -528,6 +531,7 @@ async fn route_reports_the_taps_figures_for_an_answer_that_finished() {
             op: crate::test_support::CHAT,
             destination: "p",
             headers: &headers,
+            query: None,
             body: body.clone(),
             parsed: LazyBody::parse(&body).ok(),
             caller_token: None,
@@ -643,6 +647,7 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
                     op: crate::test_support::CHAT,
                     destination,
                     headers: &headers,
+                    query: None,
                     body: body.clone(),
                     parsed: LazyBody::parse(&body).ok(),
                     caller_token: None,
@@ -670,7 +675,7 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
                         proto,
                         crate::test_support::CHAT,
                         None,
-                        Vec::new(),
+                        Default::default(),
                     )
                     .await
                 }
@@ -796,6 +801,7 @@ async fn completion_tap_carries_response_tokens_out_when_declared() {
                     op: crate::test_support::CHAT,
                     destination: "p",
                     headers: &headers,
+                    query: None,
                     body: body.clone(),
                     parsed: LazyBody::parse(&body).ok(),
                     caller_token: None,
@@ -822,7 +828,7 @@ async fn completion_tap_carries_response_tokens_out_when_declared() {
                 ingress,
                 crate::test_support::CHAT,
                 None,
-                Vec::new(),
+                Default::default(),
             )
             .await
         };
