@@ -55,7 +55,9 @@
 //!   with every gate green. The row also holds the census floor, the dead-kind rule, the
 //!   `qa/construction.toml [gate.plugin_kinds]` cross-check, the [`OFF_TREE_MANIFESTS`] expiry and
 //!   the LEGACY RATCHET.
-//! * `kind-isolation:matrix` — the rows above hold the line for the WIRES, and none of them looked
+//! * `kind-isolation:matrix` — REPORT-ONLY (owner 2026-10-03: the matrix is a measured to-do list,
+//!   not a gate; Cargo.toml excluded): measured and printed on every run, never a FAIL, on both
+//!   registrations. The rows above hold the line for the WIRES, and none of them looked
 //!   at `crates/busbar`, the COMPOSITION ROOT, where the tree hand-wires one file per plane and
 //!   where a plane-named accept loop was landed on a sibling branch, all of it green because
 //!   nothing counted it. This row counts, for EVERY kind and EVERY crate, how many times that crate
@@ -5888,6 +5890,11 @@ pub struct KindIsolationGate {
     ship: bool,
     /// `--write`: re-pin the registry's exact counts DOWNWARD, and refuse if any would rise.
     write: bool,
+    /// The matrix row's findings are FAIL rows. Only the self-test's subject sets it
+    /// ([`Self::debt_free`]): `kind-isolation:matrix` is report-only on every registration (owner
+    /// 2026-10-03) and a planted case can only observe a red, so the proofs of the counting and of
+    /// the ledger comparison run the same rule with its findings gating.
+    matrix_gating: bool,
     /// THE SELF-TEST'S SUBJECT: this same gate with the unplanted tree's findings out of view,
     /// measured once, on the first `selftest` that asks. See [`debt_free`] — it is how a red case
     /// over a row that carries owned debt stays a proof rather than PROOF IMPOSSIBLE (item 89).
@@ -5900,6 +5907,7 @@ impl KindIsolationGate {
         KindIsolationGate {
             ship: false,
             write: false,
+            matrix_gating: false,
             twin: std::sync::OnceLock::new(),
         }
     }
@@ -5910,6 +5918,7 @@ impl KindIsolationGate {
         KindIsolationGate {
             ship: false,
             write: true,
+            matrix_gating: false,
             twin: std::sync::OnceLock::new(),
         }
     }
@@ -5919,6 +5928,7 @@ impl KindIsolationGate {
         KindIsolationGate {
             ship: true,
             write: false,
+            matrix_gating: false,
             twin: std::sync::OnceLock::new(),
         }
     }
@@ -5932,6 +5942,7 @@ impl KindIsolationGate {
                 KindIsolationGate {
                     ship: self.ship,
                     write: self.write,
+                    matrix_gating: true,
                     twin: std::sync::OnceLock::new(),
                 },
                 cx,
@@ -6057,7 +6068,7 @@ impl Gate for KindIsolationGate {
             rule_steps(cx, &crates),
             rule_wires(cx, &crates),
             truths::rule_truths(cx, &kind_names(), &crates),
-            matrix::rule_matrix(cx, &crates, &reg, self.ship),
+            matrix::rule_matrix(cx, &crates, &reg, self.ship, self.matrix_gating),
         ];
         // THE SOURCE INDEX IS BUILT FOR BOTH REGISTRATIONS NOW. It was the ship twin's private
         // input, because the two rows that read it are ship criteria — but `:faces` is not a ship
@@ -8885,7 +8896,7 @@ impl Gate for KindIsolationGate {
 
         // THE MATRIX ROW'S OWN CASES, owed by BOTH registrations: the per-push gate holds the
         // ceilings and the ship twin holds zero, and neither is a claim the other proves.
-        matrix::selftest(cx, subject, self.ship, &mut report);
+        matrix::selftest(cx, subject, self, self.ship, &mut report);
 
         if !self.ship {
             // A LISTED DRAIN EDGE IS GREEN. The owner's ruling, as the per-push gate reads it:

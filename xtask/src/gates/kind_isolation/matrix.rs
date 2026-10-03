@@ -11,6 +11,24 @@
 //! counted it. A gate that measures the wires and not the place the wires are joined is a gate that
 //! reports the tidy half of the tree.
 //!
+//! ## REPORT-ONLY (owner 2026-10-03: the matrix is a measured to-do list, not a gate; Cargo.toml
+//! ## excluded)
+//!
+//! This row is MEASURED on every run and its number is printed (the total and the ten heaviest
+//! cells with their heaviest file in the row's detail; every cell and every `file:line` in
+//! `--report`), but it NEVER FAILS the gate: not on the per-push registration, not on the ship
+//! twin, and not as a "figure rose" in the turnstile (a PASS row carries no figure to compare).
+//! The ceiling comparison below is still evaluated, and its findings are carried in the detail as
+//! REPORT-ONLY text; they are not a verdict. Every other kind-isolation row (`:deps`, `:test-deps`,
+//! `:closure`, `:vocab`, `:registry`, the edge census, ship-edge, unlisted-dep-edge, the
+//! disagreement-free dead-kind rules) gates exactly as before. The one FAIL this row still emits
+//! is a scan that could not run, because a refusal is not a reading.
+//!
+//! The self-test proves the COUNTING without a gate: its subject runs this same rule with the
+//! findings as FAIL rows ([`rule_matrix`]'s `gating`), which is the one observable a planted case
+//! has, and one case reads the registered gate and asserts that a planted name RAISES the reported
+//! total while the row stays PASS.
+//!
 //! ## THE MATRIX
 //!
 //! For EVERY kind `K` in the kind table and EVERY crate `C` under `crates/`, this row counts how
@@ -2112,17 +2130,123 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
     offenders
 }
 
-pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, ship: bool) -> Row {
+/// THE MATRIX ROW, AS THE GATE EMITS IT: a measured to-do list, not a gate (owner 2026-10-03).
+///
+/// The row is measured on every run and its number is in the row's detail, but it never fails: a
+/// finding the ledger comparison raises is carried in the detail as `REPORT-ONLY` text and the row
+/// is PASS. The only FAIL this row still emits is a scan that could not run (a refusal is not a
+/// reading). `gating` is the self-test subject's setting: the proofs of the counting and of the
+/// ledger comparison run the same rule with its findings as FAIL, because a red is the one
+/// observable a planted case has. No production registration sets it.
+pub fn rule_matrix(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &super::KindRegistry,
+    ship: bool,
+    gating: bool,
+) -> Row {
+    let (row, reading) = measured_row(cx, crates, reg, ship);
+    match reading {
+        Some(r) if !gating => {
+            let verdict = if row.status == crate::ledger::Status::Fail {
+                "findings"
+            } else {
+                "no findings"
+            };
+            Row::pass(
+                ROW_MATRIX,
+                "report-only: the matrix is a measured to-do list, not a gate (owner 2026-10-03)",
+                format!(
+                    "{MEASURED_PREFIX}{} hit(s) over {} cell(s). Top cells: {}. REPORT-ONLY, \
+                     {verdict} (not evaluated as a gate; the full list is `--report`): {}",
+                    r.total,
+                    r.cells,
+                    r.top,
+                    row.detail.chars().take(1200).collect::<String>()
+                ),
+            )
+        }
+        _ => row,
+    }
+}
+
+/// What the report-only detail opens with, so a caller (and the self-test) reads the number back.
+const MEASURED_PREFIX: &str = "MEASURED ";
+
+/// The matrix total in a report-only row's detail, `None` for any other row.
+fn measured_total(row: &Row) -> Option<usize> {
+    row.detail
+        .strip_prefix(MEASURED_PREFIX)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The numbers a report-only row carries.
+struct Reading {
+    total: usize,
+    cells: usize,
+    /// The ten heaviest cells, `crate x kind = n (heaviest file)`.
+    top: String,
+}
+
+fn reading_of(matrix: &Matrix, total: usize) -> Reading {
+    let mut cells: Vec<(&(String, &'static str), &Cell)> = matrix.iter().collect();
+    cells.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(a.0.cmp(b.0)));
+    let top = cells
+        .iter()
+        .take(10)
+        .map(|((krate, kind), c)| {
+            let mut per_file: BTreeMap<&str, usize> = BTreeMap::new();
+            for h in &c.hits {
+                let mut f = h.split('\t');
+                let Some(at) = f.nth(1).and_then(|p| p.rsplit_once(':').map(|(f, _)| f)) else {
+                    continue;
+                };
+                let n = f
+                    .next()
+                    .and_then(|n| n.trim_end_matches('x').parse::<usize>().ok())
+                    .unwrap_or(1);
+                *per_file.entry(at).or_default() += n;
+            }
+            let heaviest = per_file
+                .into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+                .map(|(f, n)| format!(" ({f}: {n})"))
+                .unwrap_or_default();
+            format!("{krate} \u{d7} {kind} = {}{heaviest}", c.count)
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    Reading {
+        total,
+        cells: matrix.len(),
+        top,
+    }
+}
+
+/// The measurement and the ledger comparison, with the figures a report-only row carries (`None`
+/// for a scan that could not run, which stays a FAIL).
+fn measured_row(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &super::KindRegistry,
+    ship: bool,
+) -> (Row, Option<Reading>) {
     let (matrix, scanned, skipped) = match measure(cx, crates) {
         Ok(m) => m,
         Err(e) => {
-            return Row::fail(
-                ROW_MATRIX,
-                "the kind × crate scan could not run",
-                format!(
+            return (
+                Row::fail(
+                    ROW_MATRIX,
+                    "the kind × crate scan could not run",
+                    format!(
                     "{e} — a scan of no files names no coupling, which is indistinguishable from a \
                      tree that has none."
                 ),
+                ),
+                None,
             )
         }
     };
@@ -2133,10 +2257,13 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let (files, _) = match scan_set(cx) {
         Ok(f) => f,
         Err(e) => {
-            return Row::fail(
-                ROW_MATRIX,
-                "the kind × crate scan could not run",
-                format!("{e} — the instance axes read the same scan set, and it did not read."),
+            return (
+                Row::fail(
+                    ROW_MATRIX,
+                    "the kind × crate scan could not run",
+                    format!("{e} — the instance axes read the same scan set, and it did not read."),
+                ),
+                None,
             )
         }
     };
@@ -2149,12 +2276,15 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let vendor = match vendors::offenders(cx, crates, &files) {
         Ok(v) => v,
         Err(e) => {
-            return Row::fail(
-                ROW_MATRIX,
-                "the kind × crate scan could not run",
-                format!(
+            return (
+                Row::fail(
+                    ROW_MATRIX,
+                    "the kind × crate scan could not run",
+                    format!(
                     "{e} — the vendor-name scan did not run, and an unrun scan is not a clean one."
                 ),
+                ),
+                None,
             )
         }
     };
@@ -2162,10 +2292,13 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     // THE SHIP TWIN OWES ZERO EVERYWHERE, and owes it without consulting the ledger.
     if ship {
         if total == 0 && inst_total == 0 && ivocab.unattributed.is_empty() && vendor.is_empty() {
-            return Row::pass(
-                ROW_MATRIX,
-                "no crate names another kind's vocabulary anywhere",
-                format!("{scanned} file(s) scanned, every cell of the matrix is 0"),
+            return (
+                Row::pass(
+                    ROW_MATRIX,
+                    "no crate names another kind's vocabulary anywhere",
+                    format!("{scanned} file(s) scanned, every cell of the matrix is 0"),
+                ),
+                Some(reading_of(&matrix, total)),
             );
         }
         let worst: Vec<String> = matrix
@@ -2178,19 +2311,22 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         law0.extend(instances::law0(&inst, None));
         law0.extend(ivocab.unattributed.iter().cloned());
         law0.extend(vendor.iter().cloned());
-        return Row::fail(
-            ROW_MATRIX,
-            "a crate still names another kind's vocabulary",
-            format!(
-                "ship-ceiling 0: {total} hit(s) over {} cell(s): {}{}",
-                matrix.len(),
-                worst.join(" | "),
-                if law0.is_empty() {
-                    String::new()
-                } else {
-                    format!(" || {}", law0.join(" || "))
-                }
+        return (
+            Row::fail(
+                ROW_MATRIX,
+                "a crate still names another kind's vocabulary",
+                format!(
+                    "ship-ceiling 0: {total} hit(s) over {} cell(s): {}{}",
+                    matrix.len(),
+                    worst.join(" | "),
+                    if law0.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" || {}", law0.join(" || "))
+                    }
+                ),
             ),
+            Some(reading_of(&matrix, total)),
         );
     }
 
@@ -2423,17 +2559,23 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
 
     if !offenders.is_empty() {
         offenders.sort();
-        return Row::fail(
-            ROW_MATRIX,
-            "the kind × crate vocabulary matrix does not match its ledger",
-            format!("{headline}: {}", offenders.join(" | ")),
+        return (
+            Row::fail(
+                ROW_MATRIX,
+                "the kind × crate vocabulary matrix does not match its ledger",
+                format!("{headline}: {}", offenders.join(" | ")),
+            ),
+            Some(reading_of(&matrix, total)),
         );
     }
 
-    Row::pass(
-        ROW_MATRIX,
-        "every crate's naming of every other kind is at its recorded ceiling",
-        format!("every cell equals its {LEDGER} row; {headline}"),
+    (
+        Row::pass(
+            ROW_MATRIX,
+            "every crate's naming of every other kind is at its recorded ceiling",
+            format!("every cell equals its {LEDGER} row; {headline}"),
+        ),
+        Some(reading_of(&matrix, total)),
     )
 }
 
@@ -2674,14 +2816,74 @@ pub(super) fn cell_subst(
     Ok((cell_anchor(cx, krate, kind)?, cell_row(krate, kind, count)))
 }
 
+/// THE REPORT ASSERTION: the registered gate's row stays PASS under `plant` and the total in its
+/// detail goes UP. Green is "the row did not fail and the number rose"; anything else is red, and
+/// names which half did not hold.
+fn report_only_total_rises<'a>(
+    cx: &Ctx,
+    registered: &'a dyn crate::gates::Gate,
+    name: &str,
+    overlay: crate::ctx::Overlay,
+) -> crate::gates::CasePlan<'a> {
+    use crate::gates::{execute, Case, CasePlan, Expect};
+    use crate::ledger::Status;
+    let name = name.to_string();
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let reading = |cx: &Ctx| -> Result<usize, String> {
+            let verdict = execute(registered, cx);
+            let row = verdict
+                .rows
+                .iter()
+                .find(|r| r.id == ROW_MATRIX)
+                .ok_or_else(|| "the gate emitted no matrix row".to_string())?;
+            if row.status != Status::Pass {
+                return Err(format!("the matrix row is {:?}, not PASS", row.status));
+            }
+            measured_total(row)
+                .ok_or_else(|| "the matrix row carries no measured total".to_string())
+        };
+        let got = match (reading(&cx), reading(&cx.with_overlay(overlay))) {
+            (Ok(before), Ok(after)) if after > before => Expect::Green,
+            (Ok(before), Ok(after)) => Expect::Red {
+                naming: vec![format!("the total did not rise: {before} -> {after}")],
+            },
+            (Err(why), _) | (_, Err(why)) => Expect::Red { naming: vec![why] },
+        };
+        Case {
+            name,
+            covers: vec![ROW_MATRIX.to_string()],
+            expected: Expect::Green,
+            got,
+        }
+    })
+}
+
 /// Every RED case this row owes, and the GREEN one it is measured against.
 pub fn selftest<'a>(
     cx: &'a Ctx,
     gate: &'a dyn crate::gates::Gate,
+    registered: &'a dyn crate::gates::Gate,
     ship: bool,
     report: &mut crate::gates::Report<'a>,
 ) {
     use crate::gates::{prove_rows_green, prove_rows_red};
+
+    // THE ROW IS REPORT-ONLY, AND ITS NUMBER STILL COUNTS (owner 2026-10-03: "the matrix is a
+    // measured to-do list, not a gate"). `gate` (the subject below) runs the rule with its findings
+    // as FAIL rows so a planted case can observe a red; `registered` is the gate as it is
+    // registered, and this case reads what it reports: the row does not fail over a planted plane
+    // name in a `.rs` file, and the measured total it carries RISES by it.
+    report.push(report_only_total_rises(
+        cx,
+        registered,
+        "REPORT-ONLY: a plane named in a .rs file raises the measured total and does not fail the row",
+        plant(
+            cx,
+            "crates/busbar-transport-tcp/src/names_a_plane.rs",
+            "pub const P: &str = \"busbar-plane-mcp\";\n",
+        ),
+    ));
 
     // THE SHIP TWIN OWES A DIFFERENT PROOF, because it is RED on this tree ON PURPOSE. Every case
     // below is about the LEDGER, and the ship twin does not read the ledger — planting a raised
