@@ -1060,7 +1060,7 @@ pub fn build_split_routers_with_limits(
 
 /// [`build_split_routers_with_limits`], with the data routes of the planes the composition root
 /// serves through their doors (`doors`, one per claim) mounted on the data router ahead of the
-/// protocol fallback: the route install is the router's construction, never a later mutation
+/// protocol fallback: the route install is the router's construction, never a mutation once it is built
 /// (ARCHITECT Q-SW1, 2026-10-02).
 pub fn build_split_routers_serving(
     app: std::sync::Arc<state::App>,
