@@ -92,6 +92,121 @@ pub(crate) fn fold<R>(plugin: &str, kind: &str, envelope: &Envelope<R>) {
     }
 }
 
+/// Hand already-decoded entries to the installed observer, if any: the memory ABI's envelope, made
+/// the same JSON entries the cold wire carries ([`EnvelopeObserver`]).
+pub(crate) fn fold_entries(
+    plugin: &str,
+    kind: &str,
+    metrics: &[serde_json::Value],
+    diagnostics: &[serde_json::Value],
+) {
+    if metrics.is_empty() && diagnostics.is_empty() {
+        return;
+    }
+    if let Some(obs) = OBSERVER.get() {
+        obs.observe(plugin, kind, metrics, diagnostics);
+    }
+}
+
+/// THE MEMORY ABI'S ENVELOPE, INTO THE HOST'S OBSERVABILITY (DECISIONS #85, OWNER-LOCKED: every
+/// plugin response's metrics and diagnostics reach the host; ARCHITECT ruling ENVELOPE 2026-10-03).
+/// The dispatcher ingests a door's envelope as checked entries that name the Statement by index
+/// ([`crate::dispatch::Metric`], [`crate::dispatch::Diagnostic`]); this sink names them by what the
+/// Statement declares — a metric by its family's name, kind and label keys, a diagnostic by its
+/// declared id — and hands them to the installed [`PluginObserver`], the one fold every plugin's
+/// back-channel takes, under the plugin's name and kind. A log record is not an observation: it goes
+/// to the plugin's own log ([`crate::dispatch::PluginLogSink`], which this sink stands behind).
+pub struct EnvelopeObserver {
+    plugin: String,
+    kind: &'static str,
+    families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
+}
+
+impl std::fmt::Debug for EnvelopeObserver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvelopeObserver")
+            .field("plugin", &self.plugin)
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+impl EnvelopeObserver {
+    /// The sink for `plugin`, of `kind`, whose Statement renders as `stated`. A rendering that does
+    /// not read back names no family, so no metric of it is folded (the dispatcher already refused
+    /// such a door at its load).
+    #[must_use]
+    pub fn of(plugin: &str, kind: &'static str, stated: &[u8]) -> Self {
+        let families = busbar_contract::abi::mechanism::rendering::read(stated)
+            .map(|r| r.families)
+            .unwrap_or_default();
+        Self::with_families(plugin, kind, families)
+    }
+
+    /// The sink for `plugin`, of `kind`, whose Statement declares `families`.
+    #[must_use]
+    pub fn with_families(
+        plugin: &str,
+        kind: &'static str,
+        families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
+    ) -> Self {
+        Self {
+            plugin: plugin.to_string(),
+            kind,
+            families,
+        }
+    }
+}
+
+impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
+    fn metric(&self, m: crate::dispatch::Metric<'_>) {
+        use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE};
+        let Some(family) = self.families.get(m.family as usize) else {
+            return;
+        };
+        let kind = match family.kind {
+            FAMILY_COUNTER => "counter",
+            FAMILY_GAUGE => "gauge",
+            _ => "histogram",
+        };
+        let mut metric =
+            busbar_contract::abi::cold::observe::PluginMetric::new(&family.name, kind, m.value);
+        for (key, value) in family.label_keys.iter().zip(m.labels) {
+            metric = metric.label(key, String::from_utf8_lossy(value));
+        }
+        let Ok(entry) = serde_json::to_value(metric) else {
+            return;
+        };
+        fold_entries(&self.plugin, self.kind, &[entry], &[]);
+    }
+
+    fn diag(&self, d: crate::dispatch::Diagnostic<'_>) {
+        use busbar_contract::abi::cold::observe::{DiagLevel, PluginDiagnostic};
+        use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
+        if d.id == DIAG_LOG || d.id == DIAG_LOG_DROPPED {
+            return;
+        }
+        let level = match d.severity {
+            0 => DiagLevel::Info,
+            1 => DiagLevel::Warn,
+            _ => DiagLevel::Error,
+        };
+        let diagnostic = PluginDiagnostic::new(
+            String::from_utf8_lossy(d.name),
+            level,
+            String::from_utf8_lossy(d.text),
+        );
+        let Ok(entry) = serde_json::to_value(diagnostic) else {
+            return;
+        };
+        fold_entries(&self.plugin, self.kind, &[], &[entry]);
+    }
+
+    fn dropped(&self, why: crate::dispatch::Dropped) {
+        tracing::debug!(plugin = %self.plugin, ?why, "a plugin envelope entry was dropped");
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE FIRST-PARTY METRIC NAMESPACE (K9a S1). A plugin's signed manifest DECLARES the series it
 // emits (`declares.metrics`). The loader GRANTS those declarations at open to a first-party plugin

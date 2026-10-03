@@ -802,14 +802,30 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
     // Phase 2: trust. A rejection here is a SKIP (logged, never dlopen'ed) - unless the plugin is
     // actually referenced, in which case resolution fails loudly with this reason attached.
     match evaluate(&unpacked.lib_bytes, &unpacked.manifest, policy) {
-        Ok(verdict) => FileOutcome::Loadable(LoadablePlugin {
-            file,
-            manifest: unpacked.manifest,
-            verdict,
-            lib_bytes: unpacked.lib_bytes,
-            ephemeral: false,
-            entry: None,
-        }),
+        Ok(verdict) => {
+            let plugin = LoadablePlugin {
+                file,
+                manifest: unpacked.manifest,
+                verdict,
+                lib_bytes: unpacked.lib_bytes,
+                ephemeral: false,
+                entry: None,
+            };
+            // Phase 2b: the egress-class grant (§5): a plugin that is not first-party declaring a
+            // need in a first-party class is never admitted.
+            match plugin.first_party() {
+                true => FileOutcome::Loadable(plugin),
+                false => match crate::sign::egress_grant(&plugin.manifest) {
+                    Ok(()) => FileOutcome::Loadable(plugin),
+                    Err(reason) => FileOutcome::Skipped(SkippedPlugin {
+                        file: plugin.file,
+                        manifest: plugin.manifest,
+                        reason,
+                        kind: crate::sign::RejectKind::EgressGrant,
+                    }),
+                },
+            }
+        }
         Err(rejected) => FileOutcome::Skipped(SkippedPlugin {
             file,
             manifest: unpacked.manifest,
@@ -978,12 +994,15 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::UnknownPublisher => "unknown-publisher",
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
+                    RejectKind::EgressGrant => "third-party (egress grant)",
                 }
                 .to_string();
                 let status = match s.kind {
                     // Only a TRUSTED-but-below-floor artifact is a hard REJECTED row; every untrusted
                     // reject (including a floored untrusted one) is a SKIP.
-                    RejectKind::AntiDowngrade => format!("REJECTED: {}", s.reason),
+                    RejectKind::AntiDowngrade | RejectKind::EgressGrant => {
+                        format!("REJECTED: {}", s.reason)
+                    }
                     _ => format!("SKIPPED: {}", s.reason),
                 };
                 rows.push(InventoryEntry {

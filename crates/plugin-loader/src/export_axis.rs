@@ -30,7 +30,7 @@ use busbar_contract::abi::export::{CheckPhase, CHECK_PHASE_LIMITS};
 use busbar_contract::abi::mechanism::lifecycle::refusal_lines;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::DeclaredConns;
-use busbar_contract::export_calls::{ExportCalls, Probed};
+use busbar_contract::export_calls::{ExportCalls, Probed, DEFAULT_INFLIGHT, INFLIGHT_KEY};
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::{
@@ -38,6 +38,7 @@ use crate::dispatch::{
     PluginLogConfig,
 };
 use crate::export_door::{self, ExportInstance};
+use crate::observe::EnvelopeObserver;
 use crate::registry::LoadablePlugin;
 use crate::PluginRegistry;
 
@@ -45,8 +46,11 @@ use crate::PluginRegistry;
 /// renders under it.
 const SECTION: &str = busbar_contract::plugin::Kind::Export.root();
 
-/// The host's clamp on an export Statement's `max_inflight`.
-const MAX_INFLIGHT_CAP: u32 = 64;
+/// The image a row binds: a linked door's row, or a dropped library's stated rendering.
+enum Image {
+    Linked(LinkedRow),
+    Dropped(Vec<u8>),
+}
 
 /// How a row opens.
 enum Door {
@@ -115,40 +119,70 @@ impl<'r> ExportRows<'r> {
         self.registry.resolve_export(module)
     }
 
-    /// Bind `row`'s door under `label`: an instance only probed or checked binds with no log sink
-    /// and no connection table (nothing is opened to the network or the disk while a configuration
-    /// is judged); one opened to deliver binds with both.
-    fn load(&self, row: &LoadablePlugin, label: &str, opening: bool) -> Result<Door, String> {
+    /// Bind `row`'s door under `label`: an instance only probed or checked (`opening` is `None`)
+    /// binds with no log sink, no envelope and no connection table (nothing is opened to the network
+    /// or the disk while a configuration is judged); one opened to deliver over its settings binds
+    /// with all three, its #85 envelope going to the host's observability ([`EnvelopeObserver`],
+    /// unless [`Self::with_envelope`] said otherwise) behind its log sink, and its in-flight bound
+    /// the one its settings state ([`INFLIGHT_KEY`], [`DEFAULT_INFLIGHT`] when they state none),
+    /// within the plugin's declared `max_inflight` (ARCHITECT ruling MAX-INFLIGHT 2026-10-03).
+    fn load(
+        &self,
+        row: &LoadablePlugin,
+        label: &str,
+        opening: Option<&serde_json::Value>,
+    ) -> Result<Door, String> {
         let name = &row.manifest.name;
-        let envelope = || -> Arc<dyn EnvelopeSink> {
-            self.envelope.clone().unwrap_or_else(|| Arc::new(NoSink))
-        };
-        let sink: Arc<dyn EnvelopeSink> = match (opening, self.logs) {
-            (true, Some(logs)) => Arc::new(logs.sink(label, KindCode::Export, envelope())?),
-            (true, None) => envelope(),
-            (false, _) => Arc::new(NoSink),
-        };
-        let bind = Bind {
-            instance: Arc::from(label),
-            max_inflight_cap: MAX_INFLIGHT_CAP,
-            sink,
-            dispatcher: self.dispatcher.adopter(),
-            conns: if opening { self.conns.clone() } else { None },
-        };
-        let loaded = match row.door() {
-            Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Export>(&r, bind)),
+        let refused = |e: crate::dispatch::LoadError| format!("export plugin '{name}': {e}");
+        let image = match row.door() {
+            Some(door) => Image::Linked(LinkedRow::of(door).map_err(refused)?),
             None if row.image_is_cold_linked() => return Ok(Door::Cold),
-            None => {
-                // M6-COLD-DELETE: a dropped-in cold sink states no Statement rendering.
-                let Some(stated) = row.manifest.stated_rendering()? else {
-                    return Ok(Door::Cold);
-                };
-                load_dropped_bytes::<Export>(&row.lib_bytes, name, &stated, bind)
+            // M6-COLD-DELETE: a dropped-in cold sink states no Statement rendering.
+            None => match row.manifest.stated_rendering()? {
+                Some(stated) => Image::Dropped(stated),
+                None => return Ok(Door::Cold),
+            },
+        };
+        let stated: &[u8] = match &image {
+            Image::Linked(r) => &r.statement,
+            Image::Dropped(s) => s,
+        };
+        let sink: Arc<dyn EnvelopeSink> = match opening {
+            None => Arc::new(NoSink),
+            Some(_) => {
+                let envelope = self.envelope.clone().unwrap_or_else(|| {
+                    Arc::new(EnvelopeObserver::of(
+                        name,
+                        busbar_contract::abi::cold::kind::EXPORT,
+                        stated,
+                    ))
+                });
+                match self.logs {
+                    Some(logs) => Arc::new(logs.sink(label, KindCode::Export, envelope)?),
+                    None => envelope,
+                }
             }
         };
-        loaded
-            .map(Door::Memory)
-            .map_err(|e| format!("export plugin '{name}': {e}"))
+        let max_inflight_cap = opening
+            .and_then(|settings| settings.get(INFLIGHT_KEY))
+            .and_then(serde_json::Value::as_u64)
+            .map_or(DEFAULT_INFLIGHT, |n| {
+                u32::try_from(n).unwrap_or(u32::MAX).max(1)
+            });
+        let bind = Bind {
+            instance: Arc::from(label),
+            max_inflight_cap,
+            sink,
+            dispatcher: self.dispatcher.adopter(),
+            conns: opening.and(self.conns.clone()),
+        };
+        let loaded = match &image {
+            Image::Linked(r) => load_linked::<Export>(r, bind),
+            Image::Dropped(stated) => {
+                load_dropped_bytes::<Export>(&row.lib_bytes, name, stated, bind)
+            }
+        };
+        loaded.map(Door::Memory).map_err(refused)
     }
 
     /// `None` when no `kind: export` row names `module`; else its streams and `instance`'s
@@ -161,7 +195,7 @@ impl<'r> ExportRows<'r> {
         settings: &serde_json::Value,
     ) -> Option<Probed> {
         let row = self.row(module)?;
-        match self.load(row, &label(instance), false) {
+        match self.load(row, &label(instance), None) {
             Ok(Door::Memory(p)) => {
                 let streams = p.context::<ExportFacts>().map(|f| f.streams.clone());
                 let problems = match export_door::validate(&p, settings.to_string().as_bytes()) {
@@ -197,7 +231,7 @@ impl<'r> ExportRows<'r> {
             .first()
             .map_or_else(|| "{}".to_string(), |(_, s)| s.to_string());
         let named = instances.first().map_or(module, |(n, _)| n.as_str());
-        match self.load(row, &label(named), false) {
+        match self.load(row, &label(named), None) {
             Ok(Door::Memory(p)) => {
                 let Ok(opened) = ExportInstance::open(p, self.dispatcher.clone(), first.as_bytes())
                 else {
@@ -233,11 +267,18 @@ impl<'r> ExportRows<'r> {
         label: &str,
         settings: &serde_json::Value,
     ) -> Result<Arc<dyn ExportCalls>, String> {
-        let row = self
-            .row(module)
-            .ok_or_else(|| format!("no `kind: export` plugin answers to '{module}'"))?;
+        let row = self.row(module).ok_or_else(|| {
+            match self.registry.unresolved_reason(module) {
+                // A dropped plugin the scan refused: its refusal, named.
+                Some(s) => format!(
+                    "export plugin '{module}' is present ({}) but was not loaded: {}",
+                    s.file, s.reason
+                ),
+                None => format!("no `kind: export` plugin answers to '{module}'"),
+            }
+        })?;
         let text = settings.to_string();
-        match self.load(row, label, true)? {
+        match self.load(row, label, Some(settings))? {
             Door::Memory(p) => {
                 crate::observe::grant_series(
                     &row.manifest.name,

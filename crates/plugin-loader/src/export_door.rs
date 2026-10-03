@@ -12,17 +12,23 @@
 //!   [`MAX_BATCH_LINES`] lines and [`MAX_BATCH_BYTES`] bytes), each with its own host-minted
 //!   `op_id` (THE DESIGN §11.11 H4). The batch crosses on a ticket in the write-behind deadline
 //!   class, so a reload drain never waits on it (H5), and rides with the job as lent memory; a
-//!   FAILED batch is retried with the SAME `op_id`, at most [`DELIVER_ATTEMPTS`] times. One batch
-//!   is in flight per instance, so a sink sees its lines in the order they were handed over.
+//!   FAILED batch is retried with the SAME `op_id`, at most [`DELIVER_ATTEMPTS`] times. Up to the
+//!   instance's `max_inflight` deliveries run at once (ARCHITECT ruling MAX-INFLIGHT 2026-10-03:
+//!   1.5.5's `max_inflight_deliveries`, within the plugin's declared ceiling), each on a ticket of
+//!   its own and none holding a thread while it pends; while fewer lines are queued than deliveries
+//!   may start, each line travels alone, as each 1.5.5 delivery did. Every batch of one instance is
+//!   started on the same worker, in queue order.
 //! * **scrape** / **serve** / **status** / **check** — ticket-less, on the caller's thread (the
 //!   watchdog can fault such a crossing but never abandon it, so the buffers lent need no owner);
 //!   the host-owned exposition buffer grows ONCE on a short answer (the short-buffer rule); a
 //!   leased answer is copied, then its lease released.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::task::{Poll, Waker};
+
+use futures::stream::{FuturesUnordered, StreamExt as _};
 
 use busbar_contract::abi::export::{
     slot, CheckIn, CheckInstance, CheckOut, DeliverIn, ScrapeFamily, ScrapeIn, ScrapeLabel,
@@ -35,7 +41,6 @@ use busbar_contract::abi::mechanism::lifecycle::{
     slot as lc, OpenIn, OpenOut, ReleaseIn, ValidateIn,
 };
 use busbar_contract::abi::mechanism::route::Route;
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
@@ -51,8 +56,6 @@ pub const MAX_BATCH_BYTES: usize = 1024 * 1024;
 pub const DELIVER_ATTEMPTS: u32 = 3;
 /// The exposition buffer a scrape starts with; a short answer grows it once.
 const SCRAPE_BUF: usize = 64 * 1024;
-/// How long the flusher sleeps between looks at an empty queue or a reply that has not come.
-const WAIT_SLICE: Duration = Duration::from_secs(1);
 /// The most request headers a `serve` lends (64 name/value pairs).
 const MAX_SERVE_HEADERS: usize = 64;
 
@@ -214,7 +217,8 @@ struct Shared {
     dispatcher: Arc<Dispatcher>,
     facts: ExportFacts,
     queue: Mutex<VecDeque<Line>>,
-    ready: Condvar,
+    /// The flusher's waker, taken by whoever gives it something to do (a line, the stop).
+    flusher: Mutex<Option<Waker>>,
     stop: AtomicBool,
     /// This process's `op_id` node half; the counter half is [`Shared::minted`].
     node: [u8; 8],
@@ -235,29 +239,30 @@ impl Shared {
         id
     }
 
-    /// Take the next batch: queued lines of the first line's stream, in order, within the bounds.
-    fn take(&self) -> Option<(u8, Vec<Line>)> {
-        let mut q = self.lock();
-        loop {
-            if self.stop.load(Ordering::Acquire) {
-                // Closing: what is still queued is shed (its holds drop with it).
-                q.clear();
-                return None;
-            }
-            if !q.is_empty() {
-                break;
-            }
-            q = self
-                .ready
-                .wait_timeout(q, WAIT_SLICE)
-                .unwrap_or_else(|p| p.into_inner())
-                .0;
+    /// Wake the flusher: it has a line to take, or is to stop.
+    fn notify(&self) {
+        let waker = self
+            .flusher
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(w) = waker {
+            w.wake();
         }
+    }
+
+    /// Take the next batch without waiting: queued lines of the first line's stream, in order,
+    /// within the bounds — and no more than an even share of the queue across the `room`
+    /// deliveries that may still start, so while fewer lines are queued than that, each travels
+    /// alone. `None` with nothing queued.
+    fn take(&self, room: usize) -> Option<(u8, Vec<Line>)> {
+        let mut q = self.lock();
         let stream = q.front()?.stream;
+        let share = q.len().div_ceil(room.max(1)).clamp(1, MAX_BATCH_LINES);
         let (mut lines, mut bytes) = (Vec::new(), 0usize);
         while let Some(l) = q.front() {
             let fits = lines.is_empty()
-                || (lines.len() < MAX_BATCH_LINES && bytes + l.bytes.len() < MAX_BATCH_BYTES);
+                || (lines.len() < share && bytes + l.bytes.len() < MAX_BATCH_BYTES);
             if l.stream != stream || !fits {
                 break;
             }
@@ -267,11 +272,23 @@ impl Shared {
         Some((stream, lines))
     }
 
-    /// Offer one batch on `ticket`, retrying a FAILED answer with the same `op_id`. The batch rides
-    /// with the job: a crossing the watchdog answered still owns it until it returns.
-    fn deliver(&self, ticket: Ticket, stream: u8, lines: &[Line]) {
+    /// Offer one batch on a ticket of its own, minted on `worker` and recycled once it answered,
+    /// so the host-service results and connections one delivery made (stored under `(ticket, n)`,
+    /// its handles counting from 0) are never redeemed by another; a FAILED answer is retried with
+    /// the same `op_id`. The batch rides with the job: a crossing the watchdog answered still owns
+    /// it until it returns. Awaited, never waited on: a pending delivery holds no thread.
+    async fn deliver(self: Arc<Self>, worker: u32, stream: u8, lines: Vec<Line>) {
+        let workers = self.dispatcher.workers().max(1);
+        let ticket = (0..workers).find_map(|i| self.dispatcher.mint((worker + i) % workers));
+        let Some(ticket) = ticket else {
+            tracing::warn!(
+                plugin = %self.plugin.name(),
+                "no ticket could be minted for an export batch; it is dropped"
+            );
+            return;
+        };
         let mut batch = Vec::with_capacity(lines.iter().map(|l| l.bytes.len() + 1).sum());
-        for l in lines {
+        for l in &lines {
             batch.extend_from_slice(&l.bytes);
             batch.push(b'\n');
         }
@@ -285,23 +302,21 @@ impl Shared {
                 _reserved: [0; 7],
                 batch: blob(&batch, BLOB_JSONL),
             };
-            let reply = self.dispatcher.submit_lent(
-                &self.plugin,
-                ticket,
-                slot::DELIVER,
-                Frame::new(input, out_head()),
-                DeadlineClass::WriteBehind,
-                0,
-                batch.clone(),
-            );
             // Every op is answered or ended by the dispatcher (its deadline, or the watchdog).
-            let done = loop {
-                if let Some(done) = reply.wait(WAIT_SLICE) {
-                    break done;
-                }
-            };
+            let done = self
+                .dispatcher
+                .submit_lent(
+                    &self.plugin,
+                    ticket,
+                    slot::DELIVER,
+                    Frame::new(input, out_head()),
+                    DeadlineClass::WriteBehind,
+                    0,
+                    batch.clone(),
+                )
+                .await;
             match done.outcome {
-                Outcome::Ready => return,
+                Outcome::Ready => break,
                 Outcome::Failed if attempt < DELIVER_ATTEMPTS => continue,
                 o => {
                     tracing::warn!(
@@ -310,39 +325,49 @@ impl Shared {
                         error = %why(o, done.error),
                         "an export batch was not delivered and is dropped"
                     );
-                    return;
+                    break;
                 }
             }
         }
+        self.dispatcher.recycle(ticket);
+        // The lines' holds are released here: the batch has answered.
+        drop(lines);
     }
 
-    /// THE FLUSHER: one batch in flight per instance, each on a ticket of its own: minted for the
-    /// batch and recycled once it answered, so the host-service results and connections one
-    /// delivery made (stored under `(ticket, n)`, its handles counting from 0) are forgotten before
-    /// the next delivery counts from 0 again — a second batch never redeems the first's stored
-    /// `establish` or `disk.append`.
+    /// THE FLUSHER: up to the instance's `max_inflight` deliveries at once, every batch started on
+    /// one worker in queue order; on stop, what is still queued is shed and the deliveries in
+    /// flight answer.
     fn flush(self: Arc<Self>) {
-        while let Some((stream, lines)) = self.take() {
-            let n = self.minted.load(Ordering::Relaxed);
-            let ticket = self
-                .dispatcher
-                .mint((n % u64::from(self.dispatcher.workers().max(1))) as u32);
-            match ticket {
-                Some(t) => {
-                    self.deliver(t, stream, &lines);
-                    self.dispatcher.recycle(t);
-                }
-                None => tracing::warn!(
-                    plugin = %self.plugin.name(),
-                    "no ticket could be minted for an export batch; it is dropped"
-                ),
+        static NEXT_WORKER: AtomicU32 = AtomicU32::new(0);
+        let worker = NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % self.dispatcher.workers().max(1);
+        let cap = self.plugin.max_inflight().max(1) as usize;
+        let mut inflight = FuturesUnordered::new();
+        futures::executor::block_on(futures::future::poll_fn(|cx| loop {
+            while let Poll::Ready(Some(())) = inflight.poll_next_unpin(cx) {}
+            *self.flusher.lock().unwrap_or_else(|p| p.into_inner()) = Some(cx.waker().clone());
+            if self.stop.load(Ordering::Acquire) {
+                // Closing: what is still queued is shed (its holds drop with it).
+                self.lock().clear();
+                return if inflight.is_empty() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                };
             }
-            // The lines' holds are released here: the batch has answered.
-            drop(lines);
-        }
+            let mut started = false;
+            while inflight.len() < cap {
+                let Some((stream, lines)) = self.take(cap - inflight.len()) else {
+                    break;
+                };
+                inflight.push(self.clone().deliver(worker, stream, lines));
+                started = true;
+            }
+            if !started {
+                return Poll::Pending;
+            }
+        }));
     }
 }
-
 /// This process's `op_id` node half: the process id and the boot instant, mixed.
 fn node_id() -> [u8; 8] {
     let t = std::time::SystemTime::now()
@@ -366,12 +391,12 @@ impl std::fmt::Debug for ExportInstance {
     }
 }
 
-/// Dropping the instance stops its flusher: the batch in flight (if any) answers, the rest of the
-/// queue is shed.
+/// Dropping the instance stops its flusher: the deliveries in flight answer, the rest of the queue
+/// is shed.
 impl Drop for ExportInstance {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
-        self.shared.ready.notify_all();
+        self.shared.notify();
         let flusher = self
             .flusher
             .lock()
@@ -423,7 +448,7 @@ impl ExportInstance {
             dispatcher,
             facts,
             queue: Mutex::new(VecDeque::new()),
-            ready: Condvar::new(),
+            flusher: Mutex::new(None),
             stop: AtomicBool::new(false),
             node: node_id(),
             minted: AtomicU64::new(0),
@@ -533,7 +558,7 @@ impl ExportCalls for ExportInstance {
                 _hold: hold,
             });
         }
-        sh.ready.notify_one();
+        sh.notify();
         Delivered::Queued
     }
 

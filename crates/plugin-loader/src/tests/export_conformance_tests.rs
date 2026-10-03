@@ -50,19 +50,12 @@
 //!
 //! ## What the cold lane's suite had that the memory ABI does not
 //!
-//! Ported from the cold-lane suite (`predev-all/b9`), each arm on the door registries. Three of its
-//! claims have no door form, and say why here rather than vanish:
-//!
-//! * the cold `start` op (live, admission, words): the export table has no `start`; a sink's
-//!   in-flight bound is its Statement's `max_inflight`, read at bind and clamped by the host;
-//! * 600 deliveries in flight at once past the runtime's 512 blocking threads: a door instance's
-//!   deliveries are batched by the host's flusher, ONE batch in flight per instance (THE DESIGN
-//!   §11.11 H4), queued to `export_door::MAX_QUEUED_LINES` and shed past it — there is no
-//!   per-delivery concurrency to measure;
-//! * a manifest-declared egress POLICY (`declares.egress`) granted to a first-party sink only: on
-//!   the door a sink's egress is its need's egress CLASS in its Statement, judged by the host's
-//!   connection table on every connection ([`a_declared_egress_policy_is_granted_to_a_first_party_sink_only`]
-//!   holds that half); nothing on the door path reads the manifest's policy.
+//! Ported from the cold-lane suite (`predev-all/b9`), each arm on the door registries. One of its
+//! claims has no door form, and says why here rather than vanish: the cold `start` op (live,
+//! admission, words) — the export table has no `start`; a sink's in-flight bound is the one its
+//! settings state (`max_inflight_deliveries`), within its Statement's declared `max_inflight`, read
+//! at bind ([`a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool`] holds
+//! the bound).
 
 use std::collections::HashMap;
 use std::os::raw::c_void;
@@ -362,6 +355,8 @@ fn dispatcher() -> Arc<Dispatcher> {
 const REFUSED_TARGET: &str = "refused.example";
 /// A target the host admits and cannot reach: its connection fails at the open.
 const UNREACHABLE_TARGET: &str = "unreachable.example";
+/// A target whose far end holds every request until released: its reply pends, no thread waiting.
+const STALL_TARGET: &str = "stall.example";
 
 /// What the table answered one declaration, and the target it is pinned to.
 type Verdict = (Result<(), ConnError>, String);
@@ -372,7 +367,9 @@ type Verdict = (Result<(), ConnError>, String);
 /// request opened on it — the WHOLE request, head words, fields and body, as the host hands it to
 /// the framer — is recorded and answered `204` with no body. A need whose `target_from` resolved to
 /// nothing is refused, as the table's contract and the host's connector refuse it. A target on
-/// [`UNREACHABLE_TARGET`] fails at the open. Ownership is the shared [`ConnSlab`].
+/// [`UNREACHABLE_TARGET`] fails at the open. A reply from [`STALL_TARGET`] pends — interest kept
+/// under the reading ticket, which the table wakes through the dispatcher's connection waker once
+/// [`Far::release`]d — so a stalled request holds no thread. Ownership is the shared [`ConnSlab`].
 #[derive(Default)]
 struct Far {
     slab: ConnSlab<()>,
@@ -380,6 +377,10 @@ struct Far {
     declared: Mutex<Vec<serde_json::Value>>,
     carried: Mutex<Vec<serde_json::Value>>,
     read: Mutex<HashMap<ConnId, u8>>,
+    /// The connections whose reply is held, and the ticket each read registered interest under.
+    stalled: Mutex<HashMap<ConnId, u64>>,
+    released: std::sync::atomic::AtomicBool,
+    waker: OnceLock<Arc<dyn Fn(u64) + Send + Sync>>,
 }
 
 impl Far {
@@ -394,6 +395,28 @@ impl Far {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+    /// How many requests the far end holds right now.
+    fn stalled(&self) -> usize {
+        self.stalled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+    /// Let every held request answer, waking each ticket that waits on one.
+    fn release(&self) {
+        self.released
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let held: Vec<u64> = self
+            .stalled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain()
+            .map(|(_, t)| t)
+            .collect();
+        if let Some(wake) = self.waker.get() {
+            held.into_iter().for_each(|t| wake(t));
+        }
     }
 }
 
@@ -469,6 +492,13 @@ impl Conns for Far {
             return Err(ConnError::Timeout);
         }
         let id = self.slab.insert(caller, need, ())?;
+        if target.contains(STALL_TARGET) && !self.released.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.stalled
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(id, 0);
+        }
         let fields: Vec<(String, String)> = desc
             .fields
             .iter()
@@ -482,7 +512,9 @@ impl Conns for Far {
                 "method": String::from_utf8_lossy(desc.method),
                 "head_target": String::from_utf8_lossy(desc.head_target),
                 "fields": fields,
-                "body": String::from_utf8_lossy(desc.body),
+                // Text as text; any other body (the collector's protobuf) as hex.
+                "body": std::str::from_utf8(desc.body)
+                    .map_or_else(|_| hex::encode(desc.body), str::to_owned),
             }));
         Ok(id)
     }
@@ -500,10 +532,17 @@ impl Conns for Far {
         &self,
         caller: InstanceId,
         conn: ConnId,
-        _: u64,
+        ticket: u64,
         _: &mut [u8],
     ) -> Result<Piece, ConnError> {
         self.slab.get(caller, conn)?;
+        {
+            let mut stalled = self.stalled.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(waiting) = stalled.get_mut(&conn) {
+                *waiting = ticket;
+                return Err(ConnError::Pending);
+            }
+        }
         let mut read = self.read.lock().unwrap_or_else(PoisonError::into_inner);
         let n = read.entry(conn).or_default();
         *n += 1;
@@ -1741,4 +1780,353 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
         "the need is declared under the open web, framed by `http`, pinned to the `url` setting"
     );
     assert_eq!(linked, dropped, "both doors declare the same need");
+}
+
+/// Releases the far end when dropped.
+struct Released(Arc<Far>);
+
+impl Drop for Released {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// **K9c — A SINK'S DELIVERIES IN FLIGHT ARE BOUNDED BY ITS ADMISSION ALONE** (ARCHITECT ruling
+/// MAX-INFLIGHT 2026-10-03). The request-log WEBHOOK sink, every delivery a host-carried POST,
+/// LINKED and DROPPED IN, its instance configured with an in-flight bound of 600
+/// (`max_inflight_deliveries`) — above the runtime's 512 blocking threads, on a dispatcher of ONE
+/// worker. With the far end holding every request, 600 deliveries are in flight at once, each
+/// pending on the host's connection table with no thread waiting, and never more: the 601st waits
+/// its turn in the instance's queue and is carried once the far end answers. The effective
+/// concurrency is the configured bound, as the 1.5.5 webhook's async deliveries were. (RED: one
+/// batch at a time per instance holds 1; a delivery that holds a thread while the far end answers
+/// plateaus at the pool.)
+#[test]
+fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool() {
+    const BOUND: usize = 600;
+    let name = "k9c-bound";
+    let Some(doors) = both(
+        manifest(name, webhook_declares()),
+        WEBHOOK_DOOR,
+        WEBHOOK_CDYLIB,
+    ) else {
+        eprintln!("skip: the webhook sink's cdylib is not built");
+        return;
+    };
+    let settings = serde_json::json!({
+        "url": format!("https://{STALL_TARGET}/in"),
+        "max_inflight_deliveries": BOUND,
+        "delivery_timeout_secs": 600,
+    });
+    let [linked, dropped] = doors.map(|registry| {
+        let d = dispatcher();
+        assert_eq!(
+            d.workers(),
+            1,
+            "one worker: far fewer threads than deliveries"
+        );
+        let far = Arc::new(Far::default());
+        assert!(far.waker.set(d.conn_waker()).is_ok());
+        let sink = ExportRows::new(&registry, d)
+            .with_conns(far.clone())
+            .open(name, "export.k9c", &settings)
+            .expect("opens");
+        // Declared after the sink, so dropped before it: a failing arm still lets the far end
+        // answer, and the instance's drop (which waits for its deliveries) returns.
+        let _answer = Released(far.clone());
+        for n in 0..=BOUND {
+            deliver(sink.as_ref(), &serde_json::json!({ "n": n }));
+        }
+        until("every admitted delivery in flight", || {
+            far.stalled() == BOUND
+        });
+        // Held a moment longer: nothing beyond the bound joins.
+        std::thread::sleep(Duration::from_millis(300));
+        let in_flight = far.stalled();
+        let carried_while_held = far.carried().len();
+        far.release();
+        until("every line carried", || far.carried().len() == BOUND + 1);
+        drop(sink);
+        let mut ns: Vec<u64> = far
+            .carried()
+            .iter()
+            .map(|r| {
+                serde_json::from_str::<serde_json::Value>(r["body"].as_str().expect("a body"))
+                    .expect("a JSON line")["n"]
+                    .as_u64()
+                    .expect("n")
+            })
+            .collect();
+        ns.sort_unstable();
+        (in_flight, carried_while_held, ns)
+    });
+    assert_eq!(
+        linked.0, BOUND,
+        "every admitted delivery is in flight at once"
+    );
+    assert_eq!(
+        linked.1, BOUND,
+        "the delivery past the bound waits; it is not carried while the bound is full"
+    );
+    assert_eq!(
+        linked.2,
+        (0..=BOUND as u64).collect::<Vec<_>>(),
+        "nothing is lost: the line past the bound is carried once a delivery answers"
+    );
+    assert_eq!(linked, dropped, "both doors are bounded the same");
+}
+
+/// **K9e-2 — A FIRST-PARTY EGRESS CLASS IS GRANTED TO A FIRST-PARTY PLUGIN ONLY** (`BUSBAR-1.6.0.md`
+/// §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03). The OTLP trace sink's one need is in the
+/// `loopback-allowed` class (a collector's loopback plaintext), a first-party grant: LINKED, and
+/// DROPPED IN signed by the release key, it is admitted and opens through either door. RED ARM: the
+/// same cdylib dropped in by a THIRD party (allowlisted, trusted, not first-party) is refused at the
+/// load — the scan never admits it, and an instance naming it is refused with the grant's words —
+/// while the webhook sink, whose need is in the open web, is admitted from the same third party.
+#[test]
+fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
+    let otlp: DoorFn = busbar_export_otlp::door::door;
+    let settings = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
+    let Some(doors) = both(
+        manifest("k9e2-otlp", Declares::default()),
+        otlp,
+        "busbar_export_otlp_plugin",
+    ) else {
+        eprintln!("skip: the OTLP sink's cdylib is not built");
+        return;
+    };
+    let opened = doors.map(|registry| {
+        assert!(registry
+            .resolve("k9e2-otlp")
+            .is_some_and(|r| r.first_party()));
+        let far = Arc::new(Far::default());
+        let sink = ExportRows::new(&registry, dispatcher())
+            .with_conns(far.clone())
+            .open("k9e2-otlp", "export.trace", &settings)
+            .expect("a first-party collector opens");
+        drop(sink);
+        serde_json::to_string(&far.declarations()).expect("encode")
+    });
+    assert!(
+        opened[0].contains(&format!(
+            r#""egress_class":{}"#,
+            busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED
+        )),
+        "{}",
+        opened[0]
+    );
+    assert_eq!(opened[0], opened[1], "both doors declare the same need");
+
+    // RED ARM: the same collector from a third party is refused at the load.
+    let lib = cdylib_bytes("busbar_export_otlp_plugin").expect("built above");
+    let mut third = stating(manifest("k9e2-third-otlp", Declares::default()), otlp);
+    third.publisher = "acme".into();
+    let registry = both_ways::dropped_third_party("busbar_export_otlp_plugin", third, &lib);
+    assert!(
+        registry.resolve("k9e2-third-otlp").is_none(),
+        "never admitted"
+    );
+    let words = "declares a `http` need in the `loopback-allowed` egress class, which the host \
+                 grants to a first-party plugin only";
+    let skipped = registry
+        .unresolved_reason("k9e2-third-otlp")
+        .expect("the scan names its refusal");
+    assert_eq!(skipped.kind, crate::sign::RejectKind::EgressGrant);
+    assert!(skipped.reason.contains(words), "{}", skipped.reason);
+    let Err(refused) = ExportRows::new(&registry, dispatcher())
+        .with_conns(Arc::new(Far::default()))
+        .open("k9e2-third-otlp", "export.trace", &settings)
+    else {
+        panic!("a third party's collector opened");
+    };
+    assert!(refused.contains(words), "{refused}");
+
+    // The open web is any trusted plugin's: the webhook from the same third party is admitted.
+    let lib = cdylib_bytes(WEBHOOK_CDYLIB).expect("built");
+    let mut third = stating(
+        manifest("k9e2-third-hook", webhook_declares()),
+        WEBHOOK_DOOR,
+    );
+    third.publisher = "acme".into();
+    let registry = both_ways::dropped_third_party(WEBHOOK_CDYLIB, third, &lib);
+    let row = registry.resolve("k9e2-third-hook").expect("admitted");
+    assert!(!row.first_party());
+}
+
+/// **#85 — AN OPENED SINK'S ENVELOPE REACHES THE HOST'S OBSERVABILITY, NEVER DISCARDED** (ARCHITECT
+/// ruling ENVELOPE 2026-10-03). The opener's default envelope sink is the host's: what an opened
+/// instance REPORTS — a metric of a family its Statement declares, a declared diagnostic — is handed
+/// to the installed observer (the one fold every plugin's back-channel takes) under the plugin's
+/// name and kind, named by what its Statement declares; behind `plugins.logs` the declared
+/// diagnostic ALSO lands in the plugin's own log. Driven through the FILE sink's real Statement
+/// (linked and dropped in alike: the sink is built from the stated rendering either door states).
+/// RED: before the ruling the opener bound `NoSink`, and nothing reached the observer.
+#[test]
+fn an_opened_sinks_envelope_reaches_the_host_observability() {
+    use crate::dispatch::EnvelopeSink as _;
+    let guard = crate::observe::testing::exclusive();
+    let stated = rendering_of(FILE_DOOR).expect("renders");
+    // The opener's sink is built from the stated rendering: the FILE sink's own Statement.
+    let sink = crate::observe::EnvelopeObserver::of(
+        "busbar-export-file",
+        busbar_contract::abi::cold::kind::EXPORT,
+        &stated,
+    );
+    // A metric of a family the Statement declares, named by the family: a counter with one label.
+    let counted = crate::observe::EnvelopeObserver::with_families(
+        "busbar-export-file",
+        busbar_contract::abi::cold::kind::EXPORT,
+        vec![busbar_contract::abi::mechanism::rendering::ReadFamily {
+            name: "busbar_file_logs_rotated_total".into(),
+            help: String::new(),
+            unit: String::new(),
+            label_keys: vec!["path".into()],
+            kind: busbar_contract::abi::mechanism::door::FAMILY_COUNTER,
+        }],
+    );
+    counted.metric(Metric {
+        family: 0,
+        kind: busbar_contract::abi::mechanism::call::METRIC_ADD,
+        value: 1.0,
+        labels: &[b"/var/log/busbar/requests.jsonl"],
+    });
+    // A family index past the Statement's is nobody's: nothing is folded for it.
+    counted.metric(Metric {
+        family: 7,
+        kind: busbar_contract::abi::mechanism::call::METRIC_ADD,
+        value: 1.0,
+        labels: &[],
+    });
+    let folds = crate::observe::testing::folds();
+    assert_eq!(folds.len(), 1, "{folds:?}");
+    assert_eq!(
+        folds[0].2,
+        vec![serde_json::json!({
+            "name": "busbar_file_logs_rotated_total",
+            "type": "counter",
+            "value": 1.0,
+            "labels": { "path": "/var/log/busbar/requests.jsonl" },
+        })]
+    );
+    crate::observe::testing::clear(&guard);
+    sink.diag(Diagnostic {
+        id: 0,
+        name: b"BUSBAR-7074",
+        severity: 1,
+        text: b"request-log file open failed; this log was dropped",
+    });
+    sink.diag(Diagnostic {
+        id: DIAG_LOG,
+        name: b"",
+        severity: 0,
+        text: b"busbar_export_file: a log record",
+    });
+    let folds = crate::observe::testing::folds();
+    assert_eq!(
+        folds.len(),
+        1,
+        "one observation; the log record is not one: {folds:?}"
+    );
+    let (plugin, kind, metrics, diagnostics) = &folds[0];
+    assert_eq!(
+        (plugin.as_str(), kind.as_str()),
+        ("busbar-export-file", "export")
+    );
+    assert!(metrics.is_empty());
+    assert_eq!(diagnostics[0]["code"], "BUSBAR-7074");
+    assert_eq!(diagnostics[0]["level"], "warn");
+
+    // Behind `plugins.logs`, the declared diagnostic reaches both the plugin log and the observer.
+    crate::observe::testing::clear(&guard);
+    let dir = scratch("envelope");
+    let logs = crate::dispatch::PluginLogConfig::from_words(
+        Some(&dir.display().to_string()),
+        None,
+        &std::collections::BTreeMap::new(),
+        None,
+        None,
+    )
+    .expect("a plugins.logs block");
+    let behind = logs
+        .sink(
+            "export.tail",
+            busbar_contract::abi::mechanism::KindCode::Export,
+            Arc::new(crate::observe::EnvelopeObserver::of(
+                "busbar-export-file",
+                busbar_contract::abi::cold::kind::EXPORT,
+                &stated,
+            )),
+        )
+        .expect("a log sink");
+    behind.diag(Diagnostic {
+        id: 0,
+        name: b"BUSBAR-7074",
+        severity: 1,
+        text: b"request-log file open failed; this log was dropped",
+    });
+    let folds = crate::observe::testing::folds();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(folds.len(), 1, "{folds:?}");
+    assert_eq!(folds[0].3[0]["code"], "BUSBAR-7074");
+}
+
+/// **K9a S7 — A CLOSED SPAN REACHES A COLLECTOR THE SAME THROUGH EITHER DOOR.** The OTLP trace
+/// sink (its need in the `loopback-allowed` class: a first-party collector), LINKED and DROPPED IN
+/// signed by the release key, is handed the same `traces` record — a closed span as the kernel's
+/// producer writes it — and the HOST carries the same OTLP/HTTP request for it to the collector,
+/// byte for byte: `POST` to the configured path, `application/x-protobuf`, one
+/// `ExportTraceServiceRequest` holding the span's identity. (The shipped binary's end-to-end proof
+/// cannot drop in a FIRST-PARTY collector — its release key's private half is not the test's — so
+/// the both-doors identity of span delivery is held here, where the release key is the test's.)
+#[test]
+fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
+    let otlp: DoorFn = busbar_export_otlp::door::door;
+    let name = "s7-otlp";
+    let Some(doors) = both(
+        manifest(name, Declares::default()),
+        otlp,
+        "busbar_export_otlp_plugin",
+    ) else {
+        eprintln!("skip: the OTLP sink's cdylib is not built");
+        return;
+    };
+    let span = serde_json::json!({
+        "trace_id": "4bf92f3577b34da6",
+        "span_id": "00f067aa0ba902b7",
+        "name": "busbar.request",
+        "start": 1_700_000_000_000_000_u64,
+        "duration_us": 1500,
+    });
+    let [linked, dropped] = doors.map(|registry| {
+        let tape = Arc::new(Tape::default());
+        let far = Arc::new(Far::default());
+        let sink = ExportRows::new(&registry, dispatcher())
+            .with_envelope(tape.clone())
+            .with_conns(far.clone())
+            .open(
+                name,
+                "export.trace",
+                &serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" }),
+            )
+            .expect("a first-party collector opens");
+        let queued = sink.deliver(
+            ExportStream::Traces as u8,
+            span.to_string().into_bytes(),
+            Box::new(()),
+        );
+        assert!(matches!(queued, Delivered::Queued), "{queued:?}");
+        until("the span carried", || far.carried().len() == 1);
+        drop(sink);
+        serde_json::json!({ "carried": far.carried(), "folds": tape.seen() }).to_string()
+    });
+    let trace_id = "4bf92f3577b34da6";
+    assert!(
+        linked.contains(r#""method":"POST""#)
+            && linked.contains(r#""head_target":"/v1/traces""#)
+            && linked.contains("application/x-protobuf")
+            && linked.contains(trace_id)
+            && linked.contains(&hex::encode("busbar.request")),
+        "{linked}"
+    );
+    assert_eq!(linked, dropped, "both doors carry the same request");
 }
