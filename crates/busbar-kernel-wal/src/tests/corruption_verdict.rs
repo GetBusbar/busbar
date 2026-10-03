@@ -196,6 +196,41 @@ fn a_flipped_byte_in_the_final_record_is_quarantined_not_cut() {
     assert_eq!(quarantine_files(dir.path()).len(), 1);
 }
 
+/// A WHOLE final frame whose HEADER was altered after it was written is quarantined, never cut as a
+/// torn tail (MONEY-AUDIT E4). A torn write leaves zeros past the point it stopped; this frame has
+/// its digest and payload, so it was written in full and its record was acknowledged. The payload
+/// length byte (33) and the magic (0) are both header bytes the check covers.
+#[test]
+fn a_whole_final_frame_with_an_altered_header_is_quarantined_not_cut() {
+    for at in [33usize, 0] {
+        let dir = TempDir::new(&format!("flip-final-header-{at}"));
+        let written = four();
+        lay_down(dir.path(), &written);
+        flip(dir.path(), 3 * FRAME_BYTES + at);
+        let wal = Wal::in_directory(
+            dir.path(),
+            Box::new(NullShipper::new()),
+            crate::tests::fixtures::wall_ms,
+        )
+        .unwrap();
+        assert_eq!(wal.recovered(), &written[..3]);
+        let q = wal.quarantined();
+        assert_eq!(
+            q.len(),
+            1,
+            "byte {at}: the altered final record is set aside, loudly"
+        );
+        assert_eq!(q[0].damage_at, 3 * FRAME_BYTES as u64);
+        assert_eq!(q[0].identities, vec![(3, 4)], "byte {at}");
+        assert_eq!(quarantine_files(dir.path()).len(), 1, "byte {at}");
+        assert_eq!(
+            wal.next_free_seq(3),
+            5,
+            "byte {at}: the acknowledged record's number is never handed out again"
+        );
+    }
+}
+
 /// A tear INSIDE a version-2 frame's payload (the header was written whole) cannot be told from a
 /// whole frame altered afterwards, so it is quarantined rather than cut: the loud side of the
 /// ambiguity. Nothing is lost either way; the quarantine holds the bytes and says so.
@@ -522,7 +557,9 @@ fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
     let kept = file.display().to_string();
     assert_eq!(body.text(), Some(kept.as_str()));
     assert_eq!(body.num(), Some(q.at_unix_ms));
-    assert_eq!(body.num(), Some(2));
+    // The record whose magic was flipped (3, 2) and the two verifying ones behind it: the flipped
+    // frame was written whole, so its record was acknowledged and its identity is named too.
+    assert_eq!(body.num(), Some(3));
     assert!(body.is_done());
 
     // A clean boot has nothing to record.

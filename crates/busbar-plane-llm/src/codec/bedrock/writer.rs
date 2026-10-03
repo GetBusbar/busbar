@@ -875,6 +875,16 @@ impl BedrockWriter {
                 match block {
                     // COH-17: an empty text block carrying only citations — Converse rejects blank
                     // text, so the carrier is omitted.
+                    // THE SEARCH-RESULT SLOT: a caller's RAG passage (read from an Anthropic
+                    // `search_result`, or a Converse `searchResult` whose parked raw block is not
+                    // here) re-emits as the native `searchResult` block.
+                    b @ crate::codec::ir::IrBlock::Text { .. }
+                        if b.as_search_result().is_some() =>
+                    {
+                        if let Some(sr) = b.as_search_result() {
+                            content_arr.push(super::write_bedrock_search_result(&sr));
+                        }
+                    }
                     b @ crate::codec::ir::IrBlock::Text { .. } if b.is_citation_carrier() => {
                         crate::codec::drops::writer_drop!(
                             crate::codec::drops::TEXT,
@@ -919,6 +929,13 @@ impl BedrockWriter {
                         let mut inner_content: Vec<serde_json::Value> = Vec::new();
                         for inner_block in content {
                             match inner_block {
+                                b @ crate::codec::ir::IrBlock::Text { .. }
+                                    if b.as_search_result().is_some() =>
+                                {
+                                    if let Some(sr) = b.as_search_result() {
+                                        inner_content.push(super::write_bedrock_search_result(&sr));
+                                    }
+                                }
                                 crate::codec::ir::IrBlock::Text { text, .. } => {
                                     inner_content.push(serde_json::json!({ (keys::TEXT): text }));
                                 }
