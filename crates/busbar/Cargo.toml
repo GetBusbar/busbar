@@ -519,3 +519,28 @@ crate-type = ["cdylib"]
 [[bench]]
 name = "hook_path"
 harness = false
+
+# The linked door this binary proves is the export axis's optional edge; without the feature there is
+# no linked row to prove, so the target is not built.
+[[test]]
+name = "traces_stream_both_doors"
+path = "tests/traces_stream_both_doors.rs"
+required-features = ["export-otlp"]
+
+# These three boot the real binary on a config that names an admin token (the 1.5.5 shape). Without
+# the operator credential's linked row that config is a boot refusal (BUSBAR-9007), so the targets
+# are built only with the feature that answers it.
+[[test]]
+name = "boot_lines_neutrality"
+path = "tests/boot_lines_neutrality.rs"
+required-features = ["auth-admin-tokens"]
+
+[[test]]
+name = "no_data_dir_neutrality"
+path = "tests/no_data_dir_neutrality.rs"
+required-features = ["auth-admin-tokens"]
+
+[[test]]
+name = "root_listeners_are_the_connectors"
+path = "tests/root_listeners_are_the_connectors.rs"
+required-features = ["auth-admin-tokens"]

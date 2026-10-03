@@ -179,23 +179,6 @@ impl busbar_core_connector::framer::FramerDoor for DroppedDoor {
     }
 }
 
-/// The transport door example `name` beside this test binary, admitted and opened through the one
-/// dispatcher. A missing artifact is a failure, never a skip.
-fn dropped_door(name: &str) -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
-    let exe = std::env::current_exe().expect("the test binary has a path");
-    let examples = exe
-        .parent()
-        .and_then(|d| d.parent())
-        .expect("target/<profile>")
-        .join("examples");
-    let file = busbar_plugin_loader::plugin_library_filename(name);
-    let path = [examples.join(&file), examples.join("deps").join(&file)]
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| panic!("the {name} door ({file}) is not built beside the test binary"));
-    open_door(&path).expect("the door is admitted")
-}
-
 /// The libraries beside this test binary: uplifted, under `deps/`, or an example `cdylib`.
 fn libraries_beside_the_test() -> Vec<std::path::PathBuf> {
     let Some(profile) = std::env::current_exe()
@@ -591,10 +574,18 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
     );
 }
 
-/// The dropped-in door that composes over the socket framer: the request/response framer the head
-/// tests drive, by its example's name (the one place this file names it).
+/// The dropped-in door that composes over ONE socket framer: the request/response framer the head
+/// tests drive, found among the libraries beside this test binary by what it states (one layer in
+/// its `composes_over`), as [`layer_door`] finds its layer. It is a pinned plugin repo's cdylib,
+/// which is in no graph of this workspace: the hop's `build:dlopen-cdylibs` builds it (and the
+/// framer door it composes over) from the pinned checkout busbar's root resolves, into this target dir
+/// (spec P5). A missing door is a failure, never a skip.
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
-    dropped_door("http_door")
+    libraries_beside_the_test()
+        .into_iter()
+        .filter_map(|p| open_door(&p))
+        .find(|d| d.facts().composes_over.len() == 1)
+        .expect("a door composing over one socket framer is built beside the test binary")
 }
 
 /// A response template with its version written as the door's own scheme, upper-cased (`{V}`), so

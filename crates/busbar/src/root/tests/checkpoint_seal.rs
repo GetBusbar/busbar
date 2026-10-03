@@ -6,6 +6,8 @@
 
 use super::*;
 use busbar_contract::caps::KernelSeal;
+// All but the signing key are used only by the `root-admin` test below.
+#[cfg_attr(not(feature = "root-admin"), allow(unused_imports))]
 use busbar_kernel_audit::{
     AuditInputs, AuditSigningKey, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
     What,
