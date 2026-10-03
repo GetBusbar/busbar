@@ -77,8 +77,10 @@
 #
 # SO IT IS NOT DECLARED DORMANT HERE, deliberately. A `[[dormant]]` row would turn both rows into
 # tracked PASSes for a plane #48 puts in the shipped roster — the excuse this file exists to refuse
-# for a shipped plane. Whether 1.6.0 serves the plane or ships it declared-only is OWNER question
-# Q72(3) (ruling R8); until it is ruled, both rows stay RED and are listed as owner-blocked.
+# for a shipped plane. OWNER Q72(3) is RULED: 1.6.0 SERVES the decisions plane. It is a DOOR plane,
+# so its unit path is its SERVED DOOR (ARCHITECT Q-SO10, spec K5): its `plane-door` linked row, the
+# one composition building its PlaneDriver, and the data route driving it. Both rows stay RED until
+# SERVE-WIRE P2 and the DEC-SERVE serving slice land them; still never declared dormant.
 #
 # Nothing is declared. See below for why the four standing findings are not.
 

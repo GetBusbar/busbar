@@ -808,6 +808,7 @@ impl ProtocolReader for AnthropicReader {
                 obj.get(super::STOP_REASON).and_then(|r| r.as_str()),
                 obj.get(super::STOP_DETAILS),
             ),
+            ..Default::default()
         })
     }
 }

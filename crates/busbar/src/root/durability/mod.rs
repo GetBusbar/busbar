@@ -127,6 +127,8 @@ mod amend;
 // Re-exported for its one production caller, `main`'s boot-book open, which a build runs only when a
 // root leg opens the book; the unit tests reach it through `amend` directly.
 pub use amend::bind_amendments;
+// Its one caller is the admin verify (`units_admin`), compiled with `root-admin`.
+#[cfg(feature = "root-admin")]
 pub(crate) use amend::verify_held;
 
 /// The checkpoint sealer: the cadence, and the audit keyset bound to the ledger's two seams
@@ -201,6 +203,12 @@ pub struct Durability {
     /// What the boot could not read back of the audit chain: a journalled record that does not
     /// decode, or names a class nobody declares here. Each is a restart finding.
     pub audit_findings: Vec<String>,
+    /// THE FIRST AUDIT POSITION SEALED WHILE A KEY WAS BOUND: from here on every record must carry
+    /// a signature, and an unsigned one is a `/verify` finding. Taken off the chain at boot (the
+    /// first audit record journalled after a `Bootstrap`), else from the first record this boot
+    /// seals with a key. `None` while no record was sealed under a key: a record sealed before the
+    /// keyset was bound is unsigned, which is the truth about it.
+    pub audit_signed_from: Option<u64>,
     /// What the boot's checkpoint step check found (self-attesting): each is a restart finding.
     pub anchor_findings: Vec<String>,
     /// WHERE EVERY SEALED CHECKPOINT IS ANCHORED, and the head `GET /admin/verify` compares the
@@ -2244,6 +2252,7 @@ pub fn build_with_cards(
         checkpoints: Vec::new(),
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
+        audit_signed_from: None,
         anchor_findings: Vec::new(),
         // Seeded from the chain below, with everything else the chain rebuilds.
         anchor: SelfAttestingAnchor::new(),

@@ -284,15 +284,13 @@ pub mod ratelimit;
 // unchanged. The former hooks::gate ↔ core::session co-location edge is dissolved: the gate now
 // reaches `SessionStore` via the substrate type.
 pub mod session;
+pub mod state;
+pub mod store;
 /// The wire error-type taxonomy (`ERR_TYPE_*`), relocated out of `admin::` (1.6.0 de-vocab): the
 /// constant string VALUES (the wire error-type tokens) are byte-identical; only their Rust binding
 /// path moved, since `ingress::dispatch`/`ingress::arrival_host`/`router` consume them, not the
 /// admin HTTP API.
 pub(crate) mod taxonomy;
-// AWS SigV4: the inbound check (the identity unit's) and its signing helpers.
-pub mod sigv4;
-pub mod state;
-pub mod store;
 
 // ── W4.b P2: substrate ENGINE absorbed INTO busbar-kernel; busbar-substrate deleted. The neutral
 // engine modules that had no kernel counterpart land here at their historical `busbar_kernel::` paths.
