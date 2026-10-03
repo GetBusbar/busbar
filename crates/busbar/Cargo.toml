@@ -115,8 +115,8 @@ metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 # Only for `MetricKindMask`, naming which metric kinds the recorder's idle timeout may reap. Already
 # in the graph as the exporter's own dependency, so this adds no new external crate.
 metrics-util = { version = "0.20.4", default-features = false }
-opentelemetry = "0.32.0"
-opentelemetry_sdk = "0.32.1"
+opentelemetry = "0.33.0"
+opentelemetry_sdk = "0.33.0"
 # Pin OTLP to the HTTP/proto trace path busbar uses (`SpanExporter::builder().with_http()`). The
 # default bundled client is dropped; busbar injects its OWN HTTP client via `with_http_client` (see
 # observability::build_otlp) so trace export shares busbar's hyper/rustls stack and — critically —
@@ -130,11 +130,11 @@ opentelemetry_sdk = "0.32.1"
 # axum server), the SECOND reqwest major (0.13) that the bundled OTLP client used to pull is gone —
 # `cargo tree -d` no longer lists a duplicate reqwest. The request path's reqwest 0.12 is the only
 # reqwest major.
-opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
+opentelemetry-otlp = { version = "0.33.0", default-features = false, features = [
     "trace",
     "http-proto",
 ] }
-opentelemetry-http = { version = "0.32.0", default-features = false, features = [
+opentelemetry-http = { version = "0.33.0", default-features = false, features = [
     "hyper",
 ] }
 # HTTPS connector for the OTLP HyperClient (rustls, http/1.1). Already in the graph via the server
@@ -146,11 +146,11 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
 ] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
-tracing-opentelemetry = "0.33.0"
+tracing-opentelemetry = "0.34.0"
 sha2 = "0.11.0"
 hmac = "0.13.0"
 hex = "0.4.3"
-getrandom = "0.3"
+getrandom = "0.4"
 # ed25519 for the busbar-signed virtual-key TOKENS: the same primitive the plugin-signing
 # path uses, already in the graph. Mint signs a compact `{sub, exp, kid}` token; verify checks the
 # signature statelessly. `rand_core` is pulled for keypair generation on first boot.

@@ -28,7 +28,7 @@ tracing = "0.1"
 tar = "0.4"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # Random staging-directory suffix (a pid alone is predictable to a pre-planter).
-getrandom = "0.3"
+getrandom = "0.4"
 
 [dev-dependencies]
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
