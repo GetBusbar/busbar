@@ -356,12 +356,13 @@ fn a_bad_entry_is_refused_naming_the_key() {
     assert!(refused("10.0.0.1/8").contains("past its prefix length"));
 }
 
-/// THE DESIGN §5 egress-class table (owner-signed 2026-09-27) is one table: a destination from
-/// request data (the default class, open-web) is refused private; a destination the operator configured (provider,
-/// operator infrastructure, loopback-allowed) is trusted, private and loopback included, while
-/// cloud metadata, a configured name rebinding to it included, stays refused in every class.
+/// THE DEFAULT POLICY is one table: the provider class and a destination from request data (the
+/// default class, open-web) are refused private (THE DESIGN §5 destination guard, ARCHITECT ruling
+/// CRATES-14); operator infrastructure and loopback-allowed are allowed private and loopback (§5
+/// egress-class table, owner 2026-09-27), while cloud metadata, a configured name rebinding to it
+/// included, stays refused in every class.
 #[test]
-fn private_is_refused_for_request_data_and_trusted_for_configured_destinations() {
+fn private_is_refused_for_providers_and_request_data_and_allowed_for_operator_infrastructure() {
     let g = Guard::default();
     for class in PRIVATE_REFUSED_IN {
         assert_eq!(
@@ -369,11 +370,8 @@ fn private_is_refused_for_request_data_and_trusted_for_configured_destinations()
             Some(DEST_INTERNAL)
         );
     }
-    for class in [
-        EGRESS_PROVIDER,
-        EGRESS_OPERATOR_INFRASTRUCTURE,
-        EGRESS_LOOPBACK_ALLOWED,
-    ] {
+    assert!(PRIVATE_REFUSED_IN.contains(&EGRESS_PROVIDER));
+    for class in [EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_LOOPBACK_ALLOWED] {
         assert_eq!(g.judge_answer("db.test", &[ip("10.0.0.5")], class), Ok(()));
         assert_eq!(g.judge_name("localhost", class), Ok(None));
         assert_eq!(g.judge_name("127.0.0.1", class), Ok(Some(ip("127.0.0.1"))));

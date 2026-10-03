@@ -16,10 +16,9 @@
 //! Per address, in order: the allowlist (`advanced.allow_destinations`) admits; in the provider
 //! class only, the 1.5.5 metadata carve-outs admit (below); then the extra refusals
 //! (`security.blocked_metadata_hosts`); then cloud metadata is refused, whatever
-//! `block_private_addresses` says; then, where `block_private_addresses` holds and the destination
-//! came from request data or the network ([`PRIVATE_REFUSED_IN`]; a destination the operator
-//! configured is trusted: THE DESIGN §5 egress-class table, owner-signed 2026-09-27), every
-//! private address (`busbar_contract::net::ip_is_internal`: RFC 1918, loopback, link-local, CGNAT,
+//! `block_private_addresses` says; then, where `block_private_addresses` holds and the dial's class
+//! refuses private addresses ([`PRIVATE_REFUSED_IN`]: the provider class, and a destination from
+//! request data or the network), every private address (`busbar_contract::net::ip_is_internal`: RFC 1918, loopback, link-local, CGNAT,
 //! unique-local, unspecified and the rest of that list).
 //! A HOST allowlist entry never admits a metadata answer (owner Q8): it is how internal DNS is
 //! admitted, and it must not become a way to reach IMDS by a rebinding answer. An IP or CIDR entry
@@ -50,23 +49,38 @@ use busbar_contract::net::{
 };
 use busbar_kernel::config::Destinations;
 
-/// THE DEFAULT POLICY, ONE TABLE (BUSBAR-1.6.0.md THE DESIGN §5 egress-class table, owner-signed
-/// 2026-09-27): the egress classes whose dials the private address refusal holds for. A
-/// destination the operator writes into config is trusted (every configured URL and plugin
-/// connection: the `provider` and `operator-infrastructure` classes, a `loopback-allowed` need, and any need whose target its config names, see
-/// [`crate::Connector`]); the refusal holds for destinations that come from request data or the
-/// network (a caller- or plane-named target: the default class, `open-web`). Cloud metadata is
+/// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
+/// for (where `block_private_addresses` holds; the allowlist is the escape hatch).
+///
+/// - `provider` (THE DESIGN §5 destination guard, OWNER DESTINATION GUARD and Q130 (B), scoped by
+///   the ARCHITECT ruling CRATES-14: "the 'refused unless allowlisted' default applies to the
+///   provider and IdP egress classes only"): a provider dial, its configured `base_url` included, is
+///   refused a private or loopback address unless `advanced.allow_destinations` names it.
+/// - the default class and `open-web`: a destination from request data or the network.
+///
+/// Not here: `operator-infrastructure` (THE DESIGN §5 egress-class table, owner 2026-09-27:
+/// private, loopback and plaintext allowed; pinned) and `loopback-allowed`. Cloud metadata is
 /// refused in every class whatever this table says, a configured NAME rebinding to it included,
 /// unless an IP/CIDR allowlist entry names it (or, for a provider dial only, a 1.5.5 carve-out).
-pub const PRIVATE_REFUSED_IN: &[u32] = &[connector::EGRESS_DEFAULT, connector::EGRESS_OPEN_WEB];
+pub const PRIVATE_REFUSED_IN: &[u32] = &[
+    connector::EGRESS_DEFAULT,
+    connector::EGRESS_PROVIDER,
+    connector::EGRESS_OPEN_WEB,
+];
+
+/// The classes a need whose config names its target is lifted out of, to operator infrastructure:
+/// the request-data classes. Never `provider`: a provider dial is refused a private address unless
+/// allowlisted whether or not its config names the target (ARCHITECT ruling CRATES-14).
+const LIFTED_WHEN_CONFIGURED: &[u32] = &[connector::EGRESS_DEFAULT, connector::EGRESS_OPEN_WEB];
 
 /// The class a dial's address is judged under: a need's own, or (its target named by its config,
-/// `configured`) the operator's own destination, trusted as operator infrastructure
-/// (THE DESIGN §5 egress-class table, owner-signed 2026-09-27).
+/// `configured`, in a request-data class) the operator's own destination, judged as operator
+/// infrastructure (THE DESIGN §5 egress-class table, owner-signed 2026-09-27). A provider need
+/// keeps its class.
 #[must_use]
 pub fn judged_class(class: u32, configured: bool) -> u32 {
     let trusted = connector::EGRESS_OPERATOR_INFRASTRUCTURE;
-    if configured && PRIVATE_REFUSED_IN.contains(&class) {
+    if configured && LIFTED_WHEN_CONFIGURED.contains(&class) {
         trusted
     } else {
         class

@@ -198,12 +198,15 @@ pub struct AdvancedCfg {
     /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
     #[serde(default)]
     pub response_headers: ResponseHeadersCfg,
-    /// THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD, Q7): refuse an outbound connection
-    /// whose target came from request data or the network and is, or resolves to, a private,
-    /// loopback, link-local, CGNAT or unique-local address (a target the operator configured is
-    /// trusted), judged after resolution and dialled at the judged address. Default `true`. Cloud
-    /// metadata is refused for every target, and stays refused when `false`, unless an IP/CIDR
-    /// entry of `allow_destinations` names it. BOOT-TIME (the connector is built once).
+    /// THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD; THE DESIGN §5, ARCHITECT ruling
+    /// CRATES-14): refuse a provider dial, and an outbound connection whose target came from
+    /// request data or the network, when it is, or resolves to, a private, loopback, link-local,
+    /// CGNAT or unique-local address, unless `allow_destinations` names it; judged after resolution
+    /// and dialled at the judged address. Operator infrastructure (a database, secret service or
+    /// directory a plugin's config names) is allowed private and loopback (§5 egress-class table).
+    /// Default `true`. Cloud metadata is refused for every target, and stays refused when `false`,
+    /// unless an IP/CIDR entry of `allow_destinations` names it. BOOT-TIME (the connector is built
+    /// once).
     #[serde(default = "default_block_private_addresses")]
     pub block_private_addresses: bool,
     /// Destinations always allowed, checked before any refusal: an exact host, a `*.domain`

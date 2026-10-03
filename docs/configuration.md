@@ -1748,13 +1748,14 @@ restart. Full catalogue, rationale for defaulting off, and exactly when each hea
 
 `block_private_addresses` and `allow_destinations` are the **destination guard**, one check for every
 outbound connection busbar makes (provider upstreams, token endpoints, health probes, export sinks,
-plugin fetches, plane and plugin dials). A destination you write into config (a provider or upstream
-URL, an export sink, a store, secret or auth plugin's connection) is trusted: it may be private or
-loopback. With `block_private_addresses: true` (the default) a destination that comes from request data
-or the network (a target a caller or a plane names) is refused when it is, or resolves to, a private
-(RFC 1918), loopback, link-local, CGNAT (`100.64.0.0/10`) or IPv6 unique-local (`fc00::/7`) address.
-A cloud-metadata address is refused for every destination, configured ones included (a configured name
-that later resolves to one is refused). The check runs after name resolution, and the connection is
+plugin fetches, plane and plugin dials). With `block_private_addresses: true` (the default) a provider
+upstream (its `base_url` and `token_url` included), and a destination that comes from request data or
+the network (a target a caller or a plane names), is refused when it is, or resolves to, a private
+(RFC 1918), loopback, link-local, CGNAT (`100.64.0.0/10`) or IPv6 unique-local (`fc00::/7`) address,
+unless `allow_destinations` names it: a provider on `localhost` or an internal name is listed there.
+Operator infrastructure a plugin's config names (a database, a secret service, a directory) may be
+private or loopback without an entry. A cloud-metadata address is refused for every destination,
+configured ones included (a configured name that later resolves to one is refused). The check runs after name resolution, and the connection is
 made to the address that was checked. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
 wildcard (`*.corp.example.com` matches names under it, not the apex), an IP (`127.0.0.1`), or a CIDR
 (`10.20.0.0/16`). A host entry never admits a cloud-metadata answer; only an IP or CIDR entry naming the

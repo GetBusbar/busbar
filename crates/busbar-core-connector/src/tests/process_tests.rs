@@ -100,12 +100,12 @@ fn every_egress_class_is_judged_by_the_one_guard() {
     }
 }
 
-/// RED (THE DESIGN §5 egress-class table, owner-signed 2026-09-27): under the default, a
-/// request-data class (the default class, open-web) refuses a private and a loopback address
-/// unless allowlisted; a configured-destination class (provider,
-/// operator infrastructure, loopback-allowed) is trusted with them; metadata is refused in all.
+/// RED: under the default, the provider class and a request-data class (the default class,
+/// open-web) refuse a private and a loopback address unless allowlisted (THE DESIGN §5 destination
+/// guard, ARCHITECT ruling CRATES-14); operator infrastructure is allowed them (§5 egress-class
+/// table, owner 2026-09-27); metadata is refused in all.
 #[test]
-fn a_private_address_is_refused_for_request_data_unless_allowlisted() {
+fn a_private_address_is_refused_for_providers_and_request_data_unless_allowlisted() {
     let strict = process_judge(&[], vec![]);
     let allowed = process_judge(&["10.0.0.0/8", "127.0.0.1"], vec![]);
     for class in crate::guard::PRIVATE_REFUSED_IN.iter().copied() {
@@ -127,10 +127,9 @@ fn a_private_address_is_refused_for_request_data_unless_allowlisted() {
         assert!(now(&allowed, "10.0.0.5:5432", class).is_ok(), "{class}");
         assert!(now(&allowed, "127.0.0.1:6379", class).is_ok(), "{class}");
     }
-    for class in [EGRESS_PROVIDER, EGRESS_OPERATOR_INFRASTRUCTURE] {
-        assert!(now(&strict, "10.0.0.5:5432", class).is_ok(), "{class}");
-        assert!(now(&strict, "127.0.0.1:6379", class).is_ok(), "{class}");
-    }
+    let class = EGRESS_OPERATOR_INFRASTRUCTURE;
+    assert!(now(&strict, "10.0.0.5:5432", class).is_ok(), "{class}");
+    assert!(now(&strict, "127.0.0.1:6379", class).is_ok(), "{class}");
     for class in CLASSES {
         assert_eq!(
             now(&allowed, "169.254.169.254:80", class),
