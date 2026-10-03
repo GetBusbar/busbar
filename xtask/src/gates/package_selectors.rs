@@ -8,7 +8,7 @@
 //! sweeps (`afe12ec00`, `fe689c616`) repointed them one by one. Nothing stopped it recurring.
 //!
 //! THE FAILURE MODE IS NOT "A JOB GOES RED". It is a check that stops checking and says nothing
-//! while it stops, and the sharpest instance is `scripts/txn-fence.sh`, whose PASS CONDITION IS A
+//! while it stops, and the sharpest instance is `cargo xtask txn-fence`, whose PASS CONDITION IS A
 //! BUILD FAILURE:
 //!
 //! ```text
@@ -112,10 +112,10 @@ pub const ROW_DECL_REASON: &str = "package-selectors:declaration-reason";
 /// makes every selector in the tree look dead, which is a defect in the instrument reported as a
 /// defect in the tree.
 pub const UNIVERSE_FLOOR: usize = 40;
-/// The floor under the discovered selector sites. Measured at 65, across 273 covered files, once
-/// the deleted workflows' selectors left the tree (it read 200 across 245 files before). This is the floor that matters: an empty scan set is the one state in
+/// The floor under the discovered selector sites. Measured at 54, across 244 covered files, once
+/// the deleted workflows' selectors and then the dead landing/runner scripts left the tree (it read 200 across 245 files before). This is the floor that matters: an empty scan set is the one state in
 /// which "every selector resolves" is true and means nothing.
-pub const SITE_FLOOR: usize = 65;
+pub const SITE_FLOOR: usize = 54;
 /// The shortest exemption reason that is a reason rather than a shrug.
 pub const MIN_REASON: usize = 30;
 
@@ -661,7 +661,7 @@ impl Gate for PackageSelectorsGate {
                 format!(
                     "{} — `cargo … -p <gone>` does not select nothing, it FAILS: `package ID \
                      specification '<gone>' did not match any packages`. Where the check's pass \
-                     condition is a non-zero exit (scripts/txn-fence.sh) that failure reads as a \
+                     condition is a non-zero exit (cargo xtask txn-fence) that failure reads as a \
                      pass, and where it is a test filter it selects zero tests and exits 0. \
                      Repoint the selector, or write a `{DECL_HASH} <pkg>{SEP}<file>{SEP}<reason>` \
                      line beside it.",
@@ -838,7 +838,7 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     let target = plant_target(cx);
 
     // THE DEFECT THIS GATE IS NAMED FOR, RE-PLANTED: a command selects a package the workspace does
-    // not have. This is the shape `scripts/txn-fence.sh` carried while reporting a compile fence as
+    // not have. This is the shape `cargo xtask txn-fence` carried while reporting a compile fence as
     // holding over a crate that was never compiled.
     let dead = target.as_ref().map(|(rel, text)| {
         let mut ov = Overlay::new();

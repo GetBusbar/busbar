@@ -184,8 +184,33 @@
 # golden is recorded or moved by this pin. promote.yml RELEASE_REF is NOT moved here: the CI harness ref moves with
 # #181 / #265 and ORACLE-STABLE (busbar-release #24, cut from b168741).
 #
+# 2026-10-02 (SWITCH-OVER, ARCHITECT rulings Q-SO2/Q-SO3/Q-SO4): moved e58d85c -> 6839561 (busbar-release main;
+# e58d85c's patches are in main as f13bdd6/f16d1dc/7d1d307/cf1954d). #19: plugin-digests.tsv gains an optional 5th
+# column, the busbar line a row serves (1.5 | 1.6, absent = 1.5), chosen from the binary's --version; {ASSET:<plugin>}
+# fills an asset file name from the chosen row; fetch-plugin takes --bin/--line. #23: headroom leaves the hooks variant
+# (HEADROOM-REMOVE), so its 43 cells are NEW cells `<old id>@hooks-webrequest` (variant hooks-webrequest, one webrequest
+# gate); per-cell mask.json_keys (scoped to the webrequest asset-name fields; a key both kept and masked is refused).
+#
+# 2026-10-02 (owner rulings, ORACLE-STABLE; lane ORACLE-PIN): moved b168741 -> eff9c67 (busbar-release
+# `lane-oracle-stable`: #24 merged as 669981e on dev, eff9c67 its follow-up, PR #53). The 1.5.5 golden is IMMUTABLE and
+# ADD-ONLY: the harness_rev refusal and `--allow-harness-skew` are deleted from the engine (golden-guard in the promote
+# hop and the engine's own CI, which replays published 1.5.5 over this golden twice, replace them); a golden cell leaves
+# only through a cited, add-only row in golden/<version>/retired.tsv, and only whole (definition, ledger row, bytes).
+# The vendored corpus it checks this cells.json against is 2506 cells: the SWITCH-OVER move above (43 hooks cells ->
+# `@hooks-webrequest`), the DF-WIRE ruling-3 cell `hooks|hooked-pool|unmodelled-block@hooks-webrequest`, and the
+# billing retirement (`billing|key-usage|after-upstream-down` -> `upstream-down-refunded` + `upstream-healthy-billed`).
+# #53 landed on dev as 305477e.
+#
+# 2026-10-02 (lane ORACLE-FINISH): moved eff9c67 -> 2815f7a (busbar-release dev; it carries #53 and #77). #77: the
+# normalizer's boot.pair-order rule no longer records itself in `applied` when it swaps the pair, because the swap is
+# 1.5.5's per-process HashMap seed. That had moved golden/1.5.5 boot.refusal|BOOT-100|validate in oracle-rerecord run
+# 36967636979. The only other engine change since eff9c67 is doc deletion. Re-record run 36970480705 (this engine,
+# busbar ref lane-oracle-pin) reproduced every committed cell byte for byte on both recordings, and golden-add
+# recorded the 46 owed new cells committed beside this pin. Its other 69 additions are the 1.6.0-only cells that
+# accepted-gaps.json says the 1.5.5 golden cannot owe, so they are not committed.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=b1687413136e368aa508ee8705dd320019c84580
+release_ref=2815f7aba5f623ba5ecb6846a1da70f47e2e4360
 crate=busbar-release-oracle
 bin=busbar-oracle
