@@ -582,7 +582,7 @@ count = "2"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3634"
+count = "3705"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -597,7 +597,7 @@ count = "5"
 [[cell]]
 crate = "busbar-mcp"
 kind = "transport"
-count = "494"
+count = "583"
 
 [[cell]]
 crate = "busbar-core-oauth2"
@@ -647,17 +647,17 @@ count = "34"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "legacy"
-count = "12"
+count = "10"
 
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "plane"
-count = "83"
+count = "13"
 
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "transport"
-count = "128"
+count = "90"
 
 [[cell]]
 crate = "busbar-plane-streaming"
