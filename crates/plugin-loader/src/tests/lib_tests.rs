@@ -1617,31 +1617,12 @@ fn store_proof_plugin_path() -> Option<std::path::PathBuf> {
     candidate
 }
 
-/// The store both-ways proof's cdylib (`[package.metadata.busbar.both-ways]` `store`), if built —
-/// the newest of the uplifted `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>`
-/// output (a scoped `cargo test -p` only produces the latter). No CI policy here; the callers own that.
+/// The store both-ways proof's cdylib (`[package.metadata.busbar.both-ways]` `store`), if built: the
+/// store plugin is pulled from its own repo as a git dependency, so its cdylib is only ever built
+/// under `deps/` with a metadata hash in its name, which `both_ways::cdylib` finds (newest wins). Under
+/// `CI` a missing artifact fails there, so the callers own only the local skip.
 fn store_proof_candidate() -> Option<std::path::PathBuf> {
-    newest_cdylib(super::both_ways::fixture("store").0)
-}
-
-/// The newest built `cdylib` of `crate_snake` in this target dir: the uplifted `<profile_dir>/<name>`
-/// copy or the raw `<profile_dir>/deps/<name>` output, whichever was written last.
-fn newest_cdylib(crate_snake: &str) -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let profile_dir = exe.parent()?.parent()?;
-    let name = plugin_library_filename(crate_snake);
-    let uplifted = profile_dir.join(&name);
-    let raw = profile_dir.join("deps").join(&name);
-    [uplifted, raw]
-        .into_iter()
-        .filter_map(|p| {
-            std::fs::metadata(&p)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|mtime| (p, mtime))
-        })
-        .max_by_key(|(_, mtime)| *mtime)
-        .map(|(p, _)| p)
+    super::both_ways::cdylib(super::both_ways::fixture("store").0)
 }
 
 /// A `SampleTask` with every field set to something distinguishable, so a round trip that drops or
