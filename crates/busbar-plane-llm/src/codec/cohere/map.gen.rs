@@ -77,6 +77,7 @@ pub(crate) const RESPONSE_PATHS: &[&str] = &[
     "usage.billed_units.input_tokens",
     "usage.billed_units.output_tokens",
     "usage.billed_units.classifications",
+    "usage.cached_tokens",
 ];
 
 /// The stream wire paths this dialect carries (the drop walk's map).
