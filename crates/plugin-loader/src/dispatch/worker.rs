@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
 use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::services::{HostServices, Served, ServiceStore};
@@ -458,6 +459,18 @@ pub(crate) struct Entry {
     pub(crate) current: Option<Current>,
     pub(crate) queue: VecDeque<(Meta, Box<dyn Job>)>,
     pub(crate) driver: Option<Driver>,
+    /// The connection-table identity of every instance whose op ran on this ticket: the connector
+    /// slots' kept answers are forgotten under each of them, and only them, when it is recycled.
+    pub(crate) conns: Vec<InstanceId>,
+}
+
+impl Entry {
+    /// Note that an op of the instance `id` runs on this ticket.
+    fn note(&mut self, id: InstanceId) {
+        if !self.conns.contains(&id) {
+            self.conns.push(id);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -605,6 +618,9 @@ impl Worker {
         };
         let e = &mut st.entries[idx as usize];
         e.live = true;
+        if let Some(d) = &driver {
+            e.note(d.instance.instance);
+        }
         e.driver = driver;
         let generation = e.generation;
         Some(self.ticket(idx, generation))
@@ -634,6 +650,7 @@ impl Worker {
         match m {
             Msg::Submit { ticket, meta, job } => match self.entry(st, ticket) {
                 Some((idx, e)) if !e.client_dropped && e.driver.is_none() => {
+                    e.note(meta.instance.instance);
                     e.queue.push_back((meta, job));
                     if e.current.is_none() {
                         Self::schedule(st, idx, Action::Start);
@@ -701,7 +718,10 @@ impl Worker {
         let e = &mut st.entries[idx as usize];
         env.completions.forget(self.ticket(idx, e.generation));
         env.services.forget(self.ticket(idx, e.generation));
-        super::conn_services::forget(self.ticket(idx, e.generation));
+        let ticket = self.ticket(idx, e.generation);
+        for id in e.conns.drain(..) {
+            super::conn_services::forget(id, ticket);
+        }
         e.generation = recycled_generation(e.generation);
         e.live = false;
         e.latched = false;

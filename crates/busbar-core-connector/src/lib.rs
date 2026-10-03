@@ -171,6 +171,10 @@ struct DeclaredNeed {
     egress_class: u32,
     /// The target the need's `target_from` resolved to; `None` = the plugin names it per open.
     declared_target: Option<String>,
+    /// The need's own client config, when its `trust_from` named an operator CA: the public roots
+    /// with that CA added on top (spec section 5, the host connector: "an extra trusted root added
+    /// on top of the public roots, as in 1.5.5"); `None` = the connector's default trust.
+    tls: Option<Arc<rustls::ClientConfig>>,
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
@@ -361,7 +365,7 @@ impl Connector {
         transport: &str,
         egress_class: u32,
     ) -> Result<(), ConnError> {
-        self.record(owner, need, transport, egress_class, None)
+        self.record(owner, need, transport, egress_class, None, None)
     }
 
     /// Record that `owner` declared `need` over `transport` in `egress_class`, its target named by
@@ -380,12 +384,20 @@ impl Connector {
         egress_class: u32,
         declared_target: &str,
     ) -> Result<(), ConnError> {
-        self.record(owner, need, transport, egress_class, Some(declared_target))
+        self.record(
+            owner,
+            need,
+            transport,
+            egress_class,
+            Some(declared_target),
+            None,
+        )
     }
 
-    /// THE SCHEME MATCH (spec Part 2 #50: "no match ⇒ fail closed"): the need is recorded over the
+    /// THE SCHEME MATCH (spec Part 2 #50: "no match => fail closed"): the need is recorded over the
     /// entry serving `transport`, resolved here once, or refused here; an open never meets an
-    /// unserved scheme.
+    /// unserved scheme. `tls` is the need's own client config when its `trust_from` named an
+    /// operator CA.
     fn record(
         &self,
         owner: InstanceId,
@@ -393,6 +405,7 @@ impl Connector {
         transport: &str,
         egress_class: u32,
         declared_target: Option<&str>,
+        tls: Option<Arc<rustls::ClientConfig>>,
     ) -> Result<(), ConnError> {
         let served = {
             let view = self.transports.read().expect("transports");
@@ -412,6 +425,7 @@ impl Connector {
                 alpn,
                 egress_class,
                 declared_target: declared_target.map(str::to_owned),
+                tls,
             },
         );
         Ok(())
@@ -669,6 +683,23 @@ impl Connector {
     }
 }
 
+/// The host name a dial target names: a URL's host, or a bare `host:port`'s host, unbracketed.
+fn host_of(target: &str) -> String {
+    if target.contains("://") {
+        if let Ok(parts) = busbar_contract::net::parse_url(target) {
+            return parts.host;
+        }
+    }
+    let authority = target.split(['/', '?', '#']).next().unwrap_or(target);
+    let host = match authority.rsplit_once(':') {
+        Some((h, port)) if !port.contains(']') => h,
+        _ => authority,
+    };
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_owned()
+}
+
 /// Whether a dial target carries a userinfo (`user:pass@`): a URL by the contract's one reader, a
 /// bare `host:port` by its authority.
 fn carries_userinfo(target: &str) -> bool {
@@ -688,6 +719,7 @@ impl DeclaredConns for Connector {
         need: NeedId,
         spec: &ReadNeed,
         target: Option<&str>,
+        trust: Option<&str>,
     ) -> Result<(), ConnError> {
         // An outbound need is carried over the transport its claim names, its dials judged in its
         // own egress class, and pinned to the target its config names when it names one (a
@@ -695,30 +727,35 @@ impl DeclaredConns for Connector {
         // userinfo: a credential never rides a dial target, it travels in the request's own
         // headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any earlier pin is dropped), and
         // refused when no loaded transport serves its scheme (spec Part 2 #50; the loader fails
-        // the boot on it, naming the plugin and the scheme); an inbound need is recorded (the
-        // listener binds it), and refused on an unserved scheme alike.
+        // the boot on it, naming the plugin and the scheme). Its connections are secured with the
+        // operator CA its `trust_from` names added on top of the public roots (ARCHITECT ruling
+        // 2026-10-02): a `trust_from` that resolved to nothing, or to a PEM that does not parse
+        // into a trust anchor, refuses the need here, at declaration. An inbound need is recorded
+        // (the listener binds it), and refused on an unserved scheme alike.
         let outbound = spec.direction == DIRECTION_OUTBOUND;
-        let unresolved = !spec.target_from.is_empty() && target.is_none();
+        let unresolved = (!spec.target_from.is_empty() && target.is_none())
+            || (!spec.trust_from.is_empty() && trust.is_none());
         let credentialed = target.is_some_and(carries_userinfo);
-        let answer = if outbound && (spec.transport.is_empty() || unresolved || credentialed) {
-            self.over.lock().expect("needs").remove(&(owner, need));
-            Err(ConnError::Refused)
-        } else {
-            match (outbound, target) {
-                (true, Some(t)) => {
-                    self.declare_need_to(owner, need, &spec.transport, spec.egress_class, t)
-                }
-                (true, None) => self.declare_need(owner, need, &spec.transport, spec.egress_class),
-                // An inbound need over a scheme no loaded transport serves is refused the same way.
-                (false, _)
-                    if !spec.transport.is_empty() && !self.serves_scheme(&spec.transport) =>
-                {
+        let anchored = match trust.filter(|_| outbound) {
+            None => Ok(None),
+            Some(pem) => tls::client::operator_ca_config(pem.as_bytes()).map(|c| Some(Arc::new(c))),
+        };
+        let answer = match anchored {
+            // An inbound need over a scheme no loaded transport serves is refused the same way.
+            Ok(_) if !outbound => {
+                if !spec.transport.is_empty() && !self.serves_scheme(&spec.transport) {
                     Err(ConnError::Refused)
-                }
-                (false, _) => {
+                } else {
                     self.slab.declare(owner, need);
                     Ok(())
                 }
+            }
+            Ok(tls) if !(spec.transport.is_empty() || unresolved || credentialed) => {
+                self.record(owner, need, &spec.transport, spec.egress_class, target, tls)
+            }
+            _ => {
+                self.over.lock().expect("needs").remove(&(owner, need));
+                Err(ConnError::Refused)
             }
         };
         self.declared
@@ -731,6 +768,60 @@ impl DeclaredConns for Connector {
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
         let declared = self.declared.lock().expect("declared needs");
         declared.get(&(owner, need)).map(|(_, answer)| *answer)
+    }
+
+    /// THE MID-STREAM UPGRADE: the connection, once dialled, is secured with the need's own client
+    /// config (the public roots and the operator CA its `trust_from` named, on top), or the
+    /// connector's default trust for a need that names none, offering `name` or the endpoint's
+    /// host name, bounded by the open's default timeout. A framed need's stream is refused (its
+    /// framer, not the plugin, speaks on it), and so is a `trust` reference other than the need's
+    /// own `trust_from`.
+    fn upgrade_secure(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        name: Option<&str>,
+        trust: Option<&str>,
+        ticket: Ticket,
+    ) -> Result<(), ConnError> {
+        let (need, held) = self.slab.get(caller, conn)?;
+        if self.framed(caller, need) {
+            return Err(ConnError::Refused);
+        }
+        let config = {
+            let declared = self.declared.lock().expect("declared needs");
+            let trust_from = declared
+                .get(&(caller, need))
+                .map(|(spec, _)| spec.trust_from.as_str());
+            if trust.is_some_and(|t| Some(t) != trust_from) {
+                return Err(ConnError::Refused);
+            }
+            let over = self.over.lock().expect("needs");
+            over.get(&(caller, need))
+                .and_then(|d| d.tls.clone())
+                .or_else(|| self.tls.clone())
+                .ok_or(ConnError::Refused)?
+        };
+        let waker = self.waker(ticket);
+        if !Self::settle(&held, Some(&waker))? {
+            return Err(ConnError::Pending);
+        }
+        let mut c = held.conn.lock().expect("connection");
+        let c = c.as_mut().ok_or(ConnError::Closed)?;
+        let name = match name {
+            Some(n) => n.to_owned(),
+            None => host_of(c.target()),
+        };
+        match c.upgrade_secure(
+            &config,
+            &name,
+            DEFAULT_OPEN_TIMEOUT,
+            &mut Context::from_waker(&waker),
+        ) {
+            Poll::Ready(Ok(())) => Ok(()),
+            Poll::Ready(Err(f)) => Err(map(&f)),
+            Poll::Pending => Err(ConnError::Pending),
+        }
     }
 
     /// A need is framed when the entry serving its transport composes over another claim (a framer
@@ -762,6 +853,7 @@ impl Conns for Connector {
             alpn,
             egress_class,
             declared_target,
+            tls,
         } = self
             .over
             .lock()
@@ -778,7 +870,7 @@ impl Conns for Connector {
         endpoint::check(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
             target: target.to_owned(),
-            tls: self.tls.clone(),
+            tls: tls.or_else(|| self.tls.clone()),
             alpn,
             open_timeout: if desc.timeout_ms == 0 {
                 DEFAULT_OPEN_TIMEOUT
@@ -946,7 +1038,14 @@ impl Conns for Connector {
                 .agreed_protocol
                 .as_ref()
                 .map(|p| String::from_utf8_lossy(p).into_owned()),
-            peer_cert: None,
+            peer_cert: c
+                .as_ref()
+                .and_then(Connection::peer_cert_hash)
+                .map(|fingerprint| busbar_contract::transport::wire::CertFacts {
+                    subject: String::new(),
+                    issuer: String::new(),
+                    fingerprint,
+                }),
             claim: e.claim.clone(),
         })
     }
@@ -978,6 +1077,14 @@ impl PollConns for Connector {
 #[cfg(test)]
 #[path = "tests/connector_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/trust_from_tests.rs"]
+mod trust_from_tests;
+
+#[cfg(test)]
+#[path = "tests/upgrade_tests.rs"]
+mod upgrade_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code, dead_code)]

@@ -9,7 +9,7 @@ const OTHER: InstanceId = InstanceId(2);
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
 /// private address the scheme-rule test names (the destination guard refuses both by default), so
 /// what those tests assert stays the connector's own rule.
-fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
+pub(crate) fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
     let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
     std::sync::Arc::new(crate::LiteralsOnly(
         crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
@@ -67,7 +67,7 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
         let mut unserved = config_targeted_need("");
         unserved.transport = "nowhere".to_owned();
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(1), &unserved, None),
+            DeclaredConns::declare(&c, OWNER, NeedId(1), &unserved, None, None),
             Err(ConnError::Refused)
         );
         assert_eq!(c.declared(OWNER, NeedId(1)), Some(Err(ConnError::Refused)));
@@ -75,12 +75,12 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
         let mut inbound = unserved.clone();
         inbound.direction = busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None),
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None, None),
             Err(ConnError::Refused)
         );
         inbound.transport = "bytes".to_owned();
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None),
+            DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None, None),
             Ok(())
         );
         let desc = OpenDesc {
@@ -97,7 +97,7 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
         );
 
         // The served scheme opens.
-        DeclaredConns::declare(&c, OWNER, NeedId(2), &config_targeted_need(""), None)
+        DeclaredConns::declare(&c, OWNER, NeedId(2), &config_targeted_need(""), None, None)
             .expect("a served scheme declares");
         let id = c
             .open(OWNER, NeedId(2), &desc)
@@ -457,7 +457,7 @@ fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
         let c = literal_connector();
         let need = config_targeted_need("settings.upstream");
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved)),
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved), None),
             Ok(())
         );
         let open = |target: &str| {
@@ -479,7 +479,7 @@ fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
         c.close(OWNER, id).unwrap();
         let (_moved_listening, moved) = far_end().await;
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&moved)),
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&moved), None),
             Ok(())
         );
         assert_eq!(open(&resolved), Err(ConnError::Refused), "the old pin");
@@ -496,9 +496,9 @@ fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
         let (_listening, resolved) = far_end().await;
         let c = literal_connector();
         let need = config_targeted_need("settings.upstream");
-        let _ = DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved));
+        let _ = DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved), None);
         assert_eq!(
-            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None),
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None, None),
             Err(ConnError::Refused)
         );
         assert_eq!(
@@ -814,7 +814,7 @@ fn a_declared_target_carrying_a_userinfo_is_refused() {
             format!("user@{resolved}"),
         ] {
             assert_eq!(
-                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed)),
+                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed), None),
                 Err(ConnError::Refused),
                 "{credentialed}"
             );
@@ -839,7 +839,8 @@ fn a_declared_target_carrying_a_userinfo_is_refused() {
                 OWNER,
                 NeedId(0),
                 &need,
-                Some(&format!("http://{resolved}/v1/traces"))
+                Some(&format!("http://{resolved}/v1/traces")),
+                None
             ),
             Ok(())
         );
