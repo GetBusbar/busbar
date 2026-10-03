@@ -1733,7 +1733,7 @@ pub(crate) async fn get_audit(
     // `audit::AUDIT` ring stays as a belt-and-suspenders dual-write (BUSBAR-1002), but the seam is the
     // read source, byte-identical (same fields, same order) to the ring it replaces.
     let mut entries =
-        busbar_kernel::plane::auditlog::AUDIT_LOG.list_filtered(start, limit + 1, action, resource);
+        busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(start, limit + 1, action, resource);
     let next_cursor = page_cursor(&mut entries, start, limit);
     ok_json(
         StatusCode::OK,

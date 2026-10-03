@@ -720,7 +720,7 @@ impl busbar_kernel::plane_host::JournalHost for EngineHostImpl {
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
         // Hostless: the admin-audit engine reads `store::now` + the global ring and needs no `HostCtx`.
         // A plain forward to the UNCHANGED core engine.
-        crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
+        crate::audit::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
     }
 
     fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
@@ -2593,7 +2593,7 @@ pub trait TelemetryHost: Send + Sync {
 pub trait JournalHost: Send + Sync {
     /// Emit ONE hostless admin-audit record `(action, resource, outcome, principal)` to the shared
     /// admin audit log. Fire-and-forget, loudly: a store write failure NEVER fails the mutation it
-    /// records. Identical to `busbar_kernel::plane::auditlog::emit_admin_hostless_now` — this seam needs
+    /// records. Identical to `busbar_kernel::audit::auditlog::emit_admin_hostless_now` — this seam needs
     /// no `HostCtx`, so it is a plain forward to that engine (which stays unchanged in core).
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str);
 
