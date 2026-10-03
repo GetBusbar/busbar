@@ -40,8 +40,15 @@
 //! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
 //! ([`KernelServices::admit`]) from what it declares ([`PlaneCalls::declared`], its Statement tail)
 //! and its configured section, so its caller-scoped services (`records.*`, `sign`, `trust.*`)
-//! answer; right before each `tick` it runs the kernel's own tick ([`KernelServices::mark_due`],
-//! [`KernelServices::flush_tick`]), so the plane's `trust.due` sees the marks.
+//! answer; right before each `tick` it marks what is due ([`KernelServices::mark_due`]), so the
+//! plane's `trust.due` sees the marks.
+//!
+//! THE INSTANCE'S RECORD WRITES (ruling H2 U10): a piece's `RecordWrite`s join the kernel's one
+//! write-behind batcher ([`crate::host_records::WriteBehind`]) and the instance reads them at once
+//! through the pending-records overlay; the piece completes only once the store took every one.
+//! The batcher's cadence is not the plane's tick schedule: [`KernelServices::flushes`] restarts a
+//! stalled flush every second, and a reload never waits on a store write (the unit waiting on it is
+//! cancelled; the write itself runs on).
 
 mod cancel;
 mod epoch;
@@ -266,7 +273,6 @@ impl PlaneDriver {
                 tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
             }
             self.services.mark_due();
-            self.services.flush_tick();
             match self.calls.tick(driver, self.calls.now_ns()).await {
                 Some(next) if next != 0 => at = next,
                 _ => return,

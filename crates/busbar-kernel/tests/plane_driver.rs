@@ -1022,3 +1022,8 @@ async fn a_due_subject_shows_in_trust_due_after_a_tick() {
         .expect("one tick");
     assert_eq!(due(&services), b"peer".to_vec(), "due after the tick");
 }
+
+// ── write-behind (ruling H2 U10) ────────────────────────────────────────────────────────────────
+
+#[path = "support/plane_driver_write_behind.rs"]
+mod write_behind;
