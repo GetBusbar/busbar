@@ -61,7 +61,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
-    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB,
+    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
 use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -867,16 +867,55 @@ impl Conns for Connector {
             ("", Some(declared)) => declared,
             (named, _) => named,
         };
+        let open_timeout = if desc.timeout_ms == 0 {
+            DEFAULT_OPEN_TIMEOUT
+        } else {
+            Duration::from_millis(desc.timeout_ms)
+        };
+        // A UNIX-DOMAIN TARGET (`unix:/path`; ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX):
+        // served to an operator-infrastructure (or loopback-allowed) need as a raw stream, every
+        // other class refused; there is no address to resolve or judge. A need whose config names
+        // its target dials that path and no other.
+        if let Some(path) = socket::unix_path(target) {
+            if !matches!(
+                egress_class,
+                EGRESS_OPERATOR_INFRASTRUCTURE | EGRESS_LOOPBACK_ALLOWED
+            ) || declared_target.as_deref().is_some_and(|d| d != target)
+            {
+                return Err(ConnError::Refused);
+            }
+            let dial = Dial {
+                target: target.to_owned(),
+                tls: None,
+                alpn,
+                open_timeout,
+                opening: Some((
+                    desc.fields
+                        .iter()
+                        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                        .collect(),
+                    desc.body.to_vec(),
+                )),
+                head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+            };
+            let conn = Connection::dial_unix(door, dial, path).map_err(|f| map(&f))?;
+            return self.slab.insert(
+                caller,
+                need,
+                Held {
+                    conn: Mutex::new(Some(conn)),
+                    judging: Mutex::new(None),
+                    rest: Mutex::new((None, Vec::new(), false)),
+                    reason: Mutex::new(None),
+                },
+            );
+        }
         endpoint::check(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
             target: target.to_owned(),
             tls: tls.or_else(|| self.tls.clone()),
             alpn,
-            open_timeout: if desc.timeout_ms == 0 {
-                DEFAULT_OPEN_TIMEOUT
-            } else {
-                Duration::from_millis(desc.timeout_ms)
-            },
+            open_timeout,
             opening: Some((
                 desc.fields
                     .iter()
@@ -1086,6 +1125,10 @@ mod trust_from_tests;
 #[cfg(test)]
 #[path = "tests/upgrade_tests.rs"]
 mod upgrade_tests;
+
+#[cfg(test)]
+#[path = "tests/unix_target_tests.rs"]
+mod unix_target_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code, dead_code)]
