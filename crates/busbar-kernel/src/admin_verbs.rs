@@ -122,7 +122,7 @@ pub enum AdminVerbKind {
     Read,
     /// A mutation the core adapter audits (applied on success, rejected on refusal) UNLESS the handler
     /// returned a [`AdminReply::Prebuilt`] response (a plane that did its own audit + envelope, e.g.
-    /// A2A `approve`).
+    /// a plane's `approve`).
     Audited {
         /// The audit action word (`connect`). The resource kind is derived core-side from the plane
         /// decl, so a plane cannot invent a naming scheme.
@@ -139,7 +139,7 @@ pub struct AdminReqCtx {
     pub host: Arc<dyn EngineHost>,
     /// The `{name}` path capture.
     pub name: String,
-    /// The buffered request body bytes (empty on a `GET`). A write verb (A2A `approve`) parses this
+    /// The buffered request body bytes (empty on a `GET`). A write verb (a plane's `approve`) parses this
     /// with `axum::Json::from_bytes`, byte-identically to the old `Json<..>` extractor.
     pub body: Bytes,
     /// The request headers — a write verb reads them to reproduce the old extractor's content-type
@@ -164,11 +164,11 @@ pub enum AdminReply {
     /// round-trip would re-sort keys and change the bytes). The shim emits it as a `200` and, for an
     /// `Audited` verb, records `applied`.
     Applied(String),
-    /// The verb ran and was REJECTED after its look/decision: the shim maps it to `err_json` and, for an
+    /// The verb ran and was REJECTED after its look/verdict: the shim maps it to `err_json` and, for an
     /// `Audited` verb, records `rejected`.
     Rejected(PlaneVerbError),
     /// The handler built the ENTIRE response itself and performed its OWN audit (a plane whose verb
-    /// carries condition-tagged errors and a bespoke success view, e.g. A2A `approve`). The shim returns
+    /// carries condition-tagged errors and a bespoke success view, e.g. a plane's `approve`). The shim returns
     /// it verbatim and audits nothing.
     Prebuilt(axum::response::Response),
 }
@@ -235,7 +235,7 @@ pub struct AdminRouteSpec {
 /// [`AdminReply::Prebuilt`] needs, so it builds its OWN response + audit WITHOUT naming core's frozen
 /// `AdminError` / `Cond` / `ok_json` / `err_json` / the audit chain.
 ///
-/// A "prebuilt" verb (A2A `approve`) carries condition-tagged validation errors and a bespoke success
+/// A "prebuilt" verb (a plane's `approve`) carries condition-tagged validation errors and a bespoke success
 /// view, so it cannot ride the shared `Refused`/`Applied`/`Rejected` shim. It instead reaches these
 /// methods, whose CORE impl (`busbar_kernel::admin::CorePlaneAdminEnvelope`) maps each neutral input
 /// back onto the real `err_json`/`err_json_cond`/`ok_json`/`to_admin_error`/`planeverbs::audit` — so
@@ -256,7 +256,7 @@ pub trait PlaneAdminEnvelope: Send + Sync {
     /// given status, `application/json`, the body verbatim.
     fn ok(&self, status: u16, body: String) -> Response;
     /// Record one self-audited verb outcome: core does `planeverbs::audit(plane, verb, name, outcome,
-    /// principal)`, `outcome` one of the neutral `busbar_kernel::audit::vocab::OUTCOME_*`.
+    /// principal)`, `outcome` one of the neutral `busbar_contract::vocab::OUTCOME_*`.
     fn audit(
         &self,
         plane: &'static str,
@@ -269,7 +269,7 @@ pub trait PlaneAdminEnvelope: Send + Sync {
 
 /// THE CONDITION TAGS a self-enveloping plane attaches to a validation error — the neutral subset the
 /// extracted planes actually emit. Core maps each onto its frozen `taxonomy::Cond` so the class-level
-/// drift test witnesses the declaration at CONDITION granularity (see A2A `approve`'s two conditions).
+/// drift test witnesses the declaration at CONDITION granularity (see a plane `approve` verb's two conditions).
 #[derive(Debug, Clone, Copy)]
 pub enum PlaneAdminCond {
     /// The request body did not parse as the verb's expected shape → core's `Cond::MalformedBody`.

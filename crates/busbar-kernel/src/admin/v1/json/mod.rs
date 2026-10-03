@@ -8,7 +8,7 @@
 //! the recording layer) was extracted to the `busbar-admin` sibling crate (1.6.0). What STAYS here is
 //! the small set of envelope helpers that busbar-core itself still needs: `router::fallback_error_response`
 //! renders `err_json` for the native-API root, and `admin::planeverbs::CorePlaneAdminEnvelope` (the
-//! core backing for the self-enveloping plane-verb seam, which `busbar-a2a`/`busbar-mcp` name at
+//! core backing for the self-enveloping plane-verb seam, which the trust-fronting planes name at
 //! `busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope`) reaches `err_json`/`err_json_cond`/`ok_json`.
 //! busbar-admin's handlers call these through `busbar_kernel::admin::v1::json::{err_json,ok_json,err_json_cond}`.
 

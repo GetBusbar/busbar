@@ -184,7 +184,7 @@ pub trait GovKit: Any + Send + Sync {
 }
 
 /// THE SWAPPABLE HANDLE over a built App — the engine's live snapshot holder the route adapter, the
-/// stdio session and the subscription streams read through, so a test can swap a second App in
+/// byte-stream session and the subscription streams read through, so a test can swap a second App in
 /// mid-session exactly as a config apply does. `Any` so it upcasts to the type-erased
 /// `Arc<dyn Any + Send + Sync>` a neutral request context carries the live engine as.
 pub trait EngineHandle: Any + Send + Sync {
@@ -192,7 +192,7 @@ pub trait EngineHandle: Any + Send + Sync {
     /// slot-read paths see a swap that lands after admission).
     fn engine_host(self: Arc<Self>) -> Arc<dyn EngineHost>;
     /// A factory minting a fresh host over the handle per call — the shape a per-frame transport
-    /// (stdio) takes.
+    /// (a byte-stream carrier) takes.
     fn live_host_factory(self: Arc<Self>) -> LiveHostFactory;
     /// The current snapshot.
     fn load(&self) -> Arc<dyn EngineApp>;

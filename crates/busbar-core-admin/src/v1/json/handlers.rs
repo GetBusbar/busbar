@@ -4461,7 +4461,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             // byte-checked against it (`openapi_json_matches_committed_file`), so adding the row
             // without regenerating hands the next reader a red test — and the regeneration cannot
             // run today: the `openapi-schema` feature build is broken at HEAD for an unrelated
-            // reason (`PlaneDecl.openapi_schemas` is missing from busbar-llm / -mcp / -a2a). The row
+            // reason (`PlaneDecl.openapi_schemas` is missing from the legacy plane crates). The row
             // to add, once that compiles again, is:
             //
             //   ("as_of", "A rate-card history sequence number to price against (default: the \

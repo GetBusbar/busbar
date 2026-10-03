@@ -161,7 +161,7 @@ fn config_validate_and_plugin_inspect_do_not_share_a_bucket() {
 /// took the table for the whole decision (as its doc told them to) would be wrong on every one — and
 /// the table's own doc is held to naming all three.
 #[test]
-fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decides() {
+fn the_config_table_is_not_the_whole_answer_and_its_doc_names_what_else_decides() {
     use crate::admin::v1::contract::{PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
     let table_alone = |rel: &str| {
         CONFIG_CLASS_RULES.iter().any(|rule| match rule {
@@ -200,7 +200,7 @@ fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decide
     assert!(
         !doc.contains(&["nothing", "/// else decides class membership"].join("\n"))
             && !doc.contains("nothing else decides class membership"),
-        "the table's doc claims to be the whole decision again"
+        "the table's doc claims to be the whole answer again"
     );
     for decider in ["/config/validate", "/plugins/inspect", "named-map root"] {
         assert!(

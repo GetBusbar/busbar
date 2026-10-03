@@ -1840,9 +1840,9 @@ pub(crate) async fn auth_middleware(
 
     // THE SINGLE DATA-PLANE GATE — one resolution of the chain verdict, with NO branch anywhere on
     // admin-token presence. The DECISION lives in [`resolve_data_plane_identity`], shared with the
-    // stdio serve mode's boot-time session bind, so "who does this credential make you" cannot be
+    // byte-stream serve mode's boot-time session bind, so "who does this credential make you" cannot be
     // answered differently on the two transports; only the WORDING of a refusal differs here
-    // (an RFC 6750 challenge or a native envelope, where the stdio binding words it on stderr).
+    // (an RFC 6750 challenge or a native envelope, where the byte-stream binding words it on its error stream).
     match resolve_data_plane_identity(&app, verdict) {
         Ok((principal, gov)) => {
             // ALWAYS inserted — including `AuthPrincipal(None)` + empty `GovCtx` on the open front
@@ -1895,7 +1895,7 @@ pub(crate) async fn auth_middleware(
 pub use busbar_contract::auth::IdentityRefusal;
 
 /// WHO A CHAIN VERDICT MAKES YOU on the data plane — the one resolution of verdict →
-/// (principal, governance context), shared by the HTTP auth middleware and the stdio serve mode's
+/// (principal, governance context), shared by the HTTP auth middleware and the byte-stream serve mode's
 /// boot-time session bind so the two transports cannot come to different answers.
 ///
 /// - `Open` (`chain: []`, no keys arm) admits ANONYMOUS: `AuthPrincipal(None)` and an empty

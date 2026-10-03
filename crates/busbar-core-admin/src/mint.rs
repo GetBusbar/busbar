@@ -17,7 +17,7 @@
 
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 
-/// The plan-decision's view of the group tree. `// contract:` — the integrator binds this to the
+/// The mint plan's view of the group tree. `// contract:` — the integrator binds this to the
 /// real config/cost-model group registry (`busbar-core`'s `cost.group_named` /
 /// `groups_registry`); this crate only asks two questions of it: does a name exist, and if so what
 /// is its actual parent.

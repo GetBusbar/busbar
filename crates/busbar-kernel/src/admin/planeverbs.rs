@@ -34,7 +34,7 @@
 use crate::admin::v1::contract::AdminError;
 
 /// Re-export the relocated resolve/look seam so `crate::admin::planeverbs::{PlaneTrust, PlaneVerbError,
-/// registered}` keeps resolving for the in-core (a2a) callers and the shared `connect` bound.
+/// registered}` keeps resolving for the in-core plane callers and the shared `connect` bound.
 pub use busbar_kernel::admin_verbs::{registered, PlaneTrust, PlaneVerbError};
 
 /// RECORD ONE PLANE TRUST VERB in the audit trail.
@@ -80,7 +80,7 @@ pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> A
 /// error boundary ([`to_admin_error`]), and the audit chain ([`audit`]), so the plane names none of
 /// them. A ZST: it carries no state, promoting to `'static` for the composition-root bind.
 ///
-/// Every method maps its neutral inputs back onto exactly what the A2A `approve` verb used to call
+/// Every method maps its neutral inputs back onto exactly what a plane's `approve` verb used to call
 /// inline, so the wire bytes, the `#[cfg(test)]` taxonomy `Cond` tag, and the audit row are
 /// byte-identical to the pre-seam handler.
 pub struct CorePlaneAdminEnvelope;

@@ -7,7 +7,7 @@
 //!
 //! ## What a transport owns, and NOTHING a plane means
 //!
-//! An inbound stdio-class channel is one bidirectional byte pipe shared by everything. What that
+//! An inbound byte-stream channel is one bidirectional byte pipe shared by everything. What that
 //! carrier owns is exactly four things, and this module is exactly those four:
 //!
 //! 1. **Framing** — one frame per line (bytes split on `0x0A`), a final unterminated line still a
@@ -267,7 +267,7 @@ trait FrameSink: Send {
 }
 
 /// The BYTE framing: a frame is its bytes then the `0x0A` terminator — byte-for-byte the wire the
-/// stdio pump always spoke. Wraps any `AsyncWrite`.
+/// byte-stream pump always spoke. Wraps any `AsyncWrite`.
 struct NewlineSink<W> {
     writer: W,
 }

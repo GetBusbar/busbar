@@ -47,7 +47,7 @@ const CONTENT_FACTS: &[&str] = &[FACT_VERB];
 /// The constant used to be called `ADMIN_VERBS`, which collided in name with this crate's own
 /// 66+17-row `KernelVerb` table -- the admin SURFACE itself, not a plane's self-description of it.
 /// Two different things wearing one name had already confused an implementer, so the small
-/// per-plane set every plane may answer through `plane_facts` (the `llm` plane's `dialects` and
+/// per-plane set every plane may answer through `plane_facts` (a plane's `dialects` and
 /// `ladder`, this protocol's per-name projections) is called what it is.
 ///
 /// Declaring this plane's OWN introspection verb as, say, `verb_table` (a verb that dumps the 66+17

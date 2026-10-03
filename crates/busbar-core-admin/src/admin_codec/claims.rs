@@ -17,7 +17,7 @@ pub const TRANSPORT: &str = "http";
 /// The credential scheme this plane's claim authenticates under.
 ///
 /// **Judgment call**: the design does not name a scheme key for the admin surface as it does for the
-/// `llm` plane's `llm-key`. `admin-token` is chosen here as a coherent, self-describing name for the
+/// model plane's key scheme. `admin-token` is chosen here as a coherent, self-describing name for the
 /// bearer credential `busbar-core`'s admin contract already authenticates against; it is not the
 /// literal string the pre-extraction admin listener used, since this crate has no access to that
 /// listener's source.

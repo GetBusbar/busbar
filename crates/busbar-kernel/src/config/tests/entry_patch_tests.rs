@@ -13,15 +13,15 @@ use serde_json::json;
 fn named_fields_land_and_unnamed_fields_survive() {
     let mut target = json!({
         "url": "https://tools.internal/fs",
-        "transport": "http",
+        "transport": "carrier-a",
         "pin": { "mechanism": "cert_spki", "key": "sha256/PIN==" }
     });
-    merge_entry(&mut target, &json!({ "transport": "stdio" }));
+    merge_entry(&mut target, &json!({ "transport": "carrier-b" }));
     assert_eq!(
         target,
         json!({
             "url": "https://tools.internal/fs",
-            "transport": "stdio",
+            "transport": "carrier-b",
             "pin": { "mechanism": "cert_spki", "key": "sha256/PIN==" }
         })
     );

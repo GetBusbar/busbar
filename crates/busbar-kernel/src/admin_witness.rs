@@ -8,8 +8,7 @@
 //! ## Why it lives here and not in `busbar-core`
 //!
 //! `busbar-core`'s own test binary links `busbar-core` TWICE: once as the crate-under-test
-//! (`cfg(test)`) and once as an ordinary dependency of the extracted plane crates (`busbar-mcp` /
-//! `busbar-a2a`), whose admin-verb drivers drive requests through THAT copy's recording layer. A
+//! (`cfg(test)`) and once as an ordinary dependency of the extracted trust-fronting plane crates, whose admin-verb drivers drive requests through THAT copy's recording layer. A
 //! `static` witness set in `busbar-core` would therefore split in two — the plane emissions landing
 //! in the dependency copy, the audit reading the test copy — and the cross-plane over-claim check
 //! would report every plane trust-verb response as un-witnessed. `busbar-substrate` is a plain

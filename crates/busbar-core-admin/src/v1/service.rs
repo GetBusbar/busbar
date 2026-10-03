@@ -4,10 +4,10 @@
 //! The Admin API v1 SERVICE — the application core (the "port").
 //!
 //! `AdminService` owns every admin OPERATION as a typed async method returning `Result<View,
-//! AdminError>`. It holds the shared `App` and knows nothing about HTTP/JSON/MCP: a transport adapter
+//! AdminError>`. It holds the shared `App` and knows nothing about HTTP/JSON or any plane wire: a transport adapter
 //! (`super::transport`) drives it and projects the result onto a wire. This is where scope checks,
 //! atomicity, and audit live as the surface grows — one place, reused by every transport (REST now;
-//! GraphQL/MCP/gRPC later, unchanged).
+//! another wire later, unchanged).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

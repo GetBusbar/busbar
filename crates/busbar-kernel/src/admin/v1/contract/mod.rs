@@ -487,7 +487,7 @@ pub struct HookView {
 
 /// The shared named-DEFINITION read VIEW — relocated to the neutral substrate
 /// (`busbar_kernel::api`) as pure serde data (no `Scope`, no core reach) so a plane crate names
-/// it directly; re-exported here so every in-core (and a2a) caller is unchanged.
+/// it directly; re-exported here so every in-core (and plane) caller is unchanged.
 pub use busbar_kernel::api::NamedDefView;
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,

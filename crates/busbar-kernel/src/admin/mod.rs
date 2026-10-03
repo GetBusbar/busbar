@@ -21,7 +21,7 @@
 //! * [`v1::json`] — the ENVELOPE PRIMITIVES (`err_json`/`ok_json`/`err_json_cond`) only.
 //!   `router::fallback_error_response` and [`planeverbs::CorePlaneAdminEnvelope`] render through them.
 //! * [`planeverbs`] — [`planeverbs::CorePlaneAdminEnvelope`], the core backing for the self-enveloping
-//!   plane-verb seam. `busbar-a2a`/`busbar-mcp` name it at
+//!   plane-verb seam. The trust-fronting planes name it at
 //!   `busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope`, so it stays in core.
 //! * [`versions`] — the [`versions::VersionLog`] config-version store, a field of `state::App`.
 
@@ -30,11 +30,11 @@ pub mod seam;
 /// THE PLANE TRUST VERB SURFACE, written once and parameterised by plane. Every plane that fronts a
 /// registered upstream resolves it, looks at it and audits what it found in the same order; that
 /// order lives here, and the plane supplies only the look.
-// The surface is mounted only by the trust-fronting planes (MCP, A2A); with every such plane compiled
+// The surface is mounted only by the trust-fronting planes; with every such plane compiled
 // out nothing mounts it, so its items read dead in that config alone. The allowance is UNCONDITIONAL
-// rather than gated on the concrete plane features: a `feature = "plane-mcp"`/`"plane-a2a"` attribute
+// rather than gated on the concrete plane features: a per-plane `feature = …` attribute
 // names plane vocabulary, which this neutral crate must not — the same reason `planeverbs.rs`'s own
-// ratchet test forbids `mcp`/`a2a` in its source. When a plane IS compiled in the module is used, so
+// ratchet test forbids plane names in its source. When a plane IS compiled in the module is used, so
 // the allowance is a harmless no-op; only in the all-planes-off build does it silence the otherwise
 // unavoidable dead-code warnings.
 #[allow(dead_code)]

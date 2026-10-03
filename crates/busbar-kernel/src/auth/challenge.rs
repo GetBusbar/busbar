@@ -8,14 +8,14 @@
 //! The data plane's 401 shaper (`super::unauthorized_response`) deliberately impersonates the vendor
 //! whose dialect the caller spoke: an OpenAI SDK gets OpenAI's copy, a Bedrock SDK gets
 //! `AccessDeniedException`. That is right for a gateway pretending to be six vendors, and it is
-//! exactly wrong here. An audience-bound plane's caller is not an LLM SDK; it is an OAuth client
+//! exactly wrong here. An audience-bound plane's caller is not a model-vendor SDK; it is an OAuth client
 //! that has been TOLD, by RFC 6750 and RFC 9728, that a `401` carries a machine-readable challenge
 //! naming where to go and get a token. Hand it a vendor-shaped JSON body with no
 //! `WWW-Authenticate` header and the discovery loop simply does not close: the client has no way to
 //! find the authorization server, because the only place that URL was ever going to come from is the
 //! header we did not send.
 //!
-//! This is the whole of the MCP bootstrap story, and it is the reason an agent can log into busbar
+//! This is the whole of an audience-bound plane's bootstrap story, and it is the reason an agent can log into busbar
 //! with no prior configuration: connect with no credential, read `resource_metadata` out of the
 //! challenge, fetch the protected-resource metadata document, discover the operator's authorization
 //! server, do ordinary OAuth, come back with a token.
