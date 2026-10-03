@@ -62,13 +62,10 @@ pub fn register<T: AsRawFd>(io: T) -> io::Result<Registered<T>> {
     // A plugin driving its connection from a dispatcher worker (an export sink delivering a batch)
     // is on no runtime thread: its socket goes on the reactor of the process's one runtime, the
     // one the root installed at boot ([`install_process_reactor`]). Never a reactor of its own.
-    let _entered = match tokio::runtime::Handle::try_current() {
-        Ok(_) => None,
-        Err(_) => match PROCESS_REACTOR.get() {
-            Some(h) => Some(h.enter()),
-            None => return Err(io::Error::other(NOT_ON_A_WORKER)),
-        },
-    };
+    let _entered = enter_process_runtime();
+    if tokio::runtime::Handle::try_current().is_err() {
+        return Err(io::Error::other(NOT_ON_A_WORKER));
+    }
     AsyncFd::with_interest(io, Interest::READABLE | Interest::WRITABLE).map(Registered)
 }
 
@@ -79,6 +76,15 @@ static PROCESS_REACTOR: std::sync::OnceLock<tokio::runtime::Handle> = std::sync:
 /// reactor. Set once; a second install is ignored.
 pub fn install_process_reactor(handle: tokio::runtime::Handle) {
     let _ = PROCESS_REACTOR.set(handle);
+}
+
+/// Off a runtime thread, the process's one runtime entered for the guard's life — its reactor for a
+/// socket, its timer for a deadline. `None` on a runtime thread, or before the root installed it.
+pub(crate) fn enter_process_runtime() -> Option<tokio::runtime::EnterGuard<'static>> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return None;
+    }
+    PROCESS_REACTOR.get().map(tokio::runtime::Handle::enter)
 }
 
 impl<T: AsRawFd> Registered<T> {
