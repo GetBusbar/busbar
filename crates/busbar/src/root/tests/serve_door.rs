@@ -9,7 +9,7 @@
 //! connector: the destination guard's judgement and pin, the breaker, the dispatch record) to a
 //! real far end, and comes back a served 200 whose money record is posted: the governance ledger
 //! holds the admitted request and the node's book the unit's one line with the decision the far end
-//! reported. The plane is the jev plane's own door, linked (compiled in) and bound through the
+//! reported. The plane is the decisions plane's own door, linked (compiled in) and bound through the
 //! loader's one load, its need declared on the connector, as its door row binds it. The dropped-in
 //! fold of the same door is the plane crate's own conformance suite (`tests/conformance.rs`, one
 //! transcript through both loads); this harness builds no cdylib of it.
@@ -24,7 +24,7 @@ use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SEP};
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
-use busbar_plane_decisions::plane_door::door as jev_door;
+use busbar_plane_decisions::plane_door::door as decisions_door;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, money, Published, PUBLISHING};
@@ -52,7 +52,7 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
         holder
     });
 
-/// The jev plane's one claim, with one model configured.
+/// The decisions plane's one claim, with one model configured.
 const CLAIMED: &str = "/v1/systemone";
 
 /// The provider's credential, as its file holds it.
@@ -137,7 +137,7 @@ async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let _one = PUBLISHING.lock().await;
-    let instance = "serve-door-jev-served";
+    let instance = "serve-door-served";
     let _published = Published(instance);
     let (port, mut heard) = far_end().await;
 
@@ -160,7 +160,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     // THE DECISIONS DOOR, linked, bound through the loader's one load, its need declared on the
     // connector.
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(jev_door).expect("the door states its Statement");
+    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
         Bind {
@@ -211,7 +211,8 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let key_file = std::env::temp_dir().join(format!("busbar-serve-door-{}", std::process::id()));
     std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
     let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
-        "{{protocol: jev, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
+        "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
+        busbar_plane_decisions::config::PROTOCOL,
         key_file.display()
     ))
     .expect("a provider entry");
@@ -236,7 +237,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let mut sections = BTreeMap::new();
     sections.insert(
         section_key,
-        serde_yaml::from_str("models: {jev: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
     );
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -311,7 +312,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
     assert_eq!(post.open_units(), 0, "its node facts closed at its end");
     let rows = book.durability.lock().expect("unpoisoned").read_back();
-    let lane = format!("{plane_key}{PLANE_LANE_SEP}jev");
+    let lane = format!("{plane_key}{PLANE_LANE_SEP}m");
     let line = rows
         .iter()
         .find(|p| p.counts.as_ref().is_some_and(|c| c.lane == lane))
@@ -331,7 +332,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 #[tokio::test]
 async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let _one = PUBLISHING.lock().await;
-    let instance = "serve-door-jev";
+    let instance = "serve-door";
     let _published = Published(instance);
     let app = busbar_kernel::test_support::TestApp::new().build();
     // RED ARM: a data router built without the door's routes does not hand the claim to the plane.
@@ -341,7 +342,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     assert_ne!(send(&bare, CLAIMED, None).await.status().as_u16(), refused);
 
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(jev_door).expect("the door states its Statement");
+    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
         Bind {
@@ -357,7 +358,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let mut sections = BTreeMap::new();
     sections.insert(
         section,
-        serde_yaml::from_str("models: {jev: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
     );
     let served = compose_planes(
         &[(instance.to_string(), plane)],
