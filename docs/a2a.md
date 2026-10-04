@@ -34,7 +34,7 @@ There is a second consequence worth knowing: the `a2a_inbound` credential kind i
 
 ### The `agents:` section
 
-`agents:` is a sibling of `pools:` and `tools:`: a map whose keys are registrations, with the same two words reserved at the section level on every plane (`crates/busbar-a2a/src/a2a/config.rs:13-20`).
+`agents:` is a sibling of `pools:` and `tools:`: a map whose keys are registrations, with the same two words reserved at the section level on every plane (`crates/busbar-plane-a2a/src/a2a/config.rs:327-329`).
 
 | Reserved section key | Type | Combine rule |
 |---|---|---|
@@ -45,7 +45,7 @@ Naming an agent `hooks` or `upstream_credentials` is refused at parse (`crates/b
 
 #### `agents.<name>` — one registered agent
 
-`deny_unknown_fields`: a typo'd key fails boot rather than silently un-pinning an agent (`crates/busbar-a2a/src/a2a/config.rs:196`).
+`deny_unknown_fields`: a typo'd key fails boot rather than silently un-pinning an agent (`crates/busbar-plane-a2a/src/a2a/config.rs:249`).
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
@@ -97,7 +97,7 @@ agents:
 
 ### Boot refusals: the `agents:` section
 
-`validate_agent` is called from **both** the config file's `Deserialize` and the admin write path, so the API refuses exactly what the file refuses (`crates/busbar-a2a/src/a2a/config.rs:315-322`). This was not always true, and the defect it fixed is instructive: the API used to persist a definition the file would have refused, then drop it at the next rebuild with a log line.
+`validate_agent` is called from **both** the config file's `Deserialize` and the admin write path, so the API refuses exactly what the file refuses (`crates/busbar-plane-a2a/src/a2a/config.rs:370`). This was not always true, and the defect it fixed is instructive: the API used to persist a definition the file would have refused, then drop it at the next rebuild with a log line.
 
 | Refusal | Condition | `a2a/config.rs` |
 |---|---|---|
@@ -115,7 +115,7 @@ agents:
 | a `hooks:` entry that is not a bare name, or that reaches onto another section | | `plane/config.rs:180-201` |
 | a `hooks:` entry naming a hook not defined in the top-level `hooks:` map | checked over the whole config in `resolve` | `config/mod.rs:4405-4414` |
 
-**The `passthrough` refusal is the one to understand.** `passthrough` means "forward the CALLER's credential upstream". On the delegation plane that would hand a third-party vendor a working Busbar credential belonging to somebody else — the caller's key authenticated them *to Busbar* and authorised them against *Busbar's* scopes, and it means nothing anywhere else. **Busbar delegates as itself.** The word stays reserved on every plane so the vocabulary is learned once; the value is refused loudly, because accepting it and quietly doing something else is how an operator ends up believing a credential is being forwarded when it is not, or the reverse (`crates/busbar-a2a/src/a2a/config.rs:82-95`).
+**The `passthrough` refusal is the one to understand.** `passthrough` means "forward the CALLER's credential upstream". On the delegation plane that would hand a third-party vendor a working Busbar credential belonging to somebody else — the caller's key authenticated them *to Busbar* and authorised them against *Busbar's* scopes, and it means nothing anywhere else. **Busbar delegates as itself.** The word stays reserved on every plane so the vocabulary is learned once; the value is refused loudly, because accepting it and quietly doing something else is how an operator ends up believing a credential is being forwarded when it is not, or the reverse (`crates/busbar-plane-a2a/src/a2a/config.rs:130-145`).
 
 ### There is no empty-`auth.chain` boot refusal on this plane
 

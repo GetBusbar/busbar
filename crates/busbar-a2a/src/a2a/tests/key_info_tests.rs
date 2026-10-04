@@ -51,7 +51,7 @@ fn the_pin_is_the_sha256_of_those_bytes_in_the_planes_one_digest_spelling() {
     );
     assert_eq!(
         pin,
-        crate::a2a::card::sha256_tagged(&expected_key_pin),
+        busbar_contract::abi::sdk::digest::sha256_tagged(&expected_key_pin),
         "ONE digest rendering on this plane. A second spelling here is a second value an operator \
          has to know is the same one."
     );

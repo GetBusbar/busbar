@@ -80,7 +80,7 @@ pub(crate) struct AgentRegistration {
     /// The operator's standing decision: the locked pin, the approved per-skill digests, the
     /// suspension. THE MACHINE'S TYPE, held, not copied.
     pub(crate) approval: Approval<CardPin>,
-    /// The cadence, lowered from config by [`super::config::policy_for`].
+    /// The cadence, lowered from config by [`super::section::policy_for`].
     pub(crate) reverify: reverify::Policy,
     /// The breaker's trip points.
     pub(crate) thresholds: anomaly::Thresholds,

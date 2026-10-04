@@ -193,7 +193,7 @@ impl A2aPlane {
     /// anything.
     ///
     /// A per-agent cadence that does not parse is not reachable here: `validate_agent` already
-    /// refused it at boot and at the admin write path, so [`super::config::policy_for`]'s error is
+    /// refused it at boot and at the admin write path, so [`super::section::policy_for`]'s error is
     /// a state config validation has already excluded. It is still handled rather than unwrapped —
     /// the registration keeps the constructor's default cadence and says so — because a panic in a
     /// config lowering is a panic on the operator's next apply.
@@ -241,7 +241,7 @@ impl A2aPlane {
             if let Some(v) = def.protocol_version.as_deref() {
                 reg.protocol_version = v.to_string();
             }
-            match super::config::policy_for(def, DEFAULT_RECOVERY_BACKOFF_MS) {
+            match super::section::policy_for(def, DEFAULT_RECOVERY_BACKOFF_MS) {
                 Ok(policy) => reg.reverify = policy,
                 Err(e) => diag_warn!(
                     A2A_REVERIFY_CADENCE_UNPARSED,

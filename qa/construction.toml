@@ -736,6 +736,9 @@ busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
+# The same ruling applied to a plane: the `agents:` grammar keeps its registrations in the order an
+# operator wrote them (indexmap), and the plane reads its public base URL once (url).
+busbar-plane-a2a = ["indexmap", "url"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a

@@ -355,6 +355,15 @@ impl<'de> Deserialize<'de> for AgentsCfg {
             validate_agent,
         )?;
 
+        // THE SECTION DEFAULT, refused here too until the kernel's judgement of the reserved key
+        // (the declaration's `caller_credential_refusal`) runs on every path: the same sentence, so
+        // whichever refuses first the bytes are 1.5.5's. On the door path the reserved key arrives
+        // stripped and this never fires.
+        if section.upstream_credentials == Some(busbar_contract::config::UpstreamCreds::Passthrough)
+        {
+            return Err(serde::de::Error::custom(REFUSE_PASSTHROUGH_SECTION));
+        }
+
         Ok(AgentsCfg {
             all_agent_hooks: section.hooks,
             all_agent_upstream_credentials: section.upstream_credentials,
