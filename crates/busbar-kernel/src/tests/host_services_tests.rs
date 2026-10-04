@@ -1555,6 +1555,63 @@ fn a_dead_or_expired_key_sees_nothing() {
     }
 }
 
+/// THE PRINCIPAL AS IT STANDS (ARCHITECT round 4 Q-L3B-SURFACES (a)): with the root's live
+/// re-resolution attached, every entitlement is judged against the principal re-resolved per ask:
+/// a principal revoked after admission is entitled to nothing and no longer stands
+/// (`ENTITLEMENT_STANDING`), and one whose grant narrowed sees the narrowed grant. Unattached, an
+/// admitted principal stands as admitted.
+#[test]
+fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
+    let r = rig();
+    let admitted = key_granting(&[("item", "one"), ("item", "two")]);
+    assert_eq!(
+        entitled(
+            &r,
+            1,
+            Some(Arc::clone(&admitted)),
+            svc::ENTITLEMENT_STANDING
+        ),
+        svc::ENTITLED,
+        "unattached, the admitted principal stands"
+    );
+    let now: Arc<std::sync::Mutex<Option<Arc<VirtualKey>>>> = Arc::new(std::sync::Mutex::new(
+        Some(key_granting(&[("item", "one")])),
+    ));
+    let live = Arc::clone(&now);
+    assert!(r
+        .s
+        .attach_standing(Arc::new(move |_, _| live.lock().unwrap().clone())));
+    assert_eq!(
+        entitled(&r, 1, Some(Arc::clone(&admitted)), "item:two"),
+        svc::NOT_ENTITLED,
+        "the narrowed grant is the one judged"
+    );
+    assert_eq!(
+        entitled(&r, 1, Some(Arc::clone(&admitted)), "item:one"),
+        svc::ENTITLED
+    );
+    *now.lock().unwrap() = None;
+    assert_eq!(
+        entitled(
+            &r,
+            1,
+            Some(Arc::clone(&admitted)),
+            svc::ENTITLEMENT_STANDING
+        ),
+        svc::NOT_ENTITLED,
+        "a revoked principal no longer stands"
+    );
+    assert_eq!(
+        entitled(&r, 1, Some(admitted), "item:one"),
+        svc::NOT_ENTITLED
+    );
+    assert_eq!(
+        entitled(&r, 2, None, svc::ENTITLEMENT_STANDING),
+        svc::ENTITLED,
+        "an ungoverned unit stands"
+    );
+}
+
 #[test]
 fn an_undeclared_scope_kind_is_not_entitled() {
     let r = rig();

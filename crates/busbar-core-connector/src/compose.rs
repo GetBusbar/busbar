@@ -1055,11 +1055,18 @@ impl Connection {
     /// Begin the framing over what the open established, then send the first message and any
     /// early writes.
     fn begin(&mut self) -> Result<(), Failure> {
-        let (framing, y) = Framing::begin(
+        // A dial hands its opening head fields to the framing's begin too, for a wire that
+        // carries them on the connection's opening (ARCHITECT Q-L5B-WS-DIAL).
+        let opening: &[(String, Vec<u8>)] = match &self.opening {
+            Some((fields, _)) if self.side == SIDE_DIAL => fields,
+            _ => &[],
+        };
+        let (framing, y) = Framing::begin_with(
             Arc::clone(&self.door),
             self.side,
             &self.target,
             &self.established,
+            opening,
         )
         .map_err(|e| Failure::Refused(e.to_string()))?;
         self.framing = Some(framing);
@@ -1078,7 +1085,12 @@ impl Connection {
     fn send_opening(&mut self) -> Result<(), Failure> {
         let opening = self.opening.take();
         let words = std::mem::take(&mut self.head_words);
-        if let Some(message) = self.encode_opening(opening, words)? {
+        // A wire whose envelope renders nothing of an opening (its fields rode the framing's
+        // begin) sends no opening message.
+        if let Some(message) = self
+            .encode_opening(opening, words)?
+            .filter(|m| !m.is_empty())
+        {
             let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
             let y = framing
                 .emit(EXCHANGE_STREAM, &message, true, false)

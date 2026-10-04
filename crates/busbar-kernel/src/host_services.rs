@@ -487,6 +487,20 @@ struct Records {
 /// The wall clock, in milliseconds since the Unix epoch.
 pub type WallMs = Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// The monotonic clock `clock.now` reads, in nanoseconds from the services' origin.
+pub type MonoNs = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// THE LIVE RE-RESOLUTION of an admitted principal at `now` (Unix seconds): the principal as it
+/// stands, or `None` when it no longer does.
+pub type Standing = Arc<
+    dyn Fn(
+            &Arc<busbar_contract::records::VirtualKey>,
+            u64,
+        ) -> Option<Arc<busbar_contract::records::VirtualKey>>
+        + Send
+        + Sync,
+>;
+
 fn system_wall_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -497,6 +511,8 @@ fn system_wall_ms() -> u64 {
 pub struct KernelServices {
     origin: Instant,
     wall_ms: WallMs,
+    /// The monotonic clock, where one was given; else the time since [`Self::origin`].
+    mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
     records: Option<Records>,
     pool: OnceLock<Arc<dyn Offload>>,
@@ -516,6 +532,10 @@ pub struct KernelServices {
     bounds_of: Mutex<HashMap<Arc<str>, WorkBounds>>,
     /// The root's nested-dispatch seam, attached once, and the permits nested units run under.
     nest: OnceLock<Arc<dyn NestRoute>>,
+    /// The live re-resolution of a unit's principal (a registry key by id, a role-bound one through
+    /// the current bindings): `None` when it no longer stands. Attached by the composition root
+    /// over its live snapshot; unattached, the principal admitted is the one judged.
+    standing: OnceLock<Standing>,
     nested: Arc<crate::pump::NestedPool>,
 }
 
@@ -547,6 +567,7 @@ impl KernelServices {
         Self {
             origin: Instant::now(),
             wall_ms: Arc::new(system_wall_ms),
+            mono_ns: None,
             instances: Mutex::default(),
             records: None,
             pool: OnceLock::new(),
@@ -561,6 +582,7 @@ impl KernelServices {
             work_bounds: WorkBounds::default(),
             bounds_of: Mutex::default(),
             nest: OnceLock::new(),
+            standing: OnceLock::new(),
             nested: Arc::new(crate::pump::NestedPool::new(
                 NEST_CONCURRENCY,
                 NEST_DEPTH_MAX as usize + 1,
@@ -572,6 +594,12 @@ impl KernelServices {
     /// [`Self::attach_pool`]): once; a second attach is refused (`false`) and changes nothing.
     pub fn attach_nest(&self, route: Arc<dyn NestRoute>) -> bool {
         self.nest.set(route).is_ok()
+    }
+
+    /// Re-resolve every unit's principal through `standing` from now on (once; a second attach is
+    /// refused): entitlement is judged against the principal as it stands, frame by frame.
+    pub fn attach_standing(&self, standing: Standing) -> bool {
+        self.standing.set(standing).is_ok()
     }
 
     /// The permits nested units run under (how many are out is `size - available`).
@@ -707,6 +735,13 @@ impl KernelServices {
         self
     }
 
+    /// Read `clock.now`'s monotonic time through `mono_ns`.
+    #[must_use]
+    pub fn with_mono_clock(mut self, mono_ns: MonoNs) -> Self {
+        self.mono_ns = Some(mono_ns);
+        self
+    }
+
     /// Register (or re-register) what the instance labelled `instance` declared. Every
     /// caller-scoped service answers from this; its trust entries are admitted to the trust state,
     /// and its own durable demotions replayed.
@@ -777,6 +812,9 @@ impl KernelServices {
         let Some(facts) = self.facts(caller) else {
             return false;
         };
+        if target == busbar_contract::abi::host::service::ENTITLEMENT_STANDING {
+            return self.stands(unit);
+        }
         let Some((kind, name)) = target.split_once(':') else {
             return false;
         };
@@ -793,12 +831,30 @@ impl KernelServices {
             return false;
         };
         let now = (self.wall_ms)() / 1000;
-        validate_visibility(
-            record.principal.as_deref(),
-            now,
-            &[Grant::Scope { kind, name }],
-        )
-        .is_ok()
+        // THE PRINCIPAL AS IT STANDS NOW, re-resolved per ask where the root attached the live
+        // resolution: one that no longer stands is entitled to nothing.
+        let principal = match (record.principal.as_ref(), self.standing.get()) {
+            (Some(admitted), Some(standing)) => match standing(admitted, now) {
+                Some(live) => Some(live),
+                None => return false,
+            },
+            (admitted, _) => admitted.cloned(),
+        };
+        validate_visibility(principal.as_deref(), now, &[Grant::Scope { kind, name }]).is_ok()
+    }
+
+    /// Whether `unit`'s principal still stands (an ungoverned unit, or one with no live
+    /// resolution attached, stands as admitted).
+    fn stands(&self, unit: Option<u64>) -> bool {
+        let Some(record) = unit.and_then(|u| self.units.get(u)) else {
+            return false;
+        };
+        match (record.principal.as_ref(), self.standing.get()) {
+            (Some(admitted), Some(standing)) => {
+                standing(admitted, (self.wall_ms)() / 1000).is_some()
+            }
+            _ => true,
+        }
     }
 
     /// The overlay of every instance's record writes the store has not yet taken.
@@ -1134,7 +1190,10 @@ impl HostServices for KernelServices {
             .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
         Reading {
             wall_ns: wall,
-            mono_ns: u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            mono_ns: self.mono_ns.as_ref().map_or_else(
+                || u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                |mono| mono(),
+            ),
         }
     }
 

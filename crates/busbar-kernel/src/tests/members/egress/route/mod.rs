@@ -200,6 +200,7 @@ impl Node {
                     (
                         DestinationId::new(n as u64),
                         MemberRoute {
+                            rides: Vec::new(),
                             need: NeedId(0),
                             base_url: format!("https://{lane}.test/"),
                             auth: None,
@@ -397,6 +398,7 @@ fn ports<'p>(node: &'p Node, pools: &'p HashMap<String, Pool>) -> WalkPorts<'p> 
 /// One attempt's request, as a plane bound it for the far end.
 fn request(member: &str, pool: &str, attempt_no: u32) -> OutboundRequest {
     OutboundRequest {
+        need: 0,
         member: member.to_string(),
         pool: pool.to_string(),
         attempt_no,

@@ -36,7 +36,9 @@
 //! `drive`. A session's unsolicited output (R-B) wakes the same ticket: [`PlaneDriver::drives`]
 //! wakes each session its `drive` names, and the session collects its output.
 //!
-//! DUPLEX SESSIONS (K6): [`PlaneUnits::session`], after `open_unit` admitted the unit.
+//! DUPLEX SESSIONS (K6): [`PlaneUnits::session`], after `open_unit` admitted the unit, or as the
+//! route leg of a unit whose `arrive` stated `ROUTE_SESSION` (ARCHITECT round 5 Q-L3B-K6-HTTP (a)):
+//! the unit's own caller side is then the session's caller leg ([`SessionCaller`]).
 //!
 //! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
 //! ([`KernelServices::admit`]) from what it declares ([`PlaneCalls::declared`], its Statement tail)
@@ -70,7 +72,7 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
-    REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
+    REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -399,6 +401,8 @@ pub struct Decoded {
     pub pool: Option<Vec<u8>>,
     /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3).
     pub route: u8,
+    /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`).
+    pub route_flags: u8,
 }
 
 /// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the loop's
@@ -408,6 +412,10 @@ pub trait DriverSteps: Units {
     /// (`None` = none named) as a pool or directly (`route`, `ROUTE_*`). Called once, when decode
     /// proceeds.
     fn decoded(&self, _ctx: &UnitCtx, _op: OpClassId, _route: u8, _pool: Option<&[u8]>) {}
+
+    /// The `ROUTE_*` flag bits the unit's `arrive` stated (`ROUTE_ONCE`: an answered failure is
+    /// not retried on another member), told with [`Self::decoded`].
+    fn route_flags(&self, _ctx: &UnitCtx, _flags: u8) {}
 
     /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
     /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
@@ -596,6 +604,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
                 .collect(),
             pool,
             route: o.route,
+            route_flags: o.route_flags,
         })
     }
 }
@@ -780,7 +789,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         }
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
-            route::End::Failed(reason) => StepAnswer::refuse(token, Refusal::new(reason)),
+            route::End::Failed(reason) => failed(token, reason),
             route::End::Exhausted(status, retry_after) => {
                 // THE WALK'S EXHAUSTION TERMINAL: its status and its Retry-After floor, handed to
                 // the plane's `refusal` (RefusalIn.retry_after_s), which renders them in its dialect.
@@ -822,6 +831,11 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         }
         let _written = self.caller.write(&rendered.body).await;
     }
+}
+
+/// The route step refused for the `reason` its leg ended with.
+fn failed(token: &Pass<Route>, reason: ReasonCode) -> StepAnswer<Route> {
+    StepAnswer::refuse(token, Refusal::new(reason))
 }
 
 /// The seats the kernel's own steps answer, forwarded to `self.steps` unchanged: one line per
@@ -897,6 +911,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
             .and_then(|d| classes.get(d.op_class as usize).copied());
         if let (Some(op), Some(d)) = (op, decoded.as_ref()) {
             self.steps.decoded(ctx, op, d.route, d.pool.as_deref());
+            self.steps.route_flags(ctx, d.route_flags);
             self.steps.expected(ctx, &d.expected);
         }
         self.lock().decoded = decoded;
@@ -961,14 +976,50 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 }
 
-impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> RouteAwait for PlaneUnits<'_, S, F, C> {
+impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> PlaneUnits<'_, S, F, C> {
+    /// S3 for a unit its `arrive` stated `ROUTE_SESSION` (ARCHITECT round 5 Q-L3B-K6-HTTP (a)):
+    /// the route leg is the duplex session ([`PlaneUnits::session`]) under the unit's one
+    /// admission, inside the destinations its approval sealed, its caller leg the unit's own caller
+    /// side; a session its plane answers itself (`ROUTE_LOCAL`) bills nothing, as a local request
+    /// unit does. A session that ended on its own proceeds; one that ended for a cause is refused
+    /// with it (a caller that already has its head is told nothing more by the loop's encode).
+    async fn session_async(
+        &self,
+        token: &Pass<Route>,
+        ctx: &UnitCtx,
+        sealed: &[VerifiedDestination],
+    ) -> StepAnswer<Route> {
+        let local = self
+            .lock()
+            .decoded
+            .as_ref()
+            .is_some_and(|d| d.route == ROUTE_LOCAL);
+        match self.session_priced(token, ctx, sealed, !local).await {
+            Ok(()) => StepAnswer::proceed(token, RoutePlan::default()),
+            Err(reason) => failed(token, reason),
+        }
+    }
+}
+
+impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUnits<'_, S, F, C> {
+    /// The unit's route leg: one request's pump, or, for an arrival its `arrive` stated
+    /// `ROUTE_SESSION`, the duplex session (K6).
     fn route_leg<'a>(
         &'a self,
         token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
-        _destinations: &'a [VerifiedDestination],
+        destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
-        Box::pin(self.route_async(token, ctx))
+        let session = self
+            .lock()
+            .decoded
+            .as_ref()
+            .is_some_and(|d| d.route_flags & ROUTE_SESSION != 0);
+        if session {
+            Box::pin(self.session_async(token, ctx, destinations))
+        } else {
+            Box::pin(self.route_async(token, ctx))
+        }
     }
 
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
