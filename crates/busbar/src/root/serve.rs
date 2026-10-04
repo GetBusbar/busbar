@@ -36,7 +36,7 @@ use busbar_kernel::plane::DemotionRecord;
 use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
-    PlaneDriver, PlaneMoney, Rendered,
+    PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -592,11 +592,15 @@ impl Served {
 }
 
 impl Served {
-    /// Each plane's tick schedule, on its driver ticket, spawned on the current runtime.
+    /// Each plane's tick schedule and its ready-session fan-out (`drive`'s names, R-B), on its
+    /// driver ticket, spawned on the current runtime: a unit served as a duplex session (K6) is
+    /// woken through them for the output it owes on the tick (ARCHITECT round 5 Q-L3B-K6-HTTP (a)).
     pub fn spawn_ticks(&self) {
         for p in &self.planes {
             let driver = Arc::clone(&p.driver);
             tokio::spawn(async move { driver.ticks().await });
+            let driver = Arc::clone(&p.driver);
+            tokio::spawn(async move { driver.drives().await });
         }
     }
 }
@@ -668,6 +672,55 @@ pub fn compose_served(
             None => Ok(Served::default()),
         }
     }
+}
+
+/// THE DOOR PLANES' SECTIONS WITH THEIR POOLS: each section `pools` names (by its key) carries, at
+/// its reserved `pools` key, the unified pools its members resolved to (each with its `members` and
+/// its `repeatable` operations), so its DoorPools walks them and its plane names them (ARCHITECT
+/// round 4 Q-L3B-SURFACES (h)). A section with no pools, or one this document does not write, is
+/// left as it is.
+#[must_use]
+pub fn with_pools(
+    mut sections: BTreeMap<&'static str, serde_yaml::Value>,
+    pools: &[(
+        &'static str,
+        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    )],
+) -> BTreeMap<&'static str, serde_yaml::Value> {
+    use busbar_contract::section::{
+        POOL_MEMBERS_KEY, POOL_MEMBER_GRANTED_KEY, POOL_REPEATABLE_KEY, RESERVED_POOLS_KEY,
+    };
+    for (key, stated) in pools {
+        if stated.is_empty() {
+            continue;
+        }
+        let Some(serde_yaml::Value::Mapping(section)) = sections.get_mut(key) else {
+            continue;
+        };
+        let mut map = serde_yaml::Mapping::new();
+        for (name, pool) in stated {
+            let mut entry = serde_yaml::Mapping::new();
+            entry.insert(
+                POOL_MEMBERS_KEY.into(),
+                serde_yaml::Value::Sequence(
+                    pool.members.iter().map(|m| m.as_str().into()).collect(),
+                ),
+            );
+            entry.insert(
+                POOL_REPEATABLE_KEY.into(),
+                serde_yaml::Value::Sequence(
+                    pool.repeatable.iter().map(|m| m.as_str().into()).collect(),
+                ),
+            );
+            entry.insert(
+                POOL_MEMBER_GRANTED_KEY.into(),
+                serde_yaml::Value::Bool(true),
+            );
+            map.insert(name.as_str().into(), serde_yaml::Value::Mapping(entry));
+        }
+        section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
+    }
+    sections
 }
 
 /// WHAT A DOOR PLANE'S EGRESS IS SEALED OVER: how its members are reached ([`DoorReach`]) and the
@@ -1546,7 +1599,7 @@ impl DataRoutes {
             .get(claim as usize)
             .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key.clone();
-        let (caller, reply) = IngressCaller::new();
+        let (caller, reply) = IngressCaller::arriving(body);
         let unit = async move {
             let caller = caller;
             self.drive(plane, app, principal, key, open, &caller, arrival, None)
@@ -1790,6 +1843,7 @@ impl<'d> DoorFar<'d, '_> {
                 Some(egress.unit(UnitRoute {
                     unit: self.unit,
                     pool: egress_pool(self.steps.plane(), &routed),
+                    once: self.steps.once(),
                     ..UnitRoute::default()
                 }))
             })
@@ -1838,12 +1892,19 @@ impl FarEnd for DoorFar<'_, '_> {
 /// The head goes to the handler once; the bytes go into the response body through a channel of one
 /// piece, so a `write` resolves only once the body has taken the piece before it (the caller's side
 /// was writable). A body the server dropped (the caller went away) answers `false`.
+///
+/// A unit served as a DUPLEX SESSION (its `arrive` stated `ROUTE_SESSION`, ARCHITECT round 5
+/// Q-L3B-K6-HTTP (a)) has this caller side as its session's caller leg: its read yields the
+/// arrival's body once, then nothing until the response is dropped, and the long-lived response is
+/// what the session writes.
 #[derive(Debug)]
 pub struct IngressCaller {
     head: Mutex<Option<oneshot::Sender<Head>>>,
     body: mpsc::Sender<Bytes>,
     /// The status the unit stated its head with; `0` before it did.
     stated: std::sync::atomic::AtomicU32,
+    /// The arrival's body, until a session's caller leg has read it.
+    arrived: Mutex<Option<Bytes>>,
 }
 
 /// A reply head: the status number and the head fields.
@@ -1860,14 +1921,27 @@ impl IngressCaller {
     /// A caller side and the reply it feeds.
     #[must_use]
     pub fn new() -> (Self, IngressReply) {
+        Self::arriving(Bytes::new())
+    }
+
+    /// A caller side whose request arrived with `body`, and the reply it feeds.
+    #[must_use]
+    pub fn arriving(body: Bytes) -> (Self, IngressReply) {
         let (head_tx, head) = oneshot::channel();
-        let (body_tx, body) = mpsc::channel(1);
+        let (body_tx, reply_body) = mpsc::channel(1);
         let caller = IngressCaller {
             head: Mutex::new(Some(head_tx)),
             body: body_tx,
             stated: std::sync::atomic::AtomicU32::new(0),
+            arrived: Mutex::new(Some(body)),
         };
-        (caller, IngressReply { head, body })
+        (
+            caller,
+            IngressReply {
+                head,
+                body: reply_body,
+            },
+        )
     }
 
     /// The status the unit stated its head with, once it did.
@@ -1894,6 +1968,23 @@ impl CallerEnd for IngressCaller {
 
     async fn write(&self, bytes: &[u8]) -> bool {
         self.body.send(Bytes::copy_from_slice(bytes)).await.is_ok()
+    }
+}
+
+impl SessionCaller for IngressCaller {
+    /// The arrival's body, once (taken when the read is first polled, so a read dropped unresolved
+    /// loses nothing); then nothing until the response is dropped, when the caller's side ends.
+    async fn read(&self) -> Option<Vec<u8>> {
+        let first = self
+            .arrived
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(body) = first {
+            return Some(body.to_vec());
+        }
+        self.body.closed().await;
+        None
     }
 }
 

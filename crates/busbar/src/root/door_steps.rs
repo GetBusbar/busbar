@@ -60,6 +60,9 @@ pub struct DoorPools {
     pools: BTreeMap<String, Vec<String>>,
     /// Each pool's `on_exhausted: { fallback_pool }`, where it names one.
     fallbacks: BTreeMap<String, String>,
+    /// The pools whose members the plane admits each on its own grant (`member_granted`): the
+    /// pool's name is no grant of its own.
+    member_granted: std::collections::BTreeSet<String>,
 }
 
 /// A resolved route: its pool label (empty for a direct route) and its member entries.
@@ -116,10 +119,26 @@ impl DoorPools {
                     .collect()
             })
             .unwrap_or_default();
+        let member_granted = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter(|(_, pool)| {
+                        pool.get(busbar_contract::section::POOL_MEMBER_GRANTED_KEY)
+                            .and_then(serde_yaml::Value::as_bool)
+                            .unwrap_or(false)
+                    })
+                    .filter_map(|(name, _)| key(name))
+                    .collect()
+            })
+            .unwrap_or_default();
         DoorPools {
             entries,
             pools,
             fallbacks,
+            member_granted,
         }
     }
 
@@ -191,6 +210,10 @@ impl DoorPools {
         let Some(name) = named.and_then(|n| std::str::from_utf8(n).ok()) else {
             return true;
         };
+        // A pool of members each admitted on its own grant: the plane judges the member.
+        if class == ROUTE_POOL && self.member_granted.contains(name) {
+            return true;
+        }
         let fallback = (class == ROUTE_POOL)
             .then(|| self.fallbacks.get(name))
             .flatten();
@@ -338,6 +361,8 @@ struct DoorUnit {
     named: Option<(u8, Option<Vec<u8>>)>,
     /// What its `arrive` expected it to do (its admission estimate).
     expected: Vec<UnitCount>,
+    /// Its operation is performed at most once (`ROUTE_ONCE`).
+    once: bool,
     routed: Option<Routed>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<AdmitGrant>,
@@ -449,6 +474,12 @@ impl<'s> DoorSteps<'s> {
     #[must_use]
     pub fn routed(&self) -> Option<Routed> {
         self.lock().routed.clone()
+    }
+
+    /// Whether the unit's operation is performed at most once (its `arrive`'s `ROUTE_ONCE`).
+    #[must_use]
+    pub fn once(&self) -> bool {
+        self.lock().once
     }
 
     /// The key of the plane the unit is of.
@@ -572,6 +603,10 @@ impl DriverSteps for DoorSteps<'_> {
             .is_some_and(|(class, _)| *class == ROUTE_SCOPE);
         (reason == ReasonCode::NoDestination && scoped)
             .then(|| u.reachable.join(ROUTE_SCOPE_SEPARATOR).into_bytes())
+    }
+
+    fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
+        self.lock().once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
     }
 }
 
@@ -917,11 +952,17 @@ pub fn compose_egress(
         };
         // What of the far end's head crosses is the dialled need's own declared rule.
         let mut route = route.clone();
-        route.keep = facts
-            .keeps
-            .get(route.need.0 as usize)
-            .cloned()
-            .unwrap_or_default();
+        let keep_of = |need: busbar_contract::conn::NeedId| {
+            facts
+                .keeps
+                .get(need.0 as usize)
+                .cloned()
+                .unwrap_or_default()
+        };
+        route.keep = keep_of(route.need);
+        for (need, keep) in &mut route.rides {
+            *keep = keep_of(*need);
+        }
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
         members.insert(entry.clone(), Member::new(destination, name.clone(), 1));
@@ -1364,10 +1405,11 @@ pub fn member_routes(
     let needs: Vec<ReadNeed> = served
         .need_auths
         .iter()
-        .map(|(direction, auth)| ReadNeed {
+        .zip(served.need_transports.iter().chain(std::iter::repeat(&"")))
+        .map(|((direction, auth), transport)| ReadNeed {
             direction: *direction,
             egress_class: 0,
-            transport: String::new(),
+            transport: (*transport).to_string(),
             auth: (*auth).to_string(),
             target_from: String::new(),
             trust_from: String::new(),
@@ -1394,6 +1436,7 @@ pub fn member_routes(
         routes.insert(
             entry.clone(),
             MemberRoute {
+                rides: Vec::new(),
                 need,
                 base_url,
                 auth: None,
@@ -1421,10 +1464,17 @@ pub fn member_routes(
         let handle = auth
             .open_outbound(&r.style, &credential, &settings)
             .map_err(|e| format!("provider '{}' {e}", r.name))?;
-        let need = dialled
+        // EVERY need its style names is bound (ARCHITECT Q-L5B-NEEDS): the first is its own, the
+        // rest ride beside it, each opened when a far request names it.
+        let bound = dialled
             .get(&r.entry)
-            .copied()
+            .filter(|b| !b.is_empty())
             .ok_or_else(|| format!("member '{}' dials no need", r.entry))?;
+        let need = bound[0];
+        let rides = bound[1..]
+            .iter()
+            .map(|n| (*n, busbar_kernel::plane_driver::ResponseKeep::default()))
+            .collect();
         routes.insert(
             r.entry,
             MemberRoute {
@@ -1439,6 +1489,7 @@ pub fn member_routes(
                 }),
                 provider: r.name,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
+                rides,
             },
         );
     }

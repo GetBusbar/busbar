@@ -48,6 +48,9 @@ struct State {
     text: bool,
 }
 
+/// One `begin` crossing's opening head fields, name and value.
+pub type OpeningFields = Vec<(Vec<u8>, Vec<u8>)>;
+
 /// The test entry.
 pub struct TestDoor {
     facts: DoorFacts,
@@ -60,6 +63,8 @@ pub struct TestDoor {
     pub threads: Mutex<HashSet<ThreadId>>,
     /// The neutral status every `refuse` crossing carried, in order.
     pub refused_statuses: Mutex<Vec<u32>>,
+    /// The opening head fields every `begin` crossing carried (`BeginIn::fields`), in order.
+    pub begun_fields: Mutex<Vec<OpeningFields>>,
 }
 
 impl TestDoor {
@@ -82,6 +87,7 @@ impl TestDoor {
             crossings: Mutex::new(Vec::new()),
             threads: Mutex::new(HashSet::new()),
             refused_statuses: Mutex::new(Vec::new()),
+            begun_fields: Mutex::new(Vec::new()),
         }
     }
 
@@ -218,6 +224,23 @@ impl FramerDoor for TestDoor {
                 ("locate", ok)
             }
             Call::Begin(i, o) => {
+                let fields = if i.fields.is_null() {
+                    &[][..]
+                } else {
+                    // SAFETY: host-borrowed fields, `fields_len` of them, valid for the call.
+                    unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) }
+                };
+                self.begun_fields.lock().unwrap().push(
+                    fields
+                        .iter()
+                        .map(|f| {
+                            (
+                                raw(f.name.ptr, f.name.len).to_vec(),
+                                raw(f.value.ptr, f.value.len).to_vec(),
+                            )
+                        })
+                        .collect(),
+                );
                 let token = self.next.fetch_add(1, Ordering::Relaxed);
                 let mut st = State {
                     text: self.knobs.text,

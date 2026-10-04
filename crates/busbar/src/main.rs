@@ -769,6 +769,19 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
     // DESIGN §6 step 2), captured before `cfg` is consumed.
     let door_providers = root::door_steps::provider_routes(&cfg.providers);
+    // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
+    // section key: each door plane's section carries its own pools (DoorPools), captured before
+    // `cfg` is consumed.
+    let door_pools = [
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+            cfg.tool_pools.clone(),
+        ),
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+            cfg.agent_pools.clone(),
+        ),
+    ];
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]
@@ -862,7 +875,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         root::boot::door_planes(),
         &root::dispatch::dispatcher(),
         &late_services,
-        &deploy.door_sections(),
+        &root::serve::with_pools(deploy.door_sections(), &door_pools),
         deploy.public_url.as_deref(),
         &door_reach,
     )
@@ -947,6 +960,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new(move |app| door_appliers.apply(app)));
+    // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
+    // live snapshot per ask): a long-lived response re-asks per frame.
+    if let Some(kernel) = late_services.kernel() {
+        let _attached =
+            kernel.attach_standing(busbar_kernel::plane_host::live_standing(app_handle.clone()));
+    }
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
