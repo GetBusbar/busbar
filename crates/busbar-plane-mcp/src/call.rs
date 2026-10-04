@@ -636,46 +636,6 @@ pub fn outbound(
     })
 }
 
-/// THE REQUEST FOR ONE ROUND to a `transport: stdio` member (ARCHITECT round 5
-/// Q-L3B-STDIO-UPSTREAM (A)): the same `tools/call` body, carrying `id` (the unit's own on the
-/// child, `crate::tool_program::call_id`), sent as one message on the member's program; no head
-/// field rides a pipe. `None` for a member that is not a program.
-#[must_use]
-pub fn outbound_program(
-    admitted: &AdmittedCall,
-    member: &str,
-    def: &McpServerDefCfg,
-    continuation: Option<&Value>,
-    id: u64,
-) -> Option<OutboundCall> {
-    if !def
-        .transport
-        .is_some_and(crate::tools_config::ServerTransport::spawns_child)
-    {
-        return None;
-    }
-    let key = ToolKey::new(ServerId::new(member).ok()?, &admitted.entry.tool).ok()?;
-    let request = wire::tools_call(
-        "",
-        &key,
-        &admitted.arguments,
-        id,
-        None,
-        AdvertisedCaps {
-            roots: def.grants.roots && !def.roots.is_empty(),
-            sampling: def.grants.sampling && def.sampling.is_some(),
-            progress: admitted.progress_token.is_some(),
-        },
-        continuation,
-    );
-    Some(OutboundCall {
-        verb: "POST",
-        target: "/".to_string(),
-        fields: Vec::new(),
-        body: request.body,
-    })
-}
-
 /// A relayed call whose upstream leg failed before an answer (`reason`, in the previous release's
 /// words): the caller is answered the upstream-failure result, the call log names it dispatched and
 /// failed.
@@ -969,29 +929,7 @@ pub fn settle_call(
     sse: bool,
     round: u32,
 ) -> Settled {
-    settle_call_as(
-        admitted,
-        def,
-        status,
-        raw,
-        sse,
-        round,
-        wire::dispatch_request_id(round),
-    )
-}
-
-/// [`settle_call`], the answer correlated to `sent_id`: the id the round's request carried (a
-/// `transport: stdio` member's carries the unit's own, `crate::tool_program::call_id`).
-#[must_use]
-pub fn settle_call_as(
-    admitted: &AdmittedCall,
-    def: Option<&McpServerDefCfg>,
-    status: u32,
-    raw: &[u8],
-    sse: bool,
-    round: u32,
-    sent_id: u64,
-) -> Settled {
+    let sent_id = wire::dispatch_request_id(round);
     let entry = &admitted.entry;
     let id = &admitted.id;
     let body = if sse {
