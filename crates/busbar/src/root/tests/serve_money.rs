@@ -70,11 +70,17 @@ fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
         &sections,
         &move || Arc::clone(&one),
         None,
+        None,
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
-    let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
-        .expect("its claims mount");
+    let routes = door_routes(
+        Arc::new(served),
+        || crate::root::kernel::ROOT_CARD.pin(),
+        &[],
+        &[],
+    )
+    .expect("its claims mount");
     let app = busbar_kernel::test_support::TestApp::new();
     let app = if keys_chain { app.keys_chain() } else { app };
     let app = app
@@ -146,8 +152,11 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
     let (status, body) = g.post("/call/direct:m", true).await;
     assert_eq!(
         (status, body.as_str()),
-        (503, "refused:503:breaker_open"),
-        "admitted, then the walk is exhausted"
+        (
+            503,
+            "refused:503:The service is temporarily overloaded. Please retry shortly."
+        ),
+        "admitted, then the walk is exhausted (the shed in 1.5.5's words)"
     );
     assert_eq!(g.requests(), 1, "its request was charged at admission");
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
@@ -199,7 +208,10 @@ async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
     let (status, body) = g.post("/open", false).await;
     assert_eq!(
         (status, body.as_str()),
-        (503, "refused:503:breaker_open"),
+        (
+            503,
+            "refused:503:The service is temporarily overloaded. Please retry shortly."
+        ),
         "admitted, then the walk is exhausted"
     );
     assert_eq!(g.requests(), 0, "nothing charged");

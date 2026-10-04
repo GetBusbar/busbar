@@ -233,6 +233,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         auths: &auths,
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        models: None,
     };
 
     // THE COMPOSITION, AS PRODUCTION SEALS IT: the door opened with its section (one model),
@@ -254,16 +255,17 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
             reach: &reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
+        None,
     )
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
     let composed = &mut served.planes[0];
     assert!(
-        composed.egress.is_some(),
+        composed.live.load().egress.is_some(),
         "the composition sealed its egress"
     );
     let money_steps = Arc::clone(&composed.money);
-    let plane_key = composed.facts.plane.clone();
+    let plane_key = composed.live.load().facts.plane.clone();
     served.post = Some(Arc::clone(&post));
     let app = busbar_kernel::test_support::TestApp::new()
         .keys_chain()
@@ -271,7 +273,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         .cost(CostModel::flat(1))
         .build();
     // THE DATA ROUTER, BUILT WITH THE DOOR'S ROUTES (Q-SW1: its construction, no static).
-    let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
+    let doors = door_routes(Arc::new(served), || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
 
@@ -372,9 +374,10 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         &sections,
         &money,
         None,
+        None,
     )
     .expect("the door plane composes");
-    let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
+    let doors = door_routes(Arc::new(served), || CARD.pin(), &[], &[]).expect("its claims mount");
     assert!(!doors.is_empty(), "the claim is a route");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
@@ -398,7 +401,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         "the kernel wrote the text, the plane rendered it: {body}"
     );
     assert!(
-        door_routes(super::Served::default(), || CARD.pin(), &[], &[])
+        door_routes(Arc::new(super::Served::default()), || CARD.pin(), &[], &[])
             .expect("nothing to mount")
             .is_empty(),
         "a composition that claims nothing mounts nothing"

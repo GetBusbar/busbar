@@ -141,6 +141,14 @@ busbar-auth-admin-tokens-plugin = { workspace = true, optional = true }
 # serves the style opens the binding), linked through the `auths` axis under `auth-header`
 # (ARCHITECT Q-L1-AUTH (A), 2026-10-03). Staged in-tree; its only busbar edge is `busbar-contract`.
 busbar-auth-header = { path = "../busbar-auth-header", optional = true }
+# THE OUTBOUND SIGNING AND TOKEN STYLES (sigv4; jwt-bearer, oauth-client-credentials): the auth plugins
+# an llm member is bound under when its provider's dialect default is `sigv4` (bedrock) or its `auth:`
+# names an OAuth grant (THE DESIGN §6 step 3), linked through the `auths` axis under `auth-sigv4` and
+# `auth-oauth` (ARCHITECT Q-L1-AUTH (A), 2026-10-03). Carried by the llm fold's switch while it is in
+# flight (the default build serves llm through its `proto-llm` row and binds no member through them).
+# Staged in-tree; their only busbar edge is `busbar-contract`.
+busbar-auth-sigv4 = { path = "../busbar-auth-sigv4", optional = true }
+busbar-auth-oauth = { path = "../busbar-auth-oauth", optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
 # in its own repo (GetBusbar/busbar-export-file) and is pulled at a PINNED rev; the workspace `[patch]`
@@ -294,7 +302,7 @@ plane-decisions-door = ["plane-decisions"]
 # loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
 # (#2, #30; THE DESIGN section 11.4). It carries `proto-llm`, whose row stays linked and answers
 # every arrival the serve path does not hand the door.
-llm-on-driver = ["proto-llm", "dep:busbar-plane-llm"]
+llm-on-driver = ["proto-llm", "dep:busbar-plane-llm", "auth-sigv4", "auth-oauth"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-file = ["dep:busbar-export-file"]
@@ -336,6 +344,11 @@ auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
 # plugin serving a plane need's header style, on the `auths` axis. Off, a member whose style it serves
 # binds only when a signed tarball of the module is dropped into `plugins/`.
 auth-header = ["dep:busbar-auth-header"]
+# THE OUTBOUND SIGNING STYLE'S LINKED ROW: `sigv4` (on with the llm fold's switch).
+auth-sigv4 = ["dep:busbar-auth-sigv4"]
+# THE OUTBOUND TOKEN STYLES' LINKED ROW: `jwt-bearer`, `oauth-client-credentials` (on with the llm
+# fold's switch).
+auth-oauth = ["dep:busbar-auth-oauth"]
 hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
@@ -368,6 +381,8 @@ export-otlp = "busbar-export-otlp"
 # THE AUTH AXIS: the operator credential's module, under its packaging feature.
 auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 auth-header = "busbar-auth-header"
+auth-sigv4 = "busbar-auth-sigv4"
+auth-oauth = "busbar-auth-oauth"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
@@ -417,6 +432,8 @@ export-prometheus = "export-doors"
 export-otlp = "export-doors"
 auth-admin-tokens = "auths"
 auth-header = "auths"
+auth-sigv4 = "auths"
+auth-oauth = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
 secret-env = "secret-doors"
@@ -446,6 +463,8 @@ busbar-secret-file = "busbar_secret_file::door"
 # An auth plugin's entry is its crate root; its memory-ABI door is `<entry>::door::door`.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
 busbar-auth-header = "busbar_auth_header::compiled_in"
+busbar-auth-sigv4 = "busbar_auth_sigv4::compiled_in"
+busbar-auth-oauth = "busbar_auth_oauth::compiled_in"
 # A plane door row's entry is the module that exports its `door`.
 plane-decisions-door = "busbar_plane_decisions::plane_door"
 llm-on-driver = "busbar_plane_llm::plane_door"
@@ -457,6 +476,8 @@ busbar-export-otlp = "busbar_export_otlp::door"
 [package.metadata.busbar.linked-name]
 auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
+auth-sigv4 = "busbar-auth-sigv4"
+auth-oauth = "busbar-auth-oauth"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node under the `linked_axis_node` cfg that

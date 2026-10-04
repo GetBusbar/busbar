@@ -211,8 +211,13 @@ fn members(pool: &serde_yaml::Value) -> Vec<String> {
 
 /// THE KEY A DOOR PLANE'S ENTRY IS PRICED, METERED AND ROUTED UNDER (ARCHITECT Q-FL3: "keys the
 /// kernel's state by (plane key, model entry)"; #42/#47 one card per plane): `"<plane>\u{1f}<entry>"`.
+/// The plane that owns the flat card (the empty plane key: 1.5.5's `rate_card:` and its lanes,
+/// `busbar_kernel_ledger::cost::split_plane_lane`) keys its entries bare, as 1.5.5 did.
 #[must_use]
 pub fn plane_lane(plane: &str, entry: &str) -> String {
+    if plane.is_empty() {
+        return entry.to_string();
+    }
     format!("{plane}{PLANE_LANE_SEP}{entry}")
 }
 
@@ -227,6 +232,39 @@ pub fn egress_pool(plane: &str, routed: &Routed) -> String {
             .first()
             .map(|m| plane_lane(plane, m))
             .unwrap_or_default(),
+    }
+}
+
+/// The pools and key the destination guard reads, for the plane serving the `pools` map.
+struct DoorPoolView<'a> {
+    pools: &'a DoorPools,
+    key: Option<&'a VirtualKey>,
+    app: &'a App,
+}
+
+impl busbar_kernel::door::PoolView for DoorPoolView<'_> {
+    fn has_key(&self) -> bool {
+        self.key.is_some()
+    }
+
+    fn key_is_scoped(&self) -> bool {
+        self.key.is_some_and(|k| k.allowed_scopes.is_some())
+    }
+
+    fn pool_allowed(&self, pool: &str) -> bool {
+        self.key.is_none_or(|k| k.scope_allowed("pool", pool))
+    }
+
+    fn on_exhausted_fallback(&self, pool: &str) -> Option<String> {
+        self.pools.fallback(pool).map(str::to_owned)
+    }
+
+    fn is_configured(&self, name: &str) -> bool {
+        self.pools.pools().contains_key(name) || self.pools.entries().iter().any(|e| e == name)
+    }
+
+    fn is_unpriced(&self, name: &str) -> bool {
+        self.app.cost.model_unpriced(name)
     }
 }
 
@@ -321,6 +359,10 @@ pub struct DoorFacts {
     /// Each need's response-head rule, in Statement need order: what of a far end's head reaches
     /// the plane on that need.
     pub keeps: Vec<busbar_kernel::plane_driver::ResponseKeep>,
+    /// The plane's dialect names, by the index `arrive` answers, and each provider's dialect: an
+    /// attempt whose far end speaks another dialect than the caller's is counted as a translation
+    /// (`busbar_translations_total`), as the previous release counted it. Empty = none counted.
+    pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
 }
 
 /// What one unit carries between its steps.
@@ -336,6 +378,9 @@ struct DoorUnit {
     grant: Option<AdmitGrant>,
     /// Whether the unit's money facts were opened (it was charged).
     charged: bool,
+    /// The words of the refusal one of its steps raised, where it has its own (its Retry-After
+    /// seconds; its message).
+    refused: (Option<u32>, Option<String>),
     /// The key the unit's record was written under on the host's unit records, once authenticate
     /// passed; it is struck when these steps drop.
     recorded: Option<u64>,
@@ -477,7 +522,15 @@ impl<'s> DoorSteps<'s> {
         let units = self.expected_units(&expected);
         let grant = gov
             .try_admit_estimated(&self.app.cost, key, &pool, self.arrived, &models, &units)
-            .map_err(|blocked| refusal_for(&blocked))?;
+            .map_err(|blocked| {
+                // The plane serving the `pools` map answers a blocked admission in the previous
+                // release's words (`busbar_kernel::ingress::limit_refusal`).
+                if self.facts.plane.is_empty() {
+                    self.lock().refused.1 =
+                        Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+                }
+                refusal_for(&blocked)
+            })?;
         money.open(
             ctx.key,
             UnitMoney {
@@ -490,7 +543,14 @@ impl<'s> DoorSteps<'s> {
                 classes: Arc::clone(&self.facts.classes),
                 arrived: self.arrived,
                 mode: exhaustion_of(&self.app, key),
-                fee: FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units)),
+                // The plane serving the `pools` map bills 1.5.5's flat request fee and refunds it
+                // under 1.5.5's rule (a non-2xx caller status); every other plane's fee is its
+                // reported fee units (#47).
+                fee: if self.facts.plane.is_empty() {
+                    FeeRefund::CallerStatus
+                } else {
+                    FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units))
+                },
                 charge: grant.charge().clone(),
             },
         );
@@ -533,6 +593,19 @@ impl DriverSteps for DoorSteps<'_> {
 
     fn expected(&self, _ctx: &UnitCtx, units: &[UnitCount]) {
         self.lock().expected = units.to_vec();
+    }
+
+    fn refused_words(&self) -> (Option<u32>, Option<String>) {
+        self.lock().refused.clone()
+    }
+
+    fn attempting(&self, _ctx: &UnitCtx, dialect: u32, provider: &str) {
+        let (names, providers) = &self.facts.translations;
+        if let (Some(from), Some(to)) = (names.get(dialect as usize), providers.get(provider)) {
+            if from != to {
+                busbar_kernel::telemetry::translation(from, to);
+            }
+        }
     }
 }
 
@@ -588,6 +661,26 @@ impl Units for DoorSteps<'_> {
         // An unknown route seals nothing and is refused at admission, after its grant was judged
         // (1.5.5's order); the empty set is an answer at this step.
         let named = self.lock().named.clone();
+        // THE PLANE SERVING THE `pools` MAP judges the route as named with the previous release's
+        // destination guard (`busbar_kernel::door::destination_guard`): the key's pool grant, its
+        // fallback pools' grants, then a rate card's coverage of the name, refused in 1.5.5's words.
+        if self.facts.plane.is_empty() {
+            if let Some(name) = named
+                .as_ref()
+                .and_then(|(_, n)| n.as_deref())
+                .and_then(|n| std::str::from_utf8(n).ok())
+            {
+                let view = DoorPoolView {
+                    pools: self.pools,
+                    key: self.key.as_deref(),
+                    app: &self.app,
+                };
+                if let Err(refusal) = busbar_kernel::door::destination_guard(&view, name) {
+                    self.lock().refused.1 = Some(refusal.message());
+                    return SeatVerdict::refuse(token, Refusal::new(refusal.reason()));
+                }
+            }
+        }
         let routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
         let sealed: Vec<VerifiedDestination> = routed
             .iter()
@@ -635,6 +728,7 @@ impl Units for DoorSteps<'_> {
             Admission::Keyed => {
                 if let Some(key) = self.key.clone() {
                     if let Err(refusal) = self.charge(ctx, &key) {
+                        self.lock().refused.0 = refusal.retry_after_secs();
                         return SeatVerdict::refuse(token, refusal);
                     }
                 }
@@ -767,6 +861,7 @@ pub fn door_facts(
             .collect(),
         audit_kind: OpClassId::new(audit_kind),
         keeps,
+        translations: (Arc::from(Vec::new()), Arc::default()),
     }
 }
 
@@ -857,6 +952,195 @@ pub fn compose_egress(
         stream_ceiling_secs,
         error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
     })
+}
+
+// ── one configuration generation, as the door planes are sealed over it ─────────────────────────
+
+/// WHAT A DOOR PLANE IS SEALED OVER, for ONE configuration generation (spec Part 1 line 569: one
+/// validated `{section: value}` object per `open`/`refresh`): the kernel-owned sections it reads
+/// ([`kernel_sections`]), the providers its members are reached through ([`provider_routes`]) and
+/// the model-serving pools' bounds ([`crate::root::model_egress::ModelPools`]). Projected from each
+/// resolved configuration as it is built (`busbar_kernel::appbuild::set_config_projection`), and
+/// read back when that generation is swapped in.
+#[derive(Debug)]
+pub struct DoorConfig {
+    /// The kernel-owned sections.
+    pub sections: BTreeMap<&'static str, serde_yaml::Value>,
+    /// The providers, by name.
+    pub providers: BTreeMap<String, ProviderRoute>,
+    /// The model-serving pools' bounds.
+    pub model_pools: crate::root::model_egress::ModelPools,
+}
+
+/// The [`DoorConfig`] of `cfg` (the root's `ConfigProjection`).
+#[must_use]
+pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::Any + Send + Sync> {
+    Arc::new(DoorConfig {
+        sections: kernel_sections(cfg),
+        providers: provider_routes(&cfg.providers),
+        model_pools: crate::root::model_egress::ModelPools::of(cfg),
+    })
+}
+
+// ── the kernel-owned sections a door plane reads ────────────────────────────────────────────────
+
+/// THE KERNEL-OWNED SECTIONS A DOOR PLANE MAY READ, as the configuration validated and resolved
+/// them (spec Part 1 §4: "A plane's settings reach it as ONE validated JSON object `{section:
+/// value}` per open/refresh, reserved keys and secrets stripped"; "A plane receives, at open, the
+/// dialect fields of the providers it references and resolves model -> dialect itself"): `providers`
+/// (catalog-merged, each provider's dialect fields: no `base_url`, no credential reference, no
+/// health or token endpoint), `models`, `pools` (each pool's members and its fallback pool) and
+/// `limits` (the output-cap default and the effort budgets). The previous release kept these in the
+/// kernel; they are the root's to hand a door plane whose Statement names them. `pools` is present
+/// whenever `models` is: a deployment with models and no pools routes to its models directly.
+#[must_use]
+pub fn kernel_sections(
+    cfg: &busbar_kernel::config::RootCfg,
+) -> BTreeMap<&'static str, serde_yaml::Value> {
+    use serde_json::{json, Map, Value};
+    fn opt(m: &mut Map<String, Value>, key: &str, v: Option<Value>) {
+        if let Some(v) = v {
+            m.insert(key.to_string(), v);
+        }
+    }
+    fn output_key(k: busbar_kernel::ir::lane_caps::MaxOutputKeyCfg) -> &'static str {
+        use busbar_kernel::ir::lane_caps::MaxOutputKeyCfg;
+        match k {
+            MaxOutputKeyCfg::MaxTokens => "max_tokens",
+            MaxOutputKeyCfg::MaxCompletionTokens => "max_completion_tokens",
+        }
+    }
+    let mut out = BTreeMap::new();
+    let mut providers = Map::new();
+    for (name, p) in &cfg.providers {
+        let mut m = Map::new();
+        m.insert("protocol".into(), json!(p.protocol));
+        opt(&mut m, "path", p.path.as_ref().map(|v| json!(v)));
+        opt(&mut m, "path_base", p.path_base.as_ref().map(|v| json!(v)));
+        opt(
+            &mut m,
+            "organization",
+            p.organization.as_ref().map(|v| json!(v)),
+        );
+        opt(&mut m, "project", p.project.as_ref().map(|v| json!(v)));
+        m.insert("error_map".into(), json!(p.error_map));
+        opt(&mut m, "auth", p.auth.map(style_word).map(|v| json!(v)));
+        opt(
+            &mut m,
+            "max_output_key",
+            p.max_output_key.map(output_key).map(|v| json!(v)),
+        );
+        opt(
+            &mut m,
+            "anthropic_adaptive_thinking",
+            p.anthropic_adaptive_thinking.map(|v| json!(v)),
+        );
+        opt(
+            &mut m,
+            "native_structured_output",
+            p.native_structured_output.map(|v| json!(v)),
+        );
+        let rules: Vec<Value> = p
+            .model_capabilities
+            .iter()
+            .map(|r| {
+                let mut c = Map::new();
+                c.insert("models".into(), json!(r.models));
+                opt(
+                    &mut c,
+                    "max_output_key",
+                    r.max_output_key.map(output_key).map(|v| json!(v)),
+                );
+                opt(
+                    &mut c,
+                    "anthropic_adaptive_thinking",
+                    r.anthropic_adaptive_thinking.map(|v| json!(v)),
+                );
+                opt(
+                    &mut c,
+                    "native_structured_output",
+                    r.native_structured_output.map(|v| json!(v)),
+                );
+                opt(&mut c, "reasoning_none", r.reasoning_none.map(|v| json!(v)));
+                opt(
+                    &mut c,
+                    "thinking_always_on",
+                    r.thinking_always_on.map(|v| json!(v)),
+                );
+                Value::Object(c)
+            })
+            .collect();
+        if !rules.is_empty() {
+            m.insert("model_capabilities".into(), Value::Array(rules));
+        }
+        providers.insert(name.clone(), Value::Object(m));
+    }
+    let mut models = Map::new();
+    for (name, model) in &cfg.models {
+        let mut m = Map::new();
+        m.insert(MODEL_PROVIDER_KEY.into(), json!(model.provider));
+        opt(
+            &mut m,
+            "upstream_model",
+            model.upstream_model.as_ref().map(|v| json!(v)),
+        );
+        opt(
+            &mut m,
+            "default_max_tokens",
+            model.default_max_tokens.map(|v| json!(v)),
+        );
+        opt(&mut m, "reasoning", model.reasoning.map(|v| json!(v)));
+        opt(
+            &mut m,
+            "prompt_caching",
+            model.prompt_caching.map(|v| json!(v)),
+        );
+        models.insert(name.clone(), Value::Object(m));
+    }
+    let mut pools = Map::new();
+    for (name, pool) in &cfg.pools {
+        let members: Vec<Value> = pool
+            .members
+            .iter()
+            .map(|member| {
+                let mut m = Map::new();
+                m.insert("model".into(), json!(member.model));
+                opt(&mut m, "reasoning", member.reasoning.map(|v| json!(v)));
+                opt(&mut m, "context_max", member.context_max.map(|v| json!(v)));
+                Value::Object(m)
+            })
+            .collect();
+        let mut p = Map::new();
+        p.insert(POOL_MEMBERS_KEY.into(), Value::Array(members));
+        if let Some(busbar_kernel::config::pools::OnExhaustedCfg::FallbackPool(fallback)) =
+            &pool.on_exhausted
+        {
+            p.insert(
+                ON_EXHAUSTED_KEY.into(),
+                json!({ FALLBACK_POOL_KEY: fallback }),
+            );
+        }
+        pools.insert(name.clone(), Value::Object(p));
+    }
+    let limits = json!({
+        "default_max_tokens": cfg.limits.default_max_tokens,
+        "reasoning_effort_budgets": {
+            "minimal": cfg.limits.reasoning_effort_budgets.minimal,
+            "low": cfg.limits.reasoning_effort_budgets.low,
+            "medium": cfg.limits.reasoning_effort_budgets.medium,
+            "high": cfg.limits.reasoning_effort_budgets.high,
+        },
+    });
+    let yaml = |v: Value| serde_yaml::to_value(v).unwrap_or(serde_yaml::Value::Null);
+    if !providers.is_empty() {
+        out.insert("providers", yaml(Value::Object(providers)));
+    }
+    if !models.is_empty() || !pools.is_empty() {
+        out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
+        out.insert(RESERVED_POOLS_KEY, yaml(Value::Object(pools)));
+    }
+    out.insert("limits", yaml(limits));
+    out
 }
 
 // ── the members' routes (THE DESIGN §6 steps 2-3) ──────────────────────────────────────────────
@@ -1127,6 +1411,9 @@ pub struct DoorReach<'a> {
     pub conns: Arc<dyn busbar_contract::conn::PollConns>,
     /// Whole seconds.
     pub stream_ceiling_secs: u64,
+    /// The model-serving pools the plane serving the `pools` map walks
+    /// ([`crate::root::model_egress`]); `None` where none is composed.
+    pub models: Option<&'a crate::root::model_egress::ModelServing>,
 }
 
 impl std::fmt::Debug for DoorReach<'_> {
@@ -1173,6 +1460,8 @@ pub fn member_routes(
         name: String,
         provider: &'p ProviderRoute,
         style: String,
+        /// The dialect default style's parameters, when the style is that default.
+        params: &'static [u8],
     }
     let mut resolved = Vec::new();
     for entry in pools.entries() {
@@ -1197,10 +1486,17 @@ pub fn member_routes(
                 served
                     .dialect_auth
                     .iter()
-                    .find(|(d, _)| *d == at)
-                    .map(|(_, style)| (*style).to_string())
+                    .find(|(d, _, _)| *d == at)
+                    .map(|(_, style, params)| ((*style).to_string(), *params))
             });
-        let style = provider.style.clone().or(default).ok_or_else(|| {
+        // The provider's own `auth:` binds its style alone; the dialect's default carries its
+        // declared parameters (Q-L6-AUTHPARAMS).
+        let (style, params) = match (&provider.style, default) {
+            (Some(style), _) => (Some(style.clone()), &[][..]),
+            (None, Some((style, params))) => (Some(style), params),
+            (None, None) => (None, &[][..]),
+        };
+        let style = style.ok_or_else(|| {
             format!(
                 "member '{entry}': provider '{name}' states no `auth:` and its plane declares no \
                  default style for the dialect '{dialect}'"
@@ -1211,6 +1507,7 @@ pub fn member_routes(
             name: name.to_string(),
             provider,
             style,
+            params,
         });
     }
     let needs: Vec<ReadNeed> = served
@@ -1256,6 +1553,8 @@ pub fn member_routes(
                 r.entry, r.style
             )
         })?;
+        let settings = sealed_settings(r.params, &r.provider.base_url, &settings)
+            .map_err(|e| format!("member '{}': {e}", r.entry))?;
         let handle = auth
             .open_outbound(&r.style, &credential, &settings)
             .map_err(|e| format!("provider '{}' {e}", r.name))?;
@@ -1281,6 +1580,100 @@ pub fn member_routes(
         );
     }
     Ok(routes)
+}
+
+/// THE SETTINGS A MEMBER'S BINDING IS OPENED WITH (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS;
+/// ruling 2026-09-28: the kernel resolves the dialect's declared parameters at seal into
+/// `OpenOutboundIn::settings`): the dialect's `params` object, each value written
+/// `{"host_label_after": [labels], "default": word, "unread": warning}` resolved from the provider's
+/// `base_url` host ([`host_label`]; `default` when no label reads, its `unread` warning then handed
+/// on as `<key>_unread` for the binding to log with each use), then the provider's own settings
+/// over it.
+///
+/// # Errors
+///
+/// Parameters that are not a JSON object, or a host directive that is malformed.
+pub fn sealed_settings(
+    params: &[u8],
+    base_url: &str,
+    provider: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if params.is_empty() {
+        return Ok(provider.clone());
+    }
+    let serde_json::Value::Object(mut sealed) = serde_json::from_slice(params)
+        .map_err(|e| format!("its dialect's auth parameters are not JSON: {e}"))?
+    else {
+        return Err("its dialect's auth parameters are not a JSON object".to_string());
+    };
+    let mut unread: Vec<(String, serde_json::Value)> = Vec::new();
+    for (key, value) in &mut sealed {
+        let Some(directive) = value.get("host_label_after") else {
+            continue;
+        };
+        let labels: Vec<&str> = directive
+            .as_array()
+            .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        let default = value
+            .get("default")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("its dialect's auth parameter `{key}` names no default"))?
+            .to_string();
+        let resolved = match host_label(base_url_host(base_url), &labels) {
+            Some(label) => label.to_string(),
+            None => {
+                // The operator warning the dialect states for a host its rule cannot read, handed
+                // to the binding as `<key>_unread`: the plugin logs it where 1.5.5 did, with each
+                // use of the default.
+                if let Some(words) = value.get("unread").filter(|w| w.is_string()) {
+                    unread.push((format!("{key}_unread"), words.clone()));
+                }
+                default
+            }
+        };
+        *value = serde_json::Value::String(resolved);
+    }
+    sealed.extend(unread);
+    if let serde_json::Value::Object(own) = provider {
+        for (key, value) in own {
+            sealed.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(serde_json::Value::Object(sealed))
+}
+
+/// The host of `base_url`: after its scheme, before its port, path, query or fragment.
+fn base_url_host(base_url: &str) -> &str {
+    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
+    authority.split(':').next().unwrap_or("")
+}
+
+/// The dotted label of `host` right after the first of `after`, when it reads as a dashed name
+/// ending in a number (three parts or more, every part before the last alphabetic, the last all
+/// digits: the shape the dialect's own rule accepted, 1.5.5 `derive_sigv4_region`).
+fn host_label<'h>(host: &'h str, after: &[&str]) -> Option<&'h str> {
+    let shaped = |label: &str| {
+        let parts: Vec<&str> = label.split('-').collect();
+        let Some((last, leading)) = parts.split_last() else {
+            return false;
+        };
+        parts.len() >= 3
+            && parts.iter().all(|p| !p.is_empty())
+            && last.bytes().all(|b| b.is_ascii_digit())
+            && leading
+                .iter()
+                .all(|p| p.bytes().all(|b| b.is_ascii_alphabetic()))
+    };
+    let labels: Vec<&str> = host.split('.').collect();
+    labels.iter().enumerate().find_map(|(i, label)| {
+        if !after.contains(label) {
+            return None;
+        }
+        labels.get(i + 1).copied().filter(|next| shaped(next))
+    })
 }
 
 #[cfg(test)]

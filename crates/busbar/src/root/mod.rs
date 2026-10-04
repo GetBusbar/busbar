@@ -92,6 +92,7 @@ pub mod legacy;
 pub mod linked;
 pub(crate) mod loader;
 pub mod migration;
+pub mod model_egress;
 pub mod observe;
 pub mod otlp;
 #[cfg(feature = "plane-decisions")]

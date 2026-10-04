@@ -314,6 +314,7 @@ dependencies = [
  "busbar-auth-oauth",
  "busbar-auth-oidc",
  "busbar-auth-oidc-plugin",
+ "busbar-auth-sigv4",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connector",

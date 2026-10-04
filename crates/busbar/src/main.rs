@@ -767,6 +767,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
     // DESIGN §6 step 2), captured before `cfg` is consumed.
     let door_providers = root::door_steps::provider_routes(&cfg.providers);
+    // The kernel-owned sections a door plane's Statement may name beside its own (spec Part 1 §4),
+    // as the configuration resolved them, captured before `cfg` is consumed.
+    let door_kernel_sections = root::door_steps::kernel_sections(&cfg);
+    // The model-serving pools the plane serving the `pools` map walks, with every bound the
+    // configuration states (`root::model_egress`).
+    let door_model_pools = root::model_egress::ModelPools::of(&cfg);
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]
@@ -785,6 +791,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
     // the comment block that starts it and no further, so the voice-credential capture that used to
     // stand between the two silently ate this exemption and left the build itself flagged.
+    // What the door planes are sealed over, projected from every configuration as it is built
+    // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
+    busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
     let (boot_app, _boot_gov_rotate, boot_limits) = build_app_from_config(
         cfg,
         plugins_cfg,
@@ -838,12 +847,36 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // their money posted onto the process's one node, each member's egress sealed over the
     // deployment's providers, the auth plugins that serve its style (the build's own rows, then
     // the plugins directory's) and the one connector their needs were declared on.
-    let door_auths = root::door_steps::OutboundAuths::new(
+    let door_auths = std::sync::Arc::new(root::door_steps::OutboundAuths::new(
         root::dispatch::dispatcher(),
         LINKED.auths,
         root::boot::dropped_registry(),
         Some(Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>),
-    );
+    ));
+    // The kernel's own App (its lane store, its telemetry bank), through its swap handle once it exists (a config apply
+    // rebuilds the store), the boot App's until then.
+    let door_live_handle: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<busbar_kernel::state::AppHandle>>,
+    > = std::sync::Arc::default();
+    let door_models = root::model_egress::ModelServing {
+        pools: door_model_pools,
+        lanes: app
+            .engine_tables_view()
+            .model_indices()
+            .into_iter()
+            .map(|(model, lane)| (model.to_string(), lane))
+            .collect(),
+        app: {
+            let (live, boot) = (
+                std::sync::Arc::clone(&door_live_handle),
+                std::sync::Arc::clone(&app),
+            );
+            std::sync::Arc::new(move || {
+                live.get()
+                    .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load())
+            })
+        },
+    };
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
         secrets: &*app.secret_resolver,
@@ -853,17 +886,40 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
+        models: Some(&door_models),
     };
     let served = root::serve::compose_served(
         app.governance.clone(),
         root::boot::door_planes(),
         &root::dispatch::dispatcher(),
         &late_services,
-        &deploy.door_sections(),
+        &{
+            let mut sections = deploy.door_sections();
+            for (key, value) in door_kernel_sections {
+                sections.entry(key).or_insert(value);
+            }
+            sections
+        },
         &door_reach,
+        Some({
+            // The hooks read the CURRENT generation's host: the App's swap handle once it exists,
+            // the boot App's until then.
+            let (live, boot) = (
+                std::sync::Arc::clone(&door_live_handle),
+                std::sync::Arc::clone(&app),
+            );
+            std::sync::Arc::new(move || {
+                busbar_kernel::plane_host::engine_host(
+                    &live
+                        .get()
+                        .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load()),
+                )
+            })
+        }),
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
+    let served = std::sync::Arc::new(served);
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
     // business, and nothing about it is restored from disk here. The durable config that makes "fix
@@ -926,7 +982,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
     let doors = root::serve::data_routes(
-        served,
+        std::sync::Arc::clone(&served),
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
     )
@@ -939,6 +995,62 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         response_headers_cfg.server_timing,
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
+    let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    // A CONFIG APPLY REFRESHES THE DOOR PLANES onto the new generation (`Served::refresh`): the
+    // swapped-in App's projected configuration, its lane table and its secret seam.
+    if let Some(post) = served.post.clone() {
+        let (served, auths, live) = (
+            std::sync::Arc::clone(&served),
+            std::sync::Arc::clone(&door_auths),
+            std::sync::Arc::clone(&door_live_handle),
+        );
+        app_handle.attach_on_apply(std::sync::Arc::new(move |next| {
+            let Some(cfg) = next
+                .config_projection
+                .as_ref()
+                .and_then(|p| p.downcast_ref::<root::door_steps::DoorConfig>())
+            else {
+                return;
+            };
+            let models = root::model_egress::ModelServing {
+                pools: cfg.model_pools.clone(),
+                lanes: next
+                    .engine_tables_view()
+                    .model_indices()
+                    .into_iter()
+                    .map(|(model, lane)| (model.to_string(), lane))
+                    .collect(),
+                app: {
+                    let (live, fallback) =
+                        (std::sync::Arc::clone(&live), std::sync::Arc::clone(next));
+                    std::sync::Arc::new(move || {
+                        live.get()
+                            .map_or_else(|| std::sync::Arc::clone(&fallback), |h| h.load())
+                    })
+                },
+            };
+            let reach = root::door_steps::DoorReach {
+                providers: &cfg.providers,
+                secrets: &*next.secret_resolver,
+                auths: &auths,
+                conns: Arc::clone(root::connector::the())
+                    as Arc<dyn busbar_contract::conn::PollConns>,
+                stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
+                    busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
+                    |l| l.upstream_request_timeout_secs,
+                ),
+                models: Some(&models),
+            };
+            served.refresh(
+                &cfg.sections,
+                &root::serve::DoorEgress {
+                    reach: &reach,
+                    journal: std::sync::Arc::clone(&post)
+                        as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+                },
+            );
+        }));
+    }
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
