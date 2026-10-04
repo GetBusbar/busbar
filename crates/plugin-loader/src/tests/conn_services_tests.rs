@@ -21,7 +21,8 @@ use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::conn::{
-    ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
+    ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
+    Piece,
 };
 use busbar_contract::transport::ConnFacts;
 
@@ -662,6 +663,8 @@ struct Scripted {
     verify_offs: Mutex<Vec<bool>>,
     /// What `facts` answers; `None` = the stream is closed.
     facts: Mutex<Option<ConnFacts>>,
+    /// Every read fails with this, the table naming this cause.
+    failing: Option<(ConnError, ConnCause)>,
 }
 
 /// One upgrade call as it reached the table: the stream, the name offered, the trust reference.
@@ -711,6 +714,10 @@ impl DeclaredConns for Scripted {
         }
         Ok(())
     }
+
+    fn cause(&self, _: InstanceId, _: ConnId) -> Option<ConnCause> {
+        self.failing.as_ref().map(|(_, c)| c.clone())
+    }
 }
 
 impl Conns for Scripted {
@@ -752,6 +759,9 @@ impl Conns for Scripted {
     }
     fn read(&self, c: InstanceId, id: ConnId, _: u64, buf: &mut [u8]) -> Result<Piece, ConnError> {
         self.slab.get(c, id)?;
+        if let Some((e, _)) = &self.failing {
+            return Err(*e);
+        }
         let (mut p, bytes) = self
             .script
             .lock()
@@ -1128,6 +1138,30 @@ fn an_egress_refusal_is_a_failed_ack_with_its_text() {
         RawOutcome::of(Outcome::Failed),
         "the reply has ended"
     );
+}
+
+/// A reply the connection failed is the failed ack naming WHY: the table's `CAUSE_*` stage in
+/// `value` and the underlying error's own text, not the table's generic refusal.
+#[test]
+fn a_failed_reply_names_the_stage_and_the_underlying_error() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_CONNECT;
+    let table = Arc::new(Scripted {
+        failing: Some((
+            ConnError::Refused,
+            ConnCause {
+                stage: CAUSE_CONNECT,
+                text: "Connection refused (os error 111)".into(),
+            },
+        )),
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut buf = [0_u8; 8];
+    let (o, _) = read_reply(&p, 1, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+    assert_eq!(o.value, CAUSE_CONNECT);
+    assert_eq!(error_text(&o), "Connection refused (os error 111)");
 }
 
 /// RED: the host never runs a service twice: a re-issued ESTABLISH handle answers the same

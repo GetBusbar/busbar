@@ -280,6 +280,106 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
     }
 }
 
+/// ONE DESTINATION'S TRUST ANCHORS, sealed for dialling (the transport pin, ARCHITECT 2026-10-03): the far
+/// end's key pin to hold every connection to, and busbar's client identity, parsed once, to present.
+#[derive(Debug, Clone, Default)]
+pub struct Sealed {
+    /// The far end's key pin, in `busbar_contract::transport::trust::key_pin`'s spelling, trimmed.
+    pub key_pin: Option<String>,
+    /// The client identity to present when the far end asks for one.
+    pub identity: Option<Arc<rustls::sign::CertifiedKey>>,
+}
+
+/// SEAL `anchors` for dialling under `base` (the connector's client config, whose crypto provider
+/// parses the identity): the identity is parsed and its key checked against its leaf here, once,
+/// so a pair the stack cannot use refuses the seal (the boot), never a dial.
+///
+/// # Errors
+///
+/// The identity does not parse, its key is not its leaf's, or there is no client config to present
+/// it under.
+pub fn seal(
+    base: Option<&rustls::ClientConfig>,
+    anchors: &busbar_contract::transport::trust::Anchors,
+) -> Result<Sealed, BadClientIdentity> {
+    let identity = match &anchors.client_identity {
+        None => None,
+        Some(identity) => {
+            let base = base.ok_or_else(|| {
+                BadClientIdentity("the connector secures no connection to present it on".into())
+            })?;
+            let key = rustls_pki_types::PrivateKeyDer::try_from(identity.private_key.clone())
+                .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
+            let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
+                .cert_chain
+                .iter()
+                .cloned()
+                .map(rustls_pki_types::CertificateDer::from)
+                .collect();
+            let certified =
+                rustls::sign::CertifiedKey::from_der(chain, key, base.crypto_provider())
+                    .map_err(|e| BadClientIdentity(format!("certificate chain: {e}")))?;
+            Some(Arc::new(certified))
+        }
+    };
+    Ok(Sealed {
+        key_pin: anchors
+            .key_pin
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(str::to_owned),
+        identity,
+    })
+}
+
+/// The client-certificate resolver of one dial under sealed anchors: it presents the identity when
+/// the far end asks for one and records that it did, so the connection's facts say whether busbar
+/// proved who it is ([`busbar_contract::transport::ConnFacts::client_identity`]).
+#[derive(Debug)]
+pub struct Presenting {
+    identity: Arc<rustls::sign::CertifiedKey>,
+    presented: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Presenting {
+    /// Present `identity`, raising `presented` when the far end asked for it.
+    #[must_use]
+    pub fn new(
+        identity: Arc<rustls::sign::CertifiedKey>,
+        presented: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            identity,
+            presented,
+        }
+    }
+}
+
+impl rustls::client::ResolvesClientCert for Presenting {
+    fn resolve(
+        &self,
+        _root_hint_subjects: &[&[u8]],
+        _sigschemes: &[rustls::SignatureScheme],
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        self.presented
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Some(Arc::clone(&self.identity))
+    }
+
+    fn has_certs(&self) -> bool {
+        true
+    }
+}
+
+/// THE FAR END'S KEY PIN off its leaf certificate's DER, in the one spelling
+/// (`busbar_contract::transport::trust::key_pin`); `None` when the certificate is not the DER this
+/// walk reads. Taken off a certificate the handshake's chain-and-name check already verified.
+#[must_use]
+pub fn peer_key_pin(leaf_der: &[u8]) -> Option<String> {
+    subject_public_key_info(leaf_der).map(busbar_contract::transport::trust::key_pin)
+}
+
 /// THE SubjectPublicKeyInfo of a DER certificate, whole (tag and length included), or `None` when the
 /// bytes are not the DER this pin walk expects.
 ///

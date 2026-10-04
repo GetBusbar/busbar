@@ -393,6 +393,8 @@ pub struct DoorSteps<'s> {
     records: Option<Arc<busbar_kernel::host_units::UnitRecords>>,
     /// How deep the unit is nested.
     depth: u32,
+    /// The caller's verified credential, lent on the unit's record at authenticate.
+    credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
     /// A nested unit's parent's hold cell: its door accrues against the parent's admission.
     parent: Option<&'s busbar_contract::caps::HoldCell>,
     unit: Mutex<DoorUnit>,
@@ -422,6 +424,9 @@ pub struct DoorCaller {
     pub records: Option<Arc<busbar_kernel::host_units::UnitRecords>>,
     /// How deep the unit is nested (`0` for a unit a caller sent), written on its record.
     pub depth: u32,
+    /// The caller's verified credential, lent on the unit's record while it runs: a passthrough
+    /// member's auth call made inside the unit (the plane's own fetches included) is lent it.
+    pub credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
 }
 
 impl<'s> DoorSteps<'s> {
@@ -449,6 +454,7 @@ impl<'s> DoorSteps<'s> {
             arrived: caller.arrived,
             records: caller.records,
             depth: caller.depth,
+            credential: caller.credential,
             parent: None,
             unit: Mutex::new(DoorUnit::default()),
         }
@@ -646,6 +652,9 @@ impl Units for DoorSteps<'_> {
                             depth: self.depth,
                         },
                     );
+                    if let Some(credential) = &self.credential {
+                        records.lend(ctx.key.get(), credential.clone());
+                    }
                     self.lock().recorded = Some(ctx.key.get());
                 }
                 SeatVerdict::proceed(token, Authenticated::Principal(self.principal.clone()))
@@ -963,6 +972,11 @@ pub fn compose_egress(
         for (need, keep) in &mut route.rides {
             *keep = keep_of(*need);
         }
+        // THE MEMBER'S TRUST ANCHORS, SEALED INTO THE CONNECTOR (the transport pin, ARCHITECT 2026-10-03): every connection
+        // to the member, the walk's and the plane's own, is held to them by the connector itself.
+        conns
+            .anchor(caller, route.need, &route.base_url, &route.anchors)
+            .map_err(|e| format!("member '{entry}': its trust anchors could not be sealed: {e}"))?;
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
         members.insert(entry.clone(), Member::new(destination, name.clone(), 1));
@@ -1313,6 +1327,129 @@ fn origin_of(url: &str) -> &str {
     url[after..].find('/').map_or(url, |at| &url[..after + at])
 }
 
+/// The reserved `upstream_credentials:` value that lends the caller's credential.
+const PASSTHROUGH: &str = "passthrough";
+
+/// The style a passthrough registration presents the caller's credential under: the bearer
+/// scheme, as the previous release forwarded it.
+const PASSTHROUGH_STYLE: &str = "bearer";
+
+/// The style a `token_exchange:` registration is bound under (ARCHITECT round 5 Q-L3B-EXCHANGE (B)):
+/// RFC 8693, busbar's own subject token exchanged per call for the caller's down-scope.
+const TOKEN_EXCHANGE_STYLE: &str = "oauth-token-exchange";
+
+/// THE `token_exchange:` BINDING of the registration `registration` (`entry`): its block's
+/// `token_url`, `subject_token` (a secret reference, resolved here: busbar's own credential, the
+/// binding's) and `subject_token_type`, and the registration's `aud:` as the RFC 8707 `resource`,
+/// opened by the auth plugin serving [`TOKEN_EXCHANGE_STYLE`]. `None` when the registration states
+/// no exchange.
+///
+/// # Errors
+///
+/// The subject token does not resolve, or no auth plugin serves or will bind the style: the load
+/// is refused, naming the member.
+fn token_exchange_binding(
+    entry: &str,
+    registration: &serde_yaml::Value,
+    reach: &DoorReach<'_>,
+) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
+    use busbar_contract::section::{
+        AUDIENCE_KEY, DEFAULT_SUBJECT_TOKEN_TYPE, SUBJECT_TOKEN_KEY, SUBJECT_TOKEN_TYPE_KEY,
+        TOKEN_EXCHANGE_KEY, TOKEN_URL_KEY,
+    };
+    let Some(block) = registration.get(TOKEN_EXCHANGE_KEY) else {
+        return Ok(None);
+    };
+    let subject: busbar_contract::secret_ref::SecretRef = block
+        .get(SUBJECT_TOKEN_KEY)
+        .cloned()
+        .ok_or_else(|| format!("member '{entry}': its token exchange states no subject token"))
+        .and_then(|v| {
+            serde_yaml::from_value(v)
+                .map_err(|e| format!("member '{entry}': its subject token reference: {e}"))
+        })?;
+    let credential = reach.secrets.resolve(&subject).map_err(|e| {
+        format!("member '{entry}': busbar's own subject token for it cannot resolve: {e}")
+    })?;
+    let mut settings = serde_json::Map::new();
+    for (key, value) in [
+        ("token_url", entry_text(block, TOKEN_URL_KEY)),
+        (
+            "subject_token_type",
+            Some(entry_text(block, SUBJECT_TOKEN_TYPE_KEY).unwrap_or(DEFAULT_SUBJECT_TOKEN_TYPE)),
+        ),
+        ("resource", entry_text(registration, AUDIENCE_KEY)),
+    ] {
+        if let Some(v) = value {
+            settings.insert(key.to_string(), serde_json::Value::String(v.to_string()));
+        }
+    }
+    let settings = serde_json::Value::Object(settings);
+    let (auth, decl) = reach
+        .auths
+        .serving(TOKEN_EXCHANGE_STYLE, &settings)?
+        .ok_or_else(|| {
+            format!(
+                "member '{entry}': no linked or dropped-in auth plugin serves the style \
+                 '{TOKEN_EXCHANGE_STYLE}' a token-exchange registration is bound under"
+            )
+        })?;
+    let handle = auth
+        .open_outbound(TOKEN_EXCHANGE_STYLE, &credential, &settings)
+        .map_err(|e| format!("member '{entry}' {e}"))?;
+    Ok(Some(busbar_kernel::plane_driver::AuthBinding {
+        auth,
+        handle,
+        style_flags: decl.flags,
+        points: busbar_contract::abi::auth::AuthPoints(decl.points),
+        passthrough: false,
+    }))
+}
+
+/// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding (ARCHITECT
+/// round 5 Q-L3B-DOOR-EXCHANGE; round 4 (d): "admin connect + verify-on-call fetches use the same
+/// binding"): every registration member's route with an auth binding (`routes`, on the plane's
+/// member-target need `served` states) is held on the plane's connection table `table` per
+/// (`instance`, need, target origin), its passthrough credential lent from the unit records
+/// `units` by the unit the request is made inside.
+pub fn bind_member_fetches(
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
+    instance: busbar_contract::conn::InstanceId,
+    table: &dyn busbar_contract::conn::DeclaredConns,
+    units: &Arc<busbar_kernel::host_units::UnitRecords>,
+) {
+    let Some(need) = served
+        .need_targets
+        .iter()
+        .enumerate()
+        .find_map(|(at, path)| {
+            busbar_contract::section::member_target(path)?;
+            Some(busbar_contract::conn::NeedId(u32::try_from(at).ok()?))
+        })
+    else {
+        return;
+    };
+    for route in routes.values().filter(|r| r.need == need) {
+        let Some(binding) = &route.auth else {
+            continue;
+        };
+        table.bind_auth(
+            instance,
+            need,
+            busbar_contract::conn::origin_of(&route.base_url),
+            busbar_contract::conn::ConnAuth {
+                auth: Arc::clone(&binding.auth),
+                handle: binding.handle,
+                style_flags: binding.style_flags,
+                points: binding.points,
+                passthrough: binding.passthrough,
+                lender: Some(Arc::clone(units) as Arc<dyn busbar_contract::conn::LendCredential>),
+            },
+        );
+    }
+}
+
 /// THE MEMBERS' ROUTES of one door plane (THE DESIGN §6 steps 2-3, sealed at its composition):
 /// each entry of its section's model-serving map, by the provider it names (#49), is reached at
 /// that provider's `base_url`, under the style the provider's `auth:` states, else the plane's
@@ -1355,12 +1492,16 @@ pub fn member_routes(
     for entry in pools.entries() {
         let Some(member) = member_entry(section, entry) else {
             if let Some((need, key)) = member_target {
-                if let Some(target) = section
-                    .get(entry.as_str())
-                    .and_then(|r| entry_text(r, key))
-                    .filter(|t| !t.is_empty())
+                let registration = section.get(entry.as_str());
+                if let Some((registration, target)) = registration
+                    .and_then(|r| entry_text(r, key).filter(|t| !t.is_empty()).map(|t| (r, t)))
                 {
-                    registered.insert(entry.clone(), (need, origin_of(target).to_string()));
+                    let anchors =
+                        registration_anchors(entry, registration, need, served, reach.secrets)?;
+                    registered.insert(
+                        entry.clone(),
+                        (need, origin_of(target).to_string(), anchors),
+                    );
                 }
             }
             continue;
@@ -1428,17 +1569,59 @@ pub fn member_routes(
     let dialled = resolve_member_needs(&needs, &members).map_err(|e| e.to_string())?;
     let mut routes = BTreeMap::new();
     // Each registration member: reached at its own target on the member-target need, its metering
-    // rows naming the registration; no auth binding (its credential is none of the providers').
-    for (entry, (need, base_url)) in registered {
+    // rows naming the registration; its auth binding is the registration's own (ARCHITECT round 4
+    // Q-SURFACES (d)): `upstream_credentials: passthrough` (the entry's, else the section's reserved
+    // default) lends the caller's verified credential to the member's one outbound auth call
+    // (MODE_PASSTHROUGH; a caller who presented none presents nothing), a `token_exchange:` block
+    // binds the RFC 8693 exchange style (round 5 Q-L3B-EXCHANGE (B)), any other sends none of the
+    // providers' credentials.
+    let section_default = section
+        .get(busbar_contract::section::UPSTREAM_CREDENTIALS_KEY)
+        .and_then(serde_yaml::Value::as_str);
+    for (entry, (need, base_url, anchors)) in registered {
+        let mode = section
+            .get(entry.as_str())
+            .and_then(|r| entry_text(r, busbar_contract::section::UPSTREAM_CREDENTIALS_KEY))
+            .or(section_default);
+        let auth = if mode == Some(PASSTHROUGH) {
+            let (auth, decl) = reach
+                .auths
+                .serving(PASSTHROUGH_STYLE, &serde_json::json!({}))?
+                .ok_or_else(|| {
+                    format!(
+                        "member '{entry}': no linked or dropped-in auth plugin serves the style \
+                         '{PASSTHROUGH_STYLE}' a passthrough registration presents the caller's \
+                         credential under"
+                    )
+                })?;
+            let handle = auth
+                .open_outbound(PASSTHROUGH_STYLE, &[], &serde_json::json!({}))
+                .map_err(|e| format!("member '{entry}' {e}"))?;
+            Some(AuthBinding {
+                auth,
+                handle,
+                style_flags: decl.flags,
+                points: busbar_contract::abi::auth::AuthPoints(decl.points),
+                passthrough: true,
+            })
+        } else {
+            // A `token_exchange:` registration (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): busbar's own
+            // subject token, exchanged per call for the caller's down-scope the plane states.
+            match section.get(entry.as_str()) {
+                Some(registration) => token_exchange_binding(&entry, registration, reach)?,
+                None => None,
+            }
+        };
         routes.insert(
             entry.clone(),
             MemberRoute {
                 rides: Vec::new(),
                 need,
                 base_url,
-                auth: None,
+                auth,
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
+                anchors,
             },
         );
     }
@@ -1487,10 +1670,65 @@ pub fn member_routes(
                 provider: r.name,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 rides,
+                anchors: busbar_contract::transport::trust::Anchors::default(),
             },
         );
     }
     Ok(routes)
+}
+
+/// THE TRUST ANCHORS OF ONE REGISTRATION MEMBER (ARCHITECT 2026-10-03, THE TRANSPORT PIN: "the connector enforces pins itself"): its pin's key, where the plane declares the pin's
+/// mechanism pins the far end's key (`PinMechanismDecl::peer_key`), and busbar's client identity,
+/// where the member-target need's `trust_from` names a member path (`settings.*.<key>`) and the
+/// registration writes it (`{cert, key}`, secret references, resolved here once). The connector
+/// holds every connection to the member to them ([`compose_egress`] seals them).
+///
+/// # Errors
+///
+/// The registration's pin breaks its rule, or its client identity does not resolve or parse:
+/// the load is refused, naming the member.
+fn registration_anchors(
+    entry: &str,
+    registration: &serde_yaml::Value,
+    need: busbar_contract::conn::NeedId,
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    secrets: &dyn busbar_contract::secret::SecretResolve,
+) -> Result<busbar_contract::transport::trust::Anchors, String> {
+    let at = format!("`{}.{entry}`", served.section);
+    let pin = busbar_kernel::trust::section::parse_entry(&at, registration, &served.trust_keys)?
+        .pin
+        .filter(|p| p.peer_key)
+        .and_then(|p| p.key);
+    let identity_at = served
+        .need_trust
+        .get(need.0 as usize)
+        .and_then(|path| busbar_contract::section::member_target(path));
+    let client_identity = match identity_at
+        .and_then(|key| Some((key, registration.get(key).filter(|v| !v.is_null())?)))
+    {
+        None => None,
+        Some((key, identity)) => {
+            let reference = |half: &str| {
+                identity
+                    .get(half)
+                    .cloned()
+                    .ok_or_else(|| format!("member '{entry}': `{key}.{half}:` is required"))
+                    .and_then(|v| {
+                        serde_yaml::from_value::<busbar_contract::secret_ref::SecretRef>(v)
+                            .map_err(|e| format!("member '{entry}': `{key}.{half}:` {e}"))
+                    })
+            };
+            let (cert, private) = (reference("cert")?, reference("key")?);
+            Some(
+                busbar_core_connector::tls::client_identity(secrets, &cert, &private)
+                    .map_err(|e| format!("member '{entry}': `{key}`: {e}"))?,
+            )
+        }
+    };
+    Ok(busbar_contract::transport::trust::Anchors {
+        key_pin: pin,
+        client_identity,
+    })
 }
 
 #[cfg(test)]
