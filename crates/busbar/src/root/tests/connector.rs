@@ -317,7 +317,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
                 continue;
             };
             if frame(conn).await.as_deref() == Some(b"got:yes".as_slice()) {
-                assert_eq!(c.write(owner, conn, b"{\"id\":1}", true), Ok(8));
+                assert_eq!(c.write(owner, conn, b"{\"id\":1}", true, false), Ok(8));
                 assert_eq!(
                     frame(conn).await.as_deref(),
                     Some(b"again:{\"id\":1}".as_slice()),

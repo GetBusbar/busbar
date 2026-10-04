@@ -2734,10 +2734,6 @@
       "kind": "alias",
       "target": "&'static [(&'static str, &'static str)]"
     },
-    "type Shard": {
-      "kind": "alias",
-      "target": "Mutex<HashMap<PoolKey, Vec<Entry>>>"
-    },
     "type Verdict": {
       "kind": "alias",
       "target": "u64"

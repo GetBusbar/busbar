@@ -924,7 +924,7 @@ fn a_program_need_spawns_its_program_and_kills_it_on_close() {
         let line = String::from_utf8(first).unwrap();
         let pid = line.lines().next().expect("the pid line").trim().to_owned();
         assert!(pid.parse::<u32>().is_ok(), "{line:?}");
-        assert_eq!(c.write(OWNER, id, b"hello\n", true), Ok(6));
+        assert_eq!(c.write(OWNER, id, b"hello\n", true, false), Ok(6));
         let echoed = read_all(&c, id, 6).await;
         assert_eq!(echoed, b"hello\n");
         assert!(!gone(&pid), "the program runs while the connection is open");

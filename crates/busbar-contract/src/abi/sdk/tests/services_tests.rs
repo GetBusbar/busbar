@@ -1059,6 +1059,10 @@ fn records_claim_is_won_once_and_a_claim_without_a_ttl_never_reaches_the_host() 
     );
     assert_eq!(
         services(&table(None)).records_claim(ticketed(0), "approval", b"k1", 1),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
 /// A host whose work handle 9 has reference `ab` and record `rec`, live: `work.open` answers it;
 /// `work.find` finds `ab` and answers absent for anything else.
 extern "C" fn works(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {

@@ -23,10 +23,10 @@ use crate::abi::host::service::{
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
     check_records_list, check_trust_due, check_trust_sight, check_trust_verify, check_unit_nest,
     check_work_find, check_work_open, check_work_resume, check_work_settle, op, ClockNowIn,
-    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn,
-    RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, TrustDueIn,
-    TrustSightIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn,
-    ABSENT, CLAIM_WON, DEST_RESOLVE, ENTITLED, FOUND,
+    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn,
+    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
+    TrustDueIn, TrustSightIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
+    WorkSettleIn, ABSENT, CLAIM_WON, DEST_RESOLVE, ENTITLED, FOUND,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,

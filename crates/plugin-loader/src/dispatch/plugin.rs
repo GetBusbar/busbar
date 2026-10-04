@@ -514,7 +514,9 @@ impl Instance {
             let target = doc
                 .as_ref()
                 .and_then(|d| resolve_target(d, &need.target_from));
-            let trust = doc.as_ref().and_then(|d| resolve_setting(d, &need.trust_from));
+            let trust = doc
+                .as_ref()
+                .and_then(|d| resolve_setting(d, &need.trust_from));
             let _ = table.declare(*instance, id, need, target.as_deref(), trust.as_deref());
         }
     }
