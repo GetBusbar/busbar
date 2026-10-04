@@ -278,8 +278,14 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
         .build()
         .expect("a runtime");
     rt.block_on(async {
-        let c = process::build(|| entries(doors), judge(), &[], Arc::new(|_| {}))
-            .expect("the linked doors build a connector");
+        let c = process::build(
+            || entries(doors, &TransportSettings::default()),
+            judge(),
+            &[],
+            Arc::new(|_| {}),
+            PoolPosture::NONE,
+        )
+        .expect("the linked doors build a connector");
         let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
             "command": "/bin/sh",
             "args": ["-c", "echo \"got:$DECLARED\"; read line; echo \"again:$line\""],

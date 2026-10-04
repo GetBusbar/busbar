@@ -1120,15 +1120,13 @@ impl Conns for Connector {
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
             let conn = Connection::spawn(door, &program, dial).map_err(|f| map(&f))?;
+            // A program is a dialled, single-use line (no pool, no judgement): its one exchange
+            // rides EXCHANGE_STREAM, as a freshly dialled connection's does.
+            let line = Line::new(conn);
             return self.slab.insert(
                 caller,
                 need,
-                Held {
-                    conn: Mutex::new(Some(conn)),
-                    judging: Mutex::new(None),
-                    rest: Mutex::new((None, Vec::new(), false)),
-                    reason: Mutex::new(None),
-                },
+                Held::over(Some((line, EXCHANGE_STREAM)), None, None),
             );
         }
         // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's

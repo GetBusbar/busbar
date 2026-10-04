@@ -463,6 +463,7 @@ impl Connection {
             opening: dial.opening,
             head_words: dial.head_words,
             early: Vec::new(),
+            flushed: 0,
             open_deadline: None,
             framer_deadline: None,
             sleep: None,
