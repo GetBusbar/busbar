@@ -863,6 +863,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &late_services,
         &deploy.door_sections(),
         &door_reach,
+        root::serve::Deployment {
+            public_url: deploy.public_url.as_deref(),
+            catalog: Some(&deploy.models),
+        },
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();

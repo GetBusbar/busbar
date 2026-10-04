@@ -437,6 +437,7 @@ pub fn compose_served(
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
     reach: &crate::root::door_steps::DoorReach<'_>,
+    deployment: Deployment<'_>,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -460,13 +461,21 @@ pub fn compose_served(
             reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         };
-        let mut served = compose_planes(doors, dispatcher, late, sections, &money, Some(&egress))?;
+        let mut served = compose_planes_in(
+            doors,
+            dispatcher,
+            late,
+            sections,
+            deployment,
+            &money,
+            Some(&egress),
+        )?;
         served.post = Some(post);
         Ok(served)
     }
     #[cfg(not(linked_axis_node))]
     {
-        let _ = (gov, dispatcher, late, reach);
+        let _ = (gov, dispatcher, late, reach, deployment);
         match doors
             .iter()
             .find(|(_, plugin)| sections.contains_key(plugin.served().section))
@@ -512,6 +521,90 @@ pub fn compose_planes(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
 ) -> Result<Served, String> {
+    compose_planes_in(
+        doors,
+        dispatcher,
+        late,
+        sections,
+        Deployment::default(),
+        money,
+        egress,
+    )
+}
+
+/// WHAT A DOOR PLANE'S COMPOSITION READS OF THE DEPLOYMENT beside its own section (ARCHITECT
+/// Q-L5B-ROUTE, 2026-10-03).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Deployment<'d> {
+    /// The deployment's public base URL (top-level `public_url:`), handed to each plane's `open`
+    /// (`PlaneOpenIn.public_url`): a plane whose claims and audience are read from it publishes
+    /// them only under one.
+    pub public_url: Option<&'d str>,
+    /// The top-level `models:` catalog, from which a section's `session.model` reference is folded
+    /// into its route table ([`catalog_routes`]).
+    pub catalog: Option<&'d std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
+}
+
+/// The `session:` block of a section, and the `model:` key inside it that names a top-level catalog
+/// model.
+const SESSION_KEY: &str = "session";
+const MODEL_KEY: &str = "model";
+
+/// THE ROUTE TABLE A SECTION'S DOOR STEPS RESOLVE AGAINST (ARCHITECT Q-L5B-ROUTE, 2026-10-03): the
+/// section as written, plus, where it states no `models:` of its own and its `session.model` names an
+/// entry of the top-level models `catalog`, that one entry folded in as its `models:` map (its
+/// provider, upstream model and attempt cap), so the plane's door names it as a DIRECT route and the
+/// kernel's door steps resolve it as any entry of the plane's own section. The 1.5.5 shape of both
+/// sections is unchanged: only the route table is folded, never the settings the door opens with.
+#[must_use]
+pub fn catalog_routes(
+    section: &serde_yaml::Value,
+    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
+) -> serde_yaml::Value {
+    use serde_yaml::{Mapping, Value};
+    let mut routes = section.clone();
+    let named = section
+        .get(SESSION_KEY)
+        .and_then(|s| s.get(MODEL_KEY))
+        .and_then(Value::as_str);
+    let (Some(map), Some(model)) = (routes.as_mapping_mut(), named) else {
+        return routes;
+    };
+    let models_key = Value::from(busbar_contract::section::RESERVED_MODELS_KEY);
+    let Some(entry) = catalog
+        .get(model)
+        .filter(|_| !map.contains_key(&models_key))
+    else {
+        return routes;
+    };
+    let mut folded = Mapping::new();
+    folded.insert("provider".into(), entry.provider.clone().into());
+    if let Some(upstream) = &entry.upstream_model {
+        folded.insert("upstream_model".into(), upstream.clone().into());
+    }
+    if let Some(ms) = entry.attempt_timeout_ms {
+        folded.insert("attempt_timeout_ms".into(), ms.into());
+    }
+    let mut models = Mapping::new();
+    models.insert(model.into(), Value::Mapping(folded));
+    map.insert(models_key, Value::Mapping(models));
+    routes
+}
+
+/// [`compose_planes`], reading the deployment's public URL and model catalog.
+///
+/// # Errors
+///
+/// As [`compose_planes`].
+pub fn compose_planes_in(
+    doors: &[(String, DoorPlane)],
+    dispatcher: &Arc<Dispatcher>,
+    late: &LateServices,
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    deployment: Deployment<'_>,
+    money: &dyn Fn() -> Arc<PlaneMoney>,
+    egress: Option<&DoorEgress<'_>>,
+) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
         return Ok(served);
@@ -529,7 +622,8 @@ pub fn compose_planes(
             );
             continue;
         };
-        let snapshot = open(plugin, section).map_err(|e| format!("{instance}: {e}"))?;
+        let snapshot =
+            open(plugin, section, deployment.public_url).map_err(|e| format!("{instance}: {e}"))?;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
             Arc::clone(dispatcher),
@@ -616,14 +710,19 @@ pub fn compose_planes(
                 })
                 .collect(),
         );
-        let pools = DoorPools::of(section);
+        // The route table: the section, with the catalog model its `session.model` names folded in.
+        let routes_of = deployment.catalog.map_or_else(
+            || section.clone(),
+            |catalog| catalog_routes(section, catalog),
+        );
+        let pools = DoorPools::of(&routes_of);
         // THE EGRESS, SEALED (THE DESIGN §6 steps 2-3): each member's route resolved and its
         // credential bound by the auth plugin serving its style, over the connector its needs were
         // declared on.
         let egress = match egress {
             Some(egress) => {
                 let routes = crate::root::door_steps::member_routes(
-                    section,
+                    &routes_of,
                     &pools,
                     &served_facts,
                     egress.reach,
@@ -660,7 +759,12 @@ pub fn compose_planes(
 }
 
 /// `open` the plane, generation 1, its settings `section` as JSON; the snapshot it published.
-fn open(plugin: &DoorPlane, section: &serde_yaml::Value) -> Result<OwnedSnapshot, String> {
+fn open(
+    plugin: &DoorPlane,
+    section: &serde_yaml::Value,
+    public_url: Option<&str>,
+) -> Result<OwnedSnapshot, String> {
+    let public_url = public_url.unwrap_or_default();
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
     let mut section = section.clone();
     if let Some(map) = section.as_mapping_mut() {
@@ -684,9 +788,16 @@ fn open(plugin: &DoorPlane, section: &serde_yaml::Value) -> Result<OwnedSnapshot
                 err_buf: std::ptr::null_mut(),
                 err_cap: 0,
             },
-            public_url: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
+            public_url: if public_url.is_empty() {
+                AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                }
+            } else {
+                AbiStr {
+                    ptr: public_url.as_ptr(),
+                    len: public_url.len(),
+                }
             },
             owned: busbar_contract::abi::mechanism::call::Blob::ABSENT,
         },

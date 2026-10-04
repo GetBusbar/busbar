@@ -46,10 +46,10 @@ use crate::topology::{
 };
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::egress::engine::{send_bounded, EngineClient};
+use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::ingress::duplex_ws::{
     accept_gauntlet, install_ws_arrivals, WsAcceptFuture, WsArrival, WsArrivalSpec,
 };
-use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::observe::Counted;
 use busbar_kernel::plane::registry::{BuildCtx, PlaneBootCtx};
