@@ -338,6 +338,7 @@ dependencies = [
  "busbar-mcp",
  "busbar-plane-decisions",
  "busbar-plane-llm",
+ "busbar-plane-mcp",
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
