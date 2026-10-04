@@ -74,6 +74,9 @@ pub struct Section {
     pub at: Vec<Vec<String>>,
     /// The blob that crosses: `{verb: section}` for every stated verb the document writes, reserved
     /// sub-keys stripped; an instance's own `settings`.
+    // settings-leak-lint: allow — NON-PROJECTION engine type. `Section` derives no `Serialize`: it
+    // is the stage-3g deal, whose `settings` crosses only OUTBOUND to the dealt plugin's lifecycle
+    // `validate` (`root::boot::validate_dealt`); no admin read serves it.
     pub settings: Value,
     /// The reserved sub-keys read off, each at its path, for the kernel.
     pub reserved: Vec<(Vec<String>, Value)>,
