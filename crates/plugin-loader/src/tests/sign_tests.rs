@@ -1178,7 +1178,8 @@ fn a_plugin_outside_its_declared_contract_abi_range_is_refused_naming_both_range
         err,
         format!(
             "plugin 'busbar-store-future' supports contract ABI v{}..=v{} for kind 'store', and this \
-             binary supports v{floor}..=v{max}: the ranges share no version, refusing to load it",
+             binary supports v{floor}..=v{max}: the ranges share no version, refusing to load it; \
+             rebuild the plugin against the 1.6.0 SDK",
             max + 1,
             max + 3
         )
@@ -1204,11 +1205,12 @@ fn a_plugin_outside_its_declared_contract_abi_range_is_refused_naming_both_range
     validate_abi(&with_range(max, max, max), supported).expect("the current version is admitted");
 
     // A stamp outside the plugin's OWN range is an incoherent manifest.
-    let err = validate_abi(&with_range(max, max, floor), supported)
+    let err = validate_abi(&with_range(max, max, max + 1), supported)
         .expect_err("an abi_version outside the declared range must be refused");
     assert!(
         err.contains(&format!(
-            "manifest abi_version {floor} is outside the contract-ABI range v{max}..=v{max}"
+            "manifest abi_version {} is outside the contract-ABI range v{max}..=v{max}",
+            max + 1
         )),
         "{err}"
     );
