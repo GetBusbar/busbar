@@ -131,6 +131,81 @@ fn the_hook_projection_is_the_method_and_its_params() {
     assert_eq!(projection(b"[1]"), None);
 }
 
+/// THE INVOKE REWRITE CONTRACT, as the served engine applied a `prompt: rw` hook's reply to an A2A
+/// submission's params: an object `content`, a JSON-string `content` that parses to an object, or
+/// a role-less entry itself; the last usable entry wins; nothing usable is not applied.
+#[test]
+fn a_rewrite_replaces_the_params_by_the_invoke_contract() {
+    let params = |reply: Value| rewritten_params(&serde_json::to_vec(&reply).unwrap());
+    let object = json!({ "message": { "parts": [{ "text": "[redacted]" }] } });
+    assert_eq!(
+        params(json!({ "messages": [{ "role": "user", "content": object }] })),
+        Some(object.clone())
+    );
+    assert_eq!(
+        params(json!({ "messages": [{ "role": "user", "content": object.to_string() }] })),
+        Some(object.clone())
+    );
+    assert_eq!(
+        params(json!({ "messages": [object.clone()] })),
+        Some(object.clone())
+    );
+    assert_eq!(
+        params(json!({ "messages": [
+            { "role": "user", "content": { "first": true } },
+            { "role": "user", "content": "plain words" },
+            { "role": "user", "content": object },
+        ] })),
+        Some(object.clone())
+    );
+    assert_eq!(params(json!({ "messages": [{ "role": "user" }] })), None);
+    assert_eq!(
+        params(json!({ "messages": [{ "role": "user", "content": "7" }] })),
+        None
+    );
+    assert_eq!(params(json!({ "tools": [] })), None);
+    assert_eq!(rewritten_params(b"not json"), None);
+
+    // The envelope keeps every member but its params, re-serialized.
+    let send = br#"{"jsonrpc":"2.0","id":7,"method":"message/send","params":{"message":{}}}"#;
+    let (value, bytes) = with_params(send, object.clone()).unwrap();
+    assert_eq!(
+        value,
+        json!({ "jsonrpc": "2.0", "id": 7, "method": "message/send", "params": object })
+    );
+    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), value);
+    assert_eq!(with_params(b"[1]", object.clone()), None);
+}
+
+/// On the HTTP+JSON line the body the kernel keeps is the params where the line's body is the
+/// params (a message sent or streamed, a push config posted), and nothing where the path and the
+/// query spell them.
+#[test]
+fn the_target_line_keeps_the_rewritten_params_as_its_body() {
+    let route = |verb: &str, suffix: &str| {
+        let target = format!("{}{suffix}", crate::MOUNT_PATH);
+        door::ROUTES
+            .iter()
+            .find(|r| r.verb == verb && r.target == target)
+            .unwrap_or_else(|| panic!("{verb} {target}"))
+    };
+    let params = json!({ "message": { "parts": [] } });
+    let bytes = serde_json::to_vec(&params).unwrap();
+    for (verb, suffix) in [
+        ("POST", crate::ROUTE_MESSAGE_SEND),
+        ("POST", crate::ROUTE_MESSAGE_STREAM),
+        ("POST", crate::ROUTE_PUSH_CONFIGS),
+    ] {
+        assert_eq!(
+            target_body(route(verb, suffix), &params),
+            Some(bytes.clone()),
+            "{suffix}"
+        );
+    }
+    assert_eq!(target_body(route("GET", crate::ROUTE_TASKS), &params), None);
+    assert_eq!(target_body(route("POST", crate::ROUTE_TASK), &params), None);
+}
+
 fn ticket(slot: u32) -> Ticket {
     Ticket {
         slot,

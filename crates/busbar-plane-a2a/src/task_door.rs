@@ -20,7 +20,8 @@ use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
-    OnPieceIn, OnPieceOut, OutField, RecordWrite, EMIT_DONE, FROM_CALLER, RECORD_PUT,
+    OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, FROM_CALLER, RECORD_PUT,
+    UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::conn::{Connector, Host};
 use busbar_contract::abi::sdk::{Instance, Keyed, Lent, Out, ServiceError, Services};
@@ -44,6 +45,9 @@ pub struct Pass {
     entry: Option<Entry>,
     /// The reply bytes the last window did not hold.
     rest: Vec<u8>,
+    /// The plane answered the verb itself (the admission passed): the unit is served, and every
+    /// window reports its fee unit, as the served engine kept the fee of a verb it answered.
+    served: bool,
 }
 
 /// One piece's stamp: its clock, and whether it runs the second's sweep.
@@ -431,6 +435,7 @@ pub fn on_piece(
             )
             .err()
         });
+    let served = refused.is_none();
     let answered = match refused {
         Some(refusal) => Ok(Some(local::Answer {
             status: refusal.status,
@@ -450,6 +455,11 @@ pub fn on_piece(
         Ok(Some(answer)) => answer,
     };
     let issued = via.issued();
+    plane.units.with(&unit, |u| {
+        if let Some(u) = u {
+            u.pass.served = served;
+        }
+    });
     let body = match composed {
         Some(_) => crate::rest::reframe(answer.status, &answer.body),
         None => answer.body,
@@ -494,12 +504,23 @@ fn window(
     (status, body): (u32, &[u8]),
     writes: &[Write],
 ) -> Outcome {
-    let (mut reply, mut fields, mut records, mut arena) = (
+    let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
         input.fields_buf(),
         input.records_buf(),
         input.arena_buf(),
+        input.units_buf(),
     );
+    if plane
+        .units
+        .with(&unit, |u| u.is_some_and(|u| u.pass.served))
+    {
+        units.push(UnitCount {
+            class: crate::door::CLASS_FEE_INDEX,
+            source: UNITS_REPORTED,
+            amount: 1,
+        });
+    }
     if status != 0 {
         fields.push(OutField {
             name: arena.span(b"content-type"),
@@ -514,10 +535,13 @@ fn window(
             value: arena.span(&w.value),
         });
     }
-    let short = !(fields.fits() && records.fits() && arena.fits());
+    let short = !(fields.fits() && records.fits() && arena.fits() && units.fits());
     let (fw, fnd) = fields.settle(short);
     let (rw, rnd) = records.settle(short);
     let (aw, and) = arena.settle(short);
+    let (uw, und) = units.settle(short);
+    out.set(|o| &o.units_written, uw as u32);
+    out.set(|o| &o.units_needed, und as u32);
     out.set(|o| &o.fields_written, fw as u32);
     out.set(|o| &o.fields_needed, fnd as u32);
     out.set(|o| &o.records_written, rw as u32);

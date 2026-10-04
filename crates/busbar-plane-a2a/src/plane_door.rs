@@ -143,6 +143,9 @@ pub struct Hop {
     /// The ATTEMPT's agent endpoint was judged by the relay's guard: its re-entries do not judge it
     /// again.
     endpoint_judged: bool,
+    /// The hop has LEFT the plane for its agent (its request answered at an ATTEMPT, every gate
+    /// of the plane's passed): the unit is served and its fee unit is reported from then on.
+    left: bool,
     /// THE ENVELOPE A REQUEST-STAGE REWRITE LEFT (`project`'s `rewrite`): what the hop relays
     /// (its task ids translated over it, its binding composed from it). Everything else the hop
     /// reads (the task it opens, the callback it carries, the admission) reads the caller's own
@@ -170,6 +173,7 @@ impl Hop {
             verifying: None,
             held_writes: Vec::new(),
             endpoint_judged: false,
+            left: false,
             rewritten: None,
         }
     }
@@ -1137,6 +1141,13 @@ fn piece(
             return (outcome, false);
         }
     }
+    // THE FEE UNIT: a hop that left the plane for its agent is served, whatever the agent then
+    // answered (the served engine billed a hop that went to the transport, and gave the fee back
+    // only to one refused before the socket).
+    if matches!(hop.outbox.head, Some(Head::Attempt(_))) {
+        hop.left = true;
+    }
+    let left = hop.left;
     let ob = &mut hop.outbox;
     let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
@@ -1148,9 +1159,16 @@ fn piece(
     let moved = hop.relay.moved();
     if moved != 0 {
         units.push(UnitCount {
-            class: 0,
+            class: door::CLASS_BYTES_INDEX,
             source: UNITS_REPORTED,
             amount: moved,
+        });
+    }
+    if left {
+        units.push(UnitCount {
+            class: door::CLASS_FEE_INDEX,
+            source: UNITS_REPORTED,
+            amount: 1,
         });
     }
     let mut head_fields = |list: &[(&'static str, String)]| {

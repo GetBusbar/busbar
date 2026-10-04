@@ -119,10 +119,30 @@ pub fn op_class_index(op: busbar_contract::ids::OpClassId) -> Option<u32> {
         .and_then(|i| u32::try_from(i).ok())
 }
 
-const BILLABLE_CLASSES: &[BillableClass] = &[BillableClass {
-    class: abi_str(crate::meta::CLASS_BYTES.as_str()),
-    family: abi_str(BYTES_FAMILY),
-}];
+const BILLABLE_CLASSES: &[BillableClass] = &[
+    BillableClass {
+        class: abi_str(crate::meta::CLASS_BYTES.as_str()),
+        family: abi_str(BYTES_FAMILY),
+    },
+    // THE FEE UNIT is also a class (the tail check holds `fee_units ⊆ billable_classes`, ARCHITECT
+    // Q-L5-FEE (C)): reported `1` once the unit is served (its hop left the plane for the agent, or
+    // the plane answered the verb itself), so a unit refused before that has its `per_request`
+    // refunded, as the served engine gave the admission's fee back to a hop refused before the
+    // socket.
+    BillableClass {
+        class: abi_str(FEE_PER_REQUEST),
+        family: abi_str(FEE_FAMILY),
+    },
+];
+
+/// The family of the fee unit's class: a count of 0 or 1.
+pub const FEE_FAMILY: &str = "count";
+
+/// The tail index of the bytes class in the billable classes.
+pub const CLASS_BYTES_INDEX: u32 = 0;
+
+/// The tail index of the fee unit's class in the billable classes.
+pub const CLASS_FEE_INDEX: u32 = 1;
 
 const FEE_UNITS: &[AbiStr] = &[abi_str(FEE_PER_REQUEST)];
 
