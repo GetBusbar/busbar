@@ -288,6 +288,20 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         }
     }
 
+    /// Wait for the completion, however long the op takes (a sync caller; it blocks this thread).
+    /// The dispatcher settles every reply: the op's answer, its deadline's `cancel`, a client drop,
+    /// a watchdog fault or the dispatcher's stop. A WriteBehind op submitted with no deadline is
+    /// waited on until it completes.
+    pub fn wait_done(&self) -> Done<I, O> {
+        let mut g = self.slot.lock();
+        loop {
+            if let Some(d) = g.value.take() {
+                return d;
+            }
+            g = self.slot.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
     fn settled(outcome: Outcome, frame: Frame<I, O>) -> Self {
         let slot = Arc::new(ReplySlot::new());
         slot.put(Done {
@@ -1154,11 +1168,21 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
     }
 }
 
+std::thread_local! {
+    /// The dispatcher worker this thread is, as `(the dispatcher's Env address, worker index)`;
+    /// `None` on every other thread ([`Dispatcher::current_worker`]).
+    static ON_WORKER: std::cell::Cell<Option<(usize, u32)>> = const { std::cell::Cell::new(None) };
+}
+
 pub(crate) fn spawn_worker(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
     let name = format!("busbar-dispatch-{}", w.index);
+    let me = (Arc::as_ptr(&env) as usize, w.index);
     std::thread::Builder::new()
         .name(name)
-        .spawn(move || run(w, rx, env))
+        .spawn(move || {
+            ON_WORKER.with(|c| c.set(Some(me)));
+            run(w, rx, env);
+        })
         .expect("spawn a dispatch worker");
 }
 
@@ -1341,6 +1365,18 @@ impl Dispatcher {
         let mut st = w.lock();
         w.entry(&mut st, t)
             .is_some_and(|(_, e)| e.current.as_ref().is_some_and(|c| c.pending))
+    }
+
+    /// The index of this dispatcher's worker the calling thread IS; `None` on any other thread. A
+    /// synchronous caller that waits on a reply never submits to its own worker: that worker cannot
+    /// run the op while its thread waits.
+    #[must_use]
+    pub fn current_worker(&self) -> Option<u32> {
+        let mine = Arc::as_ptr(&self.pool.env) as usize;
+        ON_WORKER
+            .with(std::cell::Cell::get)
+            .filter(|(env, _)| *env == mine)
+            .map(|(_, index)| index)
     }
 
     /// Mint a request ticket on `worker`.

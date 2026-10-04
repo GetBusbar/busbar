@@ -4855,6 +4855,23 @@ const UPSTREAM_WORDS: &[&str] = &[
     "egress", "pool", "routing", "failover", "breaker", "provider",
 ];
 
+/// THE ONE CONTROL-TIER CRATE THAT OPENS THE REAL UPSTREAM CONNECTIONS: busbar-core-connector
+/// (CONNECTOR-19 — it dials; W3b — rustls lives only here, by design; Q-L16-4 — the operator
+/// verify-off opt-in). It is cleanliness-tier like admin and oauth2, but unlike them it DOES reach
+/// an upstream, so [`CONNECTOR_INROLE_WORDS`] — the vocabulary of OPENING a connection — is its job,
+/// not control-path debt.
+const EGRESS_HOME: &str = "busbar-core-connector";
+
+/// The connection/TLS vocabulary IN-ROLE for [`EGRESS_HOME`]: how a connection is opened — its
+/// egress class, the pool it is kept in, the TLS/crypto provider it is secured with. Excluded from
+/// the upstream-word finding for THAT crate ALONE; admin and oauth2 are checked on every word.
+///
+/// The DECISION words are deliberately NOT here: `routing`, `failover` and `breaker` are the
+/// kernel's route decision (spec:637 "KERNEL: route (pool walk, member, breaker)"), so the
+/// connector naming one is still a finding — kernel logic in the connector is real debt, not its
+/// in-role vocabulary.
+const CONNECTOR_INROLE_WORDS: &[&str] = &["egress", "pool", "provider"];
+
 /// Every `fn <name>` in a crate's shipped source, with the file, line and the body's blanked text.
 struct FnBody {
     file: String,
@@ -5047,6 +5064,13 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             for (lineno, code) in scan::production_lines(&f.text) {
                 let lower = scan::blank_literals(&code).to_lowercase();
                 for w in UPSTREAM_WORDS {
+                    // busbar-core-connector OPENS the real connections, so its connection/TLS
+                    // vocabulary is in-role, not control-path debt ([`CONNECTOR_INROLE_WORDS`]);
+                    // its DECISION words (routing/failover/breaker) stay a finding. No other
+                    // control surface gets this exclusion.
+                    if c.name == EGRESS_HOME && CONNECTOR_INROLE_WORDS.contains(w) {
+                        continue;
+                    }
                     if word_ci(&lower, w) {
                         offenders.push(format!(
                             "upstream\t{rel}:{lineno}\t{} names `{w}` — a control surface has no \
