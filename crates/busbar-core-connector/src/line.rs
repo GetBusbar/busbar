@@ -299,6 +299,12 @@ impl Line {
         s.conn.as_ref().map(|c| c.established().clone())
     }
 
+    /// Why the line's connection failed, once it has (see [`Connection::cause`]).
+    pub(crate) fn cause(&self) -> Option<busbar_contract::conn::ConnCause> {
+        let s = self.state.lock().expect("line");
+        s.conn.as_ref().and_then(|c| c.cause().cloned())
+    }
+
     /// The dial target the line's connection names, if it still holds one.
     pub(crate) fn target(&self) -> Option<String> {
         let s = self.state.lock().expect("line");

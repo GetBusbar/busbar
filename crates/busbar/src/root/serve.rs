@@ -888,6 +888,17 @@ pub fn compose_planes(
                     egress.reach,
                 )
                 .map_err(|e| format!("{instance}: {e}"))?;
+                // The door's own requests to its members carry the members' bindings (ARCHITECT
+                // round 5 Q-L3B-DOOR-EXCHANGE), held on the connection table its need is declared on.
+                if let Some(table) = plugin.conn_table() {
+                    crate::root::door_steps::bind_member_fetches(
+                        &served_facts,
+                        &routes,
+                        plugin.instance(),
+                        &*table,
+                        kernel.units(),
+                    );
+                }
                 Some(Arc::new(
                     crate::root::door_steps::compose_egress(
                         &facts,
@@ -1212,6 +1223,8 @@ pub struct DoorRequest {
     pub body: Bytes,
     /// The auth gate's verdict for the caller.
     pub gov: busbar_contract::records::PlaneRequestCtx,
+    /// The caller's verified credential, lent for a passthrough member's outbound auth call alone.
+    pub credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
     /// The generation serving the request.
     pub app: Arc<busbar_kernel::state::App>,
 }
@@ -1557,6 +1570,7 @@ impl DoorRequest {
             headers: ctx.headers,
             body: ctx.body,
             gov: ctx.gov.unwrap_or_default(),
+            credential: ctx.caller_credential,
             app,
         })
     }
@@ -1574,6 +1588,7 @@ impl DataRoutes {
             headers,
             body,
             gov,
+            credential,
             app,
         } = req;
         let fields: HeadFields = headers
@@ -1602,8 +1617,16 @@ impl DataRoutes {
         let (caller, reply) = IngressCaller::arriving(body);
         let unit = async move {
             let caller = caller;
-            self.drive(plane, app, principal, key, open, &caller, arrival, None)
-                .await
+            self.drive(
+                plane,
+                app,
+                (principal, key, credential),
+                open,
+                &caller,
+                arrival,
+                None,
+            )
+            .await
         };
         reply.answer(Box::pin(unit)).await
     }
@@ -1676,8 +1699,9 @@ impl DataRoutes {
                 .drive(
                     plane,
                     app,
-                    principal,
-                    key,
+                    // A nested unit presents no credential of its own: nothing is lent to a
+                    // passthrough member on its behalf.
+                    (principal, key, None),
                     open,
                     &caller,
                     arrival,
@@ -1714,8 +1738,7 @@ impl DataRoutes {
         &self,
         plane: usize,
         app: Arc<busbar_kernel::state::App>,
-        principal: PrincipalId,
-        key: Option<Arc<busbar_contract::records::VirtualKey>>,
+        (principal, key, credential): UnitCaller,
         open: bool,
         caller: &IngressCaller,
         arrival: Arrival,
@@ -1745,6 +1768,7 @@ impl DataRoutes {
                 arrived: arrived.secs(),
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: nesting.as_ref().map_or(0, |n| n.depth),
+                credential: credential.clone(),
             },
         );
         if let Some(n) = &nesting {
@@ -1754,6 +1778,7 @@ impl DataRoutes {
             egress: live.egress.as_deref(),
             steps: &steps,
             unit,
+            credential,
             far: OnceLock::new(),
         };
         let units = served.driver.unit(&steps, &far, caller, arrival, 0);
@@ -1830,6 +1855,8 @@ struct DoorFar<'d, 's> {
     egress: Option<&'d Egress>,
     steps: &'d DoorSteps<'s>,
     unit: busbar_contract::UnitKey,
+    /// The caller's verified credential, lent to the walk for a passthrough member alone.
+    credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
     far: OnceLock<Option<EgressFarEnd<'d>>>,
 }
 
@@ -1843,6 +1870,7 @@ impl<'d> DoorFar<'d, '_> {
                 Some(egress.unit(UnitRoute {
                     unit: self.unit,
                     pool: egress_pool(self.steps.plane(), &routed),
+                    caller_credential: self.credential.clone(),
                     once: self.steps.once(),
                     ..UnitRoute::default()
                 }))
@@ -2025,6 +2053,15 @@ impl IngressReply {
         }
     }
 }
+
+/// Who a door unit serves: the principal the auth gate verified, its governance key, and its
+/// verified credential (lent for a passthrough member's outbound auth call alone).
+#[cfg(linked_axis_node)]
+type UnitCaller = (
+    PrincipalId,
+    Option<Arc<busbar_contract::records::VirtualKey>>,
+    Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+);
 
 /// A unit the data door drives: what it rendered for its caller when it ended before any byte.
 pub type DrivenUnit = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Rendered>> + Send>>;

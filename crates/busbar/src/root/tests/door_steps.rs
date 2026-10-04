@@ -256,6 +256,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 arrived: 0,
                 records: Some(std::sync::Arc::clone(&records)),
                 depth: 0,
+                credential: None,
             },
         )
     };
@@ -449,6 +450,9 @@ struct TokenEndpoint {
     declared: std::sync::Mutex<Vec<(u32, u32, Option<String>)>>,
     opened: std::sync::Mutex<Vec<Opened>>,
     replies: std::sync::Mutex<Replies>,
+    /// The reply body to a request body, when the endpoint answers by what it was asked (an RFC
+    /// 8693 exchange's token names its scope); `None` = the minted replies above.
+    answer: Option<fn(&str) -> String>,
 }
 
 /// What one open carried: the need, the target, the head target, the body.
@@ -530,10 +534,13 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
             String::from_utf8_lossy(desc.body).into_owned(),
         ));
         let n = opened.len();
-        let body = format!(
-            r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
-            if n == 1 { 2 } else { 3600 }
-        );
+        let body = match self.answer {
+            Some(answer) => answer(&opened[n - 1].3),
+            None => format!(
+                r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
+                if n == 1 { 2 } else { 3600 }
+            ),
+        };
         let id = self.slab.insert(caller, need, ())?;
         self.replies.lock().unwrap().insert(
             id,

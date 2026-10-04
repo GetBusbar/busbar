@@ -162,6 +162,7 @@ fn rig() -> Rig {
                     pin: Some(DeclaredPin {
                         mechanism: "fingerprint".into(),
                         root: false,
+                        peer_key: false,
                         key: None,
                         fingerprint: Some("fp".into()),
                     }),
@@ -530,6 +531,7 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
                 pin: pin.map(|fp| DeclaredPin {
                     mechanism: "fingerprint".into(),
                     root: false,
+                    peer_key: false,
                     key: None,
                     fingerprint: Some(fp.into()),
                 }),

@@ -200,6 +200,7 @@ impl Node {
                     (
                         DestinationId::new(n as u64),
                         MemberRoute {
+                            anchors: Default::default(),
                             rides: Vec::new(),
                             need: NeedId(0),
                             base_url: format!("https://{lane}.test/"),

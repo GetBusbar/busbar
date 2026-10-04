@@ -1007,3 +1007,296 @@ fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
         );
     });
 }
+
+/// THE TRANSPORT PIN (the transport pin, ARCHITECT 2026-10-03): a destination's sealed trust
+/// anchors are enforced by the connector itself on every connection to it, against a real TLS far
+/// end on loopback whose certificate chains to a test root the connector trusts.
+mod transport_pin {
+    use std::sync::{Arc, Mutex};
+
+    use busbar_contract::transport::trust::{key_pin, Anchors, ClientIdentity, EgressTrust};
+    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair, PublicKeyData as _};
+
+    use super::*;
+    use crate::registry::{Entry, Transports};
+    use crate::support::{worker, TestDoor};
+
+    /// A test root and the leaves it issues.
+    struct Pki {
+        ca_der: Vec<u8>,
+        issuer: Issuer<'static, KeyPair>,
+    }
+
+    /// One issued leaf: its DER, its key's PKCS#8 DER, and its key's pin, taken off the key pair
+    /// itself (never off the certificate the connector walks).
+    struct Leaf {
+        der: Vec<u8>,
+        key: Vec<u8>,
+        pin: String,
+    }
+
+    impl Pki {
+        fn new() -> Self {
+            let kp = KeyPair::generate().unwrap();
+            let mut params = CertificateParams::new(Vec::new()).unwrap();
+            params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            let ca = params.self_signed(&kp).unwrap();
+            Self {
+                ca_der: ca.der().to_vec(),
+                issuer: Issuer::new(params, kp),
+            }
+        }
+
+        fn leaf(&self, name: &str) -> Leaf {
+            let kp = KeyPair::generate().unwrap();
+            let cert = CertificateParams::new(vec![name.to_string()])
+                .unwrap()
+                .signed_by(&kp, &self.issuer)
+                .unwrap();
+            Leaf {
+                der: cert.der().to_vec(),
+                key: kp.serialize_der(),
+                pin: key_pin(&kp.subject_public_key_info()),
+            }
+        }
+    }
+
+    /// What the far end saw on one connection: the bytes it read, and whether the dialler
+    /// presented a client certificate.
+    type Seen = Arc<Mutex<Option<(Vec<u8>, bool)>>>;
+
+    /// A TLS far end on loopback serving `leaf` (asking for a client certificate under `pki`'s
+    /// root when `mutual`), answering `answer` once it read five bytes: its address, and what it
+    /// saw.
+    async fn tls_far_end(pki: &Pki, leaf: &Leaf, mutual: bool) -> (String, Seen) {
+        crate::tls::install_crypto_provider();
+        let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
+        let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
+        let builder = rustls::ServerConfig::builder();
+        let config = if mutual {
+            let mut roots = rustls::RootCertStore::empty();
+            roots
+                .add(rustls_pki_types::CertificateDer::from(pki.ca_der.clone()))
+                .unwrap();
+            let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+                .build()
+                .unwrap();
+            builder.with_client_cert_verifier(verifier)
+        } else {
+            builder.with_no_client_auth()
+        }
+        .with_single_cert(chain, key)
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let (l, far) = far_end().await;
+        let seen: Seen = Arc::default();
+        let saw = Arc::clone(&seen);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((s, _)) = l.accept().await {
+                let (acceptor, saw) = (acceptor.clone(), Arc::clone(&saw));
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(s).await else {
+                        return;
+                    };
+                    let presented = tls.get_ref().1.peer_certificates().is_some();
+                    let mut buf = [0_u8; 5];
+                    let got = tls.read_exact(&mut buf).await.map(|_| buf.to_vec());
+                    *saw.lock().unwrap() = Some((got.unwrap_or_default(), presented));
+                    let _ = tls.write_all(b"answer").await;
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+        (far, seen)
+    }
+
+    /// A connector serving a door whose targets ask for connection security under the name
+    /// `localhost` (`sec`) and a plaintext one (`plain`), trusting `pki`'s root, with `need` 0
+    /// declared over `sec` and need 1 over `plain`.
+    fn trusting(pki: &Pki) -> Connector {
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::identity("plain")),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "sec",
+                    &["sec"],
+                    &[],
+                    crate::support::Knobs {
+                        secure_name: Some("localhost"),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let tls = crate::tls::client::build_client_config(&EgressTrust {
+            extra_anchors: vec![pki.ca_der.clone()],
+            ..EgressTrust::default()
+        })
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            loopback_literals(),
+            Some(Arc::new(tls)),
+            Arc::new(|_| {}),
+        );
+        c.declare_over(OWNER, NeedId(0), "sec").unwrap();
+        c.declare_over(OWNER, NeedId(1), "plain").unwrap();
+        c
+    }
+
+    /// Open need 0 at `far` with a five-byte opening body and read to its first answer: the
+    /// connection, and the read's answer.
+    async fn exchange(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
+        let desc = OpenDesc {
+            target: far,
+            body: b"first",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Ok(p) => return (id, Ok(buf[..p.len].to_vec())),
+                Err(e) => return (id, Err(e)),
+            }
+        }
+    }
+
+    /// A far end serving the pinned key is reached, and the connection's facts carry the key it
+    /// observed; no client identity was presented (none is sealed).
+    #[test]
+    fn a_far_end_serving_the_pinned_key_is_reached_and_its_key_is_the_facts() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let leaf = pki.leaf("localhost");
+            let (far, seen) = tls_far_end(&pki, &leaf, false).await;
+            let c = trusting(&pki);
+            let anchors = Anchors {
+                key_pin: Some(format!(" {} ", leaf.pin)),
+                client_identity: None,
+            };
+            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            let (id, got) = exchange(&c, &far).await;
+            assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
+            let facts = c.facts(OWNER, id).expect("facts");
+            assert_eq!(facts.peer_key_pin.as_deref(), Some(leaf.pin.as_str()));
+            assert!(!facts.client_identity);
+            assert_eq!(
+                seen.lock().unwrap().clone(),
+                Some((b"first".to_vec(), false))
+            );
+        });
+    }
+
+    /// RED: a far end serving ANOTHER key (a valid chain, the right name) is refused after its
+    /// handshake and before a request byte is written; the facts still name the key it served.
+    #[test]
+    fn a_far_end_serving_another_key_is_refused_before_any_request_byte() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let pinned = pki.leaf("localhost");
+            let served = pki.leaf("localhost");
+            let (far, seen) = tls_far_end(&pki, &served, false).await;
+            let c = trusting(&pki);
+            let anchors = Anchors {
+                key_pin: Some(pinned.pin.clone()),
+                client_identity: None,
+            };
+            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            let (id, got) = exchange(&c, &far).await;
+            assert_eq!(got, Err(ConnError::Refused));
+            let facts = c.facts(OWNER, id).expect("facts after the refusal");
+            assert_eq!(facts.peer_key_pin.as_deref(), Some(served.pin.as_str()));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert!(
+                seen.lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_none_or(|(bytes, _)| bytes.is_empty()),
+                "no request byte reached the far end"
+            );
+            c.close(OWNER, id).expect("closed");
+            // Unsealed, the same far end is reached again: the refusal was the anchors'.
+            c.anchor(OWNER, NeedId(0), &far, &Anchors::default())
+                .expect("unsealed");
+            let (_, got) = exchange(&c, &far).await;
+            assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
+        });
+    }
+
+    /// A far end that asks for a client certificate is presented the sealed identity, and the
+    /// facts say so; without one sealed, the same far end refuses the handshake.
+    #[test]
+    fn a_sealed_client_identity_is_presented_to_a_mutual_far_end() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let server = pki.leaf("localhost");
+            let client = pki.leaf("busbar.client");
+            let (far, seen) = tls_far_end(&pki, &server, true).await;
+            let c = trusting(&pki);
+            let (_, got) = exchange(&c, &far).await;
+            assert!(got.is_err(), "no identity: the mutual far end refuses");
+            let anchors = Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![client.der.clone()],
+                    private_key: client.key.clone(),
+                }),
+            };
+            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            let (id, got) = exchange(&c, &far).await;
+            assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
+            let facts = c.facts(OWNER, id).expect("facts");
+            assert!(facts.client_identity, "the identity was presented");
+            assert_eq!(facts.peer_key_pin.as_deref(), Some(server.pin.as_str()));
+            assert_eq!(
+                seen.lock().unwrap().clone(),
+                Some((b"first".to_vec(), true))
+            );
+        });
+    }
+
+    /// RED: a pinned destination reached without connection security has no key to hold, and is
+    /// refused before any dial; an identity that does not parse refuses the seal.
+    #[test]
+    fn a_pinned_destination_over_plaintext_is_refused_and_a_bad_identity_refuses_the_seal() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let leaf = pki.leaf("localhost");
+            let (_listening, far) = far_end().await;
+            let c = trusting(&pki);
+            let anchors = Anchors {
+                key_pin: Some(leaf.pin.clone()),
+                client_identity: None,
+            };
+            c.anchor(OWNER, NeedId(1), &far, &anchors).expect("sealed");
+            assert_eq!(open_in(&c, 1, &far), Err(ConnError::Refused));
+            let bad = Anchors {
+                key_pin: None,
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![leaf.der.clone()],
+                    private_key: b"not a key".to_vec(),
+                }),
+            };
+            assert_eq!(
+                c.anchor(OWNER, NeedId(0), &far, &bad),
+                Err(ConnError::Refused)
+            );
+            // A need the owner never declared seals nothing.
+            assert_eq!(
+                c.anchor(OTHER, NeedId(0), &far, &anchors),
+                Err(ConnError::Refused)
+            );
+        });
+    }
+}

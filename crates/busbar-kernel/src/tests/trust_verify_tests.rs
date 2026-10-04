@@ -35,6 +35,7 @@ fn entry(root_key: Option<String>, root: bool) -> TrustEntry {
         pin: Some(DeclaredPin {
             mechanism: "signature-root".into(),
             root,
+            peer_key: false,
             key: root_key,
             fingerprint: None,
         }),

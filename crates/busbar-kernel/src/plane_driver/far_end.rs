@@ -97,6 +97,10 @@ pub struct MemberRoute {
     /// binding per (transport, auth)), each with its keep rule: a far request that names one of
     /// them (`OutboundRequest::need`) opens on it. Empty = the member rides [`Self::need`] alone.
     pub rides: Vec<(NeedId, ResponseKeep)>,
+    /// The member's trust anchors (the transport pin, ARCHITECT 2026-10-03): the far end's key pin and
+    /// busbar's client identity, sealed into the connector at the egress's composition so every
+    /// connection to the member, the walk's and the plane's own, is held to them. Default = none.
+    pub anchors: busbar_contract::transport::trust::Anchors,
 }
 
 impl MemberRoute {
@@ -529,9 +533,10 @@ impl EgressFarEnd<'_> {
         };
         let name = member.name.clone();
         let route = self.egress.routes.get(&member.destination);
-        let passthrough = route
-            .and_then(|r| r.auth.as_ref())
-            .is_some_and(|a| a.passthrough);
+        let passthrough = member.passthrough
+            || route
+                .and_then(|r| r.auth.as_ref())
+                .is_some_and(|a| a.passthrough);
         let provider = route.map(|r| r.provider.clone()).unwrap_or_default();
         w.live = Some(Live {
             pool: pool.clone(),
@@ -640,12 +645,21 @@ impl EgressFarEnd<'_> {
             .map_or(remaining.max(1), |ms| attempt_cap_ms(ms, remaining))
     }
 
+    /// Whether the live attempt's member is reached through its pool with the caller's credential.
+    fn live_passthrough(&self) -> bool {
+        self.lock()
+            .live
+            .as_ref()
+            .is_some_and(|l| l.member.passthrough)
+    }
+
     /// ONE CALL to the member's auth binding for this attempt's fields (THE DESIGN, section 6).
     async fn auth_fields(
         &self,
         binding: &AuthBinding,
         request: &OutboundRequest,
         url: &str,
+        extensions: Vec<u8>,
     ) -> Option<Vec<AuthField>> {
         let (authority, path_query) = split(url);
         let (path, query) = match path_query.split_once('?') {
@@ -672,11 +686,22 @@ impl EgressFarEnd<'_> {
             } else {
                 Vec::new()
             },
-            caller_credential: if binding.passthrough {
-                self.route.caller_credential.clone()
+            // A passthrough member's one auth call is lent the caller's verified credential; a
+            // caller who presented none lends an empty one, so nothing is presented (never the
+            // operator's own key), as 1.5.5's `present_caller` did.
+            caller_credential: if binding.passthrough || self.live_passthrough() {
+                Some(
+                    self.route
+                        .caller_credential
+                        .clone()
+                        .unwrap_or_else(|| Redacted::new(Vec::new())),
+                )
             } else {
                 None
             },
+            // The per-call scope the plane stated for this attempt (ARCHITECT round 5
+            // Q-L3B-EXCHANGE (B): the caller's down-scope), in the call's extensions blob.
+            extensions,
             ..FieldsRequest::default()
         };
         let answer = match binding.auth.fields_now(binding.handle, &facts) {
@@ -701,6 +726,19 @@ impl EgressFarEnd<'_> {
         let e = self.egress;
         // Busbar is invisible to upstreams; the per-connection mechanics are the connection's own.
         crate::proxy::strip_re_derived(&mut request.fields);
+        // THE PLANE'S PER-CALL SCOPE rides its request as the host's own field
+        // (`abi::auth::SCOPE_REQUEST_FIELD`): taken out here, before anything is encoded, and lent
+        // to the member's auth call in its extensions blob. No wire carries it.
+        let mut scope = None;
+        request.fields.retain(|(name, value)| {
+            if busbar_contract::abi::auth::is_scope_field(name) {
+                scope.get_or_insert_with(|| value.clone());
+                false
+            } else {
+                true
+            }
+        });
+        let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
         let (destination, record) = {
             let w = self.lock();
             let Some(live) = w.live.as_ref() else {
@@ -746,7 +784,7 @@ impl EgressFarEnd<'_> {
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = &route.auth {
-            match self.auth_fields(binding, &request, &url).await {
+            match self.auth_fields(binding, &request, &url, extensions).await {
                 Some(fields) => auth = fields,
                 None => {
                     // Not the destination's fault: nothing recorded against it; the next member.

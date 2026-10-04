@@ -22,8 +22,9 @@
 pub(crate) mod host_wire;
 pub(crate) mod jwt_bearer;
 pub(crate) mod oauth_client_credentials;
+pub(crate) mod token_exchange;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -102,6 +103,9 @@ pub(crate) enum Minter {
     JwtBearer(Box<jwt_bearer::Signer>),
     /// RFC 6749 §4.4.
     ClientCredentials(oauth_client_credentials::ClientCreds),
+    /// RFC 8693, for one scope: minted ON DEMAND (a request that finds no usable token starts the
+    /// exchange), never refreshed ahead of a request.
+    TokenExchange(token_exchange::Scoped),
 }
 
 impl Minter {
@@ -109,6 +113,7 @@ impl Minter {
         match self {
             Minter::JwtBearer(s) => s.request(now),
             Minter::ClientCredentials(c) => c.request(),
+            Minter::TokenExchange(x) => x.request(),
         }
     }
 }
@@ -299,18 +304,47 @@ pub(crate) struct Minted {
     token: RwLock<Arc<CachedToken>>,
     exchange: Mutex<Exchange>,
     refresh_failed: AtomicBool,
+    /// Minted on demand ([`Minter::TokenExchange`]): no refresh ahead of a request, no retry on a
+    /// schedule; a request that finds no usable token arms the next exchange.
+    on_demand: bool,
+    /// An on-demand cell's token is presented until this wall-clock epoch second: the instant a
+    /// scheduled style would refresh it ([`next_refresh_secs`] from its mint).
+    usable_until: AtomicU64,
 }
 
 impl Minted {
     /// A cell that has minted nothing yet; its first exchange is due on the first `tick`.
     pub(crate) fn new(minter: Minter, max_response_bytes: usize) -> Self {
         Self {
+            on_demand: matches!(minter, Minter::TokenExchange(_)),
             minter,
             max_response_bytes,
             token: RwLock::new(Arc::new(CachedToken::new(String::new(), 0).0)),
             exchange: Mutex::new(Exchange::Idle { due_ns: 0 }),
             refresh_failed: AtomicBool::new(false),
+            usable_until: AtomicU64::new(0),
         }
+    }
+
+    /// Minted on demand (the token-exchange style's per-scope cell).
+    pub(crate) fn on_demand(&self) -> bool {
+        self.on_demand
+    }
+
+    /// No exchange is in flight.
+    pub(crate) fn idle(&self) -> bool {
+        matches!(
+            *self
+                .exchange
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Exchange::Idle { .. }
+        )
+    }
+
+    /// An on-demand cell holds a token it presents at wall-clock `now`.
+    pub(crate) fn usable(&self, now: u64) -> bool {
+        self.is_ready() && now < self.usable_until.load(Ordering::Acquire)
     }
 
     fn current(&self) -> Arc<CachedToken> {
@@ -329,6 +363,18 @@ impl Minted {
     /// (so the borrow of the cached value never escapes the read).
     pub(crate) fn read<T>(&self, now: u64, f: impl FnOnce(Read<'_>) -> T) -> T {
         let tok = self.current();
+        // ON DEMAND: a token past its use is not presented; the request arms the next exchange
+        // (due at once, when none is in flight) and waits for it.
+        if self.on_demand && !self.usable(now) {
+            if let Exchange::Idle { due_ns } = &mut *self
+                .exchange
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            {
+                *due_ns = 0;
+            }
+            return f(Read::Wait);
+        }
         if tok.token.expose_secret().is_empty() {
             return f(Read::Wait);
         }
@@ -451,17 +497,32 @@ impl Minted {
             // self-healing. Retry at MIN_SLEEP instead, exactly like a mint error.
             Ok((fresh, _)) if fresh.token.expose_secret().is_empty() => {
                 self.refresh_failed.store(true, Ordering::Release);
-                *ex = Exchange::Idle {
-                    due_ns: now_ns + MIN_SLEEP_SECS * NS,
+                let due = if self.on_demand {
+                    u64::MAX
+                } else {
+                    now_ns + MIN_SLEEP_SECS * NS
                 };
-                (now_ns + MIN_SLEEP_SECS * NS, Some(Report::EmptyToken))
+                *ex = Exchange::Idle { due_ns: due };
+                (due, Some(Report::EmptyToken))
             }
             Ok((fresh, invalid)) => {
-                let due = now_ns + next_refresh_secs(fresh.expires_at, now_epoch()) * NS;
+                let now = now_epoch();
+                let ahead = next_refresh_secs(fresh.expires_at, now);
+                // An on-demand token is presented until a scheduled style would refresh it, and no
+                // exchange is due until a request finds it past that.
+                let due = if self.on_demand {
+                    u64::MAX
+                } else {
+                    now_ns + ahead * NS
+                };
                 *self
                     .token
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(fresh);
+                if self.on_demand {
+                    self.usable_until
+                        .store(now.saturating_add(ahead), Ordering::Release);
+                }
                 self.refresh_failed.store(false, Ordering::Release);
                 *ex = Exchange::Idle { due_ns: due };
                 (
@@ -477,10 +538,15 @@ impl Minted {
         }
     }
 
-    /// A failed mint: keep serving whatever token is current, and retry at `MIN_SLEEP_SECS`.
+    /// A failed mint: keep serving whatever token is current, and retry at `MIN_SLEEP_SECS` (an
+    /// on-demand cell retries when a request next arms it).
     fn failed(&self, ex: &mut Exchange, now_ns: u64, e: String) -> (u64, Option<Report>) {
         self.refresh_failed.store(true, Ordering::Release);
-        let due = now_ns + MIN_SLEEP_SECS * NS;
+        let due = if self.on_demand {
+            u64::MAX
+        } else {
+            now_ns + MIN_SLEEP_SECS * NS
+        };
         *ex = Exchange::Idle { due_ns: due };
         (due, Some(Report::MintFailed(e)))
     }
