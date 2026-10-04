@@ -124,16 +124,24 @@ fn oauth_client_credentials_mints_on_tick_and_honours_the_expired_token_rule() {
     );
     assert_eq!(
         fields(&o, h, Ticket::NONE).0,
-        Outcome::Ready,
-        "before the first mint: READY, no header"
+        Outcome::Refused,
+        "before the first mint: not ready; ticket-less, REFUSED (the host re-submits on a ticket)"
     );
-    assert_eq!(fields(&o, h, Ticket::NONE).1, "");
+    let first = Ticket {
+        slot: 2,
+        generation: 1,
+    };
+    assert_eq!(
+        fields(&o, h, first).0,
+        Outcome::Pending,
+        "before the first mint: PENDING on a ticket until the first mint lands"
+    );
 
     // THE FIRST MINT, on the first tick: a token that expires at once, so the rule can run on the
     // wall clock.
     w.ok(r#"{"access_token":"tok-1","expires_in":0}"#);
     let mut env = EnvStore::default();
-    let due = o.tick(1_000, &mut env);
+    let due = o.tick(1_000, Ticket::NONE, &mut env);
     {
         let sent = w.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
@@ -154,6 +162,12 @@ fn oauth_client_credentials_mints_on_tick_and_honours_the_expired_token_rule() {
         );
     }
     capture("oauth-client-credentials.json", &w);
+    assert_eq!(
+        std::mem::take(&mut *WOKEN.lock().unwrap()),
+        vec![first],
+        "the landed first mint wakes the waiting ticket"
+    );
+    assert_eq!(fields(&o, h, first).1, "authorization: Bearer tok-1");
     assert_eq!(fields(&o, h, Ticket::NONE).1, "authorization: Bearer tok-1");
     assert_eq!(
         due,
@@ -162,9 +176,9 @@ fn oauth_client_credentials_mints_on_tick_and_honours_the_expired_token_rule() {
     );
 
     // THE REFRESH FAILS: the expired token answers PENDING on a ticket, bounded by the deadline;
-    // a call that may not pend fails closed (no header).
+    // a call that may not pend answers REFUSED (the host re-submits it on a ticket).
     w.push(vec![Step::Head(503), Step::Body(b"down".to_vec(), true)]);
-    o.tick(due, &mut env);
+    o.tick(due, Ticket::NONE, &mut env);
     let ticket = Ticket {
         slot: 3,
         generation: 1,
@@ -174,12 +188,12 @@ fn oauth_client_credentials_mints_on_tick_and_honours_the_expired_token_rule() {
     assert_eq!(wake_at, 99, "bounded by the attempt's deadline");
     assert_eq!(
         fields(&o, h, Ticket::NONE),
-        (Outcome::Ready, String::new(), 0)
+        (Outcome::Refused, String::new(), 0)
     );
 
     // THE NEXT MINT LANDS: the waiting ticket is woken; the resumed call presents the new token.
     w.ok(r#"{"access_token":"tok-2","expires_in":3600}"#);
-    o.tick(due + 30 * NS, &mut env);
+    o.tick(due + 30 * NS, Ticket::NONE, &mut env);
     assert_eq!(*WOKEN.lock().unwrap(), vec![ticket]);
     assert_eq!(fields(&o, h, ticket).1, "authorization: Bearer tok-2");
     assert_eq!(
@@ -201,7 +215,7 @@ fn jwt_bearer_mints_on_tick() {
     .to_string();
     let h = open(&o, style::JWT_BEARER, &sa, "{}");
     w.ok(r#"{"access_token":"ya29.tok","expires_in":3599}"#);
-    o.tick(1, &mut EnvStore::default());
+    o.tick(1, Ticket::NONE, &mut EnvStore::default());
     {
         let sent = w.sent.lock().unwrap();
         assert_eq!(sent[0].0, "https://oauth2.googleapis.com/token");

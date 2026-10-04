@@ -78,8 +78,24 @@ impl OutboundInstance {
         dispatcher: Arc<Dispatcher>,
         worker: u32,
     ) -> Result<Self, String> {
+        Self::open_with(plugin, dispatcher, worker, b"{}")
+    }
+
+    /// `plugin`'s instance OPENED over the settings document `settings` (a JSON object): the
+    /// binding's own settings, for a plugin whose needs take their target from them (`target_from`:
+    /// the loader declares each such need pinned to what its path resolves to in `settings`, at
+    /// this `open`, THE DESIGN §5 PB-100).
+    ///
+    /// # Errors
+    ///
+    /// `validate` or `open` did not answer READY, naming the plugin.
+    pub fn open_with(
+        plugin: Plugin<Auth>,
+        dispatcher: Arc<Dispatcher>,
+        worker: u32,
+        settings: &[u8],
+    ) -> Result<Self, String> {
         use busbar_contract::abi::mechanism::lifecycle::{slot as lc, OpenIn, OpenOut, ValidateIn};
-        const EMPTY: &[u8] = b"{}";
         let named = |what: &str, outcome: Outcome| {
             format!(
                 "`{}` did not {what} for its outbound styles: {outcome:?}",
@@ -89,7 +105,7 @@ impl OutboundInstance {
         let mut v = Frame::new(
             ValidateIn {
                 head: in_head(),
-                settings: blob(EMPTY, BLOB_JSON, 0),
+                settings: blob(settings, BLOB_JSON, 0),
                 err_buf: std::ptr::null_mut(),
                 err_cap: 0,
             },
@@ -103,7 +119,7 @@ impl OutboundInstance {
             OpenIn {
                 head: in_head(),
                 host: std::ptr::null(),
-                settings: blob(EMPTY, BLOB_JSON, 0),
+                settings: blob(settings, BLOB_JSON, 0),
                 secrets: std::ptr::null(),
                 secrets_len: 0,
                 generation: 1,
@@ -121,6 +137,32 @@ impl OutboundInstance {
             return Err(named("open", called.outcome));
         }
         Ok(Self::new(plugin, dispatcher, worker))
+    }
+
+    /// THE INSTANCE'S TICK SCHEDULE, on its driver ticket (THE DESIGN §6.5: a minted credential
+    /// refreshes ahead of expiry on `tick`): `tick` at once, then at each `next_tick_ns` it answers,
+    /// on the dispatcher's clock; it ends when an answer names `0`, is not READY or PENDING, or no
+    /// driver ticket can be minted. It waits on the runtime's timer and holds no `max_inflight`
+    /// slot; what pends inside a tick goes on through `drive`, which its wakes call.
+    pub async fn ticks(self: Arc<Self>) {
+        let Some(driver) = self.dispatcher.driver(&self.plugin, self.worker) else {
+            return;
+        };
+        let mut at = 0;
+        loop {
+            let now = super::now_ns();
+            if at > now {
+                tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
+            }
+            let done = self
+                .dispatcher
+                .tick(&self.plugin, driver, super::now_ns())
+                .await;
+            match (done.outcome, done.frame.map(|f| f.out.next_tick_ns)) {
+                (Outcome::Ready | Outcome::Pending, Some(next)) if next != 0 => at = next,
+                _ => return,
+            }
+        }
     }
 }
 
