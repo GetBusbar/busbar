@@ -70,3 +70,11 @@ file = "crates/busbar-plane-llm/src/codec/openai_chat/tests/handler_tests.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar/src/root/tests/serve.rs"
+count = 44
+category = "composition-root"
+wave = "FOLD-A2A (P3 FLIP-A2A): the root leg's door-path cells link the a2a door by name and drive its wire, as serve_door.rs links the decisions door; leaves with the a2a-on-driver switch when the flip makes the door the plane-a2a row (the cells then read the row from the linked table)"

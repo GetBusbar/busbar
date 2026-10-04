@@ -302,12 +302,15 @@ plane-decisions-door = ["plane-decisions"]
 # every arrival the serve path does not hand the door.
 llm-on-driver = ["proto-llm", "dep:busbar-plane-llm"]
 # THE A2A PLANE THROUGH ITS DOOR, the a2a fold's development-only switch (BUSBAR-1.6.0.md Part 3
-# section 12, "The switch"; deleted when the a2a fold completes, with `busbar-a2a`). Never in
-# `default`. On, the plane's memory-ABI door (`busbar_plane_a2a::plane_door::door`) is a `plane-door`
-# row, bound through the loader's one load beside every dropped-in plane door, the same table as its
-# dropped-in cdylib (#2, #30; THE DESIGN section 11.4). It carries `plane-a2a`, whose row stays
-# linked and answers every arrival the serve path does not hand the door.
-a2a-on-driver = ["plane-a2a", "dep:busbar-plane-a2a"]
+# section 12, "The switch"; deleted when the a2a fold completes). Never in `default`. On, the
+# plane's memory-ABI door (`busbar_plane_a2a::plane_door::door`) is a `plane-door` row, bound
+# through the loader's one load beside every dropped-in plane door, the same table as its
+# dropped-in cdylib (`a2a_door`; #2, #30; THE DESIGN section 11.4). It does NOT carry `plane-a2a`:
+# the door claims every a2a route and owns the `agents:` section, and a key a linked row registers
+# keeps that row (the boot's registry fold), so a build that links both serves a2a through
+# `busbar-a2a` alone. The driver path is the default set with `plane-a2a` swapped for this switch
+# (`--no-default-features --features <default without plane-a2a>,a2a-on-driver`).
+a2a-on-driver = ["dep:busbar-plane-a2a"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-file = ["dep:busbar-export-file"]
