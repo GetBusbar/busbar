@@ -124,6 +124,20 @@ pub fn fire_stage_taps(
     caller_group: Option<&str>,
     host: &dyn crate::plane_host::EngineHost,
 ) {
+    fire_stage_taps_where(taps, shape, stage, signals, &|groups: &[String]| {
+        host.caller_in_hook_groups(caller_group, groups)
+    });
+}
+
+/// [`fire_stage_taps`], with the `groups:` selection as a predicate over a tap's scope: the ONE
+/// stage-tap fire, for the legacy engine and the plane driver alike.
+pub fn fire_stage_taps_where(
+    taps: &[crate::hooks::TapEntry],
+    shape: &StageShape<'_>,
+    stage: crate::hooks::wire::HookStageProjection<'_>,
+    signals: busbar_contract::signal::SignalBag,
+    fires: &dyn Fn(&[String]) -> bool,
+) {
     if taps.is_empty() {
         return;
     }
@@ -147,9 +161,9 @@ pub fn fire_stage_taps(
     };
     let tap = busbar_contract::abi::host::hook::NotifyFrame::build(&req, Some(&stage), false);
     for (timeout, _send_prompt, hook, groups) in taps {
-        // SELECTION: skip a stage tap whose `groups:` scope does not admit this caller. The host seam
-        // performs the SAME self+ancestors registry walk core's `caller_in_hook_groups` free fn does.
-        if !host.caller_in_hook_groups(caller_group, groups) {
+        // SELECTION: skip a stage tap whose `groups:` scope does not admit this caller (the host
+        // seam performs the SAME self+ancestors registry walk core's `caller_in_hook_groups` does).
+        if !fires(groups) {
             continue;
         }
         let policy = hook.clone();

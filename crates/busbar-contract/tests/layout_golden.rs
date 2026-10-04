@@ -1898,7 +1898,11 @@ fn compute_layout() -> String {
             signals_buf,
             signals_cap,
             arena_buf,
-            arena_cap
+            arena_cap,
+            rewrite,
+            messages_buf,
+            messages_cap,
+            unit
         ]
     );
     record!(
@@ -1911,7 +1915,12 @@ fn compute_layout() -> String {
             signals_needed,
             _reserved,
             arena_written,
-            arena_needed
+            arena_needed,
+            prompt,
+            end_user,
+            rewritten,
+            messages_needed,
+            _reserved2
         ]
     );
     record!(

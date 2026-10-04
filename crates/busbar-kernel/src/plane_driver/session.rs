@@ -116,6 +116,7 @@ fn cause(end: &End) -> Option<ReasonCode> {
         End::Done => None,
         End::Failed(reason) | End::Cancel(reason, _) => Some(*reason),
         End::Exhausted(..) => Some(ReasonCode::BreakerOpen),
+        End::Vetoed(..) => Some(ReasonCode::HookVeto),
     }
 }
 

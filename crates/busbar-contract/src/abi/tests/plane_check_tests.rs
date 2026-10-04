@@ -8,7 +8,7 @@ use std::mem::zeroed;
 use std::ptr::null;
 
 use super::*;
-use crate::abi::hook::{SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_STR};
+use crate::abi::hook::{MessageView, SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_STR};
 use crate::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED, KEEP_RESPONSE_HEADERS_MAX,
 };
@@ -1775,12 +1775,14 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
 
 struct Host {
     signals: [SignalEntry; 2],
+    messages: [MessageView; 2],
     arena: [u8; 16],
 }
 
 fn host() -> Host {
     Host {
         signals: z(),
+        messages: z(),
         arena: [0; 16],
     }
 }
@@ -1804,7 +1806,46 @@ fn view(h: &Host, written: usize) -> ProjectOut {
 }
 
 fn project(outcome: Outcome, h: &Host, o: &ProjectOut) -> Result<(), Fault> {
-    check_project(outcome, o, &h.signals, 2, (h.arena.as_ptr(), 16))
+    project_as(outcome, h, o, false)
+}
+
+/// [`project`], for a call that carried a rewrite (`rewrite`) or not.
+fn project_as(outcome: Outcome, h: &Host, o: &ProjectOut, rewrite: bool) -> Result<(), Fault> {
+    check_project(
+        outcome,
+        o,
+        &ProjectHost {
+            signals: &h.signals,
+            signals_cap: 2,
+            messages: &h.messages,
+            messages_cap: 2,
+            arena: (h.arena.as_ptr(), 16),
+            rewrite,
+        },
+    )
+}
+
+/// A view whose prompt holds `turns` turns at the host's `messages_buf`, each naming arena bytes.
+fn prompted(h: &mut Host, turns: usize) -> ProjectOut {
+    for m in h.messages.iter_mut().take(turns) {
+        *m = MessageView {
+            role: AbiStr {
+                ptr: h.arena.as_ptr(),
+                len: 4,
+            },
+            text: AbiStr {
+                ptr: h.arena.as_ptr().wrapping_add(4),
+                len: 4,
+            },
+        };
+    }
+    let mut o = view(h, 0);
+    o.prompt.system = arena_str(h, 0, 4);
+    o.prompt.messages = h.messages.as_ptr();
+    o.prompt.message_count = turns as u64;
+    o.prompt.messages_len = turns;
+    o.end_user = arena_str(h, 4, 4);
+    o
 }
 
 #[test]
@@ -1951,6 +1992,133 @@ fn a_projected_signal_value_is_valid_for_its_tag() {
     h.signals[0].value = SignalValue { boolean: 1 };
     let o = view(&h, 1);
     assert_eq!(project(Ready, &h, &o), Ok(()));
+}
+
+#[test]
+fn a_prompt_view_and_end_user_inside_the_hosts_buffers_are_green() {
+    let mut h = host();
+    let o = prompted(&mut h, 2);
+    assert_eq!(project(Ready, &h, &o), Ok(()));
+}
+
+#[test]
+fn projected_turns_follow_the_multi_buffer_short_rule() {
+    let h = host();
+    let mut o: ProjectOut = z();
+    o.messages_needed = 3;
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::NeededNotFailed, "project.messages")
+    );
+    assert_eq!(project(Failed, &h, &o), Ok(()), "the short answer");
+    o.messages_needed = MAX_TURNS as u32 + 1;
+    assert_eq!(
+        project(Failed, &h, &o),
+        f(Rule::OverMax, "project.messages")
+    );
+    let mut h = host();
+    let mut o = prompted(&mut h, 2);
+    o.prompt.message_count = 3;
+    o.prompt.messages_len = 3;
+    assert_eq!(project(Ready, &h, &o), f(Rule::OverCap, "project.messages"));
+}
+
+#[test]
+fn a_prompt_views_turn_count_and_its_list_length_agree() {
+    let mut h = host();
+    let mut o = prompted(&mut h, 2);
+    o.prompt.messages_len = 1;
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::Contradiction, "project.prompt.messages_len")
+    );
+}
+
+#[test]
+fn projected_turns_are_the_hosts_buffer() {
+    let mut h = host();
+    let other: [MessageView; 2] = z();
+    let mut o = prompted(&mut h, 1);
+    o.prompt.messages = other.as_ptr();
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::Foreign, "project.prompt.messages")
+    );
+}
+
+#[test]
+fn a_projected_turn_and_the_prompt_strings_lie_inside_the_arena_written() {
+    let mut h = host();
+    let mut o = prompted(&mut h, 1);
+    h.messages[0].role = arena_str(&h, 12, 8);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.message.role")
+    );
+    let mut h = host();
+    o = prompted(&mut h, 1);
+    h.messages[0].text = arena_str(&h, 14, 4);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.message.text")
+    );
+    let mut h = host();
+    let mut o = prompted(&mut h, 0);
+    o.prompt.system = arena_str(&h, 12, 8);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.prompt.system")
+    );
+    let mut o = prompted(&mut h, 0);
+    o.end_user = arena_str(&h, 12, 8);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.end_user")
+    );
+}
+
+#[test]
+fn the_prompt_view_carries_no_body_of_the_planes() {
+    let h = host();
+    let mut o = view(&h, 0);
+    o.prompt.body = crate::abi::mechanism::call::Blob {
+        ptr: h.arena.as_ptr(),
+        len: 4,
+        fmt: crate::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::Foreign, "project.prompt.body")
+    );
+}
+
+#[test]
+fn a_rewritten_body_answers_only_a_rewrite_and_lies_inside_the_arena_written() {
+    let h = host();
+    let mut o = view(&h, 0);
+    o.rewritten = sp(8, 8);
+    assert_eq!(
+        project_as(Ready, &h, &o, true),
+        Ok(()),
+        "the rewrite applied"
+    );
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::Contradiction, "project.rewritten_without_rewrite")
+    );
+    o.rewritten = sp(SPAN_ABSENT, 0);
+    assert_eq!(project(Ready, &h, &o), Ok(()), "no rewrite, none applied");
+    assert_eq!(
+        project_as(Ready, &h, &o, true),
+        Ok(()),
+        "a rewrite the plane could not apply"
+    );
+    o.rewritten = sp(12, 8);
+    assert_eq!(
+        project_as(Ready, &h, &o, true),
+        f(Rule::SpanOutOfBounds, "project.rewritten")
+    );
 }
 
 // ── drive ──

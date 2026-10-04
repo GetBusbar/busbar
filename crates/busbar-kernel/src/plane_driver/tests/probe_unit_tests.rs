@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::mechanism::call::{Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket as PlaneTicket;
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
+    ServeIn, ServeOut,
     UnitCount, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_FAR_END, FROM_KERNEL, TAIL_PROBES,
     UNITS_REPORTED,
 };
@@ -133,6 +134,15 @@ impl PlaneCalls for Prober {
         _: Grow<'_, RefusalIn, RefusalOut>,
     ) -> AbiOutcome {
         AbiOutcome::Fault
+    }
+
+    fn project(
+        &self,
+        _: &mut ProjectIn,
+        _: &mut ProjectOut,
+        _: Grow<'_, ProjectIn, ProjectOut>,
+    ) -> AbiOutcome {
+        AbiOutcome::Ready
     }
 
     fn cancel(&self, _: PlaneTicket) -> Option<u32> {
