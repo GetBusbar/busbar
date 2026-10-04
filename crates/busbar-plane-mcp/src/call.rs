@@ -533,6 +533,49 @@ pub fn invocation(body: &[u8]) -> Option<busbar_contract::ir::invoke::InvokeReq>
     })
 }
 
+/// A REQUEST-STAGE HOOK'S REWRITE, APPLIED TO A `tools/call` (`project`'s `rewrite`; BUSBAR-1.6.0.md
+/// Part 3 section 12, "Hooks": the plane applies it in its own dialect and re-projects). The hook
+/// stage hands the plane the hook's reply as `{"messages": [...], "tools": ...}`; an invocation has
+/// one untrusted content member, its `arguments` object, and the rewrite REPLACES it under the
+/// served engine's invoke rewrite contract: a `messages` entry's `content` (an object verbatim, or a
+/// JSON string that parses to an object) or, for an entry with no `role`, the entry itself; the LAST
+/// entry that yields an object wins.
+///
+/// `None` = not applied (no usable object, a body that is not a `tools/call`, a reply that is not
+/// JSON): the unit proceeds with the body it had, as a rewrite that cannot be applied left the
+/// served engine's call untouched. `Some` is the rewritten request, whole, with every member the
+/// caller sent but `params.arguments` as it was.
+#[must_use]
+pub fn rewritten(body: &[u8], rewrite: &[u8]) -> Option<Vec<u8>> {
+    let reply: Value = serde_json::from_slice(rewrite).ok()?;
+    let mut arguments: Option<Value> = None;
+    for message in reply.get("messages")?.as_array()? {
+        let candidate = match message.get("content") {
+            Some(content) => content,
+            None if message.get("role").is_none() => message,
+            None => continue,
+        };
+        let resolved = match candidate {
+            Value::Object(_) => Some(candidate.clone()),
+            Value::String(text) => serde_json::from_str::<Value>(text)
+                .ok()
+                .filter(Value::is_object),
+            _ => None,
+        };
+        if resolved.is_some() {
+            arguments = resolved;
+        }
+    }
+    let arguments = arguments?;
+    let mut request: Value = serde_json::from_slice(body).ok()?;
+    if request.get("method").and_then(Value::as_str) != Some(crate::codec::METHOD_TOOLS_CALL) {
+        return None;
+    }
+    let params = request.get_mut("params")?.as_object_mut()?;
+    params.insert("arguments".to_string(), arguments);
+    serde_json::to_vec(&request).ok()
+}
+
 /// One request bound for the far end: the verb, the target path the kernel joins onto the
 /// member's base URL, the dialect's head fields and the body.
 #[derive(Debug, Clone, PartialEq, Eq)]

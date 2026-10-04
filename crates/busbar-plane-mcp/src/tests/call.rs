@@ -447,3 +447,62 @@ fn a_tasks_verb_is_gated_then_names_no_task_of_this_callers() {
         "No task with that `taskId` exists for this caller."
     );
 }
+
+/// THE INVOKE REWRITE CONTRACT, as the served engine applied a `prompt: rw` hook's reply to a
+/// call's arguments: an object `content`, a JSON-string `content` that parses to an object, or a
+/// role-less entry itself; the last usable entry wins; nothing usable is not applied.
+#[test]
+fn a_rewrite_replaces_the_arguments_by_the_invoke_contract() {
+    let body = br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"fs_read","arguments":{"path":"/secret"},"_meta":{"k":"v"}}}"#;
+    let args = |rewrite: serde_json::Value| {
+        rewritten(body, &serde_json::to_vec(&rewrite).unwrap()).map(|b| {
+            let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+            assert_eq!(v["params"]["_meta"], serde_json::json!({ "k": "v" }));
+            assert_eq!(v["id"], 7);
+            v["params"]["arguments"].clone()
+        })
+    };
+    let object = serde_json::json!({ "path": "/x" });
+    assert_eq!(
+        args(serde_json::json!({ "messages": [{ "role": "user", "content": object }] })),
+        Some(object.clone())
+    );
+    assert_eq!(
+        args(
+            serde_json::json!({ "messages": [{ "role": "user", "content": "{\"path\":\"/x\"}" }] })
+        ),
+        Some(object.clone())
+    );
+    assert_eq!(
+        args(serde_json::json!({ "messages": [{ "path": "/x" }] })),
+        Some(object.clone())
+    );
+    assert_eq!(
+        args(serde_json::json!({ "messages": [
+            { "role": "user", "content": { "path": "/first" } },
+            { "role": "user", "content": "plain words" },
+            { "role": "user", "content": { "path": "/x" } },
+        ] })),
+        Some(object)
+    );
+    // Nothing usable: a role with no content, plain text, a scalar, no messages at all.
+    assert_eq!(
+        args(serde_json::json!({ "messages": [{ "role": "user" }] })),
+        None
+    );
+    assert_eq!(
+        args(serde_json::json!({ "messages": [{ "role": "user", "content": "7" }] })),
+        None
+    );
+    assert_eq!(args(serde_json::json!({ "tools": [] })), None);
+    assert_eq!(rewritten(body, b"not json"), None);
+    // A request that is not a call is never rewritten.
+    let list = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+    assert_eq!(
+        rewritten(
+            list,
+            br#"{"messages":[{"role":"user","content":{"path":"/x"}}]}"#
+        ),
+        None
+    );
+}

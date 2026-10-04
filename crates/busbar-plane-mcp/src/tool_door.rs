@@ -2664,11 +2664,19 @@ slot!(
 
 slot!(
     /// `project`: a `tools/call` as the hook kind's request view: one turn of tool arguments
-    /// ([`crate::call::invocation`]), named by the plane's key, and the `{tool, arguments}` body. Any
-    /// other request carries no invocation for a hook to read: REFUSED.
+    /// ([`crate::call::invocation`]), named by the plane's key, the `{tool, arguments}` body, and the
+    /// prompt view a content-granted hook reads (the one `user` turn, the arguments as JSON text, as
+    /// the served engine projected an invocation). A request-stage hook's rewrite
+    /// ([`crate::call::rewritten`]) is applied first: the rewritten request is answered in
+    /// `rewritten` (the body the kernel keeps and re-pushes from then on) and is the body projected.
+    /// Any other request carries no invocation for a hook to read: REFUSED.
     Project, ProjectIn, ProjectOut, |_, input, mut out| {
         let body = input.field(|i| &i.body).bytes();
-        let Some(invocation) = crate::call::invocation(body) else {
+        let rewrite = input.field(|i| &i.rewrite).bytes();
+        let rewritten = (!rewrite.is_empty())
+            .then(|| crate::call::rewritten(body, rewrite))
+            .flatten();
+        let Some(invocation) = crate::call::invocation(rewritten.as_deref().unwrap_or(body)) else {
             return Outcome::Refused;
         };
         let shape = busbar_contract::ir::facts::IrFacts::shape(&invocation);
@@ -2677,14 +2685,29 @@ slot!(
             "arguments": invocation.arguments,
         }))
         .unwrap_or_default();
-        let (mut arena, signals) = (input.arena_buf(), input.signals_buf());
+        let turns: Vec<(&str, String)> = busbar_contract::ir::facts::IrFacts::content(&invocation)
+            .iter()
+            .map(|item| (item.author(), item.screenable_text().into_owned()))
+            .collect();
+        let (mut arena, signals, mut messages) =
+            (input.arena_buf(), input.signals_buf(), input.messages_buf());
         let pool = arena.span(b"");
         let dialect = arena.span(crate::PLANE_KEY.as_bytes());
         let body = arena.span(&projected);
-        let short = !arena.fits();
+        let rewritten = rewritten.as_deref().map(|r| arena.span(r));
+        let turns: Vec<_> = turns
+            .iter()
+            .map(|(role, text)| (arena.span(role.as_bytes()), arena.span(text.as_bytes())))
+            .collect();
+        for (role, text) in turns {
+            messages.push_turn(&arena, role, text);
+        }
+        let short = !arena.fits() || !messages.fits();
         let (written, needed) = arena.settle(short);
+        let (turns_written, turns_needed) = messages.settle(short);
         out.set(|o| &o.arena_written, written as u64);
         out.set(|o| &o.arena_needed, needed as u64);
+        out.set(|o| &o.messages_needed, turns_needed as u32);
         if short {
             return Outcome::Failed;
         }
@@ -2699,6 +2722,12 @@ slot!(
         }
         out.set(|o| &o.view.flags, flags);
         out.set(|o| &o.body, body);
+        out.host_rows(|o| &o.prompt.messages, &messages);
+        out.set(|o| &o.prompt.messages_len, turns_written);
+        out.set(|o| &o.prompt.message_count, turns_written as u64);
+        if let Some(rewritten) = rewritten {
+            out.set(|o| &o.rewritten, rewritten);
+        }
         Outcome::Ready
     }
 );

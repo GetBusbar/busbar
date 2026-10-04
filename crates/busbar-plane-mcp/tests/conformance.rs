@@ -2104,16 +2104,57 @@ mod both_ways {
         ));
         t.push(project(p, "project call", RELAY_CALL));
         t.push(project(p, "project list", TOOLS_LIST));
+        t.push(project_with(
+            p,
+            "project rewritten",
+            RELAY_CALL,
+            Some(br#"{"messages":[{"role":"user","content":"{\"path\":\"/redacted\"}"}],"tools":null}"#),
+        ));
+        t.push(project_with(
+            p,
+            "project unusable rewrite",
+            RELAY_CALL,
+            Some(br#"{"messages":[{"role":"user","content":"not arguments"}],"tools":null}"#),
+        ));
         t
     }
 
     /// `project` of `body`: the view's scalars and strings and the projected body, read back.
     fn project(p: &Plugin<Plane>, what: &'static str, body: &'static [u8]) -> Step {
+        project_with(p, what, body, None)
+    }
+
+    /// `project` of `body` with a request-stage hook's `rewrite`: the view's scalars and strings,
+    /// the projected body (`reply`), the prompt view's turns and the rewritten body (`fields`, as
+    /// `("turn:<role>", text)` and `("rewritten", body)`), read back through the arena.
+    fn project_with(
+        p: &Plugin<Plane>,
+        what: &'static str,
+        body: &'static [u8],
+        rewrite: Option<&'static [u8]>,
+    ) -> Step {
         let mut arena = vec![0_u8; 4096];
+        let mut turns = vec![
+            busbar_contract::abi::hook::MessageView {
+                role: AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                },
+                text: AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                },
+            };
+            4
+        ];
         let mut j: Frame<ProjectIn, ProjectOut> = Frame::new(z(), z());
         (j.input.head, j.out.head) = (in_head(), out_head());
         j.input.body = octets(body);
+        if let Some(rewrite) = rewrite {
+            j.input.rewrite = octets(rewrite);
+        }
         (j.input.arena_buf, j.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        (j.input.messages_buf, j.input.messages_cap) = (turns.as_mut_ptr(), turns.len());
         let c = p.call(slot::PROJECT, &mut j);
         let mut s = Step::new(what, c.outcome);
         if c.outcome == Outcome::Ready {
@@ -2132,6 +2173,16 @@ mod both_ways {
                 at(&arena, span_of(view.ingress_dialect)),
             );
             s.reply = at(&arena, j.out.body).into_bytes();
+            for turn in turns.iter().take(j.out.prompt.messages_len) {
+                s.fields.push((
+                    format!("turn:{}", at(&arena, span_of(turn.role))),
+                    at(&arena, span_of(turn.text)),
+                ));
+            }
+            if j.out.rewritten.len != 0 {
+                s.fields
+                    .push(("rewritten".to_string(), at(&arena, j.out.rewritten)));
+            }
         }
         s
     }
@@ -2159,6 +2210,50 @@ mod both_ways {
             json!({ "tool": "fs_read_file", "arguments": { "path": "/a" } })
         );
         assert_eq!(step(&t, "project list").outcome, Outcome::Refused);
+    }
+
+    /// `project`'s PROMPT VIEW is the served engine's projection of an invocation: one `user` turn,
+    /// the arguments as JSON text (what a content-granted gate or rewrite hook screens).
+    #[test]
+    fn a_call_projects_one_user_turn_of_its_arguments() {
+        let t = relay_script(&linked(&served(ALL)));
+        let call = step(&t, "project call");
+        assert_eq!(
+            call.fields,
+            vec![("turn:user".to_string(), r#"{"path":"/a"}"#.to_string())]
+        );
+    }
+
+    /// A REQUEST-STAGE HOOK'S REWRITE (BUSBAR-1.6.0.md Part 3 section 12, "Hooks"): the plane applies
+    /// it in its own dialect (the arguments replaced, every other member as the caller sent it),
+    /// answers the rewritten request, and projects THAT request; a rewrite with no usable arguments
+    /// object is not applied and the request projects as it came (the served engine's call went out
+    /// untouched).
+    #[test]
+    fn a_rewrite_replaces_the_arguments_and_the_rewritten_call_is_projected() {
+        let t = relay_script(&linked(&served(ALL)));
+        let rewritten = step(&t, "project rewritten");
+        assert_eq!(rewritten.outcome, Outcome::Ready);
+        assert_eq!(
+            document(&rewritten.reply),
+            json!({ "tool": "fs_read_file", "arguments": { "path": "/redacted" } })
+        );
+        let body = rewritten
+            .fields
+            .iter()
+            .find(|(n, _)| n == "rewritten")
+            .map(|(_, v)| v.clone())
+            .expect("the rewritten request is answered");
+        let mut expected = document(RELAY_CALL);
+        expected["params"]["arguments"] = json!({ "path": "/redacted" });
+        assert_eq!(document(body.as_bytes()), expected);
+        let unusable = step(&t, "project unusable rewrite");
+        assert_eq!(unusable.outcome, Outcome::Ready);
+        assert!(unusable.fields.iter().all(|(n, _)| n != "rewritten"));
+        assert_eq!(
+            document(&unusable.reply),
+            json!({ "tool": "fs_read_file", "arguments": { "path": "/a" } })
+        );
     }
 
     fn served(grants: &'static [&'static str]) -> Dispatcher {
