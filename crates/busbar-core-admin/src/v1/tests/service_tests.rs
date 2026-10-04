@@ -3670,6 +3670,7 @@ mod plane_fees_on_admin_usage {
                     required_config_sections: &[],
                     trust_keys: &[],
                     served_op_classes: &[],
+                    caller_credential_refusal: None,
                 },
                 wire_format_names: || &[],
                 claims: |_| Vec::new(),

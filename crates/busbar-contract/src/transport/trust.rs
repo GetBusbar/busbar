@@ -94,6 +94,53 @@ impl EgressTrust {
     }
 }
 
+/// THE ONE SPELLING OF A KEY PIN: the SHA-256 of a certificate's whole SubjectPublicKeyInfo (its
+/// DER, tag and length included), in standard base64 with padding. What an operator writes as a
+/// registration's peer-key pin, what the connector compares the far end's key against and what it
+/// reports as observed are this one rendering, so a pin and an observation compare as strings.
+#[must_use]
+pub fn key_pin(subject_public_key_info: &[u8]) -> String {
+    use sha2::Digest as _;
+    crate::media::base64_encode(&sha2::Sha256::digest(subject_public_key_info))
+}
+
+/// THE TRUST ANCHORS OF ONE DESTINATION a need reaches (the transport pin, ARCHITECT 2026-10-03): the
+/// connector enforces them itself, on every connection to it.
+///
+/// * `key_pin` — the far end's key, in the [`key_pin`] spelling: a secured connection whose leaf
+///   certificate's key is another is refused before a request byte is written (the ordinary chain
+///   and name check still runs first), and a connection that is not secured is refused outright.
+/// * `client_identity` — busbar's client certificate for that destination, presented when the far
+///   end asks for one.
+///
+/// What the connection observed (the far end's key, whether the identity was presented) is the
+/// connection's facts either way ([`crate::transport::ConnFacts`]). The default anchors nothing.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Anchors {
+    /// The far end's key pin; `None` = no pin.
+    pub key_pin: Option<String>,
+    /// The client identity to present; `None` = present none.
+    pub client_identity: Option<ClientIdentity>,
+}
+
+impl Anchors {
+    /// Whether these anchor nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.key_pin.is_none() && self.client_identity.is_none()
+    }
+}
+
+impl core::fmt::Debug for Anchors {
+    /// The identity's private key is redacted through [`ClientIdentity`]'s own `Debug`.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Anchors")
+            .field("key_pin", &self.key_pin)
+            .field("client_identity", &self.client_identity)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/redaction_tests.rs"]
 mod redaction_tests;

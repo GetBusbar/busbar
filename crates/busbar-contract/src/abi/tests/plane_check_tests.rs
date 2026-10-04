@@ -12,9 +12,9 @@ use crate::abi::hook::{MessageView, SignalEntry, SignalValue, SIGNAL_TAG_BOOL, S
 use crate::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED, KEEP_RESPONSE_HEADERS_MAX,
 };
-use crate::abi::mechanism::call::AbiStr;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
+use crate::abi::mechanism::call::{AbiStr, Blob};
 use crate::abi::mechanism::check::{check_needs, fault};
 use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
 use crate::abi::plane::*;
@@ -246,7 +246,8 @@ fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
 
 /// THE POOL AN ARRIVAL NAMES (ARCHITECT Q-SW6, 2026-10-02): the entry name inside the plane's own
 /// section, on a READY answer only. Absent is valid (the plane's single default entry); a length
-/// with no bytes is FAULT, and a refused or failed arrival naming a pool is a contradiction.
+/// with no bytes is FAULT, a failed arrival naming a pool is a contradiction, and a refused one may
+/// name the entry its refusal is about (ARCHITECT Q-DEL-A2A-GATE).
 #[test]
 fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
     let mut o: ArriveOut = z();
@@ -270,14 +271,13 @@ fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::NullWithCount, "arrive.pool")
     );
+    // A REFUSED arrival may name the entry its refusal is about (rule 6, ARCHITECT
+    // Q-DEL-A2A-GATE): held past the caller's grant, never charged.
     let mut o: ArriveOut = z();
     o.refusal = 3;
     o.refusal_status = 404;
     o.pool = s("entry");
-    assert_eq!(
-        check_arrive(Refused, &o, &[], 4, &bounds()),
-        f(Rule::Contradiction, "arrive.pool")
-    );
+    assert_eq!(check_arrive(Refused, &o, &[], 4, &bounds()), Ok(()));
     let mut o: ArriveOut = z();
     o.pool = s("entry");
     assert_eq!(
@@ -801,8 +801,8 @@ fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
 fn a_claim_states_only_known_flags() {
     let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
     assert_eq!(check_claims(&[open_exact], 1), Ok(()));
-    // RED: a bit neither CLAIM_OPEN nor CLAIM_EXACT.
-    let unknown = claim("V", "/t", CLAIM_EXACT << 1);
+    // RED: a bit none of CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN.
+    let unknown = claim("V", "/t", CLAIM_PATTERN << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
@@ -825,6 +825,106 @@ fn a_claims_refusal_dialect_is_a_declared_dialect() {
     );
     c.refusal_dialect = 0;
     assert_eq!(check_claims(&[c], 0), Ok(()), "no dialects: 0");
+}
+
+/// A test keeps a pattern's segments for the process.
+fn kept(segments: Vec<crate::grammar::PathSeg>) -> &'static [crate::grammar::PathSeg] {
+    Box::leak(segments.into_boxed_slice())
+}
+
+#[test]
+fn a_pattern_claim_is_never_also_exact() {
+    let pattern = claim("V", "/t/{id}", CLAIM_OPEN | CLAIM_PATTERN);
+    assert_eq!(check_claims(&[pattern], 1), Ok(()));
+    let both = claim("V", "/t/{id}", CLAIM_EXACT | CLAIM_PATTERN);
+    assert_eq!(
+        check_claims(&[both], 1),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(
+        claim_selector("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN, kept).map(|_| ()),
+        f(Rule::Contradiction, "claim.flags")
+    );
+}
+
+#[test]
+fn a_pattern_target_parses_into_literals_and_one_level_placeholders() {
+    use crate::grammar::PathSeg::{Lit, Var};
+    assert_eq!(
+        claim_pattern("/v1/tasks/{id}/configs/{config_id}"),
+        Ok(vec![Lit("v1"), Lit("tasks"), Var, Lit("configs"), Var])
+    );
+    for bad in [
+        "t/{id}", "/t//{id}", "/t/{}", "/t/{id", "/t/id}", "/t/{i}d}", "/t/{id}/",
+    ] {
+        assert_eq!(
+            claim_pattern(bad).map(|_| ()),
+            f(Rule::Contradiction, "claim.pattern"),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        claim_pattern("/t/id").map(|_| ()),
+        f(Rule::Missing, "claim.pattern")
+    );
+}
+
+/// RED: a malformed pattern is refused AT BIND, by the same grammar the selector reads, so a bad
+/// claim never waits for its first route.
+#[test]
+fn a_malformed_pattern_is_refused_at_bind_by_the_selectors_grammar() {
+    for bad in [
+        "t/{id}", "/t//{id}", "/t/{}", "/t/{id", "/t/id}", "/t/{i}d}", "/t/{id}/",
+    ] {
+        let at_bind = check_claim_target(bad, CLAIM_PATTERN);
+        assert_eq!(at_bind, f(Rule::Contradiction, "claim.pattern"), "{bad}");
+        assert_eq!(
+            at_bind,
+            claim_selector(bad, CLAIM_PATTERN, kept).map(|_| ()),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        check_claim_target("/t/id", CLAIM_PATTERN),
+        f(Rule::Missing, "claim.pattern")
+    );
+    assert_eq!(
+        check_claim_target("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(check_claim_target("/t/{id}", CLAIM_PATTERN), Ok(()));
+    assert_eq!(check_claim_target("/t/{id}", CLAIM_EXACT), Ok(()));
+}
+
+#[test]
+fn a_claim_reads_as_the_grammars_selector_by_its_flags() {
+    use crate::grammar::{PathSeg, Selector};
+    assert_eq!(
+        claim_selector("/t", CLAIM_EXACT, kept),
+        Ok(Selector::ExactPath("/t"))
+    );
+    assert_eq!(
+        claim_selector("/t", CLAIM_OPEN, kept),
+        Ok(Selector::PrefixOneLevel("/t"))
+    );
+    assert_eq!(
+        claim_selector("/t/{id}", CLAIM_PATTERN, kept),
+        Ok(Selector::PathPattern(&[PathSeg::Lit("t"), PathSeg::Var]))
+    );
+}
+
+/// RED: a placeholder claims ONE level, non-empty, with no `/`.
+#[test]
+fn a_pattern_claims_one_level_only() {
+    let Ok(crate::grammar::Selector::PathPattern(p)) =
+        claim_selector("/v1/tasks/{id}", CLAIM_PATTERN, kept)
+    else {
+        panic!("a pattern claim reads as a segment pattern");
+    };
+    assert!(crate::grammar::pattern_matches(p, "/v1/tasks/t1"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/t1/x"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks"));
 }
 
 #[test]
@@ -922,6 +1022,7 @@ fn dialect_auth_names_a_dialect_and_a_style() {
         dialect: 0,
         _reserved: 0,
         style: s("st"),
+        params: Blob::ABSENT,
     };
     assert_eq!(check_dialect_auth(&[d], 1), Ok(()));
     assert_eq!(
@@ -933,6 +1034,27 @@ fn dialect_auth_names_a_dialect_and_a_style() {
     assert_eq!(
         check_dialect_auth(&[bad], 1),
         f(Rule::Missing, "dialect_auth.style")
+    ); // The style's parameters: a JSON object, a counted blob never NULL.
+    const PARAMS: &[u8] = br#"{"service":"s"}"#;
+    let mut with = d;
+    with.params = Blob {
+        ptr: PARAMS.as_ptr(),
+        len: PARAMS.len(),
+        fmt: crate::abi::mechanism::call::BLOB_JSON,
+        flags: 0,
+    };
+    assert_eq!(check_dialect_auth(&[with], 1), Ok(()));
+    let mut octets = with;
+    octets.params.fmt = crate::abi::mechanism::call::BLOB_OCTETS;
+    assert_eq!(
+        check_dialect_auth(&[octets], 1),
+        f(Rule::Contradiction, "dialect_auth.params.fmt")
+    );
+    let mut dangling = with;
+    dangling.params.ptr = null();
+    assert_eq!(
+        check_dialect_auth(&[dangling], 1),
+        f(Rule::NullWithCount, "dialect_auth.params")
     );
 }
 
@@ -1298,6 +1420,21 @@ fn an_attempt_answer_names_its_verb_and_target_in_the_arena() {
     );
 }
 
+/// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a far request may name the need it rides; a need
+/// named on an answer that sends nothing to the far end contradicts it.
+#[test]
+fn a_named_need_rides_only_a_far_request() {
+    let mut o = attempt_answer();
+    o.need = 5;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    let mut o: OnPieceOut = z();
+    o.need = 1;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.need_not_to_far_end")
+    );
+}
+
 #[test]
 fn a_verb_never_comes_without_a_target() {
     let mut o = attempt_answer();
@@ -1467,6 +1604,26 @@ fn a_tail_counting_trust_keys_over_a_null_pointer_is_fault() {
     let mut t = tail();
     t.trust_keys_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.trust_keys"));
+}
+
+#[test]
+fn a_tail_caller_credential_refusal_is_absent_or_a_sentence() {
+    assert_eq!(check_tail(&tail()), Ok(()));
+    let mut t = tail();
+    t.caller_credential_refusal = s("refused here");
+    assert_eq!(check_tail(&t), Ok(()));
+    let mut t = tail();
+    t.caller_credential_refusal = s("");
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::Missing, "tail.caller_credential_refusal")
+    );
+    let mut t = tail();
+    t.caller_credential_refusal.len = 1;
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::NullWithCount, "tail.caller_credential_refusal")
+    );
 }
 
 #[test]
@@ -1649,11 +1806,21 @@ fn a_pin_mechanism_is_named_with_known_flags() {
         f(Rule::Missing, "pin_mechanism.token")
     );
     let mut m = MECHANISMS[0];
-    m.flags = MECHANISM_ROOT << 1;
+    m.flags = MECHANISM_PEER_KEY << 1;
     assert_eq!(
         check_pin_mechanisms(&[m]),
         f(Rule::UnknownCode, "pin_mechanism.flags")
     );
+    // A far-end key pin is a root; the no-root spelling carrying one contradicts itself.
+    let mut m = MECHANISMS[0];
+    m.flags = MECHANISM_PEER_KEY;
+    assert_eq!(
+        check_pin_mechanisms(&[m]),
+        f(Rule::Contradiction, "pin_mechanism.flags")
+    );
+    let mut m = MECHANISMS[0];
+    m.flags = MECHANISM_ROOT | MECHANISM_PEER_KEY;
+    assert_eq!(check_pin_mechanisms(&[m]), Ok(()));
 }
 
 #[test]
@@ -1935,6 +2102,85 @@ fn projected_strings_lie_inside_the_arena_written() {
     );
 }
 
+/// THE SESSION (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session half): absent, or
+/// flagless octets inside the arena written; anything else is FAULT, naming the field.
+#[test]
+fn a_projected_session_is_absent_or_octets_inside_the_arena_written() {
+    use crate::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
+    let h = host();
+    let octets = |offset: usize, len: usize| Blob {
+        ptr: h.arena.as_ptr().wrapping_add(offset),
+        len,
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    let with = |b: Blob| {
+        let mut o = view(&h, 0);
+        o.view.session = b;
+        o
+    };
+    assert_eq!(project(Ready, &h, &view(&h, 0)), Ok(()), "no session");
+    assert_eq!(project(Ready, &h, &with(octets(8, 8))), Ok(()));
+    assert_eq!(
+        project(Ready, &h, &with(octets(12, 8))),
+        f(Rule::SpanOutOfBounds, "project.view.session")
+    );
+    let before = Blob {
+        ptr: h.arena.as_ptr().wrapping_sub(4),
+        ..octets(0, 4)
+    };
+    assert_eq!(
+        project(Ready, &h, &with(before)),
+        f(Rule::SpanOutOfBounds, "project.view.session"),
+        "a session before the arena"
+    );
+    assert_eq!(
+        project(
+            Ready,
+            &h,
+            &with(Blob {
+                fmt: BLOB_JSON,
+                ..octets(8, 4)
+            })
+        ),
+        f(Rule::UnknownCode, "project.view.session")
+    );
+    assert_eq!(
+        project(
+            Ready,
+            &h,
+            &with(Blob {
+                flags: 1,
+                ..octets(8, 4)
+            })
+        ),
+        f(Rule::UnknownCode, "project.view.session")
+    );
+    assert_eq!(
+        project(
+            Ready,
+            &h,
+            &with(Blob {
+                ptr: std::ptr::null(),
+                ..octets(0, 4)
+            })
+        ),
+        f(Rule::NullWithCount, "project.view.session")
+    );
+    assert_eq!(
+        project(
+            Ready,
+            &h,
+            &with(Blob {
+                fmt: BLOB_ABSENT,
+                ..octets(8, 4)
+            })
+        ),
+        f(Rule::Contradiction, "project.view.session"),
+        "an absent session that names bytes"
+    );
+}
+
 #[test]
 fn a_projected_body_lies_inside_the_arena_written() {
     let h = host();
@@ -2173,9 +2419,43 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
     }
 }
 
-/// THE ROUTE CLASS (ARCHITECT Q-SW6 amended by Q-FL3, 2026-10-02): a READY arrival names whether its
-/// entry is a pool or a model routed directly; any other class is FAULT, and an answer that admits
-/// nothing names the default class only.
+/// THE ROUTE FLAGS (ARCHITECT round 4 Q-L3B-SURFACES (h) `ROUTE_ONCE`; round 5 Q-L3B-K6-HTTP (a)
+/// `ROUTE_SESSION`): a READY arrival may state either or both, whatever it routes over; a bit the
+/// contract does not define is FAULT, and an answer that admits nothing states none.
+#[test]
+fn an_arrivals_route_flags_are_once_and_session() {
+    for flags in [ROUTE_ONCE, ROUTE_SESSION, ROUTE_ONCE | ROUTE_SESSION] {
+        let mut o: ArriveOut = z();
+        o.route = ROUTE_LOCAL;
+        o.route_flags = flags;
+        assert_eq!(
+            check_arrive(Ready, &o, &[], 4, &bounds()),
+            Ok(()),
+            "{flags}"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    o.route_flags = ROUTE_SESSION << 1;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.route_flags")
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.route_flags = ROUTE_SESSION;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool"),
+        "a refused arrival opens no session"
+    );
+}
+
+/// THE ROUTE CLASS (ARCHITECT Q-SW6 amended by Q-FL3, 2026-10-02, Q-L3B-LOCAL and Q-DEL-A2A-SELECT):
+/// a READY arrival names whether its entry is a pool or a model routed directly, that the plane
+/// answers it itself, or that the kernel routes it by the principal's scope (both naming no entry); any other class is FAULT, and an answer that admits nothing names the default
+/// class only.
 #[test]
 fn an_arrivals_route_class_is_pool_or_direct() {
     for class in [ROUTE_POOL, ROUTE_DIRECT] {
@@ -2188,8 +2468,26 @@ fn an_arrivals_route_class_is_pool_or_direct() {
             "{class}"
         );
     }
+    // A unit the plane answers itself names no entry (ARCHITECT Q-L3B-LOCAL).
     let mut o: ArriveOut = z();
-    o.route = ROUTE_DIRECT + 1;
+    o.route = ROUTE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
+    o.pool = s("entry");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool"),
+        "a local unit names no entry"
+    );
+    // A unit routed by scope names no entry: the kernel picks the one member the principal's
+    // sealed set reaches (ARCHITECT Q-DEL-A2A-SELECT).
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_SCOPE;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
+    // It may name its candidate entries (ARCHITECT Q-DEL-A2A-SCOPE-TRUST).
+    o.pool = s("a, b");
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_SCOPE + 1;
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route")
@@ -2201,5 +2499,47 @@ fn an_arrivals_route_class_is_pool_or_direct() {
     assert_eq!(
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.pool")
+    );
+}
+
+/// A REFUSAL ABOUT AN ENTRY (ARCHITECT Q-DEL-A2A-GATE, abi/plane "A refused arrival" rule 6): a
+/// REFUSED arrival may name the entry its refusal concerns, with its class, operation class and
+/// dialect, and then wear a 5xx; one naming no entry stays a 4xx; a named entry with a class the
+/// rule does not admit, or an operation class the plane does not have, is FAULT.
+#[test]
+fn a_refused_arrival_may_name_the_entry_it_is_about() {
+    let about = |route: u8, status: u32| {
+        let mut o: ArriveOut = z();
+        o.refusal = 7;
+        o.refusal_status = status;
+        o.route = route;
+        o.pool = s("planner");
+        o
+    };
+    assert_eq!(
+        check_arrive(Refused, &about(ROUTE_DIRECT, 503), &[], 4, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_arrive(Refused, &about(ROUTE_POOL, 403), &[], 4, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_arrive(Refused, &about(ROUTE_SCOPE, 503), &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.route")
+    );
+    let mut o = about(ROUTE_DIRECT, 503);
+    o.op_class = 99;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::IndexOutOfRange, "arrive.op_class")
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 7;
+    o.refusal_status = 503;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.refusal_status"),
+        "a refusal about no entry is the caller's: a 4xx"
     );
 }

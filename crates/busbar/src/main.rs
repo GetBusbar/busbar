@@ -715,10 +715,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
-    // transport door as a framer entry, every dial judged by the one destination guard. Inbound
-    // listening and outbound egress both take it from `root::connector::the()`.
+    // transport door as a framer entry opened with the same settings the seal built the transports
+    // from, every dial judged by the one destination guard. Inbound listening and outbound egress
+    // both take it from `root::connector::the()`.
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
+        &root::policy::client_settings(&cfg.limits),
         dest,
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
     );

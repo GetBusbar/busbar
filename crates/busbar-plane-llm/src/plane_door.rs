@@ -288,6 +288,10 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: crate::refusal::REFUSAL_STATUSES.as_ptr(),
     refusal_statuses_len: crate::refusal::REFUSAL_STATUSES.len(),
+    caller_credential_refusal: NONE,
+    admin_routes: ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: Blob::ABSENT,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its needs and its tail.

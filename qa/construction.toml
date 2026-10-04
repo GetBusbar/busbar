@@ -1068,10 +1068,16 @@ max_sites = 0
 # the entry is not repointed (a row on a path with no finding would only excuse a future forgery);
 # it is struck, and both paths are held to the rule.
 #
+# STRUCK 2026-10-04: `crates/busbar-transport-stdio/src/tests/battery.rs`. GONE — the stdio row was
+# made door-only (ARCHITECT ruling (A)): its in-process `impl Transport` battery, which forged a
+# `TestKernelSeal` to drive that transport, was deleted and its coverage folded onto the carrier and
+# door batteries, none of which forge a seal. The rule's `impl … KernelSeal for` pattern now matches
+# NO file under `crates/busbar-transport-stdio/`, so the entry is not repointed (a row on a path with
+# no finding would only excuse a future forgery); it is struck, and the crate is held to the rule.
+#
 # STRUCK 2026-10-04: `crates/busbar-plane-streaming/src/tests/harness.rs`, deleted by the streaming
-# fold (its tests drive the door). The seal debt that remains is the one below.
+# fold (its tests drive the door). No seal debt remains.
 known_sites = [
-  "crates/busbar-transport-stdio/src/tests/battery.rs",
 ]
 
 # ── 22. forbid-unsafe ────────────────────────────────────────────────────────────────────────────

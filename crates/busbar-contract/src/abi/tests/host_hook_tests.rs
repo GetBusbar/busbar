@@ -37,6 +37,7 @@ fn req(prompt: bool) -> RoutingRequest<'static> {
             user: Some("u".into()),
         }),
         signals,
+        session: None,
     }
 }
 
@@ -169,4 +170,30 @@ fn red_an_ungranted_tap_never_sees_the_prompt_the_request_carries() {
     assert!(tap.prompt.body.ptr.is_null());
     // The signals are not grant-gated: they still ride.
     assert_eq!(tap.signals_len, 1);
+}
+
+/// THE SESSION CROSSES (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session half): the
+/// request's opaque session reaches the hook's request view as octets, byte for byte; a request
+/// that names none crosses an absent blob.
+#[test]
+fn a_decide_view_carries_the_request_session_as_octets() {
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let mut with = req(false);
+    with.session = Some(b"ctx-\xff-1");
+    let frame = DecideFrame::first(DecideView::build(&with, &[], &ctx));
+    let s = frame.input().request.session;
+    assert_eq!(s.fmt, crate::abi::mechanism::call::BLOB_OCTETS);
+    assert_eq!(s.flags, 0);
+    // SAFETY: the frame owns the bytes the view names for its life.
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    assert_eq!(bytes, b"ctx-\xff-1");
+
+    let none = DecideFrame::first(DecideView::build(&req(false), &[], &ctx)).input();
+    assert_eq!(none.request.session.fmt, BLOB_ABSENT);
+    assert!(none.request.session.ptr.is_null());
+    assert_eq!(none.request.session.len, 0);
 }

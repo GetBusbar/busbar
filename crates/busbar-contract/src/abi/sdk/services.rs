@@ -21,10 +21,12 @@ use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
-    check_records_list, check_trust_due, check_trust_sight, check_trust_verify, op, ClockNowIn,
-    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn,
+    check_records_list, check_sign, check_trust_due, check_trust_sight, check_trust_verify,
+    check_unit_nest, check_work_find, check_work_open, check_work_resume, check_work_settle, op,
+    ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn,
     RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
-    TrustDueIn, TrustSightIn, TrustVerifyIn, CLAIM_WON, DEST_RESOLVE, ENTITLED, FOUND,
+    SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn,
+    WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -93,7 +95,17 @@ pub struct Judged<'b> {
     pub addresses: Names<'b>,
 }
 
-impl Judged<'_> {
+impl<'b> Judged<'b> {
+    /// What decided a refusal the caller asked explained (`DEST_EXPLAIN`): the refused address,
+    /// or the resolver's reason; `None` on admission or when the name alone decided it.
+    #[must_use]
+    pub fn detail(&self) -> Option<&'b str> {
+        if self.verdict == DEST_ALLOWED {
+            return None;
+        }
+        self.addresses.names().next()
+    }
+
     /// The addresses as the set an ESTABLISH's dial must land on (`EstablishIn::within`): so the
     /// judge, the caller's overlap check and the dial see one address set.
     #[must_use]
@@ -103,6 +115,15 @@ impl Judged<'_> {
             .collect::<Vec<_>>()
             .join(WITHIN_SEPARATOR)
     }
+}
+
+/// The value span `s` carries: present, inside `bytes`.
+fn value<'b>(bytes: &'b [u8], s: &ItemSpan) -> Option<&'b [u8]> {
+    if s.value.offset == SPAN_ABSENT {
+        return None;
+    }
+    let at = s.value.offset as usize;
+    bytes.get(at..at.checked_add(s.value.len as usize)?)
 }
 
 /// The counterparty span `s` names: its key, present and UTF-8.
@@ -302,7 +323,21 @@ impl Services {
         egress_class: u32,
         resolve: Option<(&'b mut [u8], &'b mut [ItemSpan])>,
     ) -> Pend<Judged<'b>> {
-        let flags = if resolve.is_some() { DEST_RESOLVE } else { 0 };
+        self.dest_judge_as(handle, dest, egress_class, 0, resolve)
+    }
+
+    /// [`Self::dest_judge`] with the caller's further `flags` (`DEST_REFUSE_PRIVATE`,
+    /// `DEST_EXPLAIN`; `DEST_RESOLVE` follows `resolve`): asked to explain, a refusal an address
+    /// or the resolution decided names it ([`Judged::detail`]).
+    pub fn dest_judge_as<'b>(
+        &self,
+        handle: CompletionHandle,
+        dest: &str,
+        egress_class: u32,
+        flags: u32,
+        resolve: Option<(&'b mut [u8], &'b mut [ItemSpan])>,
+    ) -> Pend<Judged<'b>> {
+        let flags = (flags & !DEST_RESOLVE) | if resolve.is_some() { DEST_RESOLVE } else { 0 };
         let (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]) = resolve.unwrap_or_default();
         let input = DestJudgeIn {
             head: head::<DestJudgeIn>(op::DEST_JUDGE, handle),
@@ -408,6 +443,37 @@ impl Services {
             verdict: out.value,
             named,
         })
+    }
+
+    /// `sign`: sign `data` with busbar's key under the plugin's declared signing domain and key-id
+    /// prefix (the host refuses a plugin that declares none). Ready: span `0`, the key id (UTF-8)
+    /// and the signature, written into the caller's preallocated `buf` and `spans`. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when the buffers are short (re-call once, same handle); otherwise
+    /// as every service: unserved, declined, or broken (no span, a key id absent or not UTF-8, or
+    /// a signature absent is broken).
+    pub fn sign<'b>(
+        &self,
+        handle: CompletionHandle,
+        data: &[u8],
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Result<Signature<'b>, ServiceError> {
+        let input = SignIn {
+            head: head::<SignIn>(op::SIGN, handle),
+            data: blob(data, BLOB_OCTETS),
+            into: bufs(buf, spans),
+        };
+        let out = ready(self.cross(op::SIGN, |t| t.sign, &input, check_sign)?)?;
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        // The service's check held `len` and `items` within the caps and every span inside `len`.
+        let (bytes, spans) = (&buf[..out.len as usize], &spans[..out.items as usize]);
+        let first = spans.first().ok_or(ServiceError::Broken)?;
+        let key_id = name(bytes, first).ok_or(ServiceError::Broken)?;
+        let signature = value(bytes, first).ok_or(ServiceError::Broken)?;
+        Ok(Signature { key_id, signature })
     }
 
     /// `records.get`: the record `key` of the caller's own record `kind`, written into the caller's
@@ -534,6 +600,162 @@ impl Services {
         .map(|r| r.map(|v| v == CLAIM_WON))
     }
 
+    /// `work.open`: open a durable work handle of `kind` (one of the plugin's record kinds) for the
+    /// principal of the unit the op serves, with `record` (at most `MAX_WORK_RECORD` bytes). Ready:
+    /// the handle and its reference, written into the caller's preallocated `buf` (at least
+    /// `WORK_REFERENCE_LEN` bytes) and `spans` (at least one). May pend.
+    pub fn work_open<'b>(
+        &self,
+        handle: CompletionHandle,
+        kind: &str,
+        record: &[u8],
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Pend<Opened<'b>> {
+        let input = WorkOpenIn {
+            head: head::<WorkOpenIn>(op::WORK_OPEN, handle),
+            kind: text(kind),
+            record: blob(record, BLOB_OCTETS),
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(op::WORK_OPEN, |t| t.work_open, &input, check_work_open);
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        Poll::Ready(crossed.and_then(move |c| {
+            let (out, names) = named(c, buf, spans)?;
+            let reference = names.names().next().ok_or(ServiceError::Broken)?;
+            Ok(Opened {
+                handle: out.value,
+                reference,
+            })
+        }))
+    }
+
+    /// `work.find`: the handle `reference` names, within this instance and the principal of the
+    /// unit the op serves. Ready `None` for every denial alike; found, the handle, its state byte
+    /// and its record, a view into the caller's `buf`. May pend.
+    pub fn work_find<'b>(
+        &self,
+        handle: CompletionHandle,
+        reference: &str,
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Pend<Option<Found<'b>>> {
+        let input = WorkFindIn {
+            head: head::<WorkFindIn>(op::WORK_FIND, handle),
+            reference: text(reference),
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(op::WORK_FIND, |t| t.work_find, &input, check_work_find);
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        Poll::Ready(crossed.and_then(move |c| {
+            let out = ready(c)?;
+            if out.value == ABSENT {
+                return Ok(None);
+            }
+            found(&out, buf, spans).map(Some)
+        }))
+    }
+
+    /// `work.settle`: settle this instance's live handle `work` with its final `record`. May pend.
+    pub fn work_settle(&self, handle: CompletionHandle, work: u64, record: &[u8]) -> Pend<()> {
+        let input = WorkSettleIn {
+            head: head::<WorkSettleIn>(op::WORK_SETTLE, handle),
+            handle: work,
+            record: blob(record, BLOB_OCTETS),
+        };
+        match verdict(self.cross(
+            op::WORK_SETTLE,
+            |t| t.work_settle,
+            &input,
+            check_work_settle,
+        )) {
+            Poll::Ready(r) => Poll::Ready(r.map(|_| ())),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    /// `work.resume`: bind this instance's handle `work` to the unit the op serves (a continuation,
+    /// of the principal the handle recorded). Ready: its state byte and record, a view into the
+    /// caller's `buf`. May pend.
+    pub fn work_resume<'b>(
+        &self,
+        handle: CompletionHandle,
+        work: u64,
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Pend<Found<'b>> {
+        let input = WorkResumeIn {
+            head: head::<WorkResumeIn>(op::WORK_RESUME, handle),
+            handle: work,
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(
+            op::WORK_RESUME,
+            |t| t.work_resume,
+            &input,
+            check_work_resume,
+        );
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        Poll::Ready(crossed.and_then(move |c| {
+            let out = ready(c)?;
+            found(&out, buf, spans).map(|f| Found { handle: work, ..f })
+        }))
+    }
+
+    /// `unit.nest`: run a nested unit on whatever serves the claim `verb` `target` names, as a
+    /// child of the unit the op serves (its principal, its scope, its admission chain), with
+    /// `body`. Ready: the child's whole reply, a view into the caller's preallocated `buf` and
+    /// `spans` (at least one, plus one per head field it keeps). May pend; a short answer is
+    /// [`ServiceError::Short`]: re-call once, same handle, with the sizes it names.
+    pub fn unit_nest<'b>(
+        &self,
+        handle: CompletionHandle,
+        verb: &str,
+        target: &str,
+        body: &[u8],
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Pend<Nested<'b>> {
+        let input = UnitNestIn {
+            head: head::<UnitNestIn>(op::UNIT_NEST, handle),
+            verb: text(verb),
+            target: text(target),
+            body: blob(body, BLOB_OCTETS),
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(op::UNIT_NEST, |t| t.unit_nest, &input, check_unit_nest);
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        Poll::Ready(crossed.and_then(move |c| {
+            let out = ready(c)?;
+            let bytes = &buf[..out.len as usize];
+            let spans = &spans[..out.items as usize];
+            let (first, fields) = spans.split_first().ok_or(ServiceError::Broken)?;
+            let at = first.value.offset as usize;
+            let body = bytes
+                .get(at..at.saturating_add(first.value.len as usize))
+                .filter(|_| first.value.offset != SPAN_ABSENT)
+                .ok_or(ServiceError::Broken)?;
+            Ok(Nested {
+                status: out.value,
+                body,
+                bytes,
+                fields,
+            })
+        }))
+    }
+
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
     /// outcome, the `out` and how it filled the caller's buffers.
     fn cross<I>(
@@ -624,6 +846,83 @@ const fn blob(b: &[u8], fmt: u32) -> Blob {
     }
 }
 
+/// What `unit.nest` answered: the child's status, body and head fields, views into the caller's
+/// buffers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Nested<'b> {
+    /// The child's status.
+    pub status: u64,
+    /// The child's body.
+    pub body: &'b [u8],
+    bytes: &'b [u8],
+    fields: &'b [ItemSpan],
+}
+
+impl<'b> Nested<'b> {
+    /// The child's head fields, name and value, in its order.
+    pub fn fields(&self) -> impl Iterator<Item = (&'b [u8], &'b [u8])> + 'b {
+        let bytes = self.bytes;
+        self.fields.iter().filter_map(move |s| {
+            let range =
+                |o: u32, n: u32| bytes.get(o as usize..(o as usize).checked_add(n as usize)?);
+            Some((
+                range(s.key.offset, s.key.len)?,
+                range(s.value.offset, s.value.len)?,
+            ))
+        })
+    }
+}
+
+/// What `work.open` answered: the handle, and its reference, a view into the caller's buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Opened<'b> {
+    /// The handle the plugin calls with.
+    pub handle: u64,
+    /// The reference the plugin hands its caller.
+    pub reference: &'b str,
+}
+
+/// What `work.find` or `work.resume` answered: the handle, its state byte (`WORK_LIVE` /
+/// `WORK_SETTLED`) and its record, a view into the caller's buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Found<'b> {
+    /// The handle.
+    pub handle: u64,
+    /// `WORK_LIVE` or `WORK_SETTLED`.
+    pub state: u8,
+    /// The record.
+    pub record: &'b [u8],
+}
+
+/// A found handle's answer over the caller's `buf` and `spans`: span `0`'s one-byte key is the
+/// state, its value the record; anything else is broken.
+fn found<'b>(
+    out: &ServiceOut,
+    buf: &'b [u8],
+    spans: &'b [ItemSpan],
+) -> Result<Found<'b>, ServiceError> {
+    let bytes = &buf[..out.len as usize];
+    let s = spans
+        .get(..out.items as usize)
+        .and_then(<[ItemSpan]>::first)
+        .ok_or(ServiceError::Broken)?;
+    let range = |offset: u32, len: u32| {
+        (offset != SPAN_ABSENT)
+            .then(|| bytes.get(offset as usize..(offset as usize).checked_add(len as usize)?))
+            .flatten()
+    };
+    let state = match range(s.key.offset, s.key.len) {
+        Some([state]) => *state,
+        _ => return Err(ServiceError::Broken),
+    };
+    let record = range(s.value.offset, s.value.len).ok_or(ServiceError::Broken)?;
+    Ok(Found {
+        handle: out.value,
+        state,
+        record,
+    })
+}
+
 /// What `trust.verify` answered: the verdict, and the name a `SIGNED_ALGORITHM` /
 /// `SIGNED_CRITICAL` verdict refused (empty for every other verdict), a view into the caller's
 /// buffer.
@@ -633,6 +932,16 @@ pub struct Signed<'b> {
     pub verdict: u64,
     /// The refused algorithm or critical member.
     pub named: &'b str,
+}
+
+/// What `sign` answered: the key id the signature verifies under and the signature, views into
+/// the caller's buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Signature<'b> {
+    /// The key id (busbar's key id under the plugin's declared prefix).
+    pub key_id: &'b str,
+    /// The signature bytes.
+    pub signature: &'b [u8],
 }
 
 /// The head of an `I` for `service`, under `handle`.

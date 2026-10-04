@@ -40,6 +40,8 @@ const BEARER: &str = "bearer";
 const WIDE: &str = "wide";
 /// The style that signs the body: it needs the `HeadBody` point.
 const SIGNED: &str = "signed";
+/// The style that presents the per-call scope its extensions blob states.
+const SCOPED: &str = "scoped";
 
 mod plugin {
     use super::*;
@@ -75,6 +77,7 @@ mod plugin {
                 b"bearer" => 1,
                 b"wide" => 2,
                 b"signed" => 3,
+                b"scoped" => 4,
                 _ => return Outcome::Failed,
             };
             out.set(|o| &o.handle, handle);
@@ -118,6 +121,15 @@ mod plugin {
                         _ => v.extend_from_slice(input.field(|i| &i.body).bytes()),
                     }
                     vec![(b"x-signed".to_vec(), v, 0)]
+                }
+                (4, _) => {
+                    let blob = input.field(|i| &i.head.extensions).bytes();
+                    let scope = busbar_contract::abi::mechanism::extensions::get(
+                        blob,
+                        busbar_contract::abi::auth::EXT_SCOPE,
+                    )
+                    .map_or_else(|| b"-".to_vec(), <[u8]>::to_vec);
+                    vec![(b"x-scope".to_vec(), scope, 0)]
                 }
                 _ => return Outcome::Failed,
             };
@@ -173,6 +185,11 @@ mod plugin {
             name: abi_str("signed"),
             flags: 0,
             points: POINT_HEAD_BODY,
+        },
+        StyleDecl {
+            name: abi_str("scoped"),
+            flags: 0,
+            points: POINT_HEAD,
         },
     ];
     const TAIL: &AuthTail = &AuthTail {
@@ -391,6 +408,42 @@ fn the_body_is_lent_at_head_body_and_never_at_head() {
     assert_eq!(
         a.fields_now(3, &empty).map(signed),
         Some(format!("{POINT_HEAD_BODY} "))
+    );
+}
+
+/// THE PER-CALL SCOPE REACHES THE PLUGIN (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): a request's
+/// extensions blob is lent as `FieldsIn::head.extensions`, alike on the spot and on a ticket, and the
+/// style reads the scope under `EXT_SCOPE` byte for byte; a request that states none lends none.
+#[test]
+fn the_extensions_blob_carries_the_per_call_scope_to_the_plugin() {
+    let a = opened();
+    assert_eq!(a.open_outbound(SCOPED, b"", &serde_json::json!({})), Ok(4));
+    let scope_of = |f: Fields| match f {
+        Fields::Ready(v) => String::from_utf8(v[0].value.expose_secret().clone()).unwrap(),
+        other => panic!("{other:?}"),
+    };
+    let scoped = FieldsRequest {
+        extensions: busbar_contract::abi::mechanism::extensions::encode(&[
+            ("unknown", b"ignored"),
+            (
+                busbar_contract::abi::auth::EXT_SCOPE,
+                b"fs_read_file fs_write_file",
+            ),
+        ]),
+        ..request()
+    };
+    assert_eq!(
+        a.fields_now(4, &scoped).map(scope_of),
+        Some("fs_read_file fs_write_file".to_string())
+    );
+    assert_eq!(
+        scope_of(futures_lite_block_on(a.fields(4, scoped, 0))),
+        "fs_read_file fs_write_file"
+    );
+    assert_eq!(
+        a.fields_now(4, &request()).map(scope_of),
+        Some("-".to_string()),
+        "no scope stated, none lent"
     );
 }
 

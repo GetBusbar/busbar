@@ -127,6 +127,13 @@
 //! 4. The kernel never logs or audits the text, since it may echo what the caller sent.
 //! 5. [`MAX_REFUSAL_TEXT`] is at or above the largest field line a transport admits, so words that
 //!    echo a field line the caller sent never overflow it.
+//! 6. A REFUSAL ABOUT AN ENTRY (ARCHITECT Q-DEL-A2A-GATE: "refused → audits the refusal; nothing
+//!    was charged", and the caller's grant is judged before the entry's standing): a REFUSED
+//!    `arrive` that names the entry its refusal concerns ([`ArriveOut::pool`] with a
+//!    [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`], and its operation class and
+//!    dialect) is held: the kernel judges the caller's identity and its grant over that entry
+//!    first (a refusal there wins), then renders this refusal before admission, so nothing is
+//!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault).
 //!
 //! [`RefusalOut::status`] lets the rendering name the status its dialect answers with; `0` keeps
 //! the one the kernel chose. The gate-rejected audit marker is the kernel's: it sets it from
@@ -172,6 +179,7 @@
 //! | (new) dialects, `dialect_auth`, `route_cost`, `cli_help` | tail |
 //! | (new) needs, consumed sections, egress targets | Statement `needs`, [`SECTION_CONSUMED`](crate::abi::mechanism::door::SECTION_CONSUMED); tail [`PlaneTail::egress_targets`] |
 //! | (new) kernel-owned trust keys | tail [`PlaneTail::trust_keys`] |
+//! | (new) the section-level caller-credential refusal | tail [`PlaneTail::caller_credential_refusal`] |
 //!
 //! KERNEL-OWNED TRUST KEYS. The trust lifecycle (pin, re-verification cadence, demotion) is the
 //! kernel's. A plane whose registrations carry those keys DECLARES them in its tail
@@ -317,8 +325,14 @@ pub const TAIL_PROBES: u32 = 1 << 1;
 /// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
 /// without verifying a caller. Without it, the route takes one.
 pub const CLAIM_OPEN: u32 = 1;
-/// [`Claim::flags`]: the target matches exactly. Without it, the target is a prefix.
+/// [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the
+/// target is a one-level prefix.
 pub const CLAIM_EXACT: u32 = 1 << 1;
+/// [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a
+/// placeholder spelled `{name}` that matches exactly one non-empty segment with no `/`. The host
+/// reads it as the claim grammar's segment pattern ([`check::claim_selector`]), so the registry's
+/// sealed precedence is unchanged: exact beats pattern beats prefix. Never with [`CLAIM_EXACT`].
+pub const CLAIM_PATTERN: u32 = 1 << 2;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
@@ -371,6 +385,39 @@ pub const ROUTE_POOL: u8 = 0;
 /// [`ArriveOut::route`]: the entry names one MODEL entry, routed directly; the walk keys its state by
 /// (plane key, model entry) and its meter and ledger rows carry 1.5.5's empty pool label.
 pub const ROUTE_DIRECT: u8 = 1;
+/// [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF and names no entry
+/// ([`ArriveOut::pool`] absent): the kernel admits it with no route walk, and with only far-end
+/// reported units billing, it bills nothing; it is audited as every unit is (ARCHITECT Q-L3B-LOCAL,
+/// refining Q-SW6's "none named is refused").
+pub const ROUTE_LOCAL: u8 = 2;
+/// [`ArriveOut::route`]: the unit names no entry and is ROUTED BY THE PRINCIPAL'S SCOPE
+/// ([`ArriveOut::pool`] absent): the kernel resolves it to the ONE entry of the plane's section the
+/// principal's grant of the plane's scope kind reaches, and routes it directly to that entry (the
+/// attempt's member names it). [`ArriveOut::pool`] may name the CANDIDATE entries — the ones the
+/// plane would serve this unit at (those serving, whose capabilities fit it) — joined by
+/// [`ROUTE_SCOPE_SEPARATOR`]; the kernel then resolves over the grant's reach intersected with
+/// them (ARCHITECT Q-DEL-A2A-SCOPE-TRUST); absent, every entry is a candidate. Zero or several reachable entries refuse it `no_destination`, before
+/// anything is charged, which the plane renders in its own words through `refusal`: its
+/// [`RefusalIn::text`] names the reachable candidate entries, joined by [`ROUTE_SCOPE_SEPARATOR`]
+/// (empty when none reach) (ARCHITECT Q-DEL-A2A-SELECT: scope seals the destinations).
+pub const ROUTE_SCOPE: u8 = 3;
+/// What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names.
+pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
+
+/// [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4
+/// Q-L3B-SURFACES (h): the walk does repeatable). A walk over a pool still moves to another member
+/// before anything was answered (a refused connection, an open breaker), but a member that ANSWERED
+/// with a failure is not retried on another: its answer is the unit's. Unset, an answered failure
+/// fails over as the walk's status table says.
+pub const ROUTE_ONCE: u8 = 1;
+
+/// [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5
+/// Q-L3B-K6-HTTP (a)): its route leg is the driver's session, whose caller leg is the unit's own
+/// caller side (its read yields the arrival's body once, then nothing until the caller goes). Its
+/// pieces name the unit's stream ([`OnPieceIn::stream`]), its unsolicited output is named on the
+/// instance's driver ticket (`drive`) and collected on the session's caller-side ticket, and it is
+/// one unit with one line. Unset, the unit's route is one request's.
+pub const ROUTE_SESSION: u8 = 2;
 
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
@@ -453,7 +500,9 @@ pub const VERDICT_NONE: u32 = 0;
 /// [`OnPieceOut::verdict`]: the far end's answer is a success.
 pub const VERDICT_OK: u32 = 1;
 /// [`OnPieceOut::verdict`]: the far end's answer is a failure another member may not share. The
-/// walk fails over only before the first byte reaches the caller; after it, a retry is hard.
+/// walk fails over only before the first byte reaches the caller; after it, a retry is hard. On
+/// the caller's body bound for the far end, answered with nothing at all, it DECLINES the attempt's
+/// member (one this unit may not reach): nothing is sent and the walk moves to its next member.
 pub const VERDICT_RETRY: u32 = 2;
 /// [`OnPieceOut::verdict`]: the far end's answer is a failure no other member would change.
 pub const VERDICT_HARD: u32 = 3;
@@ -788,6 +837,15 @@ pub struct DialectAuth {
     pub _reserved: u32,
     /// The style, an open string.
     pub style: AbiStr,
+    /// The style's parameters for this dialect, a [`super::mechanism::call::BLOB_JSON`] object the
+    /// host hands the auth plugin's `open_outbound` as its settings at seal, under the provider's
+    /// own (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS; ruling 2026-09-28 "the kernel resolves the
+    /// dialect's declared parameters at seal into OpenOutboundIn::settings"). [`Blob::ABSENT`]: the
+    /// style takes none. A value `{"host_label_after": [labels], "default": word, "unread": text}`
+    /// is resolved at seal from the provider's base URL host: the dotted label after one of
+    /// `labels` when it reads as a dashed name ending in a number (`<word>-...-<digits>`, three
+    /// parts or more), else `default`, with `unread` logged as the operator's warning.
+    pub params: Blob,
 }
 
 /// One operation class the plane serves one level down, and the display name a refusal naming the
@@ -855,6 +913,13 @@ pub const PIN_FINGERPRINT: u32 = 1;
 /// [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key
 /// material. A mechanism without it is the no-root spelling, which must carry none.
 pub const MECHANISM_ROOT: u32 = 1;
+/// [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin
+/// of its certificate's SubjectPublicKeyInfo (`transport::trust::key_pin`'s spelling). The host
+/// seals it into the trust anchors of the registration's member route, and the connector enforces
+/// it on every connection to the registration and reports the key it observed (the transport pin, ARCHITECT 2026-10-03, the
+/// transport pin). A mechanism without it keeps its material for the plane and the kernel's
+/// signature check alone.
+pub const MECHANISM_PEER_KEY: u32 = 2;
 
 /// One pin mechanism a [`TRUST_PIN`] key accepts, as the operator spells it.
 #[repr(C)]
@@ -862,7 +927,8 @@ pub const MECHANISM_ROOT: u32 = 1;
 pub struct PinMechanism {
     /// The config token.
     pub token: AbiStr,
-    /// [`MECHANISM_ROOT`] or `0`.
+    /// [`MECHANISM_ROOT`] (with [`MECHANISM_PEER_KEY`] where its material is the far end's key) or
+    /// `0`.
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -984,6 +1050,21 @@ pub struct PlaneTail {
     pub refusal_statuses: *const RefusalStatus,
     /// How many.
     pub refusal_statuses_len: usize,
+    /// The plane's own sentence refusing the reserved `upstream_credentials: passthrough` section
+    /// default, emitted by the kernel verbatim; NULL when forwarding the caller's credential is
+    /// legitimate on this plane.
+    pub caller_credential_refusal: AbiStr,
+    /// THE ADMIN ROUTES THE PLANE SERVES, stated once (ARCHITECT Q-L3B-VERBS: the kernel's registry
+    /// row reads a door plane's admin verbs from its Statement): each verb, target relative to the
+    /// admin mount, flags and audit word, as its snapshots publish them. NULL/0 = none. A tail
+    /// addition.
+    pub admin_routes: *const AdminRoute,
+    /// How many.
+    pub admin_routes_len: usize,
+    /// THE OPENAPI PATH FRAGMENT of those admin routes: a JSON object keyed by each target relative
+    /// to the admin mount (the kernel keys it under the mount when it merges the admin document);
+    /// absent = none. A tail addition.
+    pub admin_openapi: Blob,
 }
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
@@ -999,7 +1080,7 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
-    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`]; any other bit refuses the snapshot.
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`]; any other bit refuses the snapshot.
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
     /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route
@@ -1051,6 +1132,11 @@ pub struct PlaneSnapshot {
     pub audience: AbiStr,
     /// Its resource metadata.
     pub resource_metadata: AbiStr,
+    /// THE PROTECTED-RESOURCE FACTS beside its audience (ARCHITECT Q-L3B-RFC9728): a JSON object
+    /// `{"authorization_servers": [..], "scopes_supported": [..]}`, from which the kernel renders the
+    /// RFC 9728 document at [`PlaneSnapshot::resource_metadata`] (no unit, no audit row); absent =
+    /// none stated. A tail addition.
+    pub resource_facts: Blob,
 }
 
 /// The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL.
@@ -1061,6 +1147,11 @@ pub struct PlaneOpenIn {
     pub open: OpenIn,
     /// The deployment's public base URL; absent = none stated.
     pub public_url: AbiStr,
+    /// THE PLANE'S OTHER OWNED SECTIONS this document writes (the Statement's sections that are
+    /// neither its declaring section nor consumed), as one JSON object keyed by section name, each
+    /// as written; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it writes none (ARCHITECT
+    /// Q-L3B-AUD: a plane reads its own sections and states its claims from them). A tail addition.
+    pub owned: Blob,
 }
 
 /// The plane's `open` `out`: the lifecycle's, plus the first generation's snapshot.
@@ -1242,7 +1333,8 @@ pub struct ArriveOut {
     /// REFUSED, `0` on every other outcome.
     pub refusal: u32,
     /// On REFUSED: the status the refusal wears, 400 to 499: an arrive refusal is the caller's
-    /// fault by definition. `0` on every other outcome.
+    /// fault by definition; 400 to 599 for a refusal about an entry (see "A refused arrival",
+    /// rule 6). `0` on every other outcome.
     pub refusal_status: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -1263,10 +1355,15 @@ pub struct ArriveOut {
     /// valid until the instance's next call. A tail addition; absent on every other outcome.
     pub pool: AbiStr,
     /// On READY: [`ROUTE_POOL`] or [`ROUTE_DIRECT`], what [`ArriveOut::pool`] names (ARCHITECT Q-FL3,
-    /// 2026-10-02). A tail addition; [`ROUTE_POOL`] on every other outcome.
+    /// 2026-10-02), or [`ROUTE_LOCAL`] or [`ROUTE_SCOPE`] with no pool named. A tail addition;
+    /// [`ROUTE_POOL`] on every
+    /// other outcome.
     pub route: u8,
+    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`]); `0` on every other
+    /// outcome. A tail addition, in what was padding.
+    pub route_flags: u8,
     /// Alignment padding.
-    pub _route_reserved: [u8; 7],
+    pub _route_reserved: [u8; 6],
 }
 
 /// `on_piece`'s `in`.
@@ -1380,6 +1477,14 @@ pub struct OnPieceOut {
     pub verb: Span,
     /// With `verb`: the request's target, in the arena; a zero length = none.
     pub target: Span,
+    /// With [`EMIT_TO_FAR_END`]: the need the far request rides (ARCHITECT Q-L5B-NEEDS 2026-10-03,
+    /// spec #3: a plane's needs are a list of (transport, auth) per direction, and the kernel binds
+    /// every declared outbound need of a member), as its index in the Statement's needs PLUS ONE;
+    /// `0` = the member's first bound need (a plane with one outbound need never names one). A tail
+    /// addition.
+    pub need: u32,
+    /// Alignment padding.
+    pub _need_reserved: u32,
 }
 
 /// `refusal`'s `in`.

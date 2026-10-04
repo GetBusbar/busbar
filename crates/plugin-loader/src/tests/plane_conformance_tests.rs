@@ -1763,4 +1763,45 @@ mod door {
             assert_eq!(first, published, "generation 1's copy outlives its retire");
         }
     }
+
+    /// DECL-FOLD (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): the registry facts a door states are
+    /// read off its Statement and tail at bind, linked and dropped alike, and its own `validate`
+    /// judges a section: the kernel folds these into its plane registry before the config prepass.
+    #[test]
+    fn a_door_states_its_registry_facts_and_judges_its_section() {
+        let check = |bind: crate::dispatch::kinds::plane::ProbeBind| {
+            let reg = crate::dispatch::kinds::plane::registration(bind).expect("the door binds");
+            assert_eq!(reg.key, "plane-door");
+            assert_eq!(reg.section, "door");
+            assert_eq!(
+                (reg.label, reg.subject_noun, reg.admin_noun, reg.audit_kind),
+                ("Door", "door", "door", "door")
+            );
+            assert_eq!(reg.dialects, vec!["door/1"]);
+            assert_eq!(reg.billable_classes, vec![("bytes", "bytes")]);
+            assert_eq!(reg.record_kinds, vec!["last"]);
+            assert!(reg.scope_kinds.is_empty() && reg.trust_keys.is_empty());
+            assert_eq!(reg.signing, None);
+            assert_eq!(reg.caller_credential_refusal, None);
+            assert_eq!((reg.validate)(b"{}"), Ok(()));
+            assert!(
+                (reg.validate)(plug::BAD_SETTINGS).is_err(),
+                "the door refuses its bad settings"
+            );
+            let faced = (reg.facing)(b"{}", b"", None).expect("the door faces the world");
+            assert_eq!(faced.claims, vec![("/echo".to_string(), "door/1")]);
+            assert_eq!(faced.admission, None, "the fixture binds no audience");
+            let again = (reg.facing)(b"{}", b"", None).expect("a probe closes, so it opens again");
+            assert_eq!(again, faced);
+            format!("{reg:?}")
+        };
+        let linked = check(Arc::new(|| Ok(linked())));
+        if dropped().is_none() {
+            return;
+        }
+        let dropped = check(Arc::new(|| {
+            dropped().ok_or_else(|| "no example".to_string())
+        }));
+        assert_eq!(linked, dropped, "the same facts, whichever door");
+    }
 }

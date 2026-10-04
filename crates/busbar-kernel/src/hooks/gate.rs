@@ -402,6 +402,7 @@ fn project<'a>(
         // No request-phase catalog signal is wired to this seam in this pass; the core fields above
         // are what these protocols can answer today.
         signals: Default::default(),
+        session: None,
     }
 }
 

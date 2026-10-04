@@ -91,6 +91,10 @@ impl PlaneCalls for PlaneInstance {
         crate::dispatch::plugin::copy_str(out.pool)
     }
 
+    fn arrived_refusal(&self, out: &ArriveOut) -> Option<Vec<u8>> {
+        crate::dispatch::plugin::copy_str(out.head.error)
+    }
+
     fn refusal(
         &self,
         input: &mut RefusalIn,

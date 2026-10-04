@@ -63,6 +63,7 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
             required_config_sections: &[],
             trust_keys: &[],
             served_op_classes: &[],
+            caller_credential_refusal: None,
         },
         wire_format_names: || &["pools_standin"],
         claims: |_| Vec::new(),

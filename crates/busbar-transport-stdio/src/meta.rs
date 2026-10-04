@@ -9,23 +9,9 @@
 
 use busbar_contract::grammar::SelectorForm;
 use busbar_contract::transport::wire::Unit0Trigger;
-use busbar_contract::transport::AbiVersion;
-use busbar_contract::{Kind, Plugin, TransportMeta};
+use busbar_contract::TransportMeta;
 
 use crate::claims;
-use crate::transport::StdioTransport;
-
-impl Plugin for StdioTransport {
-    fn key(&self) -> &'static str {
-        crate::linked::KEY
-    }
-    fn kind(&self) -> Kind {
-        Kind::Transport
-    }
-    fn abi(&self) -> AbiVersion {
-        busbar_contract::transport::registry::TRANSPORT_ABI
-    }
-}
 
 impl TransportMeta for crate::StdioCarrier {
     const KEY: &'static str = "stdio";

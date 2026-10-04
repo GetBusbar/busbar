@@ -87,7 +87,12 @@ pub struct Need {
     pub auth: AbiStr,
     /// Where the target comes from (a config path the host reads); absent = the plugin names it.
     pub target_from: AbiStr,
-    /// Where the trust anchors come from; absent = the host's default.
+    /// Where the trust anchors come from; absent = the host's default. On a member-target need
+    /// (`target_from` = `settings.*.<key>`), a member path (`settings.*.<key>`) names, per
+    /// registration, the object holding busbar's client identity for it (`{cert, key}`, secret
+    /// references); the host seals it, with the registration's far-end key pin (its plane's pin
+    /// key, under a mechanism flagged `abi::plane::MECHANISM_PEER_KEY`), into the member's route,
+    /// and the connector enforces both on every connection to the member (the transport pin, ARCHITECT 2026-10-03).
     pub trust_from: AbiStr,
     /// The need's details, validated only by the claiming transport.
     pub details: Blob,
@@ -240,6 +245,19 @@ pub struct EstablishIn {
 /// The separator between the addresses of [`EstablishIn::within`].
 pub const WITHIN_SEPARATOR: &str = ",";
 
+/// `ServiceOut::value` of a connector service answering FAILED or REFUSED: no cause named.
+pub const CAUSE_NONE: u64 = 0;
+/// `ServiceOut::value` on a failure: the socket's open failed; `error` is the socket's error.
+pub const CAUSE_CONNECT: u64 = 1;
+/// `ServiceOut::value` on a failure: connection security failed; `error` is its own error.
+pub const CAUSE_SECURITY: u64 = 2;
+/// `ServiceOut::value` on a failure: the open connection failed; `error` is the socket's error.
+pub const CAUSE_EXCHANGE: u64 = 3;
+/// `ServiceOut::value` on a failure: a deadline the host keeps passed.
+pub const CAUSE_DEADLINE: u64 = 4;
+/// `ServiceOut::value` on a failure: the open connection's framer failed it; `error` is its own.
+pub const CAUSE_FRAMER: u64 = 5;
+
 /// The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`].
 /// `REJECT_ENDPOINT` answers the stream on the next endpoint, or FAILED when none is left.
 #[repr(C)]
@@ -296,7 +314,9 @@ pub const UPGRADE_VERIFY_OFF: u32 = 1;
 /// The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`.
 pub const UPGRADE_IN_V1_SIZE: usize = 64;
 
-/// [`service::FACTS`]'s `in`.
+/// [`service::FACTS`]'s `in`. The host answers the stream's facts as it observed them, a stream
+/// whose connection it refused for its trust anchors included (the refusal is the reply's; the facts
+/// say why): readable until the stream closes.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FactsIn {
@@ -322,6 +342,17 @@ pub struct StreamFacts {
     pub agreed_protocol: AbiStr,
     /// The hash of the far end's certificate (the channel-binding input); absent = not secure.
     pub peer_cert_hash: AbiStr,
+    /// Appended (the transport pin, ARCHITECT 2026-10-03): the far end's KEY as the connector observed
+    /// it, the pin of its leaf certificate's SubjectPublicKeyInfo in the one spelling
+    /// (`transport::trust::key_pin`); absent = the stream carried no certificate. Where the need's
+    /// trust anchors pin a key the connector refused any other before a request byte left, and
+    /// this still names what the far end served.
+    pub peer_key_pin: AbiStr,
+    /// Appended: `1` = busbar presented its client identity in the handshake (the far end asked
+    /// and the need's trust anchors carry one); `0` = it presented none.
+    pub client_identity: u32,
+    /// Alignment padding; `0`.
+    pub _reserved: u32,
 }
 
 /// [`service::CHECKOUT`]'s `in`.
