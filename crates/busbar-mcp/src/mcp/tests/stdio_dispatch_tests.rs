@@ -28,7 +28,7 @@
 
 use super::upstream_support::{call, gov_with_scopes, mcp_cfg};
 use crate::mcp::config::{
-    McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, ToolAllowCfg, Transport,
+    McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, ToolAllowCfg, ServerTransport as Transport,
 };
 use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;

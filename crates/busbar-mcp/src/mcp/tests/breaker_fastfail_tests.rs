@@ -195,7 +195,7 @@ async fn a_tripped_server_refuses_before_a_task_id_is_minted() {
 async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails() {
     use crate::mcp::config::{
         McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, ToolAllowCfg,
-        Transport,
+        ServerTransport as Transport,
     };
     metrics_init();
 

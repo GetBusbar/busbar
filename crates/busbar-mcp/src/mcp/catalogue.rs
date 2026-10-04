@@ -1154,7 +1154,7 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
     // does not carries a url and no command.
     let transport = def
         .transport
-        .unwrap_or(super::config::Transport::StreamableHttp);
+        .unwrap_or(super::config::ServerTransport::StreamableHttp);
     let stdio = transport
         .spawns_child()
         .then(|| super::client::stdio::StdioCommand {

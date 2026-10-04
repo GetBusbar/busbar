@@ -1883,7 +1883,7 @@ mod both_ways {
             &self,
             _: &str,
             _: u32,
-            _: bool,
+            _: u32,
             _: Option<busbar_plugin_loader::dispatch::Later>,
         ) -> busbar_plugin_loader::dispatch::Ran {
             busbar_plugin_loader::dispatch::Ran::Now(Stored::refused(UNSERVED))
