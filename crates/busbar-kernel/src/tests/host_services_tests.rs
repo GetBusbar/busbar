@@ -1723,3 +1723,165 @@ fn dest_judge_answers_the_installed_guard_admission() {
         Some(Ok("93.184.216.34:443".parse().unwrap()))
     );
 }
+
+// ── THE CHAINED RECORD KINDS (`PlaneTail::record_chains`; RULE-CHECK 2026-09-30: the call log moves
+//    to the plane over the generic journal append) ─────────────────────────────────────────────────
+
+const CALL: RecordSchemaId = RecordSchemaId::new("call");
+
+/// Services over `store` with the instance `label` declaring `call` chained, length-prefixed, its
+/// scope digested.
+fn chained_services(store: &Arc<MemoryStore>, label: &str) -> KernelServices {
+    let s = KernelServices::new()
+        .with_records(Arc::new(Mem(Arc::clone(store))), store.clone())
+        .with_pool(Arc::new(Inline));
+    s.admit(
+        label,
+        InstanceFacts {
+            record_kinds: vec![KIND, CALL],
+            record_chains: vec![busbar_contract::abi::plane::RecordChain {
+                kind: 1,
+                framing: busbar_contract::abi::plane::CHAIN_LENGTH_PREFIXED,
+                flags: busbar_contract::abi::plane::CHAIN_DIGESTS_SCOPE,
+                _reserved: 0,
+            }],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    s
+}
+
+/// Append `content` to `scope`'s chain as `label`; the ack it heard.
+fn append(
+    s: &KernelServices,
+    label: &str,
+    scope: &[u8],
+    content: &[u8],
+) -> Result<(), &'static str> {
+    let heard = Arc::new(Mutex::new(None));
+    let mine = Arc::clone(&heard);
+    s.record_write(
+        &caller(label),
+        "call",
+        scope,
+        RecordBytes::new(content.to_vec()).unwrap(),
+        Box::new(move |r| *mine.lock().unwrap() = Some(r)),
+    )
+    .unwrap();
+    let r = heard.lock().unwrap().take();
+    r.expect("the append was acknowledged")
+}
+
+/// The neutral bodies the store holds for `label`'s chain of `scope`, in sequence order.
+fn chain_rows(
+    store: &MemoryStore,
+    label: &str,
+    scope: &str,
+) -> Vec<crate::audit::journal::NeutralBody> {
+    use busbar_contract::records::{PlaneSelector, RecordStore as _};
+    let parent = crate::host_chains::chain_parent(label, scope);
+    store
+        .list_plane_records("call", &PlaneSelector::Parent(parent.as_str().into()))
+        .unwrap()
+        .iter()
+        .map(|b| crate::plane::store::decode(b).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_chained_kind_appends_in_sequence_and_never_overwrites_its_scope() {
+    let store = Arc::new(MemoryStore::new());
+    let s = chained_services(&store, "mcp");
+    assert_eq!(append(&s, "mcp", b"ref-a", b"one"), Ok(()));
+    assert_eq!(append(&s, "mcp", b"ref-a", b"two"), Ok(()));
+    let rows = chain_rows(&store, "mcp", "ref-a");
+    assert_eq!(
+        rows.iter()
+            .map(|r| (r.seq, r.content.clone()))
+            .collect::<Vec<_>>(),
+        vec![(1, b"one".to_vec()), (2, b"two".to_vec())],
+        "two records under one key are two links, not a put that overwrote the first"
+    );
+    assert_eq!(rows[1].prev_hash, rows[0].hash, "linked");
+    assert_eq!(rows[0].prev_hash, "", "genesis");
+    // Nothing went through the write-behind's put.
+    assert!(s.pending().get("mcp", "call", b"ref-a").is_none());
+}
+
+#[test]
+fn the_host_frames_the_prelude_in_the_declared_framing_and_joins_the_planes_bytes_raw() {
+    let store = Arc::new(MemoryStore::new());
+    let s = chained_services(&store, "mcp");
+    append(&s, "mcp", b"ref-a", b"suffix").unwrap();
+    let row = &chain_rows(&store, "mcp", "ref-a")[0];
+    let parent = crate::host_chains::chain_parent("mcp", "ref-a");
+    let mut input = crate::audit::frame_prelude(
+        crate::audit::Framing::LengthPrefixed,
+        "",
+        Some(parent.as_str()),
+        1,
+    );
+    input.extend_from_slice(b"suffix");
+    let want: String = Sha256::digest(&input)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        row.hash, want,
+        "sha256(prelude(prev, scope, seq) ++ suffix)"
+    );
+}
+
+#[test]
+fn a_restart_resumes_every_chain_from_its_stored_tail() {
+    let store = Arc::new(MemoryStore::new());
+    let first = chained_services(&store, "mcp");
+    append(&first, "mcp", b"ref-a", b"one").unwrap();
+    append(&first, "mcp", b"ref-a", b"two").unwrap();
+    drop(first);
+    let second = chained_services(&store, "mcp");
+    append(&second, "mcp", b"ref-a", b"three").unwrap();
+    let rows = chain_rows(&store, "mcp", "ref-a");
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "the chain resumed at its tail, not forked at seq 1"
+    );
+    assert_eq!(rows[2].prev_hash, rows[1].hash);
+    let chain = second.chained(&caller("mcp"), "call").expect("chained");
+    let plane = crate::plane::store::PlaneStoreView::narrow(store.clone());
+    assert_eq!(chain.verify(plane.as_ref(), "mcp", "ref-a").unwrap(), None);
+    assert_eq!(chain.next_seq("mcp", "ref-a"), 4);
+}
+
+#[test]
+fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
+    let store = Arc::new(MemoryStore::new());
+    let s = chained_services(&store, "one");
+    s.admit(
+        "two",
+        InstanceFacts {
+            record_kinds: vec![CALL],
+            record_chains: vec![busbar_contract::abi::plane::RecordChain {
+                kind: 0,
+                framing: busbar_contract::abi::plane::CHAIN_PIPE_SEPARATED,
+                flags: 0,
+                _reserved: 0,
+            }],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    append(&s, "one", b"ref", b"a").unwrap();
+    append(&s, "two", b"ref", b"b").unwrap();
+    assert_eq!(chain_rows(&store, "one", "ref")[0].seq, 1);
+    assert_eq!(chain_rows(&store, "two", "ref")[0].seq, 1, "its own chain");
+    assert!(s.chained(&caller("one"), "approval").is_none());
+    assert!(s.chained(&caller("three"), "call").is_none());
+    // A key that is not text has no chain parent: refused, never written.
+    assert_eq!(
+        append(&s, "one", &[0xff, 0xfe], b"x"),
+        Err(crate::host_chains::SCOPE_NOT_TEXT)
+    );
+}

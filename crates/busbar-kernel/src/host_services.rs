@@ -431,7 +431,7 @@ pub struct InstanceFacts {
     pub scope_kinds: Vec<String>,
     /// Its chained record kinds, as its tail declares them (`PlaneTail::record_chains`, each `kind`
     /// an index into [`InstanceFacts::record_kinds`]): a record write of one is appended to the
-    /// kernel's journal, never put.
+    /// kernel's journal ([`crate::host_chains`]), never put.
     pub record_chains: Vec<busbar_contract::abi::plane::RecordChain>,
 }
 
@@ -482,6 +482,8 @@ impl std::error::Error for AdmitRefused {}
 struct Records {
     reads: Arc<dyn RecordRows>,
     claims: Arc<dyn RecordStore>,
+    /// The same store narrowed to its plane-record slots: where a chained kind's journal persists.
+    plane: Arc<dyn crate::plane::store::PlaneStore>,
 }
 
 /// The wall clock, in milliseconds since the Unix epoch.
@@ -514,6 +516,9 @@ pub struct KernelServices {
     /// The monotonic clock, where one was given; else the time since [`Self::origin`].
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
+    /// Every admitted instance's chained record kinds, by `(label, kind)`; kept across a
+    /// re-admission so a chain's positions are never reset.
+    chains: Mutex<HashMap<(Arc<str>, String), Arc<crate::host_chains::ChainedKind>>>,
     records: Option<Records>,
     pool: OnceLock<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
@@ -569,6 +574,7 @@ impl KernelServices {
             wall_ms: Arc::new(system_wall_ms),
             mono_ns: None,
             instances: Mutex::default(),
+            chains: Mutex::default(),
             records: None,
             pool: OnceLock::new(),
             pending: Arc::default(),
@@ -662,7 +668,12 @@ impl KernelServices {
         reads: Arc<dyn RecordRows>,
         claims: Arc<dyn RecordStore>,
     ) -> Self {
-        self.records = Some(Records { reads, claims });
+        let plane = crate::plane::store::PlaneStoreView::narrow(Arc::clone(&claims));
+        self.records = Some(Records {
+            reads,
+            claims,
+            plane,
+        });
         self
     }
 
@@ -790,6 +801,24 @@ impl KernelServices {
         });
         self.trust
             .admit(&key, facts.trust.iter().cloned(), replayed);
+        {
+            let mut chains = self
+                .chains
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for chain in &facts.record_chains {
+                let Some(kind) = facts.record_kinds.get(chain.kind as usize) else {
+                    continue;
+                };
+                let slot = (Arc::clone(&key), kind.as_str().to_string());
+                if chains.contains_key(&slot) {
+                    continue;
+                }
+                if let Some(chained) = crate::host_chains::ChainedKind::new(kind.as_str(), chain) {
+                    chains.insert(slot, Arc::new(chained));
+                }
+            }
+        }
         instances.insert(key, Arc::new(facts));
         Ok(())
     }
@@ -880,6 +909,17 @@ impl KernelServices {
         acked: Acked,
     ) -> Result<(), &'static str> {
         let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
+        if let Some(chain) = self.chained(caller, kind) {
+            // A CHAINED KIND: appended to its journal on the pool, durable before `acked` hears
+            // so; never put through the write-behind (a put keyed by scope would overwrite).
+            let store = Arc::clone(&records.plane);
+            let instance = Arc::clone(&caller.instance);
+            let (key, content) = (key.to_vec(), value.as_slice().to_vec());
+            pool.run(Box::new(move || {
+                acked(chain.append(&store, &instance, &key, content));
+            }));
+            return Ok(());
+        }
         let pending = &self.pending;
         let started = self.batcher.push_with(|| {
             let seq = pending.enqueue(&caller.instance, kind, key, value.as_slice().to_vec());
@@ -898,6 +938,15 @@ impl KernelServices {
             None => return Err(QUEUE_FULL),
         }
         Ok(())
+    }
+
+    /// The chained kind `kind` of the caller, when its tail declares that kind chained.
+    fn chained(&self, caller: &Caller, kind: &str) -> Option<Arc<crate::host_chains::ChainedKind>> {
+        self.chains
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(Arc::clone(&caller.instance), kind.to_string()))
+            .cloned()
     }
 
     /// The caller's record kind at `index` of its tail ([`RecordWrite::kind`] indexes it).
