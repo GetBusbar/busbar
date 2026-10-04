@@ -61,8 +61,8 @@ fn a_direct_route_walks_its_entry_alone_under_the_empty_label() {
 
 #[test]
 fn a_model_serving_sections_entries_are_its_models() {
-    let p = pools("models:\n  jev: {provider: p}\nhooks: []");
-    assert_eq!(routed(&p, ROUTE_DIRECT, Some("jev")), owned("", &["jev"]));
+    let p = pools("models:\n  m: {provider: p}\nhooks: []");
+    assert_eq!(routed(&p, ROUTE_DIRECT, Some("m")), owned("", &["m"]));
     assert_eq!(
         routed(&p, ROUTE_DIRECT, Some("models")),
         None,
@@ -224,7 +224,7 @@ fn a_blocked_admission_renders_as_the_budget_units_door_does() {
 /// struck when its steps drop; a refused unit writes none.
 #[test]
 fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
-    use busbar_contract::caps::{Authenticate, Pass, PrincipalId};
+    use busbar_contract::caps::{Authenticate, PrincipalId};
     use busbar_kernel::host_units::UnitRecords;
     use busbar_kernel::teller::{UnitCtx, Units};
     let facts = super::door_facts("p", &[], &[], &[], "a", Vec::new());
@@ -234,7 +234,6 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
         id: "vk_one".into(),
         ..Default::default()
     });
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let ctx = |n: u64| UnitCtx {
         key: busbar_contract::UnitKey::new(n),
         origin: busbar_contract::caps::OriginKind::Client,
@@ -261,7 +260,10 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
     };
     let keyed = steps(Some(std::sync::Arc::clone(&key)));
     assert!(records.get(7).is_none(), "nothing before authenticate");
-    let _ = keyed.authenticate(&Pass::<Authenticate>::mint(&seal), &ctx(7));
+    let _ = keyed.authenticate(
+        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
+        &ctx(7),
+    );
     let held = records.get(7).expect("recorded at authenticate");
     assert_eq!(
         held.principal.as_ref().map(|k| k.id.as_str()),
@@ -271,7 +273,10 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
     assert!(records.get(7).is_none(), "struck when its steps drop");
 
     let unkeyed = steps(None);
-    let _ = unkeyed.authenticate(&Pass::<Authenticate>::mint(&seal), &ctx(8));
+    let _ = unkeyed.authenticate(
+        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
+        &ctx(8),
+    );
     assert!(records.get(8).is_none(), "a refused unit writes no record");
 }
 

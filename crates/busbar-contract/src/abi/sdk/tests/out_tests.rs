@@ -283,11 +283,11 @@ fn an_arrival_names_its_route_and_keeps_the_name() {
     let kept = Kept::default();
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: ArriveOut = zeroed();
-    let name = String::from("jev");
+    let name = String::from("entry");
     Out::kept(&mut o, &kept, &reporting).route(ROUTE_DIRECT, &name);
     drop(name);
-    assert_eq!((o.route, read(o.pool)), (ROUTE_DIRECT, b"jev".to_vec()));
+    assert_eq!((o.route, read(o.pool)), (ROUTE_DIRECT, b"entry".to_vec()));
     let mut bare: ArriveOut = zeroed();
-    Out::new(&mut bare).route(ROUTE_DIRECT, "jev");
+    Out::new(&mut bare).route(ROUTE_DIRECT, "entry");
     assert_eq!((bare.route, bare.pool.len), (ROUTE_DIRECT, 0));
 }

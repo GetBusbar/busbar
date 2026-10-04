@@ -70,3 +70,11 @@ file = "crates/busbar-plane-llm/src/codec/openai_chat/tests/handler_tests.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "jev"
+kind = "plane"
+file = "crates/busbar/src/root/tests/serve_door.rs"
+count = 9
+category = "composition-root"
+wave = "decisions/P3 — the serve-path integration test (SERVE-WIRE step 33) drives the decisions plane's own door end to end, so it names the plane's `jev` dialect (busbar-plane-decisions config::PROTOCOL) by necessity. Resolves when the decisions plane extracts to its own repo (P5) and this harness moves with it, or a neutral test door plane replaces the concrete door."
