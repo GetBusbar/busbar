@@ -52,7 +52,7 @@ fn the_caller_body_is_kept_and_an_empty_one_is_refused() {
 #[test]
 fn an_attempt_forwards_the_caller_body_unchanged() {
     let body = br#"{"state":{"session":"s"},"context":{}}"#;
-    let r = attempt(body);
+    let r = attempt_request(body);
     assert_eq!(r.verb, "POST");
     assert_eq!(r.target, "/v1/systemone");
     assert_eq!(r.fields, [("content-type", &b"application/json"[..])]);

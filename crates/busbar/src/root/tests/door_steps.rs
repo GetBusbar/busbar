@@ -326,6 +326,11 @@ fn resolve(
     super::member_routes(&section, &DoorPools::of(&section), &styled(), &reach)
 }
 
+// The positive binding proof needs a bearer-serving auth plugin LINKED (the default distribution's
+// `busbar-auth-header`); the member cannot bind to a style no linked/dropped-in plugin serves. A
+// `--no-default-features` build without `auth-header` links none, so the bind is refused there (the
+// sibling test proves that refusal), exactly as 1.5.5 bound only when a credential source was present.
+#[cfg(feature = "auth-header")]
 #[test]
 fn a_member_is_bound_under_its_dialects_default_style_on_the_need_that_style_names() {
     let routes = resolve("models: {m: {provider: p}}", &[("p", provider("d", None))])

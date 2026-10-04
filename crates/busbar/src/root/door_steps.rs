@@ -1021,9 +1021,9 @@ impl OutboundAuths {
     ///
     /// The serving plugin would not open for its outbound styles.
     pub fn serving(&self, style: &str) -> Result<Option<Serving>, String> {
-        use crate::root::loader::dispatch::auth_outbound::{serves, OutboundInstance};
+        use crate::root::loader::dispatch::auth_outbound::{serves_style, OutboundInstance};
         for (name, plugin) in self.rows() {
-            let Some(decl) = serves(&plugin, style) else {
+            let Some(decl) = serves_style(&plugin, style) else {
                 continue;
             };
             let mut opened = self.opened.lock().unwrap_or_else(|p| p.into_inner());

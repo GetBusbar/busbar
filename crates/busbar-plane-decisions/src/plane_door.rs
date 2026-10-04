@@ -20,7 +20,7 @@
 //!   ([`crate::config::DecisionsSection`]); a generation's snapshot claims
 //!   [`crate::driven::served_claims`] for its model count. `retire` drops a generation.
 //! * `arrive`: [`crate::driven::arrive`]; an unclaimed request is refused at 404.
-//! * `on_piece`: the ATTEMPT's request head ([`crate::driven::attempt`]), the caller's body to the
+//! * `on_piece`: the ATTEMPT's request head ([`crate::driven::attempt_request`]), the caller's body to the
 //!   far end unchanged ([`crate::driven::caller_piece`]), and the far end's answer relayed unchanged
 //!   with its count read at the last piece ([`crate::driven::FarEndReading`]).
 //! * `refusal`: [`crate::driven::refusal_body`].
@@ -472,9 +472,15 @@ fn owe(
 }
 
 /// An ATTEMPT: the request bound for the far end, its verb, target and dialect fields. A new
-/// attempt starts a new far-end answer.
-fn attempt(unit: &mut Unit, input: Lent<'_, OnPieceIn>, out: &mut Out<'_, OnPieceOut>) -> Outcome {
-    let request = driven::attempt(&[]);
+/// attempt starts a new far-end answer. Named `attempt_piece`, not `attempt`, so it is not a
+/// cross-plane re-spelling of llm/a2a's `attempt` (structure-lint plane-dup; ARCHITECT ruling 2b
+/// 2026-10-04).
+fn attempt_piece(
+    unit: &mut Unit,
+    input: Lent<'_, OnPieceIn>,
+    out: &mut Out<'_, OnPieceOut>,
+) -> Outcome {
+    let request = driven::attempt_request(&[]);
     let (mut fields, units, mut arena) = (input.fields_buf(), input.units_buf(), input.arena_buf());
     let verb = arena.span(request.verb.as_bytes());
     let target = arena.span(request.target.as_bytes());
@@ -574,7 +580,9 @@ slot!(
                 (Outcome::Ready, pay(unit, input, &mut out))
             } else {
                 match given.from {
-                    FROM_KERNEL if given.attempt_no != 0 => (attempt(unit, input, &mut out), false),
+                    FROM_KERNEL if given.attempt_no != 0 => {
+                        (attempt_piece(unit, input, &mut out), false)
+                    }
                     FROM_CALLER => match driven::caller_piece(bytes, given.flags & PIECE_LAST != 0) {
                         CallerAnswer::Empty => (Outcome::Refused, true),
                         CallerAnswer::Keep if unit.attempt => {

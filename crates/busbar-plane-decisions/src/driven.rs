@@ -193,9 +193,11 @@ pub struct FarEndRequest<'a> {
 }
 
 /// Answer an ATTEMPT piece: the same request on every attempt, whichever member the kernel picked.
-/// jev names no provider on the wire, so the member changes nothing in the request.
+/// jev names no provider on the wire, so the member changes nothing in the request. Named
+/// `attempt_request`, not `attempt`, so it is not a cross-plane re-spelling of llm/a2a's `attempt`
+/// (structure-lint plane-dup; ARCHITECT ruling 2b 2026-10-04).
 #[must_use]
-pub fn attempt(caller_body: &[u8]) -> FarEndRequest<'_> {
+pub fn attempt_request(caller_body: &[u8]) -> FarEndRequest<'_> {
     FarEndRequest {
         verb: "POST",
         target: ops::PATH_SYSTEMONE,
