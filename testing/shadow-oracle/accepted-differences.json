@@ -2229,6 +2229,84 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "Q-STORE migrate names the store",
+      "kind": "breaking",
+      "changelog": "A config with no `store:` block is refused at boot and by `--validate`; `busbar --migrate-config` inserts `store: {module: memory}`, the in-memory store such a config ran on in 1.5.x.",
+      "by": "owner (Matthew Jackson), OWNER RULED Q-STORE = (B) (2026-09-27) + Q-STEP7-a (2026-10-04: D1 approved, D2 signed #46)",
+      "cells": "^config\\.migrate\\|[^|]+\\|migrate$",
+      "expected_cells": 78,
+      "classes": [
+        "body",
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "(?m)^store:\\n  module: memory\\n",
+            ""
+          ],
+          [
+            "\\nCHANGES \\(1\\):\\n  - store: inserted `store: \\{module: memory\\}`[^\\n]*\\n",
+            ""
+          ],
+          [
+            "(?m)^  - store: inserted `store: \\{module: memory\\}`[^\\n]*\\n",
+            ""
+          ],
+          [
+            "CHANGES \\(2\\):",
+            "CHANGES (1):"
+          ],
+          [
+            "CHANGES \\(3\\):",
+            "CHANGES (2):"
+          ],
+          [
+            "CHANGES \\(4\\):",
+            "CHANGES (3):"
+          ],
+          [
+            "CHANGES \\(5\\):",
+            "CHANGES (4):"
+          ],
+          [
+            "CHANGES \\(7\\):",
+            "CHANGES (6):"
+          ],
+          [
+            "CHANGES \\(10\\):",
+            "CHANGES (9):"
+          ],
+          [
+            "CHANGES \\(30\\):",
+            "CHANGES (29):"
+          ],
+          [
+            "CHANGES \\(32\\):",
+            "CHANGES (31):"
+          ],
+          [
+            "CHANGES \\(33\\):",
+            "CHANGES (32):"
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "config.migrate|v1.5.5|migrate",
+        "body_contains": "store:\n  module: memory"
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-04",
+        "ruling": "2026-09-27 OWNER RULED Q-STORE = (B); Q-STEP7-a (1.6.0-QUESTIONS.md) answered 2026-10-04: \"Approve D1\" (the oracle baseline names its store), \"Sign #46\" (this entry)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "OWNER RULED Q-STORE = (B) (2026-09-27, docs/design/BUSBAR-1.6.0.md): 1.6.0 refuses a config with no `store:` block, and `busbar --migrate-config` inserts `store: {module: memory}`, the store 1.5.5 ran such a config on (v1.5.5 GOVERNANCE_STORE_MEMORY via default_governance_store, config/mod.rs:3026/3061). Q-STEP7-a (1.6.0-QUESTIONS.md, answered by the owner 2026-10-04): D1, approved, makes the oracle's run-time inputs name that store (busbar-release recorder/store_baseline.rs: the configs the engine writes and boots, each capture cell's config, the admin config-apply/validate bodies and every script cell's config via `upgrade-config`; no stored cell definition is edited, no golden re-recorded), so every other 1.5.5 golden stays the 1.5.5 answer. D2, signed as #46, is this entry: the cells that move BECAUSE of the ruling are exactly the 78 `config.migrate|<tag>|migrate` cells, since every corpus config lacks `store:` and none carries a 1.4.x `governance:`. The migrated document (body) gains `store:\\n  module: memory` as its last root key, and stderr gains `  - store: inserted `store: {module: memory}` (1.6.0 requires a `store:` block; ...)` under CHANGES: the header appears on the 9 cells whose 1.5.5 golden printed none, and the count is +1 on the other 69 (goldens print 1,2,3,4,6,9,29,31,32). The transform removes exactly that block and that line and decrements the count (ascending, so no count is rewritten twice); the cell then scores ACCEPTED, never PASS, and anything else that moved stays red. The 78 `validate-migrated` cells do not move (the migrated config validates). PREMISE (evaluated): the v1.5.5 corpus config's migrated body names the memory store, so a build that does not insert the block withholds the entry. kind=breaking: a 1.5.5 config with no store block no longer boots unchanged."
     }
   ]
 }

@@ -543,6 +543,8 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   said); 1.5.5 passed the request through.
 - 1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a
   message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).
+- A config with no `store:` block is refused at boot and by `--validate`; `busbar --migrate-config`
+  inserts `store: {module: memory}`, the in-memory store such a config ran on in 1.5.x.
 
 ### Deprecated env vars still honoured
 
