@@ -70,8 +70,8 @@ use busbar_contract::abi::host::conn::connector::{
 use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::conn::{
-    ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
-    PieceKind, PollConns, Ticket, NO_TICKET,
+    ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
+    Piece, PieceKind, PollConns, Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
@@ -188,6 +188,10 @@ struct DeclaredNeed {
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
 type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 
+/// The trust anchors sealed per destination (the transport pin, ARCHITECT 2026-10-03), by the need's owner, the need and
+/// the destination's authority (lower-case, `host:port`).
+type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
+
 /// The listeners, one per inbound need, by the need's owner and need.
 type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>;
 
@@ -284,6 +288,11 @@ pub struct Connector {
     listeners: Listeners,
     /// The per-worker pools of dialled connections.
     pools: Pools,
+    /// The trust anchors each sealed destination's connections are held to.
+    anchored: Anchored,
+    /// Each member's auth binding, by (instance, need, target origin): what a plugin's own request
+    /// to that member is authenticated with ([`DeclaredConns::bind_auth`]).
+    auths: Mutex<HashMap<(InstanceId, NeedId, String), busbar_contract::conn::ConnAuth>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -304,6 +313,8 @@ impl Default for Connector {
             judge: Arc::new(LiteralsOnly(guard::Guard::default())),
             listeners: Mutex::new(HashMap::new()),
             pools: Pools::new(PoolPosture::NONE),
+            anchored: Mutex::new(HashMap::new()),
+            auths: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -1093,6 +1104,39 @@ impl DeclaredConns for Connector {
             .insert((owner, need), (spec.clone(), answer));
         answer
     }
+
+    fn cause(&self, owner: InstanceId, conn: ConnId) -> Option<ConnCause> {
+        let (_, held) = self.slab.get(owner, conn).ok()?;
+        let (line, _) = held.line()?;
+        line.cause()
+    }
+
+    fn bind_auth(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        origin: &str,
+        binding: busbar_contract::conn::ConnAuth,
+    ) {
+        self.auths
+            .lock()
+            .expect("auth bindings")
+            .insert((owner, need, origin.to_string()), binding);
+    }
+
+    fn auth_of(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+    ) -> Option<busbar_contract::conn::ConnAuth> {
+        let origin = busbar_contract::conn::origin_of(target);
+        self.auths
+            .lock()
+            .expect("auth bindings")
+            .get(&(owner, need, origin.to_string()))
+            .cloned()
+    }
 }
 
 impl Conns for Connector {
@@ -1125,6 +1169,7 @@ impl Conns for Connector {
                 return Err(ConnError::Refused);
             }
             let dial = Dial {
+                anchors: None,
                 target: program.command.clone(),
                 tls: None,
                 alpn,
@@ -1172,6 +1217,7 @@ impl Conns for Connector {
                 return Err(ConnError::Refused);
             }
             let dial = Dial {
+                anchors: None,
                 target: target.to_owned(),
                 tls: None,
                 alpn,
@@ -1207,8 +1253,25 @@ impl Conns for Connector {
                 desc.body.to_vec(),
             )),
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+            anchors: None,
         };
         let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
+        // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
+        // destination is held to them; one that pins the far end's key and is not secured has no
+        // key to hold, and is refused before any judgement or dial.
+        let anchors = self
+            .anchored
+            .lock()
+            .expect("anchors")
+            .get(&(caller, need, planned.authority().to_ascii_lowercase()))
+            .cloned();
+        if anchors
+            .as_ref()
+            .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
+        {
+            return Err(ConnError::Refused);
+        }
+        let planned = planned.anchored(anchors);
         // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
         // table, owner-signed 2026-09-27): in a request-data class its address is judged as
         // operator infrastructure. A provider need keeps its class: it is refused a private
@@ -1359,8 +1422,6 @@ impl Conns for Connector {
         let (line, _) = held.line().ok_or(ConnError::Closed)?;
         let e = line.established().ok_or(ConnError::Closed)?;
         Ok(ConnFacts {
-            client_identity: false,
-            peer_key_pin: None,
             sni: e.offered_name.clone(),
             alpn: e
                 .agreed_protocol
@@ -1374,6 +1435,8 @@ impl Conns for Connector {
                 }
             }),
             claim: e.claim.clone(),
+            peer_key_pin: e.peer_key_pin.clone(),
+            client_identity: e.client_identity,
         })
     }
 
@@ -1401,6 +1464,44 @@ impl PollConns for Connector {
             Err(ConnError::Pending) => Poll::Pending,
             done => Poll::Ready(done),
         }
+    }
+
+    /// The anchors are sealed against the authority the need's own entry locates `target` at, the
+    /// identity parsed once under the connector's client config; every open on the need to that
+    /// authority is then held to them ([`Conns::open`]: a pinned key over no connection security is
+    /// refused there, and [`compose`] refuses a far end serving another key after its handshake).
+    fn anchor(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        anchors: &busbar_contract::transport::trust::Anchors,
+    ) -> Result<(), ConnError> {
+        let door = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|d| Arc::clone(&d.door));
+        let located = door
+            .as_ref()
+            .and_then(|door| framer::locate(door.as_ref(), target).ok());
+        let at = located.map(|l| (owner, need, l.authority.to_ascii_lowercase()));
+        if anchors.is_empty() {
+            // Nothing to hold: any earlier seal for the destination is dropped.
+            if let Some(at) = at {
+                self.anchored.lock().expect("anchors").remove(&at);
+            }
+            return Ok(());
+        }
+        let at = at.ok_or(ConnError::Refused)?;
+        let sealed =
+            tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?;
+        self.anchored
+            .lock()
+            .expect("anchors")
+            .insert(at, Arc::new(sealed));
+        Ok(())
     }
 }
 
