@@ -63,6 +63,8 @@ struct Table {
     bytes: Mutex<HashMap<u64, VecDeque<Vec<u8>>>>,
     next: AtomicU64,
     closed: AtomicU64,
+    /// The need every open was made on.
+    needs: Mutex<Vec<u32>>,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -84,7 +86,8 @@ fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Pie
 }
 
 impl Conns for Table {
-    fn open(&self, _: InstanceId, _: NeedId, d: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+    fn open(&self, _: InstanceId, need: NeedId, d: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+        self.needs.lock().unwrap().push(need.0);
         let host = d
             .target
             .split("://")
@@ -466,6 +469,7 @@ fn rig(
                     base_url: format!("https://{host}/v1/"),
                     provider: format!("p{k}"),
                     keep: super::ResponseKeep::default(),
+                    rides: Vec::new(),
                     auth: Some(AuthBinding {
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,
@@ -529,6 +533,7 @@ fn request() -> OutboundRequest {
         target: b"/chat".to_vec(),
         fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
         body: b"{}".to_vec(),
+        need: 0,
     }
 }
 
@@ -663,6 +668,44 @@ async fn a_529_fails_over_with_its_retry_after() {
         r.auth.calls.load(Ordering::SeqCst),
         2,
         "one auth call per attempt"
+    );
+}
+
+/// AT MOST ONCE (ARCHITECT round 4 Q-L3B-SURFACES (h), the walk does repeatable): a unit whose
+/// operation is performed at most once has a member's ANSWERED failure reach the plane as it came,
+/// never retried on another member; the breaker still records it. The same answer without the flag
+/// fails over (above).
+#[tokio::test]
+async fn an_answered_failure_of_an_at_most_once_operation_is_not_retried_elsewhere() {
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(529, Some(7), vec![b"overloaded"])),
+            ("b.test", Script::Answer(529, Some(7), vec![b"overloaded"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        once: true,
+        ..route()
+    });
+    let Pick::Member { .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    assert!(
+        pieces.iter().all(|p| !p.fail_over),
+        "an at-most-once operation is not failed over once answered: {pieces:?}"
+    );
+    assert_eq!(pieces[0].status.map(|s| s.0), Some(529), "{pieces:?}");
+    let observed = r.book.observed.lock().unwrap().clone();
+    assert!(
+        observed
+            .iter()
+            .any(|(_, o)| matches!(o, Outcome::Transient { .. })),
+        "the breaker still records the answered failure: {observed:?}"
     );
 }
 
@@ -1250,4 +1293,39 @@ async fn every_dispatch_is_recorded_under_its_unit() {
     let kept = r.journal.0.lock().unwrap().clone();
     assert_eq!(kept.len(), 1, "one record, before the dial");
     assert_eq!(kept[0].unit, busbar_contract::UnitKey::new(77));
+}
+
+/// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a member binds every need its auth names; a far
+/// request that names one (its declared index plus one) opens on it, one that names none on the
+/// member's own, and one naming a need the member has no binding for is refused before any record
+/// or dial.
+#[tokio::test]
+async fn a_far_request_opens_on_the_need_it_names() {
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    for route in r.egress.routes.values_mut() {
+        route.rides = vec![(NeedId(3), super::ResponseKeep::default())];
+    }
+    let t = token();
+    for (named, opened) in [(4, Some(3)), (0, Some(0)), (1, Some(0)), (9, None)] {
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        let before = r.table.needs.lock().unwrap().len();
+        let sent = far
+            .send(
+                &t,
+                OutboundRequest {
+                    need: named,
+                    ..request()
+                },
+            )
+            .await;
+        assert_eq!(sent, opened.is_some(), "named {named}");
+        let needs = r.table.needs.lock().unwrap().clone();
+        assert_eq!(needs.get(before).copied(), opened, "named {named}");
+        drop(far);
+    }
 }

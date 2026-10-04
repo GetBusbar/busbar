@@ -29,8 +29,8 @@ use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
     RefusalIn, RefusalOut, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE,
     EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ARRIVE, UNITS_ESTIMATED,
-    UNITS_REPORTED, VERDICT_RETRY,
+    PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ARRIVE, ROUTE_LOCAL,
+    ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -190,6 +190,19 @@ struct Double {
     tick_every_ns: AtomicU64,
     /// What it declares for its admission.
     declared: InstanceDecl,
+    /// Its duplex sessions (a `/session` arrival states `ROUTE_SESSION`): see [`Sessions`].
+    sessions: Arc<Sessions>,
+}
+
+/// The double's sessions: the streams open, the caller pieces each read (stream, bytes), the
+/// collections answered, and the streams `drive` names once a tick owes them output.
+#[derive(Default)]
+struct Sessions {
+    open: Mutex<Vec<u64>>,
+    read: Mutex<Vec<(u64, Vec<u8>)>>,
+    collects: AtomicU64,
+    named: Mutex<Vec<u64>>,
+    told: tokio::sync::Notify,
 }
 // SAFETY: the held `out`s are plain data the double wrote.
 unsafe impl Send for Double {}
@@ -263,6 +276,9 @@ impl Double {
     unsafe fn piece(&self, t: Ticket, i: &OnPieceIn, o: &mut OnPieceOut) -> (Answered, Hold) {
         self.count(stat::ON_PIECES);
         self.stats[stat::UNIT].store(i.unit, Ordering::SeqCst);
+        if i.stream != 0 {
+            return (self.session_piece(i, o), Hold::No);
+        }
         let Some(head) = self.heads.lock().unwrap().get(&i.unit).cloned() else {
             // A piece of a unit that never arrived: the caller's head is not re-sent.
             return (ready(Outcome::Fault), Hold::No);
@@ -433,6 +449,38 @@ impl Double {
     }
 }
 
+impl Double {
+    /// A session's piece: the caller's piece opens it (`200`, `open:<body>`), a collection answers
+    /// the output a tick owed (`keepalive;`), and the caller's last piece ends it.
+    unsafe fn session_piece(&self, i: &OnPieceIn, o: &mut OnPieceOut) -> Answered {
+        let s = &self.sessions;
+        let reply = |o: &mut OnPieceOut, bytes: &[u8]| {
+            let n = bytes.len().min(i.reply_cap);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), i.reply_buf, n);
+            o.emitted = n as u64;
+        };
+        match i.from {
+            FROM_CALLER if i.flags & PIECE_LAST != 0 => {
+                s.open.lock().unwrap().retain(|k| *k != i.stream);
+                o.flags = EMIT_DONE;
+            }
+            FROM_CALLER => {
+                let body = bytes(i.bytes).to_vec();
+                s.read.lock().unwrap().push((i.stream, body.clone()));
+                s.open.lock().unwrap().push(i.stream);
+                o.reply_status = 200;
+                reply(o, &[b"open:".as_slice(), &body].concat());
+            }
+            FROM_KERNEL if i.attempt_no == 0 => {
+                s.collects.fetch_add(1, Ordering::SeqCst);
+                reply(o, b"keepalive;");
+            }
+            _ => return ready(Outcome::Refused),
+        }
+        ready(Outcome::Ready)
+    }
+}
+
 enum Hold {
     No,
     For(Duration),
@@ -503,6 +551,12 @@ impl PlaneCalls for Double {
                     out.refusal_status = 400;
                     out.head.error = AbiStr::over(REFUSAL_WORDS);
                     return Outcome::Refused;
+                }
+                b"/session" => {
+                    // A unit served as a duplex session, answered by the plane itself.
+                    out.route = ROUTE_LOCAL;
+                    out.route_flags = ROUTE_SESSION;
+                    vec![estimate(0)]
                 }
                 b"/short-twice" => vec![estimate(0); cap + 1],
                 b"/short" => vec![estimate(1), estimate(2)],
@@ -650,14 +704,30 @@ impl PlaneCalls for Double {
             "tick on the driver ticket"
         );
         self.ticks.lock().unwrap().push(now);
+        // Every open session owes output on the tick: `drive` names it.
+        let open = self.sessions.open.lock().unwrap().clone();
+        if !open.is_empty() {
+            self.sessions.named.lock().unwrap().extend(open);
+            self.sessions.told.notify_one();
+        }
         let every = self.tick_every_ns.load(Ordering::SeqCst);
         let next = if every == 0 { 0 } else { now + every };
         Box::pin(std::future::ready(Some(next)))
     }
 
-    /// The double holds no session: its `drive` names none.
+    /// The streams its ticks named, waiting until one is.
     fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
-        Box::pin(std::future::ready(Vec::new()))
+        let sessions = Arc::clone(&self.sessions);
+        Box::pin(async move {
+            loop {
+                let told = sessions.told.notified();
+                let named = std::mem::take(&mut *sessions.named.lock().unwrap());
+                if !named.is_empty() {
+                    return named;
+                }
+                told.await;
+            }
+        })
     }
 
     /// The client-drop path: an op held on `ticket` is cancelled "on its worker" and answers the
@@ -1185,5 +1255,141 @@ async fn a_refused_arrival_is_rendered_in_the_planes_own_words() {
     assert!(
         body.starts_with("words:refused:400:the body is not a document:7@"),
         "{body}"
+    );
+}
+
+// ── a unit served as a session (ARCHITECT round 5 Q-L3B-K6-HTTP (a)) ───────────────────────────
+
+/// A request's caller side, as the composition root's ingress caller is: its read yields the
+/// arrival's body once, then nothing until the caller goes away, when its side ends.
+struct OnceCaller {
+    body: Mutex<Option<Vec<u8>>>,
+    head: Mutex<Option<u32>>,
+    heard: Mutex<Vec<u8>>,
+    gone: tokio::sync::Notify,
+}
+
+impl OnceCaller {
+    fn new(body: &[u8]) -> Self {
+        OnceCaller {
+            body: Mutex::new(Some(body.to_vec())),
+            head: Mutex::new(None),
+            heard: Mutex::new(Vec::new()),
+            gone: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn heard(&self) -> String {
+        String::from_utf8_lossy(&self.heard.lock().unwrap()).into_owned()
+    }
+}
+
+impl busbar_kernel::plane_driver::CallerEnd for OnceCaller {
+    fn head(&self, status: u32, _fields: Vec<(Vec<u8>, Vec<u8>)>) {
+        *self.head.lock().unwrap() = Some(status);
+    }
+
+    async fn write(&self, bytes: &[u8]) -> bool {
+        self.heard.lock().unwrap().extend_from_slice(bytes);
+        true
+    }
+}
+
+impl busbar_kernel::plane_driver::SessionCaller for OnceCaller {
+    async fn read(&self) -> Option<Vec<u8>> {
+        let first = self.body.lock().unwrap().take();
+        if first.is_some() {
+            return first;
+        }
+        self.gone.notified().await;
+        None
+    }
+}
+
+/// A `ROUTE_SESSION` ARRIVAL IS DRIVEN AS A SESSION (ARCHITECT round 5 Q-L3B-K6-HTTP (a)): the
+/// loop's route leg is the duplex session, its caller leg the unit's own caller side, whose read
+/// yields the arrival's body ONCE (one caller piece, on the unit's stream); the instance's tick
+/// owes the session output, `drive` names it, and the session collects it on its caller-side ticket
+/// (the keepalive, every tick) until the caller goes away; nothing dialled, and a session its plane
+/// answers itself bills nothing (as a local request unit). RED before
+/// the route leg switched: the unit was walked as a request, and with no member its walk was
+/// exhausted (refused, nothing heard).
+#[tokio::test]
+async fn a_route_session_arrival_is_driven_as_a_session_whose_caller_leg_is_the_units() {
+    use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
+    use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
+    let (plane, book, driver) = driven(5_000_000);
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&[], &[]),
+        OnceCaller::new(b"hello"),
+    );
+    let units = driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/session", b"hello"),
+        0,
+    );
+    let kernel = Kernel::new();
+    let (gauge, canary, leases, meter) = (
+        ConcurrencyGauge::new(),
+        busbar_contract::caps::Canary::new(),
+        LeaseCell::new(),
+        AccrualMeter::new(),
+    );
+    let cell = common::cell(&kernel);
+    let run = Run {
+        cell: &cell,
+        parent: None,
+        leases: &leases,
+        gauge: &gauge,
+        canary: &canary,
+        meter: &meter,
+    };
+    let ctx = common::ctx(7);
+    let unit = run_unit_async(&kernel, &units, &ctx, run, &units);
+    // The caller goes away once it heard the session open and three keepalives.
+    let leaves = async {
+        while caller.heard().matches("keepalive;").count() < 3 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        caller.gone.notify_one();
+        std::future::pending::<()>().await;
+    };
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            ended = unit => ended,
+            () = async { tokio::join!(driver.ticks(), driver.drives()); } => panic!("the schedule ran on"),
+            () = leaves => unreachable!(),
+        }
+    })
+    .await
+    .expect("the session collected the tick's output and ended with its caller");
+    let outcome = match ended {
+        Ended::Settled { end, .. } => end.outcome(),
+        Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
+    };
+    assert!(
+        matches!(outcome, busbar_contract::caps::Outcome::Completed),
+        "{outcome:?}"
+    );
+    assert_eq!(*caller.head.lock().unwrap(), Some(200));
+    let heard = caller.heard();
+    assert!(heard.starts_with("open:hello"), "{heard}");
+    assert_eq!(
+        plane.sessions.read.lock().unwrap().clone(),
+        vec![(7, b"hello".to_vec())],
+        "the caller leg yielded the arrival's body once, on the unit's stream"
+    );
+    assert!(plane.sessions.collects.load(Ordering::SeqCst) >= 3);
+    assert!(
+        far.sent().is_empty(),
+        "a session the plane answers dials nothing"
+    );
+    assert_eq!(
+        book.sessions_ended.load(Ordering::SeqCst),
+        0,
+        "a session its plane answers itself (ROUTE_LOCAL) tells the money seam nothing"
     );
 }

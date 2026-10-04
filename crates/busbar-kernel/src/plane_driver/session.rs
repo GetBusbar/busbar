@@ -65,12 +65,16 @@ struct Open<'d> {
     driver: &'d PlaneDriver,
     stream: u64,
     ctx: &'d UnitCtx,
+    /// The money seam was told the session opened, so it is told it ended.
+    priced: bool,
 }
 
 impl Drop for Open<'_> {
     fn drop(&mut self) {
         self.driver.lock_sessions().remove(&self.stream);
-        self.driver.money.session_ended(self.ctx);
+        if self.priced {
+            self.driver.money.session_ended(self.ctx);
+        }
     }
 }
 
@@ -137,8 +141,24 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         ctx: &UnitCtx,
         sealed: &[VerifiedDestination],
     ) -> Result<(), ReasonCode> {
+        self.session_priced(token, ctx, sealed, true).await
+    }
+
+    /// [`Self::session`]; `priced` = false for a session its plane answers ITSELF (`ROUTE_LOCAL`,
+    /// ARCHITECT Q-L3B-LOCAL: it names no entry, so it dials nothing, and only far-end-reported
+    /// units bill): it runs under the admission that charged nothing, and the money seam is told
+    /// nothing of it, as of a local request unit.
+    pub(crate) async fn session_priced(
+        &self,
+        token: &Pass<Route>,
+        ctx: &UnitCtx,
+        sealed: &[VerifiedDestination],
+        priced: bool,
+    ) -> Result<(), ReasonCode> {
         let d = self.driver;
-        d.money.session_opened(ctx)?;
+        if priced {
+            d.money.session_opened(ctx)?;
+        }
         let stream = ctx.key.get();
         let told = Arc::new(Notify::new());
         d.lock_sessions().insert(stream, told.clone());
@@ -146,6 +166,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             driver: d,
             stream,
             ctx,
+            priced,
         };
         d.sweep();
         let (near, far) = (d.calls.mint(), d.calls.mint());

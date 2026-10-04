@@ -26,7 +26,7 @@ use busbar_contract::abi::plane::{
 use busbar_contract::caps::{Canary, Outcome, Pass, ReasonCode, Route, StepName};
 use busbar_kernel::plane_driver::{
     Arrival, BufferCaps, CallerEnd, CancelBill, Checkpoint, FarEnd, FarPiece, MoneySeam,
-    OutboundRequest, Pick, PlaneUnits,
+    OutboundRequest, Pick, PlaneUnits, SessionCaller,
 };
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{
@@ -200,6 +200,14 @@ impl CallerEnd for Caller {
     async fn write_text(&self, bytes: &[u8]) -> bool {
         self.texts.fetch_add(1, Ordering::SeqCst);
         self.write(bytes).await
+    }
+}
+
+/// A request's caller: its side carries no piece of its own (a unit's route leg may be a session,
+/// whose caller leg is the unit's caller side).
+impl SessionCaller for Caller {
+    async fn read(&self) -> Option<Vec<u8>> {
+        None
     }
 }
 

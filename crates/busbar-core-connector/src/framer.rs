@@ -715,12 +715,40 @@ impl Framing {
         target: &str,
         established: &Established,
     ) -> Result<(Self, Yielded), Refused> {
+        Self::begin_with(door, side, target, established, &[])
+    }
+
+    /// [`Framing::begin`], handing a dialled framing its OPENING head fields (`BeginIn::fields`:
+    /// the bound auth's fields and the request's own), for a wire that carries them on the
+    /// connection's opening rather than on a message (ARCHITECT Q-L5B-WS-DIAL).
+    ///
+    /// # Errors
+    ///
+    /// The entry refused to frame the connection.
+    pub fn begin_with(
+        door: Arc<dyn FramerDoor>,
+        side: u32,
+        target: &str,
+        established: &Established,
+        opening: &[(String, Vec<u8>)],
+    ) -> Result<(Self, Yielded), Refused> {
         let mut bufs = Buffers::for_side(side);
         let facts = established.facts();
+        let fields: Vec<Field> = opening
+            .iter()
+            .map(|(n, v)| Field {
+                name: abi(n.as_bytes()),
+                value: abi(v),
+            })
+            .collect();
         let mut i: BeginIn = blank_in();
         i.side = side;
         i.target = abi(target.as_bytes());
         i.facts = &facts;
+        if !fields.is_empty() {
+            i.fields = fields.as_ptr();
+            i.fields_len = fields.len();
+        }
         i.sink = bufs.sink();
         let mut o: FramerOut = blank_out();
         ready(door.cross(Call::Begin(&mut i, &mut o)))?;
