@@ -5,14 +5,17 @@
 //! tickets, and the per-op envelope storage the host copies after each control-lane call.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Diag};
 use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::abi::sdk::conn::Host;
 
 use crate::abi::{abi, Waker};
-use crate::mint::{Minted, Minter, Report, Wire};
+use crate::mint::host_wire::HostWire;
+use crate::mint::{Minted, Minter, Report, Wire, MIN_SLEEP_SECS};
 
 /// The index of each diagnostic id in the Statement (`crate::DIAG_IDS`).
 pub(crate) mod diag {
@@ -75,7 +78,19 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// One plugin instance.
 pub(crate) struct Oauth {
     waker: Option<Waker>,
+    /// A test's need double; production reaches its need through [`Oauth::host`].
     wire: Option<Box<dyn Wire>>,
+    /// The host's connector tables `open` was handed (`None`: no need was granted).
+    host: Option<Host>,
+    /// The instance's driver ticket, as its first `tick` names it: a binding opened, or a request
+    /// waiting on a token nothing has minted yet, wakes it so a `drive` starts the mint at once.
+    driver: Mutex<Ticket>,
+    /// The handle count of the driver ticket's cycle ([`HostWire`]): reset at each `tick`, carried
+    /// on through each `drive`.
+    issued: AtomicU32,
+    /// The last `tick`'s clock (`TickIn::now_ns`) and when it was read: a `drive` reads the tick
+    /// clock from it.
+    clock: Mutex<Option<(u64, Instant)>>,
     generation: AtomicU64,
     next_handle: AtomicU64,
     handles: RwLock<HashMap<u64, (u64, Arc<Minted>)>>,
@@ -85,6 +100,8 @@ pub(crate) struct Oauth {
     pub(crate) open_env: Mutex<EnvStore>,
     /// `tick`'s envelope.
     pub(crate) tick_env: Mutex<EnvStore>,
+    /// `drive`'s envelope.
+    pub(crate) drive_env: Mutex<EnvStore>,
 }
 
 impl crate::style::TokenCache for Oauth {
@@ -97,10 +114,12 @@ impl crate::style::TokenCache for Oauth {
 }
 
 impl Oauth {
-    /// An instance at `generation` over the host's wake. No need is wired yet (the seam in
-    /// [`crate::abi::waker`]): a minted style reports that no connection was granted.
-    pub(crate) fn new(generation: u64, waker: Option<Waker>) -> Self {
-        Self::with_wire(generation, waker, None)
+    /// An instance at `generation` over the host's wake and its connector tables (`host`; `None`:
+    /// no need was granted, and a minted style reports that no connection was).
+    pub(crate) fn new(generation: u64, waker: Option<Waker>, host: Option<Host>) -> Self {
+        let mut o = Self::with_wire(generation, waker, None);
+        o.host = host;
+        o
     }
 
     /// An instance over any [`Wire`] (the unit tests' double).
@@ -112,6 +131,10 @@ impl Oauth {
         Self {
             waker,
             wire,
+            host: None,
+            driver: Mutex::new(Ticket::NONE),
+            issued: AtomicU32::new(0),
+            clock: Mutex::new(None),
             generation: AtomicU64::new(generation),
             next_handle: AtomicU64::new(1),
             handles: RwLock::new(HashMap::new()),
@@ -119,6 +142,7 @@ impl Oauth {
             waiters: Mutex::new(Vec::new()),
             open_env: Mutex::default(),
             tick_env: Mutex::default(),
+            drive_env: Mutex::default(),
         }
     }
 
@@ -169,13 +193,57 @@ impl Oauth {
         lock(&self.waiters).retain(|t| *t != ticket);
     }
 
-    /// `tick`: the refresh ahead of expiry, the wakes. Answers the next tick (`0`: none wanted).
-    pub(crate) fn tick(&self, now_ns: u64, env: &mut EnvStore) -> u64 {
+    /// A mint is wanted now (a binding opened; a request waits on a token nothing has minted):
+    /// wake the driver ticket, so a `drive` starts it without waiting for the next `tick`. Before
+    /// the first `tick` nothing is woken: that tick, made at once, starts it.
+    pub(crate) fn mint_soon(&self) {
+        let driver = *lock(&self.driver);
+        if let (Some(w), false) = (&self.waker, driver.is_none()) {
+            w.wake(driver);
+        }
+    }
+
+    /// `tick` at tick-clock `now_ns` on the driver ticket `ticket`: a new cycle (its handle count
+    /// starts again), the refresh ahead of expiry, the wakes. Answers the next tick; an instance
+    /// with no binding yet still asks for one ([`MIN_SLEEP_SECS`] on), never ending its schedule.
+    pub(crate) fn tick(&self, now_ns: u64, ticket: Ticket, env: &mut EnvStore) -> u64 {
+        if !ticket.is_none() {
+            *lock(&self.driver) = ticket;
+        }
+        *lock(&self.clock) = Some((now_ns, Instant::now()));
+        self.issued.store(0, Ordering::Release);
+        self.advance(now_ns, ticket, env)
+            .unwrap_or(now_ns.saturating_add(MIN_SLEEP_SECS * crate::mint::NS))
+    }
+
+    /// `drive` on the driver ticket `ticket` (a wake: a read that pended, [`Oauth::mint_soon`], or
+    /// the timer the last `drive` set): the cycle goes on, at the tick clock as it now reads. Answers
+    /// when the earliest cell is next due, the instant the `drive` asks to be resumed at (a mint
+    /// landed between ticks schedules its own refresh: the tick schedule was set before it), or
+    /// `None` (no cell, or no `tick` yet).
+    pub(crate) fn drive(&self, ticket: Ticket, env: &mut EnvStore) -> Option<u64> {
+        let (at, read) = (*lock(&self.clock))?;
+        let elapsed = u64::try_from(read.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.advance(at.saturating_add(elapsed), ticket, env)
+    }
+
+    /// Advance every token cell at `now_ns`, over the need on `ticket`: when the next tick is
+    /// wanted (`None`: no cell).
+    fn advance(&self, now_ns: u64, ticket: Ticket, env: &mut EnvStore) -> Option<u64> {
+        let host = self
+            .host
+            .as_ref()
+            .map(|h| HostWire::new(h, ticket, &self.issued));
+        let wire: Option<&dyn Wire> = match (&self.wire, &host) {
+            (Some(w), _) => Some(w.as_ref()),
+            (None, Some(h)) => Some(h),
+            (None, None) => None,
+        };
         let cells: Vec<Arc<Minted>> = lock(&self.cache).values().cloned().collect();
         let mut next = u64::MAX;
         let mut minted = false;
         for cell in cells {
-            let (due, report) = cell.tick(now_ns, self.wire.as_deref());
+            let (due, report) = cell.tick(now_ns, wire);
             next = next.min(due);
             match report {
                 Some(Report::Minted) => minted = true,
@@ -212,11 +280,7 @@ impl Oauth {
                 }
             }
         }
-        if next == u64::MAX {
-            0
-        } else {
-            next
-        }
+        (next != u64::MAX).then_some(next)
     }
 }
 

@@ -19,6 +19,7 @@
 //! refresh has failed, the per-request call answers not-ready ([`Read::Wait`]) and the ticket is
 //! woken when a mint lands; the host bounds the wait by the attempt's deadline.
 
+pub(crate) mod host_wire;
 pub(crate) mod jwt_bearer;
 pub(crate) mod oauth_client_credentials;
 
@@ -48,7 +49,8 @@ pub(crate) const DEFAULT_MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// How long `tick` waits before reading an in-flight exchange again.
 pub(crate) const IN_FLIGHT_POLL_NS: u64 = 5_000_000;
 
-const NS: u64 = 1_000_000_000;
+/// Nanoseconds in a second, on the tick clock.
+pub(crate) const NS: u64 = 1_000_000_000;
 
 /// Wall-clock seconds since the epoch (1970-01-01 UTC) — the clock a token's `expires_in` and a JWT's `iat` are
 /// read against, as in 1.5.5.
@@ -59,9 +61,21 @@ pub(crate) fn now_epoch() -> u64 {
         .unwrap_or(0)
 }
 
-/// One token request: POST `body` (a form) to `target`.
+/// THE PLUGIN'S OWN NEEDS, by their index in the Statement (`crate::NEEDS`): the token endpoint
+/// each style POSTs to, its target the binding's own setting (THE DESIGN §5: egress class
+/// `open-web`, "auth mint endpoints (`token_url`, `token_uri`)").
+pub(crate) mod need {
+    /// `oauth-client-credentials`: `settings.token_url`.
+    pub const TOKEN_URL: u32 = 0;
+    /// `jwt-bearer`: `settings.token_uri`.
+    pub const TOKEN_URI: u32 = 1;
+}
+
+/// One token request: POST `body` (a form) to `target`, over the need `need`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TokenRequest {
+    /// The need it goes out on ([`need`]).
+    pub need: u32,
     /// The token endpoint.
     pub target: String,
     /// The head fields, in order.
@@ -71,9 +85,10 @@ pub(crate) struct TokenRequest {
 }
 
 impl TokenRequest {
-    /// A form POST of `body` to `target`.
-    pub(crate) fn form(target: String, body: String) -> Self {
+    /// A form POST of `body` to `target`, over the need `need`.
+    pub(crate) fn form(need: u32, target: String, body: String) -> Self {
         Self {
+            need,
             target,
             fields: vec![("content-type", "application/x-www-form-urlencoded")],
             body: Redacted::new(body),
@@ -269,9 +284,10 @@ pub(crate) enum Report {
 pub(crate) enum Read<'a> {
     /// Present this header value (`Bearer <token>`).
     Header(&'a str),
-    /// No header (before the first mint, or an un-encodable token): the upstream answers 401.
+    /// No header (an un-encodable token): the upstream answers 401.
     Nothing,
-    /// The token has expired and its refresh failed: not ready.
+    /// Not ready: nothing has minted yet (THE DESIGN §11: Ready | Pending, PENDING until the first
+    /// mint lands), or the token has expired and its refresh failed.
     Wait,
 }
 
@@ -313,8 +329,10 @@ impl Minted {
     /// (so the borrow of the cached value never escapes the read).
     pub(crate) fn read<T>(&self, now: u64, f: impl FnOnce(Read<'_>) -> T) -> T {
         let tok = self.current();
-        let expired = !tok.token.expose_secret().is_empty() && now >= tok.expires_at;
-        if expired && self.refresh_failed.load(Ordering::Acquire) {
+        if tok.token.expose_secret().is_empty() {
+            return f(Read::Wait);
+        }
+        if now >= tok.expires_at && self.refresh_failed.load(Ordering::Acquire) {
             return f(Read::Wait);
         }
         match tok.header() {

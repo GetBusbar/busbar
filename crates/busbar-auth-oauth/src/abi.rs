@@ -105,6 +105,14 @@ pub(crate) fn waker(p: *const HostTables) -> Option<Waker> {
     t.wake.map(|wake| Waker { wake, ctx: t.ctx })
 }
 
+/// The host's connector tables from the tables `open` was handed, when they carry a connector (the
+/// instance's declared needs were granted); `None` otherwise.
+pub(crate) fn host(p: *const HostTables) -> Option<busbar_contract::abi::sdk::conn::Host> {
+    // SAFETY: a non-NULL `OpenIn::host` addresses the host's tables, live for the instance.
+    let t = unsafe { p.as_ref() }?;
+    (!t.conns.is_null()).then(|| busbar_contract::abi::sdk::conn::Host::of(t))
+}
+
 /// Write `fields` into the host's field buffer and array (`FieldsIn::field_buf`/`fields`) under
 /// the SHORT-BUFFER rule: when they do not fit, write nothing and answer FAILED with the FULL sizes.
 pub(crate) fn write_fields(

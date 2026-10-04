@@ -318,7 +318,7 @@ fn resolve(
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
-    let auths = super::OutboundAuths::new(dispatcher, crate::LINKED.auths, None);
+    let auths = super::OutboundAuths::new(dispatcher, crate::LINKED.auths, None, None);
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let conns: std::sync::Arc<dyn busbar_contract::conn::PollConns> =
         std::sync::Arc::new(busbar_core_connector::Connector::new());
@@ -377,5 +377,287 @@ fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
         unmatched.as_ref().is_err_and(|e| e.contains("api-key")),
         "{:?}",
         unmatched.err()
+    );
+}
+
+// ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
+
+/// A connection table standing in for the token endpoint: framed needs, each declaration and each
+/// open recorded, each open answered by the endpoint's next reply (`expires_in` 2, then 3600), one
+/// piece per read.
+#[derive(Default)]
+struct TokenEndpoint {
+    slab: busbar_contract::conn::ConnSlab<()>,
+    declared: std::sync::Mutex<Vec<(u32, u32, Option<String>)>>,
+    opened: std::sync::Mutex<Vec<Opened>>,
+    replies: std::sync::Mutex<Replies>,
+}
+
+/// What one open carried: the need, the target, the head target, the body.
+type Opened = (u32, String, Vec<u8>, String);
+
+/// Each open's reply, piece by piece, with its bytes.
+type Replies = std::collections::HashMap<
+    busbar_contract::conn::ConnId,
+    std::collections::VecDeque<(busbar_contract::conn::Piece, Vec<u8>)>,
+>;
+
+fn reply_piece(kind: busbar_contract::conn::PieceKind, len: usize) -> busbar_contract::conn::Piece {
+    use busbar_contract::conn::PieceKind;
+    busbar_contract::conn::Piece {
+        kind,
+        stream: busbar_contract::ids::StreamId(0),
+        len,
+        end: kind != PieceKind::Fields,
+        status: None,
+        status_code: (kind == PieceKind::Fields).then_some(200),
+        status_namespace: None,
+        retry_after_secs: None,
+        reason: None,
+    }
+}
+
+impl busbar_contract::conn::DeclaredConns for TokenEndpoint {
+    fn declare(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        target: Option<&str>,
+        _trust: Option<&str>,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.declared
+            .lock()
+            .unwrap()
+            .push((need.0, spec.egress_class, target.map(str::to_owned)));
+        if !spec.target_from.is_empty() && target.is_none() {
+            return Err(busbar_contract::conn::ConnError::Refused);
+        }
+        self.slab.declare(owner, need);
+        Ok(())
+    }
+    fn declared(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+    ) -> Option<Result<(), busbar_contract::conn::ConnError>> {
+        self.slab.check_need(owner, need).ok().map(Ok)
+    }
+    fn framed(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+    ) -> bool {
+        true
+    }
+    fn serves_scheme(&self, _: &str) -> bool {
+        true
+    }
+}
+
+impl busbar_contract::conn::Conns for TokenEndpoint {
+    fn open(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        use busbar_contract::conn::PieceKind;
+        self.slab.check_need(caller, need)?;
+        let mut opened = self.opened.lock().unwrap();
+        opened.push((
+            need.0,
+            desc.target.to_owned(),
+            desc.head_target.to_vec(),
+            String::from_utf8_lossy(desc.body).into_owned(),
+        ));
+        let n = opened.len();
+        let body = format!(
+            r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
+            if n == 1 { 2 } else { 3600 }
+        );
+        let id = self.slab.insert(caller, need, ())?;
+        self.replies.lock().unwrap().insert(
+            id,
+            std::collections::VecDeque::from([
+                (reply_piece(PieceKind::Fields, 0), Vec::new()),
+                (reply_piece(PieceKind::Body, body.len()), body.into_bytes()),
+                (reply_piece(PieceKind::Completion, 0), Vec::new()),
+            ]),
+        );
+        Ok(id)
+    }
+    fn write(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        b: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Ok(b.len())
+    }
+    fn read(
+        &self,
+        c: busbar_contract::conn::InstanceId,
+        id: busbar_contract::conn::ConnId,
+        _: u64,
+        buf: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        self.slab.get(c, id)?;
+        let (p, bytes) = self
+            .replies
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .and_then(std::collections::VecDeque::pop_front)
+            .ok_or(busbar_contract::conn::ConnError::Closed)?;
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Ok(p)
+    }
+    fn wait(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: &[busbar_contract::conn::ConnId],
+        _: u64,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Pending)
+    }
+    fn facts(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn close(
+        &self,
+        c: busbar_contract::conn::InstanceId,
+        id: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.replies.lock().unwrap().remove(&id);
+        self.slab.remove(c, id).map(|_| ())
+    }
+}
+
+/// The authorization a `fields` answer presents.
+fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<String> {
+    match answer? {
+        busbar_contract::auth_calls::Fields::Ready(fields) => fields.iter().find_map(|f| {
+            (f.name == b"authorization")
+                .then(|| String::from_utf8_lossy(f.value.expose_secret()).into_owned())
+        }),
+        _ => None,
+    }
+}
+
+/// THE MEMBER UNDER `auth: oauth-client-credentials`, BOUND BY THE COMPOSITION (THE DESIGN §6 steps
+/// 2-3, §5, §6.5): the auth plugin serving the style is opened over the provider's own settings,
+/// so its `open-web` need is declared pinned to the provider's `token_url`; its tick schedule runs
+/// without anyone driving it; the member's binding presents nothing until the first mint lands,
+/// then the minted bearer, then the refreshed one ahead of the first token's expiry (the oracle
+/// cell `egress.auth|oauth-cc|mint-refresh`: the second upstream request carries the refreshed
+/// authorization).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer() {
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
+    use busbar_contract::auth_calls::FieldsRequest;
+    const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
+    let key_file =
+        std::env::temp_dir().join(format!("busbar-door-steps-oauth-{}", std::process::id()));
+    std::fs::write(&key_file, "oracle-client-0001:oracle:secret:with:colons").expect("key");
+    let providers: std::collections::BTreeMap<String, super::ProviderRoute> = [(
+        "p".to_string(),
+        super::ProviderRoute {
+            base_url: "http://127.0.0.1:9".to_string(),
+            protocol: "d".to_string(),
+            credential: busbar_contract::secret_ref::SecretRef::file(
+                key_file.display().to_string(),
+            ),
+            style: Some("oauth-client-credentials".to_string()),
+            token_url: Some(TOKEN_URL.to_string()),
+            scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
+            subject: None,
+        },
+    )]
+    .into();
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    let linked: [busbar_kernel::preflight::LinkedAuth; 1] =
+        [("busbar-auth-oauth", busbar_auth_oauth::door)];
+    let auths = super::OutboundAuths::new(
+        dispatcher,
+        &linked,
+        None,
+        Some(std::sync::Arc::clone(&table)
+            as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+    );
+    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let reach = super::DoorReach {
+        providers: &providers,
+        secrets: &secrets,
+        auths: &auths,
+        conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
+        stream_ceiling_secs: 1,
+    };
+    let section: serde_yaml::Value =
+        serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![(DIRECTION_OUTBOUND, "oauth-client-credentials")],
+        dialects: vec!["d"],
+        ..Default::default()
+    };
+    let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach)
+        .expect("the member resolves");
+    let _ = std::fs::remove_file(&key_file);
+    let binding = routes["m"].auth.clone().expect("its credential is bound");
+    assert!(
+        table
+            .declared
+            .lock()
+            .unwrap()
+            .contains(&(0, EGRESS_OPEN_WEB, Some(TOKEN_URL.to_string()))),
+        "the plugin's open-web need, pinned to the provider's token_url: {:?}",
+        table.declared.lock().unwrap()
+    );
+
+    // The first request waits for the first mint (no empty credential), then carries it.
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        binding
+            .auth
+            .fields(binding.handle, FieldsRequest::default(), 0),
+    )
+    .await
+    .expect("the first mint lands");
+    assert_eq!(
+        presented(Some(&first)).as_deref(),
+        Some("Bearer oracle-minted-1")
+    );
+    // The refresh lands ahead of the first token's expiry; the next request carries it.
+    let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let now = binding
+                .auth
+                .fields_now(binding.handle, &FieldsRequest::default());
+            if presented(now.as_ref()).as_deref() == Some("Bearer oracle-minted-2") {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(refreshed.is_ok(), "the refreshed bearer is presented");
+    let opened = table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 2, "the mint and the refresh: {opened:?}");
+    assert!(opened.iter().all(|(need, target, words, _)| *need == 0
+        && target == TOKEN_URL
+        && words == b"/tenant/oauth2/v2.0/token"));
+    assert_eq!(
+        opened[1].3,
+        "grant_type=client_credentials&client_id=oracle-client-0001&client_secret=\
+         oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
     );
 }
