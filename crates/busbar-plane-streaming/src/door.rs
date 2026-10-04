@@ -168,6 +168,7 @@ const fn dialect_auth(dialect: u32, style: &'static str) -> DialectAuth {
         dialect,
         _reserved: 0,
         style: abi_str(style),
+        params: Blob::ABSENT,
     }
 }
 
@@ -321,6 +322,10 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: ptr::null(),
     refusal_statuses_len: 0,
+    caller_credential_refusal: NONE,
+    admin_routes: ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: Blob::ABSENT,
 };
 
 /// The inbound auth style of the metadata door: none, it is read without a credential.
