@@ -527,6 +527,8 @@ extern "C" {
 #define BB_HCONN_SERVICE_WRITE_REQUEST UINT32_C(13) /* Write one piece of a request on a FRAMED stream, with its descriptor: the framer builds its */
 #define BB_HCONN_SERVICES UINT32_C(14) /* How many services [`ConnectorSlots`] holds. */
 #define BB_HCONN_WITHIN_SEPARATOR "," /* The separator between the addresses of [`EstablishIn::within`]. */
+#define BB_HCONN_UPGRADE_VERIFY_OFF UINT32_C(1) /* [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's */
+#define BB_HCONN_UPGRADE_IN_V1_SIZE ((size_t)64) /* The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`. */
 #define BB_HCONN_CHECKIN_REUSE UINT32_C(0) /* [`CheckinIn::disposition`]: return the stream to the pool as is. */
 #define BB_HCONN_CHECKIN_RESET UINT32_C(1) /* [`CheckinIn::disposition`]: return it after the plugin kind's reset op. */
 #define BB_HCONN_CHECKIN_DROP UINT32_C(2) /* [`CheckinIn::disposition`]: close it; it is not fit for reuse. */
@@ -3133,7 +3135,7 @@ struct bb_hsvc_ServiceHead {
 struct bb_hconn_EstablishIn {
     bb_hsvc_ServiceHead head;
     uint32_t need;
-    uint32_t _reserved;
+    uint32_t timeout_ms;
     bb_mech_AbiStr target;
     bb_mech_AbiStr within;
 };
@@ -3158,6 +3160,8 @@ struct bb_hconn_UpgradeIn {
     uint64_t stream;
     bb_mech_AbiStr offered_name;
     bb_mech_AbiStr trust;
+    uint32_t flags;
+    uint32_t _reserved;
 };
 
 /* [`service::FACTS`]'s `in`. */
@@ -5205,7 +5209,7 @@ BB_ASSERT(sizeof(bb_hconn_EstablishIn) == 64, "bb_hconn_EstablishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_EstablishIn) == 8, "bb_hconn_EstablishIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, head) == 0, "bb_hconn_EstablishIn.head: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, need) == 24, "bb_hconn_EstablishIn.need: offset");
-BB_ASSERT(offsetof(bb_hconn_EstablishIn, _reserved) == 28, "bb_hconn_EstablishIn._reserved: offset");
+BB_ASSERT(offsetof(bb_hconn_EstablishIn, timeout_ms) == 28, "bb_hconn_EstablishIn.timeout_ms: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, target) == 32, "bb_hconn_EstablishIn.target: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, within) == 48, "bb_hconn_EstablishIn.within: offset");
 BB_ASSERT(sizeof(bb_hconn_StreamIn) == 32, "bb_hconn_StreamIn: size");
@@ -5218,12 +5222,14 @@ BB_ASSERT(offsetof(bb_hconn_IoIn, head) == 0, "bb_hconn_IoIn.head: offset");
 BB_ASSERT(offsetof(bb_hconn_IoIn, stream) == 24, "bb_hconn_IoIn.stream: offset");
 BB_ASSERT(offsetof(bb_hconn_IoIn, buf) == 32, "bb_hconn_IoIn.buf: offset");
 BB_ASSERT(offsetof(bb_hconn_IoIn, len) == 40, "bb_hconn_IoIn.len: offset");
-BB_ASSERT(sizeof(bb_hconn_UpgradeIn) == 64, "bb_hconn_UpgradeIn: size");
+BB_ASSERT(sizeof(bb_hconn_UpgradeIn) == 72, "bb_hconn_UpgradeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_UpgradeIn) == 8, "bb_hconn_UpgradeIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_UpgradeIn, head) == 0, "bb_hconn_UpgradeIn.head: offset");
 BB_ASSERT(offsetof(bb_hconn_UpgradeIn, stream) == 24, "bb_hconn_UpgradeIn.stream: offset");
 BB_ASSERT(offsetof(bb_hconn_UpgradeIn, offered_name) == 32, "bb_hconn_UpgradeIn.offered_name: offset");
 BB_ASSERT(offsetof(bb_hconn_UpgradeIn, trust) == 48, "bb_hconn_UpgradeIn.trust: offset");
+BB_ASSERT(offsetof(bb_hconn_UpgradeIn, flags) == 64, "bb_hconn_UpgradeIn.flags: offset");
+BB_ASSERT(offsetof(bb_hconn_UpgradeIn, _reserved) == 68, "bb_hconn_UpgradeIn._reserved: offset");
 BB_ASSERT(sizeof(bb_hconn_FactsIn) == 40, "bb_hconn_FactsIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_FactsIn) == 8, "bb_hconn_FactsIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_FactsIn, head) == 0, "bb_hconn_FactsIn.head: offset");

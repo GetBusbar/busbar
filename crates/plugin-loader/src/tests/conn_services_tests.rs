@@ -197,7 +197,7 @@ fn establish_on(
             },
         },
         need,
-        _reserved: 0,
+        timeout_ms: 0,
         target: abi_str(target),
         within: NONE,
     };
@@ -604,6 +604,8 @@ struct Scripted {
     upgrades: Mutex<Vec<Upgrade>>,
     /// How many upgrade calls answer PENDING before one answers done.
     upgrade_pends: Mutex<u32>,
+    /// Each upgrade call's verify-off request, in order.
+    verify_offs: Mutex<Vec<bool>>,
     /// What `facts` answers; `None` = the stream is closed.
     facts: Mutex<Option<ConnFacts>>,
 }
@@ -638,9 +640,11 @@ impl DeclaredConns for Scripted {
         conn: ConnId,
         name: Option<&str>,
         trust: Option<&str>,
+        verify_off: bool,
         _: u64,
     ) -> Result<(), ConnError> {
         self.slab.get(caller, conn)?;
+        self.verify_offs.lock().unwrap().push(verify_off);
         self.upgrades.lock().unwrap().push((
             conn,
             name.map(str::to_owned),
@@ -798,7 +802,7 @@ fn pinned_stream(p: &Plugin<TestKind>, seq: u32, within: &'static str) -> Servic
     let i = EstablishIn {
         head: head_of::<EstablishIn>(service::ESTABLISH, seq),
         need: 0,
-        _reserved: 0,
+        timeout_ms: 0,
         target: abi_str("127.0.0.1:9"),
         within: abi_str(within),
     };
@@ -1296,6 +1300,8 @@ fn an_upgrade_on_no_ticket_or_a_framed_stream_is_refused() {
         stream,
         offered_name: NONE,
         trust: NONE,
+        flags: 0,
+        _reserved: 0,
     };
     let out = call(
         &p,
@@ -1353,4 +1359,42 @@ fn facts_expose_the_peer_certificate_hash() {
         ..ConnFacts::default()
     });
     assert_eq!(read(2), (1, Some("ab".repeat(32))), "secured");
+}
+
+/// Q-L16-4: `UpgradeIn::flags`' verify-off reaches the table; an `in` from before the flags
+/// (`UPGRADE_IN_V1_SIZE`) reads them as 0, never past what the head states.
+#[test]
+fn an_upgrades_verify_off_reaches_the_table_and_a_v1_in_reads_none() {
+    use busbar_contract::abi::host::conn::connector::{
+        UpgradeIn, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
+    };
+    let table = Arc::new(Scripted::default());
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let upgrade = |size: usize, flags: u32, seq: u32| UpgradeIn {
+        head: ServiceHead {
+            size: size as u32,
+            op: service::UPGRADE_SECURE,
+            handle: CompletionHandle {
+                ticket: T,
+                seq,
+                _reserved: 0,
+            },
+        },
+        stream,
+        offered_name: NONE,
+        trust: NONE,
+        flags,
+        _reserved: 0,
+    };
+    let full = std::mem::size_of::<UpgradeIn>();
+    for (size, flags, seq) in [
+        (full, UPGRADE_VERIFY_OFF, 20),
+        (full, 0, 21),
+        (UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF, 22),
+    ] {
+        let out = call(&p, CONN_SLOTS.upgrade_secure, &upgrade(size, flags, seq));
+        assert_eq!(out.outcome, RawOutcome::of(Outcome::Ready));
+    }
+    assert_eq!(*table.verify_offs.lock().unwrap(), vec![true, false, false]);
 }

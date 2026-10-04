@@ -74,6 +74,8 @@ mod stage;
 pub mod store_adapter;
 pub mod store_v3;
 pub mod tarball;
+#[cfg(any(test, feature = "test-support"))]
+pub mod tcp_conns;
 /// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
 /// Compiled for this crate's tests and under the `test-support` feature, which only
 /// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
@@ -1520,11 +1522,9 @@ impl RecordStore for DynStore {
     // store plugin that implements them would have its every write DISCARDED here while the call
     // reported success. Each routes through `call_with_legacy_default`, the one choke point, so a
     // real backend error, a caught panic and a caller-protocol violation all propagate rather than
-    // collapsing to an empty read. The `STATUS_UNSUPPORTED` arm is LIVE, not defensive: the store
-    // `supported_abi` floor is 2, so a published 1.5.x plugin (which predates every one of these
-    // variants and answers each with `STATUS_UNSUPPORTED`) loads and lands here, and the inert
-    // default is what makes it behave exactly as it did under 1.5.5 — no durable plane, nothing
-    // else changed.
+    // collapsing to an empty read. The `STATUS_UNSUPPORTED` arm answers a store that does not
+    // implement one of these variants with the inert default: no durable plane, nothing else
+    // changed.
     //
     // The two WRITE verbs send the whole typed sidecar of [`PlaneRecord`], because the plugin on the
     // far side reconstitutes its envelope from the request and nothing else — anything left off here

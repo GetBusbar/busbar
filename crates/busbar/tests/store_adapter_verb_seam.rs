@@ -16,10 +16,13 @@ use busbar_contract::records::VirtualKey;
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceRequest, SliceStore};
 use busbar_contract::verb_store::Store as VerbStore;
 use busbar_kernel_wal::Record;
-use busbar_plugin_loader::registry::STORE_ABI_FLOOR;
 use busbar_plugin_loader::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
 use busbar_plugin_loader::test_support::{self, dyn_proof_store_with_fake_call_at_abi};
 use std::sync::Arc;
+
+/// The published store payload schema (v2), the value `registry::STORE_ABI_FLOOR` held before C21
+/// (ruling C21/ABI-o1) deleted it: the loader now refuses v2 at scan, so this suite loads it directly.
+const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
 /// The `tracing` capture the store-adapter tests assert silence with, carried from
 /// `busbar-plugin-loader`'s `src/tests/abi2_store_ops_tests.rs` (where it stays for its own tests).
@@ -76,7 +79,7 @@ fn admin() -> Grant<AdminVerb> {
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
 fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    let store = dyn_proof_store_with_fake_call_at_abi(STORE_ABI_FLOOR)?;
+    let store = dyn_proof_store_with_fake_call_at_abi(PUBLISHED_STORE_SCHEMA)?;
     Some(StoreAdapter::over_loaded_store(store))
 }
 
@@ -109,7 +112,7 @@ impl TestClock {
 fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
     // The schema the store is bound to is the one handed to the harness: `DynStore`'s own field is
     // the loader's, so the test names the value it passed rather than reading it back.
-    let abi_version = STORE_ABI_FLOOR;
+    let abi_version = PUBLISHED_STORE_SCHEMA;
     let store = dyn_proof_store_with_fake_call_at_abi(abi_version)?;
     Some(StoreAdapter::with_clock(
         Arc::new(store),
@@ -393,7 +396,7 @@ fn a_round_trip_through_the_published_store() {
         busbar_plugin_loader::tarball::unpack(&bytes).expect("the published tarball unpacks");
     assert_eq!(unpacked.manifest.kind, "store");
     assert_eq!(
-        unpacked.manifest.abi_version, STORE_ABI_FLOOR,
+        unpacked.manifest.abi_version, PUBLISHED_STORE_SCHEMA,
         "the published store is at the published payload schema"
     );
 
